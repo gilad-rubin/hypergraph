@@ -73,7 +73,7 @@ class BaseEvent:
 | `RunStartEvent` | Execution begins | `inputs`, `session_id` |
 | `RunEndEvent` | Execution completes | `outputs`, `duration_ms`, `iterations` |
 | `NodeStartEvent` | Node begins | `node_name`, `inputs` |
-| `NodeEndEvent` | Node completes successfully | `node_name`, `outputs`, `duration_ms`, `cached` |
+| `NodeEndEvent` | Node completes successfully | `node_name`, `outputs`, `duration_ms`, `cached`, `replayed` |
 | `NodeErrorEvent` | Node raises exception | `node_name`, `error`, `error_type` |
 | `StreamingChunkEvent` | Generator yields | `node_name`, `chunk`, `chunk_index` |
 | `CacheHitEvent` | Cache lookup succeeded | `node_name` (emitted *before* NodeEndEvent) |
@@ -96,6 +96,19 @@ class NodeErrorEvent:
 
 **Note:** After `NodeErrorEvent`, the runner may still emit `RunEndEvent` (with error status) and call `shutdown()` on processors.
 
+### Cache vs Checkpoint: The `cached` and `replayed` Flags
+
+`NodeEndEvent` has two boolean flags to distinguish how outputs were obtained:
+
+| Flag | Meaning | Use Case |
+|------|---------|----------|
+| `cached=True` | Loaded from cache | Optimization - same inputs seen before |
+| `replayed=True` | Loaded from checkpoint | Recovery - resuming after crash/pause |
+
+**Why distinguish?** For observability and debugging:
+- `cached=True` → "optimization working, saved compute"
+- `replayed=True` → "recovering from step X, workflow resuming"
+
 ### CacheHitEvent vs NodeEndEvent.cached
 
 Both relate to caching but serve different purposes:
@@ -110,9 +123,12 @@ Both relate to caching but serve different purposes:
 2. `CacheHitEvent` (cache lookup succeeded)
 3. `NodeEndEvent` with `cached=True` (outputs available)
 
-**Sequence for cache miss:**
+**Sequence for fresh execution:**
 1. `NodeStartEvent` (node begins)
-2. `NodeEndEvent` with `cached=False` (computed fresh)
+2. `NodeEndEvent` with `cached=False, replayed=False` (computed fresh)
+
+**Sequence for checkpoint replay:**
+1. `NodeEndEvent` with `replayed=True` (no NodeStartEvent - already ran)
 
 ### Span Hierarchy
 
@@ -437,8 +453,13 @@ async for event in runner.iter(graph, inputs={...}):
         case StreamingChunkEvent(chunk=chunk):
             print(chunk, end="", flush=True)
 
-        case NodeEndEvent(node_name=name, duration_ms=ms, cached=cached):
-            status = "cached" if cached else f"{ms:.1f}ms"
+        case NodeEndEvent(node_name=name, duration_ms=ms, cached=cached, replayed=replayed):
+            if cached:
+                status = "cached"
+            elif replayed:
+                status = "replayed"
+            else:
+                status = f"{ms:.1f}ms"
             print(f"\n[{name}: {status}]")
 
         case InterruptEvent(value=prompt, workflow_id=wf_id):
@@ -472,7 +493,12 @@ class LoggingProcessor(TypedEventProcessor):
         self.logger.info(f"Starting {event.node_name}")
 
     def on_node_end(self, event: NodeEndEvent) -> None:
-        status = "cached" if event.cached else f"{event.duration_ms:.1f}ms"
+        if event.cached:
+            status = "cached"
+        elif event.replayed:
+            status = "replayed"
+        else:
+            status = f"{event.duration_ms:.1f}ms"
         self.logger.info(f"Completed {event.node_name} ({status})")
 
     def on_route_decision(self, event: RouteDecisionEvent) -> None:
@@ -560,10 +586,11 @@ class OpenTelemetryProcessor(EventProcessor):
                 span.set_attribute("hypergraph.run_id", event.run_id)
                 self.spans[sid] = span
 
-            case NodeEndEvent(span_id=sid, duration_ms=ms, cached=cached):
+            case NodeEndEvent(span_id=sid, duration_ms=ms, cached=cached, replayed=replayed):
                 if sid in self.spans:
                     span = self.spans[sid]
                     span.set_attribute("hypergraph.cached", cached)
+                    span.set_attribute("hypergraph.replayed", replayed)
                     span.set_attribute("hypergraph.duration_ms", ms)
                     span.end()
                     del self.spans[sid]

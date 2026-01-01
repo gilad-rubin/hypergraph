@@ -616,7 +616,8 @@ class NodeEndEvent:
     node_name: str
     outputs: Any
     duration_ms: float
-    cached: bool
+    cached: bool      # True if loaded from cache (same inputs seen before)
+    replayed: bool    # True if loaded from checkpoint (crash recovery/resume)
     timestamp: float
 ```
 

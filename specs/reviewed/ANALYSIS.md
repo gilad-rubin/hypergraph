@@ -65,7 +65,7 @@ Updated in: `execution-types.md`
 
 ---
 
-### 4. Cache vs Checkpoint Semantics
+### ~~4. Cache vs Checkpoint Semantics~~ RESOLVED
 
 **The problem:**
 
@@ -73,7 +73,15 @@ Updated in: `execution-types.md`
 - "Loaded from checkpoint" is a different concept
 - Not clear if checkpoint loads emit `cached=True`, a new flag, or distinct event
 
-**Decision needed:** Define distinction for observability correctness
+**Resolution:** Added separate `replayed` boolean flag.
+
+`NodeEndEvent` now has two flags:
+- `cached: bool` - True if loaded from cache (same inputs seen before)
+- `replayed: bool` - True if loaded from checkpoint (crash recovery/resume)
+
+Simple, backwards compatible, and each boolean answers a clear question.
+
+Updated in: `execution-types.md`, `runners-api-reference.md`, `observability.md`
 
 ---
 
@@ -178,7 +186,7 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | SyncRunner durability        | `durable-execution.md`, `checkpointer.md`        | Done (cache-based, no checkpointer) |
 | Resolved | initial_state vs steps       | `checkpointer.md`, `persistence.md`              | Done (removed initial_state) |
 | Resolved | Step indexing                | `execution-types.md`                             | Done (alphabetical within batch) |
-| Medium   | Cache vs checkpoint          | Design                                           | Needs decision |
+| Resolved | Cache vs checkpoint          | `execution-types.md`, `observability.md`         | Done (added replayed flag) |
 | Resolved | Namespace collision          | `graph.md`                                       | Done (build-time validation) |
 | Medium   | persist allowlist semantics  | Design                                           | Needs decision |
 | Low      | Remaining broken links       | Multiple                                         | Needs fix      |
