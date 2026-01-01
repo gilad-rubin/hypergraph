@@ -113,19 +113,20 @@ Updated in: `graph.md`
 - If a node has multiple outputs, can you persist only some?
 - If node re-runs to regenerate non-persisted outputs, persisted ones may change (defeats purpose)
 
-**Solution (Resolved):** Persistence is per-node, not per-output.
+**Solution (Resolved):** Persistence uses output names with multi-output validation.
 
 Key decisions:
-- `persist` is a Graph-level parameter taking **node names** (not output names)
-- `persist=None` (default): All nodes are checkpointed when checkpointer is present
-- `persist=["node1", "node2"]`: Allowlist - only these nodes are checkpointed
-- `persist=[]`: No nodes checkpointed
+- `persist` is a Graph-level parameter taking **output names** (what users care about as "state")
+- `persist=None` (default): All outputs are checkpointed when checkpointer is present
+- `persist=["messages", "answer"]`: Allowlist - only these outputs are checkpointed
+- `persist=[]`: No outputs checkpointed
 - No `persist` parameter on `run()` - changing persist between runs can break resume behavior
 - When no checkpointer is present, `persist` is ignored (it's metadata for durability systems)
 
-Why per-node?
-- Nodes execute atomically - you can't get some outputs without running the whole node
-- Partial output persistence creates inconsistency on resume
+Multi-output node validation:
+- For nodes with multiple outputs (e.g., `@node(outputs=("mean", "std"))`), must include ALL or NONE
+- Partial inclusion raises a build-time error in `Graph.__init__`
+- This prevents inconsistent state on resume — nodes execute atomically
 
 Updated in: `graph.md`, `persistence.md`, `durable-execution.md`
 
@@ -197,6 +198,6 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | Step indexing                | `execution-types.md`                             | Done (alphabetical within batch) |
 | Resolved | Cache vs checkpoint          | `execution-types.md`, `observability.md`         | Done (added replayed flag) |
 | Resolved | Namespace collision          | `graph.md`                                       | Done (build-time validation) |
-| Resolved | persist allowlist semantics  | `graph.md`, `persistence.md`, `durable-execution.md` | Done (per-node, Graph-level only) |
+| Resolved | persist allowlist semantics  | `graph.md`, `persistence.md`, `durable-execution.md` | Done (output names + multi-output validation) |
 | Resolved | Remaining broken links       | `graph.md`, `persistence.md`                     | Done           |
 | Resolved | Duplicate hierarchies        | `node-types.md`, `graph.md`                      | Done (canonical in node-types.md) |
