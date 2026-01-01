@@ -2,80 +2,9 @@
 
 Based on reviewing all 10 spec files in `specs/reviewed/`.
 
-## High-Priority Issues (All Resolved ✓)
-
-### 1. Resume Semantics Conflict ✓
-
-**Was:** Three different resume patterns existed (`resume=True`, implicit, `resume()` method)
-
-**Resolution:** **Option A — Implicit resume via same `workflow_id`**
-- Removed all `resume=True` flags from examples
-- Checkpointer auto-detects paused state when same `workflow_id` is used
-- Files fixed: `execution-types.md`, `runners.md`
-
----
-
-### 2. GraphNode.inputs Type Mismatch ✓
-
-**Was:** `Graph.inputs` returns `InputSpec` but `GraphNode` assigned it directly as tuple
-
-**Resolution:** `GraphNode` now extracts `.all` from `InputSpec`
-- `node-types.md:1107` changed to `self.inputs = graph.inputs.all`
-
----
-
-### 3. RunResult Shape Inconsistency ✓
-
-**Was:** `runners.md` had old shape with separate `pause_reason`, `pause_node`, `pause_value` fields
-
-**Resolution:** Updated to use `PauseInfo` dataclass
-- `runners.md` now shows `pause: PauseInfo | None` matching `execution-types.md`
-
----
-
-### 4. RunStatus RUNNING Error ✓
-
-**Was:** `graph.md:810` listed `RUNNING` as a valid status
-
-**Resolution:** Removed `RUNNING` — only `COMPLETED`, `PAUSED`, `ERROR` are valid
-- `RUNNING` doesn't make sense for a returned result (execution is complete when result is returned)
-
----
-
-### 5. @node Parameter Name Drift ✓
-
-**Was:** Examples mixed `outputs=` and `output_name=`
-
-**Resolution:** Standardized to `output_name=` across all examples
-- Files fixed: `graph.md`, `runners.md`
-
----
-
-### 6. DBOS Runner Not in Taxonomy ✓
-
-**Was:** `DBOSAsyncRunner` described in `durable-execution.md` but missing from `runners.md`
-
-**Resolution:** Added `DBOSAsyncRunner` to official taxonomy
-- Updated "The Four Runners" table
-- Added to Feature Compatibility Matrix
-- Added to Capability values table
-- Added `supports_durable_execution` capability
-
----
-
-### 7. persistence.md Uses Old Checkpointer Interface ✓
-
-**Was:** Used `checkpointer.load()` and missing `await` on async calls
-
-**Resolution:** Updated to canonical interface
-- Changed `load()` to `get_workflow()`
-- Added `await` to all `get_state()`, `get_history()`, `get_workflow()` calls
-
----
-
 ## Medium-Priority Issues (Design Clarifications)
 
-### 1. Paused Workflow Persistence Model
+### ~~1. Paused Workflow Persistence Model~~ ✓
 
 **The problem:**
 
@@ -83,11 +12,14 @@ Based on reviewing all 10 spec files in `specs/reviewed/`.
 - `Workflow` persistence type in `execution-types.md:994` has no pause fields
 - If workflow pauses and process dies, how does external system query "what are we waiting for?"
 
-**Decision needed:** Define whether pause metadata is:
+**Solution (Resolved):**
 
-- Stored in `Workflow`
-- In a dedicated "pending interrupts" table
-- Derivable from steps (and how)
+Pause metadata is stored in `StepResult`:
+- Added `StepStatus.WAITING` - indicates step is blocked at InterruptNode
+- Added `StepResult.pause: PauseInfo | None` - contains the pause details
+- External systems query `get_workflow()`, find steps with `WAITING` status, read `pause` field
+
+Updated in: `execution-types.md`, `checkpointer.md`
 
 ---
 
@@ -213,7 +145,7 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | ---------- | ------------------------------ | -------------------------------------------------- | ---------------- |
 | Resolved | Checkpointer interface       | `durable-execution.md`                           | Done           |
 | Resolved | InterruptEvent fields        | `observability.md`                               | Done           |
-| Resolved | SyncRunner checkpointer      | `checkpointer.md`                                | Done           |
+| Resolved | SyncRunner checkpointer      | `checkpointer.md`, `durable-execution.md`        | Done (no checkpointer, use cache) |
 | Resolved | NodeExecution undefined      | `execution-types.md`                             | Done           |
 | Resolved | StepSnapshot undefined       | `durable-execution.md`                           | Done           |
 | Resolved | Some dead links              | Multiple                                         | Done           |
@@ -225,7 +157,9 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | @node param name             | All examples                                     | Done (output_name=) |
 | Resolved | DBOS runner taxonomy         | `runners.md`                                     | Done (added DBOSAsyncRunner) |
 | Resolved | persistence.md old interface | `persistence.md`                                 | Done (get_workflow + await) |
-| Medium   | Pause persistence model      | Design                                           | Needs decision |
+| Resolved | Pause persistence model      | `execution-types.md`, `checkpointer.md`          | Done (WAITING status + StepResult.pause) |
+| Resolved | DBOS integration philosophy  | `durable-execution.md`, `runners-api-reference.md` | Done (thin wrapper pattern) |
+| Resolved | SyncRunner durability        | `durable-execution.md`, `checkpointer.md`        | Done (cache-based, no checkpointer) |
 | Medium   | initial_state vs steps       | Design                                           | Needs decision |
 | Medium   | Step indexing                | Design                                           | Needs decision |
 | Medium   | Cache vs checkpoint          | Design                                           | Needs decision |

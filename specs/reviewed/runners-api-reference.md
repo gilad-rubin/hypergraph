@@ -68,15 +68,18 @@ class RunnerCapabilities:
 
 **Per-runner capabilities:**
 
-| Capability | SyncRunner | AsyncRunner | DaftRunner |
-|------------|:----------:|:-----------:|:----------:|
-| `supports_cycles` | ✅ | ✅ | ❌ |
-| `supports_gates` | ✅ | ✅ | ❌ |
-| `supports_interrupts` | ❌ | ✅ | ❌ |
-| `supports_async_nodes` | ❌ | ✅ | ✅ |
-| `supports_streaming` | ❌ | ✅ | ❌ |
-| `supports_distributed` | ❌ | ❌ | ✅ |
-| `returns_coroutine` | ❌ | ✅ | ❌ |
+| Capability | SyncRunner | AsyncRunner | DBOSAsyncRunner | DaftRunner |
+|------------|:----------:|:-----------:|:---------------:|:----------:|
+| `supports_cycles` | ✅ | ✅ | ✅ | ❌ |
+| `supports_gates` | ✅ | ✅ | ✅ | ❌ |
+| `supports_interrupts` | ❌ | ✅ | ✅ | ❌ |
+| `supports_async_nodes` | ❌ | ✅ | ✅ | ✅ |
+| `supports_streaming` | ❌ | ✅ | ✅* | ❌ |
+| `supports_distributed` | ❌ | ❌ | ❌ | ✅ |
+| `returns_coroutine` | ❌ | ✅ | ✅ | ❌ |
+| `supports_automatic_recovery` | ❌ | ❌ | ✅ | ❌ |
+
+*DBOSAsyncRunner supports streaming via EventProcessor only, not `.iter()`.
 
 ---
 
@@ -357,6 +360,126 @@ async def map(
 
     Raises:
         GraphConfigError: If graph contains interrupts.
+    """
+```
+
+---
+
+## DBOSAsyncRunner
+
+For DBOS integration with automatic crash recovery. See [Durable Execution](./durable-execution.md) for concepts and usage patterns.
+
+### Constructor
+
+```python
+class DBOSAsyncRunner(BaseRunner):
+    def __init__(
+        self,
+        *,
+        event_processors: list[EventProcessor] | None = None,
+    ) -> None:
+        """
+        Create DBOS-integrated async runner.
+
+        IMPORTANT: User must configure DBOS separately before creating this runner:
+            from dbos import DBOS
+            DBOS(config={"name": "my_app", "database_url": "..."})
+
+        Args:
+            event_processors: Processors that receive execution events.
+                See [Observability](./observability.md) for details.
+
+        Note:
+            - No database_url parameter — user configures DBOS directly
+            - No checkpointer parameter — DBOS handles persistence
+            - User must call DBOS.launch() for automatic crash recovery
+        """
+```
+
+### run()
+
+```python
+async def run(
+    self,
+    graph: Graph,
+    inputs: dict[str, Any],
+    *,
+    select: list[str] | None = None,
+    session_id: str | None = None,
+    max_iterations: int | None = None,
+    max_concurrency: int | None = None,
+    workflow_id: str,
+    event_processors: list[EventProcessor] | None = None,
+) -> RunResult:
+    """
+    Execute graph with DBOS durability.
+
+    Under the hood:
+    - Graph execution is wrapped as a DBOS workflow
+    - persist=True nodes are wrapped with @DBOS.step
+    - InterruptNode maps to DBOS.recv()
+
+    Args:
+        graph: Graph to execute.
+        inputs: Input values.
+        select: Outputs to return.
+        session_id: Session identifier.
+        max_iterations: Max iterations before InfiniteLoopError.
+        max_concurrency: Limit total concurrent async operations.
+        workflow_id: REQUIRED. Unique workflow identifier for DBOS.
+        event_processors: Additional processors for this run only.
+
+    Returns:
+        RunResult with outputs and status.
+
+    Note:
+        - To resume an interrupted workflow, use DBOS.send() directly:
+            DBOS.send(destination_id="workflow_id", message={...}, topic="interrupt_name")
+        - Do NOT call runner.run() again to resume — DBOS handles this
+    """
+```
+
+### Capabilities
+
+```python
+@dataclass
+class DBOSRunnerCapabilities(RunnerCapabilities):
+    supports_cycles: bool = True
+    supports_gates: bool = True
+    supports_interrupts: bool = True
+    supports_async_nodes: bool = True
+    supports_streaming: bool = True  # Via EventProcessor only
+    supports_distributed: bool = False
+    returns_coroutine: bool = True
+
+    # DBOS-specific
+    supports_automatic_recovery: bool = True
+    supports_workflow_fork: bool = True
+    supports_durable_sleep: bool = True
+    supports_durable_queues: bool = True
+```
+
+### get_dbos_workflow()
+
+```python
+def get_dbos_workflow(self, graph: Graph) -> Callable:
+    """
+    Get the DBOS workflow function that wraps this graph.
+
+    Useful for advanced DBOS features like queues and scheduling:
+
+    Example:
+        workflow_fn = runner.get_dbos_workflow(graph)
+
+        # Use with queues
+        queue = Queue("processing", concurrency=10)
+        handle = queue.enqueue(workflow_fn, {"query": "hello"})
+
+        # Use with scheduling
+        @DBOS.scheduled('0 9 * * *')
+        @DBOS.workflow()
+        def daily_job(scheduled_time, actual_time):
+            workflow_fn({"report_date": scheduled_time.date()})
     """
 ```
 

@@ -167,10 +167,94 @@ Resume:
 
 | Need | Solution | Install |
 |------|----------|---------|
+| Long-running sync DAGs | `SyncRunner(cache=DiskCache(...))` | `pip install hypergraph` |
 | Development save points | `AsyncRunner(checkpointer=SqliteCheckpointer(...))` | `pip install hypergraph` |
 | Simple production (manual resume) | Same as above | `pip install hypergraph` |
-| Automatic crash recovery | `DBOSAsyncRunner()` | `pip install hypergraph[dbos]` |
-| Durable queues, scheduling | `DBOSAsyncRunner` + DBOS features | `pip install hypergraph[dbos]` |
+| Automatic crash recovery | `DBOS()` config + `DBOSAsyncRunner()` + `DBOS.launch()` | `pip install hypergraph[dbos]` |
+| Durable queues, scheduling | Above + DBOS APIs directly | `pip install hypergraph[dbos]` |
+
+---
+
+## SyncRunner: Cache-Based Durability
+
+**"Poor man's durability for DAGs"** — For long-running synchronous DAGs, use cache instead of checkpointer.
+
+### The Pattern
+
+```python
+from hypergraph import SyncRunner, DiskCache
+
+runner = SyncRunner(cache=DiskCache("./cache"))
+
+# First run — all nodes execute, results cached by input hash
+result = runner.run(graph, inputs={"data": "big_file.csv"})
+# 💥 CRASH at node 5 of 10
+
+# Restart with same inputs — nodes 1-4 are cache hits, only 5+ execute
+result = runner.run(graph, inputs={"data": "big_file.csv"})
+# ✅ Completes from where it left off (approximately)
+```
+
+### How It Works
+
+Cache keys are based on **input hash**, not workflow identity:
+
+```
+Node execution:
+  inputs = {"x": 1, "y": 2}
+  cache_key = hash(node_name, inputs)
+
+On restart:
+  Same inputs → cache hit → skip execution
+  Different inputs → cache miss → re-execute
+```
+
+### Cache vs Checkpointer
+
+| Aspect | Cache | Checkpointer |
+|--------|-------|--------------|
+| **Semantics** | "Same inputs = same output" | "Resume workflow from step N" |
+| **Key** | Hash of node + inputs | workflow_id + step_index |
+| **Workflow identity** | None | workflow_id tracks job |
+| **Works with cycles** | ❌ (inputs change each iteration) | ✅ |
+| **Works with HITL** | ❌ | ✅ |
+| **Query job status** | ❌ | ✅ |
+| **Complexity** | Simple | More complex |
+
+### When Cache Is Enough
+
+Use SyncRunner + cache for:
+- ✅ ETL pipelines
+- ✅ Batch data processing
+- ✅ ML training workflows
+- ✅ Report generation
+- ✅ Any long-running DAG with deterministic inputs
+
+### When You Need More
+
+Use AsyncRunner + Checkpointer (or DBOS) for:
+- ❌ Cycles (multi-turn conversations)
+- ❌ HITL (InterruptNode)
+- ❌ Workflow identity (dashboard showing job status)
+- ❌ Different inputs on resume (continuing conversation)
+
+### Why No SyncCheckpointer or DBOSSyncRunner?
+
+**DBOS is async-native.** Its core primitives (`@DBOS.workflow`, `recv`/`send`, `DBOS.sleep`) are all async. Wrapping them in sync would be awkward and hide what's actually happening.
+
+**Checkpointer requires workflow semantics.** SyncRunner is designed for simple scripts without workflow identity. If you need workflow semantics, you need the async execution model anyway (for HITL, streaming, etc.).
+
+**AsyncRunner handles sync nodes fine.** If you really need checkpointing but prefer sync-style code:
+
+```python
+# Write sync functions, use AsyncRunner for durability
+@node(output_name="result")
+def my_sync_node(x: int) -> int:  # Sync function
+    return expensive_computation(x)
+
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
+result = await runner.run(graph, inputs={...}, workflow_id="job-123")
+```
 
 ---
 
@@ -430,6 +514,23 @@ For workflow forking (creating a new workflow from a specific step), use DBOS.
 
 For production workloads requiring automatic crash recovery.
 
+### Integration Philosophy: Thin Wrapper
+
+hypergraph takes a **thin wrapper** approach to DBOS integration, similar to [Pydantic AI's approach](https://ai.pydantic.dev/dbos/):
+
+| What hypergraph wraps | What users handle directly |
+|----------------------|---------------------------|
+| Graph → DBOS workflow | `DBOS()` configuration |
+| `persist=True` → `@DBOS.step` | `DBOS.launch()` for auto-recovery |
+| `InterruptNode` → `DBOS.recv()` | `DBOS.send()` for resume |
+| Same `RunResult` API | Fork, time travel, sleep, queues, scheduling |
+
+**Why this design?**
+- **Core loop is wrapped** — You don't need to learn DBOS to run graphs with durability
+- **Advanced features are DBOS-native** — Fork, queues, cron use DBOS APIs directly
+- **No leaky abstractions** — We don't try to wrap every DBOS feature poorly
+- **Users learn DBOS gradually** — Start with auto-recovery, add queues/cron when needed
+
 ### What DBOS Provides
 
 DBOS is a **library** that runs in your process and checkpoints to Postgres/SQLite using pickle serialization. If your process crashes and restarts, DBOS automatically recovers pending workflows.
@@ -445,7 +546,7 @@ DBOS is a **library** that runs in your process and checkpoints to Postgres/SQLi
 │     step_3() → 💥 CRASH                                             │
 │                                                                     │
 │  2. Process restarts                                                │
-│     DBOS.launch()  ← Triggers automatic recovery                    │
+│     DBOS.launch()  ← User calls this (triggers recovery)            │
 │                                                                     │
 │  3. DBOS replays from checkpoints                                   │
 │     step_1() → cached ⚡ (skip)                                      │
@@ -486,6 +587,20 @@ When using `.get_dbos_workflow()` for advanced DBOS features, the same mapping a
 
 ### Basic Usage
 
+**Step 1: Configure DBOS (user responsibility)**
+
+```python
+from dbos import DBOS
+
+# User configures DBOS directly - hypergraph doesn't wrap this
+DBOS(config={
+    "name": "my_app",
+    "database_url": "sqlite:///./workflow.db",  # Or PostgreSQL for production
+})
+```
+
+**Step 2: Define and run graph (hypergraph wraps this)**
+
 ```python
 from hypergraph import Graph, node
 from hypergraph.runners import DBOSAsyncRunner
@@ -500,8 +615,8 @@ async def summarize(result: dict) -> str:
 
 graph = Graph(nodes=[fetch, summarize])
 
-# DBOS runner — automatic durability
-runner = DBOSAsyncRunner()  # SQLite by default (zero config)
+# DBOSAsyncRunner is a thin wrapper - no config needed
+runner = DBOSAsyncRunner()
 
 result = await runner.run(
     graph,
@@ -510,10 +625,27 @@ result = await runner.run(
 )
 ```
 
+**Step 3: Enable auto-recovery (user responsibility)**
+
+```python
+async def main():
+    DBOS.launch()  # User calls this to enable crash recovery
+    result = await runner.run(graph, inputs={...}, workflow_id="order-123")
+```
+
 ### With Postgres (Production)
 
 ```python
-runner = DBOSAsyncRunner(database_url="postgresql://user:pass@host/db")
+from dbos import DBOS
+
+# User configures Postgres directly
+DBOS(config={
+    "name": "my_app",
+    "database_url": "postgresql://user:pass@host/db",
+})
+
+# Runner remains the same - no database_url parameter
+runner = DBOSAsyncRunner()
 ```
 
 ### Human-in-the-Loop with DBOS
@@ -541,7 +673,7 @@ graph = Graph(nodes=[generate, approval, finalize])
 runner = DBOSAsyncRunner()
 
 # First run — workflow pauses at InterruptNode
-# Under the hood: DBOS.recv("approval") waits for signal
+# Under the hood: hypergraph maps InterruptNode to DBOS.recv("approval")
 result = await runner.run(
     graph,
     inputs={"prompt": "Write a poem"},
@@ -552,12 +684,13 @@ print(result.pause is not None)  # True
 print(result.pause.value)        # The draft
 ```
 
-**Resuming with DBOS uses `send()` from external system:**
+**Resuming with DBOS — user calls `DBOS.send()` directly:**
 
 ```python
 from dbos import DBOS
 
 # From webhook, API endpoint, or external process:
+# User calls DBOS.send() directly — NOT wrapped by hypergraph
 DBOS.send(
     destination_id="poem-456",  # workflow_id
     message={"decision": "approve"},
@@ -566,9 +699,14 @@ DBOS.send(
 # Workflow automatically continues — no runner.run() call needed!
 ```
 
-This is fundamentally different from the checkpointer approach:
-- **Checkpointer:** You call `runner.run()` again with the same `workflow_id` (state loaded via value resolution)
-- **DBOS:** External system calls `DBOS.send()`, workflow auto-resumes without any `runner.run()` call
+**Key distinction from checkpointer approach:**
+
+| Aspect | Built-in Checkpointer | DBOS |
+|--------|----------------------|------|
+| Resume mechanism | Call `runner.run()` again | Call `DBOS.send()` directly |
+| State loading | Via value resolution hierarchy | DBOS handles internally |
+| Who triggers resume | Your code | External system or webhook |
+| Automatic recovery | No | Yes (via `DBOS.launch()`) |
 
 ### Streaming with DBOS
 
@@ -861,7 +999,17 @@ async def execute_graph_node(
 
 ## Advanced DBOS Features
 
-For features beyond hypergraph primitives, access DBOS directly **without breaking your graphs**.
+For features beyond hypergraph primitives, **users call DBOS APIs directly**. This is by design — we wrap the core loop, not every DBOS feature.
+
+| Feature | hypergraph Wraps? | How to Use |
+|---------|:-----------------:|------------|
+| Run graph with durability | ✅ | `runner.run()` |
+| Crash recovery | ❌ | `DBOS.launch()` |
+| Resume interrupted workflow | ❌ | `DBOS.send()` |
+| Workflow forking (time travel) | ❌ | `DBOS.fork_workflow()` |
+| Durable sleep | ❌ | `DBOS.sleep()` |
+| Durable queues | ❌ | `Queue().enqueue()` |
+| Scheduled workflows (cron) | ❌ | `@DBOS.scheduled()` |
 
 ### Workflow Forking (Time Travel)
 
@@ -982,18 +1130,33 @@ result = await runner.run(
 ### DBOSAsyncRunner
 
 ```python
-result = await runner.run(
-    graph,
-    inputs={"query": "hello"},
-    workflow_id="order-123",    # Required for DBOS
-)
+from dbos import DBOS
+from hypergraph.runners import DBOSAsyncRunner
+
+# User configures DBOS directly (not via runner)
+DBOS(config={"name": "my_app", "database_url": "postgresql://..."})
+
+# Runner is a thin wrapper — no config parameters
+runner = DBOSAsyncRunner()
+
+async def main():
+    DBOS.launch()  # User calls this for auto-recovery
+
+    result = await runner.run(
+        graph,
+        inputs={"query": "hello"},
+        workflow_id="order-123",    # Required for DBOS
+    )
 ```
 
 | Parameter | Required | Description |
 |-----------|:--------:|-------------|
 | `workflow_id` | Yes | Unique workflow identifier for DBOS durability |
 
-Note: No `resume` parameter — DBOS handles recovery automatically.
+**Note:**
+- No `database_url` parameter — user configures DBOS directly via `DBOS()`
+- No `resume` parameter — DBOS handles recovery automatically via `DBOS.launch()`
+- Resume interrupted workflows via `DBOS.send()`, not `runner.run()`
 
 ---
 
@@ -1007,7 +1170,7 @@ hypergraph/
 │   ├── sync.py              # SyncRunner
 │   ├── async_.py            # AsyncRunner
 │   ├── daft.py              # DaftRunner
-│   └── dbos.py              # DBOSAsyncRunner, DBOSSyncRunner
+│   └── dbos.py              # DBOSAsyncRunner
 │
 ├── checkpointers/
 │   ├── __init__.py
@@ -1050,23 +1213,37 @@ if result.pause:
     # State loaded automatically via value resolution
 
 # After: Automatic recovery with DBOS
+from dbos import DBOS
+
+# 1. User configures DBOS directly
+DBOS(config={"name": "my_app", "database_url": "postgresql://..."})
+
+# 2. Use thin wrapper runner (no config)
 runner = DBOSAsyncRunner()
-result = await runner.run(graph, inputs={...}, workflow_id="123")
-if result.pause:
-    # External system sends response via DBOS.send()
-    # Workflow auto-resumes — no runner.run() call needed
+
+async def main():
+    # 3. User calls DBOS.launch() for auto-recovery
+    DBOS.launch()
+
+    result = await runner.run(graph, inputs={...}, workflow_id="123")
+    if result.pause:
+        # 4. External system resumes via DBOS.send() — NOT wrapped
+        # Workflow auto-resumes — no runner.run() call needed
+        pass
 ```
 
 **What changes:**
-- Remove `checkpointer=` parameter
+- Add `DBOS()` configuration (user responsibility)
+- Add `DBOS.launch()` call (user responsibility)
+- Remove `checkpointer=` parameter from runner
 - Resume via `DBOS.send()` instead of `runner.run()`
-- Add DBOS initialization in app startup
 
 **What doesn't change:**
 - Graph definition
 - Node functions
 - InterruptNode usage
 - `workflow_id` parameter
+- `RunResult` API
 
 ---
 
@@ -1187,7 +1364,11 @@ The checkpointer only sees the final result. Same behavior with any runner.
 | **Retries** | Transient failure handling | `stamina` (or any retry lib) |
 | **DBOS (optional)** | Automatic durability, queues, scheduling | `dbos` |
 
-**The principle:** Graph code stays pure. Durability is a runner concern. Retries are decorator stacking — no hypergraph-specific retry API.
+**The principles:**
+- **Graph code stays pure** — No durability imports in nodes
+- **Durability is a runner concern** — Same graph works with any runner
+- **DBOS is a thin wrapper** — We wrap the core loop, users call DBOS APIs for advanced features
+- **Retries are decorator stacking** — No hypergraph-specific retry API
 
 ---
 

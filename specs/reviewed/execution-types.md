@@ -946,6 +946,7 @@ class StepStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    WAITING = "waiting"  # Paused at InterruptNode, waiting for response
 ```
 
 ### Step
@@ -984,6 +985,23 @@ class StepResult:
     step_index: int
     outputs: dict[str, Any] | None = None
     error: str | None = None
+    pause: PauseInfo | None = None  # Set when step is an InterruptNode waiting for response
+```
+
+**Pause persistence:** When an `InterruptNode` executes and waits for a response, the step is saved with `status=WAITING` and `pause` containing the pause metadata. This enables external systems to query "what is this workflow waiting for?" even after a crash.
+
+```python
+# Example: Step saved when InterruptNode pauses
+step = Step(index=3, node_name="approval", status=StepStatus.WAITING)
+result = StepResult(
+    step_index=3,
+    pause=PauseInfo(
+        reason=PauseReason.HUMAN_INPUT,
+        node="approval",
+        response_param="decision",
+        value={"draft": "The poem content..."}
+    )
+)
 ```
 
 ### WorkflowStatus (DBOS-compatible)
@@ -1072,10 +1090,10 @@ Internal Types (not user-facing):
 └── GraphState (runtime values with versioning, includes persist=False values)
 
 Persistence Types:
-├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED)
+├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED, WAITING)
 ├── WorkflowStatus (enum: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
 ├── Step (individual step record)
-├── StepResult (step outputs, only persist=True values)
+├── StepResult (step outputs + pause info, only persist=True values)
 └── Workflow (workflow execution record)
 
 Event Hierarchy (all include span_id, parent_span_id for hierarchy):

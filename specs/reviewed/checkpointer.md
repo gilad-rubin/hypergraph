@@ -189,24 +189,39 @@ class Checkpointer(ABC):
         pass
 ```
 
-### Sync Variant (Future)
+### SyncRunner: No Checkpointer (Use Cache Instead)
 
-> **Note:** SyncRunner currently does not support checkpointing. It is designed for simple
-> blocking scripts without persistence or interrupt support. Use AsyncRunner for workflows
-> that need persistence.
+**SyncRunner does not support checkpointing.** This is by design:
 
-If sync persistence is needed in the future, a `SyncCheckpointer` would have sync method signatures:
+- SyncRunner is for simple blocking scripts
+- No workflow identity or step history needed
+- No HITL (InterruptNode requires async)
+
+**For long-running sync DAGs, use cache as "poor man's durability":**
 
 ```python
-class SyncCheckpointer(ABC):
-    """Synchronous checkpointer for SyncRunner (not yet implemented)."""
+from hypergraph import SyncRunner, DiskCache
 
-    def save_step(self, workflow_id: str, step: Step, result: StepResult) -> None: ...
-    def get_state(self, workflow_id: str, at_step: int | None = None) -> dict[str, Any]: ...
-    def get_history(self, workflow_id: str, up_to_step: int | None = None) -> list[Step]: ...
-    def get_workflow(self, workflow_id: str) -> Workflow | None: ...
-    # ... same methods, sync signatures
+runner = SyncRunner(cache=DiskCache("./cache"))
+
+# First run — all nodes execute, results cached
+result = runner.run(graph, inputs={"data": big_file})
+# 💥 CRASH at node 5
+
+# Restart with same inputs — nodes 1-4 cache hit, only 5+ execute
+result = runner.run(graph, inputs={"data": big_file})
 ```
+
+**When cache is enough:**
+- DAGs only (no cycles — cache key changes each iteration)
+- Same inputs on restart
+- Don't need workflow identity or status queries
+- No human-in-the-loop
+
+**When you need checkpointer:**
+- Cycles, HITL, or different inputs on resume → use AsyncRunner + Checkpointer
+
+See [Durable Execution](durable-execution.md#syncrunner-cache-based-durability) for the full pattern.
 
 ---
 
@@ -526,12 +541,14 @@ class StepResult:
     step_index: int
     outputs: dict[str, Any] | None  # Only persist=True values
     error: str | None
+    pause: PauseInfo | None         # Set when step is waiting at InterruptNode
 
 class StepStatus(Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    WAITING = "waiting"  # Paused at InterruptNode, waiting for response
 
 @dataclass
 class Workflow:
@@ -548,6 +565,26 @@ class WorkflowStatus(Enum):
     SUCCESS = "SUCCESS"
     ERROR = "ERROR"
     CANCELLED = "CANCELLED"
+```
+
+### Pause Persistence
+
+When an `InterruptNode` executes and waits for a response, the step is saved with:
+- `StepStatus.WAITING` - indicates the step is blocked
+- `StepResult.pause` - contains `PauseInfo` with reason, node, response_param, and value
+
+This enables external systems to query "what is this workflow waiting for?" even after a crash:
+
+```python
+# Get workflow to find waiting step
+workflow = await checkpointer.get_workflow("session-123")
+
+for step in workflow.steps:
+    if step.status == StepStatus.WAITING:
+        result = workflow.results.get(step.index)
+        if result and result.pause:
+            print(f"Waiting for: {result.pause.response_param}")
+            print(f"Value to show user: {result.pause.value}")
 ```
 
 ### DBOS Compatibility
