@@ -66,6 +66,16 @@ class BaseEvent:
     timestamp: float         # Unix timestamp
 ```
 
+### Terminology: hypergraph Events vs OTel Span Events
+
+hypergraph "events" are **not** OTel "span events". In OpenTelemetry, span events are log annotations *attached to* spans. hypergraph events are structured records that together **define** spans:
+
+- `NodeStartEvent` + `NodeEndEvent` = span boundaries (start/end)
+- `span_id` = correlation ID linking all events for one node execution
+- `parent_span_id` = nested graph hierarchy (maps to OTel parent span)
+
+Processors reconstruct OTel spans from hypergraph events. The `OpenTelemetryProcessor` example below shows this mapping: it creates an OTel span on `NodeStartEvent` and ends it on `NodeEndEvent`.
+
 ### Core Events
 
 | Event | When Emitted | Key Fields |
