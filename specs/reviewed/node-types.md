@@ -273,8 +273,6 @@ self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "input
 
 This tracks all rename operations in a single list, enabling helpful error messages when users try to use old names.
 
-See [Node Configuration](node-configuration.md) for full details.
-
 ---
 
 ## FunctionNode
@@ -1106,7 +1104,7 @@ class GraphNode(HyperNode):
 
         # Core HyperNode attributes
         self.name = resolved_name
-        self.inputs = graph.inputs  # Already a tuple
+        self.inputs = graph.inputs.all  # Extract tuple from InputSpec
         self.outputs = graph.leaf_outputs  # Use .with_outputs() to override
 ```
 

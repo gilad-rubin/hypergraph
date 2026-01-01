@@ -416,16 +416,16 @@ Different operations need different data:
 
 ```python
 # Get accumulated state at a point (computed from steps)
-state = checkpointer.get_state("session-123")           # Latest
-state = checkpointer.get_state("session-123", at_step=5)  # At step 5
+state = await checkpointer.get_state("session-123")           # Latest
+state = await checkpointer.get_state("session-123", at_step=5)  # At step 5
 # Returns: {"messages": [...], "answer": "..."}
 
 # Get execution history (the actual stored records)
-history = checkpointer.get_history("session-123")
+history = await checkpointer.get_history("session-123")
 # Returns: [StepInfo(index=0, node="embed", output=...), ...]
 
 # Get full workflow metadata
-workflow = checkpointer.get_workflow("session-123")
+workflow = await checkpointer.get_workflow("session-123")
 # Returns: Workflow(id=..., status=..., created_at=...)
 ```
 
@@ -441,8 +441,8 @@ The `runner.run()` method supports explicit injection of state and history, deco
 
 ```python
 # Get state and history from an existing workflow
-state = checkpointer.get_state("session-123", at_step=5)
-history = checkpointer.get_history("session-123", up_to_step=5)
+state = await checkpointer.get_state("session-123", at_step=5)
+history = await checkpointer.get_history("session-123", up_to_step=5)
 
 # Start a NEW workflow with that context
 result = await runner.run(
@@ -463,8 +463,8 @@ result = await runner.run(
 **Fork and continue:**
 ```python
 # Fork from step 5 of workflow X into new workflow Y
-state = checkpointer.get_state("order-123", at_step=5)
-history = checkpointer.get_history("order-123", up_to_step=5)
+state = await checkpointer.get_state("order-123", at_step=5)
+history = await checkpointer.get_history("order-123", up_to_step=5)
 
 result = await runner.run(
     graph,
@@ -477,7 +477,7 @@ result = await runner.run(
 **Continue conversation in new session:**
 ```python
 # Get conversation state from old session
-state = checkpointer.get_state("chat-old")
+state = await checkpointer.get_state("chat-old")
 
 # Start fresh session with that context (no history needed)
 result = await runner.run(
@@ -490,8 +490,8 @@ result = await runner.run(
 **Debug replay:**
 ```python
 # Replay from specific point with full history
-state = checkpointer.get_state("debug-me", at_step=3)
-history = checkpointer.get_history("debug-me", up_to_step=3)
+state = await checkpointer.get_state("debug-me", at_step=3)
+history = await checkpointer.get_history("debug-me", up_to_step=3)
 
 result = await runner.run(
     graph,
@@ -536,8 +536,8 @@ async def copy_workflow(
     up_to_step: int | None = None,
 ) -> None:
     """Copy a workflow's state and history to a new workflow."""
-    state = checkpointer.get_state(source_id, at_step=up_to_step)
-    history = checkpointer.get_history(source_id, up_to_step=up_to_step)
+    state = await checkpointer.get_state(source_id, at_step=up_to_step)
+    history = await checkpointer.get_history(source_id, up_to_step=up_to_step)
 
     # Create new workflow with copied data
     await checkpointer.create_workflow(dest_id, initial_state=state, history=history)
@@ -687,8 +687,8 @@ result["messages"]         # Conversation history
 For inspection without running:
 
 ```python
-# Get latest workflow state
-workflow = await checkpointer.load("session-123")
+# Get latest workflow metadata
+workflow = await checkpointer.get_workflow("session-123")
 if workflow:
     print(f"Status: {workflow.status}")
     print(f"Steps completed: {len(workflow.steps)}")

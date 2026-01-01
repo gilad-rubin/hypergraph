@@ -165,17 +165,16 @@ class RunStatus(Enum):
 class PauseReason(Enum):
     """Why a workflow is paused (when status is PAUSED)."""
     HUMAN_INPUT = "human_input"  # InterruptNode waiting for response
-    SLEEP = "sleep"              # Waiting for duration (future)
-    SCHEDULED = "scheduled"      # Waiting for specific time (future)
-    EVENT = "event"              # Waiting for external event (future)
 ```
+
+> **Note:** Additional pause reasons (`SLEEP`, `SCHEDULED`, `EVENT`) may be added when using DBOSAsyncRunner for durable sleep and scheduling features. See [Durable Execution](durable-execution.md) for DBOS capabilities.
 
 ### Status Semantics
 
 | Status | Meaning | Typical Cause | Resume Action |
 |--------|---------|---------------|---------------|
 | `COMPLETED` | Finished | Normal completion or routed to `END` | None needed |
-| `PAUSED` | Waiting | `InterruptNode`, sleep, scheduled wait | Depends on `pause_reason` |
+| `PAUSED` | Waiting | `InterruptNode` | Provide response via `resume()` or `DBOS.send()` |
 | `ERROR` | Failed | Uncaught exception | Fix and retry |
 
 ### Pause Reasons
@@ -183,9 +182,6 @@ class PauseReason(Enum):
 | Reason | Meaning | Resume Action |
 |--------|---------|---------------|
 | `HUMAN_INPUT` | Waiting for human decision | Provide response via `resume()` or `DBOS.send()` |
-| `SLEEP` | Waiting for duration | Automatic (timer) |
-| `SCHEDULED` | Waiting for specific time | Automatic (scheduler) |
-| `EVENT` | Waiting for external event | Send event via messaging |
 
 ### DBOS Mapping
 
@@ -227,6 +223,32 @@ This means:
 - During execution, all values are available for downstream nodes
 - On crash recovery, `persist=False` values are re-computed (nodes re-execute)
 - `persist=True` values are loaded from checkpoint (nodes skipped)
+
+### NodeExecution (Internal)
+
+```python
+@dataclass
+class NodeExecution:
+    """Record of a single node execution. Internal to runners."""
+
+    node_name: str
+    """Name of the node that executed."""
+
+    started_at: float
+    """Timestamp when execution started."""
+
+    completed_at: float | None
+    """Timestamp when execution completed (None if still running)."""
+
+    outputs: dict[str, Any] | None
+    """Output values produced (None if failed or still running)."""
+
+    error: str | None
+    """Error message if execution failed."""
+
+    cached: bool = False
+    """True if result was retrieved from cache."""
+```
 
 ### Class Definition
 
@@ -279,7 +301,7 @@ class PauseInfo:
     """Details about a paused workflow."""
 
     reason: PauseReason
-    """Why we're paused (HUMAN_INPUT, SLEEP, SCHEDULED, EVENT)."""
+    """Why we're paused (currently only HUMAN_INPUT)."""
 
     node: str
     """Name of the node that caused the pause."""
@@ -289,9 +311,6 @@ class PauseInfo:
 
     value: Any
     """Value to show user (e.g., the draft for approval)."""
-
-    resume_at: datetime | None = None
-    """When to resume (for SCHEDULED pause reason)."""
 ```
 
 ---
@@ -352,7 +371,7 @@ class RunResult:
 
 - **Nested `RunResult` for nested graphs** - When a graph contains `GraphNode`s, their results are nested `RunResult` objects, preserving status and pause info per subgraph.
 - **No `checkpoint: bytes`** - The checkpointer manages state internally by `workflow_id`. You don't pass checkpoint bytes around.
-- **`workflow_id` for resume** - Use `workflow_id` + `resume=True` to continue from where you left off.
+- **`workflow_id` for resume** - Same `workflow_id` auto-resumes from where you left off (checkpointer detects paused state).
 - **Dict-like access** - `result["answer"]` is equivalent to `result.outputs["answer"]`.
 - **All outputs by default** - `outputs` contains all node outputs unless filtered with `select=`.
 
@@ -445,7 +464,6 @@ result = await runner.run(
     outer,
     inputs={result.pause.response_param: user_response},
     workflow_id="order-123",
-    resume=True,
 )
 
 # Option 2: Resume the nested graph directly (advanced)
@@ -453,7 +471,6 @@ result = await runner.run(
     review_pipeline,
     inputs={"decision": user_response},
     workflow_id="order-123/review",  # Nested workflow ID
-    resume=True,
 )
 ```
 
@@ -710,12 +727,11 @@ if result.pause:
     # Get user response (your application logic)
     response = await get_user_response(prompt)
 
-    # Resume using workflow_id (checkpointer loads state internally)
+    # Resume using same workflow_id (checkpointer auto-detects paused state)
     result = await runner.run(
         graph,
         inputs={result.pause.response_param: response},
         workflow_id="session-123",
-        resume=True,
     )
 
 # Now complete
@@ -886,8 +902,7 @@ async def resume_execution(workflow_id: str, user_response: Any):
     result = await runner.run(
         graph,
         inputs={pending["interrupt_name"]: user_response},
-        workflow_id=workflow_id,
-        resume=True,  # Checkpointer loads state internally
+        workflow_id=workflow_id,  # Checkpointer auto-detects paused state
     )
     return result
 ```

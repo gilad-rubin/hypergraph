@@ -6,15 +6,18 @@ A `Graph` is a pure data structure describing computation flow. A `Runner` takes
 
 ---
 
-## The Three Runners
+## The Four Runners
 
-Hypernodes provides three runners, each optimized for different execution contexts:
+Hypernodes provides four runners, each optimized for different execution contexts:
 
 | Runner | Description | Primary Use Case |
 |--------|-------------|------------------|
 | **SyncRunner** | Synchronous, blocking execution | Scripts, CLI tools, simple pipelines |
 | **AsyncRunner** | Async execution with full feature support | Web APIs, streaming, human-in-the-loop |
+| **DBOSAsyncRunner** | AsyncRunner with DBOS durability | Production with automatic crash recovery |
 | **DaftRunner** | Distributed execution via Daft DataFrames | Large-scale batch processing |
+
+**Note:** `DBOSAsyncRunner` extends `AsyncRunner` with DBOS-powered durability. See [Durable Execution](durable-execution.md) for details.
 
 ---
 
@@ -108,16 +111,18 @@ results = df.collect()  # Execution happens here
 
 ### Feature Compatibility Matrix
 
-| Feature | SyncRunner | AsyncRunner | DaftRunner |
-|---------|:----------:|:-----------:|:----------:|
-| DAG execution | ✅ | ✅ | ✅ |
-| Cycles (loops) | ✅ | ✅ | ❌ |
-| `@branch` / `@route` gates | ✅ | ✅ | ❌ |
-| `InterruptNode` | ❌ | ✅ | ❌ |
-| `.iter()` streaming | ❌ | ✅ | ❌ |
-| `.map()` batch | ✅ | ✅ | ✅ |
-| Async nodes (`async def`) | ❌ | ✅ | ✅ |
-| Distributed execution | ❌ | ❌ | ✅ |
+| Feature | SyncRunner | AsyncRunner | DBOSAsyncRunner | DaftRunner |
+|---------|:----------:|:-----------:|:---------------:|:----------:|
+| DAG execution | ✅ | ✅ | ✅ | ✅ |
+| Cycles (loops) | ✅ | ✅ | ✅ | ❌ |
+| `@branch` / `@route` gates | ✅ | ✅ | ✅ | ❌ |
+| `InterruptNode` | ❌ | ✅ | ✅ | ❌ |
+| `.iter()` streaming | ❌ | ✅ | ✅ | ❌ |
+| `.map()` batch | ✅ | ✅ | ✅ | ✅ |
+| Async nodes (`async def`) | ❌ | ✅ | ✅ | ✅ |
+| Distributed execution | ❌ | ❌ | ❌ | ✅ |
+| Automatic crash recovery | ❌ | ❌ | ✅ | ❌ |
+| Durable sleep/scheduling | ❌ | ❌ | ✅ | ❌ |
 
 ---
 
@@ -232,12 +237,11 @@ if result.pause:
     print(f"Review needed: {result.pause.value}")
     user_decision = await get_user_approval()
 
-    # Resume using workflow_id (checkpointer loads state internally)
+    # Resume using same workflow_id (checkpointer auto-detects paused state)
     result = await runner.run(
         graph,
-        inputs={"approved": user_decision},
+        inputs={result.pause.response_param: user_decision},
         workflow_id="review-123",
-        resume=True,
     )
 
 print(result.outputs["final_result"])
@@ -254,11 +258,11 @@ print(result.outputs["final_result"])
 AsyncRunner handles both `def` and `async def` nodes in the same graph:
 
 ```python
-@node(outputs="data")
+@node(output_name="data")
 def fetch_local(path: str) -> str:
     return open(path).read()  # Sync node
 
-@node(outputs="data")
+@node(output_name="data")
 async def fetch_api(url: str) -> str:
     return await httpx.get(url).text()  # Async node
 
@@ -272,15 +276,15 @@ result = await AsyncRunner().run(graph, inputs={...})
 **Independent async nodes run concurrently:**
 
 ```python
-@node(outputs="a")
+@node(output_name="a")
 async def fetch_a(x: int) -> int:
     return await api_a.call(x)
 
-@node(outputs="b")
+@node(output_name="b")
 async def fetch_b(x: int) -> int:
     return await api_b.call(x)
 
-@node(outputs="c")
+@node(output_name="c")
 def combine(a: int, b: int) -> int:
     return a + b
 ```
@@ -302,7 +306,7 @@ Step 2: combine()                              # After both complete
 Generators are automatically accumulated by the framework:
 
 ```python
-@node(outputs="response")
+@node(output_name="response")
 async def stream_llm(prompt: str) -> str:
     async for chunk in llm.stream(prompt):
         yield chunk
@@ -548,17 +552,18 @@ class RunnerCapabilities:
 
 Capability values per runner:
 
-| Capability | SyncRunner | AsyncRunner | DaftRunner |
-|------------|:----------:|:-----------:|:----------:|
-| `supports_cycles` | ✅ | ✅ | ❌ |
-| `supports_gates` | ✅ | ✅ | ❌ |
-| `supports_interrupts` | ❌ | ✅ | ❌ |
-| `supports_async_nodes` | ❌ | ✅ | ✅ |
-| `supports_streaming` | ❌ | ✅ | ❌ |
-| `supports_distributed` | ❌ | ❌ | ✅ |
-| `returns_coroutine` | ❌ | ✅ | ❌ |
+| Capability | SyncRunner | AsyncRunner | DBOSAsyncRunner | DaftRunner |
+|------------|:----------:|:-----------:|:---------------:|:----------:|
+| `supports_cycles` | ✅ | ✅ | ✅ | ❌ |
+| `supports_gates` | ✅ | ✅ | ✅ | ❌ |
+| `supports_interrupts` | ❌ | ✅ | ✅ | ❌ |
+| `supports_async_nodes` | ❌ | ✅ | ✅ | ✅ |
+| `supports_streaming` | ❌ | ✅ | ✅ | ❌ |
+| `supports_distributed` | ❌ | ❌ | ❌ | ✅ |
+| `supports_durable_execution` | ❌ | ❌ | ✅ | ❌ |
+| `returns_coroutine` | ❌ | ✅ | ✅ | ❌ |
 
-Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner handles async nodes internally but returns a DataFrame synchronously.
+Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner handles async nodes internally but returns a DataFrame synchronously. `DBOSAsyncRunner` inherits all AsyncRunner capabilities and adds DBOS durability.
 
 ### Design Rationale
 
@@ -585,16 +590,10 @@ class RunResult:
     status: RunStatus                # COMPLETED, PAUSED, or ERROR
     workflow_id: str | None          # Workflow ID (required with checkpointer)
     run_id: str                      # Unique execution identifier
-
-    # Pause info (when status == PAUSED)
-    pause_reason: PauseReason | None # HUMAN_INPUT, SLEEP, SCHEDULED, EVENT
-    pause_node: str | None           # Name of the pause node
-    pause_value: Any | None          # Value to show user
+    pause: PauseInfo | None = None   # Pause details (when status == PAUSED)
 
     @property
     def paused(self) -> bool: ...    # True if status == PAUSED
-    @property
-    def interrupted(self) -> bool: ... # True if paused for HUMAN_INPUT
 ```
 
 **See [Execution Types](execution-types.md#runresult)** for full definition.

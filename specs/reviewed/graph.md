@@ -223,7 +223,7 @@ See [State Model](state-model.md#value-resolution-hierarchy) for detailed exampl
 **Basic binding:**
 
 ```python
-@node(outputs="result")
+@node(output_name="result")
 def process(query: str, model: str, temperature: float) -> str:
     return llm.invoke(query, model=model, temperature=temperature)
 
@@ -259,11 +259,11 @@ graph.bind(model="text-embedding-ada-002", top_k=10, temperature=0.7)
 **Error: binding edge-connected values:**
 
 ```python
-@node(outputs="config")
+@node(output_name="config")
 def load_config() -> dict:
     return {"threshold": 0.7}
 
-@node(outputs="result")
+@node(output_name="result")
 def process(data: str, config: dict) -> str:
     return transform(data, config)
 
@@ -628,11 +628,11 @@ outer = Graph(nodes=[
 ### Basic Graph
 
 ```python
-@node(outputs="embedded")
+@node(output_name="embedded")
 def embed(text: str) -> list[float]:
     return model.encode(text)
 
-@node(outputs="result")
+@node(output_name="result")
 def classify(embedded: list[float]) -> str:
     return classifier.predict(embedded)
 
@@ -643,11 +643,11 @@ graph = Graph(nodes=[embed, classify])
 ### Cyclic Graph
 
 ```python
-@node(outputs="response")
+@node(output_name="response")
 def generate(messages: list) -> str:
     return llm.chat(messages)
 
-@node(outputs="messages")
+@node(output_name="messages")
 def accumulate(messages: list, response: str) -> list:
     return messages + [{"role": "assistant", "content": response}]
 
@@ -807,7 +807,7 @@ result = runner.run(graph, inputs={...}, select=["rag_pipeline/**"])
 
 Nested graphs return `RunResult` objects, which provide:
 - `outputs`: Dict of output values (and nested `RunResult` for deeper nesting)
-- `status`: Execution status (`COMPLETED`, `PAUSED`, `RUNNING`)
+- `status`: Execution status (`COMPLETED`, `PAUSED`, `ERROR`)
 - `pause`: Pause info if the nested graph paused
 
 ```python
@@ -829,15 +829,15 @@ class RunResult:
 
 ```python
 # Inner RAG pipeline
-@node(outputs="embedding")
+@node(output_name="embedding")
 def embed(query: str) -> list[float]:
     return model.embed(query)
 
-@node(outputs="docs")
+@node(output_name="docs")
 def retrieve(embedding: list[float]) -> list[str]:
     return vector_db.search(embedding)
 
-@node(outputs="response")
+@node(output_name="response")
 def generate(docs: list[str]) -> str:
     return llm.generate(docs)
 
@@ -847,7 +847,7 @@ rag_pipeline = Graph(
 )
 
 # Outer pipeline
-@node(outputs="cleaned")
+@node(output_name="cleaned")
 def clean(query: str) -> str:
     return query.strip().lower()
 
