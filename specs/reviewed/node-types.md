@@ -613,19 +613,6 @@ class GateNode(HyperNode):
     cache: bool = False
 ```
 
-### Type Hierarchy
-
-```
-HyperNode (ABC)
-├── FunctionNode
-├── GateNode (ABC)
-│   ├── RouteNode      - func returns target name (str)
-│   ├── BranchNode     - func returns bool
-│   └── TypeRouteNode  - no func, routes by isinstance()
-├── InterruptNode
-└── GraphNode
-```
-
 ### Shared Gate Properties
 
 All gates share:

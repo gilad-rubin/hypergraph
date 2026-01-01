@@ -431,7 +431,7 @@ workflow = await checkpointer.get_workflow("session-123")
 # Returns: Workflow(id=..., status=..., created_at=...)
 ```
 
-See [Checkpointer API Reference](../api/checkpointer.md) for the full interface definition.
+See [Checkpointer API Reference](checkpointer.md) for the full interface definition.
 
 ---
 

@@ -40,22 +40,28 @@ class Graph:
                   nesting this graph. If not set here, must be provided
                   when calling as_node(name='...')
             strict_types: Validate type annotations between connected nodes (default: False)
-            persist: Output names to checkpoint for durability.
-                - None (default): All outputs are checkpointed
-                - [...]: Only listed outputs are checkpointed (allowlist)
-                - []: No outputs checkpointed (pure in-memory execution)
+            persist: Node names to checkpoint for durability (when checkpointer is present).
+                - None (default): All nodes are checkpointed
+                - [...]: Only listed nodes are checkpointed (allowlist)
+                - []: No nodes checkpointed (pure in-memory execution)
 
-                Individual nodes can override with @node(persist=True/False).
-                See state-model.md for the "outputs ARE state" philosophy.
+                Why per-node, not per-output? Nodes execute atomically. If a node
+                has multiple outputs, you can't persist some without the others.
+
+                Why on Graph, not run()? Changing persist between runs can break
+                resume behavior. Graph-level ensures consistent persistence policy.
+
+                When no checkpointer is present, this parameter is ignored.
+                See durable-execution.md for details.
 
         Example:
-            # Basic graph - all outputs checkpointed (default)
+            # Basic graph - all nodes checkpointed when checkpointer present
             graph = Graph(nodes=[embed, retrieve, generate])
 
-            # Selective persistence - only checkpoint important outputs
+            # Selective persistence - only checkpoint expensive/irreproducible nodes
             graph = Graph(
                 nodes=[embed, retrieve, generate],
-                persist=["messages", "answer"],  # Only these survive crashes
+                persist=["retrieve", "generate"],  # embed is cheap to redo
             )
 
             # Named graph for nesting
@@ -593,7 +599,7 @@ def _validate_graphnode_map_over(self):
             )
 ```
 
-This validation uses the shared `validate_map_compatible()` function (see [runners.md](runners.md#validate_map_compatible)) to ensure GraphNodes configured with `.map_over()` don't wrap graphs containing interrupts.
+This validation uses the shared `validate_map_compatible()` function (see [runners-api-reference.md](runners-api-reference.md#validate_map_compatible)) to ensure GraphNodes configured with `.map_over()` don't wrap graphs containing interrupts.
 
 **Example error:**
 
@@ -975,17 +981,9 @@ result["rag"]["docs"]       # KeyError - not selected
 
 ## Type Hierarchy
 
-```
-HyperNode (ABC)
-├── FunctionNode (regular function wrapper, @node decorator)
-├── GateNode (ABC) - base for routing gates
-│   ├── RouteNode (multi-way gate, func returns str)
-│   ├── BranchNode (binary gate, func returns bool)
-│   └── TypeRouteNode (declarative type-based routing)
-├── InterruptNode (pause point)
-└── GraphNode (nested graph as node)
-    └── Created by Graph.as_node()
+For the complete node type hierarchy (`HyperNode`, `FunctionNode`, `GateNode`, etc.), see [Node Types - Type Hierarchy Summary](node-types.md#type-hierarchy-summary).
 
+```
 Graph (structure definition)
 ├── InputSpec (input parameter specification, returned by .inputs)
 └── GraphState (runtime values - INTERNAL)
