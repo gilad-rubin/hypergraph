@@ -6,8 +6,8 @@ see @specs/reviewed/README.md for the overview
 ## General
 - use uv run X to run scripts
 - use trash X instead of rm X. This allows me to rescue deleted files if I need.
-- commit frequently using "Conventional Commits" https://www.conventionalcommits.org/en/v1.0.0/
-- when we're discussing design and building docs, use ELI5 (but more like ELI20) to explain the issue and considerations. one good example is usually worth a 1000 words.
+- **commit frequently** using "Conventional Commits" https://www.conventionalcommits.org/en/v1.0.0/
+- when we're discussing design and building docs, use ELI5 (but more like ELI20) to explain the issue and considerations. one good example is usually worth a 1000 words. **use this frequently** when something is not working or when we're considering alternatives.
 - when making changes in the codebase - run them to verify everything works
 - if an API key is needed, first check in the .env to make sure it exists. use dotenv to load if needed.
 - prefer to search online and in documentations before acting
