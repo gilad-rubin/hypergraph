@@ -133,13 +133,11 @@ Updated in: `graph.md`, `persistence.md`, `durable-execution.md`
 
 ## Low-Priority Issues (Doc Cleanup)
 
-### Additional Broken Links
+### ~~Additional Broken Links~~ ✓
 
-
-| Location             | Broken Link                          | Should Be                                          |
-| ---------------------- | -------------------------------------- | ---------------------------------------------------- |
-| `graph.md:596`       | `runners.md#validate_map_compatible` | `runners-api-reference.md#validate_map_compatible` |
-| `persistence.md:432` | Links to`checkpointer.md`            | Verify path is correct                             |
+Fixed:
+- `graph.md:596` → Updated link to `runners-api-reference.md#validate_map_compatible`
+- `persistence.md:434` → Updated link to `checkpointer.md`
 
 ### ~~Missing await in persistence.md~~ ✓
 
@@ -147,15 +145,12 @@ Updated in: `graph.md`, `persistence.md`, `durable-execution.md`
 
 Fixed as part of High-Priority Issue #7.
 
-### Duplicate Type Hierarchies
+### ~~Duplicate Type Hierarchies~~ ✓
 
-Type hierarchy diagram appears differently in:
-
-- `node-types.md`
-- `graph.md`
-- `execution-types.md`
-
-Should have one canonical version.
+Consolidated:
+- Canonical node hierarchy lives in `node-types.md#type-hierarchy-summary`
+- Removed duplicate from `node-types.md` GateNode section
+- Updated `graph.md` to reference `node-types.md` for node hierarchy (keeps only Graph-specific types)
 
 ### Inconsistent Module Paths
 
@@ -203,5 +198,5 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | Cache vs checkpoint          | `execution-types.md`, `observability.md`         | Done (added replayed flag) |
 | Resolved | Namespace collision          | `graph.md`                                       | Done (build-time validation) |
 | Resolved | persist allowlist semantics  | `graph.md`, `persistence.md`, `durable-execution.md` | Done (per-node, Graph-level only) |
-| Low      | Remaining broken links       | Multiple                                         | Needs fix      |
-| Low      | Duplicate hierarchies        | Multiple                                         | Cleanup        |
+| Resolved | Remaining broken links       | `graph.md`, `persistence.md`                     | Done           |
+| Resolved | Duplicate hierarchies        | `node-types.md`, `graph.md`                      | Done (canonical in node-types.md) |
