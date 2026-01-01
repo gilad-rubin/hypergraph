@@ -959,13 +959,20 @@ class Step:
     Maps to DBOS `operation_outputs` table.
     """
     index: int
-    """Monotonically increasing step ID (maps to DBOS function_id)."""
+    """Monotonically increasing step ID (maps to DBOS function_id).
+
+    Within a batch, indices are assigned alphabetically by node_name
+    for deterministic ordering regardless of completion order.
+    """
 
     node_name: str
     """Name of the node that executed."""
 
     batch_index: int
-    """Which batch/superstep this step belongs to."""
+    """Which batch/superstep this step belongs to.
+
+    Nodes that can run in parallel share the same batch_index.
+    """
 
     status: StepStatus = StepStatus.PENDING
     created_at: datetime = field(default_factory=datetime.utcnow)

@@ -41,7 +41,7 @@ Updated in: `checkpointer.md`, `persistence.md`
 
 ---
 
-### 3. Step Indexing + Parallel Execution
+### ~~3. Step Indexing + Parallel Execution~~ ✓
 
 **The problem:**
 
@@ -49,10 +49,19 @@ Updated in: `checkpointer.md`, `persistence.md`
 - But checkpointer interface doesn't support that lifecycle
 - Need deterministic mapping: `(workflow_id, step_index)` <-> node execution instance
 
-**Decision needed:** Choose one model:
+**Solution (Resolved):** Pre-assigned indices per batch, alphabetically by node name.
 
-- Append-only in completion order (simple, nondeterministic under concurrency)
-- Pre-assigned indices per batch/superstep (deterministic, needs richer checkpointer ops)
+- `batch_index` groups nodes that run in parallel (already in Step type)
+- `index` is assigned alphabetically by `node_name` within each batch
+- Completion order doesn't affect indices — deterministic regardless of timing
+
+Example:
+```
+Batch 0: fetch_orders=0, fetch_products=1, fetch_users=2  (alphabetical)
+Batch 1: combine=3
+```
+
+Updated in: `execution-types.md`
 
 ---
 
@@ -163,7 +172,7 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | DBOS integration philosophy  | `durable-execution.md`, `runners-api-reference.md` | Done (thin wrapper pattern) |
 | Resolved | SyncRunner durability        | `durable-execution.md`, `checkpointer.md`        | Done (cache-based, no checkpointer) |
 | Resolved | initial_state vs steps       | `checkpointer.md`, `persistence.md`              | Done (removed initial_state) |
-| Medium   | Step indexing                | Design                                           | Needs decision |
+| Resolved | Step indexing                | `execution-types.md`                             | Done (alphabetical within batch) |
 | Medium   | Cache vs checkpoint          | Design                                           | Needs decision |
 | Medium   | Namespace collision          | `graph.md`                                       | Needs decision |
 | Medium   | persist allowlist semantics  | Design                                           | Needs decision |
