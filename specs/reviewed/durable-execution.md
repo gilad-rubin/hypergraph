@@ -56,94 +56,86 @@ Both paths keep your graph code **pure and portable**. The graph never imports d
 
 ## Selective Persistence
 
-By default, all node outputs are checkpointed. Use the `persist` parameter to control what's saved.
+By default, all nodes are checkpointed when a checkpointer is present. Use the `persist` parameter at the Graph level to control what's saved.
 
-### Why Selective Persistence?
+### Default: Persist Everything
 
-Not all outputs need to survive crashes:
+When a checkpointer is present, **all nodes are persisted by default**. This is the safe default — you opt into durability by adding a checkpointer, so persist everything.
 
-| Output Type | Example | Should Persist? |
-|-------------|---------|-----------------|
-| Conversation history | `messages` | ✅ Yes - can't reconstruct |
-| Final answers | `answer` | ✅ Yes - user expects this |
-| Embeddings | `embedding` | ❌ No - can regenerate |
-| Intermediate docs | `retrieved_docs` | ❌ No - can refetch |
+```python
+# All nodes persisted (default)
+graph = Graph(nodes=[embed, retrieve, generate])
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
+```
 
-### Configuration
+### Allowlist: Persist Specific Nodes
 
-**Graph-level (allowlist):**
+Use `persist=[...]` to specify which **nodes** to checkpoint. This is an optimization to reduce storage.
 
 ```python
 graph = Graph(
     nodes=[embed, retrieve, generate],
-    persist=["messages", "answer"],  # Only these are checkpointed
+    persist=["retrieve", "generate"],  # Only these nodes are checkpointed
 )
 ```
 
-**Node-level (override):**
+**Why per-node, not per-output?** Nodes execute atomically. If a node has multiple outputs (`@node(outputs=("mean", "std"))`), persisting only some outputs creates inconsistency on resume — you'd have to re-run the node anyway.
 
-```python
-@node(output_name="embedding", persist=False)  # Never checkpoint
-def embed(text: str) -> list[float]:
-    return model.embed(text)
+### Why Selective Persistence?
 
-@node(output_name="answer", persist=True)  # Always checkpoint
-def generate(docs: list[str]) -> str:
-    return llm.generate(docs)
-```
+Not all nodes need to survive crashes:
 
-### Resolution Order
-
-```
-1. Node-level persist=True/False  → Explicit override, always wins
-2. Graph-level persist=[...]      → Allowlist of output names
-3. Default (no persist specified) → All outputs checkpointed
-```
+| Node | What It Produces | Persist? | Reason |
+|------|------------------|:--------:|--------|
+| `accumulate` | `messages` | ✅ | Can't reconstruct conversation |
+| `generate` | `answer` | ✅ | User expects this |
+| `embed` | `embedding` | ❌ | Can regenerate (deterministic) |
+| `retrieve` | `docs` | ❌ | Can refetch |
 
 ### Semantics
 
-| `persist` | On Crash/Resume | Storage | DBOS Mapping |
-|-----------|-----------------|---------|--------------|
-| `True` | Load from checkpoint | Saved to DB | `@DBOS.step` |
-| `False` | Re-execute node | Not saved | Regular function call |
+| `persist` value | Behavior | DBOS Mapping |
+|-----------------|----------|--------------|
+| `None` (default) | All nodes checkpointed | All nodes wrapped as `@DBOS.step` |
+| `["node1", "node2"]` | Only listed nodes checkpointed | Only listed nodes wrapped as `@DBOS.step` |
+| `[]` | No nodes checkpointed | No `@DBOS.step` wrapping |
 
 ### Example
 
 ```python
-@node(output_name="embedding", persist=False)  # Large, reproducible
+@node(output_name="embedding")
 def embed(text: str) -> list[float]:
     return model.embed(text)
 
-@node(output_name="docs")  # Follows graph policy
+@node(output_name="docs")
 def retrieve(embedding: list[float]) -> list[str]:
     return db.search(embedding)
 
-@node(output_name="answer")  # Follows graph policy
+@node(output_name="answer")
 def generate(docs: list[str], messages: list) -> str:
     return llm.generate(docs, messages)
 
 graph = Graph(
     nodes=[embed, retrieve, generate],
-    persist=["messages", "answer"],
+    persist=["generate"],  # Only persist the generate node
 )
 
 # What gets checkpointed:
-# ❌ embedding - node says persist=False
-# ❌ docs      - not in graph's persist list
-# ✅ messages  - in persist list (passed as input, returned by another node)
-# ✅ answer    - in persist list
+# ❌ embed     - not in persist list
+# ❌ retrieve  - not in persist list
+# ✅ generate  - in persist list
 ```
 
 ### Resume Behavior
 
 On crash and resume:
 
-1. **Persisted outputs** → Loaded from checkpoint, node skipped
-2. **Non-persisted outputs** → Node re-executes to reconstruct value
+1. **Persisted nodes** → Output loaded from checkpoint, node skipped
+2. **Non-persisted nodes** → Node re-executes to reconstruct value
 
 ```
 Original run:
-  embed("hello") → [0.1, 0.2, ...]  ← NOT saved (persist=False)
+  embed("hello") → [0.1, 0.2, ...]  ← NOT saved (not in persist list)
   generate(...) → "answer"          ← SAVED
   💥 CRASH
 
@@ -155,11 +147,11 @@ Resume:
 
 ### Important Notes
 
-1. **Non-determinism is OK** — If `persist=False` nodes produce slightly different outputs on resume (e.g., embedding model updates), that's expected. Users working with AI understand non-determinism.
+1. **Non-determinism is OK** — If non-persisted nodes produce slightly different outputs on resume (e.g., embedding model updates), that's expected. Users working with AI understand non-determinism.
 
-2. **Don't use `persist=False` for context-dependent code** — If a node reads from external context that might change (current user, system time), it should be persisted.
+2. **Don't skip persistence for context-dependent nodes** — If a node reads from external context that might change (current user, system time), it should be persisted.
 
-3. **Default is safe** — When in doubt, let outputs be checkpointed (the default).
+3. **Default is safe** — When in doubt, use the default (persist everything).
 
 ---
 
@@ -561,20 +553,27 @@ DBOS is a **library** that runs in your process and checkpoints to Postgres/SQLi
 
 ### How `persist` Maps to DBOS
 
-hypergraph maps the `persist` parameter to DBOS primitives:
+hypergraph maps the Graph-level `persist` parameter to DBOS primitives:
 
-| `persist` | DBOS Mapping | On Recovery |
-|-----------|--------------|-------------|
-| `True` (default) | `@DBOS.step` wrapper | Output loaded from DB |
-| `False` | Regular function call | Function re-executes |
+| Node in `persist` list? | DBOS Mapping | On Recovery |
+|-------------------------|--------------|-------------|
+| Yes (or `persist=None`) | `@DBOS.step` wrapper | Output loaded from DB |
+| No | Regular function call | Function re-executes |
 
 ```python
+# Graph with selective persistence
+graph = Graph(
+    nodes=[embed, generate],
+    persist=["generate"],  # Only generate is persisted
+)
+
+# Translates to DBOS workflow:
 @DBOS.workflow()
 async def graph_workflow(inputs: dict) -> dict:
-    # persist=True → wrapped as DBOS step
+    # generate is in persist list → wrapped as DBOS step
     answer = await generate_step(inputs["prompt"])  # @DBOS.step
 
-    # persist=False → regular function call
+    # embed is NOT in persist list → regular function call
     embedding = embed(inputs["text"])  # NOT a step, re-runs on recovery
 
     return {"answer": answer, "embedding": embedding}

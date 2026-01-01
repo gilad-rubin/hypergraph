@@ -123,7 +123,7 @@ Your node outputs become the state. No reducers, no explicit schema.
 
 ### Checkpoints
 
-A checkpoint is a snapshot of workflow state at a specific step. hypergraph saves a checkpoint after each node completes (for nodes with `persist=True`).
+A checkpoint is a snapshot of workflow state at a specific step. By default, hypergraph saves a checkpoint after each node completes.
 
 ```
 Step 0: fetch     → checkpoint saved
@@ -145,37 +145,39 @@ history = await checkpointer.get_history("order-456")
 
 ## Selective Persistence
 
-Not all outputs need to survive crashes. Use the `persist` parameter to control what's checkpointed.
+Not all nodes need to survive crashes. Use the `persist` parameter at the Graph level to control what's checkpointed.
 
-### Why Selective Persistence?
+### Default: Persist Everything
 
-| Output Type | Example | Persist? | Reason |
-|-------------|---------|:--------:|--------|
-| Conversation history | `messages` | ✅ | Can't reconstruct |
-| Final answers | `answer` | ✅ | User expects this |
-| Embeddings | `embedding` | ❌ | Can regenerate |
-| Retrieved docs | `docs` | ❌ | Can refetch |
+When a checkpointer is present, **all nodes are persisted by default**. This is the safe default — you opt into durability by adding a checkpointer, so persist everything.
 
-### Graph-Level Configuration
+```python
+# All nodes persisted (default)
+graph = Graph(nodes=[embed, retrieve, generate])
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
+```
+
+### Allowlist: Persist Specific Nodes
+
+Use `persist=[...]` to specify which **nodes** to checkpoint. This is an optimization to reduce storage.
 
 ```python
 graph = Graph(
     nodes=[embed, retrieve, generate],
-    persist=["messages", "answer"],  # Only these are checkpointed
+    persist=["retrieve", "generate"],  # Only these nodes are checkpointed
 )
 ```
 
-### Node-Level Override
+**Why per-node, not per-output?** Nodes execute atomically. If a node has multiple outputs (`@node(outputs=("mean", "std"))`), persisting only some outputs creates inconsistency on resume — you'd have to re-run the node anyway.
 
-```python
-@node(output_name="embedding", persist=False)  # Never checkpoint
-def embed(text: str) -> list[float]:
-    return model.embed(text)
+### Why Selective Persistence?
 
-@node(output_name="answer", persist=True)  # Always checkpoint
-def generate(docs: list[str]) -> str:
-    return llm.generate(docs)
-```
+| Node | What It Produces | Persist? | Reason |
+|------|------------------|:--------:|--------|
+| `accumulate` | `messages` | ✅ | Can't reconstruct conversation |
+| `generate` | `answer` | ✅ | User expects this |
+| `embed` | `embedding` | ❌ | Can regenerate (deterministic) |
+| `retrieve` | `docs` | ❌ | Can refetch |
 
 ### Resume Behavior
 
@@ -183,7 +185,7 @@ On crash and resume:
 
 ```
 Original run:
-  embed("hello") → [0.1, 0.2, ...]  ← NOT saved (persist=False)
+  embed("hello") → [0.1, 0.2, ...]  ← NOT saved (not in persist list)
   generate(...)  → "answer"         ← SAVED
   💥 CRASH
 
@@ -193,7 +195,7 @@ Resume:
   ✅ Complete
 ```
 
-**Key insight:** `persist=False` nodes re-execute on resume. This is fine for deterministic operations like embedding — you trade storage for compute.
+**Key insight:** Non-persisted nodes re-execute on resume. This is fine for deterministic operations like embedding — you trade storage for compute.
 
 ---
 
@@ -896,15 +898,17 @@ workflow_id = str(uuid.uuid4())
 ### 2. Use Selective Persistence
 
 ```python
-# ✅ Good: Only persist what matters
+# ✅ Good: Only persist what matters (node names, not output names)
 graph = Graph(
     nodes=[embed, retrieve, generate],
-    persist=["messages", "answer"],
+    persist=["generate"],  # Only persist the generate node
 )
 
-# ❌ Bad: Persisting large, reproducible data
-@node(output_name="embedding", persist=True)  # Wastes storage
-def embed(text: str) -> list[float]: ...
+# ❌ Bad: Persisting nodes that produce large, reproducible data
+graph = Graph(
+    nodes=[embed, retrieve, generate],
+    # persist=None means persist everything - embed outputs are large!
+)
 ```
 
 ### 3. Handle Pauses Gracefully
@@ -944,7 +948,7 @@ async def cleanup_old_workflows(days: int = 30):
 | Concept | Description |
 |---------|-------------|
 | `workflow_id` | Unique identifier for a workflow execution |
-| `persist` | Controls what outputs are checkpointed |
+| `persist` | Controls which **nodes** are checkpointed (None = all, [...] = allowlist) |
 | `InterruptNode` | Pause for human input |
 | `RunResult.pause` | Information about why workflow paused |
 | `get_state()` | Get accumulated values at a point in time |
@@ -953,4 +957,4 @@ async def cleanup_old_workflows(days: int = 30):
 | Checkpointer | Storage backend (SQLite, Postgres) |
 | DBOS | Production upgrade with automatic recovery |
 
-**The philosophy:** Outputs flow through nodes. Persistence is orthogonal — you choose what survives a crash. History is append-only. Human input comes through `InterruptNode`, not external state mutation.
+**The philosophy:** Outputs flow through nodes. Persistence is orthogonal — you choose what survives a crash (per-node, at Graph level). History is append-only. Human input comes through `InterruptNode`, not external state mutation.
