@@ -8,7 +8,7 @@
 
 ## Overview
 
-HyperNodes provides two paths to durability:
+hypergraph provides two paths to durability:
 
 1. **Built-in Checkpointer** — Manual resume, simple production, development
 2. **DBOS Runners** — Automatic crash recovery, production infrastructure
@@ -21,7 +21,7 @@ Both paths keep your graph code **pure and portable**. The graph never imports d
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  HYPERNODES LAYER                                           │   │
+│  │  hypergraph LAYER                                           │   │
 │  │                                                             │   │
 │  │  @node, Graph, InterruptNode, generators (yield)           │   │
 │  │                                                             │   │
@@ -50,7 +50,7 @@ Both paths keep your graph code **pure and portable**. The graph never imports d
 4. **Generators for streaming** — Use `yield` for progress and streaming, not special functions
 5. **Clear upgrade path** — Start simple, add durability when needed
 6. **Outputs ARE state** — No separate state schema; node outputs are the state (see [State Model](state-model.md))
-7. **State flows through nodes** — No external mutation of checkpointed state. Use `InterruptNode` for human input, `fork_workflow` for retries. See [State Model FAQ](state-model.md#faq) for why HyperNodes doesn't have `update_state()`.
+7. **State flows through nodes** — No external mutation of checkpointed state. Use `InterruptNode` for human input, `fork_workflow` for retries. See [State Model FAQ](state-model.md#faq) for why hypergraph doesn't have `update_state()`.
 
 ---
 
@@ -167,10 +167,10 @@ Resume:
 
 | Need | Solution | Install |
 |------|----------|---------|
-| Development save points | `AsyncRunner(checkpointer=SqliteCheckpointer(...))` | `pip install hypernodes` |
-| Simple production (manual resume) | Same as above | `pip install hypernodes` |
-| Automatic crash recovery | `DBOSAsyncRunner()` | `pip install hypernodes[dbos]` |
-| Durable queues, scheduling | `DBOSAsyncRunner` + DBOS features | `pip install hypernodes[dbos]` |
+| Development save points | `AsyncRunner(checkpointer=SqliteCheckpointer(...))` | `pip install hypergraph` |
+| Simple production (manual resume) | Same as above | `pip install hypergraph` |
+| Automatic crash recovery | `DBOSAsyncRunner()` | `pip install hypergraph[dbos]` |
+| Durable queues, scheduling | `DBOSAsyncRunner` + DBOS features | `pip install hypergraph[dbos]` |
 
 ---
 
@@ -181,8 +181,8 @@ For development and simple production use cases where manual resume is acceptabl
 ### Basic Usage
 
 ```python
-from hypernodes import Graph, node, AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import Graph, node, AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 @node(output_name="result")
 async def fetch(query: str) -> dict:
@@ -268,7 +268,7 @@ With DBOS, use `fork_workflow()` for more advanced time-travel capabilities.
 ### Human-in-the-Loop with InterruptNode
 
 ```python
-from hypernodes import Graph, node, InterruptNode
+from hypergraph import Graph, node, InterruptNode
 
 @node(output_name="draft")
 async def generate(prompt: str) -> str:
@@ -460,7 +460,7 @@ DBOS is a **library** that runs in your process and checkpoints to Postgres/SQLi
 
 ### How `persist` Maps to DBOS
 
-HyperNodes maps the `persist` parameter to DBOS primitives:
+hypergraph maps the `persist` parameter to DBOS primitives:
 
 | `persist` | DBOS Mapping | On Recovery |
 |-----------|--------------|-------------|
@@ -487,8 +487,8 @@ When using `.get_dbos_workflow()` for advanced DBOS features, the same mapping a
 ### Basic Usage
 
 ```python
-from hypernodes import Graph, node
-from hypernodes.runners import DBOSAsyncRunner
+from hypergraph import Graph, node
+from hypergraph.runners import DBOSAsyncRunner
 
 @node(output_name="result")
 async def fetch(query: str) -> dict:
@@ -521,7 +521,7 @@ runner = DBOSAsyncRunner(database_url="postgresql://user:pass@host/db")
 `InterruptNode` maps to DBOS's `recv()`/`send()` messaging pattern:
 
 ```python
-from hypernodes import Graph, node, InterruptNode
+from hypergraph import Graph, node, InterruptNode
 
 @node(output_name="draft")
 async def generate(prompt: str) -> str:
@@ -613,7 +613,7 @@ class DBOSRunnerCapabilities(RunnerCapabilities):
 
 ## Parallel Execution
 
-HyperNodes executes nodes in **batches** (supersteps). Nodes within the same batch run concurrently.
+hypergraph executes nodes in **batches** (supersteps). Nodes within the same batch run concurrently.
 
 ### The Challenge
 
@@ -861,7 +861,7 @@ async def execute_graph_node(
 
 ## Advanced DBOS Features
 
-For features beyond HyperNodes primitives, access DBOS directly **without breaking your graphs**.
+For features beyond hypergraph primitives, access DBOS directly **without breaking your graphs**.
 
 ### Workflow Forking (Time Travel)
 
@@ -1000,7 +1000,7 @@ Note: No `resume` parameter — DBOS handles recovery automatically.
 ## Module Structure
 
 ```
-hypernodes/
+hypergraph/
 ├── runners/
 │   ├── __init__.py
 │   ├── base.py              # BaseRunner, RunnerCapabilities
@@ -1024,10 +1024,10 @@ hypernodes/
 
 ```bash
 # Core (includes checkpointers)
-pip install hypernodes
+pip install hypergraph
 
 # With DBOS
-pip install hypernodes[dbos]
+pip install hypergraph[dbos]
 ```
 
 ---
@@ -1072,7 +1072,7 @@ if result.pause:
 
 ## Retry Configuration
 
-Transient failures are common. HyperNodes has no built-in retry — just stack a retry decorator on your node.
+Transient failures are common. hypergraph has no built-in retry — just stack a retry decorator on your node.
 
 ### Design Principle
 
@@ -1081,7 +1081,7 @@ Transient failures are common. HyperNodes has no built-in retry — just stack a
 ```python
 import stamina
 import httpx
-from hypernodes import node
+from hypergraph import node
 
 @node(output_name="result")
 @stamina.retry(on=httpx.HTTPError, attempts=5, timeout=60)
@@ -1092,7 +1092,7 @@ async def fetch(query: str) -> dict:
         return response.json()
 ```
 
-No retry params in `@node()`. No HyperNodes retry API. Just decorators.
+No retry params in `@node()`. No hypergraph retry API. Just decorators.
 
 ### Why Stamina?
 
@@ -1112,7 +1112,7 @@ pip install stamina
 ```python
 import httpx
 import stamina
-from hypernodes import node
+from hypergraph import node
 
 def is_retryable(exc: httpx.HTTPStatusError) -> bool:
     """Don't retry 4xx client errors (except 429 rate limit)."""
@@ -1181,13 +1181,13 @@ The checkpointer only sees the final result. Same behavior with any runner.
 
 | Layer | Responsibility | User Imports |
 |-------|----------------|--------------|
-| **Graph** | Structure, nodes, routing | `hypernodes` |
-| **Runner** | Execution, event dispatch | `hypernodes.runners` |
-| **Checkpointer** | Manual persistence | `hypernodes.checkpointers` |
+| **Graph** | Structure, nodes, routing | `hypergraph` |
+| **Runner** | Execution, event dispatch | `hypergraph.runners` |
+| **Checkpointer** | Manual persistence | `hypergraph.checkpointers` |
 | **Retries** | Transient failure handling | `stamina` (or any retry lib) |
 | **DBOS (optional)** | Automatic durability, queues, scheduling | `dbos` |
 
-**The principle:** Graph code stays pure. Durability is a runner concern. Retries are decorator stacking — no HyperNodes-specific retry API.
+**The principle:** Graph code stays pure. Durability is a runner concern. Retries are decorator stacking — no hypergraph-specific retry API.
 
 ---
 

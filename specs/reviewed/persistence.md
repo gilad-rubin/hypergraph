@@ -6,7 +6,7 @@
 
 ## Why Persistence?
 
-Persistence enables powerful capabilities for your HyperNodes graphs:
+Persistence enables powerful capabilities for your hypergraph graphs:
 
 | Capability | What It Enables |
 |------------|-----------------|
@@ -21,8 +21,8 @@ Persistence enables powerful capabilities for your HyperNodes graphs:
 ## Quick Start
 
 ```python
-from hypernodes import Graph, node, AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import Graph, node, AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 @node(output_name="answer")
 async def generate(query: str) -> str:
@@ -68,7 +68,7 @@ result = await runner.run(graph, inputs={...}, workflow_id="order-456")
 
 ### Value Resolution Hierarchy
 
-When determining what value to use for a parameter, HyperNodes checks these sources in order:
+When determining what value to use for a parameter, hypergraph checks these sources in order:
 
 ```
 1. Edge value        ← Produced by upstream node (if it has executed)
@@ -88,7 +88,7 @@ This hierarchy enables powerful patterns:
 
 ### Outputs ARE State
 
-Unlike frameworks that require explicit state schemas, **HyperNodes infers state from your node outputs**.
+Unlike frameworks that require explicit state schemas, **hypergraph infers state from your node outputs**.
 
 ```python
 # LangGraph - explicit state schema
@@ -100,7 +100,7 @@ graph = StateGraph(State)
 ```
 
 ```python
-# HyperNodes - no schema needed
+# hypergraph - no schema needed
 @node(output_name="response")
 def get_response(messages: list, user_input: str) -> str:
     """Get LLM response for the conversation."""
@@ -123,7 +123,7 @@ Your node outputs become the state. No reducers, no explicit schema.
 
 ### Checkpoints
 
-A checkpoint is a snapshot of workflow state at a specific step. HyperNodes saves a checkpoint after each node completes (for nodes with `persist=True`).
+A checkpoint is a snapshot of workflow state at a specific step. hypergraph saves a checkpoint after each node completes (for nodes with `persist=True`).
 
 ```
 Step 0: fetch     → checkpoint saved
@@ -204,8 +204,8 @@ The value resolution hierarchy makes multi-turn conversations effortless.
 ### The Pattern
 
 ```python
-from hypernodes import Graph, node, AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import Graph, node, AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 @node(output_name="response")
 def get_response(messages: list, user_input: str) -> str:
@@ -287,7 +287,7 @@ Use `InterruptNode` to pause workflows for human input.
 ### Basic Pattern
 
 ```python
-from hypernodes import Graph, node, InterruptNode
+from hypergraph import Graph, node, InterruptNode
 
 @node(output_name="draft")
 async def generate(prompt: str) -> str:
@@ -377,7 +377,7 @@ See [Execution Semantics](#execution-semantics) for the full model
 
 ## State vs History
 
-HyperNodes separates two concepts:
+hypergraph separates two concepts:
 
 | Concept | What It Is | API |
 |---------|------------|-----|
@@ -752,7 +752,7 @@ if result.status == RunStatus.PAUSED:
 ### SqliteCheckpointer (Development & Simple Production)
 
 ```python
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph.checkpointers import SqliteCheckpointer
 
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./workflows.db"))
 ```
@@ -762,7 +762,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./workflows.db"))
 ### PostgresCheckpointer (Production)
 
 ```python
-from hypernodes.checkpointers import PostgresCheckpointer
+from hypergraph.checkpointers import PostgresCheckpointer
 
 runner = AsyncRunner(
     checkpointer=PostgresCheckpointer("postgresql://user:pass@host/db")
@@ -792,7 +792,7 @@ For automatic crash recovery and advanced features, use DBOS.
 When you need automatic crash recovery, switch to `DBOSAsyncRunner`:
 
 ```python
-from hypernodes.runners import DBOSAsyncRunner
+from hypergraph.runners import DBOSAsyncRunner
 
 # Before: Manual resume
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
@@ -853,7 +853,7 @@ queue = Queue("processing", concurrency=10)
 
 ## Comparison with LangGraph
 
-| Aspect | LangGraph | HyperNodes |
+| Aspect | LangGraph | hypergraph |
 |--------|-----------|------------|
 | **State definition** | Explicit `TypedDict` schema | Inferred from outputs |
 | **What's persisted** | Everything in schema | Controlled by `persist` |
@@ -866,7 +866,7 @@ queue = Queue("processing", concurrency=10)
 
 ### Why No `update_state()`?
 
-HyperNodes intentionally doesn't have `update_state()`. Here's why:
+hypergraph intentionally doesn't have `update_state()`. Here's why:
 
 1. **Breaks dataflow** — State should flow through nodes, not be injected externally
 2. **Debugging complexity** — Hard to trace where values came from
@@ -874,7 +874,7 @@ HyperNodes intentionally doesn't have `update_state()`. Here's why:
 
 **Migration guide:**
 
-| LangGraph Pattern | HyperNodes Equivalent |
+| LangGraph Pattern | hypergraph Equivalent |
 |-------------------|----------------------|
 | `update_state()` for human input | `InterruptNode` |
 | `update_state()` for retries | Fork with `get_state(at_step=N)` or DBOS `fork_workflow()` |

@@ -1,4 +1,4 @@
-# Hypernodes v0.5 - Overview
+# hypergraph v0.5 - Overview
 
 **A graph-native execution system that supports cycles, multi-turn interactions, and complex control flow while maintaining pure, portable functions.**
 
@@ -6,10 +6,10 @@
 
 ## Quick Example: Multi-Turn RAG
 
-Here's what using Hypernodes looks like:
+Here's what using hypergraph looks like:
 
 ```python
-from hypernodes import Graph, node, route, END, AsyncRunner, SyncRunner, DiskCache
+from hypergraph import Graph, node, route, END, AsyncRunner, SyncRunner, DiskCache
 
 # Define nodes as pure functions
 @node(outputs="docs")
@@ -67,7 +67,7 @@ print(result["messages"])  # Full conversation history
 
 ### Where It Started (v0.1-0.4)
 
-HyperNodes began as an answer to existing DAG frameworks like Hamilton and Pipefunc. The key innovation: **hierarchical composition** - pipelines are nodes that can be nested infinitely.
+hypergraph began as an answer to existing DAG frameworks like Hamilton and Pipefunc. The key innovation: **hierarchical composition** - pipelines are nodes that can be nested infinitely.
 
 ```python
 # The original vision: pipelines as composable building blocks
@@ -134,7 +134,7 @@ def add_response(state: AgentState) -> dict:
 
 ## Key Differentiators
 
-| Aspect | LangGraph / Pydantic-Graph | HyperNodes |
+| Aspect | LangGraph / Pydantic-Graph | hypergraph |
 |--------|---------------------------|------------|
 | **State definition** | Static `TypedDict` or Pydantic model required | No state class - just function signatures |
 | **Graph construction** | Edges defined at class definition time | Build graphs dynamically at runtime |
@@ -144,7 +144,7 @@ def add_response(state: AgentState) -> dict:
 
 ## The Solution: Dynamic Graphs with Build-Time Validation
 
-HyperNodes 0.5 introduces **fully dynamic graph construction** with validation at build time (when `Graph()` is called), not compile time.
+hypergraph 0.5 introduces **fully dynamic graph construction** with validation at build time (when `Graph()` is called), not compile time.
 
 ```python
 # LangGraph - static, tied to schema
@@ -152,7 +152,7 @@ class AgentState(TypedDict):
     messages: list[str]  # Must know fields at definition time
 graph = StateGraph(AgentState)
 
-# HyperNodes - fully dynamic
+# hypergraph - fully dynamic
 nodes = [create_tool_node(t) for t in available_tools]  # Built at runtime!
 graph = Graph(nodes=nodes)  # Validation happens here
 ```
@@ -163,7 +163,7 @@ LLMs already work in a write-then-validate loop - they write code, then get comp
 
 ```
 Traditional: Write code → Compiler error → Fix → Repeat
-HyperNodes:  Write code → Graph() error → Fix → Repeat
+hypergraph:  Write code → Graph() error → Fix → Repeat
 ```
 
 Both catch errors before runtime. The difference is *when* validation happens (compile time vs build time), not *whether* it happens.
@@ -173,7 +173,7 @@ Both catch errors before runtime. The difference is *when* validation happens (c
 ### Defining Nodes
 
 ```python
-from hypernodes import node, route, branch, InterruptNode, END
+from hypergraph import node, route, branch, InterruptNode, END
 
 # Regular node
 @node(outputs="result")
@@ -208,7 +208,7 @@ approval = InterruptNode(
 ### Building Graphs
 
 ```python
-from hypernodes import Graph
+from hypergraph import Graph
 
 # Build graph - edges inferred from parameter names matching output names
 graph = Graph(nodes=[retrieve, generate, decide, process])
@@ -243,7 +243,7 @@ adapted = (
 ### Executing Graphs
 
 ```python
-from hypernodes import SyncRunner, AsyncRunner, DiskCache
+from hypergraph import SyncRunner, AsyncRunner, DiskCache
 
 # Synchronous execution
 runner = SyncRunner(cache=DiskCache("./cache"))

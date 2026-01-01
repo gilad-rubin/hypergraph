@@ -8,7 +8,7 @@ A `Graph` is a pure data structure describing computation flow. A `Runner` takes
 
 ## The Four Runners
 
-Hypernodes provides four runners, each optimized for different execution contexts:
+hypergraph provides four runners, each optimized for different execution contexts:
 
 | Runner | Description | Primary Use Case |
 |--------|-------------|------------------|
@@ -26,7 +26,7 @@ Hypernodes provides four runners, each optimized for different execution context
 ### SyncRunner
 
 ```python
-from hypernodes import Graph, SyncRunner, DiskCache
+from hypergraph import Graph, SyncRunner, DiskCache
 
 graph = Graph(nodes=[fetch, process, save])
 
@@ -39,7 +39,7 @@ print(result["response"])  # dict[str, Any]
 ### AsyncRunner
 
 ```python
-from hypernodes import Graph, AsyncRunner
+from hypergraph import Graph, AsyncRunner
 
 graph = Graph(nodes=[fetch, process, save])
 
@@ -52,7 +52,7 @@ print(result.outputs["response"])  # Access output value
 ### DaftRunner
 
 ```python
-from hypernodes import Graph, DaftRunner
+from hypergraph import Graph, DaftRunner
 
 graph = Graph(nodes=[embed, process])  # Must be a DAG
 
@@ -221,8 +221,8 @@ async for event in runner.iter(graph, inputs={"prompt": "Tell me a story"}):
 Pause execution for human input and resume:
 
 ```python
-from hypernodes import AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 
@@ -636,7 +636,7 @@ result = await runner.run(
 All runners accept a `cache` parameter:
 
 ```python
-from hypernodes import DiskCache, MemoryCache
+from hypergraph import DiskCache, MemoryCache
 
 # Persistent cache
 runner = SyncRunner(cache=DiskCache("./cache"))

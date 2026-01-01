@@ -2,7 +2,7 @@
 
 ## Overview
 
-Hypernodes uses **reactive dataflow with versioning**. Nodes execute when their inputs are ready and stale. The same unified algorithm handles DAGs, branches, AND cycles.
+hypergraph uses **reactive dataflow with versioning**. Nodes execute when their inputs are ready and stale. The same unified algorithm handles DAGs, branches, AND cycles.
 
 ## Core Concepts
 

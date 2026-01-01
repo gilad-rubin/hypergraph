@@ -1,6 +1,6 @@
 # Calculator Agent
 
-A tool-calling agent ported from LangGraph to demonstrate HyperNodes patterns.
+A tool-calling agent ported from LangGraph to demonstrate hypergraph patterns.
 
 **Source:** https://docs.langchain.com/oss/python/langgraph/quickstart
 
@@ -23,7 +23,7 @@ flowchart TD
 
 ```python
 import asyncio
-from hypernodes import node, branch, Graph, END, AsyncRunner
+from hypergraph import node, branch, Graph, END, AsyncRunner
 
 from langchain.tools import tool
 from langchain.chat_models import init_chat_model
@@ -147,7 +147,7 @@ if __name__ == "__main__":
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `StateGraph(MessagesState)` | `Graph(nodes=[...])` |
 | `state["messages"]` | `def node(messages: list)` |

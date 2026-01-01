@@ -1,8 +1,8 @@
-# HyperNodes Examples
+# hypergraph Examples
 
 Design validation examples ported from LangGraph tutorials.
 
-These examples demonstrate how HyperNodes API patterns express common agent workflows, helping validate our design before implementation.
+These examples demonstrate how hypergraph API patterns express common agent workflows, helping validate our design before implementation.
 
 ## Examples
 
@@ -21,14 +21,14 @@ These examples demonstrate how HyperNodes API patterns express common agent work
 
 These examples serve to:
 
-1. **Validate API design** - Ensure HyperNodes can elegantly express real-world patterns
+1. **Validate API design** - Ensure hypergraph can elegantly express real-world patterns
 2. **Identify gaps** - Find missing features or awkward APIs before implementation
-3. **Document patterns** - Show idiomatic HyperNodes solutions
+3. **Document patterns** - Show idiomatic hypergraph solutions
 4. **Compare with LangGraph** - Highlight differences in approach
 
 ## Key Differences from LangGraph
 
-| Aspect | LangGraph | HyperNodes |
+| Aspect | LangGraph | hypergraph |
 |--------|-----------|------------|
 | **State** | Explicit `TypedDict` with annotations | No state object - values flow by name |
 | **Edges** | `add_edge("a", "b")` | Implicit from parameter matching |

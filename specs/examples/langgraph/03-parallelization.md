@@ -1,6 +1,6 @@
 # Parallelization
 
-Multiple LLM calls run simultaneously, then aggregate results. HyperNodes handles this naturally - nodes run when their inputs are available.
+Multiple LLM calls run simultaneously, then aggregate results. hypergraph handles this naturally - nodes run when their inputs are available.
 
 **Source:** https://docs.langchain.com/oss/python/langgraph/workflows-agents#parallelization
 
@@ -21,7 +21,7 @@ graph TD
 
 ```python
 import asyncio
-from hypernodes import node, Graph, AsyncRunner
+from hypergraph import node, Graph, AsyncRunner
 from langchain_anthropic import ChatAnthropic
 
 llm = ChatAnthropic(model="claude-sonnet-4-5-20250929")
@@ -135,13 +135,13 @@ builder.add_edge("call_llm_2", "aggregator")
 builder.add_edge("call_llm_3", "aggregator")
 ```
 
-**HyperNodes - edges are implicit:**
+**hypergraph - edges are implicit:**
 ```python
 # Just declare the nodes - edges derived from parameter names
 Graph(nodes=[generate_joke, generate_story, generate_poem, aggregate])
 ```
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | 6 explicit `add_edge()` calls | 0 explicit edges |
 | Must manually wire START to each parallel node | Automatic: all nodes consuming input run |

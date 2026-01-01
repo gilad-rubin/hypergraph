@@ -1,6 +1,6 @@
 # LangGraph Durable Execution & Checkpointing Reference
 
-> LangGraph v1.0 (October 2025) - Reference for HyperNodes design
+> LangGraph v1.0 (October 2025) - Reference for hypergraph design
 
 ## Overview
 
@@ -401,9 +401,9 @@ result = await client.runs.create(thread["thread_id"], assistant_id, input={...}
 
 ---
 
-## Implications for HyperNodes
+## Implications for hypergraph
 
-### Current HyperNodes approach:
+### Current hypergraph approach:
 - `RunResult.checkpoint` for interrupt resume
 - Checkpoint is opaque `bytes`
 - No built-in persistence backends

@@ -1,6 +1,6 @@
 # Core Types Reference
 
-**Complete reference for all types, classes, and data structures in HyperNodes.**
+**Complete reference for all types, classes, and data structures in hypergraph.**
 
 ---
 
@@ -157,14 +157,14 @@ class HyperNode(ABC):
 ### Type Hints
 
 ```python
-from hypernodes import HyperNode
+from hypergraph import HyperNode
 
 def process_node(node: HyperNode) -> None:
     """Works with any node type."""
     print(f"{node.name}: {node.inputs} → {node.outputs}")
 
 # Or be specific when you need type-specific features
-from hypernodes import FunctionNode
+from hypergraph import FunctionNode
 
 def process_function_node(node: FunctionNode) -> None:
     """Only FunctionNode has is_async/is_generator properties."""
@@ -391,7 +391,7 @@ def __repr__(self) -> str:
 ### Example
 
 ```python
-from hypernodes import node, FunctionNode
+from hypergraph import node, FunctionNode
 
 # Option 1: Decorator (convenient)
 @node(output_name="result")
@@ -440,7 +440,7 @@ assert process.is_generator == False
 ### All Four Execution Modes
 
 ```python
-from hypernodes import node
+from hypergraph import node
 from typing import Iterator, AsyncIterator
 
 # 1. Sync function (most common)
@@ -662,7 +662,7 @@ def fallback(self) -> str | type[END] | None:
 ### Example
 
 ```python
-from hypernodes import route, END
+from hypergraph import route, END
 
 @route(targets=["option_a", "option_b", "option_c", END])
 def decide(state: dict) -> str:
@@ -759,7 +759,7 @@ def when_false(self) -> str:
 ### Example
 
 ```python
-from hypernodes import branch
+from hypergraph import branch
 
 @branch(when_true="valid_path", when_false="error_path")
 def check_valid(data: dict) -> bool:
@@ -843,7 +843,7 @@ def input_param(self) -> str:
 ### Example
 
 ```python
-from hypernodes import node, TypeRouteNode, Graph
+from hypergraph import node, TypeRouteNode, Graph
 from dataclasses import dataclass
 
 @dataclass
@@ -972,7 +972,7 @@ def cache(self) -> bool:
 ### Example
 
 ```python
-from hypernodes import InterruptNode
+from hypergraph import InterruptNode
 from dataclasses import dataclass
 
 @dataclass
@@ -1568,7 +1568,7 @@ def visualize(self, **kwargs):
 ### Example
 
 ```python
-from hypernodes import Graph, node
+from hypergraph import Graph, node
 
 @node(output_name="doubled")
 def double(x: int) -> int:
@@ -1807,7 +1807,7 @@ class RunResult:
 ### Example
 
 ```python
-from hypernodes import AsyncRunner
+from hypergraph import AsyncRunner
 
 runner = AsyncRunner()
 result = await runner.run(graph, inputs={...})
@@ -2095,7 +2095,7 @@ Rationale: Each batch item would potentially pause at different points, making t
 ### Type Checking
 
 ```python
-from hypernodes import FunctionNode, RouteNode, BranchNode, InterruptNode
+from hypergraph import FunctionNode, RouteNode, BranchNode, InterruptNode
 
 def process_node(node: HyperNode):
     """Handle different node types."""

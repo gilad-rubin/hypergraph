@@ -21,7 +21,7 @@ flowchart TD
 
 ```python
 import asyncio
-from hypernodes import node, Graph, AsyncRunner
+from hypergraph import node, Graph, AsyncRunner
 from langchain_anthropic import ChatAnthropic
 from langchain.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -135,7 +135,7 @@ section_writer.as_node()
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `Send` API for dynamic workers | `.with_inputs().map_over()` |
 | Separate worker state class | Same graph, automatic iteration |

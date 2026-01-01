@@ -11,8 +11,8 @@
 **Graph defines structure. Runner handles execution.**
 
 ```python
-from hypernodes import Graph, node
-from hypernodes import Runner, AsyncRunner, DiskCache
+from hypergraph import Graph, node
+from hypergraph import Runner, AsyncRunner, DiskCache
 
 # Define graph (pure structure, no execution config)
 @node(output_name="answer")
@@ -120,7 +120,7 @@ class AsyncRunner:
 ### Specialized Runners
 
 ```python
-from hypernodes.runners import DaftRunner, DaskRunner
+from hypergraph.runners import DaftRunner, DaskRunner
 
 # Distributed execution
 runner = DaftRunner(cache=DiskCache("./cache"))
@@ -134,7 +134,7 @@ results = runner.map(graph, inputs={"query": queries}, map_over="query")
 ### Basic Execution
 
 ```python
-from hypernodes import Graph, node, Runner
+from hypergraph import Graph, node, Runner
 
 @node(output_name="doubled")
 def double(x: int) -> int:
@@ -150,7 +150,7 @@ print(result["doubled"])  # 10
 ### With Caching
 
 ```python
-from hypernodes import Runner, DiskCache
+from hypergraph import Runner, DiskCache
 
 runner = Runner(cache=DiskCache("./cache"))
 result = runner.run(graph, inputs={"x": 5})  # Computed
@@ -160,8 +160,8 @@ result = runner.run(graph, inputs={"x": 5})  # Cached
 ### With Callbacks
 
 ```python
-from hypernodes import Runner
-from hypernodes.callbacks import ProgressCallback
+from hypergraph import Runner
+from hypergraph.callbacks import ProgressCallback
 
 runner = Runner(callbacks=[ProgressCallback()])
 result = runner.run(graph, inputs={"x": 5})
@@ -170,7 +170,7 @@ result = runner.run(graph, inputs={"x": 5})
 ### Async Execution (Jupyter / Production)
 
 ```python
-from hypernodes import AsyncRunner
+from hypergraph import AsyncRunner
 
 runner = AsyncRunner(cache=DiskCache("./cache"))
 
@@ -181,7 +181,7 @@ result = await runner.run(graph, inputs={"query": "hello"})
 ### Streaming Events
 
 ```python
-from hypernodes import AsyncRunner
+from hypergraph import AsyncRunner
 
 runner = AsyncRunner()
 
@@ -198,7 +198,7 @@ print(run.result["answer"])
 ### Batch Processing
 
 ```python
-from hypernodes import Runner
+from hypergraph import Runner
 
 runner = Runner(cache=DiskCache("./cache"))
 
@@ -377,7 +377,7 @@ For notebooks or scripts with many graphs:
 
 ```python
 # Possible future pattern
-import hypernodes as hn
+import hypergraph as hn
 
 hn.set_default_runner(Runner(cache=DiskCache("./cache")))
 

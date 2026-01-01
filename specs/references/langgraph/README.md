@@ -1,18 +1,18 @@
 # LangGraph Reference Documentation
 
-> Reference materials for LangGraph v1.0 (October 2025) to inform HyperNodes design decisions.
+> Reference materials for LangGraph v1.0 (October 2025) to inform hypergraph design decisions.
 
 ## Purpose
 
-These documents capture LangGraph's approach to key features that HyperNodes needs to mature. Each document includes:
+These documents capture LangGraph's approach to key features that hypergraph needs to mature. Each document includes:
 - How LangGraph implements the feature
 - API surface and code examples
 - Design decisions and trade-offs
-- **Implications for HyperNodes** - what we should adopt or do differently
+- **Implications for hypergraph** - what we should adopt or do differently
 
 ## Documents
 
-| Document | Topic | HyperNodes Status |
+| Document | Topic | hypergraph Status |
 |----------|-------|-------------------|
 | [streaming.md](streaming.md) | 5 streaming modes, events, token streaming | Has `AsyncRunner.iter()`, missing modes |
 | [retry-policy.md](retry-policy.md) | Exponential backoff, per-node policies | Mentioned but not specified |
@@ -28,7 +28,7 @@ LangGraph 1.0 stabilized four core runtime features:
 3. **Streaming** - Multiple modes for different use cases
 4. **Memory** - Short-term (checkpoints) and long-term (stores)
 
-## HyperNodes Gaps to Address
+## hypergraph Gaps to Address
 
 Based on these references, priority gaps:
 
@@ -51,7 +51,7 @@ Based on these references, priority gaps:
 
 ## Design Philosophy Differences
 
-| Aspect | LangGraph | HyperNodes |
+| Aspect | LangGraph | hypergraph |
 |--------|-----------|------------|
 | State | Central TypedDict | Function signatures |
 | Streaming | 5 modes to choose from | Unified event stream |

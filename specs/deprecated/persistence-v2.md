@@ -37,8 +37,8 @@ This design follows the principle: **start simple, extend when needed**.
 ## Quick Example
 
 ```python
-from hypernodes import Graph, AsyncRunner
-from hypernodes.persistence import SQLiteCheckpointer
+from hypergraph import Graph, AsyncRunner
+from hypergraph.persistence import SQLiteCheckpointer
 
 # Create graph with durable execution
 graph = Graph(nodes=[fetch, process, generate])
@@ -849,8 +849,8 @@ class WorkflowNotFoundError(PersistenceError):
 ### Basic Persistence
 
 ```python
-from hypernodes import Graph, AsyncRunner, node
-from hypernodes.persistence import SQLiteCheckpointer
+from hypergraph import Graph, AsyncRunner, node
+from hypergraph.persistence import SQLiteCheckpointer
 
 @node(output_name="result")
 async def process(data: str) -> str:
@@ -870,8 +870,8 @@ result = await runner.run(
 ### Resume After Interrupt
 
 ```python
-from hypernodes import Graph, AsyncRunner, node, InterruptNode
-from hypernodes.persistence import SQLiteCheckpointer
+from hypergraph import Graph, AsyncRunner, node, InterruptNode
+from hypergraph.persistence import SQLiteCheckpointer
 
 @node(output_name="draft")
 async def generate(prompt: str) -> str:
@@ -918,7 +918,7 @@ print(result.outputs["final"])
 ### Testing with In-Memory Checkpointer
 
 ```python
-from hypernodes.persistence import Checkpointer
+from hypergraph.persistence import Checkpointer
 
 # Base class works as in-memory checkpointer
 checkpointer = Checkpointer()

@@ -267,7 +267,7 @@ State (computed):
 ### SqliteCheckpointer
 
 ```python
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph.checkpointers import SqliteCheckpointer
 
 checkpointer = SqliteCheckpointer(
     path="./workflows.db",      # Database file path
@@ -282,7 +282,7 @@ runner = AsyncRunner(checkpointer=checkpointer)
 ### PostgresCheckpointer
 
 ```python
-from hypernodes.checkpointers import PostgresCheckpointer
+from hypergraph.checkpointers import PostgresCheckpointer
 
 checkpointer = PostgresCheckpointer(
     connection_string="postgresql://user:pass@host/db",
@@ -315,8 +315,8 @@ runner = AsyncRunner(checkpointer=checkpointer)
 ### Minimal Implementation
 
 ```python
-from hypernodes.checkpointers import Checkpointer
-from hypernodes.types import Step, StepResult, Workflow, WorkflowStatus
+from hypergraph.checkpointers import Checkpointer
+from hypergraph.types import Step, StepResult, Workflow, WorkflowStatus
 
 class RedisCheckpointer(Checkpointer):
     """Example Redis-based checkpointer."""
@@ -398,7 +398,7 @@ checkpointer = SqliteCheckpointer("./workflows.db")
 For complex objects (numpy arrays, custom classes), provide a custom serializer:
 
 ```python
-from hypernodes.checkpointers import Serializer
+from hypergraph.checkpointers import Serializer
 import pickle
 
 class PickleSerializer(Serializer):
@@ -438,8 +438,8 @@ class Serializer(ABC):
 ### Basic Usage
 
 ```python
-from hypernodes import Graph, node, AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import Graph, node, AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 @node(output_name="answer")
 async def generate(query: str) -> str:
@@ -554,7 +554,7 @@ class WorkflowStatus(Enum):
 
 These types map to DBOS tables for compatibility:
 
-| HyperNodes Type | DBOS Table |
+| hypergraph Type | DBOS Table |
 |-----------------|------------|
 | `Workflow` | `dbos.workflow_status` |
 | `Step` | `dbos.operation_outputs` |

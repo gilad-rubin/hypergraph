@@ -5,7 +5,7 @@
 ```
 Graph                 # Pure structure definition
 ├── wraps nx.DiGraph  # NetworkX graph internally
-├── nodes: list       # Registered hypernodes
+├── nodes: list       # Registered hypergraph
 └── validation        # Build-time checks
 
 GraphState            # Runtime value storage

@@ -7,7 +7,7 @@
 ## Quick Example
 
 ```python
-from hypernodes import Graph, Node, node
+from hypergraph import Graph, Node, node
 
 # Example: Reuse the same function with different interfaces
 def transform(text: str) -> str:

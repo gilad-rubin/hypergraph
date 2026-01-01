@@ -1,6 +1,6 @@
-# HyperNodes Development Guide
+# hypergraph Development Guide
 
-**Project:** hypernodes v0.4.8  
+**Project:** hypergraph v0.4.8  
 **Type:** Python Library  
 **Generated:** 2025-12-22
 
@@ -24,30 +24,30 @@
 
 ```bash
 # Install from PyPI
-pip install hypernodes
+pip install hypergraph
 
 # Or with uv (recommended)
-uv add hypernodes
+uv add hypergraph
 ```
 
 ### For Contributors
 
 ```bash
 # Clone the repository
-git clone https://github.com/gilad-rubin/hypernodes
-cd hypernodes
+git clone https://github.com/gilad-rubin/hypergraph
+cd hypergraph
 
 # Install with all development dependencies
 uv sync
 
 # Install with specific optional features
-uv add hypernodes[all]           # All features
-uv add hypernodes[daft]           # Daft distributed engine
-uv add hypernodes[viz]            # Visualization support
-uv add hypernodes[telemetry]      # Tracing and progress
-uv add hypernodes[notebook]       # Jupyter support
-uv add hypernodes[modal]          # Modal cloud integration
-uv add hypernodes[examples]       # Example dependencies
+uv add hypergraph[all]           # All features
+uv add hypergraph[daft]           # Daft distributed engine
+uv add hypergraph[viz]            # Visualization support
+uv add hypergraph[telemetry]      # Tracing and progress
+uv add hypergraph[notebook]       # Jupyter support
+uv add hypergraph[modal]          # Modal cloud integration
+uv add hypergraph[examples]       # Example dependencies
 ```
 
 ---
@@ -55,8 +55,8 @@ uv add hypernodes[examples]       # Example dependencies
 ## Project Structure
 
 ```
-hypernodes/
-├── src/hypernodes/       # Main package source
+hypergraph/
+├── src/hypergraph/       # Main package source
 ├── tests/                # Test suite (pytest)
 ├── docs/                 # Documentation (MDX)
 ├── guides/               # Design documents
@@ -75,7 +75,7 @@ hypernodes/
 The library is meant to be imported, not run directly. See `examples/` and `notebooks/` for usage examples.
 
 ```python
-from hypernodes import Pipeline, node, SeqEngine, DiskCache
+from hypergraph import Pipeline, node, SeqEngine, DiskCache
 
 @node(output_name="result")
 def process(x: int) -> int:
@@ -96,7 +96,7 @@ uv run pytest
 uv run pytest tests/test_execution.py
 
 # Run with coverage
-uv run pytest --cov=hypernodes
+uv run pytest --cov=hypergraph
 
 # Run visualization tests (requires Playwright)
 uv run pytest tests/viz/
@@ -129,14 +129,14 @@ uv run pytest -v
 # Build distribution packages
 uv build
 
-# Output: dist/hypernodes-0.4.8-py3-none-any.whl
-#         dist/hypernodes-0.4.8.tar.gz
+# Output: dist/hypergraph-0.4.8-py3-none-any.whl
+#         dist/hypergraph-0.4.8.tar.gz
 ```
 
 **Build Configuration:**
 - **Build Backend:** Hatchling (PEP 517)
-- **Package Source:** `src/hypernodes/`
-- **Excluded:** `src/hypernodes/old/` (deprecated code)
+- **Package Source:** `src/hypergraph/`
+- **Excluded:** `src/hypergraph/old/` (deprecated code)
 
 ---
 
@@ -146,15 +146,15 @@ The library uses optional dependencies for different use cases:
 
 | Feature Group | Install | Purpose |
 |---------------|---------|---------|
-| `daft` | `uv add hypernodes[daft]` | Distributed execution with Daft (>=0.6.11) |
+| `daft` | `uv add hypergraph[daft]` | Distributed execution with Daft (>=0.6.11) |
 | `dask` | Included in examples | Parallel map operations with Dask |
-| `viz` | `uv add hypernodes[viz]` | Graphviz static visualization (>=0.20) |
-| `notebook` | `uv add hypernodes[notebook]` | Jupyter support with IPyWidgets (>=8.1.7) |
-| `telemetry` | `uv add hypernodes[telemetry]` | Logfire tracing + tqdm/rich progress |
-| `modal` | `uv add hypernodes[modal]` | Modal serverless integration (>=0.64.0) |
-| `batch` | `uv add hypernodes[batch]` | PyArrow batch processing (>=14.0.0) |
-| `all` | `uv add hypernodes[all]` | All optional features |
-| `examples` | `uv add hypernodes[examples]` | Dependencies for example scripts |
+| `viz` | `uv add hypergraph[viz]` | Graphviz static visualization (>=0.20) |
+| `notebook` | `uv add hypergraph[notebook]` | Jupyter support with IPyWidgets (>=8.1.7) |
+| `telemetry` | `uv add hypergraph[telemetry]` | Logfire tracing + tqdm/rich progress |
+| `modal` | `uv add hypergraph[modal]` | Modal serverless integration (>=0.64.0) |
+| `batch` | `uv add hypergraph[batch]` | PyArrow batch processing (>=14.0.0) |
+| `all` | `uv add hypergraph[all]` | All optional features |
+| `examples` | `uv add hypergraph[examples]` | Dependencies for example scripts |
 
 ---
 
@@ -163,7 +163,7 @@ The library uses optional dependencies for different use cases:
 **No special environment variables required** for core functionality.
 
 **Optional:**
-- `LOG_HYPERNODES_CACHE=1` - Enable cache hit/miss logging
+- `LOG_hypergraph_CACHE=1` - Enable cache hit/miss logging
 - Standard Python environment variables apply
 
 ---
@@ -230,15 +230,15 @@ playwright install chromium
 
 ### Add a New Node Type
 
-1. Create new decorator in `src/hypernodes/decorators.py` or separate file
+1. Create new decorator in `src/hypergraph/decorators.py` or separate file
 2. Implement node class following `HyperNode` protocol
-3. Update `src/hypernodes/__init__.py` exports
+3. Update `src/hypergraph/__init__.py` exports
 4. Add tests in `tests/test_<feature>.py`
 5. Update documentation in `docs/`
 
 ### Add a New Engine
 
-1. Create new file in `src/hypernodes/integrations/<engine_name>/`
+1. Create new file in `src/hypergraph/integrations/<engine_name>/`
 2. Implement `Engine` protocol from `protocols.py`
 3. Add integration tests in `tests/test_<engine>_*.py`
 4. Update `pyproject.toml` optional dependencies
@@ -246,7 +246,7 @@ playwright install chromium
 
 ### Add Visualization Features
 
-1. Update graph walker in `src/hypernodes/viz/graph_walker.py`
+1. Update graph walker in `src/hypergraph/viz/graph_walker.py`
 2. Modify renderers in `viz/graphviz/` or `viz/js/`
 3. Add tests in `tests/viz/`
 4. Rebuild Tailwind CSS if needed: `build/tailwind/rebuild.sh`
@@ -294,8 +294,8 @@ Typical workflow would include:
 - `notebooks/` - Interactive Jupyter notebooks
 
 **Support:**
-- GitHub Issues: https://github.com/gilad-rubin/hypernodes/issues
-- Repository: https://github.com/gilad-rubin/hypernodes
+- GitHub Issues: https://github.com/gilad-rubin/hypergraph/issues
+- Repository: https://github.com/gilad-rubin/hypergraph
 
 ---
 

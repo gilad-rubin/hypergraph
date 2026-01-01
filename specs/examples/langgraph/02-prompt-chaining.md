@@ -21,7 +21,7 @@ flowchart TD
 
 ```python
 import asyncio
-from hypernodes import node, branch, Graph, END, AsyncRunner
+from hypergraph import node, branch, Graph, END, AsyncRunner
 from langchain_anthropic import ChatAnthropic
 
 llm = ChatAnthropic(model="claude-sonnet-4-5-20250929")
@@ -120,7 +120,7 @@ def check_punchline(joke: str) -> bool:
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `add_conditional_edges("generate_joke", check_punchline, {"Fail": "improve_joke", "Pass": END})` | `@branch(when_true=END, when_false="improve_joke")` |
 | Explicit edge from `improve_joke` to `polish_joke` | Implicit: `polish_joke` consumes `improved_joke` |

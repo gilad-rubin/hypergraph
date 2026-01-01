@@ -397,7 +397,7 @@ class TopicResponse(BaseModel):
 ### Complete Example
 
 ```python
-from hypernodes import Graph, node, route, InterruptNode, END, AsyncRunner
+from hypergraph import Graph, node, route, InterruptNode, END, AsyncRunner
 
 # Step 1: Create node that produces the prompt
 @node(outputs="approval_prompt")

@@ -1,6 +1,6 @@
 # LangGraph Streaming Reference
 
-> LangGraph v1.0 (October 2025) - Reference for HyperNodes design
+> LangGraph v1.0 (October 2025) - Reference for hypergraph design
 
 ## Overview
 
@@ -236,14 +236,14 @@ async for mode, chunk in graph.astream(inputs, stream_mode=["messages", "updates
 
 ---
 
-## Implications for HyperNodes
+## Implications for hypergraph
 
-### What HyperNodes has:
+### What hypergraph has:
 - Unified event stream via `AsyncRunner.iter()`
 - Typed events (`StreamingChunkEvent`, `NodeStartEvent`, etc.)
 - Built-in span hierarchy (`span_id`, `parent_span_id`)
 
-### What HyperNodes could adopt:
+### What hypergraph could adopt:
 1. **State snapshot mode** - Full state after each node (like `values`)
 2. **Custom stream writer** - Let tools emit progress events (like `custom`)
 3. **Mode filtering** - Subscribe only to what you need
@@ -251,7 +251,7 @@ async for mode, chunk in graph.astream(inputs, stream_mode=["messages", "updates
 
 ### Design trade-offs:
 - LangGraph: More flexible, more complex API surface
-- HyperNodes: Simpler mental model, filter in user code
+- hypergraph: Simpler mental model, filter in user code
 
 ---
 

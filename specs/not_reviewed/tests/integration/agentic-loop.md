@@ -21,7 +21,7 @@ Agent: [refines] → self-review → decide: "done"
 ## Graph Definition
 
 ```python
-from hypernodes import Graph, node, route, END
+from hypergraph import Graph, node, route, END
 
 # Available tools
 TOOLS = ["read_file", "search", "generate", "refine"]

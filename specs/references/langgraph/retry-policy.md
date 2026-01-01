@@ -1,6 +1,6 @@
 # LangGraph Retry Policy Reference
 
-> LangGraph v1.0 (October 2025) - Reference for HyperNodes design
+> LangGraph v1.0 (October 2025) - Reference for hypergraph design
 
 ## Overview
 
@@ -259,9 +259,9 @@ policy = RetryPolicy(
 
 ---
 
-## Implications for HyperNodes
+## Implications for hypergraph
 
-### Current HyperNodes approach:
+### Current hypergraph approach:
 - Mentioned in runners.md but not fully specified
 - No per-node retry configuration
 

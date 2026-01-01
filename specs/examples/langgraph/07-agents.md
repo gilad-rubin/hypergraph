@@ -25,7 +25,7 @@ flowchart TD
 
 ```python
 import asyncio
-from hypernodes import node, branch, Graph, END, AsyncRunner
+from hypergraph import node, branch, Graph, END, AsyncRunner
 from langchain_anthropic import ChatAnthropic
 from langchain.tools import tool
 from langchain.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
@@ -207,7 +207,7 @@ def has_tool_calls(llm_response: AIMessage) -> bool:
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `MessagesState` with `Annotated[list, operator.add]` | Explicit accumulator nodes |
 | `should_continue` returns node name or END | `@branch(when_true=..., when_false=END)` |

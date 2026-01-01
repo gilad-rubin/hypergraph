@@ -32,7 +32,7 @@ flowchart TD
 ## Implementation
 
 ```python
-from hypernodes import node, Graph, Runner
+from hypergraph import node, Graph, Runner
 
 
 # --- Inner Graph (Subgraph) ---
@@ -268,7 +268,7 @@ parent = Graph(
 Common pattern for multi-agent systems — each agent is a subgraph:
 
 ```python
-from hypernodes import node, route, Graph, AsyncRunner
+from hypergraph import node, route, Graph, AsyncRunner
 
 # --- Agent 1: Researcher ---
 
@@ -336,7 +336,7 @@ async def main():
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `subgraph_builder.compile()` then `add_node("name", subgraph)` | `subgraph.as_node()` |
 | Wrapper function to transform state | `.with_inputs()` / `.with_outputs()` |

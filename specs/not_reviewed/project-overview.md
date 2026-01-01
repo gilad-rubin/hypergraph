@@ -1,4 +1,4 @@
-# HyperNodes Project Overview
+# hypergraph Project Overview
 
 **Generated:** 2025-12-22  
 **Version:** 0.4.8  
@@ -8,12 +8,12 @@
 
 ## Project Summary
 
-**HyperNodes** is a hierarchical, modular pipeline system for ML/AI workflows. It enables developers to build cache-first data pipelines from decorated Python functions with automatic dependency resolution, intelligent caching, and pluggable execution engines.
+**hypergraph** is a hierarchical, modular pipeline system for ML/AI workflows. It enables developers to build cache-first data pipelines from decorated Python functions with automatic dependency resolution, intelligent caching, and pluggable execution engines.
 
 **Repository Type:** Monolith (single cohesive codebase)  
 **Primary Language:** Python 3.10+  
 **License:** MIT  
-**Homepage:** https://github.com/gilad-rubin/hypernodes
+**Homepage:** https://github.com/gilad-rubin/hypergraph
 
 ---
 
@@ -32,7 +32,7 @@
 
 ### Entry Points
 
-- **Main Package:** `src/hypernodes/__init__.py`
+- **Main Package:** `src/hypergraph/__init__.py`
 - **Public API:** Pipeline, node, branch, SeqEngine, DiskCache
 - **CLI:** None (library-only)
 
@@ -59,8 +59,8 @@ Storage (DiskCache) + Observability (Callbacks)
 **Structure:** Monolith (single cohesive library)
 
 ```
-hypernodes/
-├── src/hypernodes/       # Main package (64 Python files)
+hypergraph/
+├── src/hypergraph/       # Main package (64 Python files)
 │   ├── Core modules      # pipeline, node, cache, engines
 │   ├── integrations/     # Daft, Dask execution backends
 │   ├── viz/              # Visualization system
@@ -74,7 +74,7 @@ hypernodes/
 ```
 
 **Key Directories:**
-- **Core Library:** `src/hypernodes/` - Zero-dependency pipeline system
+- **Core Library:** `src/hypergraph/` - Zero-dependency pipeline system
 - **Integrations:** `integrations/` - Optional Daft and Dask engines
 - **Visualization:** `viz/` - Graphviz + React Flow renderers
 - **Tests:** `tests/` - Comprehensive pytest suite
@@ -163,22 +163,22 @@ def is_valid(data: dict) -> bool:
 ### For Users
 
 ```bash
-pip install hypernodes
+pip install hypergraph
 # or
-uv add hypernodes
+uv add hypergraph
 ```
 
 ### Optional Features
 
 ```bash
 # All features
-uv add hypernodes[all]
+uv add hypergraph[all]
 
 # Specific features
-uv add hypernodes[daft]        # Distributed execution
-uv add hypernodes[viz]         # Visualization
-uv add hypernodes[telemetry]   # Tracing and progress
-uv add hypernodes[notebook]    # Jupyter support
+uv add hypergraph[daft]        # Distributed execution
+uv add hypergraph[viz]         # Visualization
+uv add hypergraph[telemetry]   # Tracing and progress
+uv add hypergraph[notebook]    # Jupyter support
 ```
 
 ---
@@ -186,7 +186,7 @@ uv add hypernodes[notebook]    # Jupyter support
 ## Quick Start
 
 ```python
-from hypernodes import Pipeline, node, SeqEngine, DiskCache
+from hypergraph import Pipeline, node, SeqEngine, DiskCache
 
 # Define nodes
 @node(output_name="cleaned")
@@ -251,7 +251,7 @@ Located in `guides/`:
 
 - `graph_design_philosophy.md` - Design principles
 - `graph_implementation_guide.md` - Implementation details
-- `HyperNodes Pipeline System Specification/` - Complete specification
+- `hypergraph Pipeline System Specification/` - Complete specification
 
 ### Examples
 
@@ -290,7 +290,7 @@ uv run pytest tests/test_daft_*.py
 # Build distribution
 uv build
 
-# Output: dist/hypernodes-0.4.8-py3-none-any.whl
+# Output: dist/hypergraph-0.4.8-py3-none-any.whl
 ```
 
 ### Test Coverage
@@ -382,8 +382,8 @@ Implement `VisualizationEngine` protocol for custom renderers.
 
 ## Community & Support
 
-**GitHub:** https://github.com/gilad-rubin/hypernodes  
-**Issues:** https://github.com/gilad-rubin/hypernodes/issues  
+**GitHub:** https://github.com/gilad-rubin/hypergraph  
+**Issues:** https://github.com/gilad-rubin/hypergraph/issues  
 **License:** MIT  
 **Author:** Gilad Rubin (me@giladrubin.com)
 
@@ -396,7 +396,7 @@ Implement `VisualizationEngine` protocol for custom renderers.
 ## Project Metrics
 
 **Source Code:**
-- 64 Python files in `src/hypernodes/`
+- 64 Python files in `src/hypergraph/`
 - 94 test files
 - ~10,000+ lines of code
 
@@ -411,7 +411,7 @@ Implement `VisualizationEngine` protocol for custom renderers.
 - Playwright browser tests for visualization
 
 **Distribution:**
-- PyPI package (`pip install hypernodes`)
+- PyPI package (`pip install hypergraph`)
 - Wheel and source distributions
 - Python 3.10+ support
 

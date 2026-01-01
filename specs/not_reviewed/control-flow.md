@@ -2,7 +2,7 @@
 
 ## Overview
 
-Control flow in Hypernodes is managed through **gates** - special nodes that decide which downstream nodes execute. There are two gate types:
+Control flow in hypergraph is managed through **gates** - special nodes that decide which downstream nodes execute. There are two gate types:
 
 - `@route` - Multi-way routing (returns target node name)
 - `@branch` - Binary routing (returns bool, maps to true/false targets)
@@ -12,7 +12,7 @@ Control flow in Hypernodes is managed through **gates** - special nodes that dec
 `END` is a special sentinel value that explicitly terminates cycles.
 
 ```python
-from hypernodes import END
+from hypergraph import END
 
 @route(targets=["process", "validate", END])
 def decide_next(result: str) -> str:

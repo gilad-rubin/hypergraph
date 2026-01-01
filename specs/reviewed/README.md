@@ -1,6 +1,6 @@
-# HyperNodes Specification
+# hypergraph Specification
 
-Design specifications for HyperNodes - a graph-based workflow framework.
+Design specifications for hypergraph - a graph-based workflow framework.
 
 ---
 

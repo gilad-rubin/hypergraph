@@ -7,8 +7,8 @@
 ## Quick Example
 
 ```python
-from hypernodes import Graph, AsyncRunner
-from hypernodes.persistence import SQLiteCheckpointer
+from hypergraph import Graph, AsyncRunner
+from hypergraph.persistence import SQLiteCheckpointer
 
 # Create graph with durable execution
 graph = Graph(nodes=[fetch, process, generate])
@@ -66,9 +66,9 @@ This design is informed by production-proven patterns from:
 
 ### Workflows and Steps
 
-HyperNodes borrows proven concepts from [Temporal](https://temporal.io), [DBOS](https://dbos.dev), and [Inngest](https://inngest.com):
+hypergraph borrows proven concepts from [Temporal](https://temporal.io), [DBOS](https://dbos.dev), and [Inngest](https://inngest.com):
 
-| Concept | HyperNodes | Temporal | DBOS | Inngest |
+| Concept | hypergraph | Temporal | DBOS | Inngest |
 |---------|------------|----------|------|---------|
 | **Durable identity** | `workflow_id` | `workflow_id` | `workflow_uuid` | `function_id` |
 | **Single execution** | `run_id` | `run_id` | `workflow_id` | `run_id` |
@@ -96,7 +96,7 @@ workflow_id: "order-12345"
     └── step: notify:4          ✓ completed
 ```
 
-**On resume, HyperNodes replays from the beginning** but uses cached results for completed steps. This matches [Temporal's replay model](https://docs.temporal.io/encyclopedia/event-history) and [DBOS's recovery mechanism](https://docs.dbos.dev/architecture).
+**On resume, hypergraph replays from the beginning** but uses cached results for completed steps. This matches [Temporal's replay model](https://docs.temporal.io/encyclopedia/event-history) and [DBOS's recovery mechanism](https://docs.dbos.dev/architecture).
 
 ---
 
@@ -151,7 +151,7 @@ The `workflow_id` scopes the cache — run_002 can find run_001's cached results
 
 ## Exactly-Once Semantics
 
-HyperNodes provides **exactly-once step completion** through atomic checkpointing:
+hypergraph provides **exactly-once step completion** through atomic checkpointing:
 
 ### How It Works
 
@@ -262,7 +262,7 @@ This matches [Inngest's recommendation](https://www.inngest.com/docs/reference/f
 
 ### Supported Types
 
-HyperNodes uses JSON-compatible serialization by default, with msgpack for efficiency:
+hypergraph uses JSON-compatible serialization by default, with msgpack for efficiency:
 
 | Type | Support |
 |------|---------|
@@ -318,7 +318,7 @@ This is [Temporal's recommended pattern](https://community.temporal.io/t/best-pr
 Register custom codecs for unsupported types:
 
 ```python
-from hypernodes.persistence import Serializer
+from hypergraph.persistence import Serializer
 
 serializer = Serializer()
 
@@ -339,7 +339,7 @@ runner = AsyncRunner(
 
 ## Versioning and Code Changes
 
-Workflow code must be **deterministic** — but code evolves. HyperNodes supports safe code changes through versioning.
+Workflow code must be **deterministic** — but code evolves. hypergraph supports safe code changes through versioning.
 
 ### Safe Changes (No Action Needed)
 
@@ -506,7 +506,7 @@ If a user watches streaming output and the app crashes, they expect to continue 
 | **`on_complete`** | Only persist when stream finishes | Fastest, but lose all on crash |
 
 ```python
-from hypernodes.persistence import StreamPersistenceMode
+from hypergraph.persistence import StreamPersistenceMode
 
 runner = AsyncRunner(
     checkpointer=SQLiteCheckpointer("./db.sqlite"),

@@ -1,7 +1,7 @@
 # Graph Execution Design Philosophy
 
 > **Status**: Design Document  
-> **Author**: Hypernodes Team  
+> **Author**: hypergraph Team  
 > **Date**: December 2025  
 > **Type**: Philosophy & High-Level Design
 
@@ -30,7 +30,7 @@
 
 ### The Limitation of Static DAGs
 
-Hypernodes' `Pipeline` is built on Directed Acyclic Graphs (DAGs). This works beautifully for:
+hypergraph' `Pipeline` is built on Directed Acyclic Graphs (DAGs). This works beautifully for:
 
 - Data processing pipelines
 - ETL workflows  
@@ -117,7 +117,7 @@ Most frameworks require manual edge definitions, duplicating information already
 
 ### Summary
 
-| Aspect | State Object Frameworks | Hypernodes Graph |
+| Aspect | State Object Frameworks | hypergraph Graph |
 |--------|------------------------|------------------|
 | State coupling | Functions read/write state | Pure input → output |
 | Single responsibility | Read + Do + Write | Just transform |

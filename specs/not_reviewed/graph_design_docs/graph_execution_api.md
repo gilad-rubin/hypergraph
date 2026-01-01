@@ -1,12 +1,12 @@
-# Hypernodes Graph Execution API
+# hypergraph Graph Execution API
 
-This document describes the execution API for Hypernodes, a reactive dataflow graph framework. It covers how to run graphs, handle human-in-the-loop interactions, and manage long-running workflows.
+This document describes the execution API for hypergraph, a reactive dataflow graph framework. It covers how to run graphs, handle human-in-the-loop interactions, and manage long-running workflows.
 
 ---
 
 ## Part 1: Human-in-the-Loop Interactions
 
-Hypernodes supports **interrupts** - pause points where the graph surfaces a value to the user and waits for a response before continuing. This enables human-in-the-loop workflows like approvals, edits, topic selection, and multi-turn conversations.
+hypergraph supports **interrupts** - pause points where the graph surfaces a value to the user and waits for a response before continuing. This enables human-in-the-loop workflows like approvals, edits, topic selection, and multi-turn conversations.
 
 ### Design Philosophy
 
@@ -119,7 +119,7 @@ class TopicResponse(BaseModel):
 ### Creating Interrupt Points in a Graph
 
 ```python
-from hypernodes import node, Graph, InterruptNode
+from hypergraph import node, Graph, InterruptNode
 
 # Step 1: Create a node that produces the prompt
 @node(output_name="approval_prompt")
@@ -141,7 +141,7 @@ approval_interrupt = InterruptNode(
 # Gates are preferred over inline conditionals for control flow (see graph_implementation_guide.md)
 
 from typing import Literal
-from hypernodes import gate, END
+from hypergraph import gate, END
 
 # String-based targets with optional descriptions (tuple format)
 ApprovalRoute = Literal[
@@ -191,7 +191,7 @@ Instead of using `match` statements to dispatch on interrupt types, register han
 Handlers are validated at registration time - if you register a handler for an interrupt that doesn't exist in the graph, you get an immediate error.
 
 ```python
-from hypernodes import GraphRunner
+from hypergraph import GraphRunner
 
 runner = GraphRunner(graph)
 
@@ -294,7 +294,7 @@ class GraphRunner:
 For simpler cases or when you want more explicit control:
 
 ```python
-from hypernodes import Graph, GraphResult
+from hypergraph import Graph, GraphResult
 
 # Define handlers as a dictionary
 handlers: dict[str, Callable] = {
@@ -688,7 +688,7 @@ class Graph:
 ### Basic Usage
 
 ```python
-from hypernodes import Graph
+from hypergraph import Graph
 
 # Simple run - no interrupts expected
 result = await graph.run(
@@ -962,7 +962,7 @@ Here's a full example: a content generation workflow with topic selection and ap
 
 ```python
 from dataclasses import dataclass
-from hypernodes import node, branch, Graph, InterruptNode
+from hypergraph import node, branch, Graph, InterruptNode
 
 # ============ Types ============
 
@@ -1071,7 +1071,7 @@ content_graph = Graph(
 ### Run with Handler Registration
 
 ```python
-from hypernodes import GraphRunner
+from hypergraph import GraphRunner
 
 runner = GraphRunner(content_graph)
 
@@ -1380,7 +1380,7 @@ async def handle_approval_cli(prompt: ApprovalPrompt) -> ApprovalDecision:
 
 ## Part 6: Three-Layer Architecture (UI, Observability, Durability)
 
-Hypernodes is designed to support three complementary but distinct layers without coupling to specific implementations:
+hypergraph is designed to support three complementary but distinct layers without coupling to specific implementations:
 
 | Layer | Purpose | Key Identifiers | Example Systems |
 |-------|---------|-----------------|-----------------|
@@ -1390,7 +1390,7 @@ Hypernodes is designed to support three complementary but distinct layers withou
 
 ### Unified Identity Model
 
-All three layers need stable correlation identifiers. Hypernodes provides a unified model:
+All three layers need stable correlation identifiers. hypergraph provides a unified model:
 
 ```python
 @dataclass(frozen=True)
@@ -1428,7 +1428,7 @@ class NodeIdentity:
 
 ### Event System
 
-Hypernodes emits a unified event stream that all three layers can consume:
+hypergraph emits a unified event stream that all three layers can consume:
 
 ```python
 from typing import Literal, Any
@@ -1695,7 +1695,7 @@ class GraphCallback(ABC):
 
 ### Layer-Specific Adapters
 
-Each layer has an adapter that translates Hypernodes events:
+Each layer has an adapter that translates hypergraph events:
 
 #### 1. AG-UI Adapter (UI Protocol Layer)
 
@@ -1704,7 +1704,7 @@ from typing import Callable, Any
 import json
 
 class AGUIAdapter(GraphCallback):
-    """Translates Hypernodes events to AG-UI protocol events.
+    """Translates hypergraph events to AG-UI protocol events.
     
     AG-UI is a protocol for streaming agent interactions to frontends.
     See: https://docs.ag-ui.com/
@@ -1792,7 +1792,7 @@ class AGUIAdapter(GraphCallback):
 
 ```python
 class LangfuseAdapter(GraphCallback):
-    """Translates Hypernodes events to Langfuse traces/spans.
+    """Translates hypergraph events to Langfuse traces/spans.
     
     Langfuse provides observability for LLM applications.
     See: https://langfuse.com/docs
@@ -1981,7 +1981,7 @@ class Checkpoint:
 ### Wiring It All Together
 
 ```python
-from hypernodes import Graph, node
+from hypergraph import Graph, node
 
 # Define your graph
 @node(output_name="response")
@@ -2018,7 +2018,7 @@ result = await runner.run(
 
 ### ID Mapping Reference
 
-| Hypernodes | AG-UI | Langfuse | Temporal | DBOS |
+| hypergraph | AG-UI | Langfuse | Temporal | DBOS |
 |------------|-------|----------|----------|------|
 | `thread_id` | `threadId` | `sessionId` | `workflowId` | — |
 | `run_id` | `runId` | `traceId` | `runId` | `workflowId` |
@@ -2065,7 +2065,7 @@ async def process_order(order_id: str):
 ```python
 from temporalio import workflow, activity
 
-# Hypernodes graph runs as a Temporal activity
+# hypergraph graph runs as a Temporal activity
 @activity.defn
 async def run_graph_activity(inputs: dict, thread_id: str) -> dict:
     result = await runner.run(
@@ -2084,7 +2084,7 @@ class OrderWorkflow:
     @workflow.run
     async def run(self, order_id: str) -> dict:
         # Temporal handles durability/replay
-        # Hypernodes handles graph execution
+        # hypergraph handles graph execution
         return await workflow.execute_activity(
             run_graph_activity,
             args=[{"order_id": order_id}, f"order-{order_id}"],

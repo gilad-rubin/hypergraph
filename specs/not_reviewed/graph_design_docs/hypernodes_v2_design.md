@@ -1,6 +1,6 @@
-# HyperNodes V2 — Complete System Design
+# hypergraph V2 — Complete System Design
 
-This document captures the comprehensive design for HyperNodes V2, a reactive dataflow graph framework for building AI/ML workflows with support for cycles, human-in-the-loop interactions, and durable execution.
+This document captures the comprehensive design for hypergraph V2, a reactive dataflow graph framework for building AI/ML workflows with support for cycles, human-in-the-loop interactions, and durable execution.
 
 ---
 
@@ -24,7 +24,7 @@ This document captures the comprehensive design for HyperNodes V2, a reactive da
 
 ### Reactive Dataflow, Not State Objects
 
-HyperNodes uses **implicit edge construction** from function signatures. Data flows through named parameters — no explicit state objects or routers.
+hypergraph uses **implicit edge construction** from function signatures. Data flows through named parameters — no explicit state objects or routers.
 
 ```python
 # Edges are inferred: embed produces "embedding", retrieve consumes it
@@ -56,7 +56,7 @@ Every value has a name, every edge is traceable.
 Regular computation nodes using the `@node` decorator:
 
 ```python
-from hypernodes import node
+from hypergraph import node
 
 @node(output_name="answer")
 def generate(query: str, context: str, llm: Any) -> str:
@@ -73,7 +73,7 @@ def statistics(data: list[float]) -> tuple[float, float]:
 For simple true/false decisions with **string-based targets**:
 
 ```python
-from hypernodes import branch
+from hypergraph import branch
 
 @branch(when_true="process_valid", when_false="handle_error")
 def is_valid(data: dict) -> bool:
@@ -90,7 +90,7 @@ For multi-way routing using `Literal` types:
 
 ```python
 from typing import Literal
-from hypernodes import gate, END
+from hypergraph import gate, END
 
 # Simple targets
 AgentAction = Literal["research", "retrieve", "respond", END]
@@ -119,7 +119,7 @@ AgentAction = Literal[
 Declares a pause point where the graph surfaces a value and waits for user input:
 
 ```python
-from hypernodes import InterruptNode
+from hypergraph import InterruptNode
 
 approval_interrupt = InterruptNode(
     name="approval",                  # Interrupt identifier (for handlers, events)
@@ -164,7 +164,7 @@ class ApprovalResponse:
 ### Building a Graph
 
 ```python
-from hypernodes import Graph, node, InterruptNode, branch
+from hypergraph import Graph, node, InterruptNode, branch
 
 @node(output_name="draft")
 def generate_draft(topic: str) -> str: ...
@@ -564,11 +564,11 @@ async for event in run:
 
 #### Pattern 3: AG-UI Protocol Integration
 
-AG-UI is a **protocol**, not a callback. You translate HyperNodes events to AG-UI events:
+AG-UI is a **protocol**, not a callback. You translate hypergraph events to AG-UI events:
 
 ```python
 async def stream_to_agui(graph, inputs, thread_id: str):
-    """Translate HyperNodes events → AG-UI protocol."""
+    """Translate hypergraph events → AG-UI protocol."""
     async with graph.iter(inputs=inputs) as run:
         async for event in run:
             match event:
@@ -610,7 +610,7 @@ async def stream_to_agui(graph, inputs, thread_id: str):
                     }
 ```
 
-**The translation is app-owned** — HyperNodes provides events, the app decides the protocol mapping.
+**The translation is app-owned** — hypergraph provides events, the app decides the protocol mapping.
 
 ---
 
@@ -726,7 +726,7 @@ result = graph.run(
 
 ### Mapping to External Systems
 
-| HyperNodes | AG-UI | Langfuse | Temporal | DBOS |
+| hypergraph | AG-UI | Langfuse | Temporal | DBOS |
 |------------|-------|----------|----------|------|
 | `session_id` | `threadId` | `sessionId` | `workflowId` | — |
 | `run_id` | `runId` | `traceId` | `runId` | `workflowId` |
@@ -791,7 +791,7 @@ Both Temporal and DBOS solve this by treating parallel operations as a single lo
 | **Temporal** | Activities in parallel share same event batch | Event IDs within batch unordered |
 | **DBOS** | Queue.enqueue → get_result pattern | Handles track individual items, workflow sees batch |
 
-**HyperNodes approach:**
+**hypergraph approach:**
 
 ```python
 @dataclass
@@ -974,7 +974,7 @@ If interrupt DURING parallel (one done, one pending):
 
 ## Three-Layer Architecture
 
-HyperNodes supports three complementary layers without coupling to specific implementations:
+hypergraph supports three complementary layers without coupling to specific implementations:
 
 | Layer | Purpose | Key Identifiers | Implementation |
 |-------|---------|-----------------|----------------|
@@ -986,7 +986,7 @@ HyperNodes supports three complementary layers without coupling to specific impl
 
 ### Adapters
 
-Each layer gets an adapter that translates HyperNodes events:
+Each layer gets an adapter that translates hypergraph events:
 
 ```python
 graph = Graph(
@@ -1034,7 +1034,7 @@ class Checkpointer(Protocol):
 **Built-in implementations:**
 
 ```python
-from hypernodes.persistence import (
+from hypergraph.persistence import (
     MemoryCheckpointer,    # In-memory (dev/testing)
     FileCheckpointer,      # JSON files (simple, portable)
     SQLiteCheckpointer,    # SQLite (lightweight, single-file)
@@ -1195,7 +1195,7 @@ Engines determine **how** nodes execute (sequential, parallel, distributed). Ort
 The default engine handles all three execution methods:
 
 ```python
-from hypernodes import Graph, GraphEngine
+from hypergraph import Graph, GraphEngine
 
 # GraphEngine is the default — no need to specify
 graph = Graph(nodes=[embed, retrieve, generate])
@@ -1232,7 +1232,7 @@ graph = Graph(nodes=[...], engine=engine)
 
 ```python
 # Distributed engine for large-scale batch
-from hypernodes.engines import DaftEngine
+from hypergraph.engines import DaftEngine
 
 graph = Graph(nodes=[...], engine=DaftEngine())
 results = graph.map(inputs={"x": large_dataset}, map_over="x")
@@ -1253,7 +1253,7 @@ results = graph.map(inputs={"x": large_dataset}, map_over="x")
 ### Cache Scope
 
 ```python
-from hypernodes import Graph, DiskCache
+from hypergraph import Graph, DiskCache
 
 graph = Graph(
     nodes=[...],

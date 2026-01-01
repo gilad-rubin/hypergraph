@@ -1,7 +1,7 @@
-# HyperNodes Project Documentation Index
+# hypergraph Project Documentation Index
 
 **Generated:** 2025-12-22  
-**Project:** hypernodes v0.4.8  
+**Project:** hypergraph v0.4.8  
 **Type:** Python Library (Monolith)  
 **Scan Level:** Quick Scan (pattern-based)
 
@@ -9,7 +9,7 @@
 
 ## 👋 Welcome
 
-This is the **primary AI retrieval source** for the HyperNodes project. All documentation generated during the brownfield project scan is indexed here for easy reference during AI-assisted development.
+This is the **primary AI retrieval source** for the hypergraph project. All documentation generated during the brownfield project scan is indexed here for easy reference during AI-assisted development.
 
 **Purpose:** Use this index when creating PRDs, planning features, or understanding the existing codebase.
 
@@ -58,7 +58,7 @@ Cache (DiskCache) + Callbacks (Progress, Tracing)
 
 ### Entry Point
 
-**Main Package:** `src/hypernodes/__init__.py`
+**Main Package:** `src/hypergraph/__init__.py`
 
 **Public API:**
 - `Pipeline` - Main pipeline class
@@ -152,7 +152,7 @@ The project has extensive pre-existing documentation:
 - `guides/graph_edge_cases.md` - Edge cases and handling
 
 **Specification:**
-- `guides/HyperNodes Pipeline System Specification.../` - Complete specification with subsections:
+- `guides/hypergraph Pipeline System Specification.../` - Complete specification with subsections:
   - Core Concepts
   - Caching
   - Backends
@@ -179,7 +179,7 @@ The project has extensive pre-existing documentation:
 ### Test Documentation
 
 - `tests/README.md` - Testing documentation
-- `src/hypernodes/integrations/dask/README.md` - Dask integration docs
+- `src/hypergraph/integrations/dask/README.md` - Dask integration docs
 
 ### Changelog
 
@@ -229,8 +229,8 @@ The project has extensive pre-existing documentation:
 **Nodes** wrap Python functions with pipeline metadata. Created using the `@node` decorator.
 
 **Key files:**
-- `src/hypernodes/node.py` - Node implementation
-- `src/hypernodes/decorators.py` - Decorator utilities
+- `src/hypergraph/node.py` - Node implementation
+- `src/hypergraph/decorators.py` - Decorator utilities
 - `docs/core/nodes.mdx` - User documentation
 
 ### 2. Pipeline DAG
@@ -238,8 +238,8 @@ The project has extensive pre-existing documentation:
 **Pipelines** orchestrate DAGs of nodes with automatic dependency resolution.
 
 **Key files:**
-- `src/hypernodes/pipeline.py` - Pipeline class
-- `src/hypernodes/graph_builder.py` - DAG construction
+- `src/hypergraph/pipeline.py` - Pipeline class
+- `src/hypergraph/graph_builder.py` - DAG construction
 - `docs/core/pipelines.mdx` - User documentation
 
 ### 3. Caching System
@@ -247,18 +247,18 @@ The project has extensive pre-existing documentation:
 **Content-addressable cache** using deterministic signatures (code + inputs + dependencies).
 
 **Key files:**
-- `src/hypernodes/cache.py` - Cache implementation
+- `src/hypergraph/cache.py` - Cache implementation
 - `docs/core/caching.mdx` - User documentation
-- `guides/HyperNodes Pipeline System Specification.../Caching.md` - Design spec
+- `guides/hypergraph Pipeline System Specification.../Caching.md` - Design spec
 
 ### 4. Execution Engines
 
 **Pluggable execution strategies** - Sequential, Daft (distributed), Dask (parallel).
 
 **Key files:**
-- `src/hypernodes/sequential_engine.py` - Default engine
-- `src/hypernodes/integrations/daft/engine.py` - Distributed engine
-- `src/hypernodes/integrations/dask/engine.py` - Parallel engine
+- `src/hypergraph/sequential_engine.py` - Default engine
+- `src/hypergraph/integrations/daft/engine.py` - Distributed engine
+- `src/hypergraph/integrations/dask/engine.py` - Parallel engine
 - `docs/engines/` - User documentation
 
 ### 5. Composition Patterns
@@ -266,9 +266,9 @@ The project has extensive pre-existing documentation:
 **Hierarchical composition** - Pipelines as nodes, branch nodes for conditionals.
 
 **Key files:**
-- `src/hypernodes/branch.py` - Branch nodes
-- `src/hypernodes/dual_node.py` - Dual nodes
-- `src/hypernodes/pipeline_node.py` - Nested pipelines
+- `src/hypergraph/branch.py` - Branch nodes
+- `src/hypergraph/dual_node.py` - Dual nodes
+- `src/hypergraph/pipeline_node.py` - Nested pipelines
 - `docs/composition/` - User documentation
 
 ### 6. Visualization System
@@ -276,7 +276,7 @@ The project has extensive pre-existing documentation:
 **Dual-mode visualization** - Static (Graphviz) and interactive (React Flow).
 
 **Key files:**
-- `src/hypernodes/viz/` - Visualization system
+- `src/hypergraph/viz/` - Visualization system
   - `ui_handler.py` - State management
   - `graph_walker.py` - Graph traversal
   - `graphviz/renderer.py` - Static SVG
@@ -289,16 +289,16 @@ The project has extensive pre-existing documentation:
 **Progress tracking and tracing** with tqdm, rich, and Logfire.
 
 **Key files:**
-- `src/hypernodes/telemetry/progress.py` - Progress bars
-- `src/hypernodes/telemetry/tracing.py` - Distributed tracing
-- `src/hypernodes/callbacks.py` - Callback protocol
+- `src/hypergraph/telemetry/progress.py` - Progress bars
+- `src/hypergraph/telemetry/tracing.py` - Distributed tracing
+- `src/hypergraph/callbacks.py` - Callback protocol
 - `docs/observability/` - User documentation
 
 ---
 
 ## Module Organization
 
-### Core Modules (`src/hypernodes/`)
+### Core Modules (`src/hypergraph/`)
 
 **DAG & Execution:**
 - `pipeline.py` - Pipeline class (DAG definition)
@@ -422,7 +422,7 @@ The project has extensive pre-existing documentation:
 ### Creating a Basic Pipeline
 
 ```python
-from hypernodes import Pipeline, node, SeqEngine, DiskCache
+from hypergraph import Pipeline, node, SeqEngine, DiskCache
 
 @node(output_name="result")
 def process(x: int) -> int:
@@ -453,7 +453,7 @@ outer = Pipeline(nodes=[inner.as_node(), analyze])
 ### Adding Conditional Logic
 
 ```python
-from hypernodes import branch
+from hypergraph import branch
 
 @branch(when_true=process_valid, when_false=handle_error)
 def is_valid(data: dict) -> bool:
@@ -483,8 +483,8 @@ This documentation was generated using a **Quick Scan** (pattern-based analysis 
 ### Finding Specific Information
 
 **API details:** Check `docs/core/` and `docs/composition/`  
-**Engine specifics:** Check `docs/engines/` and `src/hypernodes/integrations/`  
-**Visualization:** Check `docs/observability/visualization.mdx` and `src/hypernodes/viz/`  
+**Engine specifics:** Check `docs/engines/` and `src/hypergraph/integrations/`  
+**Visualization:** Check `docs/observability/visualization.mdx` and `src/hypergraph/viz/`  
 **Design decisions:** Check `guides/graph_design_philosophy.md`
 
 ---
@@ -520,7 +520,7 @@ This documentation was generated using a **Quick Scan** (pattern-based analysis 
 **Version:** 0.4.8  
 **Status:** Alpha (Development Status :: 3 - Alpha)  
 **License:** MIT  
-**Homepage:** https://github.com/gilad-rubin/hypernodes
+**Homepage:** https://github.com/gilad-rubin/hypergraph
 
 **Metrics:**
 - **Source Files:** 64 Python modules
@@ -549,5 +549,5 @@ This documentation was generated using a **Quick Scan** (pattern-based analysis 
 ---
 
 **Last Updated:** 2025-12-22  
-**For AI:** Use this index as the primary entry point for understanding the HyperNodes codebase. All paths are relative to the project root.
+**For AI:** Use this index as the primary entry point for understanding the hypergraph codebase. All paths are relative to the project root.
 

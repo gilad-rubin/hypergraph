@@ -1,6 +1,6 @@
-# HyperNodes v0.5 - Specifications
+# hypergraph v0.5 - Specifications
 
-**Complete technical specification for implementing HyperNodes v0.5: a graph-native execution system supporting cycles, multi-turn interactions, and complex control flow.**
+**Complete technical specification for implementing hypergraph v0.5: a graph-native execution system supporting cycles, multi-turn interactions, and complex control flow.**
 
 ---
 
@@ -23,7 +23,7 @@
 ### 📖 Foundation
 
 **[Overview](overview.md)** - The journey from DAGs to reactive graphs
-- Why HyperNodes v0.5 exists
+- Why hypergraph v0.5 exists
 - Key differentiators from LangGraph/Pydantic-Graph
 - What this enables
 - Implementation priorities
@@ -158,7 +158,7 @@ api/observability.md              # EventProcessor, events, integrations
 api/decorators.md                 # @node, @route, @branch, InterruptNode
 api/node-configuration.md         # Node configuration and builder pattern
 ```
-*For getting oriented: what can I do with HyperNodes?*
+*For getting oriented: what can I do with hypergraph?*
 
 ### 🎯 I'm building a specific feature
 
@@ -228,7 +228,7 @@ overview.md (The Journey section)
 design-principles.md (complete)
 architecture/execution-model.md (concepts)
 ```
-*Why HyperNodes exists, what makes it different.*
+*Why hypergraph exists, what makes it different.*
 
 ### ✅ I'm writing tests
 ```

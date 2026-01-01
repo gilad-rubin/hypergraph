@@ -18,7 +18,7 @@ Generate content → [PAUSE: Show to human] → Human approves → Publish
 ## Graph Definition
 
 ```python
-from hypernodes import Graph, node, route, END, InterruptNode, AsyncRunner
+from hypergraph import Graph, node, route, END, InterruptNode, AsyncRunner
 
 @node(outputs="content")
 def generate_content(prompt: str, revision_notes: str | None = None) -> str:

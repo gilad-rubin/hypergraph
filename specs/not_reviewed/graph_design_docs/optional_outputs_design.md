@@ -1,7 +1,7 @@
 # Optional Inputs, Default Values, and Bound Values
 
 > **Status**: Design Document
-> **Author**: Hypernodes Team
+> **Author**: hypergraph Team
 > **Date**: December 2025
 > **Type**: Core Semantics
 
@@ -23,7 +23,7 @@
 
 ## Overview
 
-HyperNodes supports multiple ways to provide values to node inputs:
+hypergraph supports multiple ways to provide values to node inputs:
 
 1. **Function defaults** — Default values in the Python function signature
 2. **Bound values** — Values set via `.bind()` on a Graph/Pipeline

@@ -14,31 +14,31 @@ Principles:
 ## Error Hierarchy
 
 ```python
-class HyperNodesError(Exception):
-    """Base class for all Hypernodes errors."""
+class hypergraphError(Exception):
+    """Base class for all hypergraph errors."""
 
-class GraphConfigError(HyperNodesError):
+class GraphConfigError(hypergraphError):
     """Build-time validation failure."""
 
-class ConflictError(HyperNodesError):
+class ConflictError(hypergraphError):
     """Two nodes produce same output simultaneously."""
 
-class MissingInputError(HyperNodesError):
+class MissingInputError(hypergraphError):
     """Required input not provided."""
 
-class InvalidRouteError(HyperNodesError):
+class InvalidRouteError(hypergraphError):
     """Route returned invalid target."""
 
-class InfiniteLoopError(HyperNodesError):
+class InfiniteLoopError(hypergraphError):
     """Cycle exceeded max iterations."""
 
-class DeadlockError(HyperNodesError):
+class DeadlockError(hypergraphError):
     """Cycle cannot start - no node is ready."""
 
-class IncompatibleRunnerError(HyperNodesError):
+class IncompatibleRunnerError(hypergraphError):
     """Runner doesn't support graph features."""
 
-class CheckpointError(HyperNodesError):
+class CheckpointError(hypergraphError):
     """Checkpoint serialization/restore failed."""
 ```
 

@@ -2,7 +2,7 @@
 
 **Events are the primitive. Processors consume them.**
 
-HyperNodes uses a unified event stream for all observability. The core execution engine emits events; pluggable processors handle logging, tracing, and integration with external tools.
+hypergraph uses a unified event stream for all observability. The core execution engine emits events; pluggable processors handle logging, tracing, and integration with external tools.
 
 ---
 
@@ -305,7 +305,7 @@ class MyProcessor(TypedEventProcessor):
 ### Per-Runner (Recommended)
 
 ```python
-from hypernodes import AsyncRunner, SyncRunner
+from hypergraph import AsyncRunner, SyncRunner
 
 # Processors receive events from all runs on this runner
 runner = AsyncRunner(
@@ -466,7 +466,7 @@ import logging
 
 class LoggingProcessor(TypedEventProcessor):
     def __init__(self, logger: logging.Logger | None = None):
-        self.logger = logger or logging.getLogger("hypernodes")
+        self.logger = logger or logging.getLogger("hypergraph")
 
     def on_node_start(self, event: NodeStartEvent) -> None:
         self.logger.info(f"Starting {event.node_name}")
@@ -540,7 +540,7 @@ class OpenTelemetryProcessor(EventProcessor):
     """Export events to any OpenTelemetry-compatible backend."""
 
     def __init__(self):
-        self.tracer = trace.get_tracer("hypernodes")
+        self.tracer = trace.get_tracer("hypergraph")
         self.spans: dict[str, trace.Span] = {}
 
     def on_event(self, event: Event) -> None:
@@ -556,15 +556,15 @@ class OpenTelemetryProcessor(EventProcessor):
                     context=context,
                     kind=SpanKind.INTERNAL,
                 )
-                span.set_attribute("hypernodes.span_id", sid)
-                span.set_attribute("hypernodes.run_id", event.run_id)
+                span.set_attribute("hypergraph.span_id", sid)
+                span.set_attribute("hypergraph.run_id", event.run_id)
                 self.spans[sid] = span
 
             case NodeEndEvent(span_id=sid, duration_ms=ms, cached=cached):
                 if sid in self.spans:
                     span = self.spans[sid]
-                    span.set_attribute("hypernodes.cached", cached)
-                    span.set_attribute("hypernodes.duration_ms", ms)
+                    span.set_attribute("hypergraph.cached", cached)
+                    span.set_attribute("hypergraph.duration_ms", ms)
                     span.end()
                     del self.spans[sid]
 

@@ -1,12 +1,12 @@
 # State Model
 
-**In HyperNodes, there is no separate "state" to define. Your node outputs are the state.**
+**In hypergraph, there is no separate "state" to define. Your node outputs are the state.**
 
 ---
 
 ## The Question
 
-> "Where do I define state in HyperNodes?"
+> "Where do I define state in hypergraph?"
 
 If you're coming from LangGraph or similar frameworks, you might expect to define an explicit state schema:
 
@@ -20,13 +20,13 @@ class State(TypedDict):
 graph = StateGraph(State)
 ```
 
-**HyperNodes doesn't work this way.** There's no `State` class to define.
+**hypergraph doesn't work this way.** There's no `State` class to define.
 
 ---
 
 ## Outputs ARE State
 
-In HyperNodes, state emerges from your nodes' outputs:
+In hypergraph, state emerges from your nodes' outputs:
 
 ```python
 @node(output_name="response")
@@ -54,7 +54,7 @@ graph = Graph(nodes=[get_response, update_messages])
 
 ## Value Resolution Hierarchy
 
-When determining what value to use for a parameter, HyperNodes checks these sources in order:
+When determining what value to use for a parameter, hypergraph checks these sources in order:
 
 ```
 1. Edge value        ← Produced by upstream node (if it has executed)
@@ -157,13 +157,13 @@ The user never passes `messages` — the merge handles it automatically.
 
 ## Why No Explicit State?
 
-Frameworks require explicit state for specific reasons. HyperNodes addresses each differently:
+Frameworks require explicit state for specific reasons. hypergraph addresses each differently:
 
 ### 1. Dataflow (Values Between Nodes)
 
 **LangGraph:** State channels carry values between nodes.
 
-**HyperNodes:** Outputs flow via edge inference. If node A produces `embedding` and node B takes `embedding` as input, they're connected automatically.
+**hypergraph:** Outputs flow via edge inference. If node A produces `embedding` and node B takes `embedding` as input, they're connected automatically.
 
 ```python
 @node(output_name="embedding")
@@ -178,7 +178,7 @@ def retrieve(embedding: list[float]) -> list[str]: ...
 
 **LangGraph:** Everything in the state schema is checkpointed.
 
-**HyperNodes:** Control what's checkpointed with the `persist` parameter.
+**hypergraph:** Control what's checkpointed with the `persist` parameter.
 
 ```python
 graph = Graph(
@@ -191,7 +191,7 @@ graph = Graph(
 
 **LangGraph:** Memory is part of the state schema, persisted to threads.
 
-**HyperNodes:** Pass conversation history as input, return updated history as output.
+**hypergraph:** Pass conversation history as input, return updated history as output.
 
 ```python
 @node(output_name="messages")
@@ -213,7 +213,7 @@ result = runner.run(graph, inputs={
 
 **LangGraph:** Human edits state directly via `update_state()`.
 
-**HyperNodes:** Use `InterruptNode` with explicit parameters.
+**hypergraph:** Use `InterruptNode` with explicit parameters.
 
 ```python
 approval = InterruptNode(
@@ -227,7 +227,7 @@ approval = InterruptNode(
 
 **LangGraph:** Reducers like `Annotated[list, add]` combine multiple updates to the same key.
 
-**HyperNodes:** Not needed. Each node produces distinctly-named outputs. No conflicts to resolve.
+**hypergraph:** Not needed. Each node produces distinctly-named outputs. No conflicts to resolve.
 
 ---
 
@@ -302,7 +302,7 @@ def generate(docs: list[str]) -> str:
 
 ## Comparison with LangGraph
 
-| Aspect | LangGraph | HyperNodes |
+| Aspect | LangGraph | hypergraph |
 |--------|-----------|------------|
 | **Define state** | Explicit `TypedDict` | Implicit from outputs |
 | **What's persisted** | Everything in schema | Controlled by `persist` |
@@ -325,21 +325,21 @@ def accumulate(messages: list, new_message: str) -> list:
     return messages + [new_message]
 ```
 
-In cycles, HyperNodes tracks versions to know when to re-execute.
+In cycles, hypergraph tracks versions to know when to re-execute.
 
 ### "How do I share state across multiple workflows?"
 
-HyperNodes' checkpointer handles state within a single workflow. For cross-workflow memory (like user preferences across conversations), use an external store (database, Redis, etc.) and pass values as inputs.
+hypergraph' checkpointer handles state within a single workflow. For cross-workflow memory (like user preferences across conversations), use an external store (database, Redis, etc.) and pass values as inputs.
 
 ### "What if two nodes produce the same output name?"
 
-This is a build-time error unless the nodes are mutually exclusive (via routing gates). HyperNodes validates this when constructing the graph.
+This is a build-time error unless the nodes are mutually exclusive (via routing gates). hypergraph validates this when constructing the graph.
 
 ### "Can I update state from outside the graph?"
 
 For human-in-the-loop, use `InterruptNode`. The interrupt surfaces a value, waits for a response, and the response becomes an output that flows to downstream nodes.
 
-**HyperNodes intentionally does not have a `update_state()` API** like LangGraph. This is a design choice:
+**hypergraph intentionally does not have a `update_state()` API** like LangGraph. This is a design choice:
 
 | Need | Solution |
 |------|----------|
@@ -351,7 +351,7 @@ The philosophy: State flows through nodes. External mutation breaks the dataflow
 
 ### "Why no update_state()? LangGraph has it."
 
-LangGraph's `update_state()` allows arbitrary state modification at any checkpoint. HyperNodes chose not to include this because:
+LangGraph's `update_state()` allows arbitrary state modification at any checkpoint. hypergraph chose not to include this because:
 
 1. **Breaks dataflow** - State should flow through nodes, not be injected from outside
 2. **Debugging complexity** - Hard to trace where a value came from if it can be externally modified

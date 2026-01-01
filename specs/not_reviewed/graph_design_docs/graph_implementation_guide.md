@@ -3,7 +3,7 @@
 > **Status**: Design Document  
 > **Date**: December 2024  
 > **Type**: Implementation & Architecture Guide  
-> **Summary**: Concrete architecture for hypernodes using explicit graph modeling with NetworkX, supporting DAGs, branching, cycles, and nested graphs with a single unified execution algorithm.
+> **Summary**: Concrete architecture for hypergraph using explicit graph modeling with NetworkX, supporting DAGs, branching, cycles, and nested graphs with a single unified execution algorithm.
 
 ---
 
@@ -191,7 +191,7 @@ For multi-way routing, use `Literal` types with optional descriptions:
 
 ```python
 from typing import Literal
-from hypernodes import gate, END
+from hypergraph import gate, END
 
 # Simple: just target strings
 AgentAction = Literal["research", "retrieve", "respond", END]
@@ -207,7 +207,7 @@ def agent_decide(state: dict) -> AgentAction:
 
 ```python
 from typing import Literal
-from hypernodes import gate, END
+from hypergraph import gate, END
 
 # Tuple format: (target, description)
 AgentAction = Literal[
@@ -977,7 +977,7 @@ def decide(state: dict) -> MyDecision:
 
 ```python
 from typing import Literal
-from hypernodes import END
+from hypergraph import END
 
 # String targets with optional descriptions
 Decision = Literal[
@@ -996,7 +996,7 @@ Decision = Literal[
 ### Example 1: Static DAG (No Loops)
 
 ```python
-from hypernodes import node, Graph
+from hypergraph import node, Graph
 
 @node(output_name="result_a")
 def process_a(input_a: int) -> int:
@@ -1054,7 +1054,7 @@ result = graph.run(inputs={"x": 10})
 
 ```python
 from typing import Literal
-from hypernodes import node, gate, Graph, END
+from hypergraph import node, gate, Graph, END
 
 @node(output_name="enriched_q")
 def enrich(question: str) -> str:
@@ -1107,7 +1107,7 @@ Iteration 7: add_response READY, route READY → PARALLEL
 ### Example 4: Early Termination with Interrupt
 
 ```python
-from hypernodes import node, Graph, Interrupt
+from hypergraph import node, Graph, Interrupt
 
 @node(output_name="validated")
 def validate(input_data: dict) -> dict:
@@ -1147,7 +1147,7 @@ result2 = rag_agent.resume(
 ### Example 6: Mutually Exclusive Branches with @branch
 
 ```python
-from hypernodes import node, branch, Graph
+from hypergraph import node, branch, Graph
 
 @node(output_name="result")
 def process_valid(data: dict) -> str:
@@ -1170,7 +1170,7 @@ result = graph.run(inputs={"data": {"value": "test"}})
 
 ```python
 from typing import Literal
-from hypernodes import node, gate, Graph, END
+from hypergraph import node, gate, Graph, END
 
 # Simple string targets
 AgentAction = Literal["research", "retrieve", "respond", END]
@@ -1190,7 +1190,7 @@ def agent_decide(state: dict) -> AgentAction:
 
 ```python
 from typing import Literal
-from hypernodes import node, gate, Graph, END
+from hypergraph import node, gate, Graph, END
 
 # Tuple format for descriptions: (target, description)
 AgentAction = Literal[
@@ -1218,7 +1218,7 @@ def agent_decide(state: dict) -> AgentAction:
 ### Before (Pipeline)
 
 ```python
-from hypernodes import Pipeline, node
+from hypergraph import Pipeline, node
 
 @node(output_name="result")
 def process(x: int) -> int:
@@ -1231,7 +1231,7 @@ result = pipeline.run(inputs={"x": 5})
 ### After (Graph)
 
 ```python
-from hypernodes import Graph, node
+from hypergraph import Graph, node
 
 @node(output_name="result")
 def process(x: int) -> int:
@@ -1258,7 +1258,7 @@ result = graph.run(inputs={"x": 5})
 ## File Structure
 
 ```
-src/hypernodes/
+src/hypergraph/
 ├── node.py                 # @node decorator, Node class
 ├── branch.py               # @branch decorator, BranchNode class
 ├── gate.py                 # @gate decorator, GateNode class

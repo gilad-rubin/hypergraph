@@ -21,7 +21,7 @@ flowchart TD
 
 ```python
 import asyncio
-from hypernodes import node, branch, Graph, END, AsyncRunner
+from hypergraph import node, branch, Graph, END, AsyncRunner
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -156,7 +156,7 @@ async def evaluate_joke(joke: str) -> tuple[str, str]:
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `state.get("feedback")` check | `.bind(feedback=None)` |
 | Implicit state initialization | Explicit: `.bind()` for defaults |

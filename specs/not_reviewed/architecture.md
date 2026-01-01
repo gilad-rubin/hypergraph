@@ -8,18 +8,18 @@ inputDocuments:
   - '_bmad-output/source-tree-analysis.md'
 workflowType: 'architecture'
 lastStep: 1
-project_name: 'hypernodes'
+project_name: 'hypergraph'
 user_name: 'Giladrubin'
 date: '2025-12-23'
 ---
 
-# Architecture Decision Document - HyperNodes Graph (v0.5.0)
+# Architecture Decision Document - hypergraph Graph (v0.5.0)
 
 _This document builds collaboratively through step-by-step discovery. Sections are appended as we work through architectural decisions for the Graph architecture rewrite._
 
 ## Context
 
-This architecture document covers the **v0.5.0 rewrite** of HyperNodes:
+This architecture document covers the **v0.5.0 rewrite** of hypergraph:
 - **From:** Pipeline (DAG-only) architecture
 - **To:** Graph (reactive dataflow with cycles) architecture
 

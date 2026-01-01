@@ -7,7 +7,7 @@
 ## Quick Example
 
 ```python
-from hypernodes import Graph, SyncRunner, AsyncRunner, DiskCache
+from hypergraph import Graph, SyncRunner, AsyncRunner, DiskCache
 
 # Define graph (pure structure)
 graph = Graph(nodes=[embed, retrieve, generate])

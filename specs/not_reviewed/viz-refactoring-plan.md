@@ -1,4 +1,4 @@
-# HyperNodes Visualization Refactoring Plan
+# hypergraph Visualization Refactoring Plan
 
 ## Executive Summary
 
@@ -52,7 +52,7 @@ Chromatic provides:
 ## Proposed Architecture
 
 ```
-src/hypernodes/viz/
+src/hypergraph/viz/
 ├── js/
 │   ├── src/                         # TypeScript source
 │   │   ├── components/
@@ -89,7 +89,7 @@ src/hypernodes/viz/
 │   │   ├── preview.ts
 │   │   └── chromatic.config.json
 │   ├── dist/                        # Built bundle
-│   │   └── hypernodes-viz.umd.js
+│   │   └── hypergraph-viz.umd.js
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── vite.config.ts
@@ -154,19 +154,19 @@ class PlaywrightVizTester:
     
     async def wait_for_layout(self, timeout: int = 5000):
         await self.page.wait_for_function(
-            "window.__hypernodes?.layoutComplete === true",
+            "window.__hypergraph?.layoutComplete === true",
             timeout=timeout
         )
     
     async def expand_pipeline(self, pipeline_id: str):
-        await self.page.evaluate(f"window.__hypernodes.expandPipeline('{pipeline_id}')")
+        await self.page.evaluate(f"window.__hypergraph.expandPipeline('{pipeline_id}')")
         await self.wait_for_layout()
     
     async def get_node_position(self, node_id: str) -> dict:
-        return await self.page.evaluate(f"window.__hypernodes.getNodePosition('{node_id}')")
+        return await self.page.evaluate(f"window.__hypergraph.getNodePosition('{node_id}')")
     
     async def validate_edge_alignment(self) -> dict:
-        return await self.page.evaluate("window.__hypernodes.validateConnections()")
+        return await self.page.evaluate("window.__hypergraph.validateConnections()")
     
     async def check_color_contrast(self, node_id: str) -> dict:
         # WCAG contrast checking
@@ -185,7 +185,7 @@ Move JS from Python string to proper TypeScript files with modern build tooling.
 **package.json:**
 ```json
 {
-  "name": "@hypernodes/viz",
+  "name": "@hypergraph/viz",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -210,9 +210,9 @@ export default defineConfig({
   build: {
     lib: {
       entry: 'src/index.ts',
-      name: 'HyperNodesViz',
+      name: 'hypergraphViz',
       formats: ['umd'],
-      fileName: () => 'hypernodes-viz.umd.js'
+      fileName: () => 'hypergraph-viz.umd.js'
     },
     rollupOptions: {
       external: ['react', 'react-dom'],
@@ -229,7 +229,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     react_js = _read_asset("vendor/react.production.min.js", "js")
     react_dom_js = _read_asset("vendor/react-dom.production.min.js", "js")
     elk_js = _read_asset("vendor/elk.bundled.js", "js")
-    viz_bundle = _read_asset("dist/hypernodes-viz.umd.js", "js")
+    viz_bundle = _read_asset("dist/hypergraph-viz.umd.js", "js")
     css = _read_asset("styles.css", "css")
     
     return f"""<!DOCTYPE html>
@@ -239,7 +239,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     <div id="root"></div>
     {viz_bundle}
     <script id="graph-data" type="application/json">{json.dumps(graph_data)}</script>
-    <script>HyperNodesViz.mount(document.getElementById('root'))</script>
+    <script>hypergraphViz.mount(document.getElementById('root'))</script>
 </body>
 </html>"""
 ```
@@ -842,10 +842,10 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/hypernodes/viz/js/**'
+      - 'src/hypergraph/viz/js/**'
   pull_request:
     paths:
-      - 'src/hypernodes/viz/js/**'
+      - 'src/hypergraph/viz/js/**'
 
 jobs:
   chromatic:
@@ -859,16 +859,16 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: src/hypernodes/viz/js/package-lock.json
+          cache-dependency-path: src/hypergraph/viz/js/package-lock.json
       
       - name: Install dependencies
-        working-directory: src/hypernodes/viz/js
+        working-directory: src/hypergraph/viz/js
         run: npm ci
       
       - name: Run Chromatic
         uses: chromaui/action@latest
         with:
-          workingDir: src/hypernodes/viz/js
+          workingDir: src/hypergraph/viz/js
           projectToken: ${{ secrets.CHROMATIC_PROJECT_TOKEN }}
           # Fail the build if there are visual changes (for PRs)
           exitOnceUploaded: ${{ github.event_name == 'push' }}
@@ -881,7 +881,7 @@ jobs:
 
 ```json
 {
-  "name": "@hypernodes/viz",
+  "name": "@hypergraph/viz",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -963,8 +963,8 @@ class TestFullIntegration:
     @pytest.fixture
     def viz_page(self, page: Page, pipeline):
         """Render actual pipeline to HTML and load in browser."""
-        from hypernodes.viz import UIHandler
-        from hypernodes.viz.js.html_generator import generate_widget_html
+        from hypergraph.viz import UIHandler
+        from hypergraph.viz.js.html_generator import generate_widget_html
         
         handler = UIHandler(pipeline, depth=99)
         html = generate_widget_html(handler.get_visualization_data())
@@ -973,33 +973,33 @@ class TestFullIntegration:
         with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as f:
             f.write(html.encode())
         page.goto(f'file://{f.name}')
-        page.wait_for_function("window.__hypernodes?.layoutComplete")
+        page.wait_for_function("window.__hypergraph?.layoutComplete")
         return page
     
     def test_edge_alignment_after_collapse(self, viz_page: Page):
         """Verify edges connect properly after collapse."""
         # Collapse a pipeline
-        viz_page.evaluate("window.__hypernodes.collapsePipeline('inner')")
-        viz_page.wait_for_function("window.__hypernodes?.layoutComplete")
+        viz_page.evaluate("window.__hypergraph.collapsePipeline('inner')")
+        viz_page.wait_for_function("window.__hypergraph?.layoutComplete")
         
         # Validate connections
-        result = viz_page.evaluate("window.__hypernodes.validateConnections()")
+        result = viz_page.evaluate("window.__hypergraph.validateConnections()")
         assert result['valid'], f"Edge issues: {result['issues']}"
     
     def test_programmatic_expand_all(self, viz_page: Page):
         """Expand all pipelines programmatically."""
         pipelines = viz_page.evaluate("""
-            window.__hypernodes.getAllNodes()
+            window.__hypergraph.getAllNodes()
                 .filter(n => n.data.nodeType === 'PIPELINE')
                 .map(n => n.id)
         """)
         
         for pid in pipelines:
-            viz_page.evaluate(f"window.__hypernodes.expandPipeline('{pid}')")
-            viz_page.wait_for_function("window.__hypernodes?.layoutComplete")
+            viz_page.evaluate(f"window.__hypergraph.expandPipeline('{pid}')")
+            viz_page.wait_for_function("window.__hypergraph?.layoutComplete")
         
         # All should be expanded now
-        state = viz_page.evaluate("window.__hypernodes.getExpansionState()")
+        state = viz_page.evaluate("window.__hypergraph.getExpansionState()")
         assert all(state.values()), "Not all pipelines expanded"
 
 
@@ -1030,7 +1030,7 @@ class TestPerformance:
     def test_large_graph_render_time(self, viz_page: Page, large_pipeline):
         """Verify large graphs render in reasonable time."""
         start = viz_page.evaluate("performance.now()")
-        viz_page.wait_for_function("window.__hypernodes?.layoutComplete")
+        viz_page.wait_for_function("window.__hypergraph?.layoutComplete")
         end = viz_page.evaluate("performance.now()")
         
         render_time = end - start
@@ -1048,7 +1048,7 @@ class TestPerformance:
 | 3 | Extract components to .tsx, build UMD bundle |
 | 4 | Setup Storybook, write component stories for all node types |
 | 5 | Setup Chromatic, integrate with GitHub Actions |
-| 6 | Implement VizController API, expose on window.__hypernodes |
+| 6 | Implement VizController API, expose on window.__hypergraph |
 | 7 | Setup Playwright E2E tests for integration scenarios |
 | 8 | Update html_generator.py, cleanup, documentation |
 
@@ -1123,7 +1123,7 @@ What scenarios are most important to cover in Storybook?
 ### Test File Organization
 
 ```
-src/hypernodes/viz/js/
+src/hypergraph/viz/js/
 ├── src/
 │   ├── components/
 │   │   ├── CustomNode.tsx

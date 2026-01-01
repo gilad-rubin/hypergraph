@@ -1,7 +1,7 @@
-# HyperNodes Source Tree Analysis
+# hypergraph Source Tree Analysis
 
 **Generated:** 2025-12-22  
-**Project:** hypernodes v0.4.8  
+**Project:** hypergraph v0.4.8  
 **Type:** Python Library (Monolith)
 
 ---
@@ -9,8 +9,8 @@
 ## Project Structure Overview
 
 ```
-hypernodes/
-├── src/hypernodes/              # Main package source code (ENTRY POINT)
+hypergraph/
+├── src/hypergraph/              # Main package source code (ENTRY POINT)
 │   ├── __init__.py              # Package exports (API surface)
 │   ├── pipeline.py              # Pipeline class - DAG orchestration
 │   ├── node.py                  # @node decorator - function wrapping
@@ -99,7 +99,7 @@ hypernodes/
 ├── guides/                      # Design and implementation guides
 │   ├── graph_design_philosophy.md
 │   ├── graph_implementation_guide.md
-│   └── HyperNodes Pipeline System Specification.../
+│   └── hypergraph Pipeline System Specification.../
 │
 ├── examples/                    # Example scripts
 │   ├── daft_backend_example.py
@@ -118,8 +118,8 @@ hypernodes/
 │   └── tailwind/                # Tailwind CSS compilation
 │
 ├── dist/                        # Distribution packages
-│   ├── hypernodes-0.4.8-py3-none-any.whl
-│   └── hypernodes-0.4.8.tar.gz
+│   ├── hypergraph-0.4.8-py3-none-any.whl
+│   └── hypergraph-0.4.8.tar.gz
 │
 ├── pyproject.toml               # Package configuration (hatchling)
 ├── uv.lock                      # Locked dependencies
@@ -132,7 +132,7 @@ hypernodes/
 
 ## Critical Directories Explained
 
-### `/src/hypernodes/` - Core Library
+### `/src/hypergraph/` - Core Library
 The main package implementing the pipeline system. Zero external dependencies for core functionality.
 
 **Key architectural components:**
@@ -142,13 +142,13 @@ The main package implementing the pipeline system. Zero external dependencies fo
 - **Caching**: `cache.py` implements content-addressable storage
 - **API Surface**: `__init__.py` exports public API
 
-### `/src/hypernodes/integrations/` - Pluggable Backends
+### `/src/hypergraph/integrations/` - Pluggable Backends
 Optional execution engines for distributed/parallel processing.
 
 - **Daft**: Distributed DataFrame execution with auto-batching
 - **Dask**: Parallel map operations using Dask Bag
 
-### `/src/hypernodes/viz/` - Visualization System
+### `/src/hypergraph/viz/` - Visualization System
 Comprehensive visualization with both static (Graphviz) and interactive (React Flow) rendering.
 
 **Architecture:**
@@ -158,7 +158,7 @@ Comprehensive visualization with both static (Graphviz) and interactive (React F
 - `js/` - Interactive HTML/React generation
 - `assets/` - Bundled JS/CSS (fully offline)
 
-### `/src/hypernodes/telemetry/` - Observability
+### `/src/hypergraph/telemetry/` - Observability
 Progress tracking and distributed tracing.
 
 - `progress.py` - tqdm/rich progress bars (auto-detects CLI vs Jupyter)
@@ -190,7 +190,7 @@ Internal design documents and specifications.
 
 ## Entry Points
 
-**Main Package:** `src/hypernodes/__init__.py`
+**Main Package:** `src/hypergraph/__init__.py`
 
 Exports:
 - `Pipeline` - Main pipeline class
@@ -218,14 +218,14 @@ This is a monolithic package with no separate client/server or multi-part archit
 
 **Build System:** Hatchling (PEP 517)  
 **Package Manager:** uv  
-**Distribution:** PyPI (`pip install hypernodes`)
+**Distribution:** PyPI (`pip install hypergraph`)
 
 **Artifacts:**
-- Wheel: `hypernodes-0.4.8-py3-none-any.whl`
-- Source: `hypernodes-0.4.8.tar.gz`
+- Wheel: `hypergraph-0.4.8-py3-none-any.whl`
+- Source: `hypergraph-0.4.8.tar.gz`
 
 **Excluded from builds:**
-- `src/hypernodes/old/` - Deprecated code
+- `src/hypergraph/old/` - Deprecated code
 - Test files and development tools
 
 ---

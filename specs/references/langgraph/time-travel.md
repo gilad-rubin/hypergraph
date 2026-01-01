@@ -1,6 +1,6 @@
 # LangGraph Time Travel Reference
 
-> LangGraph v1.0 (October 2025) - Reference for HyperNodes design
+> LangGraph v1.0 (October 2025) - Reference for hypergraph design
 
 ## Overview
 
@@ -296,9 +296,9 @@ LangGraph Studio (visual IDE) provides:
 
 ---
 
-## Implications for HyperNodes
+## Implications for hypergraph
 
-### Current HyperNodes approach:
+### Current hypergraph approach:
 - `RunResult.checkpoint` for interrupt resume
 - No explicit time travel API
 - History available via `GraphResult.history`

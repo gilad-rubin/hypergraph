@@ -189,7 +189,7 @@ Should have one canonical version.
 
 ### Inconsistent Module Paths
 
-Examples import from `hypernodes.checkpointers` and `hypernodes.runners` inconsistently.
+Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsistently.
 
 ---
 

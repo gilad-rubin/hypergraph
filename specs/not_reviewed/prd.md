@@ -7,7 +7,7 @@ inputDocuments:
   - '_bmad-output/development-guide.md'
   - '_bmad-output/source-tree-analysis.md'
   - 'guides/runner_api_design.md'
-  - 'guides/hypernodes_v2_design.md'
+  - 'guides/hypergraph_v2_design.md'
   - 'guides/graph_implementation_guide.md'
   - 'guides/graph_edge_cases.md'
   - 'guides/async_execution_design.md'
@@ -22,24 +22,24 @@ documentCounts:
   designGuides: 8
 workflowType: 'prd'
 lastStep: 11
-project_name: 'hypernodes'
+project_name: 'hypergraph'
 user_name: 'Giladrubin'
 date: '2025-12-22'
 ---
-# Product Requirements Document - hypernodes
+# Product Requirements Document - hypergraph
 
 **Author:** Giladrubin
 **Date:** 2025-12-22
 
 ## Executive Summary
 
-HyperNodes is evolving from a DAG-only pipeline framework to a **graph-native execution system** that supports cycles, multi-turn interactions, and complex control flow - all while maintaining the framework's core philosophy of pure, portable functions.
+hypergraph is evolving from a DAG-only pipeline framework to a **graph-native execution system** that supports cycles, multi-turn interactions, and complex control flow - all while maintaining the framework's core philosophy of pure, portable functions.
 
 ### The Journey: From Hierarchical DAGs to Reactive Graphs
 
 **Where it started (v0.1-0.4):**
 
-HyperNodes began as an answer to existing DAG frameworks like Hamilton and Pipefunc. The key innovation: **hierarchical composition** - pipelines are nodes that can be nested infinitely.
+hypergraph began as an answer to existing DAG frameworks like Hamilton and Pipefunc. The key innovation: **hierarchical composition** - pipelines are nodes that can be nested infinitely.
 
 ```python
 # The original vision: pipelines as composable building blocks
@@ -113,12 +113,12 @@ def add_response(state: AgentState) -> dict:
 
 ### The Solution: Dynamic Graphs with Build-Time Validation
 
-HyperNodes 0.5 introduces **fully dynamic graph construction** with validation at build time (when `Graph()` is called), not compile time.
+hypergraph 0.5 introduces **fully dynamic graph construction** with validation at build time (when `Graph()` is called), not compile time.
 
 **Key differentiator from LangGraph/Pydantic-Graph:**
 
 
-| Aspect                 | LangGraph / Pydantic-Graph                   | HyperNodes                                |
+| Aspect                 | LangGraph / Pydantic-Graph                   | hypergraph                                |
 | ------------------------ | ---------------------------------------------- | ------------------------------------------- |
 | **State definition**   | Static`TypedDict` or Pydantic model required | No state class - just function signatures |
 | **Graph construction** | Edges defined at class definition time       | Build graphs dynamically at runtime       |
@@ -131,7 +131,7 @@ class AgentState(TypedDict):
     messages: list[str]  # Must know fields at definition time
 graph = StateGraph(AgentState)
 
-# HyperNodes - fully dynamic
+# hypergraph - fully dynamic
 nodes = [create_tool_node(t) for t in available_tools]  # Built at runtime!
 graph = Graph(nodes=nodes)  # Validation happens here
 ```
@@ -144,7 +144,7 @@ The workflow is very similar:
 
 ```
 Traditional: Write code → Compiler error → Fix → Repeat
-HyperNodes:  Write code → Graph() error → Fix → Repeat
+hypergraph:  Write code → Graph() error → Fix → Repeat
 ```
 
 Both catch errors before runtime. The difference is *when* validation happens (compile time vs build time), not *whether* it happens.
@@ -159,7 +159,7 @@ Both catch errors before runtime. The difference is *when* validation happens (c
 **Example - Multi-turn RAG becomes possible:**
 
 ```python
-from hypernodes import Graph, node, route, END
+from hypergraph import Graph, node, route, END
 
 @node(output_name="docs")
 def retrieve(query: str, messages: list) -> list:
@@ -255,7 +255,7 @@ result = await runner.run(graph, inputs={
    - Runners own: cache, callbacks, execution strategy
 
 ```python
-from hypernodes import Graph, node, Runner, AsyncRunner, DiskCache
+from hypergraph import Graph, node, Runner, AsyncRunner, DiskCache
 
 # Graph = pure definition
 graph = Graph(nodes=[embed, retrieve, generate])
@@ -279,7 +279,7 @@ results = runner.map(graph, inputs={"query": queries}, map_over="query")
    - Framework provides plumbing, user defines prompt/response types
 
 ```python
-from hypernodes import InterruptNode
+from hypergraph import InterruptNode
 
 approval = InterruptNode(
     name="approval",
@@ -626,7 +626,7 @@ The v0.5.0 release is "done" when:
   - Migration guide (Pipeline → Graph patterns)
   - Theory documentation (why reactive dataflow works)
   - Architecture decisions (ADRs for future reference)
-- **Code preservation:** Archive `Pipeline` code in `src/hypernodes/old/` for reference
+- **Code preservation:** Archive `Pipeline` code in `src/hypergraph/old/` for reference
 
 ### Architectural Decisions
 
@@ -1506,7 +1506,7 @@ This section defines the technical boundaries, dependencies, and quality attribu
 
 ### TC3: Compatibility
 
-#### With Existing HyperNodes Code
+#### With Existing hypergraph Code
 
 
 | Item                | Compatibility | Notes                               |
@@ -1563,7 +1563,7 @@ This section defines the technical boundaries, dependencies, and quality attribu
 | ----------------------------- | ----------------------------------------- |
 | Global registries           | Makes testing hard, hidden dependencies |
 | Implicit state modification | Debugging nightmare                     |
-| Framework-coupled functions | Can't reuse outside HyperNodes          |
+| Framework-coupled functions | Can't reuse outside hypergraph          |
 | Magic method resolution     | Explicit > implicit                     |
 | Inheritance hierarchies     | Composition over inheritance            |
 

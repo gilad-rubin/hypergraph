@@ -2,7 +2,7 @@
 
 **Reference for execution state, results, events, and observability types.**
 
-These types represent the runtime layer of HyperNodes - what happens when graphs execute.
+These types represent the runtime layer of hypergraph - what happens when graphs execute.
 
 ---
 
@@ -40,7 +40,7 @@ Graph Definition  →  Runtime State  →  Results & Events
 
 ### Events vs Steps: Ephemeral vs Durable
 
-HyperNodes separates two distinct record types:
+hypergraph separates two distinct record types:
 
 | Concept | Events | Steps |
 |---------|--------|-------|
@@ -89,7 +89,7 @@ After Node Completion:
 
 ## Three-Layer Architecture
 
-HyperNodes uses a **unified event stream** that flows through pluggable layers. The core execution engine produces events; layers consume what they need.
+hypergraph uses a **unified event stream** that flows through pluggable layers. The core execution engine produces events; layers consume what they need.
 
 ```
                     ┌─────────────────────────┐
@@ -145,13 +145,13 @@ result = await runner.run(graph, inputs={...}, workflow_id="session-123")
 
 ### RunStatus
 
-**HyperNodes execution status.** Returned in `RunResult.status`.
+**hypergraph execution status.** Returned in `RunResult.status`.
 
 ```python
 from enum import Enum
 
 class RunStatus(Enum):
-    """Workflow execution status (HyperNodes layer)."""
+    """Workflow execution status (hypergraph layer)."""
     COMPLETED = "completed"  # Finished all steps (or routed to END)
     PAUSED = "paused"        # Waiting for something (see PauseReason)
     ERROR = "error"          # Failed with exception
@@ -185,11 +185,11 @@ class PauseReason(Enum):
 
 ### DBOS Mapping
 
-HyperNodes status maps to DBOS status as follows:
+hypergraph status maps to DBOS status as follows:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  HyperNodes RunStatus        →    DBOS WorkflowStatus       │
+│  hypergraph RunStatus        →    DBOS WorkflowStatus       │
 ├─────────────────────────────────────────────────────────────┤
 │  COMPLETED                   →    SUCCESS                   │
 │  PAUSED (any reason)         →    PENDING (blocked on recv) │
@@ -197,7 +197,7 @@ HyperNodes status maps to DBOS status as follows:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** DBOS has no "PAUSED" status. When a workflow calls `DBOS.recv()` and waits for human input, DBOS still reports it as `PENDING`. HyperNodes adds the `PAUSED` + `PauseReason` abstraction on top.
+**Key insight:** DBOS has no "PAUSED" status. When a workflow calls `DBOS.recv()` and waits for human input, DBOS still reports it as `PENDING`. hypergraph adds the `PAUSED` + `PauseReason` abstraction on top.
 
 ---
 
@@ -378,8 +378,8 @@ class RunResult:
 ### Basic Example
 
 ```python
-from hypernodes import AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 result = await runner.run(
@@ -479,7 +479,7 @@ result = await runner.run(
 When using `DBOSAsyncRunner`, resume happens via `DBOS.send()` from an external system:
 
 ```python
-from hypernodes.runners import DBOSAsyncRunner
+from hypergraph.runners import DBOSAsyncRunner
 
 runner = DBOSAsyncRunner()
 result = await runner.run(
@@ -709,8 +709,8 @@ async with runner.iter(graph, inputs={...}) as run:
 ### Using `.run()` - Pause and Resume
 
 ```python
-from hypernodes import AsyncRunner
-from hypernodes.checkpointers import SqliteCheckpointer
+from hypergraph import AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 
@@ -993,7 +993,7 @@ class WorkflowStatus(Enum):
     """DBOS-compatible workflow status values.
 
     These match DBOS exactly for storage compatibility.
-    Use RunStatus for HyperNodes API layer.
+    Use RunStatus for hypergraph API layer.
     """
     PENDING = "PENDING"       # Running or waiting (includes recv() blocked)
     ENQUEUED = "ENQUEUED"     # In queue, not started
@@ -1023,7 +1023,7 @@ class Workflow:
 
 ### DBOS Table Mapping
 
-| HyperNodes Type | DBOS Table | Key Columns |
+| hypergraph Type | DBOS Table | Key Columns |
 |-----------------|------------|-------------|
 | `Workflow` | `dbos.workflow_status` | `workflow_uuid`, `status`, `created_at` |
 | `Step` | `dbos.operation_outputs` | `workflow_uuid`, `function_id`, `function_name` |
@@ -1098,7 +1098,7 @@ Observability:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  HyperNodes API Layer (what users see)                          │
+│  hypergraph API Layer (what users see)                          │
 │                                                                 │
 │  RunResult                                                      │
 │  ├── outputs: all values (or filtered by select=)              │

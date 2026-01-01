@@ -23,7 +23,7 @@ flowchart TD
 
 ```python
 import asyncio
-from hypernodes import node, route, Graph, AsyncRunner
+from hypergraph import node, route, Graph, AsyncRunner
 from langchain_anthropic import ChatAnthropic
 from langchain.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
@@ -169,7 +169,7 @@ results = await runner.map(graph, inputs={"input": [...]}, map_over="input")
 
 ## LangGraph Comparison
 
-| LangGraph | HyperNodes |
+| LangGraph | hypergraph |
 |-----------|------------|
 | `add_conditional_edges(src, fn, {mapping})` | `@route(targets=[...])` |
 | Explicit `add_edge(handler, END)` × 3 | Implicit termination |

@@ -19,7 +19,7 @@ Refine draft → Evaluate quality (0.92) → Above threshold → END
 ## Graph Definition
 
 ```python
-from hypernodes import Graph, node, route, END
+from hypergraph import Graph, node, route, END
 
 @node(outputs="draft")
 def generate(prompt: str, feedback: str | None = None) -> str:

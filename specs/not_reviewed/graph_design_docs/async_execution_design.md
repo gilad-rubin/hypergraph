@@ -1,6 +1,6 @@
 # Async Execution Design
 
-> HyperNodes V2 execution model for sync and async nodes.
+> hypergraph V2 execution model for sync and async nodes.
 
 ---
 

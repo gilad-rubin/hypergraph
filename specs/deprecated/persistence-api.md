@@ -887,7 +887,7 @@ class DefaultSerializer:
 **Custom type registration:**
 
 ```python
-from hypernodes.persistence import DefaultSerializer
+from hypergraph.persistence import DefaultSerializer
 import pandas as pd
 
 serializer = DefaultSerializer()
@@ -2043,8 +2043,8 @@ class NonDeterministicReplayError(PersistenceError):
 ## Complete Example
 
 ```python
-from hypernodes import Graph, AsyncRunner, node, route, InterruptNode
-from hypernodes.persistence import SQLiteCheckpointer, RetryPolicy
+from hypergraph import Graph, AsyncRunner, node, route, InterruptNode
+from hypergraph.persistence import SQLiteCheckpointer, RetryPolicy
 
 # Define nodes
 @node(

@@ -2,7 +2,7 @@
 
 ## Core Philosophy
 
-When implementing Hypernodes, follow these principles to make good judgment calls.
+When implementing hypergraph, follow these principles to make good judgment calls.
 
 ---
 
@@ -93,7 +93,7 @@ def execute(graph, state):
 
 ---
 
-## 8. NetworkX for Graph Theory, Hypernodes for Execution
+## 8. NetworkX for Graph Theory, hypergraph for Execution
 
 **Principle**: Don't reinvent graph algorithms.
 
@@ -175,7 +175,7 @@ graph = Graph(
 | Global registries | Hidden dependencies, testing nightmare | Explicit parameters |
 | Magic method resolution | Can't reason about behavior | Explicit in signatures |
 | Silent failures | Errors discovered too late | Fail fast with clear message |
-| Framework-coupled functions | Can't reuse outside Hypernodes | Pure functions |
+| Framework-coupled functions | Can't reuse outside hypergraph | Pure functions |
 | Implicit reducers | Unclear append semantics | Return complete list |
 | State mutation | Debugging nightmare | Immutable state |
 | Inheritance hierarchies | Rigid, hard to change | Composition |

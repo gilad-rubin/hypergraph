@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is the PRIMARY use case that drove the Graph architecture. The test must prove that Hypernodes can handle multi-turn conversations with cycles.
+This is the PRIMARY use case that drove the Graph architecture. The test must prove that hypergraph can handle multi-turn conversations with cycles.
 
 ---
 
@@ -22,7 +22,7 @@ System: [detects completion] → END
 ## Graph Definition
 
 ```python
-from hypernodes import Graph, node, route, END, AsyncRunner
+from hypergraph import Graph, node, route, END, AsyncRunner
 
 @node(outputs="docs")
 def retrieve(query: str, messages: list) -> list[str]:
@@ -285,7 +285,7 @@ def generate(state: RAGState) -> dict:
     response = llm.chat(docs, messages)
     return {"response": response, "messages": [{"role": "assistant", "content": response}]}
 
-# Hypernodes is cleaner because:
+# hypergraph is cleaner because:
 # 1. No TypedDict state class required
 # 2. No Annotated reducers
 # 3. Functions take direct parameters, not state dict
