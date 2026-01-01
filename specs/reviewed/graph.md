@@ -621,6 +621,98 @@ outer = Graph(nodes=[
 #     Use runner.run() in a loop instead of map
 ```
 
+### 6. Node Name Validation
+
+```python
+def _validate_node_names(self):
+    """Node and output names cannot contain '/'."""
+    for node in self._nodes.values():
+        # Check node name
+        if "/" in node.name:
+            raise GraphConfigError(
+                f"Invalid node name: '{node.name}'\n\n"
+                f"  → Names cannot contain '/'\n\n"
+                f"The problem:\n"
+                f"  The '/' character is reserved as the path separator for\n"
+                f"  nested graphs. When you access nested outputs like:\n\n"
+                f"    result['rag_pipeline/embedding']\n"
+                f"    runner.run(..., select=['outer/inner/*'])\n\n"
+                f"  The '/' tells hypergraph to navigate into nested RunResults.\n"
+                f"  If node names contained '/', paths would be ambiguous:\n\n"
+                f"    'rag/pipeline/embedding' - Is this:\n"
+                f"      • 'rag' → 'pipeline' → 'embedding' (3 levels)?\n"
+                f"      • 'rag/pipeline' → 'embedding' (2 levels)?\n\n"
+                f"How to fix:\n"
+                f"  Use underscores or hyphens instead:\n"
+                f"  • 'rag_pipeline' ✓\n"
+                f"  • 'rag-pipeline' ✓\n"
+                f"  • 'rag/pipeline' ✗"
+            )
+
+        # Check output name
+        if hasattr(node, 'output_name') and "/" in node.output_name:
+            raise GraphConfigError(
+                f"Invalid output name: '{node.output_name}' (from node '{node.name}')\n\n"
+                f"  → Output names cannot contain '/'\n"
+                f"  → See above for why '/' is reserved"
+            )
+```
+
+### 7. Namespace Collision Validation
+
+```python
+def _validate_no_namespace_collision(self):
+    """Output names cannot match GraphNode names (would create ambiguous paths)."""
+    graphnode_names = {
+        node.name for node in self._nodes.values()
+        if isinstance(node, GraphNode)
+    }
+
+    for node in self._nodes.values():
+        output_name = getattr(node, 'output_name', node.name)
+        if output_name in graphnode_names and node.name != output_name:
+            raise GraphConfigError(
+                f"Namespace collision: output '{output_name}' matches GraphNode name\n\n"
+                f"  → Node '{node.name}' produces output '{output_name}'\n"
+                f"  → GraphNode '{output_name}' exists in this graph\n\n"
+                f"The problem:\n"
+                f"  RunResult.outputs stores both regular outputs and nested\n"
+                f"  RunResults from GraphNodes in the same dict:\n\n"
+                f"    result.outputs = {{\n"
+                f"      'answer': '...',           # Regular output\n"
+                f"      'rag_pipeline': RunResult  # Nested graph\n"
+                f"    }}\n\n"
+                f"  If an output name equals a GraphNode name, result['{output_name}']\n"
+                f"  is ambiguous - is it the output value or the nested RunResult?\n\n"
+                f"How to fix:\n"
+                f"  Rename one to avoid the collision:\n"
+                f"  • Change the output name: @node(output_name='...')\n"
+                f"  • Change the GraphNode name: graph.as_node(name='...')"
+            )
+```
+
+**Example error:**
+
+```python
+@node(output_name="summary")
+def summarize(text: str) -> str:
+    return text[:100]
+
+# Nested graph also named "summary"
+inner = Graph(nodes=[...], name="summary")
+
+# ❌ Error at Graph() construction time
+outer = Graph(nodes=[summarize, inner.as_node()])
+# → GraphConfigError: Namespace collision: output 'summary' matches GraphNode name
+#
+#   → Node 'summarize' produces output 'summary'
+#   → GraphNode 'summary' exists in this graph
+#
+#   The problem:
+#     RunResult.outputs stores both regular outputs and nested
+#     RunResults from GraphNodes in the same dict...
+```
+
 ---
 
 ## Usage Examples

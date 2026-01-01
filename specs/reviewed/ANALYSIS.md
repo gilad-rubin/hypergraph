@@ -77,7 +77,7 @@ Updated in: `execution-types.md`
 
 ---
 
-### 5. Nested Graph Output Namespace Collision
+### ~~5. Nested Graph Output Namespace Collision~~ ✓
 
 **The problem:**
 
@@ -86,10 +86,15 @@ Updated in: `execution-types.md`
 - What if output key equals nested graph node name?
 - Also: `select` path syntax uses `/` - should ban `/` in names?
 
-**Decision needed:** Either:
+**Solution (Resolved):** Validate at graph build time + ban `/` in names.
 
-- Reserve namespace / validate collisions at graph build time
-- Separate `outputs` from `children`/`subruns`
+Two new validations in `Graph.__init__`:
+
+1. **Node name validation** (`_validate_node_names`): Node and output names cannot contain `/`. The slash is reserved as the path separator for nested graph access (`result['outer/inner/value']`, `select=['rag/*']`). If allowed in names, paths would be ambiguous.
+
+2. **Namespace collision validation** (`_validate_no_namespace_collision`): Output names cannot match GraphNode names in the same graph. Since `RunResult.outputs` stores both regular outputs and nested RunResults in the same dict, a collision would make `result['name']` ambiguous.
+
+Updated in: `graph.md`
 
 ---
 
@@ -174,7 +179,7 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | initial_state vs steps       | `checkpointer.md`, `persistence.md`              | Done (removed initial_state) |
 | Resolved | Step indexing                | `execution-types.md`                             | Done (alphabetical within batch) |
 | Medium   | Cache vs checkpoint          | Design                                           | Needs decision |
-| Medium   | Namespace collision          | `graph.md`                                       | Needs decision |
+| Resolved | Namespace collision          | `graph.md`                                       | Done (build-time validation) |
 | Medium   | persist allowlist semantics  | Design                                           | Needs decision |
 | Low      | Remaining broken links       | Multiple                                         | Needs fix      |
 | Low      | Duplicate hierarchies        | Multiple                                         | Cleanup        |
