@@ -524,27 +524,25 @@ This enables:
 
 ---
 
-## Copying Workflows
+## Forking Workflows
 
-For simple forking without DBOS, use the copy pattern:
+To fork a workflow (start a new one from a point in an existing workflow), use `runner.run()` with the source's state and history:
 
 ```python
-async def copy_workflow(
-    checkpointer,
-    source_id: str,
-    dest_id: str,
-    up_to_step: int | None = None,
-) -> None:
-    """Copy a workflow's state and history to a new workflow."""
-    state = await checkpointer.get_state(source_id, at_step=up_to_step)
-    history = await checkpointer.get_history(source_id, up_to_step=up_to_step)
+# Fork from step 5 of workflow X into new workflow Y
+state = await checkpointer.get_state("order-123", at_step=5)
+history = await checkpointer.get_history("order-123", up_to_step=5)
 
-    # Create new workflow with copied data
-    await checkpointer.create_workflow(dest_id, initial_state=state, history=history)
+result = await runner.run(
+    graph,
+    inputs={**state, "new_input": "value"},  # Merge with new inputs
+    workflow_id="order-123-fork",            # New workflow ID
+    history=history,                         # Carry forward history
+)
 ```
 
-**Key design decision:** Copies are pure data copies — no references or pointers to the source. This keeps the model simple:
-- Deleting the source doesn't affect copies
+**Key design decision:** Forks are pure data copies — no references or pointers to the source. This keeps the model simple:
+- Deleting the source doesn't affect forks
 - No maintenance of reference chains
 - Each workflow is self-contained
 

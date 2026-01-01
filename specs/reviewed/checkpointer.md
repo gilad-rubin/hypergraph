@@ -69,20 +69,20 @@ class Checkpointer(ABC):
         """
         ...
 
+    # Internal: Called by runner, not user-facing
     @abstractmethod
     async def create_workflow(
         self,
         workflow_id: str,
-        initial_state: dict[str, Any] | None = None,
-        history: list[Step] | None = None,
     ) -> Workflow:
         """
         Create a new workflow record.
 
+        Internal method called by the runner when starting a new workflow.
+        Users should call runner.run() with a workflow_id instead.
+
         Args:
             workflow_id: Unique workflow identifier
-            initial_state: Optional initial state values
-            history: Optional step history (for forking)
 
         Returns:
             The created Workflow object

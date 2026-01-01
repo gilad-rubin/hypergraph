@@ -23,19 +23,21 @@ Updated in: `execution-types.md`, `checkpointer.md`
 
 ---
 
-### 2. "Steps Are Source of Truth" vs initial_state
+### ~~2. "Steps Are Source of Truth" vs initial_state~~ RESOLVED
 
 **The problem:**
 
 - Core principle: "state is computed from steps"
-- But `create_workflow(..., initial_state=...)` in `checkpointer.md:73` allows non-step state
+- But `create_workflow(..., initial_state=...)` allowed non-step state
 - If `initial_state` isn't a step, it breaks single source of truth
 
-**Decision needed:** Define if `initial_state` is:
+**Resolution:** Removed `initial_state` parameter entirely.
 
-- Banned
-- A synthetic "INIT step"
-- Separate "base_state" explicitly part of folding model
+- `create_workflow(workflow_id)` is now internal-only (called by runner)
+- For forking/time-travel, users call `runner.run()` with `history` parameter
+- State is always computed from steps - no exceptions
+
+Updated in: `checkpointer.md`, `persistence.md`
 
 ---
 
@@ -160,7 +162,7 @@ Examples import from `hypergraph.checkpointers` and `hypergraph.runners` inconsi
 | Resolved | Pause persistence model      | `execution-types.md`, `checkpointer.md`          | Done (WAITING status + StepResult.pause) |
 | Resolved | DBOS integration philosophy  | `durable-execution.md`, `runners-api-reference.md` | Done (thin wrapper pattern) |
 | Resolved | SyncRunner durability        | `durable-execution.md`, `checkpointer.md`        | Done (cache-based, no checkpointer) |
-| Medium   | initial_state vs steps       | Design                                           | Needs decision |
+| Resolved | initial_state vs steps       | `checkpointer.md`, `persistence.md`              | Done (removed initial_state) |
 | Medium   | Step indexing                | Design                                           | Needs decision |
 | Medium   | Cache vs checkpoint          | Design                                           | Needs decision |
 | Medium   | Namespace collision          | `graph.md`                                       | Needs decision |
