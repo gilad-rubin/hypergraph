@@ -2,117 +2,74 @@
 
 Based on reviewing all 10 spec files in `specs/reviewed/`.
 
-## High-Priority Issues (Design Decisions Needed)
+## High-Priority Issues (All Resolved ✓)
 
-### 1. Resume Semantics Conflict
+### 1. Resume Semantics Conflict ✓
 
-**The problem:** Three different resume patterns exist in the specs:
+**Was:** Three different resume patterns existed (`resume=True`, implicit, `resume()` method)
 
-
-| Location                                   | Pattern                                         |
-| -------------------------------------------- | ------------------------------------------------- |
-| `durable-execution.md:220`                 | "No resume=True needed!"                        |
-| `persistence.md`                           | No special resume flag                          |
-| `execution-types.md:448`, `runners.md:240` | Uses`resume=True`                               |
-| `durable-execution.md:1177`                | Mentions "User calls`resume()`" (undefined API) |
-
-**Files affected:** `execution-types.md`, `runners.md`, `durable-execution.md`, `persistence.md`
-
-**Decision needed:** Choose one canonical pattern: #@A
-
-- **Option A:** Implicit resume (same `workflow_id` auto-resumes)
-- **Option B:** Explicit `resume=True` flag
-- **Option C:** Separate `runner.resume()` method
+**Resolution:** **Option A — Implicit resume via same `workflow_id`**
+- Removed all `resume=True` flags from examples
+- Checkpointer auto-detects paused state when same `workflow_id` is used
+- Files fixed: `execution-types.md`, `runners.md`
 
 ---
 
-### 2. GraphNode.inputs Type Mismatch
+### 2. GraphNode.inputs Type Mismatch ✓
 
-**The problem:**
+**Was:** `Graph.inputs` returns `InputSpec` but `GraphNode` assigned it directly as tuple
 
-- `graph.md:151` specifies `Graph.inputs` returns `InputSpec` (a dataclass)
-- `node-types.md:1107` says `self.inputs = graph.inputs  # Already a tuple`
-
-**Files affected:** `graph.md`, `node-types.md`
-
-**Decision needed:** Either: #@use inputspec
-
-- `Graph.inputs` returns `InputSpec` and `GraphNode` extracts `.all` as tuple
-- Or `Graph.inputs` returns a tuple (but then `InputSpec` needs restructuring)
+**Resolution:** `GraphNode` now extracts `.all` from `InputSpec`
+- `node-types.md:1107` changed to `self.inputs = graph.inputs.all`
 
 ---
 
-### 3. RunResult Shape Inconsistency
+### 3. RunResult Shape Inconsistency ✓
 
-**The problem:**
+**Was:** `runners.md` had old shape with separate `pause_reason`, `pause_node`, `pause_value` fields
 
-- `execution-types.md` defines `RunResult.pause: PauseInfo | None` #@use this
-- `runners.md:590-592` shows older shape with separate `pause_reason`, `pause_node`, `pause_value` fields
-
-**Files affected:** `runners.md`
-
-**Decision needed:** Update `runners.md` to use `PauseInfo` (matches `execution-types.md`)
+**Resolution:** Updated to use `PauseInfo` dataclass
+- `runners.md` now shows `pause: PauseInfo | None` matching `execution-types.md`
 
 ---
 
-### 4. RunStatus RUNNING Error
+### 4. RunStatus RUNNING Error ✓
 
-**The problem:**
+**Was:** `graph.md:810` listed `RUNNING` as a valid status
 
-- `graph.md:810` claims `RunResult.status` includes `RUNNING`
-- `execution-types.md:153-157` defines only `COMPLETED`, `PAUSED`, `ERROR`
-- `RUNNING` doesn't make sense for a returned result
-
-**Files affected:** `graph.md`
-
-**Fix:** Remove `RUNNING` from `graph.md:810` #@is there a case where this will make sense?
+**Resolution:** Removed `RUNNING` — only `COMPLETED`, `PAUSED`, `ERROR` are valid
+- `RUNNING` doesn't make sense for a returned result (execution is complete when result is returned)
 
 ---
 
-### 5. @node Parameter Name Drift
+### 5. @node Parameter Name Drift ✓
 
-**The problem:**
+**Was:** Examples mixed `outputs=` and `output_name=`
 
-- Decorator signature in `node-types.md:497` uses `output_name=`
-- Many examples use `outputs=` (e.g., `graph.md:226`, `runners.md:257`)
-
-**Files affected:** All files with `@node` examples
-
-**Decision needed:** Either:
-
-- Support both spellings (with one as alias)
-- Standardize all examples to use `output_name=` #@yes. output_name
+**Resolution:** Standardized to `output_name=` across all examples
+- Files fixed: `graph.md`, `runners.md`
 
 ---
 
-### 6. DBOS Runner Not in Taxonomy
+### 6. DBOS Runner Not in Taxonomy ✓
 
-**The problem:**
+**Was:** `DBOSAsyncRunner` described in `durable-execution.md` but missing from `runners.md`
 
-- `durable-execution.md` extensively describes `DBOSAsyncRunner` and `DBOSSyncRunner`
-- `runners.md` only lists `SyncRunner`, `AsyncRunner`, `DaftRunner`
-- `runners-api-reference.md` has no DBOS runner API
-
-**Files affected:** `runners.md`, `runners-api-reference.md`
-
-**Decision needed:** Either:
-
-- Add DBOS runners to the official taxonomy #@yes
-- Or clarify DBOS is an implementation detail of AsyncRunner
+**Resolution:** Added `DBOSAsyncRunner` to official taxonomy
+- Updated "The Four Runners" table
+- Added to Feature Compatibility Matrix
+- Added to Capability values table
+- Added `supports_durable_execution` capability
 
 ---
 
-### 7. persistence.md Uses Old Checkpointer Interface
+### 7. persistence.md Uses Old Checkpointer Interface ✓
 
-**The problem:**
+**Was:** Used `checkpointer.load()` and missing `await` on async calls
 
-- `persistence.md:691` uses `checkpointer.load("session-123")` (old interface)
-- Canonical interface in `checkpointer.md` uses `get_workflow()`
-- Many examples missing `await` (lines 419, 420, 444, etc.) but interface is async
-
-**Files affected:** `persistence.md`
-
-**Fix needed:** Update to use `get_workflow()` and add `await` to all async calls #@great
+**Resolution:** Updated to canonical interface
+- Changed `load()` to `get_workflow()`
+- Added `await` to all `get_state()`, `get_history()`, `get_workflow()` calls
 
 ---
 
@@ -214,9 +171,11 @@ Based on reviewing all 10 spec files in `specs/reviewed/`.
 | `graph.md:596`       | `runners.md#validate_map_compatible` | `runners-api-reference.md#validate_map_compatible` |
 | `persistence.md:432` | Links to`checkpointer.md`            | Verify path is correct                             |
 
-### Missing await in persistence.md
+### ~~Missing await in persistence.md~~ ✓
 
-Lines 419, 420, 444, 466, 480, 493, 539 use `checkpointer.get_state()` without `await` but interface is async.
+~~Lines 419, 420, 444, 466, 480, 493, 539 use `checkpointer.get_state()` without `await` but interface is async.~~
+
+Fixed as part of High-Priority Issue #7.
 
 ### Duplicate Type Hierarchies
 
