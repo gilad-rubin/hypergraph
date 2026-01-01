@@ -424,11 +424,10 @@ Pause details (only present when `RunResult.status == PAUSED`):
 ```python
 @dataclass
 class PauseInfo:
-    reason: PauseReason      # HUMAN_INPUT, SLEEP, SCHEDULED, EVENT
+    reason: PauseReason      # Currently only HUMAN_INPUT
     node: str                # Name of node that paused
     response_param: str      # Key to use in inputs dict when resuming
     value: Any               # Value to show user
-    resume_at: datetime | None = None  # When to resume (for scheduled pauses)
 ```
 
 ---

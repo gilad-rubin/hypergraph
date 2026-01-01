@@ -189,13 +189,17 @@ class Checkpointer(ABC):
         pass
 ```
 
-### Sync Variant
+### Sync Variant (Future)
 
-For `SyncRunner`, implement `SyncCheckpointer`:
+> **Note:** SyncRunner currently does not support checkpointing. It is designed for simple
+> blocking scripts without persistence or interrupt support. Use AsyncRunner for workflows
+> that need persistence.
+
+If sync persistence is needed in the future, a `SyncCheckpointer` would have sync method signatures:
 
 ```python
 class SyncCheckpointer(ABC):
-    """Synchronous checkpointer for SyncRunner."""
+    """Synchronous checkpointer for SyncRunner (not yet implemented)."""
 
     def save_step(self, workflow_id: str, step: Step, result: StepResult) -> None: ...
     def get_state(self, workflow_id: str, at_step: int | None = None) -> dict[str, Any]: ...
@@ -560,7 +564,7 @@ These types map to DBOS tables for compatibility:
 
 ## See Also
 
-- [Persistence Tutorial](../tutorials/persistence.md) - How to use persistence
+- [Persistence Tutorial](persistence.md) - How to use persistence
 - [Durable Execution](durable-execution.md) - DBOS integration and advanced patterns
 - [Execution Types](execution-types.md) - Type definitions
 - [Observability](observability.md) - EventProcessor (separate from Checkpointer)

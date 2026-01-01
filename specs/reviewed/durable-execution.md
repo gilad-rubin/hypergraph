@@ -384,38 +384,29 @@ class ProgressHandler(TypedEventProcessor):
 
 ### Checkpointer Interface
 
+The full `Checkpointer` interface is defined in [checkpointer.md](checkpointer.md). Key methods:
+
 ```python
-from abc import ABC, abstractmethod
-from hypernodes.types import Workflow, Step  # See execution-types.md
-
 class Checkpointer(ABC):
-    """Base class for checkpoint storage.
+    """Base class for workflow persistence. See checkpointer.md for full interface."""
 
-    For type definitions (Workflow, Step, StepResult), see execution-types.md.
-    """
+    # Write Operations (per-step, not per-workflow)
+    async def save_step(self, workflow_id: str, step: Step, result: StepResult) -> None: ...
+    async def create_workflow(self, workflow_id: str, ...) -> Workflow: ...
+    async def update_workflow_status(self, workflow_id: str, status: WorkflowStatus) -> None: ...
 
-    @abstractmethod
-    async def save(self, workflow_id: str, workflow: Workflow) -> None:
-        """Save workflow state."""
-        ...
-
-    @abstractmethod
-    async def load(self, workflow_id: str) -> Workflow | None:
-        """Load latest state for workflow, or None if not found."""
-        ...
-
-    @abstractmethod
-    async def list_workflows(self) -> list[Workflow]:
-        """List all stored workflows."""
-        ...
-
-    @abstractmethod
-    async def get_history(self, workflow_id: str) -> list[Step]:
-        """Get step execution history for a workflow."""
-        ...
+    # Read Operations
+    async def get_state(self, workflow_id: str, at_step: int | None = None) -> dict[str, Any]: ...
+    async def get_history(self, workflow_id: str, up_to_step: int | None = None) -> list[Step]: ...
+    async def get_workflow(self, workflow_id: str) -> Workflow | None: ...
+    async def list_workflows(self, status: WorkflowStatus | None = None, limit: int = 100) -> list[Workflow]: ...
 ```
 
-**See [Execution Types](execution-types.md#persistence-types)** for `Workflow`, `Step`, `StepResult`, and status enum definitions.
+**Key principle:** Steps are the source of truth. State is computed from steps via `get_state()`, not stored separately.
+
+**See also:**
+- [Checkpointer API](checkpointer.md) - Full interface definition
+- [Execution Types](execution-types.md#persistence-types) - `Workflow`, `Step`, `StepResult` definitions
 
 ### Checkpointer Capabilities
 
@@ -636,61 +627,47 @@ Batch 0: [fetch, embed, retrieve]  ← 3 async nodes run in parallel
 
 ### Solution: Pre-register All Steps
 
-When a batch starts, we create `StepSnapshot` records for ALL nodes in the batch with `status="pending"`. As each completes, we update its status individually.
+When a batch starts, we create `Step` records for ALL nodes in the batch with `status=PENDING`. As each completes, we update its status individually.
+
+> **Note:** This is simplified pseudocode illustrating the concept. See [checkpointer.md](checkpointer.md) for the actual Checkpointer interface.
 
 ```python
-# Execution flow (simplified)
+# Execution flow (conceptual pseudocode)
 async def execute_batch(batch: list[HyperNode], workflow_id: str, start_index: int):
     # 1. Pre-register all steps as "pending"
     step_indices = []
     for i, node in enumerate(batch):
-        step_index = start_index + i
-        step = StepSnapshot(
-            workflow_id=workflow_id,
-            step_index=step_index,
+        idx = start_index + i
+        step = Step(
+            index=idx,
             node_name=node.name,
-            node_type="node",
             batch_index=batch.index,
-            status="pending",
+            status=StepStatus.PENDING,
         )
-        await checkpointer.save_step(step)
-        step_indices.append(step_index)
+        # Conceptually: register step before execution
+        step_indices.append(idx)
 
     # 2. Execute all in parallel with individual checkpointing
     async def execute_one(node: HyperNode, step_index: int):
         # Check if already completed (resume case)
-        snapshot = await checkpointer.load_step(workflow_id, step_index)
-        if snapshot and snapshot.status == "completed":
-            result = await checkpointer.load_result(workflow_id, step_index)
-            return result.outputs  # Skip, use cached result
-
-        # Update to running
-        await checkpointer.update_step(workflow_id, step_index, status="running")
+        existing = get_step_if_completed(workflow_id, step_index)
+        if existing:
+            return existing.outputs  # Skip, use cached result
 
         try:
             outputs = await node.execute(inputs)
-            # Save result separately
-            await checkpointer.save_result(StepResult(
-                workflow_id=workflow_id,
-                step_index=step_index,
-                outputs=outputs,
-            ))
-            # Update snapshot status
-            await checkpointer.update_step(
-                workflow_id, step_index,
-                status="completed",
-                completed_at=datetime.utcnow(),
+            # Save step with result
+            await checkpointer.save_step(
+                workflow_id,
+                Step(index=step_index, node_name=node.name, ...),
+                StepResult(outputs=outputs),
             )
             return outputs
         except Exception as e:
-            await checkpointer.save_result(StepResult(
-                workflow_id=workflow_id,
-                step_index=step_index,
-                error=str(e),
-            ))
-            await checkpointer.update_step(
-                workflow_id, step_index,
-                status="failed",
+            await checkpointer.save_step(
+                workflow_id,
+                Step(index=step_index, node_name=node.name, status=StepStatus.FAILED),
+                StepResult(error=str(e)),
             )
             raise
 
@@ -1217,6 +1194,6 @@ The checkpointer only sees the final result. Same behavior with any runner.
 ## See Also
 
 - [Checkpointer API](checkpointer.md) - Full interface definition and custom implementations
-- [Persistence Tutorial](../tutorials/persistence.md) - How to use persistence
+- [Persistence Tutorial](persistence.md) - How to use persistence
 - [Execution Types](execution-types.md) - Step, Workflow, and other type definitions
 - [Observability](observability.md) - EventProcessor (separate from Checkpointer)

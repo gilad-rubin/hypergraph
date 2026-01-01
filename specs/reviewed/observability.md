@@ -78,7 +78,7 @@ class BaseEvent:
 | `StreamingChunkEvent` | Generator yields | `node_name`, `chunk`, `chunk_index` |
 | `CacheHitEvent` | Cache lookup succeeded | `node_name` (emitted *before* NodeEndEvent) |
 | `RouteDecisionEvent` | Gate routes | `gate_name`, `decision` |
-| `InterruptEvent` | Paused for input | `interrupt_name`, `value`, `checkpoint` |
+| `InterruptEvent` | Paused for input | `workflow_id`, `interrupt_name`, `value`, `response_param` |
 
 ### NodeErrorEvent
 
@@ -441,9 +441,9 @@ async for event in runner.iter(graph, inputs={...}):
             status = "cached" if cached else f"{ms:.1f}ms"
             print(f"\n[{name}: {status}]")
 
-        case InterruptEvent(value=prompt, checkpoint=cp):
+        case InterruptEvent(value=prompt, workflow_id=wf_id):
             response = await get_user_input(prompt)
-            # Resume handled separately
+            # Resume via workflow_id (checkpointer or DBOS.send())
 ```
 
 **When to use `.iter()` vs processors:**
