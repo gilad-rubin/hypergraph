@@ -1173,16 +1173,14 @@ class Checkpoint:
     - Testing and debugging
     """
     outputs: dict[str, Any]
-    """Output values at this checkpoint."""
+    """Computed output values at this checkpoint (folded from StepResults)."""
 
     steps: list[Step]
-    """Step history up to this checkpoint (the implicit cursor)."""
+    """Step history up to this checkpoint (the implicit cursor).
 
-    workflow_id: str
-    """Original workflow this checkpoint came from."""
-
-    step_index: int
-    """The step index at which this checkpoint was taken."""
+    Note: This is Step metadata only (index, node_name, status).
+    The actual output values are pre-computed in `outputs`.
+    """
 ```
 
 **Why bundle outputs + steps?**
@@ -1192,6 +1190,10 @@ As established in [Step History as Implicit Cursor](#step-history-as-implicit-cu
 - Branches with shared outputs (need to know which branch)
 
 The `Checkpoint` type ensures these always travel together.
+
+**Why no workflow_id?**
+
+The checkpoint is a snapshot of *state*, not identity. When forking, you provide a new `workflow_id` separately. Including the source workflow_id would be confusing since it's not the target workflow.
 
 ### Resume vs Fork
 
@@ -1216,34 +1218,45 @@ The checkpointer handles everything. User just provides new inputs.
 # Get checkpoint at a specific step
 checkpoint = await checkpointer.get_checkpoint("order-123", at_step=5)
 
-# Fork with different inputs
+# Fork with different inputs - requires NEW workflow_id
 result = await runner.run(
     graph,
     inputs={"decision": "reject"},  # Different choice this time
-    from_checkpoint=checkpoint,
+    checkpoint=checkpoint,
     workflow_id="order-123-retry",  # NEW workflow ID for the fork
 )
 ```
 
 Fork creates a new workflow that starts from the checkpoint state.
 
+**Mutual Exclusivity:**
+
+| `workflow_id` exists? | `checkpoint` provided? | Behavior |
+|:---------------------:|:----------------------:|----------|
+| ❌ No | ❌ No | Error: workflow_id required when checkpointer present |
+| ✅ Yes (new) | ❌ No | Fresh start |
+| ✅ Yes (existing) | ❌ No | Resume from checkpointer state |
+| ✅ Yes (new) | ✅ Yes | Fork: new workflow from checkpoint |
+| ✅ Yes (existing) | ✅ Yes | Error: can't fork into existing workflow |
+
 **API Summary:**
 
 | Pattern | Parameters | Use Case |
 |---------|------------|----------|
-| Fresh start | `inputs=`, `workflow_id=` | New workflow |
-| Resume | `inputs=`, `workflow_id=` (same ID) | Continue paused/crashed workflow |
-| Fork | `inputs=`, `from_checkpoint=`, `workflow_id=` (new ID) | Retry from past point |
+| Fresh start | `inputs=`, `workflow_id=` (new ID) | New workflow |
+| Resume | `inputs=`, `workflow_id=` (existing ID) | Continue paused/crashed workflow |
+| Fork | `inputs=`, `checkpoint=`, `workflow_id=` (new ID) | Retry from past point |
 
 **Without checkpointer (manual state management):**
 
 ```python
-# You manage storage - must provide both outputs AND history
+# You manage storage - must provide checkpoint
 result = await runner.run(
     graph,
-    inputs={**saved_outputs, **new_inputs},
-    history=saved_steps,  # Required for cycles/branches
+    inputs={**new_inputs},  # New inputs only
+    checkpoint=checkpoint,   # Contains outputs + steps
 )
+# No workflow_id needed without checkpointer
 ```
 
 ---
@@ -1268,10 +1281,10 @@ Internal Types (not user-facing):
 Persistence Types:
 ├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED, WAITING)
 ├── WorkflowStatus (enum: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
-├── Step (individual step record)
+├── Step (individual step record: index, node_name, status)
 ├── StepResult (step outputs + pause info, only persist=True values)
 ├── Workflow (workflow execution record)
-└── Checkpoint (point-in-time snapshot: outputs + steps for fork/resume)
+└── Checkpoint (point-in-time snapshot: computed outputs + step history)
 
 Event Hierarchy (all include span_id, parent_span_id for hierarchy):
 ├── RunStartEvent

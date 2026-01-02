@@ -139,6 +139,28 @@ class Checkpointer(ABC):
         """
         ...
 
+    async def get_checkpoint(
+        self,
+        workflow_id: str,
+        at_step: int | None = None,
+    ) -> Checkpoint:
+        """
+        Get a checkpoint for forking workflows.
+
+        Combines get_state() and get_history() into a single Checkpoint object.
+        Default implementation calls both; subclasses may optimize.
+
+        Args:
+            workflow_id: Unique workflow identifier
+            at_step: Step index to checkpoint at (None = latest)
+
+        Returns:
+            Checkpoint with computed outputs and step history
+        """
+        outputs = await self.get_state(workflow_id, at_step=at_step)
+        steps = await self.get_history(workflow_id, up_to_step=at_step)
+        return Checkpoint(outputs=outputs, steps=steps)
+
     @abstractmethod
     async def get_workflow(
         self,
@@ -320,7 +342,7 @@ runner = AsyncRunner(checkpointer=checkpointer)
 | List workflows | ✅ | ✅ | ✅ |
 | Step history | ✅ | ✅ | ✅ |
 | Automatic crash recovery | ❌ | ❌ | ✅ |
-| Workflow forking | Manual | Manual | ✅ |
+| Workflow forking (get_checkpoint) | ✅ | ✅ | ✅ |
 | Multi-server | ❌ | ✅ | ✅ |
 
 ---
@@ -565,6 +587,12 @@ class WorkflowStatus(Enum):
     SUCCESS = "SUCCESS"
     ERROR = "ERROR"
     CANCELLED = "CANCELLED"
+
+@dataclass
+class Checkpoint:
+    """A point-in-time snapshot for forking workflows."""
+    outputs: dict[str, Any]     # Computed state at this point
+    steps: list[Step]           # Step history (the implicit cursor)
 ```
 
 ### Pause Persistence
