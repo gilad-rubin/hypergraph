@@ -1094,6 +1094,47 @@ result = StepResult(
 )
 ```
 
+### Steps vs StepResults: What Gets Saved
+
+**Steps are saved for ALL executed nodes**, regardless of the `persist` setting. **StepResults (outputs) are only saved for `persist=True` nodes.**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Step (always saved)           │  StepResult (conditional)      │
+├────────────────────────────────┼────────────────────────────────┤
+│  index: 0                      │  outputs: None                 │
+│  node_name: "embed"            │  (persist=False, not saved)    │
+│  status: COMPLETED             │                                │
+├────────────────────────────────┼────────────────────────────────┤
+│  index: 1                      │  outputs: {"answer": "..."}    │
+│  node_name: "generate"         │  (persist=True, saved)         │
+│  status: COMPLETED             │                                │
+└────────────────────────────────┴────────────────────────────────┘
+```
+
+**Why save steps for non-persisted nodes?**
+
+Steps serve as the **implicit cursor** (see [Step History as Implicit Cursor](#step-history-as-implicit-cursor)). Without step history for all nodes:
+- Cycles break (can't track iteration count)
+- Branch disambiguation breaks (can't tell which branch was taken)
+
+The `persist` flag only controls whether `StepResult.outputs` is populated.
+
+### Resume Behavior: Skip vs Re-Execute
+
+On resume, a node is **skipped** only if:
+1. It appears in step history as `COMPLETED`
+2. **AND** its output is available in `checkpoint.outputs`
+
+If the step exists but output is missing (non-persisted node), the node **re-executes**:
+
+```python
+def should_skip_node(node, checkpoint):
+    completed = node.name in {s.node_name for s in checkpoint.steps if s.status == COMPLETED}
+    output_available = node.output_name in checkpoint.outputs
+    return completed and output_available  # Both conditions required
+```
+
 ### WorkflowStatus (DBOS-compatible)
 
 ```python
@@ -1229,15 +1270,16 @@ result = await runner.run(
 
 Fork creates a new workflow that starts from the checkpoint state.
 
-**Mutual Exclusivity:**
+**Parameter Combinations:**
 
-| `workflow_id` exists? | `checkpoint` provided? | Behavior |
-|:---------------------:|:----------------------:|----------|
-| ❌ No | ❌ No | Error: workflow_id required when checkpointer present |
-| ✅ Yes (new) | ❌ No | Fresh start |
-| ✅ Yes (existing) | ❌ No | Resume from checkpointer state |
-| ✅ Yes (new) | ✅ Yes | Fork: new workflow from checkpoint |
-| ✅ Yes (existing) | ✅ Yes | Error: can't fork into existing workflow |
+| `workflow_id` | `checkpoint` | Behavior |
+|:-------------:|:------------:|----------|
+| ❌ None | ❌ None | With checkpointer: Error. Without: OK (ephemeral run) |
+| ❌ None | ✅ Yes | Fork with auto-generated workflow_id |
+| ✅ New ID | ❌ None | Fresh start |
+| ✅ Existing ID | ❌ None | Resume from checkpointer state |
+| ✅ New ID | ✅ Yes | Fork with explicit workflow_id |
+| ✅ Existing ID | ✅ Yes | Error: can't fork into existing workflow |
 
 **API Summary:**
 

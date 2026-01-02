@@ -65,17 +65,28 @@ When determining what value to use for a parameter, hypergraph checks these sour
 
 ### How Inputs Are Merged
 
-When you call `runner.run()` with a `workflow_id`, the runner merges checkpoint state with your inputs **before** execution:
+At the **start of a run**, the runner merges prior state with your inputs:
 
 ```python
 # What you write:
 result = await runner.run(graph, inputs={"user_input": "Hi"}, workflow_id="chat-123")
 
-# What happens internally:
-checkpoint_state = await checkpointer.get_state("chat-123")  # {"messages": [...]}
-merged_inputs = {**checkpoint_state, **inputs}               # inputs win on conflicts
-# merged_inputs = {"messages": [...], "user_input": "Hi"}
+# What happens internally (three possible cases):
+
+# Case 1: Resume existing workflow (workflow_id exists in checkpointer)
+loaded_state = await checkpointer.get_state("chat-123")  # {"messages": [...]}
+merged = {**loaded_state, **inputs}  # inputs override loaded state
+
+# Case 2: Fork from checkpoint (explicit checkpoint parameter)
+merged = {**checkpoint.outputs, **inputs}  # inputs override checkpoint
+
+# Case 3: Fresh start (new workflow_id, no checkpoint)
+merged = {**inputs}  # just inputs
 ```
+
+**The hierarchy is:** `inputs > (checkpoint.outputs OR loaded_state) > bind() > function defaults`
+
+Inputs always win on conflicts. This ensures new data takes precedence over restored state.
 
 This means the value resolution during execution is simple — checkpoint values are just part of the merged inputs.
 

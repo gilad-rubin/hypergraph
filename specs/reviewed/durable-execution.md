@@ -145,6 +145,23 @@ Resume:
   ✅ Complete
 ```
 
+### Steps vs Outputs: What Gets Saved
+
+**Steps are saved for ALL executed nodes**, regardless of `persist`. **Outputs are only saved for `persist=True` nodes.**
+
+| What | Saved? | Purpose |
+|------|:------:|---------|
+| Step metadata (index, node_name, status) | Always | Implicit cursor for cycles/branches |
+| StepResult.outputs | Only if `persist=True` | Value recovery on resume |
+
+This is important because step history serves as the **implicit cursor** for resumption:
+- **Cycles:** Step count tracks iteration number
+- **Branches:** Steps show which branch was taken
+
+A node is **skipped on resume** only if it's completed AND its output is available. If the step exists but output is missing (non-persisted), the node re-executes.
+
+See [Step History as Implicit Cursor](execution-types.md#step-history-as-implicit-cursor) for details.
+
 ### Important Notes
 
 1. **Non-determinism is OK** — If non-persisted nodes produce slightly different outputs on resume (e.g., embedding model updates), that's expected. Users working with AI understand non-determinism.

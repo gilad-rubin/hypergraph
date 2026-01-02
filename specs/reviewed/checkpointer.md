@@ -274,20 +274,33 @@ See [Observability](observability.md) for EventProcessor details.
 
 ```
 Steps (stored):
-  Step 0: node="fetch",    outputs={"data": {...}}
-  Step 1: node="process",  outputs={"result": {...}}
-  Step 2: node="generate", outputs={"answer": "..."}
+  Step 0: node="embed",    outputs=None           ← persist=False
+  Step 1: node="retrieve", outputs=None           ← persist=False
+  Step 2: node="generate", outputs={"answer": "..."} ← persist=True
 
-State (computed):
-  get_state(at_step=2) → {"data": {...}, "result": {...}, "answer": "..."}
+State (computed from persisted outputs only):
+  get_state(at_step=2) → {"answer": "..."}
 ```
+
+### What Gets Saved
+
+**Steps are saved for ALL executed nodes.** This is required for the implicit cursor (tracking position in cycles and branches).
+
+**Outputs are only saved for `persist=True` nodes.** This controls storage size.
+
+| Component | Saved? | Contains |
+|-----------|:------:|----------|
+| Step | Always | index, node_name, status, batch_index |
+| StepResult.outputs | Only if `persist=True` | Actual output values |
+
+On resume, non-persisted nodes re-execute (their step exists but output is missing).
 
 ### Implications
 
 - **Single source of truth**: Steps are authoritative; state is derived
 - **Time travel**: Get state at any historical point
 - **No sync issues**: State can never be "out of sync" with steps
-- **Storage efficiency**: No duplicate state snapshots
+- **Storage efficiency**: Only persist what matters
 
 ### When to Use Each
 
