@@ -75,15 +75,55 @@ Unlike sequential workflow systems (DBOS, Temporal) that track an explicit progr
 |------------|:-------------:|----------|
 | DAG with unique outputs | ✅ | Output existence = node completed |
 | Cycles | ❌ | Need iteration count (step index) |
-| Shared output names | ❌ | Need to know which node produced the output |
+| Branches with shared intermediates | ❌ | Need to know which branch was taken |
 
-**Example: Shared output name (accumulator pattern)**
+**Example 1: Cycles need iteration count**
 
 ```
-user_input (→ messages) → process → accumulate (→ messages) → generate
+generate(messages) → accumulate(messages, response) → check_done → generate
 ```
 
-If checkpoint contains `messages`, which node produced it? Both `user_input` and `accumulate` write to `messages`. Without step history, we can't know if `accumulate` has run.
+If checkpoint contains `{"messages": [...], "response": "..."}`:
+
+- **Scenario A:** Crashed after `generate`, before `accumulate`
+  - `messages` = [user message]
+  - `response` = "answer" (fresh, needs to be accumulated)
+
+- **Scenario B:** Crashed after `accumulate`, before `check_done`
+  - `messages` = [user message, assistant response]
+  - `response` = "answer" (stale, already in messages)
+
+With just outputs, we can't distinguish A from B. In A, we should run `accumulate`. In B, we should run `check_done`. **Step history tells us which node last completed.**
+
+**Example 2: Branches with shared intermediate outputs**
+
+```python
+@route(targets=["branch_a", "branch_b"])
+def router(data: str) -> str: ...
+
+# Branch A
+@node(output_name="processed")
+def process_a(data: str) -> str: ...
+
+@node(output_name="result")
+def finalize_a(processed: str) -> str: ...
+
+# Branch B
+@node(output_name="processed")
+def process_b(data: str) -> str: ...
+
+@node(output_name="result")
+def finalize_b(processed: str) -> str: ...
+```
+
+If we crash after `process_a` with `outputs = {"processed": "..."}`:
+
+- `finalize_a` needs `processed` → exists ✓ → can run
+- `finalize_b` needs `processed` → exists ✓ → can run
+
+**Both finalize nodes appear runnable!** Without step history, we don't know we're "in" branch A. Step history shows `process_a` completed (not `process_b`), disambiguating which finalize should run.
+
+> **Note:** hypergraph does NOT require unique intermediate output names in branches. Instead, step history disambiguates. This is more flexible for users.
 
 **The resume algorithm:**
 
@@ -1120,6 +1160,92 @@ Child:  "order-123/rag"
 Deeply nested: "order-123/rag/inner"
 ```
 
+### Checkpoint
+
+```python
+@dataclass
+class Checkpoint:
+    """A point-in-time snapshot of workflow state.
+
+    Bundles outputs + step history together. Used for:
+    - Forking from a past point
+    - Manual resume without checkpointer
+    - Testing and debugging
+    """
+    outputs: dict[str, Any]
+    """Output values at this checkpoint."""
+
+    steps: list[Step]
+    """Step history up to this checkpoint (the implicit cursor)."""
+
+    workflow_id: str
+    """Original workflow this checkpoint came from."""
+
+    step_index: int
+    """The step index at which this checkpoint was taken."""
+```
+
+**Why bundle outputs + steps?**
+
+As established in [Step History as Implicit Cursor](#step-history-as-implicit-cursor), outputs alone are insufficient for:
+- Cycles (need iteration count)
+- Branches with shared outputs (need to know which branch)
+
+The `Checkpoint` type ensures these always travel together.
+
+### Resume vs Fork
+
+Two distinct patterns for continuing execution:
+
+**Resume: Continue the same workflow**
+
+```python
+# Same workflow_id → checkpointer loads state automatically
+result = await runner.run(
+    graph,
+    inputs={"decision": "approve"},
+    workflow_id="order-123",  # Checkpointer finds and loads state
+)
+```
+
+The checkpointer handles everything. User just provides new inputs.
+
+**Fork: Start new workflow from past point**
+
+```python
+# Get checkpoint at a specific step
+checkpoint = await checkpointer.get_checkpoint("order-123", at_step=5)
+
+# Fork with different inputs
+result = await runner.run(
+    graph,
+    inputs={"decision": "reject"},  # Different choice this time
+    from_checkpoint=checkpoint,
+    workflow_id="order-123-retry",  # NEW workflow ID for the fork
+)
+```
+
+Fork creates a new workflow that starts from the checkpoint state.
+
+**API Summary:**
+
+| Pattern | Parameters | Use Case |
+|---------|------------|----------|
+| Fresh start | `inputs=`, `workflow_id=` | New workflow |
+| Resume | `inputs=`, `workflow_id=` (same ID) | Continue paused/crashed workflow |
+| Fork | `inputs=`, `from_checkpoint=`, `workflow_id=` (new ID) | Retry from past point |
+
+**Without checkpointer (manual state management):**
+
+```python
+# You manage storage - must provide both outputs AND history
+result = await runner.run(
+    graph,
+    inputs={**saved_outputs, **new_inputs},
+    history=saved_steps,  # Required for cycles/branches
+)
+```
+
 ---
 
 ## Type Hierarchy
@@ -1144,7 +1270,8 @@ Persistence Types:
 ├── WorkflowStatus (enum: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
 ├── Step (individual step record)
 ├── StepResult (step outputs + pause info, only persist=True values)
-└── Workflow (workflow execution record)
+├── Workflow (workflow execution record)
+└── Checkpoint (point-in-time snapshot: outputs + steps for fork/resume)
 
 Event Hierarchy (all include span_id, parent_span_id for hierarchy):
 ├── RunStartEvent
