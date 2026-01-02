@@ -65,6 +65,48 @@ After Node Completion:
 
 **Key insight:** When a node produces output, the value exists once in memory. Events reference this value (in memory) for observability. The checkpointer serializes and stores a copy (only if `persist=True`) for durability. They are separate concerns with separate interfaces.
 
+### Step History as Implicit Cursor
+
+Unlike sequential workflow systems (DBOS, Temporal) that track an explicit program counter, hypergraph uses **step history as an implicit cursor**. The combination of outputs + completed steps determines what runs next.
+
+**Why outputs alone aren't sufficient:**
+
+| Graph Type | Outputs Only? | Why Not? |
+|------------|:-------------:|----------|
+| DAG with unique outputs | ✅ | Output existence = node completed |
+| Cycles | ❌ | Need iteration count (step index) |
+| Shared output names | ❌ | Need to know which node produced the output |
+
+**Example: Shared output name (accumulator pattern)**
+
+```
+user_input (→ messages) → process → accumulate (→ messages) → generate
+```
+
+If checkpoint contains `messages`, which node produced it? Both `user_input` and `accumulate` write to `messages`. Without step history, we can't know if `accumulate` has run.
+
+**The resume algorithm:**
+
+```python
+def get_runnable_nodes(graph, available_outputs, completed_steps):
+    return [
+        node for node in graph.nodes
+        if all(input in available_outputs for input in node.inputs)  # Can run
+        and node.name not in completed_steps  # Hasn't run yet
+    ]
+```
+
+This is the **same algorithm** used for fresh starts and resumes - only the initial state differs:
+
+| Scenario | `available_outputs` | `completed_steps` |
+|----------|---------------------|-------------------|
+| Fresh start | `inputs` dict | `{}` empty |
+| Resume | Checkpoint outputs | Step records with `status=COMPLETED` |
+
+**The implicit cursor is:** `(available_outputs, set of completed node names)`
+
+This is encoded in the step history, not as a separate pointer. The graph structure constrains execution paths, so given this state, there's exactly one deterministic answer to "what runs next?"
+
 ---
 
 ## Quick Navigation
