@@ -1135,6 +1135,33 @@ def should_skip_node(node, checkpoint):
     return completed and output_available  # Both conditions required
 ```
 
+### Re-execution Warning
+
+When resuming, the runner **logs a warning** if any nodes will re-execute due to missing outputs:
+
+```python
+# In runner.run() after loading checkpoint:
+def _check_reexecution(self, checkpoint: Checkpoint, graph: Graph) -> None:
+    completed = {s.node_name for s in checkpoint.steps if s.status == COMPLETED}
+    has_output = {
+        node.name for node in graph.nodes
+        if node.output_name in checkpoint.outputs
+    }
+
+    will_reexecute = completed - has_output
+
+    if will_reexecute:
+        logger.warning(
+            f"Resuming workflow will re-execute {len(will_reexecute)} "
+            f"non-persisted nodes: {sorted(will_reexecute)}. "
+            f"To avoid re-execution, add their outputs to persist=[...]."
+        )
+```
+
+This warning helps users understand:
+- Which nodes will run again (even though they completed before)
+- How to change `persist` settings to avoid re-execution if desired
+
 ### WorkflowStatus (DBOS-compatible)
 
 ```python
