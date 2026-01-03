@@ -1,3 +1,7 @@
+<design_principles>
+These principles guide code structure decisions. Follow them to produce maintainable, testable Python code.
+</design_principles>
+
 # Planning
 
 - Separate what's important to design now (even futuristic things that affect the present)

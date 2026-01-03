@@ -1,35 +1,44 @@
-**This project is in design mode. Only markdown is needed**
-**Updated design specs are in specs/reviewed. Please search and read there when not sure**
+<project_mode>
+This project is in design mode. Only markdown is needed.
+Updated design specs are in specs/reviewed - search there when uncertain.
+</project_mode>
 
-see @specs/reviewed/README.md for the overview
+See @specs/reviewed/README.md for the overview.
 
-## General
-- use uv run X to run scripts
-- use trash X instead of rm X. This allows me to rescue deleted files if I need.
-- **commit frequently** using "Conventional Commits" https://www.conventionalcommits.org/en/v1.0.0/
-- when we're discussing design and building docs, use ELI5 (but more like ELI20) to explain the issue and considerations. one good example is usually worth a 1000 words. **use this frequently** when something is not working or when we're considering alternatives.
-- when making changes in the codebase - run them to verify everything works
-- if an API key is needed, first check in the .env to make sure it exists. use dotenv to load if needed.
-- prefer to search online and in documentations before acting
-- tests go to tests folder. scripts go to scripts folder
-- when you're finished with a task - you can write a summary, but just one is enough. no need for multiple summaries and markdowns.
-- update .ruler/2-code-structure.md if you've changed something in the code structure :)
+## Workflow
+
+- Use `uv run X` for scripts (ensures consistent dependencies)
+- Use `trash X` instead of `rm X` (allows file recovery)
+- Commit frequently using Conventional Commits format
+- When discussing design, use ELI5 (closer to ELI20) explanations with concrete examples - one good example is worth a thousand words
+- Run code changes to verify they work before moving on
+- Check `.env` for API keys before requesting them; use dotenv to load
+- Search documentation before implementing unfamiliar patterns
+- Place tests in `tests/`, scripts in `scripts/`
+- Provide one summary when finishing a task (not multiple)
 
 ## Coding Principles
-- When designing and implementing features - always prefer using SOLID principles.
-- Use simple, human readable functions rather than massive long indented functions.
-- Split classes functions into helper functions if needed
+
+Follow SOLID principles. Use simple, readable functions rather than deeply nested ones. Split large functions into focused helpers when needed.
 
 ## Tools
-- use context7 and MCP servers whenever you're stuck or want to understand how a library works
+
+Use Context7 and MCP servers to understand unfamiliar libraries.
 
 ## Jupyter
-- Use concise, human readable cells
-- avoid redundancy in notebooks. keep the cells and notebook as a whole concise.
-- avoid using "special" emojis in jupyter, it can crash the notebook. you can use basic ones, like X, V etc...
-- remember that jupyter has its own async handling. remember to use the correct syntax.
-- If you're editing a module while reviewing the output in jupyter, remember to either restart the kernel or reload the module to see changes
 
-- jupyter notebook's working directory is the project's working directory, so no need to do sys.path.insert(0, '/Users/...')
-- run cells after you create them to verify things work as expected. read the output and decide what to do next
-- when trying to figure out something about an object - iterate over it by running the cell and examining the output and refining
+<jupyter_guidelines>
+Keep cells concise and eliminate redundancy. Use only basic emojis (checkmarks, X marks) - special emojis can crash notebooks.
+
+Jupyter has its own async handling - use appropriate syntax. When editing modules, restart the kernel or reload to see changes.
+
+The notebook's working directory is the project root - no sys.path manipulation needed. Run cells after creation to verify output, then iterate by examining output and refining.
+</jupyter_guidelines>
+
+## Maintaining Instructions
+
+After making significant code structure changes, update the relevant .ruler/ markdown files and run:
+```bash
+ruler apply --agents cursor,claude
+```
+This regenerates CLAUDE.md, AGENTS.md and syncs instructions to all configured agents.
