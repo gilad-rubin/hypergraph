@@ -1074,7 +1074,7 @@ class GraphNode(HyperNode):
 
                 When True: run remaining nodes even when a streaming
                 node is stopped by the user. Streaming nodes save partial
-                output (marked truncated=True). Ensures cleanup nodes execute.
+                output (marked partial=True). Ensures cleanup nodes execute.
 
                 When False: stop propagates immediately, skip remaining nodes.
 

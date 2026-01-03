@@ -43,7 +43,7 @@ class Graph:
             complete_on_stop: Behavior when a stop signal is received during execution.
 
                 True:
-                  - Streaming nodes: save partial output, mark step COMPLETED with truncated=True
+                  - Streaming nodes: save partial output, mark step COMPLETED with partial=True
                   - Regular nodes being stopped: mark step STOPPED (no output possible)
                   - Continue executing remaining nodes in the graph
 

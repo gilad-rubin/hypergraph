@@ -38,6 +38,31 @@ Graph Definition  →  Runtime State  →  Results & Events
 - **Observability** - Logging, tracing (Langfuse, Logfire)
 - **Durability** - Checkpoint persistence (Redis, PostgreSQL, SQLite)
 
+### Terminology: inputs vs values
+
+| Term | Where used | Meaning |
+|------|------------|---------|
+| `inputs` | `runner.run(inputs=...)`, `NodeStartEvent.inputs` | Data passed into a run or node |
+| `values` | `RunResult.values`, `StepResult.values`, `GraphState.values` | Accumulated state / computed outputs |
+
+Use `inputs` when calling the runner. Use `values` when accessing results.
+
+### Terminology: interrupt vs pause
+
+| Term | Where used | Meaning |
+|------|------------|---------|
+| **Interrupt** | `InterruptNode`, `InterruptEvent` | The action/mechanism that causes execution to wait |
+| **Pause** | `RunStatus.PAUSED`, `PauseInfo`, `PauseReason` | The resulting state when execution is waiting |
+
+**Think of it as:** The `InterruptNode` *interrupts* execution, causing the run to be in a *paused* state.
+
+| Layer | Term Used |
+|-------|-----------|
+| Node type | `InterruptNode` (the action) |
+| Event | `InterruptEvent` (the action happening) |
+| Status | `PAUSED` (the resulting state) |
+| Info | `PauseInfo` (details about the paused state) |
+
 ### Events vs Steps: Ephemeral vs Durable
 
 hypergraph separates two distinct record types:
@@ -64,6 +89,8 @@ After Node Completion:
 ```
 
 **Key insight:** When a node produces output, the value exists once in memory. Events reference this value (in memory) for observability. The checkpointer serializes and stores a copy for durability. They are separate concerns with separate interfaces.
+
+**Persistence policy: All outputs are persisted.** There is no selective persistence - when a checkpointer is configured, every node's output is saved. This ensures reliable crash recovery and workflow forking. If you need to exclude sensitive data from persistence, handle it at the serialization layer (e.g., custom serializer that redacts fields).
 
 ### Step History as Implicit Cursor
 
@@ -536,8 +563,11 @@ class PauseInfo:
     reason: PauseReason
     """Why we're paused (currently only HUMAN_INPUT)."""
 
-    node: str
-    """Name of the node that caused the pause."""
+    node_name: str
+    """Name of the node that caused the pause.
+
+    For nested graphs, this is the full path (e.g., "review/approval").
+    """
 
     response_param: str
     """Parameter name to use when resuming (the key for inputs dict)."""
@@ -575,6 +605,9 @@ class RunResult:
 
     pause: PauseInfo | None = None
     """Pause details (only set when status == PAUSED)."""
+
+    error: str | None = None
+    """Error message (only set when status == FAILED)."""
 
     # === Dict-like access for convenience ===
 
@@ -617,7 +650,7 @@ from hypergraph.checkpointers import SqliteCheckpointer
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 result = await runner.run(
     graph,
-    values={"query": "hello"},
+    inputs={"query": "hello"},
     workflow_id="session-123",
 )
 
@@ -646,7 +679,7 @@ outer = Graph(nodes=[
     postprocess,
 ])
 
-result = await runner.run(outer, values={...}, workflow_id="order-123")
+result = await runner.run(outer, inputs={...}, workflow_id="order-123")
 
 # Access nested graph results
 result["final_output"]                    # Top-level output
@@ -665,7 +698,7 @@ result["review"]["draft"]                 # Output from nested graph
 When a nested graph contains an `InterruptNode` and pauses, the pause propagates up:
 
 ```python
-result = await runner.run(outer, values={...}, workflow_id="order-123")
+result = await runner.run(outer, inputs={...}, workflow_id="order-123")
 
 # Check overall status
 if result.status == RunStatus.PAUSED:
@@ -674,12 +707,12 @@ if result.status == RunStatus.PAUSED:
         print("RAG completed")
 
     if result["review"].status == RunStatus.PAUSED:
-        print(f"Review paused at: {result['review'].pause.node}")
+        print(f"Review paused at: {result['review'].pause.node_name}")
         print(f"Value to show user: {result['review'].pause.value}")
         print(f"Nested workflow ID: {result['review'].workflow_id}")  # "order-123/review"
 
 # The top-level pause info points to the nested interrupt
-print(result.pause.node)  # "review/approval" (path to the interrupt)
+print(result.pause.node_name)  # "review/approval" (path to the interrupt)
 ```
 
 **Pause propagation rules:**
@@ -695,14 +728,14 @@ To resume a paused nested graph:
 # Option 1: Resume the outer graph (checkpointer handles nesting)
 result = await runner.run(
     outer,
-    values={result.pause.response_param: user_response},
+    inputs={result.pause.response_param: user_response},
     workflow_id="order-123",
 )
 
 # Option 2: Resume the nested graph directly (advanced)
 result = await runner.run(
     review_pipeline,
-    values={"decision": user_response},
+    inputs={"decision": user_response},
     workflow_id="order-123/review",  # Nested workflow ID
 )
 ```
@@ -717,7 +750,7 @@ from hypergraph.runners import DBOSAsyncRunner
 runner = DBOSAsyncRunner()
 result = await runner.run(
     graph,
-    values={"prompt": "Write a poem"},
+    inputs={"prompt": "Write a poem"},
     workflow_id="poem-456",
 )
 
@@ -773,6 +806,24 @@ class RunHandle:
         """
         ...
 
+    def stop(self) -> None:
+        """
+        Request graceful stop of execution.
+
+        - Currently executing nodes will complete (or save partial output if streaming)
+        - No new nodes will start
+        - Iteration will end after in-flight work completes
+        - Final result will have status=STOPPED
+
+        Behavior depends on node's `complete_on_stop` setting:
+        - complete_on_stop=True (default for streaming): Save partial output
+        - complete_on_stop=False: No output saved for this node
+
+        This is a request, not immediate cancellation. Use for user-initiated
+        cancellation (e.g., "Stop" button in UI).
+        """
+        ...
+
     @property
     def result(self) -> RunResult:
         """
@@ -787,7 +838,7 @@ class RunHandle:
 ### Example
 
 ```python
-async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-123") as run:
+async with runner.iter(graph, inputs={"query": "hello"}, workflow_id="session-123") as run:
     async for event in run:
         match event:
             case StreamingChunkEvent(chunk=chunk):
@@ -825,6 +876,34 @@ timestamp: float         # Unix timestamp
 
 The `span_id` → `parent_span_id` relationship forms a tree, enabling observability tools to visualize nested graph execution. See [Observability](observability.md) for details.
 
+### RunStartEvent
+
+```python
+@dataclass
+class RunStartEvent:
+    run_id: str
+    span_id: str             # Root span for this run
+    parent_span_id: str | None  # None for top-level, set for nested graphs
+    workflow_id: str | None  # Workflow identifier if using checkpointer
+    graph_name: str          # Name of the graph being executed
+    timestamp: float
+```
+
+### RunEndEvent
+
+```python
+@dataclass
+class RunEndEvent:
+    run_id: str
+    span_id: str             # Same as RunStartEvent.span_id
+    parent_span_id: str | None
+    workflow_id: str | None
+    status: RunStatus        # COMPLETED, FAILED, PAUSED, or STOPPED
+    error: str | None        # Error message if status == FAILED
+    duration_ms: float
+    timestamp: float
+```
+
 ### NodeStartEvent
 
 ```python
@@ -854,6 +933,23 @@ class NodeEndEvent:
     timestamp: float
 ```
 
+### CacheHitEvent
+
+Emitted when a node's result is retrieved from cache (before `NodeEndEvent`). Useful for cache analytics.
+
+```python
+@dataclass
+class CacheHitEvent:
+    run_id: str
+    span_id: str
+    parent_span_id: str | None
+    node_name: str
+    cache_key: str           # The cache key that matched
+    timestamp: float
+```
+
+**Note:** When a cache hit occurs, you'll see both `CacheHitEvent` (for cache analytics) and `NodeEndEvent` with `cached=True` (for general observability). The `CacheHitEvent` provides cache-specific details.
+
 ### StreamingChunkEvent
 
 ```python
@@ -877,7 +973,7 @@ class InterruptEvent:
     span_id: str
     parent_span_id: str | None
     workflow_id: str        # Use this to resume via checkpointer or DBOS.send()
-    interrupt_name: str
+    node_name: str          # Name of the InterruptNode (path for nested graphs)
     value: Any              # Value to show user
     response_param: str     # Where to write response
     timestamp: float
@@ -893,8 +989,8 @@ class RouteDecisionEvent:
     run_id: str
     span_id: str
     parent_span_id: str | None
-    gate_name: str
-    decision: str  # Target node name or "END"
+    node_name: str   # Name of the gate/route node
+    decision: str    # Target node name or "END"
     timestamp: float
 ```
 
@@ -914,6 +1010,22 @@ class NodeErrorEvent:
 
 **Note:** After `NodeErrorEvent`, execution may continue (if error is handled) or terminate. `RunEndEvent` is still emitted with error status. Processors' `shutdown()` is always called.
 
+### StopRequestedEvent
+
+Emitted when `RunHandle.stop()` is called. Allows UIs to react immediately (e.g., show "Stopping..." indicator) without waiting for `RunEndEvent`.
+
+```python
+@dataclass
+class StopRequestedEvent:
+    run_id: str
+    span_id: str             # Run's root span
+    parent_span_id: str | None
+    workflow_id: str | None
+    timestamp: float
+```
+
+**Note:** After `StopRequestedEvent`, in-flight nodes will complete and `RunEndEvent` will follow with `status=STOPPED`.
+
 ### Example
 
 ```python
@@ -929,7 +1041,7 @@ async with runner.iter(graph, inputs={...}) as run:
             case StreamingChunkEvent(chunk=chunk):
                 print(chunk, end="")
 
-            case InterruptEvent(interrupt_name=name, value=prompt):
+            case InterruptEvent(node_name=name, value=prompt):
                 print(f"Paused at: {name}")
                 # Handle interrupt
 ```
@@ -976,7 +1088,7 @@ print(result.values["answer"])
 ### Using `.iter()` - Handle Inline
 
 ```python
-async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-123") as run:
+async with runner.iter(graph, inputs={"query": "hello"}, workflow_id="session-123") as run:
     async for event in run:
         match event:
             case StreamingChunkEvent(chunk=chunk):
@@ -1122,20 +1234,20 @@ The checkpointer manages state internally - you resume by `workflow_id`, not by 
 # When interrupt occurs, store the workflow_id (not checkpoint bytes)
 async def handle_interrupt(event: InterruptEvent):
     await db.execute(
-        "INSERT INTO pending_approvals (workflow_id, interrupt_name, value) VALUES (?, ?, ?)",
-        (event.workflow_id, event.interrupt_name, serialize(event.value))
+        "INSERT INTO pending_approvals (workflow_id, node_name, value) VALUES (?, ?, ?)",
+        (event.workflow_id, event.node_name, serialize(event.value))
     )
 
 # Resume from stored workflow_id
 async def resume_execution(workflow_id: str, user_response: Any):
     pending = await db.fetch_one(
-        "SELECT interrupt_name FROM pending_approvals WHERE workflow_id = ?",
+        "SELECT node_name FROM pending_approvals WHERE workflow_id = ?",
         (workflow_id,)
     )
 
     result = await runner.run(
         graph,
-        inputs={pending["interrupt_name"]: user_response},
+        inputs={pending["node_name"]: user_response},
         workflow_id=workflow_id,  # Checkpointer auto-detects paused state
     )
     return result
@@ -1416,8 +1528,8 @@ The checkpointer handles everything. User just provides new inputs.
 **Fork: Start new workflow from past point**
 
 ```python
-# Get checkpoint at a specific step
-checkpoint = await checkpointer.get_checkpoint("order-123", at_step=5)
+# Get checkpoint at a specific superstep
+checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 # Fork with different inputs - requires NEW workflow_id
 result = await runner.run(
@@ -1470,11 +1582,12 @@ User-Facing Types:
 ├── RunResult (primary result type, supports nesting)
 │   ├── values: dict[str, Any | RunResult]  ← nested graphs are RunResult
 │   ├── status: RunStatus
-│   ├── pause: PauseInfo | None
+│   ├── pause: PauseInfo | None  ← only when PAUSED
+│   ├── error: str | None        ← only when FAILED
 │   └── workflow_id, run_id
 ├── RunStatus (enum: COMPLETED, FAILED, PAUSED, STOPPED)
 ├── PauseReason (enum: HUMAN_INPUT)
-├── PauseInfo (pause details: reason, node, value, response_param)
+├── PauseInfo (pause details: reason, node_name, value, response_param)
 └── RunHandle (streaming execution handle from .iter())
 
 Internal Types (not user-facing):
@@ -1498,7 +1611,8 @@ Event Hierarchy (all include span_id, parent_span_id for hierarchy):
 ├── StreamingChunkEvent
 ├── CacheHitEvent
 ├── InterruptEvent
-└── RouteDecisionEvent
+├── RouteDecisionEvent
+└── StopRequestedEvent
 
 Observability:
 ├── EventProcessor (base interface)
@@ -1512,12 +1626,16 @@ Observability:
 │                        EPHEMERAL (in-memory)                        │
 ├─────────────────────────────────────────────────────────────────────┤
 │  Events (real-time observability, NOT persisted)                    │
+│  ├── RunStartEvent       - run begins                               │
+│  ├── RunEndEvent         - run completes (has status, error)        │
 │  ├── NodeStartEvent      - node begins execution                    │
 │  ├── NodeEndEvent        - node completes (has outputs)             │
+│  ├── CacheHitEvent       - node result from cache                   │
 │  ├── StreamingChunkEvent - streaming token                          │
 │  ├── InterruptEvent      - HITL pause                               │
 │  ├── RouteDecisionEvent  - which branch taken                       │
-│  └── NodeErrorEvent      - exception raised                         │
+│  ├── NodeErrorEvent      - exception raised                         │
+│  └── StopRequestedEvent  - stop() called                            │
 │                                                                     │
 │  GraphState (internal to runner, NOT user-facing)                   │
 │  ├── values: ALL outputs from executed nodes                        │
@@ -1536,14 +1654,15 @@ Observability:
 │  RunResult                                                          │
 │  ├── values: dict[str, Any | RunResult]  ← nested graphs here       │
 │  ├── status: RunStatus (COMPLETED, FAILED, PAUSED, STOPPED)         │
-│  ├── pause: PauseInfo | None                                        │
+│  ├── pause: PauseInfo | None    ← only when PAUSED                  │
+│  ├── error: str | None          ← only when FAILED                  │
 │  ├── workflow_id: str | None                                        │
 │  └── run_id: str                                                    │
 │                                                                     │
 │  Dict-like access: result["answer"], result["rag"]["docs"]          │
 │                                                                     │
 │  Nested graphs: RunResult.values["rag"] returns nested RunResult.   │
-│  Pause propagates up: if nested pauses, parent pauses.              │
+│  Pause/error propagate up: if nested fails/pauses, parent does too. │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               │ Checkpointer saves ALL values
@@ -1572,7 +1691,7 @@ Observability:
 │  ├── values: dict[str, Any] | None  ← THE ACTUAL VALUES             │
 │  ├── error: str | None                                              │
 │  ├── pause: PauseInfo | None                                        │
-│  └── partial: bool  ← True if streaming output was truncated        │
+│  └── partial: bool  ← True if output was cut short by stop          │
 │                                                                     │
 │  Nested graphs: GraphNode step has child_workflow_id pointing to    │
 │  child workflow (e.g., "order-123/rag"). Child has its own steps.   │
@@ -1582,9 +1701,9 @@ Observability:
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  State (COMPUTED, not stored)                                       │
-│  get_state(workflow_id, at_step=N) → dict[str, Any]                 │
+│  get_state(workflow_id, superstep=N) → dict[str, Any]               │
 │                                                                     │
-│  Folds over StepResults up to step N, merging values.               │
+│  Folds over StepResults up to superstep N, merging values.          │
 │  Later values overwrite earlier ones (same key).                    │
 │                                                                     │
 │  Nested graphs: Child workflow state is computed separately.        │
