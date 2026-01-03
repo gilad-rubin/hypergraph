@@ -575,6 +575,7 @@ class Step:
 class StepResult:
     index: int                      # Reference to Step.index
     status: StepStatus              # COMPLETED, FAILED, PAUSED, STOPPED
+    input_versions: dict[str, int]  # Versions consumed (for staleness detection)
     values: dict[str, Any] | None   # Node output values
     error: str | None
     pause: PauseInfo | None         # Set when step is paused at InterruptNode

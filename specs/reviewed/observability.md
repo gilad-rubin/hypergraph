@@ -41,7 +41,7 @@ Persistence uses a **separate `Checkpointer` interface**, not `EventProcessor`. 
 | Concern | EventProcessor | Checkpointer |
 |---------|----------------|--------------|
 | **Direction** | Write-only (events push to processor) | Read + Write (load and save) |
-| **Data** | All events (including streaming chunks) | Only `persist=True` outputs |
+| **Data** | All events (including streaming chunks) | All node outputs |
 | **Purpose** | Observability (fire-and-forget) | Durability (must succeed) |
 | **Timing** | During execution | After node completion |
 

@@ -155,22 +155,34 @@ If we crash after `process_a` with `outputs = {"processed": "..."}`:
 **The resume algorithm:**
 
 ```python
-def get_runnable_nodes(graph, available_outputs, completed_steps):
-    return [
-        node for node in graph.nodes
-        if all(input in available_outputs for input in node.inputs)  # Can run
-        and node.name not in completed_steps  # Hasn't run yet
-    ]
+def should_run_node(node: HyperNode, state: GraphState, steps: list[Step]) -> bool:
+    """Unified algorithm for DAGs and cycles."""
+
+    # 1. Inputs available?
+    if not all(inp in state.values for inp in node.inputs):
+        return False
+
+    # 2. Find last step for this node
+    last_step = find_last_step(node.name, steps)
+    if last_step is None:
+        return True  # Never ran
+
+    # 3. Compare consumed vs current versions (staleness detection)
+    consumed = last_step.result.input_versions
+    current = {inp: state.versions[inp] for inp in node.inputs}
+    return consumed != current  # Run if any input changed
 ```
 
-This is the **same algorithm** used for fresh starts and resumes - only the initial state differs:
+This algorithm handles both DAGs and cycles:
 
-| Scenario | `available_outputs` | `completed_steps` |
-|----------|---------------------|-------------------|
-| Fresh start | `inputs` dict | `{}` empty |
-| Resume | Checkpoint outputs | Step records with `status=COMPLETED` |
+| Scenario | Behavior |
+|----------|----------|
+| Fresh DAG | No steps exist, all nodes with satisfied inputs run |
+| Resume mid-DAG | Steps have input_versions, skip if versions match |
+| Cycle iteration | Version increments trigger staleness, node re-runs |
+| Resume mid-cycle | Last step's input_versions determines staleness |
 
-**The implicit cursor is:** `(available_outputs, set of completed node names)`
+**The implicit cursor is:** `(available_outputs, step history with input_versions)`
 
 This is encoded in the step history, not as a separate pointer. The graph structure constrains execution paths, so given this state, there's exactly one deterministic answer to "what runs next?"
 
@@ -419,6 +431,7 @@ For streaming nodes stopped with `complete_on_stop=True`, the step saves partial
 ```python
 @dataclass
 class StepResult:
+    input_versions: dict[str, int]  # Versions consumed (for staleness detection)
     values: dict[str, Any] | None
     partial: bool = False  # True = values contains usable but truncated output
 ```
@@ -1336,6 +1349,13 @@ class StepResult:
     status: StepStatus
     """Execution status: COMPLETED, FAILED, PAUSED, or STOPPED."""
 
+    input_versions: dict[str, int]
+    """Version of each input when this node executed.
+
+    Used for staleness detection on resume. If current versions differ
+    from input_versions, the node should re-execute (its inputs changed).
+    """
+
     values: dict[str, Any] | None = None
     """Output values. Present when status is COMPLETED (or PAUSED with partial output)."""
 
@@ -1394,14 +1414,19 @@ Steps serve as the **implicit cursor** (see [Step History as Implicit Cursor](#s
 
 ### Resume Behavior
 
-On resume, a node is **skipped** if it appears in step history as `COMPLETED` (its output is always available since everything is saved):
+On resume, a node is skipped if its last step's `input_versions` match current versions (see [Step History as Implicit Cursor](#step-history-as-implicit-cursor) for the full algorithm):
 
 ```python
-def should_skip_node(node, checkpoint):
-    return node.name in {s.node_name for s in checkpoint.steps if s.status == COMPLETED}
+def should_skip_node(node, state, steps):
+    last_step = find_last_step(node.name, steps)
+    if last_step is None:
+        return False  # Never ran, don't skip
+    consumed = last_step.result.input_versions
+    current = {inp: state.versions[inp] for inp in node.inputs}
+    return consumed == current  # Skip if versions match (not stale)
 ```
 
-This ensures full crash recovery — no nodes re-execute on resume.
+This ensures full crash recovery for DAGs. For cycles, version changes trigger re-execution.
 
 ### DBOSWorkflowStatus (Storage Adapter)
 
