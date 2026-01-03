@@ -408,6 +408,131 @@ class ProgressHandler(TypedEventProcessor):
             update_progress_bar(event.chunk.percent, event.chunk.message)
 ```
 
+### User Stop Handling
+
+When a user clicks "stop" during streaming, hypergraph saves partial output and returns `RunStatus.STOPPED`. This differs from crashes (which restart nodes) and pauses (which wait for user input).
+
+**The Problem:** In a typical chat flow, nodes are coupled:
+
+```python
+@node(output_name="response")
+async def get_response(messages: list):
+    async for chunk in llm.stream(messages):
+        yield chunk
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return messages + [{"role": "assistant", "content": response}]
+```
+
+If the user stops `get_response` mid-stream, `add_response` never runs. The partial response is lost.
+
+**The Solution:** Use nested graphs with `complete_on_stop=True`:
+
+```python
+from hypergraph import Graph, node, AsyncRunner
+
+# --- Nodes ---
+@node(output_name="messages_with_user")
+def add_user_input(messages: list, user_input: str) -> list:
+    return messages + [{"role": "user", "content": user_input}]
+
+@node(output_name="response")
+async def get_response(messages_with_user: list):
+    async for chunk in llm.stream(messages_with_user):
+        yield chunk
+
+@node(output_name="messages")
+def add_response(messages_with_user: list, response: str) -> list:
+    return messages_with_user + [{"role": "assistant", "content": response}]
+
+# --- Graph Structure ---
+# The LLM turn is a unit - if stopped, still adds partial to messages
+llm_turn = Graph(
+    nodes=[get_response, add_response],
+    name="llm_turn",
+).as_node(complete_on_stop=True)
+
+chat_graph = Graph(
+    nodes=[add_user_input, llm_turn],
+).bind(messages=[])
+
+# --- Execution ---
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./chat.db"))
+
+# Turn 1: Normal completion
+result = await runner.run(
+    chat_graph,
+    inputs={"user_input": "Explain quantum computing"},
+    workflow_id="session-123",
+)
+# result.status = COMPLETED
+# result.outputs["messages"] = [user_msg, full_response]
+
+# Turn 2: User stops mid-stream
+result = await runner.run(
+    chat_graph,
+    inputs={"user_input": "Now explain it simpler"},
+    workflow_id="session-123",
+)
+# User clicks STOP while streaming...
+# result.status = STOPPED
+# result.outputs["messages"] = [..., partial_response]
+#                                    ^^^^^^^^^^^^^^^
+#     add_response still ran because of complete_on_stop=True!
+
+# Turn 3: User continues with context preserved
+result = await runner.run(
+    chat_graph,
+    inputs={"user_input": "Actually let's talk about something else"},
+    workflow_id="session-123",
+)
+# messages now has full history including partial response
+```
+
+**How `complete_on_stop=True` Works:**
+
+1. User clicks stop while `get_response` is streaming
+2. `get_response` receives cancellation, returns partial output, saves with `StepStatus.STOPPED`
+3. The `llm_turn` GraphNode sees STOPPED but has `complete_on_stop=True`
+4. GraphNode continues executing remaining nodes (`add_response`)
+5. `add_response` runs with partial response, updates messages
+6. GraphNode completes, propagates `RunStatus.STOPPED` to parent
+
+**Nested Groups:**
+
+Each GraphNode decides independently whether to complete before propagating stop:
+
+```python
+outer = Graph([
+    node_a,
+    inner.as_node(complete_on_stop=True),  # Inner completes
+    node_c,
+]).as_node(complete_on_stop=True)  # Outer also completes
+```
+
+If `complete_on_stop=True` on outer, then all nested GraphNodes must also have `complete_on_stop=True`. This is validated at graph construction time:
+
+```python
+# This raises ValueError at construction time
+inner = Graph([...]).as_node(complete_on_stop=False)
+outer = Graph([inner]).as_node(complete_on_stop=True)  # ❌ Error!
+```
+
+**Default Behavior:**
+
+By default, `complete_on_stop=False` — stop propagates immediately. This is principle of least surprise: stop means stop.
+
+| Scenario | `complete_on_stop=False` (default) | `complete_on_stop=True` |
+|----------|:----------------------------------:|:-----------------------:|
+| User stops mid-stream | Remaining nodes skipped | Remaining nodes run |
+| Status returned | `STOPPED` | `STOPPED` |
+| Partial output | Saved in stopped node's step | Accumulated into state |
+
+**See also:**
+- [GraphNode.complete_on_stop](node-types.md#graphnode-specific-properties) - Property definition
+- [StepStatus.STOPPED](execution-types.md#stepstatus) - Step status enum
+
 ### Checkpointer Interface
 
 The full `Checkpointer` interface is defined in [checkpointer.md](checkpointer.md). Key methods:

@@ -1060,6 +1060,7 @@ class GraphNode(HyperNode):
         graph: Graph,
         name: str | None = None,
         runner: BaseRunner | None = None,
+        complete_on_stop: bool = False,
     ):
         """
         Wrap a graph as a node.
@@ -1068,13 +1069,22 @@ class GraphNode(HyperNode):
             graph: The graph to wrap (reference, not copy)
             name: Node name (default: use graph.name if set)
             runner: Runner for nested execution (default: inherit from parent)
+            complete_on_stop: If True, run remaining nodes even when a streaming
+                node is stopped by the user. This ensures cleanup nodes execute
+                and partial outputs are properly accumulated. Default: False
+                (stop propagates immediately).
 
         Raises:
             ValueError: If name not provided and graph has no name.
+            ValueError: If complete_on_stop=True but any nested GraphNode has
+                complete_on_stop=False (inconsistent guarantees).
 
         Note:
             Use .with_outputs() to override output names (default: graph's leaf outputs).
             Use .map_over() to configure iteration.
+
+        See Also:
+            durable-execution.md for stop handling patterns and examples.
         """
         resolved_name = name or graph.name
         if resolved_name is None:
@@ -1083,8 +1093,19 @@ class GraphNode(HyperNode):
                 "or pass name to GraphNode(graph, name='x')"
             )
 
+        # Validate nested GraphNode consistency
+        if complete_on_stop:
+            for node in graph.nodes:
+                if isinstance(node, GraphNode) and not node.complete_on_stop:
+                    raise ValueError(
+                        f"complete_on_stop=True requires all nested GraphNodes "
+                        f"to also have complete_on_stop=True. "
+                        f"Node '{node.name}' has complete_on_stop=False."
+                    )
+
         self._graph = graph
         self._runner = runner
+        self._complete_on_stop = complete_on_stop
         self._map_over: list[str] | None = None
         self._map_mode: Literal["zip", "product"] = "zip"
         self._rename_history: list[RenameEntry] = []
@@ -1103,6 +1124,20 @@ Inherits `name`, `inputs`, `outputs` from HyperNode.
 @property
 def graph(self) -> Graph:
     """The wrapped graph (read-only reference)."""
+
+@property
+def complete_on_stop(self) -> bool:
+    """Whether to run remaining nodes when a streaming node is stopped.
+
+    When True: If a streaming node receives a stop signal, the graph
+    continues executing remaining nodes before returning STOPPED status.
+    This ensures cleanup/accumulation nodes run with partial output.
+
+    When False (default): Stop signal propagates immediately, skipping
+    remaining nodes in this graph.
+
+    See durable-execution.md for patterns and examples.
+    """
 ```
 
 **Note:** GraphNode intentionally has no `cache`, `definition_hash`, `is_async`, or `is_generator` properties:

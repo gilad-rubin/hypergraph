@@ -252,6 +252,7 @@ class RunStatus(Enum):
     """Workflow execution status (hypergraph layer)."""
     COMPLETED = "completed"  # Finished all steps (or routed to END)
     PAUSED = "paused"        # Waiting for something (see PauseReason)
+    STOPPED = "stopped"      # User cancelled mid-execution (partial output saved)
     ERROR = "error"          # Failed with exception
 ```
 
@@ -273,6 +274,7 @@ class PauseReason(Enum):
 |--------|---------|---------------|---------------|
 | `COMPLETED` | Finished | Normal completion or routed to `END` | None needed |
 | `PAUSED` | Waiting | `InterruptNode` | Provide response via `resume()` or `DBOS.send()` |
+| `STOPPED` | Cancelled | User clicked stop during streaming | Continue with partial output in state |
 | `ERROR` | Failed | Uncaught exception | Fix and retry |
 
 ### Pause Reasons
@@ -291,11 +293,12 @@ hypergraph status maps to DBOS status as follows:
 ├─────────────────────────────────────────────────────────────┤
 │  COMPLETED                   →    SUCCESS                   │
 │  PAUSED (any reason)         →    PENDING (blocked on recv) │
+│  STOPPED                     →    CANCELLED                 │
 │  ERROR                       →    ERROR                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** DBOS has no "PAUSED" status. When a workflow calls `DBOS.recv()` and waits for human input, DBOS still reports it as `PENDING`. hypergraph adds the `PAUSED` + `PauseReason` abstraction on top.
+**Key insight:** DBOS has no "PAUSED" status. When a workflow calls `DBOS.recv()` and waits for human input, DBOS still reports it as `PENDING`. hypergraph adds the `PAUSED` + `PauseReason` abstraction on top. `STOPPED` maps to DBOS `CANCELLED` since both represent intentional early termination.
 
 ---
 
@@ -1043,6 +1046,7 @@ class StepStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     WAITING = "waiting"  # Paused at InterruptNode, waiting for response
+    STOPPED = "stopped"  # User cancelled mid-execution (partial output saved)
 ```
 
 ### Step
@@ -1320,7 +1324,7 @@ User-Facing Types:
 │   ├── status: RunStatus
 │   ├── pause: PauseInfo | None
 │   └── workflow_id, run_id
-├── RunStatus (enum: COMPLETED, PAUSED, ERROR)
+├── RunStatus (enum: COMPLETED, PAUSED, STOPPED, ERROR)
 ├── PauseReason (enum: HUMAN_INPUT, SLEEP, SCHEDULED, EVENT)
 ├── PauseInfo (pause details: reason, node, value, response_param)
 └── RunHandle (streaming execution handle from .iter())
@@ -1329,7 +1333,7 @@ Internal Types (not user-facing):
 └── GraphState (runtime values with versioning)
 
 Persistence Types:
-├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED, WAITING)
+├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED, WAITING, STOPPED)
 ├── WorkflowStatus (enum: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
 ├── Step (individual step record: index, node_name, status)
 ├── StepResult (step outputs + pause info)
