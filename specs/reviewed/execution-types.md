@@ -1505,41 +1505,114 @@ Observability:
 └── TypedEventProcessor (convenience class with typed methods)
 ```
 
-### Type Layer Separation
+### Type Layer Separation (Comprehensive)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  hypergraph API Layer (what users see)                          │
-│                                                                 │
-│  RunResult                                                      │
-│  ├── values: all values (or filtered by select=)               │
-│  ├── status: RunStatus (COMPLETED, FAILED, PAUSED, STOPPED)    │
-│  ├── pause: PauseInfo | None                                   │
-│  └── [nested_graph]: RunResult (for nested graphs)             │
-│                                                                 │
-│  Dict-like access: result["answer"], result["rag"]["docs"]     │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        EPHEMERAL (in-memory)                        │
+├─────────────────────────────────────────────────────────────────────┤
+│  Events (real-time observability, NOT persisted)                    │
+│  ├── NodeStartEvent      - node begins execution                    │
+│  ├── NodeEndEvent        - node completes (has outputs)             │
+│  ├── StreamingChunkEvent - streaming token                          │
+│  ├── InterruptEvent      - HITL pause                               │
+│  ├── RouteDecisionEvent  - which branch taken                       │
+│  └── NodeErrorEvent      - exception raised                         │
+│                                                                     │
+│  GraphState (internal to runner, NOT user-facing)                   │
+│  ├── values: ALL outputs from executed nodes                        │
+│  ├── versions: version number per value (staleness detection)       │
+│  └── history: in-memory execution log                               │
+│                                                                     │
+│  Nested graphs: Each GraphNode has its own GraphState.              │
+│  Parent GraphState stores child's RunResult as a value.             │
+└─────────────────────────────────────────────────────────────────────┘
                               │
-                              │ Runners translate between layers
+                              │ Runner translates to user-facing types
                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Internal Runtime (GraphState)                                  │
-│                                                                 │
-│  All values from executed nodes                                 │
-│  Version tracking for staleness detection                       │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                     USER-FACING (API layer)                         │
+├─────────────────────────────────────────────────────────────────────┤
+│  RunResult                                                          │
+│  ├── values: dict[str, Any | RunResult]  ← nested graphs here       │
+│  ├── status: RunStatus (COMPLETED, FAILED, PAUSED, STOPPED)         │
+│  ├── pause: PauseInfo | None                                        │
+│  ├── workflow_id: str | None                                        │
+│  └── run_id: str                                                    │
+│                                                                     │
+│  Dict-like access: result["answer"], result["rag"]["docs"]          │
+│                                                                     │
+│  Nested graphs: RunResult.values["rag"] returns nested RunResult.   │
+│  Pause propagates up: if nested pauses, parent pauses.              │
+└─────────────────────────────────────────────────────────────────────┘
                               │
-                              │ Checkpointer saves all values
+                              │ Checkpointer saves ALL values
                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Persistence Layer (Workflow, Step, StepResult)                 │
-│                                                                 │
-│  All values saved for full durability                           │
-│  WorkflowStatus: ACTIVE → COMPLETED or FAILED                   │
-│  StepStatus: COMPLETED, FAILED, PAUSED, STOPPED                 │
-│  Checkpoint ID = workflow_id + step_index                       │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      PERSISTED (checkpointer)                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  Workflow                                                           │
+│  ├── id: str                                                        │
+│  ├── status: WorkflowStatus (ACTIVE, COMPLETED, FAILED)             │
+│  ├── steps: list[Step]                                              │
+│  ├── results: dict[int, StepResult]                                 │
+│  └── created_at, completed_at                                       │
+│                                                                     │
+│  Step (one per node execution)                                      │
+│  ├── index: int (monotonically increasing, DB primary key)          │
+│  ├── superstep: int (parallel nodes share same superstep)           │
+│  ├── node_name: str                                                 │
+│  ├── status: StepStatus (COMPLETED, FAILED, PAUSED, STOPPED)        │
+│  ├── child_workflow_id: str | None  ← nested graph reference        │
+│  └── created_at, completed_at                                       │
+│                                                                     │
+│  StepResult (one per Step, stored separately - can be large)        │
+│  ├── index: int (references Step.index)                             │
+│  ├── status: StepStatus                                             │
+│  ├── values: dict[str, Any] | None  ← THE ACTUAL VALUES             │
+│  ├── error: str | None                                              │
+│  ├── pause: PauseInfo | None                                        │
+│  └── partial: bool  ← True if streaming output was truncated        │
+│                                                                     │
+│  Nested graphs: GraphNode step has child_workflow_id pointing to    │
+│  child workflow (e.g., "order-123/rag"). Child has its own steps.   │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ computed (fold over steps)
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  State (COMPUTED, not stored)                                       │
+│  get_state(workflow_id, at_step=N) → dict[str, Any]                 │
+│                                                                     │
+│  Folds over StepResults up to step N, merging values.               │
+│  Later values overwrite earlier ones (same key).                    │
+│                                                                     │
+│  Nested graphs: Child workflow state is computed separately.        │
+│  Parent state includes child's RunResult as a value.                │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              │ snapshot for forking
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  Checkpoint (point-in-time snapshot)                                │
+│  ├── values: dict[str, Any]  ← computed state at this point         │
+│  └── steps: list[Step]       ← step history (implicit cursor)       │
+│                                                                     │
+│  Used for: forking, manual resume, testing.                         │
+│  Nested graphs: Checkpoint includes nested RunResults in values.    │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Nested Graph Handling Summary
+
+| Layer | How nested graphs appear |
+|-------|-------------------------|
+| Events | Span hierarchy via `parent_span_id` linking child to parent |
+| GraphState | Child has own GraphState; parent stores child RunResult as value |
+| RunResult | `result.values["rag"]` returns nested `RunResult` object |
+| Workflow | GraphNode step has `child_workflow_id` (e.g., `"order-123/rag"`) |
+| Step | Child workflow has its own independent step history |
+| Checkpoint | Nested RunResults included in `values` dict |
 
 **See also:**
 - [Checkpointer API](checkpointer.md) - Full interface definition and custom implementations
