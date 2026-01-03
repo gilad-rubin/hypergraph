@@ -189,13 +189,12 @@ def retrieve(embedding: list[float]) -> list[str]: ...
 
 **LangGraph:** Everything in the state schema is checkpointed.
 
-**hypergraph:** Control what's checkpointed with the `persist` parameter.
+**hypergraph:** When a checkpointer is present, all outputs are checkpointed. Full durability, no configuration needed.
 
 ```python
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    persist=["messages", "answer"],  # Only these are checkpointed
-)
+graph = Graph(nodes=[embed, retrieve, generate])
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
+# All outputs saved automatically
 ```
 
 ### 3. Memory (Across Conversation Turns)
@@ -242,57 +241,23 @@ approval = InterruptNode(
 
 ---
 
-## The `persist` Parameter
-
-The `persist` parameter is how you declare "these outputs matter for recovery":
-
-### Graph-Level (Allowlist)
-
-```python
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    persist=["messages", "answer"],  # Only these are checkpointed
-)
-```
-
-### Node-Level (Override)
-
-```python
-@node(output_name="embedding", persist=False)  # Never checkpoint
-def embed(text: str) -> list[float]:
-    return model.embed(text)
-
-@node(output_name="answer", persist=True)  # Always checkpoint
-def generate(docs: list[str]) -> str:
-    return llm.generate(docs)
-```
-
-### Semantics
-
-| `persist` | On Crash/Resume | Storage |
-|-----------|-----------------|---------|
-| `True` (default) | Load from checkpoint | Saved to DB |
-| `False` | Re-execute node | Not saved |
-
----
-
 ## Three Layers of "State"
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Runtime State (GraphState) - INTERNAL                          │
 │                                                                  │
-│  ALL outputs from ALL nodes, including persist=False.           │
+│  ALL outputs from ALL nodes during execution.                   │
 │  Tracked with version numbers for staleness detection.          │
 │  Used internally by runners - not user-facing.                  │
 └─────────────────────────────────────────────────────────────────┘
                               │
-                              │ Checkpointer filters by persist=
+                              │ Checkpointer saves all values
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  Persisted State (Workflow + StepResult)                        │
 │                                                                  │
-│  Only outputs where persist=True.                               │
+│  All outputs saved for full durability.                         │
 │  Survives crashes, enables resume.                              │
 │  Checkpoint ID = workflow_id + step_index.                      │
 └─────────────────────────────────────────────────────────────────┘
@@ -307,7 +272,7 @@ def generate(docs: list[str]) -> str:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** `GraphState` holds everything during execution (including `persist=False` values). The checkpointer only saves `persist=True` values. On crash recovery, `persist=False` nodes re-execute to reconstruct their outputs.
+**Key insight:** `GraphState` holds everything during execution. When a checkpointer is present, all values are saved for durability. On crash recovery, all outputs are loaded — no nodes re-execute.
 
 ---
 
@@ -316,11 +281,11 @@ def generate(docs: list[str]) -> str:
 | Aspect | LangGraph | hypergraph |
 |--------|-----------|------------|
 | **Define state** | Explicit `TypedDict` | Implicit from outputs |
-| **What's persisted** | Everything in schema | Controlled by `persist` |
+| **What's persisted** | Everything in schema | Everything (when checkpointer present) |
 | **Reducers** | Required for shared keys | Not needed |
 | **Memory** | Built into state | Pass as input/output |
 | **Human edits** | `update_state()` | `InterruptNode` |
-| **Philosophy** | "State is central" | "Outputs flow, persist what matters" |
+| **Philosophy** | "State is central" | "Outputs flow, full durability" |
 
 ---
 
@@ -379,8 +344,8 @@ If you're migrating from LangGraph and used `update_state()`, consider:
 ## Summary
 
 - **No explicit state schema** - Outputs are inferred from nodes
-- **Persistence is configurable** - Use `persist` to control what's checkpointed
+- **Full durability** - When checkpointer is present, all outputs are saved
 - **Memory is explicit** - Pass as input, return as output
 - **Reducers not needed** - Each node has distinct outputs
 
-**The mental model:** Nodes are pure functions. Outputs flow between them. Persistence is orthogonal - you choose what survives a crash.
+**The mental model:** Nodes are pure functions. Outputs flow between them. When a checkpointer is present, everything is saved for crash recovery.

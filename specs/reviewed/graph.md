@@ -29,7 +29,6 @@ class Graph:
         *,
         name: str | None = None,
         strict_types: bool = False,
-        persist: list[str] | None = None,
     ):
         """
         Create a graph from nodes.
@@ -40,32 +39,10 @@ class Graph:
                   nesting this graph. If not set here, must be provided
                   when calling as_node(name='...')
             strict_types: Validate type annotations between connected nodes (default: False)
-            persist: Output names to checkpoint for durability (when checkpointer is present).
-                - None (default): All outputs are checkpointed
-                - [...]: Only listed outputs are checkpointed (allowlist)
-                - []: No outputs checkpointed (pure in-memory execution)
-
-                For multi-output nodes (e.g., @node(outputs=("mean", "std"))), you must
-                include ALL or NONE of the node's outputs. Partial inclusion raises an
-                error at graph construction time — this prevents inconsistent state on
-                resume (nodes execute atomically, so you can't persist some outputs
-                without running the whole node).
-
-                Why on Graph, not run()? Changing persist between runs can break
-                resume behavior. Graph-level ensures consistent persistence policy.
-
-                When no checkpointer is present, this parameter is ignored.
-                See durable-execution.md for details.
 
         Example:
-            # Basic graph - all outputs checkpointed when checkpointer present
+            # Basic graph
             graph = Graph(nodes=[embed, retrieve, generate])
-
-            # Selective persistence - only checkpoint expensive/irreproducible outputs
-            graph = Graph(
-                nodes=[embed, retrieve, generate],
-                persist=["docs", "answer"],  # embedding is cheap to redo
-            )
 
             # Named graph for nesting
             rag = Graph(nodes=[embed, retrieve, generate], name="rag_pipeline")
@@ -73,7 +50,6 @@ class Graph:
         """
         self._nodes = {n.name: n for n in nodes}
         self.name = name
-        self.persist = persist
         self._nx_graph = self._build_graph(nodes)
         self._bound = {}
         self._validate()  # Build-time validation
@@ -667,70 +643,7 @@ def _validate_node_names(self):
             )
 ```
 
-### 7. Persist Output Validation
-
-```python
-def _validate_persist_outputs(self):
-    """Persist list must include ALL or NONE outputs from multi-output nodes."""
-    if self.persist is None:
-        return  # Default: persist everything
-
-    persist_set = set(self.persist)
-
-    for node in self._nodes.values():
-        # Get all outputs from this node
-        node_outputs = node.outputs if hasattr(node, 'outputs') else [node.output_name]
-
-        # Check how many of this node's outputs are in persist list
-        included = [o for o in node_outputs if o in persist_set]
-        excluded = [o for o in node_outputs if o not in persist_set]
-
-        # Either all or none must be included
-        if included and excluded:
-            raise GraphConfigError(
-                f"persist={self.persist!r} includes only some outputs from node '{node.name}'\n\n"
-                f"  Node '{node.name}' produces: {sorted(node_outputs)}\n"
-                f"  You specified: {sorted(included)}\n"
-                f"  Missing: {sorted(excluded)}\n\n"
-                f"The problem:\n"
-                f"  Nodes execute atomically. On resume, either all outputs are loaded\n"
-                f"  from checkpoint, or the node re-runs. Partial persistence causes\n"
-                f"  inconsistency.\n\n"
-                f"How to fix:\n"
-                f"  Include all outputs: persist=[..., {', '.join(repr(o) for o in excluded)}, ...]\n"
-                f"  Or exclude all outputs from this node."
-            )
-```
-
-**Example error:**
-
-```python
-@node(outputs=("mean", "std"))
-def statistics(data: list[float]) -> tuple[float, float]:
-    return sum(data) / len(data), std_dev(data)
-
-# ❌ Error at Graph() construction time
-graph = Graph(
-    nodes=[fetch, statistics],
-    persist=["mean"],  # Only one of two outputs
-)
-# → GraphConfigError: persist=['mean'] includes only some outputs from node 'statistics'
-#
-#   Node 'statistics' produces: ['mean', 'std']
-#   You specified: ['mean']
-#   Missing: ['std']
-#
-#   The problem:
-#     Nodes execute atomically. On resume, either all outputs are loaded
-#     from checkpoint, or the node re-runs. Partial persistence causes
-#     inconsistency.
-#
-#   How to fix:
-#     Include all outputs: persist=[..., 'std', ...]
-#     Or exclude all outputs from this node.
-```
-
-### 8. Namespace Collision Validation
+### 7. Namespace Collision Validation
 
 ```python
 def _validate_no_namespace_collision(self):

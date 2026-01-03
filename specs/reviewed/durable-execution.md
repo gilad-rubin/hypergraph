@@ -54,121 +54,54 @@ Both paths keep your graph code **pure and portable**. The graph never imports d
 
 ---
 
-## Selective Persistence
+## Persistence Model
 
-By default, all outputs are checkpointed when a checkpointer is present. Use the `persist` parameter at the Graph level to control what's saved.
-
-### Default: Persist Everything
-
-When a checkpointer is present, **all outputs are persisted by default**. This is the safe default — you opt into durability by adding a checkpointer, so persist everything.
+When a checkpointer is present, **all outputs are persisted**. This is the only behavior — there is no selective persistence.
 
 ```python
-# All outputs persisted (default)
 graph = Graph(nodes=[embed, retrieve, generate])
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
+# All outputs checkpointed automatically
 ```
 
-### Allowlist: Persist Specific Outputs
-
-Use `persist=[...]` to specify which **outputs** to checkpoint. This is an optimization to reduce storage.
-
-```python
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    persist=["docs", "answer"],  # Only these outputs are checkpointed
-)
-```
-
-**Multi-output nodes:** For nodes with multiple outputs (e.g., `@node(outputs=("mean", "std"))`), you must include ALL or NONE of the node's outputs. Partial inclusion raises a build-time error — nodes execute atomically, so you can't persist some outputs without the others.
-
-### Why Selective Persistence?
-
-Not all nodes need to survive crashes:
-
-| Node | What It Produces | Persist? | Reason |
-|------|------------------|:--------:|--------|
-| `accumulate` | `messages` | ✅ | Can't reconstruct conversation |
-| `generate` | `answer` | ✅ | User expects this |
-| `embed` | `embedding` | ❌ | Can regenerate (deterministic) |
-| `retrieve` | `docs` | ❌ | Can refetch |
-
-### Semantics
-
-| `persist` value | Behavior | DBOS Mapping |
-|-----------------|----------|--------------|
-| `None` (default) | All outputs checkpointed | All nodes wrapped as `@DBOS.step` |
-| `["output1", "output2"]` | Only outputs from nodes producing these checkpointed | Only those nodes wrapped as `@DBOS.step` |
-| `[]` | No outputs checkpointed | No `@DBOS.step` wrapping |
-
-### Example
-
-```python
-@node(output_name="embedding")
-def embed(text: str) -> list[float]:
-    return model.embed(text)
-
-@node(output_name="docs")
-def retrieve(embedding: list[float]) -> list[str]:
-    return db.search(embedding)
-
-@node(output_name="answer")
-def generate(docs: list[str], messages: list) -> str:
-    return llm.generate(docs, messages)
-
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    persist=["answer"],  # Only persist the answer output
-)
-
-# What gets checkpointed:
-# ❌ embedding - not in persist list
-# ❌ docs      - not in persist list
-# ✅ answer    - in persist list
-```
-
-### Resume Behavior
-
-On crash and resume:
-
-1. **Persisted nodes** → Output loaded from checkpoint, node skipped
-2. **Non-persisted nodes** → Node re-executes to reconstruct value
-
-```
-Original run:
-  embed("hello") → [0.1, 0.2, ...]  ← NOT saved (not in persist list)
-  generate(...) → "answer"          ← SAVED
-  💥 CRASH
-
-Resume:
-  embed("hello") → [0.1, 0.2, ...]  ← Re-executed
-  generate(...) → (loaded)          ← Loaded from checkpoint
-  ✅ Complete
-```
-
-### Steps vs Outputs: What Gets Saved
-
-**Steps are saved for ALL executed nodes**, regardless of `persist`. **Outputs are only saved for `persist=True` nodes.**
+### What Gets Saved
 
 | What | Saved? | Purpose |
 |------|:------:|---------|
 | Step metadata (index, node_name, status) | Always | Implicit cursor for cycles/branches |
-| StepResult.outputs | Only if `persist=True` | Value recovery on resume |
+| StepResult.outputs | Always | Value recovery on resume |
 
-This is important because step history serves as the **implicit cursor** for resumption:
+Step history serves as the **implicit cursor** for resumption:
 - **Cycles:** Step count tracks iteration number
 - **Branches:** Steps show which branch was taken
 
-A node is **skipped on resume** only if it's completed AND its output is available. If the step exists but output is missing (non-persisted), the node re-executes.
-
 See [Step History as Implicit Cursor](execution-types.md#step-history-as-implicit-cursor) for details.
 
-### Important Notes
+### Why No Selective Persistence (Design Decision)
 
-1. **Non-determinism is OK** — If non-persisted nodes produce slightly different outputs on resume (e.g., embedding model updates), that's expected. Users working with AI understand non-determinism.
+We considered a `persist=[...]` parameter to control which outputs are checkpointed. We decided against it because **selective persistence creates footguns**:
 
-2. **Don't skip persistence for context-dependent nodes** — If a node reads from external context that might change (current user, system time), it should be persisted.
+| Node Type | If Not Persisted | Impact |
+|-----------|------------------|--------|
+| `embed()` | Re-computes embedding | OK — deterministic |
+| `send_email()` | Sends email **twice** | Dangerous |
+| `InterruptNode` | Asks human **again** | Confusing UX |
+| `charge_card()` | Double charges | Very dangerous |
 
-3. **Default is safe** — When in doubt, use the default (persist everything).
+The mental model is leaky: users think "persist = storage optimization" but it actually means "this might run twice on crash." This conflates two concerns:
+
+1. **Durability** — "Must this survive crashes?" (correctness)
+2. **Efficiency** — "Can we skip recomputation?" (performance)
+
+These have different failure modes. Mixing them creates footguns.
+
+**Our decision:** Durability is non-negotiable. When you add a checkpointer, everything is saved. Storage optimization should happen at a different layer:
+
+- **Serializer compression** — reduce size at storage level
+- **Workflow cleanup** — delete old workflows (TTL, retention policies)
+- **Future: Cache layer** — separate mechanism for cross-workflow memoization
+
+This keeps the model simple: checkpointer = full durability, always.
 
 ---
 
@@ -568,35 +501,22 @@ DBOS is a **library** that runs in your process and checkpoints to Postgres/SQLi
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### How `persist` Maps to DBOS
+### How hypergraph Maps to DBOS
 
-hypergraph maps the Graph-level `persist` parameter to DBOS primitives:
-
-| Output in `persist` list? | DBOS Mapping | On Recovery |
-|---------------------------|--------------|-------------|
-| Yes (or `persist=None`) | `@DBOS.step` wrapper | Output loaded from DB |
-| No | Regular function call | Function re-executes |
+hypergraph wraps all nodes as DBOS steps for full durability:
 
 ```python
-# Graph with selective persistence
-graph = Graph(
-    nodes=[embed, generate],
-    persist=["answer"],  # Only the answer output is persisted
-)
+graph = Graph(nodes=[embed, generate])
 
 # Translates to DBOS workflow:
 @DBOS.workflow()
 async def graph_workflow(inputs: dict) -> dict:
-    # answer is in persist list → generate node wrapped as DBOS step
+    embedding = await embed_step(inputs["text"])  # @DBOS.step
     answer = await generate_step(inputs["prompt"])  # @DBOS.step
-
-    # embedding is NOT in persist list → regular function call
-    embedding = embed(inputs["text"])  # NOT a step, re-runs on recovery
-
-    return {"answer": answer, "embedding": embedding}
+    return {"embedding": embedding, "answer": answer}
 ```
 
-This follows DBOS's own recommendation:
+Every node becomes a `@DBOS.step`, ensuring full crash recovery. DBOS's recommendation:
 > "Skip the decorator if durability isn't needed, so you avoid the extra DB checkpoint write."
 
 When using `.get_dbos_workflow()` for advanced DBOS features, the same mapping applies.

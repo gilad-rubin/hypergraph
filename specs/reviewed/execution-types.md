@@ -46,12 +46,12 @@ hypergraph separates two distinct record types:
 |---------|--------|-------|
 | **Purpose** | Real-time observability | Durability and recovery |
 | **Lifetime** | Ephemeral (in-memory) | Persisted (to database) |
-| **Contains** | All execution details | Only `persist=True` outputs |
+| **Contains** | All execution details | All node outputs |
 | **Consumers** | EventProcessor, `.iter()` | Checkpointer |
 
 **Events** are emitted during execution for real-time streaming and observability. They include `NodeStartEvent`, `StreamingChunkEvent`, etc. Events are consumed by `EventProcessor` implementations or via `.iter()` for pull-based access. **Events are NOT persisted by default.**
 
-**Steps** are persisted records saved by the checkpointer. Each step contains the node outputs (for `persist=True` nodes only). Steps enable crash recovery, resume, and workflow forking.
+**Steps** are persisted records saved by the checkpointer. Each step contains the node outputs. Steps enable crash recovery, resume, and workflow forking.
 
 ```
 During Execution:
@@ -60,10 +60,10 @@ During Execution:
 
 After Node Completion:
   Runner saves Step  → Checkpointer (durability)
-                     → Only persist=True outputs
+                     → All outputs saved
 ```
 
-**Key insight:** When a node produces output, the value exists once in memory. Events reference this value (in memory) for observability. The checkpointer serializes and stores a copy (only if `persist=True`) for durability. They are separate concerns with separate interfaces.
+**Key insight:** When a node produces output, the value exists once in memory. Events reference this value (in memory) for observability. The checkpointer serializes and stores a copy for durability. They are separate concerns with separate interfaces.
 
 ### Step History as Implicit Cursor
 
@@ -291,20 +291,17 @@ hypergraph status maps to DBOS status as follows:
 
 ### Important: GraphState Holds ALL Values
 
-`GraphState.values` contains **all outputs from all executed nodes**, including those with `persist=False`. The `persist` flag only controls what gets saved to the checkpointer:
+`GraphState.values` contains **all outputs from all executed nodes**. When a checkpointer is present, all values are also saved for durability:
 
 ```
 GraphState.values = {"embedding": [...], "answer": "..."}  # ALL values at runtime
                       ↓
-                   persist filter
-                      ↓
-Checkpointer saves = {"answer": "..."}  # Only persist=True values
+Checkpointer saves = {"embedding": [...], "answer": "..."}  # ALL values persisted
 ```
 
 This means:
 - During execution, all values are available for downstream nodes
-- On crash recovery, `persist=False` values are re-computed (nodes re-execute)
-- `persist=True` values are loaded from checkpoint (nodes skipped)
+- On crash recovery, all values are loaded from checkpoint (nodes skipped)
 
 ### NodeExecution (Internal)
 
@@ -340,7 +337,7 @@ class GraphState:
     """Runtime value storage with versioning. Internal to runners."""
 
     values: dict[str, Any]
-    """Current values by name. Includes ALL outputs (persist=True and persist=False)."""
+    """Current values by name. Includes all outputs from all executed nodes."""
 
     versions: dict[str, int]
     """Version number for each value (increments on update)."""
@@ -1096,71 +1093,36 @@ result = StepResult(
 
 ### Steps vs StepResults: What Gets Saved
 
-**Steps are saved for ALL executed nodes**, regardless of the `persist` setting. **StepResults (outputs) are only saved for `persist=True` nodes.**
+**Everything is saved.** Both steps and their outputs are persisted for all executed nodes.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step (always saved)           │  StepResult (conditional)      │
+│  Step (always saved)           │  StepResult (always saved)     │
 ├────────────────────────────────┼────────────────────────────────┤
-│  index: 0                      │  outputs: None                 │
-│  node_name: "embed"            │  (persist=False, not saved)    │
+│  index: 0                      │  outputs: {"embedding": [...]} │
+│  node_name: "embed"            │                                │
 │  status: COMPLETED             │                                │
 ├────────────────────────────────┼────────────────────────────────┤
 │  index: 1                      │  outputs: {"answer": "..."}    │
-│  node_name: "generate"         │  (persist=True, saved)         │
+│  node_name: "generate"         │                                │
 │  status: COMPLETED             │                                │
 └────────────────────────────────┴────────────────────────────────┘
 ```
 
-**Why save steps for non-persisted nodes?**
+Steps serve as the **implicit cursor** (see [Step History as Implicit Cursor](#step-history-as-implicit-cursor)):
+- **Cycles:** Step count tracks iteration number
+- **Branches:** Steps show which branch was taken
 
-Steps serve as the **implicit cursor** (see [Step History as Implicit Cursor](#step-history-as-implicit-cursor)). Without step history for all nodes:
-- Cycles break (can't track iteration count)
-- Branch disambiguation breaks (can't tell which branch was taken)
+### Resume Behavior
 
-The `persist` flag only controls whether `StepResult.outputs` is populated.
-
-### Resume Behavior: Skip vs Re-Execute
-
-On resume, a node is **skipped** only if:
-1. It appears in step history as `COMPLETED`
-2. **AND** its output is available in `checkpoint.outputs`
-
-If the step exists but output is missing (non-persisted node), the node **re-executes**:
+On resume, a node is **skipped** if it appears in step history as `COMPLETED` (its output is always available since everything is saved):
 
 ```python
 def should_skip_node(node, checkpoint):
-    completed = node.name in {s.node_name for s in checkpoint.steps if s.status == COMPLETED}
-    output_available = node.output_name in checkpoint.outputs
-    return completed and output_available  # Both conditions required
+    return node.name in {s.node_name for s in checkpoint.steps if s.status == COMPLETED}
 ```
 
-### Re-execution Warning
-
-When resuming, the runner **logs a warning** if any nodes will re-execute due to missing outputs:
-
-```python
-# In runner.run() after loading checkpoint:
-def _check_reexecution(self, checkpoint: Checkpoint, graph: Graph) -> None:
-    completed = {s.node_name for s in checkpoint.steps if s.status == COMPLETED}
-    has_output = {
-        node.name for node in graph.nodes
-        if node.output_name in checkpoint.outputs
-    }
-
-    will_reexecute = completed - has_output
-
-    if will_reexecute:
-        logger.warning(
-            f"Resuming workflow will re-execute {len(will_reexecute)} "
-            f"non-persisted nodes: {sorted(will_reexecute)}. "
-            f"To avoid re-execution, add their outputs to persist=[...]."
-        )
-```
-
-This warning helps users understand:
-- Which nodes will run again (even though they completed before)
-- How to change `persist` settings to avoid re-execution if desired
+This ensures full crash recovery — no nodes re-execute on resume.
 
 ### WorkflowStatus (DBOS-compatible)
 
@@ -1345,13 +1307,13 @@ User-Facing Types:
 └── RunHandle (streaming execution handle from .iter())
 
 Internal Types (not user-facing):
-└── GraphState (runtime values with versioning, includes persist=False values)
+└── GraphState (runtime values with versioning)
 
 Persistence Types:
 ├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED, WAITING)
 ├── WorkflowStatus (enum: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
 ├── Step (individual step record: index, node_name, status)
-├── StepResult (step outputs + pause info, only persist=True values)
+├── StepResult (step outputs + pause info)
 ├── Workflow (workflow execution record)
 └── Checkpoint (point-in-time snapshot: computed outputs + step history)
 
@@ -1391,16 +1353,16 @@ Observability:
 ┌─────────────────────────────────────────────────────────────────┐
 │  Internal Runtime (GraphState)                                  │
 │                                                                 │
-│  All values including persist=False                             │
+│  All values from executed nodes                                 │
 │  Version tracking for staleness detection                       │
 └─────────────────────────────────────────────────────────────────┘
                               │
-                              │ Checkpointer filters by persist=
+                              │ Checkpointer saves all values
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  Persistence Layer (Workflow, Step, StepResult)                 │
 │                                                                 │
-│  Only persist=True values are saved                             │
+│  All values saved for full durability                           │
 │  DBOS-compatible format                                         │
 │  Checkpoint ID = workflow_id + step_index                       │
 └─────────────────────────────────────────────────────────────────┘

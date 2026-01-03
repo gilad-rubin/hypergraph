@@ -143,62 +143,6 @@ history = await checkpointer.get_history("order-456")
 
 ---
 
-## Selective Persistence
-
-Not all outputs need to survive crashes. Use the `persist` parameter at the Graph level to control what's checkpointed.
-
-### Default: Persist Everything
-
-When a checkpointer is present, **all outputs are persisted by default**. This is the safe default — you opt into durability by adding a checkpointer, so persist everything.
-
-```python
-# All outputs persisted (default)
-graph = Graph(nodes=[embed, retrieve, generate])
-runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
-```
-
-### Allowlist: Persist Specific Outputs
-
-Use `persist=[...]` to specify which **outputs** to checkpoint. This is an optimization to reduce storage.
-
-```python
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    persist=["docs", "answer"],  # Only these outputs are checkpointed
-)
-```
-
-**Multi-output nodes:** For nodes with multiple outputs (e.g., `@node(outputs=("mean", "std"))`), you must include ALL or NONE of the node's outputs. Partial inclusion raises a build-time error — nodes execute atomically, so you can't persist some outputs without the others.
-
-### Why Selective Persistence?
-
-| Node | What It Produces | Persist? | Reason |
-|------|------------------|:--------:|--------|
-| `accumulate` | `messages` | ✅ | Can't reconstruct conversation |
-| `generate` | `answer` | ✅ | User expects this |
-| `embed` | `embedding` | ❌ | Can regenerate (deterministic) |
-| `retrieve` | `docs` | ❌ | Can refetch |
-
-### Resume Behavior
-
-On crash and resume:
-
-```
-Original run:
-  embed("hello") → [0.1, 0.2, ...]  ← NOT saved (not in persist list)
-  generate(...)  → "answer"         ← SAVED
-  💥 CRASH
-
-Resume:
-  embed("hello") → [0.1, 0.2, ...]  ← Re-executed
-  generate(...)  → (loaded)         ← Loaded from checkpoint
-  ✅ Complete
-```
-
-**Key insight:** Non-persisted nodes re-execute on resume. This is fine for deterministic operations like embedding — you trade storage for compute.
-
----
-
 ## Multi-Turn Conversations
 
 The value resolution hierarchy makes multi-turn conversations effortless.
@@ -895,23 +839,7 @@ workflow_id = f"user-{user_id}-session-{session_id}"
 workflow_id = str(uuid.uuid4())
 ```
 
-### 2. Use Selective Persistence
-
-```python
-# ✅ Good: Only persist what matters (output names)
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    persist=["answer"],  # Only persist the answer output
-)
-
-# ❌ Bad: Persisting outputs that are large and reproducible
-graph = Graph(
-    nodes=[embed, retrieve, generate],
-    # persist=None means persist everything - embedding outputs are large!
-)
-```
-
-### 3. Handle Pauses Gracefully
+### 2. Handle Pauses Gracefully
 
 ```python
 result = await runner.run(graph, inputs={...}, workflow_id="...")
@@ -928,7 +856,7 @@ match result.status:
         logger.error(f"Workflow failed: {result.error}")
 ```
 
-### 4. Clean Up Old Workflows
+### 3. Clean Up Old Workflows
 
 ```python
 # Implement cleanup based on your retention policy
@@ -948,7 +876,6 @@ async def cleanup_old_workflows(days: int = 30):
 | Concept | Description |
 |---------|-------------|
 | `workflow_id` | Unique identifier for a workflow execution |
-| `persist` | Controls which **outputs** are checkpointed (None = all, [...] = allowlist) |
 | `InterruptNode` | Pause for human input |
 | `RunResult.pause` | Information about why workflow paused |
 | `get_state()` | Get accumulated values at a point in time |
@@ -957,4 +884,4 @@ async def cleanup_old_workflows(days: int = 30):
 | Checkpointer | Storage backend (SQLite, Postgres) |
 | DBOS | Production upgrade with automatic recovery |
 
-**The philosophy:** Outputs flow through nodes. Persistence is orthogonal — you choose what survives a crash (per-output, at Graph level). History is append-only. Human input comes through `InterruptNode`, not external state mutation.
+**The philosophy:** Outputs flow through nodes. When a checkpointer is present, all outputs are saved — durability is non-negotiable. History is append-only. Human input comes through `InterruptNode`, not external state mutation.

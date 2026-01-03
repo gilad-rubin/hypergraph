@@ -254,7 +254,7 @@ Checkpointer is **not** an EventProcessor. This is deliberate:
 | Concern | EventProcessor | Checkpointer |
 |---------|----------------|--------------|
 | **Direction** | Write-only (push) | Read + Write (bidirectional) |
-| **Data** | All events | Only `persist=True` outputs |
+| **Data** | All events | All outputs |
 | **Purpose** | Observability | Durability |
 | **Failure mode** | Fire-and-forget | Must succeed |
 
@@ -274,33 +274,31 @@ See [Observability](observability.md) for EventProcessor details.
 
 ```
 Steps (stored):
-  Step 0: node="embed",    outputs=None           ← persist=False
-  Step 1: node="retrieve", outputs=None           ← persist=False
-  Step 2: node="generate", outputs={"answer": "..."} ← persist=True
+  Step 0: node="embed",    outputs={"embedding": [...]}
+  Step 1: node="retrieve", outputs={"docs": [...]}
+  Step 2: node="generate", outputs={"answer": "..."}
 
-State (computed from persisted outputs only):
-  get_state(at_step=2) → {"answer": "..."}
+State (computed by folding outputs):
+  get_state(at_step=2) → {"embedding": [...], "docs": [...], "answer": "..."}
 ```
 
 ### What Gets Saved
 
-**Steps are saved for ALL executed nodes.** This is required for the implicit cursor (tracking position in cycles and branches).
-
-**Outputs are only saved for `persist=True` nodes.** This controls storage size.
+**Everything is saved.** Both step metadata and outputs are persisted for all executed nodes.
 
 | Component | Saved? | Contains |
 |-----------|:------:|----------|
 | Step | Always | index, node_name, status, batch_index |
-| StepResult.outputs | Only if `persist=True` | Actual output values |
+| StepResult.outputs | Always | Output values |
 
-On resume, non-persisted nodes re-execute (their step exists but output is missing).
+This ensures full crash recovery — on resume, all outputs are loaded and no nodes re-execute.
 
 ### Implications
 
 - **Single source of truth**: Steps are authoritative; state is derived
 - **Time travel**: Get state at any historical point
 - **No sync issues**: State can never be "out of sync" with steps
-- **Storage efficiency**: Only persist what matters
+- **Full durability**: All nodes are recoverable on crash
 
 ### When to Use Each
 
