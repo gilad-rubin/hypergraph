@@ -1010,30 +1010,30 @@ async def execute_graph_node(
     graph_node: GraphNode,
     workflow_id: str,
     step_index: int,
+    superstep: int,
     inputs: dict,
 ):
-    # 1. Create step with child reference
+    # 1. Create child workflow reference
     child_id = child_workflow_id(workflow_id, graph_node.name)
-
-    step = Step(
-        index=step_index,
-        node_name=graph_node.name,
-        batch_index=batch.index,
-        status=StepStatus.RUNNING,
-        child_workflow_id=child_id,
-    )
-    await checkpointer.save_step(workflow_id, step)
 
     # 2. Execute child as separate workflow
     child_workflow = Workflow(id=child_id)
     result = await execute_graph(graph_node.graph, child_workflow, inputs)
 
-    # 3. Mark parent step complete
-    step.status = StepStatus.COMPLETED
+    # 3. Save parent step (only after child completes)
+    step = Step(
+        index=step_index,
+        node_name=graph_node.name,
+        superstep=superstep,
+        status=StepStatus.COMPLETED,
+        child_workflow_id=child_id,
+    )
     await checkpointer.save_step(workflow_id, step)
 
     return result
 ```
+
+> **Note:** Steps are only saved after completion. There is no RUNNING status in persistence — see [Status Enums](execution-types.md#stepstatus) for why.
 
 ### Parallel vs Nested
 
