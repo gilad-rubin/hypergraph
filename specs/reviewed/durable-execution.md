@@ -687,44 +687,53 @@ class DBOSRunnerCapabilities(RunnerCapabilities):
 
 ## Parallel Execution
 
-hypergraph executes nodes in **batches** (supersteps). Nodes within the same batch run concurrently.
+### What Is a Superstep?
+
+A **superstep** is a synchronized batch of parallel computations. The term comes from Google's [Pregel paper](https://15799.courses.cs.cmu.edu/fall2013/static/papers/p135-malewicz.pdf) and is used by [LangGraph](https://medium.com/@maksymilian.pilzys/langgraph-transactions-pregel-message-passing-and-super-steps-0e101e620f10).
+
+```
+DAG execution as supersteps:
+
+  Superstep 0: [embed, validate, fetch]  ← All can run in parallel (no dependencies)
+       ↓ barrier (wait for all to complete)
+  Superstep 1: [retrieve, analyze]       ← Depend on superstep 0 outputs
+       ↓ barrier
+  Superstep 2: [generate]                ← Depends on superstep 1 outputs
+```
+
+**Why supersteps matter for checkpointing:**
+- Supersteps are the natural unit for user-facing checkpoint operations (fork, resume)
+- Each superstep represents a consistent state (all parallel nodes have completed)
+- Users don't need to think about individual node indices within a superstep
+
+**Within a superstep:**
+- Nodes run concurrently
+- Each node is checkpointed individually (partial superstep recovery on crash)
+- Alphabetical ordering by node_name provides deterministic replay
 
 ### The Challenge
 
 ```
-Batch 0: [fetch, embed, retrieve]  ← 3 async nodes run in parallel
-         ↓
-         Process crashes after fetch and embed complete
-         ↓
-         On resume: How to know which completed?
+Superstep 0: [fetch, embed, retrieve]  ← 3 async nodes run in parallel
+             ↓
+             Process crashes after fetch and embed complete
+             ↓
+             On resume: How to know which completed?
 ```
 
-### Solution: Pre-register All Steps
+### Solution: Per-Node Status Tracking
 
-When a batch starts, we create `Step` records for ALL nodes in the batch with `status=PENDING`. As each completes, we update its status individually.
+Each node within a superstep is tracked individually. On resume, only incomplete nodes re-run.
 
 > **Note:** This is simplified pseudocode illustrating the concept. See [checkpointer.md](checkpointer.md) for the actual Checkpointer interface.
 
 ```python
 # Execution flow (conceptual pseudocode)
-async def execute_batch(batch: list[HyperNode], workflow_id: str, start_index: int):
-    # 1. Pre-register all steps as "pending"
-    step_indices = []
-    for i, node in enumerate(batch):
-        idx = start_index + i
-        step = Step(
-            index=idx,
-            node_name=node.name,
-            batch_index=batch.index,
-            status=StepStatus.PENDING,
-        )
-        # Conceptually: register step before execution
-        step_indices.append(idx)
-
-    # 2. Execute all in parallel with individual checkpointing
-    async def execute_one(node: HyperNode, step_index: int):
+async def execute_superstep(superstep_nodes: list[HyperNode], workflow_id: str, superstep: int):
+    # 1. Execute all in parallel with individual checkpointing
+    async def execute_one(node: HyperNode, idx: int):
         # Check if already completed (resume case)
-        existing = get_step_if_completed(workflow_id, step_index)
+        existing = get_step_if_completed(workflow_id, superstep, node.name)
         if existing:
             return existing.outputs  # Skip, use cached result
 
@@ -733,83 +742,89 @@ async def execute_batch(batch: list[HyperNode], workflow_id: str, start_index: i
             # Save step with result
             await checkpointer.save_step(
                 workflow_id,
-                Step(index=step_index, node_name=node.name, ...),
+                Step(superstep=superstep, node_name=node.name, index=idx, status=StepStatus.COMPLETED),
                 StepResult(outputs=outputs),
             )
             return outputs
         except Exception as e:
             await checkpointer.save_step(
                 workflow_id,
-                Step(index=step_index, node_name=node.name, status=StepStatus.FAILED),
+                Step(superstep=superstep, node_name=node.name, index=idx, status=StepStatus.FAILED),
                 StepResult(error=str(e)),
             )
             raise
 
-    # 3. Run all concurrently
+    # 2. Run all concurrently
+    # Indices assigned alphabetically by node_name for deterministic ordering
+    sorted_nodes = sorted(superstep_nodes, key=lambda n: n.name)
     results = await asyncio.gather(*[
         execute_one(node, idx)
-        for node, idx in zip(batch, step_indices)
+        for idx, node in enumerate(sorted_nodes)
     ])
 
     return results
 ```
 
-### Key Principle: Deterministic Scheduling
+### Partial Superstep Recovery
+
+**Only incomplete nodes re-run.** This ensures at-least-once semantics per node:
+
+```
+Superstep 0: [embed, fetch, validate] running in parallel
+  → embed completes    (status=COMPLETED)
+  → fetch completes    (status=COMPLETED)
+  → 💥 CRASH before validate completes
+
+On resume:
+  → embed: COMPLETED → skip (output loaded from checkpoint)
+  → fetch: COMPLETED → skip (output loaded from checkpoint)
+  → validate: RUNNING → re-execute
+```
+
+### Deterministic Ordering Within Supersteps
 
 From [Temporal](https://docs.temporal.io/workflows) and [DBOS](https://docs.dbos.dev/architecture):
 
 > "Workflows must be deterministic... the order of *starting* steps must be the same on replay."
 
-**Parallel nodes are identified by their scheduling order, not completion order.**
+**Within a superstep, nodes are ordered alphabetically by node_name.** This ensures deterministic `index` assignment regardless of completion order.
 
 ```
-Batch 0 starts:
-  → step_index=0: fetch   (scheduled first)
-  → step_index=1: embed   (scheduled second)
-  → step_index=2: retrieve (scheduled third)
+Superstep 0 starts (nodes sorted alphabetically):
+  → index=0: embed    (alphabetically first)
+  → index=1: fetch    (alphabetically second)
+  → index=2: validate (alphabetically third)
 
-Completion order may vary:
-  → embed completes first (step_index=1 → "completed")
-  → fetch completes second (step_index=0 → "completed")
-  → CRASH before retrieve completes
-
-On resume:
-  → step_index=0: fetch → status="completed" → skip
-  → step_index=1: embed → status="completed" → skip
-  → step_index=2: retrieve → status="running" → re-execute
+Completion order may vary, but indices are stable.
 ```
 
 ### Checkpoint Identification
 
-A checkpoint is uniquely identified by `workflow_id` + `step_index`. No separate checkpoint UUID is needed.
-
-```
-Checkpoint ID = workflow_id + step_index
-             = "order-123" + 2
-             = refers to step 2 in workflow "order-123"
-```
-
-**Batch Index vs Step Index:**
-
-| Concept | Purpose | Example |
-|---------|---------|---------|
-| `step_index` | Unique ID for each step | 0, 1, 2, 3, 4... |
-| `batch_index` | Groups parallel steps | batch 0: steps 0,1,2; batch 1: steps 3,4 |
-
-- `step_index` is always unique per workflow
-- `batch_index` groups steps that execute concurrently
-- For checkpoint lookup, use `step_index`
-- For understanding execution phases, use `batch_index`
+Users identify checkpoints by **superstep number**, not individual step indices:
 
 ```python
-# Example: Parallel batch
-# batch_index=0 contains step_index=0,1,2 (all run concurrently)
+# Get state after superstep 2 completes (all parallel nodes in that superstep)
+state = await checkpointer.get_state("order-123", superstep=2)
 
-Step(index=0, node_name="fetch", batch_index=0)    # ─┐
-Step(index=1, node_name="embed", batch_index=0)    # ─┼─ Same batch, concurrent
-Step(index=2, node_name="retrieve", batch_index=0) # ─┘
+# Fork workflow from superstep 1
+checkpoint = await checkpointer.get_checkpoint("order-123", superstep=1)
+```
 
-Step(index=3, node_name="generate", batch_index=1) # Next batch, sequential
+**Superstep vs Index:**
+
+| Concept | User-Facing? | Purpose |
+|---------|:------------:|---------|
+| `superstep` | ✅ Yes | Identifies batch boundaries for checkpointing/forking |
+| `node_name` | ✅ Yes | Identifies which node within a superstep |
+| `index` | ❌ Internal | Unique DB key, assigned alphabetically within superstep |
+
+```python
+# Example: Superstep with 3 parallel nodes
+Step(superstep=0, node_name="embed", index=0)     # ─┐
+Step(superstep=0, node_name="fetch", index=1)     # ─┼─ Same superstep, concurrent
+Step(superstep=0, node_name="validate", index=2)  # ─┘
+
+Step(superstep=1, node_name="generate", index=3)  # Next superstep
 ```
 
 ### Parallel Nodes Are Steps, Not Child Workflows
@@ -818,7 +833,7 @@ Step(index=3, node_name="generate", batch_index=1) # Next batch, sequential
 
 | Concept | What It Is | Checkpoint Model |
 |---------|-----------|------------------|
-| **Parallel nodes** | Multiple nodes in same batch | Steps within current workflow |
+| **Parallel nodes** | Multiple nodes in same superstep | Steps within current workflow |
 | **Nested graph** | GraphNode containing subgraph | Child workflow |
 
 Parallel nodes do NOT become child workflows. They're just steps that happen to run concurrently within the same workflow.

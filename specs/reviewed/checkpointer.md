@@ -12,7 +12,7 @@ Checkpointers store workflow state to enable resume, crash recovery, and multi-t
 
 1. **Steps are the source of truth** - State is computed from steps, not stored separately
 2. **Bidirectional interface** - Both read (load) and write (save) operations
-3. **Selective persistence** - Only `persist=True` outputs are stored
+3. **Full persistence** - All outputs are stored when checkpointer is present
 4. **Separate from observability** - Checkpointer is not an EventProcessor (see [Why](#why-checkpointer-is-separate))
 
 ### Architecture
@@ -60,12 +60,12 @@ class Checkpointer(ABC):
         """
         Save a completed step and its outputs.
 
-        Called by the runner after each node with persist=True completes.
+        Called by the runner after each node completes.
 
         Args:
             workflow_id: Unique workflow identifier
-            step: Step metadata (index, node_name, status)
-            result: Step outputs (only persist=True values)
+            step: Step metadata (superstep, node_name, index, status)
+            result: Step outputs
         """
         ...
 
@@ -104,17 +104,17 @@ class Checkpointer(ABC):
     async def get_state(
         self,
         workflow_id: str,
-        at_step: int | None = None,
+        superstep: int | None = None,
     ) -> dict[str, Any]:
         """
-        Get accumulated state at a point in time.
+        Get accumulated state through a superstep.
 
-        State is COMPUTED by folding over steps up to `at_step`.
+        State is COMPUTED by folding over steps through `superstep`.
         This is not a simple lookup - it reconstructs state from history.
 
         Args:
             workflow_id: Unique workflow identifier
-            at_step: Step index to compute state at (None = latest)
+            superstep: Include outputs through this superstep (None = latest)
 
         Returns:
             Accumulated output values: {"messages": [...], "answer": "..."}
@@ -125,14 +125,14 @@ class Checkpointer(ABC):
     async def get_history(
         self,
         workflow_id: str,
-        up_to_step: int | None = None,
+        superstep: int | None = None,
     ) -> list[Step]:
         """
-        Get step execution history.
+        Get step execution history through a superstep.
 
         Args:
             workflow_id: Unique workflow identifier
-            up_to_step: Maximum step index to include (None = all)
+            superstep: Include steps through this superstep (None = all)
 
         Returns:
             List of Step records in execution order
@@ -142,7 +142,7 @@ class Checkpointer(ABC):
     async def get_checkpoint(
         self,
         workflow_id: str,
-        at_step: int | None = None,
+        superstep: int | None = None,
     ) -> Checkpoint:
         """
         Get a checkpoint for forking workflows.
@@ -152,13 +152,13 @@ class Checkpointer(ABC):
 
         Args:
             workflow_id: Unique workflow identifier
-            at_step: Step index to checkpoint at (None = latest)
+            superstep: Checkpoint through this superstep (None = latest)
 
         Returns:
             Checkpoint with computed outputs and step history
         """
-        outputs = await self.get_state(workflow_id, at_step=at_step)
-        steps = await self.get_history(workflow_id, up_to_step=at_step)
+        outputs = await self.get_state(workflow_id, superstep=superstep)
+        steps = await self.get_history(workflow_id, superstep=superstep)
         return Checkpoint(outputs=outputs, steps=steps)
 
     @abstractmethod
@@ -274,12 +274,12 @@ See [Observability](observability.md) for EventProcessor details.
 
 ```
 Steps (stored):
-  Step 0: node="embed",    outputs={"embedding": [...]}
-  Step 1: node="retrieve", outputs={"docs": [...]}
-  Step 2: node="generate", outputs={"answer": "..."}
+  Superstep 0: embed, validate (parallel)  → outputs={"embedding": [...], "valid": true}
+  Superstep 1: retrieve                    → outputs={"docs": [...]}
+  Superstep 2: generate                    → outputs={"answer": "..."}
 
 State (computed by folding outputs):
-  get_state(at_step=2) → {"embedding": [...], "docs": [...], "answer": "..."}
+  get_state(superstep=2) → {"embedding": [...], "valid": true, "docs": [...], "answer": "..."}
 ```
 
 ### What Gets Saved
@@ -288,10 +288,10 @@ State (computed by folding outputs):
 
 | Component | Saved? | Contains |
 |-----------|:------:|----------|
-| Step | Always | index, node_name, status, batch_index |
+| Step | Always | superstep, node_name, index, status |
 | StepResult.outputs | Always | Output values |
 
-This ensures full crash recovery — on resume, all outputs are loaded and no nodes re-execute.
+This ensures full crash recovery — on resume, completed nodes are skipped, incomplete nodes re-run.
 
 ### Implications
 
@@ -348,7 +348,7 @@ runner = AsyncRunner(checkpointer=checkpointer)
 | Capability | SqliteCheckpointer | PostgresCheckpointer | DBOS |
 |------------|:------------------:|:--------------------:|:----:|
 | Resume from latest | ✅ | ✅ | ✅ |
-| Resume from specific step | ✅ | ✅ | ✅ |
+| Resume from specific superstep | ✅ | ✅ | ✅ |
 | Get current state | ✅ | ✅ | ✅ |
 | List workflows | ✅ | ✅ | ✅ |
 | Step history | ✅ | ✅ | ✅ |
@@ -399,10 +399,10 @@ class RedisCheckpointer(Checkpointer):
     async def get_state(
         self,
         workflow_id: str,
-        at_step: int | None = None,
+        superstep: int | None = None,
     ) -> dict[str, Any]:
         # Fold over steps to compute state
-        history = await self.get_history(workflow_id, up_to_step=at_step)
+        history = await self.get_history(workflow_id, superstep=superstep)
         state = {}
         for step in history:
             result = await self._get_step_result(workflow_id, step.index)
@@ -413,7 +413,7 @@ class RedisCheckpointer(Checkpointer):
     async def get_history(
         self,
         workflow_id: str,
-        up_to_step: int | None = None,
+        superstep: int | None = None,
     ) -> list[Step]:
         # Implementation details...
         pass
@@ -424,7 +424,7 @@ class RedisCheckpointer(Checkpointer):
 ### Key Implementation Notes
 
 1. **get_state() must compute from steps** - Don't store state separately
-2. **save_step() is called per-node** - Only for `persist=True` nodes
+2. **save_step() is called per-node** - Called for all executed nodes
 3. **Handle serialization** - Outputs can be complex objects
 4. **Initialize/close for resource management** - Connections, pools, etc.
 
@@ -561,9 +561,9 @@ rag_state = await checkpointer.get_state("order-123/rag")
 ```python
 @dataclass
 class Step:
-    index: int                      # Monotonically increasing step ID
+    superstep: int                  # Which superstep (batch) - user-facing
     node_name: str                  # Name of the node that executed
-    batch_index: int                # Which batch/superstep this belongs to
+    index: int                      # Unique sequential ID (internal, for DB key)
     status: StepStatus              # PENDING, RUNNING, COMPLETED, FAILED
     created_at: datetime
     completed_at: datetime | None
@@ -572,7 +572,7 @@ class Step:
 @dataclass
 class StepResult:
     step_index: int
-    outputs: dict[str, Any] | None  # Only persist=True values
+    outputs: dict[str, Any] | None  # Node outputs
     error: str | None
     pause: PauseInfo | None         # Set when step is waiting at InterruptNode
 

@@ -147,6 +147,22 @@ This is the **same algorithm** used for fresh starts and resumes - only the init
 
 This is encoded in the step history, not as a separate pointer. The graph structure constrains execution paths, so given this state, there's exactly one deterministic answer to "what runs next?"
 
+**Partial superstep recovery:** If a crash occurs mid-superstep, only incomplete nodes re-run:
+
+```
+Superstep 0: [embed, validate, fetch] running in parallel
+  → embed completes   (status=COMPLETED)
+  → validate completes (status=COMPLETED)
+  → 💥 CRASH before fetch completes
+
+On resume:
+  → embed: COMPLETED → skip (output loaded from checkpoint)
+  → validate: COMPLETED → skip (output loaded from checkpoint)
+  → fetch: RUNNING → re-execute
+```
+
+This ensures at-least-once semantics per node, not per superstep.
+
 ---
 
 ## Quick Navigation
@@ -1038,20 +1054,23 @@ class Step:
 
     Maps to DBOS `operation_outputs` table.
     """
-    index: int
-    """Monotonically increasing step ID (maps to DBOS function_id).
+    superstep: int
+    """Which superstep (batch) this step belongs to.
 
-    Within a batch, indices are assigned alphabetically by node_name
-    for deterministic ordering regardless of completion order.
+    Nodes that can run in parallel share the same superstep number.
+    This is the user-facing identifier for checkpointing/forking.
+    Follows LangGraph/Pregel terminology.
     """
 
     node_name: str
     """Name of the node that executed."""
 
-    batch_index: int
-    """Which batch/superstep this step belongs to.
+    index: int
+    """Unique sequential ID for this step (internal).
 
-    Nodes that can run in parallel share the same batch_index.
+    Used as DB primary key. Within a superstep, indices are assigned
+    alphabetically by node_name for deterministic ordering regardless
+    of completion order.
     """
 
     status: StepStatus = StepStatus.PENDING
