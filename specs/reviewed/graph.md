@@ -690,9 +690,9 @@ def _validate_no_namespace_collision(self):
                 f"  → Node '{node.name}' produces output '{output_name}'\n"
                 f"  → GraphNode '{output_name}' exists in this graph\n\n"
                 f"The problem:\n"
-                f"  RunResult.outputs stores both regular outputs and nested\n"
+                f"  RunResult.values stores both regular outputs and nested\n"
                 f"  RunResults from GraphNodes in the same dict:\n\n"
-                f"    result.outputs = {{\n"
+                f"    result.values = {{\n"
                 f"      'answer': '...',           # Regular output\n"
                 f"      'rag_pipeline': RunResult  # Nested graph\n"
                 f"    }}\n\n"
@@ -723,7 +723,7 @@ outer = Graph(nodes=[summarize, inner.as_node()])
 #   → GraphNode 'summary' exists in this graph
 #
 #   The problem:
-#     RunResult.outputs stores both regular outputs and nested
+#     RunResult.values stores both regular outputs and nested
 #     RunResults from GraphNodes in the same dict...
 ```
 

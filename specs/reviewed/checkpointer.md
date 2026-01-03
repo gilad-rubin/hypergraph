@@ -95,7 +95,7 @@ class Checkpointer(ABC):
         workflow_id: str,
         status: WorkflowStatus,
     ) -> None:
-        """Update workflow status (PENDING, SUCCESS, ERROR, etc.)."""
+        """Update workflow status (ACTIVE, COMPLETED, or FAILED)."""
         ...
 
     # === Read Operations ===
@@ -558,13 +558,15 @@ rag_state = await checkpointer.get_state("order-123/rag")
 
 ### Types
 
+> **Full definitions:** See [Execution Types](execution-types.md#persistence-types) for complete type definitions with docstrings.
+
 ```python
 @dataclass
 class Step:
     superstep: int                  # Which superstep (batch) - user-facing
     node_name: str                  # Name of the node that executed
     index: int                      # Unique sequential ID (internal, for DB key)
-    status: StepStatus              # PENDING, RUNNING, COMPLETED, FAILED
+    status: StepStatus              # COMPLETED, FAILED, PAUSED, STOPPED
     created_at: datetime
     completed_at: datetime | None
     child_workflow_id: str | None   # For nested graphs
@@ -572,17 +574,17 @@ class Step:
 @dataclass
 class StepResult:
     index: int                      # Reference to Step.index
+    status: StepStatus              # COMPLETED, FAILED, PAUSED, STOPPED
     values: dict[str, Any] | None   # Node output values
     error: str | None
-    pause: PauseInfo | None         # Set when step is waiting at InterruptNode
-    truncated: bool = False         # True if streaming output was truncated by stop
+    pause: PauseInfo | None         # Set when step is paused at InterruptNode
+    partial: bool = False           # True if streaming output was truncated by stop
 
 class StepStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    WAITING = "waiting"  # Paused at InterruptNode, waiting for response
+    COMPLETED = "completed"  # Finished with usable output
+    FAILED = "failed"        # Terminated with error
+    PAUSED = "paused"        # At InterruptNode, waiting for response
+    STOPPED = "stopped"      # User stopped, no usable output
 
 @dataclass
 class Workflow:
@@ -594,11 +596,9 @@ class Workflow:
     completed_at: datetime | None
 
 class WorkflowStatus(Enum):
-    PENDING = "PENDING"
-    ENQUEUED = "ENQUEUED"
-    SUCCESS = "SUCCESS"
-    ERROR = "ERROR"
-    CANCELLED = "CANCELLED"
+    ACTIVE = "active"        # Can be resumed (running, paused, or stopped)
+    COMPLETED = "completed"  # Terminal success
+    FAILED = "failed"        # Terminal failure
 
 @dataclass
 class Checkpoint:
@@ -610,17 +610,17 @@ class Checkpoint:
 ### Pause Persistence
 
 When an `InterruptNode` executes and waits for a response, the step is saved with:
-- `StepStatus.WAITING` - indicates the step is blocked
+- `StepStatus.PAUSED` - indicates the step is blocked
 - `StepResult.pause` - contains `PauseInfo` with reason, node, response_param, and value
 
 This enables external systems to query "what is this workflow waiting for?" even after a crash:
 
 ```python
-# Get workflow to find waiting step
+# Get workflow to find paused step
 workflow = await checkpointer.get_workflow("session-123")
 
 for step in workflow.steps:
-    if step.status == StepStatus.WAITING:
+    if step.status == StepStatus.PAUSED:
         result = workflow.results.get(step.index)
         if result and result.pause:
             print(f"Waiting for: {result.pause.response_param}")
@@ -636,6 +636,8 @@ These types map to DBOS tables for compatibility:
 | `Workflow` | `dbos.workflow_status` |
 | `Step` | `dbos.operation_outputs` |
 | `StepResult` | `dbos.operation_outputs` |
+
+For status mapping between hypergraph and DBOS, see [DBOS Mapping](execution-types.md#dbos-mapping).
 
 ---
 

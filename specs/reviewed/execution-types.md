@@ -151,14 +151,14 @@ This is encoded in the step history, not as a separate pointer. The graph struct
 
 ```
 Superstep 0: [embed, validate, fetch] running in parallel
-  → embed completes   (status=COMPLETED)
-  → validate completes (status=COMPLETED)
+  → embed completes   (step saved: COMPLETED)
+  → validate completes (step saved: COMPLETED)
   → 💥 CRASH before fetch completes
 
 On resume:
-  → embed: COMPLETED → skip (output loaded from checkpoint)
-  → validate: COMPLETED → skip (output loaded from checkpoint)
-  → fetch: RUNNING → re-execute
+  → embed: has step → skip (output loaded from checkpoint)
+  → validate: has step → skip (output loaded from checkpoint)
+  → fetch: no step → re-execute
 ```
 
 This ensures at-least-once semantics per node, not per superstep.
@@ -241,19 +241,108 @@ result = await runner.run(graph, inputs={...}, workflow_id="session-123")
 
 ## Status Enums
 
+### Design Philosophy: Status as Decision Driver
+
+A **status** is a small set of mutually exclusive states that changes what a consumer does next. Everything else is extra metadata.
+
+**Who consumes statuses?**
+
+| Consumer | What they need | Level |
+|----------|---------------|-------|
+| App code | "Do I have a result? Need input? Error? User stopped?" | Run |
+| UI/streaming | Render experience, show partial output indicator | Run + `partial` flag |
+| Checkpointer | Which steps have usable output for resume? | Step |
+| Observability/DBOS | Label traces, map to foreign status models | Workflow |
+
+**Key principle:** Statuses are minimal. Each status implies a different "what do I do next?" branch.
+
 ### RunStatus
 
-**hypergraph execution status.** Returned in `RunResult.status`.
+**How did `.run()` end?** Returned in `RunResult.status`.
 
 ```python
 from enum import Enum
 
 class RunStatus(Enum):
-    """Workflow execution status (hypergraph layer)."""
-    COMPLETED = "completed"  # Finished all steps (or routed to END)
-    PAUSED = "paused"        # Waiting for something (see PauseReason)
-    STOPPED = "stopped"      # User cancelled mid-execution (partial output saved)
-    ERROR = "error"          # Failed with exception
+    """Status of a single .run() or .iter() invocation."""
+
+    COMPLETED = "completed"
+    """Run finished normally. All planned nodes executed."""
+
+    FAILED = "failed"
+    """Run terminated due to unhandled exception."""
+
+    PAUSED = "paused"
+    """Run waiting for external input (InterruptNode)."""
+
+    STOPPED = "stopped"
+    """Run ended because caller requested stop.
+
+    This status is always used when stop is requested, even if:
+    - Some streaming nodes saved partial output (check StepResult.partial)
+    - Remaining nodes continued to completion (complete_on_stop=True)
+
+    The distinction is: COMPLETED means "no stop requested".
+    """
+```
+
+### StepStatus
+
+**What happened to this step?** Used in persistence layer for resume logic.
+
+```python
+class StepStatus(Enum):
+    """Execution status of a single step (persisted)."""
+
+    COMPLETED = "completed"
+    """Step finished with usable output.
+
+    Check StepResult.partial to see if output was truncated
+    due to stop request (streaming nodes only).
+    """
+
+    FAILED = "failed"
+    """Step terminated due to exception."""
+
+    PAUSED = "paused"
+    """Step at InterruptNode, waiting for response.
+
+    StepResult.pause contains the pause details.
+    """
+
+    STOPPED = "stopped"
+    """Step ended due to stop request, no usable output.
+
+    This happens when:
+    - Non-streaming node was stopped mid-execution
+    - Streaming node was stopped with complete_on_stop=False
+
+    StepResult.values will be None.
+    """
+```
+
+**Note:** Steps that never started have no record. There is no PENDING or RUNNING status in persistence — these are operational states for live monitoring, not needed for recovery correctness.
+
+### WorkflowStatus
+
+**Can this workflow be resumed?** Used for workflow lifecycle management.
+
+```python
+class WorkflowStatus(Enum):
+    """Lifecycle status of an entire workflow (across multiple runs)."""
+
+    ACTIVE = "active"
+    """Workflow can be resumed.
+
+    Covers: currently running, paused at InterruptNode,
+    or stopped but resumable.
+    """
+
+    COMPLETED = "completed"
+    """Workflow finished successfully. Terminal state."""
+
+    FAILED = "failed"
+    """Workflow terminated due to unrecoverable error. Terminal state."""
 ```
 
 ### PauseReason
@@ -268,37 +357,83 @@ class PauseReason(Enum):
 
 > **Note:** Additional pause reasons (`SLEEP`, `SCHEDULED`, `EVENT`) may be added when using DBOSAsyncRunner for durable sleep and scheduling features. See [Durable Execution](durable-execution.md) for DBOS capabilities.
 
-### Status Semantics
+### Status Decision Matrix
 
-| Status | Meaning | Typical Cause | Resume Action |
-|--------|---------|---------------|---------------|
-| `COMPLETED` | Finished | Normal completion or routed to `END` | None needed |
-| `PAUSED` | Waiting | `InterruptNode` | Provide response via `resume()` or `DBOS.send()` |
-| `STOPPED` | Cancelled | User clicked stop during streaming | Continue with partial output in state |
-| `ERROR` | Failed | Uncaught exception | Fix and retry |
+**Run-level decisions:**
 
-### Pause Reasons
+| Status | Has usable result? | What to do next |
+|--------|:------------------:|-----------------|
+| COMPLETED | ✅ Full | Use `result.values` |
+| FAILED | ❌ | Handle `result.error` |
+| PAUSED | Partial | Prompt user via `result.pause`, then resume |
+| STOPPED | Maybe partial | Check steps for `partial=True` outputs |
 
-| Reason | Meaning | Resume Action |
-|--------|---------|---------------|
-| `HUMAN_INPUT` | Waiting for human decision | Provide response via `resume()` or `DBOS.send()` |
+**Step-level decisions (for resume):**
+
+| Status | Has `values`? | Resume action |
+|--------|:-------------:|---------------|
+| COMPLETED | ✅ | Skip (use saved output) |
+| FAILED | ❌ | Handle error or retry |
+| PAUSED | Partial | Provide input and continue |
+| STOPPED | ❌ | Re-run this step |
+
+**Workflow-level decisions:**
+
+| Status | Can resume? | Typical action |
+|--------|:-----------:|----------------|
+| ACTIVE | ✅ | Show "Continue" button |
+| COMPLETED | ❌ | Archive, show results |
+| FAILED | ❌ | Show error, allow retry |
+
+### The `partial` Flag
+
+For streaming nodes stopped with `complete_on_stop=True`, the step saves partial output. The `partial` flag distinguishes this from normal completion:
+
+```python
+@dataclass
+class StepResult:
+    values: dict[str, Any] | None
+    partial: bool = False  # True = values contains usable but truncated output
+```
+
+| Scenario | status | values | partial |
+|----------|--------|--------|:-------:|
+| Normal finish | COMPLETED | `{...}` | `False` |
+| Stopped, partial saved | COMPLETED | `{...}` | `True` |
+| Stopped, no output | STOPPED | `None` | `False` |
+
+**Consumer code:**
+
+```python
+if step.status == StepStatus.COMPLETED:
+    use(step.values)
+    if step.partial:
+        show_indicator("(truncated)")
+elif step.status == StepStatus.STOPPED:
+    # No usable output
+    pass
+```
 
 ### DBOS Mapping
 
-hypergraph status maps to DBOS status as follows:
+hypergraph status maps to DBOS status for storage compatibility:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  hypergraph RunStatus        →    DBOS WorkflowStatus       │
+│  hypergraph                  →    DBOS                      │
 ├─────────────────────────────────────────────────────────────┤
-│  COMPLETED                   →    SUCCESS                   │
-│  PAUSED (any reason)         →    PENDING (blocked on recv) │
-│  STOPPED                     →    CANCELLED                 │
-│  ERROR                       →    ERROR                     │
+│  WorkflowStatus.ACTIVE       →    PENDING                   │
+│  WorkflowStatus.COMPLETED    →    SUCCESS                   │
+│  WorkflowStatus.FAILED       →    ERROR                     │
+├─────────────────────────────────────────────────────────────┤
+│  RunStatus.COMPLETED         →    (workflow) SUCCESS        │
+│  RunStatus.FAILED            →    (workflow) ERROR          │
+│  RunStatus.PAUSED            →    (workflow) PENDING        │
+│  RunStatus.STOPPED           →    (workflow) PENDING        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** DBOS has no "PAUSED" status. When a workflow calls `DBOS.recv()` and waits for human input, DBOS still reports it as `PENDING`. hypergraph adds the `PAUSED` + `PauseReason` abstraction on top. `STOPPED` maps to DBOS `CANCELLED` since both represent intentional early termination.
+**Key insight:** DBOS has no "PAUSED" or "STOPPED" status. Both map to PENDING because the workflow is still active (resumable). hypergraph adds finer-grained status on top for better developer experience.
 
 ---
 
@@ -835,7 +970,7 @@ if result.pause:
 
 # Now complete
 assert not result.pause
-print(result.outputs["answer"])
+print(result.values["answer"])
 ```
 
 ### Using `.iter()` - Handle Inline
@@ -857,7 +992,7 @@ async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-12
                 print(f"Completed: {name}")
 
     # After iteration, result is available
-    print(run.result.outputs)
+    print(run.result.values)
 ```
 
 ### Using `.run()` with Handlers
@@ -1036,18 +1171,7 @@ class EventRouter:
 
 These types represent how workflow state is stored in checkpointers and DBOS. They map directly to database tables.
 
-### StepStatus
-
-```python
-class StepStatus(Enum):
-    """Execution status of a single step."""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    WAITING = "waiting"  # Paused at InterruptNode, waiting for response
-    STOPPED = "stopped"  # User cancelled mid-execution (partial output saved)
-```
+> **Note:** `StepStatus` and `WorkflowStatus` are defined in [Status Enums](#status-enums) above.
 
 ### Step
 
@@ -1077,7 +1201,8 @@ class Step:
     of completion order.
     """
 
-    status: StepStatus = StepStatus.PENDING
+    status: StepStatus
+    """Execution status: COMPLETED, FAILED, PAUSED, or STOPPED."""
     created_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: datetime | None = None
 
@@ -1091,20 +1216,39 @@ class Step:
 ```python
 @dataclass
 class StepResult:
-    """Step outputs. Stored separately (can be large)."""
-    step_index: int
-    outputs: dict[str, Any] | None = None
+    """Step outputs and metadata. Stored separately (can be large)."""
+
+    index: int
+    """Step index this result belongs to."""
+
+    status: StepStatus
+    """Execution status: COMPLETED, FAILED, PAUSED, or STOPPED."""
+
+    values: dict[str, Any] | None = None
+    """Output values. Present when status is COMPLETED (or PAUSED with partial output)."""
+
     error: str | None = None
-    pause: PauseInfo | None = None  # Set when step is an InterruptNode waiting for response
+    """Error message. Present when status is FAILED."""
+
+    pause: PauseInfo | None = None
+    """Pause details. Present when status is PAUSED."""
+
+    partial: bool = False
+    """True if values contains truncated output due to stop request.
+
+    Only meaningful for streaming nodes with complete_on_stop=True.
+    When True, status will be COMPLETED (output is usable, just truncated).
+    """
 ```
 
-**Pause persistence:** When an `InterruptNode` executes and waits for a response, the step is saved with `status=WAITING` and `pause` containing the pause metadata. This enables external systems to query "what is this workflow waiting for?" even after a crash.
+**Pause persistence:** When an `InterruptNode` executes and waits for a response, the step is saved with `status=PAUSED` and `pause` containing the pause metadata. This enables external systems to query "what is this workflow waiting for?" even after a crash.
 
 ```python
 # Example: Step saved when InterruptNode pauses
-step = Step(index=3, node_name="approval", status=StepStatus.WAITING)
+step = Step(index=3, node_name="approval", status=StepStatus.PAUSED)
 result = StepResult(
-    step_index=3,
+    index=3,
+    status=StepStatus.PAUSED,
     pause=PauseInfo(
         reason=PauseReason.HUMAN_INPUT,
         node="approval",
@@ -1147,14 +1291,14 @@ def should_skip_node(node, checkpoint):
 
 This ensures full crash recovery — no nodes re-execute on resume.
 
-### WorkflowStatus (DBOS-compatible)
+### DBOSWorkflowStatus (Storage Adapter)
 
 ```python
-class WorkflowStatus(Enum):
-    """DBOS-compatible workflow status values.
+class DBOSWorkflowStatus(Enum):
+    """DBOS-native workflow status values.
 
-    These match DBOS exactly for storage compatibility.
-    Use RunStatus for hypergraph API layer.
+    Used internally by DBOSAsyncRunner for storage compatibility.
+    Users should use WorkflowStatus (ACTIVE/COMPLETED/FAILED) instead.
     """
     PENDING = "PENDING"       # Running or waiting (includes recv() blocked)
     ENQUEUED = "ENQUEUED"     # In queue, not started
@@ -1162,6 +1306,8 @@ class WorkflowStatus(Enum):
     ERROR = "ERROR"           # Failed with exception
     CANCELLED = "CANCELLED"   # Manually cancelled or timeout
 ```
+
+**Mapping:** See [DBOS Mapping](#dbos-mapping) in Status Enums for how hypergraph statuses translate to DBOS.
 
 ### Workflow
 
@@ -1175,7 +1321,9 @@ class Workflow:
     id: str
     """Unique workflow identifier."""
 
-    status: WorkflowStatus = WorkflowStatus.PENDING
+    status: WorkflowStatus = WorkflowStatus.ACTIVE
+    """Lifecycle status: ACTIVE, COMPLETED, or FAILED."""
+
     steps: list[Step] = field(default_factory=list)
     results: dict[int, StepResult] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -1220,23 +1368,23 @@ Deeply nested: "order-123/rag/inner"
 class Checkpoint:
     """A point-in-time snapshot of workflow state.
 
-    Bundles outputs + step history together. Used for:
+    Bundles values + step history together. Used for:
     - Forking from a past point
     - Manual resume without checkpointer
     - Testing and debugging
     """
-    outputs: dict[str, Any]
+    values: dict[str, Any]
     """Computed output values at this checkpoint (folded from StepResults)."""
 
     steps: list[Step]
     """Step history up to this checkpoint (the implicit cursor).
 
     Note: This is Step metadata only (index, node_name, status).
-    The actual output values are pre-computed in `outputs`.
+    The actual output values are pre-computed in `values`.
     """
 ```
 
-**Why bundle outputs + steps?**
+**Why bundle values + steps?**
 
 As established in [Step History as Implicit Cursor](#step-history-as-implicit-cursor), outputs alone are insufficient for:
 - Cycles (need iteration count)
@@ -1320,12 +1468,12 @@ result = await runner.run(
 ```
 User-Facing Types:
 ├── RunResult (primary result type, supports nesting)
-│   ├── outputs: dict[str, Any | RunResult]  ← nested graphs are RunResult
+│   ├── values: dict[str, Any | RunResult]  ← nested graphs are RunResult
 │   ├── status: RunStatus
 │   ├── pause: PauseInfo | None
 │   └── workflow_id, run_id
-├── RunStatus (enum: COMPLETED, PAUSED, STOPPED, ERROR)
-├── PauseReason (enum: HUMAN_INPUT, SLEEP, SCHEDULED, EVENT)
+├── RunStatus (enum: COMPLETED, FAILED, PAUSED, STOPPED)
+├── PauseReason (enum: HUMAN_INPUT)
 ├── PauseInfo (pause details: reason, node, value, response_param)
 └── RunHandle (streaming execution handle from .iter())
 
@@ -1333,12 +1481,13 @@ Internal Types (not user-facing):
 └── GraphState (runtime values with versioning)
 
 Persistence Types:
-├── StepStatus (enum: PENDING, RUNNING, COMPLETED, FAILED, WAITING, STOPPED)
-├── WorkflowStatus (enum: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
+├── StepStatus (enum: COMPLETED, FAILED, PAUSED, STOPPED)
+├── WorkflowStatus (enum: ACTIVE, COMPLETED, FAILED)
+├── DBOSWorkflowStatus (DBOS adapter: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
 ├── Step (individual step record: index, node_name, status)
-├── StepResult (step outputs + pause info)
+├── StepResult (step values + status + partial flag + pause info)
 ├── Workflow (workflow execution record)
-└── Checkpoint (point-in-time snapshot: computed outputs + step history)
+└── Checkpoint (point-in-time snapshot: computed values + step history)
 
 Event Hierarchy (all include span_id, parent_span_id for hierarchy):
 ├── RunStartEvent
@@ -1363,8 +1512,8 @@ Observability:
 │  hypergraph API Layer (what users see)                          │
 │                                                                 │
 │  RunResult                                                      │
-│  ├── outputs: all values (or filtered by select=)              │
-│  ├── status: RunStatus (COMPLETED, PAUSED, ERROR)              │
+│  ├── values: all values (or filtered by select=)               │
+│  ├── status: RunStatus (COMPLETED, FAILED, PAUSED, STOPPED)    │
 │  ├── pause: PauseInfo | None                                   │
 │  └── [nested_graph]: RunResult (for nested graphs)             │
 │                                                                 │
@@ -1386,7 +1535,8 @@ Observability:
 │  Persistence Layer (Workflow, Step, StepResult)                 │
 │                                                                 │
 │  All values saved for full durability                           │
-│  DBOS-compatible format                                         │
+│  WorkflowStatus: ACTIVE → COMPLETED or FAILED                   │
+│  StepStatus: COMPLETED, FAILED, PAUSED, STOPPED                 │
 │  Checkpoint ID = workflow_id + step_index                       │
 └─────────────────────────────────────────────────────────────────┘
 ```

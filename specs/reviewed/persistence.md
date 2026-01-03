@@ -802,7 +802,7 @@ queue = Queue("processing", concurrency=10)
 | **State definition** | Explicit `TypedDict` schema | Inferred from outputs |
 | **What's persisted** | Everything in schema | Controlled by `persist` |
 | **Identifier** | `thread_id` | `workflow_id` |
-| **Get state** | `graph.get_state(config)` | `result.outputs` or `checkpointer.get_state()` |
+| **Get state** | `graph.get_state(config)` | `result.values` or `checkpointer.get_state()` |
 | **Update state** | `graph.update_state()` | Not supported (use `InterruptNode`) |
 | **Resume** | Provide `thread_id` + `checkpoint_id` | Same `workflow_id` (automatic) |
 | **Human input** | `interrupt()` + `update_state()` | `InterruptNode` |
@@ -851,7 +851,7 @@ match result.status:
         # Store for later, notify user
         await save_pending(result.workflow_id, result.pause)
         return {"status": "pending", "waiting_for": result.pause.response_param}
-    case RunStatus.ERROR:
+    case RunStatus.FAILED:
         # Log and handle error
         logger.error(f"Workflow failed: {result.error}")
 ```

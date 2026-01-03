@@ -44,9 +44,9 @@ from hypergraph import Graph, AsyncRunner
 graph = Graph(nodes=[fetch, process, save])
 
 runner = AsyncRunner(cache=DiskCache("./cache"))
-result = await runner.run(graph, inputs={"query": "hello"})
+result = await runner.run(graph, values={"query": "hello"})
 
-print(result.outputs["response"])  # Access output value
+print(result.values["response"])  # Access output value
 ```
 
 ### DaftRunner
@@ -240,11 +240,11 @@ if result.pause:
     # Resume using same workflow_id (checkpointer auto-detects paused state)
     result = await runner.run(
         graph,
-        inputs={result.pause.response_param: user_decision},
+        values={result.pause.response_param: user_decision},
         workflow_id="review-123",
     )
 
-print(result.outputs["final_result"])
+print(result.values["final_result"])
 ```
 
 **See [Execution Types](execution-types.md)** for `RunResult`, `RunStatus`, and `PauseReason` definitions.
@@ -316,14 +316,14 @@ async def stream_llm(prompt: str) -> str:
 **In `.run()` mode:** Final accumulated value is stored
 
 ```python
-result = await runner.run(graph, inputs={...})
-result.outputs["response"]  # Complete text
+result = await runner.run(graph, values={...})
+result.values["response"]  # Complete text
 ```
 
 **In `.iter()` mode:** Each chunk is emitted as an event
 
 ```python
-async for event in runner.iter(graph, inputs={...}):
+async for event in runner.iter(graph, values={...}):
     if isinstance(event, StreamingChunkEvent):
         print(event.chunk, end="")  # Real-time streaming
 ```
@@ -586,8 +586,8 @@ Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner
 ```python
 @dataclass
 class RunResult:
-    outputs: dict[str, Any]          # Output values
-    status: RunStatus                # COMPLETED, PAUSED, or ERROR
+    values: dict[str, Any]           # Output values
+    status: RunStatus                # COMPLETED, FAILED, PAUSED, or STOPPED
     workflow_id: str | None          # Workflow ID (required with checkpointer)
     run_id: str                      # Unique execution identifier
     pause: PauseInfo | None = None   # Pause details (when status == PAUSED)

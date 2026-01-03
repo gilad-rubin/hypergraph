@@ -78,13 +78,13 @@ loaded_state = await checkpointer.get_state("chat-123")  # {"messages": [...]}
 merged = {**loaded_state, **inputs}  # inputs override loaded state
 
 # Case 2: Fork from checkpoint (explicit checkpoint parameter)
-merged = {**checkpoint.outputs, **inputs}  # inputs override checkpoint
+merged = {**checkpoint.values, **inputs}  # inputs override checkpoint
 
 # Case 3: Fresh start (new workflow_id, no checkpoint)
 merged = {**inputs}  # just inputs
 ```
 
-**The hierarchy is:** `inputs > (checkpoint.outputs OR loaded_state) > bind() > function defaults`
+**The hierarchy is:** `inputs > (checkpoint.values OR loaded_state) > bind() > function defaults`
 
 Inputs always win on conflicts. This ensures new data takes precedence over restored state.
 

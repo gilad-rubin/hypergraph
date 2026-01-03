@@ -69,7 +69,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
 | What | Saved? | Purpose |
 |------|:------:|---------|
 | Step metadata (index, node_name, status) | Always | Implicit cursor for cycles/branches |
-| StepResult.outputs | Always | Value recovery on resume |
+| StepResult.values | Always | Value recovery on resume |
 
 Step history serves as the **implicit cursor** for resumption:
 - **Cycles:** Step count tracks iteration number
@@ -361,7 +361,7 @@ runner = AsyncRunner(
     event_processors=[StreamingHandler()],
 )
 result = await runner.run(graph, inputs={...}, workflow_id="123")
-# Chunks printed as they arrive, final value in result.outputs
+# Chunks printed as they arrive, final value in result.values
 ```
 
 **In `.iter()` mode (pull-based):**
@@ -467,7 +467,7 @@ result = await runner.run(
     workflow_id="session-123",
 )
 # result.status = COMPLETED
-# result.outputs["messages"] = [user_msg, full_response]
+# result.values["messages"] = [user_msg, full_response]
 
 # Turn 2: User stops mid-stream
 result = await runner.run(
@@ -477,7 +477,7 @@ result = await runner.run(
 )
 # User clicks STOP while streaming...
 # result.status = STOPPED
-# result.outputs["messages"] = [..., partial_response]
+# result.values["messages"] = [..., partial_response]
 #                                    ^^^^^^^^^^^^^^^
 #     add_response still ran because of complete_on_stop=True!
 
@@ -860,7 +860,7 @@ async def execute_superstep(superstep_nodes: list[HyperNode], workflow_id: str, 
         # Check if already completed (resume case)
         existing = get_step_if_completed(workflow_id, superstep, node.name)
         if existing:
-            return existing.outputs  # Skip, use cached result
+            return existing.values  # Skip, use cached result
 
         try:
             outputs = await node.execute(inputs)
