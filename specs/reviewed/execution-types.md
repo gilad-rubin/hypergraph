@@ -381,7 +381,7 @@ def is_stale(self, node: HyperNode) -> bool:
     """Check if node needs to re-execute based on input versions."""
 ```
 
-**Note:** Users don't interact with `GraphState` directly. Use `RunResult.outputs` to access execution results.
+**Note:** Users don't interact with `GraphState` directly. Use `RunResult.values` to access execution results.
 
 ---
 
@@ -426,11 +426,11 @@ class PauseInfo:
 class RunResult:
     """Result from graph execution."""
 
-    outputs: dict[str, Any | "RunResult"]
-    """Output values. For nested graphs, contains nested RunResult objects."""
+    values: dict[str, Any | "RunResult"]
+    """Output name → value mapping. For nested graphs, contains nested RunResult objects."""
 
     status: RunStatus
-    """Execution status: COMPLETED, PAUSED, or ERROR."""
+    """Execution status: COMPLETED, PAUSED, STOPPED, or FAILED."""
 
     workflow_id: str | None
     """Workflow identifier (required with checkpointer, None otherwise)."""
@@ -445,19 +445,19 @@ class RunResult:
 
     def __getitem__(self, key: str) -> Any | "RunResult":
         """Dict-like access: result['answer'] or result['nested_graph']['value']"""
-        return self.outputs[key]
+        return self.values[key]
 
     def __contains__(self, key: str) -> bool:
-        """Check if output exists: 'answer' in result"""
-        return key in self.outputs
+        """Check if value exists: 'answer' in result"""
+        return key in self.values
 
     def keys(self):
         """Get output names."""
-        return self.outputs.keys()
+        return self.values.keys()
 
     def items(self):
         """Get output name-value pairs."""
-        return self.outputs.items()
+        return self.values.items()
 
     @property
     def paused(self) -> bool:
@@ -470,8 +470,8 @@ class RunResult:
 - **Nested `RunResult` for nested graphs** - When a graph contains `GraphNode`s, their results are nested `RunResult` objects, preserving status and pause info per subgraph.
 - **No `checkpoint: bytes`** - The checkpointer manages state internally by `workflow_id`. You don't pass checkpoint bytes around.
 - **`workflow_id` for resume** - Same `workflow_id` auto-resumes from where you left off (checkpointer detects paused state).
-- **Dict-like access** - `result["answer"]` is equivalent to `result.outputs["answer"]`.
-- **All outputs by default** - `outputs` contains all node outputs unless filtered with `select=`.
+- **Dict-like access** - `result["answer"]` is equivalent to `result.values["answer"]`.
+- **All values by default** - `values` contains all node outputs unless filtered with `select=`.
 
 ### Basic Example
 
@@ -482,12 +482,12 @@ from hypergraph.checkpointers import SqliteCheckpointer
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",
 )
 
 # Dict-like access
-print(result["answer"])           # Same as result.outputs["answer"]
+print(result["answer"])           # Same as result.values["answer"]
 print("answer" in result)         # True
 
 # Check status
@@ -511,7 +511,7 @@ outer = Graph(nodes=[
     postprocess,
 ])
 
-result = await runner.run(outer, inputs={...}, workflow_id="order-123")
+result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Access nested graph results
 result["final_output"]                    # Top-level output
@@ -530,7 +530,7 @@ result["review"]["draft"]                 # Output from nested graph
 When a nested graph contains an `InterruptNode` and pauses, the pause propagates up:
 
 ```python
-result = await runner.run(outer, inputs={...}, workflow_id="order-123")
+result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Check overall status
 if result.status == RunStatus.PAUSED:
@@ -560,14 +560,14 @@ To resume a paused nested graph:
 # Option 1: Resume the outer graph (checkpointer handles nesting)
 result = await runner.run(
     outer,
-    inputs={result.pause.response_param: user_response},
+    values={result.pause.response_param: user_response},
     workflow_id="order-123",
 )
 
 # Option 2: Resume the nested graph directly (advanced)
 result = await runner.run(
     review_pipeline,
-    inputs={"decision": user_response},
+    values={"decision": user_response},
     workflow_id="order-123/review",  # Nested workflow ID
 )
 ```
@@ -582,7 +582,7 @@ from hypergraph.runners import DBOSAsyncRunner
 runner = DBOSAsyncRunner()
 result = await runner.run(
     graph,
-    inputs={"prompt": "Write a poem"},
+    values={"prompt": "Write a poem"},
     workflow_id="poem-456",
 )
 
@@ -652,7 +652,7 @@ class RunHandle:
 ### Example
 
 ```python
-async with runner.iter(graph, inputs={"query": "hello"}, workflow_id="session-123") as run:
+async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-123") as run:
     async for event in run:
         match event:
             case StreamingChunkEvent(chunk=chunk):
@@ -841,7 +841,7 @@ print(result.outputs["answer"])
 ### Using `.iter()` - Handle Inline
 
 ```python
-async with runner.iter(graph, inputs={"query": "hello"}, workflow_id="session-123") as run:
+async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-123") as run:
     async for event in run:
         match event:
             case StreamingChunkEvent(chunk=chunk):

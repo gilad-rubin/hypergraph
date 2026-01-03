@@ -157,9 +157,9 @@ class Checkpointer(ABC):
         Returns:
             Checkpoint with computed outputs and step history
         """
-        outputs = await self.get_state(workflow_id, superstep=superstep)
+        values = await self.get_state(workflow_id, superstep=superstep)
         steps = await self.get_history(workflow_id, superstep=superstep)
-        return Checkpoint(outputs=outputs, steps=steps)
+        return Checkpoint(values=values, steps=steps)
 
     @abstractmethod
     async def get_workflow(
@@ -274,11 +274,11 @@ See [Observability](observability.md) for EventProcessor details.
 
 ```
 Steps (stored):
-  Superstep 0: embed, validate (parallel)  → outputs={"embedding": [...], "valid": true}
-  Superstep 1: retrieve                    → outputs={"docs": [...]}
-  Superstep 2: generate                    → outputs={"answer": "..."}
+  Superstep 0: embed, validate (parallel)  → values={"embedding": [...], "valid": true}
+  Superstep 1: retrieve                    → values={"docs": [...]}
+  Superstep 2: generate                    → values={"answer": "..."}
 
-State (computed by folding outputs):
+State (computed by folding values):
   get_state(superstep=2) → {"embedding": [...], "valid": true, "docs": [...], "answer": "..."}
 ```
 
@@ -289,7 +289,7 @@ State (computed by folding outputs):
 | Component | Saved? | Contains |
 |-----------|:------:|----------|
 | Step | Always | superstep, node_name, index, status |
-| StepResult.outputs | Always | Output values |
+| StepResult.values | Always | Output values |
 
 This ensures full crash recovery — on resume, completed nodes are skipped, incomplete nodes re-run.
 
@@ -391,7 +391,7 @@ class RedisCheckpointer(Checkpointer):
         await self.client.hset(key, mapping={
             "node_name": step.node_name,
             "status": step.status.value,
-            "outputs": json.dumps(result.outputs),
+            "values": json.dumps(result.values),
         })
         # Update step count
         await self.client.hset(f"workflow:{workflow_id}", "step_count", step.index + 1)
@@ -406,8 +406,8 @@ class RedisCheckpointer(Checkpointer):
         state = {}
         for step in history:
             result = await self._get_step_result(workflow_id, step.index)
-            if result and result.outputs:
-                state.update(result.outputs)
+            if result and result.values:
+                state.update(result.values)
         return state
 
     async def get_history(
@@ -499,7 +499,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./workflows.db"))
 # Run with workflow_id for persistence
 result = await runner.run(
     graph,
-    inputs={"query": "What is RAG?"},
+    values={"query": "What is RAG?"},
     workflow_id="session-123",
 )
 ```
@@ -510,15 +510,15 @@ The runner has one behavior: **load → merge → execute → append**.
 
 ```python
 # First run
-result = await runner.run(graph, inputs={...}, workflow_id="session-123")
+result = await runner.run(graph, values={...}, workflow_id="session-123")
 # 💥 CRASH
 
 # Resume - just run with same workflow_id
-result = await runner.run(graph, inputs={...}, workflow_id="session-123")
-# State loaded, merged with inputs, graph executes, steps appended
+result = await runner.run(graph, values={...}, workflow_id="session-123")
+# State loaded, merged with values, graph executes, steps appended
 
 # Continue conversation - same pattern
-result = await runner.run(graph, inputs={"user_input": "more"}, workflow_id="session-123")
+result = await runner.run(graph, values={"user_input": "more"}, workflow_id="session-123")
 # No special handling - just load, merge, execute, append
 ```
 
@@ -535,7 +535,7 @@ For nested graphs, workflow IDs use path convention:
 ```python
 outer = Graph(nodes=[preprocess, rag.as_node(name="rag"), postprocess])
 
-result = await runner.run(outer, inputs={...}, workflow_id="order-123")
+result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Workflow IDs:
 # Parent: "order-123"
@@ -571,10 +571,11 @@ class Step:
 
 @dataclass
 class StepResult:
-    step_index: int
-    outputs: dict[str, Any] | None  # Node outputs
+    index: int                      # Reference to Step.index
+    values: dict[str, Any] | None   # Node output values
     error: str | None
     pause: PauseInfo | None         # Set when step is waiting at InterruptNode
+    truncated: bool = False         # True if streaming output was truncated by stop
 
 class StepStatus(Enum):
     PENDING = "pending"
@@ -602,7 +603,7 @@ class WorkflowStatus(Enum):
 @dataclass
 class Checkpoint:
     """A point-in-time snapshot for forking workflows."""
-    outputs: dict[str, Any]     # Computed state at this point
+    values: dict[str, Any]      # Computed state at this point
     steps: list[Step]           # Step history (the implicit cursor)
 ```
 

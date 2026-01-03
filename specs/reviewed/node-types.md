@@ -1060,7 +1060,7 @@ class GraphNode(HyperNode):
         graph: Graph,
         name: str | None = None,
         runner: BaseRunner | None = None,
-        complete_on_stop: bool = False,
+        complete_on_stop: bool | None = None,
     ):
         """
         Wrap a graph as a node.
@@ -1069,10 +1069,14 @@ class GraphNode(HyperNode):
             graph: The graph to wrap (reference, not copy)
             name: Node name (default: use graph.name if set)
             runner: Runner for nested execution (default: inherit from parent)
-            complete_on_stop: If True, run remaining nodes even when a streaming
-                node is stopped by the user. This ensures cleanup nodes execute
-                and partial outputs are properly accumulated. Default: False
-                (stop propagates immediately).
+            complete_on_stop: Override graph's complete_on_stop setting.
+                If None (default), inherits from Graph(..., complete_on_stop=).
+
+                When True: run remaining nodes even when a streaming
+                node is stopped by the user. Streaming nodes save partial
+                output (marked truncated=True). Ensures cleanup nodes execute.
+
+                When False: stop propagates immediately, skip remaining nodes.
 
         Raises:
             ValueError: If name not provided and graph has no name.
@@ -1084,6 +1088,7 @@ class GraphNode(HyperNode):
             Use .map_over() to configure iteration.
 
         See Also:
+            graph.md for Graph(..., complete_on_stop=) documentation.
             durable-execution.md for stop handling patterns and examples.
         """
         resolved_name = name or graph.name
@@ -1093,8 +1098,14 @@ class GraphNode(HyperNode):
                 "or pass name to GraphNode(graph, name='x')"
             )
 
+        # Resolve complete_on_stop: explicit override > graph default
+        resolved_complete_on_stop = (
+            complete_on_stop if complete_on_stop is not None
+            else graph.complete_on_stop
+        )
+
         # Validate nested GraphNode consistency
-        if complete_on_stop:
+        if resolved_complete_on_stop:
             for node in graph.nodes:
                 if isinstance(node, GraphNode) and not node.complete_on_stop:
                     raise ValueError(
@@ -1105,7 +1116,7 @@ class GraphNode(HyperNode):
 
         self._graph = graph
         self._runner = runner
-        self._complete_on_stop = complete_on_stop
+        self._complete_on_stop = resolved_complete_on_stop
         self._map_over: list[str] | None = None
         self._map_mode: Literal["zip", "product"] = "zip"
         self._rename_history: list[RenameEntry] = []

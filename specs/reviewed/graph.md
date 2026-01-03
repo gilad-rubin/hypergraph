@@ -29,6 +29,7 @@ class Graph:
         *,
         name: str | None = None,
         strict_types: bool = False,
+        complete_on_stop: bool = False,
     ):
         """
         Create a graph from nodes.
@@ -39,6 +40,19 @@ class Graph:
                   nesting this graph. If not set here, must be provided
                   when calling as_node(name='...')
             strict_types: Validate type annotations between connected nodes (default: False)
+            complete_on_stop: Behavior when a stop signal is received during execution.
+
+                True:
+                  - Streaming nodes: save partial output, mark step COMPLETED with truncated=True
+                  - Regular nodes being stopped: mark step STOPPED (no output possible)
+                  - Continue executing remaining nodes in the graph
+
+                False (default):
+                  - All stopped nodes: mark step STOPPED (no output)
+                  - Stop graph immediately, skip remaining nodes
+
+                This setting can be overridden when using as_node(complete_on_stop=...).
+                See durable-execution.md for patterns and examples.
 
         Example:
             # Basic graph
@@ -47,9 +61,17 @@ class Graph:
             # Named graph for nesting
             rag = Graph(nodes=[embed, retrieve, generate], name="rag_pipeline")
             outer = Graph(nodes=[preprocess, rag.as_node(), postprocess])
+
+            # Graph that saves partial streaming output on stop
+            chat = Graph(
+                nodes=[generate, accumulate],
+                name="chat",
+                complete_on_stop=True,  # Partial responses saved to history
+            )
         """
         self._nodes = {n.name: n for n in nodes}
         self.name = name
+        self.complete_on_stop = complete_on_stop
         self._nx_graph = self._build_graph(nodes)
         self._bound = {}
         self._validate()  # Build-time validation
@@ -177,8 +199,8 @@ def bind(self, **values: Any) -> Graph:
         bound = graph.bind(temperature=0.7, max_tokens=1000)
 
         # These are equivalent:
-        runner.run(bound, inputs={"query": "hello"})
-        runner.run(graph, inputs={"query": "hello", "temperature": 0.7, "max_tokens": 1000})
+        runner.run(bound, values={"query": "hello"})
+        runner.run(graph, values={"query": "hello", "temperature": 0.7, "max_tokens": 1000})
     """
 ```
 
@@ -218,10 +240,10 @@ graph = Graph(nodes=[process])
 bound = graph.bind(model="gpt-4", temperature=0.7)
 
 # Now only query is required
-result = runner.run(bound, inputs={"query": "hello"})
+result = runner.run(bound, values={"query": "hello"})
 
 # Can still override at runtime
-result = runner.run(bound, inputs={
+result = runner.run(bound, values={
     "query": "hello",
     "temperature": 0.9  # Overrides bound value
 })
@@ -306,6 +328,7 @@ def as_node(
     *,
     name: str | None = None,
     runner: BaseRunner | None = None,
+    complete_on_stop: bool | None = None,
 ) -> GraphNode:
     """
     Wrap graph as a node for composition.
@@ -320,6 +343,9 @@ def as_node(
     Args:
         name: Override node name (default: use graph.name)
         runner: Runner for nested execution (default: inherit from parent)
+        complete_on_stop: Override graph's complete_on_stop setting.
+            If None (default), inherits from Graph(..., complete_on_stop=).
+            See Graph constructor for behavior details.
 
     Returns:
         GraphNode with graph's leaf_outputs as default outputs.
@@ -336,6 +362,9 @@ def as_node(
         # Override name
         node = graph.as_node(name="custom")
 
+        # Override complete_on_stop for this nested usage
+        node = graph.as_node(complete_on_stop=True)
+
         # Configure outputs and iteration via chaining
         node = (
             graph.as_node()
@@ -343,7 +372,7 @@ def as_node(
             .map_over("query")
         )
     """
-    return GraphNode(self, name=name, runner=runner)
+    return GraphNode(self, name=name, runner=runner, complete_on_stop=complete_on_stop)
 ```
 
 **Name resolution examples:**
@@ -774,9 +803,9 @@ outer = Graph(nodes=[preprocess, rag.as_node(name="rag_pipeline"), postprocess])
 Results from nested graphs are returned as nested `RunResult` objects. This preserves the full execution context (status, pause info) for each subgraph:
 
 ```python
-result = await runner.run(outer_graph, inputs={...})
+result = await runner.run(outer_graph, values={...})
 
-# Direct outputs (from outputs)
+# Direct values
 result["answer"]                      # value
 result["cleaned"]                     # value
 
@@ -789,8 +818,8 @@ result["rag_pipeline"]["inner"]       # another nested RunResult
 Both output values and nested graph names share the same namespace:
 
 ```python
-result.outputs = {
-    "answer": "...",                  # from outputs
+result.values = {
+    "answer": "...",                  # output value
     "rag_pipeline": RunResult(...),   # nested graph by name
 }
 ```
@@ -805,7 +834,7 @@ Using `RunResult` (not a simpler value container) for nested graphs enables:
 
 ```python
 # Example: Nested graph paused
-result = await runner.run(outer_graph, inputs={...})
+result = await runner.run(outer_graph, values={...})
 
 if result.status == RunStatus.PAUSED:
     # Find which nested graph paused
@@ -819,11 +848,11 @@ Use the `select` parameter in `.run()` to filter what's included in the result:
 
 ```python
 # Default: everything accessible
-result = runner.run(graph, inputs={...})
+result = runner.run(graph, values={...})
 result.keys()  # ["answer", "cleaned", "rag_pipeline", "other_graph"]
 
 # Filtered: specific outputs only
-result = runner.run(graph, inputs={...}, select=["answer"])
+result = runner.run(graph, values={...}, select=["answer"])
 result.keys()  # ["answer"]
 
 # With patterns
@@ -850,14 +879,14 @@ result = runner.run(
 **Full access (default):**
 
 ```python
-result = runner.run(graph, inputs={...})
+result = runner.run(graph, values={...})
 result["rag_pipeline"]["embedding"]  # accessible
 ```
 
 **Only top-level values:**
 
 ```python
-result = runner.run(graph, inputs={...}, select=["answer", "cleaned"])
+result = runner.run(graph, values={...}, select=["answer", "cleaned"])
 result["rag_pipeline"]  # KeyError - not selected
 ```
 
@@ -876,28 +905,28 @@ result["rag_pipeline"]["docs"]       # KeyError - not selected
 **Everything from a nested graph:**
 
 ```python
-result = runner.run(graph, inputs={...}, select=["rag_pipeline/**"])
+result = runner.run(graph, values={...}, select=["rag_pipeline/**"])
 # All outputs from rag_pipeline and its nested graphs
 ```
 
 ### RunResult for Nested Graphs
 
 Nested graphs return `RunResult` objects, which provide:
-- `outputs`: Dict of output values (and nested `RunResult` for deeper nesting)
-- `status`: Execution status (`COMPLETED`, `PAUSED`, `ERROR`)
+- `values`: Dict of output values (and nested `RunResult` for deeper nesting)
+- `status`: Execution status (`COMPLETED`, `PAUSED`, `STOPPED`, `FAILED`)
 - `pause`: Pause info if the nested graph paused
 
 ```python
 @dataclass
 class RunResult:
-    outputs: dict[str, Any | "RunResult"]  # Supports nesting
+    values: dict[str, Any | "RunResult"]  # Supports nesting
     status: RunStatus
     workflow_id: str | None
     run_id: str
     pause: PauseInfo | None = None
 
     def __getitem__(self, key: str) -> Any | "RunResult":
-        return self.outputs[key]
+        return self.values[key]
 ```
 
 **See [Execution Types](execution-types.md)** for the complete `RunResult` definition, `RunStatus`, and pause handling.
@@ -934,7 +963,7 @@ outer = Graph(nodes=[
 ])
 
 # Execute
-result = await runner.run(outer, inputs={"query": "  What is RAG?  "})
+result = await runner.run(outer, values={"query": "  What is RAG?  "})
 
 # Access results
 result["cleaned"]                  # "what is rag?"
@@ -966,11 +995,11 @@ For the complete node type hierarchy (`HyperNode`, `FunctionNode`, `GateNode`, e
 Graph (structure definition)
 ├── InputSpec (input parameter specification, returned by .inputs)
 └── GraphState (runtime values - INTERNAL)
-    └── Holds ALL outputs including persist=False during execution
+    └── Holds ALL values during execution
     └── Used by runners, not user-facing
 
 RunResult (user-facing result)
-├── outputs: dict[str, Any | RunResult]  # Nested graphs → nested RunResult
+├── values: dict[str, Any | RunResult]  # Nested graphs → nested RunResult
 ├── status: RunStatus
 ├── pause: PauseInfo | None
 └── workflow_id, run_id

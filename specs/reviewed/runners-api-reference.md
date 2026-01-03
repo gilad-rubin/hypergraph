@@ -25,7 +25,7 @@ class BaseRunner(ABC):
         ...
 
     @abstractmethod
-    def run(self, graph: Graph, inputs: dict[str, Any], **kwargs):
+    def run(self, graph: Graph, values: dict[str, Any], **kwargs):
         """Execute graph. Return type varies by runner."""
         ...
 
@@ -33,7 +33,7 @@ class BaseRunner(ABC):
     def map(
         self,
         graph: Graph,
-        inputs: dict[str, Any],
+        values: dict[str, Any],
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
@@ -111,7 +111,7 @@ class SyncRunner(BaseRunner):
 def run(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     select: list[str] | None = None,
     session_id: str | None = None,
@@ -122,7 +122,7 @@ def run(
 
     Args:
         graph: Graph to execute.
-        inputs: Input values. For cycles, determines starting point.
+        values: Input values. For cycles, determines starting point.
         select: Output names to return. Default: all leaf outputs.
         session_id: Group related runs (for logging/tracing).
         max_iterations: Maximum iterations before InfiniteLoopError.
@@ -146,7 +146,7 @@ def run(
 def map(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
@@ -158,7 +158,7 @@ def map(
 
     Args:
         graph: Graph to execute.
-        inputs: Input values. map_over params should be lists.
+        values: Input values. map_over params should be lists.
         map_over: Parameter name(s) to iterate over. REQUIRED.
         map_mode: How to combine multiple mapped parameters:
                   - "zip": Iterate in parallel (requires same-length iterables)
@@ -207,7 +207,7 @@ class AsyncRunner(BaseRunner):
 async def run(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     select: list[str] | None = None,
     session_id: str | None = None,
@@ -222,14 +222,14 @@ async def run(
 
     When workflow_id is provided and a checkpointer is configured:
     1. Load checkpoint state (if workflow exists)
-    2. Merge with inputs (inputs win on conflicts)
+    2. Merge with values (values win on conflicts)
     3. Execute graph
     4. Append steps to history
     5. Return result
 
     Args:
         graph: Graph to execute.
-        inputs: Input values. Merged with checkpoint state if workflow_id exists.
+        values: Input values. Merged with checkpoint state if workflow_id exists.
         select: Outputs to return.
         session_id: Session identifier.
         max_iterations: Max iterations before InfiniteLoopError.
@@ -238,7 +238,7 @@ async def run(
             all nodes and nested graphs. Propagated via contextvars.
             None means unlimited.
         workflow_id: Workflow identifier. If provided with a checkpointer,
-            checkpoint state is loaded and merged with inputs automatically.
+            checkpoint state is loaded and merged with values automatically.
             Steps are appended to history after execution.
         interrupt_handlers: Map of interrupt names to handler functions.
             If all interrupts have handlers, runs to completion.
@@ -247,7 +247,7 @@ async def run(
             Appended to runner's processors, not replacing them.
 
     Returns:
-        RunResult with outputs and status.
+        RunResult with values and status.
     """
 ```
 
@@ -257,7 +257,7 @@ async def run(
 def iter(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     session_id: str | None = None,
     max_iterations: int | None = None,
@@ -272,13 +272,13 @@ def iter(
 
     Args:
         graph: Graph to execute.
-        inputs: Input values. Merged with checkpoint state if workflow_id exists.
+        values: Input values. Merged with checkpoint state if workflow_id exists.
         session_id: Session identifier.
         max_iterations: Max iterations before InfiniteLoopError.
             None means unlimited (use with caution on graphs with cycles).
         max_concurrency: Limit total concurrent async operations.
         workflow_id: Workflow identifier. Checkpoint state loaded and merged
-            with inputs automatically.
+            with values automatically.
         event_processors: Additional processors for this run only.
             Appended to runner's processors, not replacing them.
 
@@ -287,7 +287,7 @@ def iter(
         and provides respond() for interrupts and result access.
 
     Example:
-        async with runner.iter(graph, inputs={...}) as run:
+        async with runner.iter(graph, values={...}) as run:
             async for event in run:
                 if isinstance(event, InterruptEvent):
                     run.respond(event.response_param, user_response)
@@ -336,7 +336,7 @@ class RunHandle:
 async def map(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
@@ -348,7 +348,7 @@ async def map(
 
     Args:
         graph: Graph to execute.
-        inputs: Input values.
+        values: Input values.
         map_over: Parameter(s) to iterate. REQUIRED.
         map_mode: "zip" (parallel) or "product" (cartesian).
         select: Outputs to return.
@@ -402,7 +402,7 @@ class DBOSAsyncRunner(BaseRunner):
 async def run(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     select: list[str] | None = None,
     session_id: str | None = None,
@@ -416,12 +416,12 @@ async def run(
 
     Under the hood:
     - Graph execution is wrapped as a DBOS workflow
-    - persist=True nodes are wrapped with @DBOS.step
+    - All nodes are wrapped with @DBOS.step (outputs persisted)
     - InterruptNode maps to DBOS.recv()
 
     Args:
         graph: Graph to execute.
-        inputs: Input values.
+        values: Input values.
         select: Outputs to return.
         session_id: Session identifier.
         max_iterations: Max iterations before InfiniteLoopError.
@@ -430,7 +430,7 @@ async def run(
         event_processors: Additional processors for this run only.
 
     Returns:
-        RunResult with outputs and status.
+        RunResult with values and status.
 
     Note:
         - To resume an interrupted workflow, use DBOS.send() directly:
@@ -514,7 +514,7 @@ class DaftRunner(BaseRunner):
 def map(
     self,
     graph: Graph,
-    inputs: dict[str, Any],
+    values: dict[str, Any],
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
@@ -525,7 +525,7 @@ def map(
 
     Args:
         graph: Must be DAG (no cycles).
-        inputs: Input values.
+        values: Input values.
         map_over: Parameter(s) to distribute. REQUIRED.
         map_mode: "zip" (parallel) or "product" (cartesian).
         select: Outputs to return.
@@ -562,8 +562,8 @@ Returned by `AsyncRunner.run()`:
 ```python
 @dataclass
 class RunResult:
-    outputs: dict[str, Any]       # Output values
-    status: RunStatus             # COMPLETED, PAUSED, or ERROR
+    values: dict[str, Any | "RunResult"]  # Output name → value (or nested RunResult)
+    status: RunStatus             # COMPLETED, PAUSED, STOPPED, or FAILED
     workflow_id: str | None       # For persistence/resume (if checkpointer configured)
     run_id: str                   # Unique run identifier
     pause: PauseInfo | None = None  # Pause details (only set when paused)
