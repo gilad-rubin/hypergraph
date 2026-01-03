@@ -51,21 +51,21 @@ class Checkpointer(ABC):
     # === Write Operations ===
 
     @abstractmethod
-    async def save_step(
-        self,
-        workflow_id: str,
-        step: Step,
-        result: StepResult,
-    ) -> None:
+    async def save_step(self, record: StepRecord) -> None:
         """
-        Save a completed step and its outputs.
+        Save a step atomically.
 
-        Called by the runner after each node completes.
+        Called by the runner after each node completes. The entire record
+        is persisted in a single atomic operation - either all data is
+        saved, or nothing. This prevents corrupted state from crashes.
+
+        Implementations should use:
+        - Database transactions for SQL backends
+        - Atomic document writes for document stores
+        - Upsert semantics with unique constraint on (workflow_id, superstep, node_name)
 
         Args:
-            workflow_id: Unique workflow identifier
-            step: Step metadata (superstep, node_name, index, status)
-            result: Step outputs
+            record: Complete step record with metadata and values
         """
         ...
 
@@ -122,20 +122,20 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def get_history(
+    async def get_steps(
         self,
         workflow_id: str,
         superstep: int | None = None,
-    ) -> list[Step]:
+    ) -> list[StepRecord]:
         """
-        Get step execution history through a superstep.
+        Get step records through a superstep.
 
         Args:
             workflow_id: Unique workflow identifier
             superstep: Include steps through this superstep (None = all)
 
         Returns:
-            List of Step records in execution order
+            List of StepRecord in execution order
         """
         ...
 
@@ -147,7 +147,7 @@ class Checkpointer(ABC):
         """
         Get a checkpoint for forking workflows.
 
-        Combines get_state() and get_history() into a single Checkpoint object.
+        Combines get_state() and get_steps() into a single Checkpoint object.
         Default implementation calls both; subclasses may optimize.
 
         Args:
@@ -158,7 +158,7 @@ class Checkpointer(ABC):
             Checkpoint with computed outputs and step history
         """
         values = await self.get_state(workflow_id, superstep=superstep)
-        steps = await self.get_history(workflow_id, superstep=superstep)
+        steps = await self.get_steps(workflow_id, superstep=superstep)
         return Checkpoint(values=values, steps=steps)
 
     @abstractmethod
@@ -266,14 +266,14 @@ See [Observability](observability.md) for EventProcessor details.
 
 ---
 
-## State vs History
+## State vs Steps
 
 ### Steps Are the Source of Truth
 
-**State is computed from Steps, not stored separately.**
+**State is computed from StepRecords, not stored separately.**
 
 ```
-Steps (stored):
+StepRecords (stored atomically):
   Superstep 0: embed, validate (parallel)  → values={"embedding": [...], "valid": true}
   Superstep 1: retrieve                    → values={"docs": [...]}
   Superstep 2: generate                    → values={"answer": "..."}
@@ -284,14 +284,16 @@ State (computed by folding values):
 
 ### What Gets Saved
 
-**Everything is saved.** Both step metadata and outputs are persisted for all executed nodes.
+**Everything is saved atomically.** Each StepRecord contains both metadata and outputs in a single write.
 
-| Component | Saved? | Contains |
-|-----------|:------:|----------|
-| Step | Always | superstep, node_name, index, status |
-| StepResult.values | Always | Output values |
+| Field | Contains |
+|-------|----------|
+| workflow_id, superstep, node_name, index | Identity |
+| status | Execution status |
+| input_versions | For staleness detection |
+| values | Output values |
 
-This ensures full crash recovery — on resume, completed nodes are skipped, incomplete nodes re-run.
+This ensures full crash recovery — on resume, completed nodes are skipped, incomplete nodes re-run. Because metadata and values are in one atomic write, there's no possibility of corrupted state from crashes.
 
 ### Implications
 
@@ -299,14 +301,15 @@ This ensures full crash recovery — on resume, completed nodes are skipped, inc
 - **Time travel**: Get state at any historical point
 - **No sync issues**: State can never be "out of sync" with steps
 - **Full durability**: All nodes are recoverable on crash
+- **Atomic writes**: No partial state from crashes between writes
 
 ### When to Use Each
 
 | Operation | API | Use Case |
 |-----------|-----|----------|
 | Continue conversation | `get_state()` | Need accumulated values |
-| Debug execution | `get_history()` | Need step-by-step trail |
-| Fork workflow | Both | Need state + history up to a point |
+| Debug execution | `get_steps()` | Need step-by-step trail |
+| Fork workflow | Both | Need state + steps up to a point |
 
 ---
 
@@ -364,7 +367,7 @@ runner = AsyncRunner(checkpointer=checkpointer)
 
 ```python
 from hypergraph.checkpointers import Checkpointer
-from hypergraph.types import Step, StepResult, Workflow, WorkflowStatus
+from hypergraph.types import StepRecord, Workflow, WorkflowStatus
 
 class RedisCheckpointer(Checkpointer):
     """Example Redis-based checkpointer."""
@@ -381,20 +384,22 @@ class RedisCheckpointer(Checkpointer):
         if self.client:
             await self.client.close()
 
-    async def save_step(
-        self,
-        workflow_id: str,
-        step: Step,
-        result: StepResult,
-    ) -> None:
-        key = f"workflow:{workflow_id}:step:{step.index}"
+    async def save_step(self, record: StepRecord) -> None:
+        """Save step atomically - single write contains all data."""
+        key = f"workflow:{record.workflow_id}:step:{record.index}"
         await self.client.hset(key, mapping={
-            "node_name": step.node_name,
-            "status": step.status.value,
-            "values": json.dumps(result.values),
+            "superstep": record.superstep,
+            "node_name": record.node_name,
+            "status": record.status.value,
+            "input_versions": json.dumps(record.input_versions),
+            "values": json.dumps(record.values),
         })
         # Update step count
-        await self.client.hset(f"workflow:{workflow_id}", "step_count", step.index + 1)
+        await self.client.hset(
+            f"workflow:{record.workflow_id}",
+            "step_count",
+            record.index + 1
+        )
 
     async def get_state(
         self,
@@ -402,19 +407,18 @@ class RedisCheckpointer(Checkpointer):
         superstep: int | None = None,
     ) -> dict[str, Any]:
         # Fold over steps to compute state
-        history = await self.get_history(workflow_id, superstep=superstep)
+        steps = await self.get_steps(workflow_id, superstep=superstep)
         state = {}
-        for step in history:
-            result = await self._get_step_result(workflow_id, step.index)
-            if result and result.values:
-                state.update(result.values)
+        for step in sorted(steps, key=lambda s: s.index):
+            if step.values:
+                state.update(step.values)
         return state
 
-    async def get_history(
+    async def get_steps(
         self,
         workflow_id: str,
         superstep: int | None = None,
-    ) -> list[Step]:
+    ) -> list[StepRecord]:
         # Implementation details...
         pass
 
@@ -423,8 +427,8 @@ class RedisCheckpointer(Checkpointer):
 
 ### Key Implementation Notes
 
-1. **get_state() must compute from steps** - Don't store state separately
-2. **save_step() is called per-node** - Called for all executed nodes
+1. **save_step() is atomic** - Single write per step, all data together
+2. **get_state() folds over steps** - Compute state, don't store separately
 3. **Handle serialization** - Outputs can be complex objects
 4. **Initialize/close for resource management** - Connections, pools, etc.
 
@@ -561,25 +565,22 @@ rag_state = await checkpointer.get_state("order-123/rag")
 > **Full definitions:** See [Execution Types](execution-types.md#persistence-types) for complete type definitions with docstrings.
 
 ```python
-@dataclass
-class Step:
+@dataclass(frozen=True)
+class StepRecord:
+    """Single atomic record - metadata + values together."""
+    workflow_id: str                # Which workflow
     superstep: int                  # Which superstep (batch) - user-facing
     node_name: str                  # Name of the node that executed
     index: int                      # Unique sequential ID (internal, for DB key)
-    status: StepStatus              # COMPLETED, FAILED, PAUSED, STOPPED
-    created_at: datetime
-    completed_at: datetime | None
-    child_workflow_id: str | None   # For nested graphs
-
-@dataclass
-class StepResult:
-    index: int                      # Reference to Step.index
     status: StepStatus              # COMPLETED, FAILED, PAUSED, STOPPED
     input_versions: dict[str, int]  # Versions consumed (for staleness detection)
     values: dict[str, Any] | None   # Node output values
     error: str | None
     pause: PauseInfo | None         # Set when step is paused at InterruptNode
     partial: bool = False           # True if streaming output was truncated by stop
+    created_at: datetime
+    completed_at: datetime | None
+    child_workflow_id: str | None   # For nested graphs
 
 class StepStatus(Enum):
     COMPLETED = "completed"  # Finished with usable output
@@ -591,8 +592,8 @@ class StepStatus(Enum):
 class Workflow:
     id: str
     status: WorkflowStatus
-    steps: list[Step]
-    results: dict[int, StepResult]
+    steps: list[StepRecord]         # Unified metadata + values
+    graph_hash: str | None          # For version mismatch detection
     created_at: datetime
     completed_at: datetime | None
 
@@ -605,14 +606,14 @@ class WorkflowStatus(Enum):
 class Checkpoint:
     """A point-in-time snapshot for forking workflows."""
     values: dict[str, Any]      # Computed state at this point
-    steps: list[Step]           # Step history (the implicit cursor)
+    steps: list[StepRecord]     # Step history (the implicit cursor)
 ```
 
 ### Pause Persistence
 
 When an `InterruptNode` executes and waits for a response, the step is saved with:
 - `StepStatus.PAUSED` - indicates the step is blocked
-- `StepResult.pause` - contains `PauseInfo` with reason, node, response_param, and value
+- `StepRecord.pause` - contains `PauseInfo` with reason, node, response_param, and value
 
 This enables external systems to query "what is this workflow waiting for?" even after a crash:
 
@@ -621,11 +622,9 @@ This enables external systems to query "what is this workflow waiting for?" even
 workflow = await checkpointer.get_workflow("session-123")
 
 for step in workflow.steps:
-    if step.status == StepStatus.PAUSED:
-        result = workflow.results.get(step.index)
-        if result and result.pause:
-            print(f"Waiting for: {result.pause.response_param}")
-            print(f"Value to show user: {result.pause.value}")
+    if step.status == StepStatus.PAUSED and step.pause:
+        print(f"Waiting for: {step.pause.response_param}")
+        print(f"Value to show user: {step.pause.value}")
 ```
 
 ### DBOS Compatibility
@@ -635,8 +634,7 @@ These types map to DBOS tables for compatibility:
 | hypergraph Type | DBOS Table |
 |-----------------|------------|
 | `Workflow` | `dbos.workflow_status` |
-| `Step` | `dbos.operation_outputs` |
-| `StepResult` | `dbos.operation_outputs` |
+| `StepRecord` | `dbos.operation_outputs` |
 
 For status mapping between hypergraph and DBOS, see [DBOS Mapping](execution-types.md#dbos-mapping).
 

@@ -43,7 +43,7 @@ Graph Definition  →  Runtime State  →  Results & Events
 | Term | Where used | Meaning |
 |------|------------|---------|
 | `inputs` | `runner.run(inputs=...)`, `NodeStartEvent.inputs` | Data passed into a run or node |
-| `values` | `RunResult.values`, `StepResult.values`, `GraphState.values` | Accumulated state / computed outputs |
+| `values` | `RunResult.values`, `StepRecord.values`, `GraphState.values` | Accumulated state / computed outputs |
 
 Use `inputs` when calling the runner. Use `values` when accessing results.
 
@@ -84,7 +84,7 @@ During Execution:
                      → .iter() (real-time UI)
 
 After Node Completion:
-  Runner saves Step  → Checkpointer (durability)
+  Runner saves StepRecord → Checkpointer (durability)
                      → All outputs saved
 ```
 
@@ -155,7 +155,7 @@ If we crash after `process_a` with `outputs = {"processed": "..."}`:
 **The resume algorithm:**
 
 ```python
-def should_run_node(node: HyperNode, state: GraphState, steps: list[Step]) -> bool:
+def should_run_node(node: HyperNode, state: GraphState, steps: list[StepRecord]) -> bool:
     """Unified algorithm for DAGs and cycles."""
 
     # 1. Inputs available?
@@ -214,7 +214,7 @@ This ensures at-least-once semantics per node, not per superstep.
 | [RunResult](#runresult) | Execution result | Returned by `runner.run()`, supports nesting |
 | [RunHandle](#runhandle) | Streaming execution handle | Returned by `AsyncRunner.iter()` |
 | [Event Types](#event-types) | Streaming events | Yielded during iteration |
-| [Persistence Types](#persistence-types) | Checkpoint storage | Workflow, Step, StepResult |
+| [Persistence Types](#persistence-types) | Checkpoint storage | Workflow, StepRecord, Checkpoint |
 
 **See also:**
 - [Node Types](node-types.md) - Building blocks (includes InterruptNode)
@@ -290,7 +290,7 @@ A **status** is a small set of mutually exclusive states that changes what a con
 |----------|---------------|-------|
 | App code | "Do I have a result? Need input? Error? User stopped?" | Run |
 | UI/streaming | Render experience, show partial output indicator | Run + `partial` flag |
-| Checkpointer | Which steps have usable output for resume? | Step |
+| Checkpointer | Which steps have usable output for resume? | StepRecord |
 | Observability/DBOS | Label traces, map to foreign status models | Workflow |
 
 **Key principle:** Statuses are minimal. Each status implies a different "what do I do next?" branch.
@@ -318,7 +318,7 @@ class RunStatus(Enum):
     """Run ended because caller requested stop.
 
     This status is always used when stop is requested, even if:
-    - Some streaming nodes saved partial output (check StepResult.partial)
+    - Some streaming nodes saved partial output (check StepRecord.partial)
     - Remaining nodes continued to completion (complete_on_stop=True)
 
     The distinction is: COMPLETED means "no stop requested".
@@ -336,7 +336,7 @@ class StepStatus(Enum):
     COMPLETED = "completed"
     """Step finished with usable output.
 
-    Check StepResult.partial to see if output was truncated
+    Check StepRecord.partial to see if output was truncated
     due to stop request (streaming nodes only).
     """
 
@@ -346,7 +346,7 @@ class StepStatus(Enum):
     PAUSED = "paused"
     """Step at InterruptNode, waiting for response.
 
-    StepResult.pause contains the pause details.
+    StepRecord.pause contains the pause details.
     """
 
     STOPPED = "stopped"
@@ -356,7 +356,7 @@ class StepStatus(Enum):
     - Non-streaming node was stopped mid-execution
     - Streaming node was stopped with complete_on_stop=False
 
-    StepResult.values will be None.
+    StepRecord.values will be None.
     """
 ```
 
@@ -429,11 +429,8 @@ class PauseReason(Enum):
 For streaming nodes stopped with `complete_on_stop=True`, the step saves partial output. The `partial` flag distinguishes this from normal completion:
 
 ```python
-@dataclass
-class StepResult:
-    input_versions: dict[str, int]  # Versions consumed (for staleness detection)
-    values: dict[str, Any] | None
-    partial: bool = False  # True = values contains usable but truncated output
+# StepRecord has partial flag:
+partial: bool = False  # True = values contains usable but truncated output
 ```
 
 | Scenario | status | values | partial |
@@ -445,6 +442,8 @@ class StepResult:
 **Consumer code:**
 
 ```python
+step: StepRecord = ...
+
 if step.status == StepStatus.COMPLETED:
     use(step.values)
     if step.partial:
@@ -1298,15 +1297,26 @@ These types represent how workflow state is stored in checkpointers and DBOS. Th
 
 > **Note:** `StepStatus` and `WorkflowStatus` are defined in [Status Enums](#status-enums) above.
 
-### Step
+### StepRecord
 
 ```python
-@dataclass
-class Step:
-    """A single step in a workflow.
+@dataclass(frozen=True)
+class StepRecord:
+    """A single atomic record of node execution.
+
+    Combines step metadata and result values into one type to ensure
+    atomic persistence - either the entire record is saved, or nothing.
+    This eliminates the possibility of corrupted state from crashes
+    between separate writes.
 
     Maps to DBOS `operation_outputs` table.
     """
+
+    # === Identity ===
+
+    workflow_id: str
+    """Which workflow this step belongs to."""
+
     superstep: int
     """Which superstep (batch) this step belongs to.
 
@@ -1326,28 +1336,12 @@ class Step:
     of completion order.
     """
 
-    status: StepStatus
-    """Execution status: COMPLETED, FAILED, PAUSED, or STOPPED."""
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    completed_at: datetime | None = None
-
-    # Added when nested graphs are implemented
-    child_workflow_id: str | None = None
-    """For GraphNode steps, the nested workflow ID (e.g., 'order-123/rag')."""
-```
-
-### StepResult
-
-```python
-@dataclass
-class StepResult:
-    """Step outputs and metadata. Stored separately (can be large)."""
-
-    index: int
-    """Step index this result belongs to."""
+    # === Status ===
 
     status: StepStatus
     """Execution status: COMPLETED, FAILED, PAUSED, or STOPPED."""
+
+    # === Outputs ===
 
     input_versions: dict[str, int]
     """Version of each input when this node executed.
@@ -1371,41 +1365,62 @@ class StepResult:
     Only meaningful for streaming nodes with complete_on_stop=True.
     When True, status will be COMPLETED (output is usable, just truncated).
     """
+
+    # === Timestamps ===
+
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    completed_at: datetime | None = None
+
+    # === Nested ===
+
+    child_workflow_id: str | None = None
+    """For GraphNode steps, the nested workflow ID (e.g., 'order-123/rag')."""
 ```
 
 **Pause persistence:** When an `InterruptNode` executes and waits for a response, the step is saved with `status=PAUSED` and `pause` containing the pause metadata. This enables external systems to query "what is this workflow waiting for?" even after a crash.
 
 ```python
-# Example: Step saved when InterruptNode pauses
-step = Step(index=3, node_name="approval", status=StepStatus.PAUSED)
-result = StepResult(
+# Example: StepRecord saved when InterruptNode pauses
+step = StepRecord(
+    workflow_id="order-123",
+    superstep=2,
+    node_name="approval",
     index=3,
     status=StepStatus.PAUSED,
+    input_versions={"draft": 1},
     pause=PauseInfo(
         reason=PauseReason.HUMAN_INPUT,
-        node="approval",
+        node_name="approval",
         response_param="decision",
         value={"draft": "The poem content..."}
     )
 )
 ```
 
-### Steps vs StepResults: What Gets Saved
+### What Gets Saved
 
-**Everything is saved.** Both steps and their outputs are persisted for all executed nodes.
+**Everything is saved atomically.** Each step record contains both metadata and outputs in a single write.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Step (always saved)           │  StepResult (always saved)     │
-├────────────────────────────────┼────────────────────────────────┤
-│  index: 0                      │  outputs: {"embedding": [...]} │
-│  node_name: "embed"            │                                │
-│  status: COMPLETED             │                                │
-├────────────────────────────────┼────────────────────────────────┤
-│  index: 1                      │  outputs: {"answer": "..."}    │
-│  node_name: "generate"         │                                │
-│  status: COMPLETED             │                                │
-└────────────────────────────────┴────────────────────────────────┘
+│  StepRecord (single atomic write)                               │
+├─────────────────────────────────────────────────────────────────┤
+│  workflow_id: "order-123"                                       │
+│  superstep: 0                                                   │
+│  node_name: "embed"                                             │
+│  index: 0                                                       │
+│  status: COMPLETED                                              │
+│  input_versions: {"text": 1}                                    │
+│  values: {"embedding": [...]}                                   │
+├─────────────────────────────────────────────────────────────────┤
+│  workflow_id: "order-123"                                       │
+│  superstep: 1                                                   │
+│  node_name: "generate"                                          │
+│  index: 1                                                       │
+│  status: COMPLETED                                              │
+│  input_versions: {"embedding": 1}                               │
+│  values: {"answer": "..."}                                      │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 Steps serve as the **implicit cursor** (see [Step History as Implicit Cursor](#step-history-as-implicit-cursor)):
@@ -1421,7 +1436,7 @@ def should_skip_node(node, state, steps):
     last_step = find_last_step(node.name, steps)
     if last_step is None:
         return False  # Never ran, don't skip
-    consumed = last_step.result.input_versions
+    consumed = last_step.input_versions
     current = {inp: state.versions[inp] for inp in node.inputs}
     return consumed == current  # Skip if versions match (not stale)
 ```
@@ -1461,8 +1476,17 @@ class Workflow:
     status: WorkflowStatus = WorkflowStatus.ACTIVE
     """Lifecycle status: ACTIVE, COMPLETED, or FAILED."""
 
-    steps: list[Step] = field(default_factory=list)
-    results: dict[int, StepResult] = field(default_factory=dict)
+    steps: list[StepRecord] = field(default_factory=list)
+    """All step records for this workflow (unified metadata + values)."""
+
+    graph_hash: str | None = None
+    """Hash of the graph definition at workflow creation.
+
+    Used to detect version mismatches on resume. If current graph hash
+    differs from stored hash, resume will fail with VersionMismatchError
+    unless force_resume=True is specified.
+    """
+
     created_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: datetime | None = None
 ```
@@ -1472,8 +1496,7 @@ class Workflow:
 | hypergraph Type | DBOS Table | Key Columns |
 |-----------------|------------|-------------|
 | `Workflow` | `dbos.workflow_status` | `workflow_uuid`, `status`, `created_at` |
-| `Step` | `dbos.operation_outputs` | `workflow_uuid`, `function_id`, `function_name` |
-| `StepResult` | `dbos.operation_outputs` | `output`, `error`, `child_workflow_id` |
+| `StepRecord` | `dbos.operation_outputs` | `workflow_uuid`, `function_id`, `function_name`, `output`, `error` |
 
 ### Workflow ID Convention
 
@@ -1511,13 +1534,13 @@ class Checkpoint:
     - Testing and debugging
     """
     values: dict[str, Any]
-    """Computed output values at this checkpoint (folded from StepResults)."""
+    """Computed output values at this checkpoint (folded from StepRecords)."""
 
-    steps: list[Step]
+    steps: list[StepRecord]
     """Step history up to this checkpoint (the implicit cursor).
 
-    Note: This is Step metadata only (index, node_name, status).
-    The actual output values are pre-computed in `values`.
+    Each StepRecord contains both metadata and values, but the pre-computed
+    `values` dict above provides fast access without iterating.
     """
 ```
 
@@ -1622,9 +1645,8 @@ Persistence Types:
 ├── StepStatus (enum: COMPLETED, FAILED, PAUSED, STOPPED)
 ├── WorkflowStatus (enum: ACTIVE, COMPLETED, FAILED)
 ├── DBOSWorkflowStatus (DBOS adapter: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
-├── Step (individual step record: index, node_name, status)
-├── StepResult (step values + status + partial flag + pause info)
-├── Workflow (workflow execution record)
+├── StepRecord (atomic step record: metadata + values in one type)
+├── Workflow (workflow execution record with steps: list[StepRecord])
 └── Checkpoint (point-in-time snapshot: computed values + step history)
 
 Event Hierarchy (all include span_id, parent_span_id for hierarchy):
@@ -1698,25 +1720,25 @@ Observability:
 │  Workflow                                                           │
 │  ├── id: str                                                        │
 │  ├── status: WorkflowStatus (ACTIVE, COMPLETED, FAILED)             │
-│  ├── steps: list[Step]                                              │
-│  ├── results: dict[int, StepResult]                                 │
+│  ├── steps: list[StepRecord]  ← unified metadata + values           │
+│  ├── graph_hash: str | None   ← for version mismatch detection      │
 │  └── created_at, completed_at                                       │
 │                                                                     │
-│  Step (one per node execution)                                      │
+│  StepRecord (one atomic record per node execution)                  │
+│  ├── workflow_id: str                                               │
 │  ├── index: int (monotonically increasing, DB primary key)          │
 │  ├── superstep: int (parallel nodes share same superstep)           │
 │  ├── node_name: str                                                 │
 │  ├── status: StepStatus (COMPLETED, FAILED, PAUSED, STOPPED)        │
-│  ├── child_workflow_id: str | None  ← nested graph reference        │
-│  └── created_at, completed_at                                       │
-│                                                                     │
-│  StepResult (one per Step, stored separately - can be large)        │
-│  ├── index: int (references Step.index)                             │
-│  ├── status: StepStatus                                             │
+│  ├── input_versions: dict[str, int]  ← for staleness detection      │
 │  ├── values: dict[str, Any] | None  ← THE ACTUAL VALUES             │
 │  ├── error: str | None                                              │
 │  ├── pause: PauseInfo | None                                        │
-│  └── partial: bool  ← True if output was cut short by stop          │
+│  ├── partial: bool  ← True if output was cut short by stop          │
+│  ├── child_workflow_id: str | None  ← nested graph reference        │
+│  └── created_at, completed_at                                       │
+│                                                                     │
+│  KEY: Metadata + values in ONE atomic write = no corrupt state.     │
 │                                                                     │
 │  Nested graphs: GraphNode step has child_workflow_id pointing to    │
 │  child workflow (e.g., "order-123/rag"). Child has its own steps.   │
@@ -1728,7 +1750,7 @@ Observability:
 │  State (COMPUTED, not stored)                                       │
 │  get_state(workflow_id, superstep=N) → dict[str, Any]               │
 │                                                                     │
-│  Folds over StepResults up to superstep N, merging values.          │
+│  Folds over StepRecords up to superstep N, merging values.          │
 │  Later values overwrite earlier ones (same key).                    │
 │                                                                     │
 │  Nested graphs: Child workflow state is computed separately.        │
@@ -1740,7 +1762,7 @@ Observability:
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Checkpoint (point-in-time snapshot)                                │
 │  ├── values: dict[str, Any]  ← computed state at this point         │
-│  └── steps: list[Step]       ← step history (implicit cursor)       │
+│  └── steps: list[StepRecord] ← step history (implicit cursor)       │
 │                                                                     │
 │  Used for: forking, manual resume, testing.                         │
 │  Nested graphs: Checkpoint includes nested RunResults in values.    │
@@ -1755,7 +1777,7 @@ Observability:
 | GraphState | Child has own GraphState; parent stores child RunResult as value |
 | RunResult | `result.values["rag"]` returns nested `RunResult` object |
 | Workflow | GraphNode step has `child_workflow_id` (e.g., `"order-123/rag"`) |
-| Step | Child workflow has its own independent step history |
+| StepRecord | Child workflow has its own independent step records |
 | Checkpoint | Nested RunResults included in `values` dict |
 
 **See also:**

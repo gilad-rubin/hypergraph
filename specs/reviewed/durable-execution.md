@@ -2,7 +2,7 @@
 
 **From development save points to production-grade crash recovery.**
 
-> **Type Reference:** For all type definitions (`RunResult`, `RunStatus`, `PauseReason`, `Workflow`, `Step`, etc.), see [Execution Types](execution-types.md). This document focuses on usage patterns.
+> **Type Reference:** For all type definitions (`RunResult`, `RunStatus`, `PauseReason`, `Workflow`, `StepRecord`, etc.), see [Execution Types](execution-types.md). This document focuses on usage patterns.
 
 ---
 
@@ -66,10 +66,14 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
 
 ### What Gets Saved
 
+Each `StepRecord` is saved atomically - metadata and values together in one write:
+
 | What | Saved? | Purpose |
 |------|:------:|---------|
-| Step metadata (index, node_name, status) | Always | Implicit cursor for cycles/branches |
-| StepResult.values | Always | Value recovery on resume |
+| StepRecord (unified) | Always | Atomic write of metadata + values |
+| → index, node_name, status | ✅ | Implicit cursor for cycles/branches |
+| → input_versions | ✅ | Staleness detection for resume |
+| → values | ✅ | Value recovery on resume |
 
 Step history serves as the **implicit cursor** for resumption:
 - **Cycles:** Step count tracks iteration number
@@ -541,23 +545,23 @@ The full `Checkpointer` interface is defined in [checkpointer.md](checkpointer.m
 class Checkpointer(ABC):
     """Base class for workflow persistence. See checkpointer.md for full interface."""
 
-    # Write Operations (per-step, not per-workflow)
-    async def save_step(self, workflow_id: str, step: Step, result: StepResult) -> None: ...
+    # Write Operations (per-step, atomic)
+    async def save_step(self, record: StepRecord) -> None: ...  # Atomic write
     async def create_workflow(self, workflow_id: str) -> Workflow: ...  # Internal
     async def update_workflow_status(self, workflow_id: str, status: WorkflowStatus) -> None: ...
 
     # Read Operations
-    async def get_state(self, workflow_id: str, at_step: int | None = None) -> dict[str, Any]: ...
-    async def get_history(self, workflow_id: str, up_to_step: int | None = None) -> list[Step]: ...
+    async def get_state(self, workflow_id: str, superstep: int | None = None) -> dict[str, Any]: ...
+    async def get_steps(self, workflow_id: str, superstep: int | None = None) -> list[StepRecord]: ...
     async def get_workflow(self, workflow_id: str) -> Workflow | None: ...
     async def list_workflows(self, status: WorkflowStatus | None = None, limit: int = 100) -> list[Workflow]: ...
 ```
 
-**Key principle:** Steps are the source of truth. State is computed from steps via `get_state()`, not stored separately.
+**Key principle:** Steps are the source of truth. State is computed from steps via `get_state()`, not stored separately. Each `StepRecord` is saved atomically.
 
 **See also:**
 - [Checkpointer API](checkpointer.md) - Full interface definition
-- [Execution Types](execution-types.md#persistence-types) - `Workflow`, `Step`, `StepResult` definitions
+- [Execution Types](execution-types.md#persistence-types) - `Workflow`, `StepRecord`, `Checkpoint` definitions
 
 ### Checkpointer Capabilities
 
@@ -864,19 +868,27 @@ async def execute_superstep(superstep_nodes: list[HyperNode], workflow_id: str, 
 
         try:
             outputs = await node.execute(inputs)
-            # Save step with result
-            await checkpointer.save_step(
-                workflow_id,
-                Step(superstep=superstep, node_name=node.name, index=idx, status=StepStatus.COMPLETED),
-                StepResult(outputs=outputs),
-            )
+            # Save step atomically (metadata + values in one write)
+            await checkpointer.save_step(StepRecord(
+                workflow_id=workflow_id,
+                superstep=superstep,
+                node_name=node.name,
+                index=idx,
+                status=StepStatus.COMPLETED,
+                input_versions=get_input_versions(node, state),
+                values=outputs,
+            ))
             return outputs
         except Exception as e:
-            await checkpointer.save_step(
-                workflow_id,
-                Step(superstep=superstep, node_name=node.name, index=idx, status=StepStatus.FAILED),
-                StepResult(error=str(e)),
-            )
+            await checkpointer.save_step(StepRecord(
+                workflow_id=workflow_id,
+                superstep=superstep,
+                node_name=node.name,
+                index=idx,
+                status=StepStatus.FAILED,
+                input_versions=get_input_versions(node, state),
+                error=str(e),
+            ))
             raise
 
     # 2. Run all concurrently
@@ -945,11 +957,11 @@ checkpoint = await checkpointer.get_checkpoint("order-123", superstep=1)
 
 ```python
 # Example: Superstep with 3 parallel nodes
-Step(superstep=0, node_name="embed", index=0)     # ─┐
-Step(superstep=0, node_name="fetch", index=1)     # ─┼─ Same superstep, concurrent
-Step(superstep=0, node_name="validate", index=2)  # ─┘
+StepRecord(superstep=0, node_name="embed", index=0, ...)     # ─┐
+StepRecord(superstep=0, node_name="fetch", index=1, ...)     # ─┼─ Same superstep, concurrent
+StepRecord(superstep=0, node_name="validate", index=2, ...)  # ─┘
 
-Step(superstep=1, node_name="generate", index=3)  # Next superstep
+StepRecord(superstep=1, node_name="generate", index=3, ...)  # Next superstep
 ```
 
 ### Parallel Nodes Are Steps, Not Child Workflows
@@ -991,14 +1003,14 @@ Two separate `Workflow` records linked by string reference:
 
 ```
 Workflow(id="order-123")
-├── Step(index=0, node_name="fetch")
-├── Step(index=1, node_name="embed")
-├── Step(index=2, node_name="rag", child_workflow_id="order-123/rag")
-└── Step(index=3, node_name="postprocess")
+├── StepRecord(index=0, node_name="fetch", ...)
+├── StepRecord(index=1, node_name="embed", ...)
+├── StepRecord(index=2, node_name="rag", child_workflow_id="order-123/rag", ...)
+└── StepRecord(index=3, node_name="postprocess", ...)
 
 Workflow(id="order-123/rag")  # Separate record
-├── Step(index=0, node_name="inner_embed")
-└── Step(index=1, node_name="inner_retrieve")
+├── StepRecord(index=0, node_name="inner_embed", ...)
+└── StepRecord(index=1, node_name="inner_retrieve", ...)
 ```
 
 No recursive in-memory structure. Just flat records with string references.
@@ -1020,15 +1032,17 @@ async def execute_graph_node(
     child_workflow = Workflow(id=child_id)
     result = await execute_graph(graph_node.graph, child_workflow, inputs)
 
-    # 3. Save parent step (only after child completes)
-    step = Step(
+    # 3. Save parent step atomically (only after child completes)
+    await checkpointer.save_step(StepRecord(
+        workflow_id=workflow_id,
         index=step_index,
         node_name=graph_node.name,
         superstep=superstep,
         status=StepStatus.COMPLETED,
+        input_versions={},
+        values=result.values,
         child_workflow_id=child_id,
-    )
-    await checkpointer.save_step(workflow_id, step)
+    ))
 
     return result
 ```
@@ -1452,5 +1466,5 @@ The checkpointer only sees the final result. Same behavior with any runner.
 
 - [Checkpointer API](checkpointer.md) - Full interface definition and custom implementations
 - [Persistence Tutorial](persistence.md) - How to use persistence
-- [Execution Types](execution-types.md) - Step, Workflow, and other type definitions
+- [Execution Types](execution-types.md) - StepRecord, Workflow, and other type definitions
 - [Observability](observability.md) - EventProcessor (separate from Checkpointer)

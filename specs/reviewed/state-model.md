@@ -255,9 +255,9 @@ approval = InterruptNode(
                               │ Checkpointer saves all values
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Persisted State (Workflow + StepResult)                        │
+│  Persisted State (Workflow + StepRecord)                        │
 │                                                                  │
-│  All outputs saved for full durability.                         │
+│  All outputs saved atomically for full durability.              │
 │  Survives crashes, enables resume.                              │
 │  Checkpoint ID = workflow_id + step_index.                      │
 └─────────────────────────────────────────────────────────────────┘

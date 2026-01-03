@@ -1122,10 +1122,20 @@ def complete_on_stop(self) -> bool:
     """
 ```
 
-**Note:** GraphNode intentionally has no `cache`, `definition_hash`, `is_async`, or `is_generator` properties:
+**Note:** GraphNode intentionally has no `cache`, `is_async`, or `is_generator` properties:
 - **No `cache`**: Caching happens at individual node level inside the graph. Graph-level caching would override inner nodes' cache decisions and skip side effects.
-- **No `definition_hash`**: No caching means no need for cache invalidation hashing.
 - **No `is_async`/`is_generator`**: The runner discovers these properties recursively when executing inner nodes.
+
+**GraphNode does have `definition_hash`** - it delegates to the inner graph:
+
+```python
+@property
+def definition_hash(self) -> str:
+    """Hash of the nested graph (delegates to inner graph)."""
+    return self.graph.definition_hash
+```
+
+This ensures changes inside nested graphs bubble up to the parent graph's hash (Merkle tree).
 
 GraphNode is a pure structural wrapper with no execution semantics of its own.
 

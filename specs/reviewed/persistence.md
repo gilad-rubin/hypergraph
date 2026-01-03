@@ -134,11 +134,11 @@ Step 2: generate  → checkpoint saved ← latest
 Checkpoints are identified by `workflow_id` + `step_index`:
 
 ```python
-# Get step history
-history = await checkpointer.get_history("order-456")
-# [Step(index=0, node_name="fetch", status="completed"),
-#  Step(index=1, node_name="process", status="completed"),
-#  Step(index=2, node_name="generate", status="completed")]
+# Get step records
+steps = await checkpointer.get_steps("order-456")
+# [StepRecord(index=0, node_name="fetch", status="completed", values={...}),
+#  StepRecord(index=1, node_name="process", status="completed", values={...}),
+#  StepRecord(index=2, node_name="generate", status="completed", values={...})]
 ```
 
 ---
@@ -637,9 +637,9 @@ if workflow:
     print(f"Status: {workflow.status}")
     print(f"Steps completed: {len(workflow.steps)}")
 
-# Get step history
-history = await checkpointer.get_history("session-123")
-for step in history:
+# Get step records
+steps = await checkpointer.get_steps("session-123")
+for step in steps:
     print(f"Step {step.index}: {step.node_name} ({step.status})")
 ```
 
@@ -800,7 +800,7 @@ queue = Queue("processing", concurrency=10)
 | Aspect | LangGraph | hypergraph |
 |--------|-----------|------------|
 | **State definition** | Explicit `TypedDict` schema | Inferred from outputs |
-| **What's persisted** | Everything in schema | Controlled by `persist` |
+| **What's persisted** | Everything in schema | Everything (when checkpointer present) |
 | **Identifier** | `thread_id` | `workflow_id` |
 | **Get state** | `graph.get_state(config)` | `result.values` or `checkpointer.get_state()` |
 | **Update state** | `graph.update_state()` | Not supported (use `InterruptNode`) |

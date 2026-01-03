@@ -30,6 +30,7 @@ class Graph:
         name: str | None = None,
         strict_types: bool = False,
         complete_on_stop: bool = False,
+        hash_depth: int | None = 1,
     ):
         """
         Create a graph from nodes.
@@ -40,6 +41,17 @@ class Graph:
                   nesting this graph. If not set here, must be provided
                   when calling as_node(name='...')
             strict_types: Validate type annotations between connected nodes (default: False)
+            hash_depth: How deep to follow local imports when computing definition_hash.
+                Controls the trade-off between hash sensitivity and performance.
+
+                - 0: Function source only (fastest, misses helper changes)
+                - 1: Function + direct local imports (default, good balance)
+                - 2+: Recursive up to N levels (thorough, slower)
+                - None: Full transitive closure within package (most thorough)
+
+                Only same-package imports are included; stdlib and pip packages
+                are excluded. See definition_hash property for details.
+
             complete_on_stop: Behavior when a stop signal is received during execution.
 
                 True:
@@ -140,6 +152,69 @@ def has_async_nodes(self) -> bool:
     Implementation: any(isinstance(n, FunctionNode) and n.is_async for n in self._nodes.values())
     """
 ```
+
+### Versioning
+
+```python
+@property
+def definition_hash(self) -> str:
+    """
+    Merkle-tree hash of the entire graph structure.
+
+    Computed lazily on first access, then cached. Used by runners to detect
+    schema changes on workflow resume.
+
+    The hash includes:
+    - All node hashes (recursive for nested GraphNodes)
+    - Graph structure (edges between nodes)
+    - Node configuration that affects behavior
+
+    Returns:
+        SHA256 hash string (64 hex characters)
+    """
+```
+
+**Hashing algorithm:**
+
+```python
+def _compute_definition_hash(self) -> str:
+    """Recursive Merkle-tree style hash."""
+    node_hashes = []
+    for node in sorted(self.nodes.values(), key=lambda n: n.name):
+        node_hashes.append(f"{node.name}:{node.definition_hash}")
+
+    # Include structure (edges)
+    edge_str = str(sorted((e.source, e.target) for e in self._edges))
+
+    return sha256("|".join(node_hashes) + "|" + edge_str)
+```
+
+**What's included in each node's hash:**
+
+| Node Type | Hash includes |
+|-----------|---------------|
+| `FunctionNode` | Function source + local imports (up to `hash_depth`) |
+| `GraphNode` | Inner graph's `definition_hash` (recursive) |
+| `InterruptNode` | `input_param`, `response_param`, `response_type` |
+| `TypeRouteNode` | `input_param`, routes mapping |
+| `BranchNode` | `condition_param`, `when_true`, `when_false` |
+| `GateNode` | Node name only (structural) |
+| `RouteNode` | Routing function hash |
+
+**Hash boundary rules:**
+
+| Include in hash | Exclude from hash |
+|-----------------|-------------------|
+| Function source code | stdlib (`os`, `sys`, `json`) |
+| Same-package imports (up to `hash_depth`) | pip packages (`pydantic`, `numpy`) |
+| Graph structure (edges) | Runtime env vars |
+| Node configuration | Dynamically loaded modules |
+
+**Trade-offs:**
+
+- Changing a comment invalidates the hash (aggressive but safe)
+- Updating pip packages does NOT invalidate (intentional - library updates are explicit via requirements.txt)
+- Deep transitive imports only go up to `hash_depth` levels
 
 ### Detailed Node Lists
 
@@ -1008,7 +1083,7 @@ RunResult (user-facing result)
 **See [Execution Types](execution-types.md)** for complete type definitions including:
 - `RunStatus`, `PauseReason` enums
 - `RunResult` with nested support and pause handling
-- `Workflow`, `Step`, `StepResult` for persistence
+- `Workflow`, `StepRecord`, `Checkpoint` for persistence
 - `GraphState` (internal runtime state)
 
 **Composition pattern:**
