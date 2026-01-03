@@ -628,6 +628,7 @@ result = await runner.run(
 | `ConflictError` | Parallel nodes produced conflicting values for same output |
 | `InfiniteLoopError` | Exceeded `max_iterations` (default: 1000) |
 | `IncompatibleRunnerError` | Runner doesn't support graph features (cycles, gates, async nodes) |
+| `VersionMismatchError` | Graph changed since workflow started (use `force_resume=True` to override) |
 
 ---
 

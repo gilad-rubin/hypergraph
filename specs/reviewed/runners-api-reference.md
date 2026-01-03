@@ -214,6 +214,7 @@ async def run(
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
     workflow_id: str | None = None,
+    force_resume: bool = False,
     interrupt_handlers: dict[str, Callable] | None = None,
     event_processors: list[EventProcessor] | None = None,
 ) -> RunResult:
@@ -222,10 +223,11 @@ async def run(
 
     When workflow_id is provided and a checkpointer is configured:
     1. Load checkpoint state (if workflow exists)
-    2. Merge with values (values win on conflicts)
-    3. Execute graph
-    4. Append steps to history
-    5. Return result
+    2. Check graph hash (raise VersionMismatchError if changed, unless force_resume=True)
+    3. Merge with values (values win on conflicts)
+    4. Execute graph
+    5. Append steps to history
+    6. Return result
 
     Args:
         graph: Graph to execute.
@@ -240,6 +242,11 @@ async def run(
         workflow_id: Workflow identifier. If provided with a checkpointer,
             checkpoint state is loaded and merged with values automatically.
             Steps are appended to history after execution.
+        force_resume: If True, resume workflow even if graph.definition_hash
+            differs from the stored workflow.graph_hash. Use when you've fixed
+            a bug and want to continue an existing workflow. Data integrity
+            is not guaranteed when force resuming with a changed graph.
+            Default: False (strict mode - raises VersionMismatchError).
         interrupt_handlers: Map of interrupt names to handler functions.
             If all interrupts have handlers, runs to completion.
             Handler signature: async def handler(value) -> response
@@ -248,6 +255,11 @@ async def run(
 
     Returns:
         RunResult with values and status.
+
+    Raises:
+        VersionMismatchError: If workflow exists and graph.definition_hash
+            differs from stored graph_hash (unless force_resume=True).
+            The error message includes both hashes and suggests how to fix.
     """
 ```
 
@@ -263,12 +275,13 @@ def iter(
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
     workflow_id: str | None = None,
+    force_resume: bool = False,
     event_processors: list[EventProcessor] | None = None,
 ) -> AsyncContextManager[RunHandle]:
     """
     Execute graph and yield events via context manager.
 
-    Same execution semantics as run(): load → merge → execute → append.
+    Same execution semantics as run(): load → check hash → merge → execute → append.
 
     Args:
         graph: Graph to execute.
@@ -279,6 +292,7 @@ def iter(
         max_concurrency: Limit total concurrent async operations.
         workflow_id: Workflow identifier. Checkpoint state loaded and merged
             with values automatically.
+        force_resume: If True, resume even if graph hash changed. See run().
         event_processors: Additional processors for this run only.
             Appended to runner's processors, not replacing them.
 
