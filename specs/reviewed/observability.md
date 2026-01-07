@@ -173,6 +173,82 @@ run-456 (parallel execution)
 - Use `span_id` (not event order) for correlation
 - `TreeProcessor` example handles this correctly
 
+### Event Ordering Guarantees
+
+hypergraph provides specific ordering guarantees that processors can rely on. Understanding these helps build correct integrations.
+
+#### Single Node (Strict Order)
+
+Within a single node execution, events follow strict happens-before ordering:
+
+```
+NodeStartEvent → StreamingChunkEvent* → NodeEndEvent
+                 (in emission order)
+```
+
+**Guarantees:**
+- `NodeStartEvent` always precedes any `StreamingChunkEvent` for that span
+- `StreamingChunkEvent`s preserve generator yield order (`chunk_index` is monotonic)
+- `NodeEndEvent` always follows all chunks (or `NodeErrorEvent` on failure)
+- `CacheHitEvent`, when present, occurs between `NodeStartEvent` and `NodeEndEvent`
+
+#### Nested Graphs (Parent-Child)
+
+For `GraphNode` (nested graph) execution:
+
+```
+Parent NodeStartEvent
+├── Child events (fully contained)
+│   └── ...
+Parent NodeEndEvent
+```
+
+**Guarantees:**
+- Child graph's `RunStartEvent` happens-after parent node's `NodeStartEvent`
+- Child graph's `RunEndEvent` happens-before parent node's `NodeEndEvent`
+- All child events are bracketed by parent's start/end
+
+#### Parallel Execution (No Order Guarantee)
+
+For independent nodes running concurrently:
+
+```
+NodeStartEvent(A) ─┐
+NodeStartEvent(B) ─┼─ May interleave in ANY order
+NodeEndEvent(B)   ─┤
+NodeEndEvent(A)   ─┘
+```
+
+**No guarantees:**
+- `NodeStartEvent` order across parallel nodes is undefined
+- Sibling nodes may interleave events freely
+- Processors must use `span_id` for correlation, not arrival order
+
+#### Checkpoint Events
+
+```
+[all node events] → InterruptEvent → force_flush() called
+```
+
+**Guarantees:**
+- `InterruptEvent` fires after all in-progress nodes complete
+- `force_flush()` is called on all processors before pausing
+- On resume, `NodeEndEvent` with `replayed=True` (no `NodeStartEvent`)
+
+#### Formal Happens-Before Summary
+
+| A | B | Relationship |
+|---|---|--------------|
+| `NodeStartEvent(X)` | `StreamingChunkEvent(X)` | A → B (strict) |
+| `StreamingChunkEvent(X, i)` | `StreamingChunkEvent(X, i+1)` | A → B (strict) |
+| `StreamingChunkEvent(X)` | `NodeEndEvent(X)` | A → B (strict) |
+| `NodeStartEvent(parent)` | `NodeStartEvent(child)` | A → B (strict) |
+| `NodeEndEvent(child)` | `NodeEndEvent(parent)` | A → B (strict) |
+| `NodeStartEvent(A)` | `NodeStartEvent(B)` | **No guarantee** (parallel) |
+| `NodeEndEvent(A)` | `NodeStartEvent(B)` | A → B only if edge A→B exists |
+
+**Key insight:** Use `span_id` and `parent_span_id` for reconstruction, not event arrival order.
+
 ---
 
 ## EventProcessor Interface

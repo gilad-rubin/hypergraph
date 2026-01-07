@@ -26,7 +26,7 @@ Runner
                   │
                   ├── save_step()      Write
                   ├── get_state()      Read (computed)
-                  ├── get_history()    Read
+                  ├── get_steps()      Read
                   └── get_workflow()   Read
 ```
 
@@ -109,8 +109,9 @@ class Checkpointer(ABC):
         """
         Get accumulated state through a superstep.
 
-        State is COMPUTED by folding over steps through `superstep`.
-        This is not a simple lookup - it reconstructs state from history.
+        State is logically COMPUTED by folding over steps through `superstep`.
+        Implementations may use materialized state/snapshots for performance,
+        as long as results match the fold over StepRecords.
 
         Args:
             workflow_id: Unique workflow identifier
@@ -313,6 +314,50 @@ This ensures full crash recovery — on resume, completed nodes are skipped, inc
 
 ---
 
+## State Materialization (Performance)
+
+`get_state()` is defined as “fold StepRecords”, but long-lived workflows (chat threads, ETL, schedulers) cannot afford O(n) replay on every resume/inspection.
+
+**Design rule:**
+- **Steps remain the source of truth** (correctness, time travel).
+- **Checkpointers SHOULD materialize derived state** to make the common path fast.
+
+### Recommended Materializations
+
+Most backends will want two derived structures (both rebuildable from StepRecords):
+
+1. **Latest values index (fast latest state)**
+   - Key: `(workflow_id, output_name)`
+   - Value: `{value, last_step_index, last_superstep, version}`
+   - Updated transactionally inside `save_step()`
+
+2. **Periodic snapshots (fast historical state)**
+   - Key: `(workflow_id, superstep)`
+   - Value: full state dict at that superstep (or a compacted representation)
+   - Written periodically (e.g., every superstep, every N supersteps, or size-based)
+
+### How `get_state()` Should Work
+
+For `superstep=None` (latest):
+- Prefer `latest_values` → O(number of outputs) to assemble the dict.
+
+For `superstep=X` (historical):
+- Load the nearest snapshot at `S <= X`.
+- Apply deltas from StepRecords in `(S, X]` (state.update(step.values)).
+
+This keeps:
+- **Correctness:** exactly matches folding StepRecords.
+- **Performance:** bounded by snapshot interval + number of distinct outputs, not total workflow age.
+
+### Rebuild, Retention, and Compaction
+
+Materializations are caches. Implementations should be able to:
+- Rebuild `latest_values` and snapshots by replaying StepRecords.
+- Optionally archive cold StepRecords (e.g., to object storage) if required for cost,
+  as long as `get_state(superstep=...)` remains correct and reconstructible.
+
+---
+
 ## Built-in Implementations
 
 ### SqliteCheckpointer
@@ -428,7 +473,7 @@ class RedisCheckpointer(Checkpointer):
 ### Key Implementation Notes
 
 1. **save_step() is atomic** - Single write per step, all data together
-2. **get_state() folds over steps** - Compute state, don't store separately
+2. **get_state() is a fold** - Implementations may materialize snapshots/indexes for performance
 3. **Handle serialization** - Outputs can be complex objects
 4. **Initialize/close for resource management** - Connections, pools, etc.
 
