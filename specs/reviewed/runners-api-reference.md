@@ -234,6 +234,11 @@ async def run(
     Args:
         graph: Graph to execute.
         values: Input values. Merged with checkpoint state if workflow_id exists.
+            Use "." separator to provide values to nested graphs:
+            - {"query": "hello"} → top-level value
+            - {"rag.top_k": 5} → value for nested "rag" GraphNode
+            - {"rag.inner.threshold": 0.8} → deeply nested value
+            See graph.md "Nested Graph Values" for details.
         select: Outputs to return.
         session_id: Session identifier.
         max_iterations: Max iterations before InfiniteLoopError.
@@ -561,9 +566,29 @@ Pause details (only present when `RunResult.status == PAUSED`):
 @dataclass
 class PauseInfo:
     reason: PauseReason      # Currently only HUMAN_INPUT
-    node: str                # Name of node that paused
-    response_param: str      # Key to use in inputs dict when resuming
+    node_name: str           # Path to node that paused (uses "/" separator)
+    response_param: str      # Local parameter name from InterruptNode
     value: Any               # Value to show user
+
+    @property
+    def response_key(self) -> str:
+        """Namespaced key for values dict (uses "." separator).
+
+        Examples:
+            - Top-level: "decision"
+            - Nested: "review.decision" (from node_name="review/approval")
+        """
+```
+
+**Resume pattern:**
+```python
+if result.pause:
+    response = get_user_input(result.pause.value)
+    result = await runner.run(
+        graph,
+        values={result.pause.response_key: response},  # Uses "." for nested
+        workflow_id=result.workflow_id,
+    )
 ```
 
 ---
@@ -756,7 +781,7 @@ def validate_map_compatible(graph: Graph, context: str) -> None:
             f"How to fix:\n"
             f"  Use runner.run() in a loop instead of map:\n"
             f"    for item in items:\n"
-            f"        result = runner.run(graph, inputs={{...item...}})\n"
+            f"        result = runner.run(graph, values={{...item...}})\n"
             f"        if result.pause:\n"
             f"            # Handle interrupt\n"
         )

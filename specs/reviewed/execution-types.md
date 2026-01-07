@@ -38,14 +38,19 @@ Graph Definition  →  Runtime State  →  Results & Events
 - **Observability** - Logging, tracing (Langfuse, Logfire)
 - **Durability** - Checkpoint persistence (Redis, PostgreSQL, SQLite)
 
-### Terminology: inputs vs values
+### Terminology: values
 
-| Term | Where used | Meaning |
-|------|------------|---------|
-| `inputs` | `runner.run(inputs=...)`, `NodeStartEvent.inputs` | Data passed into a run or node |
-| `values` | `RunResult.values`, `StepRecord.values`, `GraphState.values` | Accumulated state / computed outputs |
+The term `values` is used consistently throughout hypergraph:
 
-Use `inputs` when calling the runner. Use `values` when accessing results.
+| Context | Example | Meaning |
+|---------|---------|---------|
+| Runner parameter | `runner.run(values={...})` | Input values for graph execution |
+| RunResult | `result.values` | Output values from execution |
+| StepRecord | `step.values` | Node outputs persisted in checkpoint |
+| GraphState | `state.values` | Runtime value storage (internal) |
+| NodeStartEvent | `event.inputs` | Values passed to a specific node |
+
+**Note:** `NodeStartEvent.inputs` uses "inputs" because it refers to what a *node* receives (distinct from graph-level values).
 
 ### Terminology: interrupt vs pause
 
@@ -260,7 +265,7 @@ hypergraph uses a **unified event stream** that flows through pluggable layers. 
 
 ```python
 # Runner produces events via .iter()
-async for event in runner.iter(graph, inputs={...}, workflow_id="session-123"):
+async for event in runner.iter(graph, values={...}, workflow_id="session-123"):
     # UI layer consumes streaming chunks
     if isinstance(event, StreamingChunkEvent):
         await websocket.send(event.chunk)
@@ -275,7 +280,7 @@ async for event in runner.iter(graph, inputs={...}, workflow_id="session-123"):
 
 # Or use EventProcessor for push-based observability
 runner = AsyncRunner(event_processors=[LangfuseProcessor()])
-result = await runner.run(graph, inputs={...}, workflow_id="session-123")
+result = await runner.run(graph, values={...}, workflow_id="session-123")
 ```
 
 ---
@@ -580,14 +585,47 @@ class PauseInfo:
     node_name: str
     """Name of the node that caused the pause.
 
-    For nested graphs, this is the full path (e.g., "review/approval").
+    For nested graphs, this is the full path using "/" (e.g., "review/approval").
     """
 
     response_param: str
-    """Parameter name to use when resuming (the key for inputs dict)."""
+    """Local parameter name defined by the InterruptNode (e.g., "decision").
+
+    For the full namespaced key to use in values dict, use response_key property.
+    """
 
     value: Any
     """Value to show user (e.g., the draft for approval)."""
+
+    @property
+    def response_key(self) -> str:
+        """Namespaced key for the values dict when resuming.
+
+        Uses "." separator for values (attribute access convention).
+
+        For top-level interrupts: returns response_param as-is.
+        For nested interrupts: prefixes with GraphNode path.
+
+        Examples:
+            - Top-level: response_param="decision" → "decision"
+            - Nested: node_name="review/approval", response_param="decision" → "review.decision"
+            - Deeply nested: node_name="outer/inner/approval" → "outer.inner.decision"
+
+        Usage:
+            result = await runner.run(graph, values={...})
+            if result.pause:
+                response = get_user_input(result.pause.value)
+                result = await runner.run(
+                    graph,
+                    values={result.pause.response_key: response},
+                    workflow_id=result.workflow_id,
+                )
+        """
+        if "/" not in self.node_name:
+            return self.response_param
+        # Convert path separator "/" to value separator "."
+        namespace = self.node_name.rsplit("/", 1)[0].replace("/", ".")
+        return f"{namespace}.{self.response_param}"
 ```
 
 ---
@@ -664,7 +702,7 @@ from hypergraph.checkpointers import SqliteCheckpointer
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",
 )
 
@@ -693,7 +731,7 @@ outer = Graph(nodes=[
     postprocess,
 ])
 
-result = await runner.run(outer, inputs={...}, workflow_id="order-123")
+result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Access nested graph results
 result["final_output"]                    # Top-level output
@@ -712,7 +750,7 @@ result["review"]["draft"]                 # Output from nested graph
 When a nested graph contains an `InterruptNode` and pauses, the pause propagates up:
 
 ```python
-result = await runner.run(outer, inputs={...}, workflow_id="order-123")
+result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Check overall status
 if result.status == RunStatus.PAUSED:
@@ -739,18 +777,19 @@ print(result.pause.node_name)  # "review/approval" (path to the interrupt)
 To resume a paused nested graph:
 
 ```python
-# Option 1: Resume the outer graph (checkpointer handles nesting)
+# Option 1: Resume the outer graph (recommended)
+# response_key uses "." for nested: "review.decision"
 result = await runner.run(
     outer,
-    inputs={result.pause.response_param: user_response},
+    values={result.pause.response_key: user_response},
     workflow_id="order-123",
 )
 
 # Option 2: Resume the nested graph directly (advanced)
 result = await runner.run(
     review_pipeline,
-    inputs={"decision": user_response},
-    workflow_id="order-123/review",  # Nested workflow ID
+    values={"decision": user_response},
+    workflow_id="order-123/review",  # Nested workflow ID uses "/"
 )
 ```
 
@@ -764,7 +803,7 @@ from hypergraph.runners import DBOSAsyncRunner
 runner = DBOSAsyncRunner()
 result = await runner.run(
     graph,
-    inputs={"prompt": "Write a poem"},
+    values={"prompt": "Write a poem"},
     workflow_id="poem-456",
 )
 
@@ -852,7 +891,7 @@ class RunHandle:
 ### Example
 
 ```python
-async with runner.iter(graph, inputs={"query": "hello"}, workflow_id="session-123") as run:
+async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-123") as run:
     async for event in run:
         match event:
             case StreamingChunkEvent(chunk=chunk):
@@ -1043,7 +1082,7 @@ class StopRequestedEvent:
 ### Example
 
 ```python
-async with runner.iter(graph, inputs={...}) as run:
+async with runner.iter(graph, values={...}) as run:
     async for event in run:
         match event:
             case NodeStartEvent(node_name=name):
@@ -1076,7 +1115,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",
 )
 
@@ -1088,9 +1127,10 @@ if result.pause:
     response = await get_user_response(prompt)
 
     # Resume using same workflow_id (checkpointer auto-detects paused state)
+    # Use response_key for namespaced value access (uses "." separator)
     result = await runner.run(
         graph,
-        inputs={result.pause.response_param: response},
+        values={result.pause.response_key: response},
         workflow_id="session-123",
     )
 
@@ -1102,7 +1142,7 @@ print(result.values["answer"])
 ### Using `.iter()` - Handle Inline
 
 ```python
-async with runner.iter(graph, inputs={"query": "hello"}, workflow_id="session-123") as run:
+async with runner.iter(graph, values={"query": "hello"}, workflow_id="session-123") as run:
     async for event in run:
         match event:
             case StreamingChunkEvent(chunk=chunk):
@@ -1128,7 +1168,7 @@ Pass handlers per-call for automatic interrupt resolution:
 ```python
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     interrupt_handlers={
         "approval": handle_approval,
         "topic_selection": handle_topic,
@@ -1190,7 +1230,7 @@ def extract_all_values(result: RunResult, prefix="") -> dict[str, Any]:
     return flat
 
 # Usage
-result = await runner.run(outer_graph, inputs={...})
+result = await runner.run(outer_graph, values={...})
 all_values = extract_all_values(result)
 # {"answer": "...", "rag/embedding": [...], "rag/docs": [...]}
 ```
@@ -1213,7 +1253,7 @@ def find_paused_graphs(result: RunResult, path="") -> list[tuple[str, RunResult]
     return paused
 
 # Usage
-result = await runner.run(outer_graph, inputs={...})
+result = await runner.run(outer_graph, values={...})
 for path, paused_result in find_paused_graphs(result):
     print(f"Paused at: {path}")
     print(f"  Waiting for: {paused_result.pause.response_param}")
@@ -1225,7 +1265,7 @@ for path, paused_result in find_paused_graphs(result):
 ```python
 async def process_events(graph: Graph, workflow_id: str):
     """Route events to different handlers based on type."""
-    async with runner.iter(graph, inputs={...}, workflow_id=workflow_id) as run:
+    async with runner.iter(graph, values={...}, workflow_id=workflow_id) as run:
         async for event in run:
             match event:
                 case StreamingChunkEvent():
@@ -1261,7 +1301,7 @@ async def resume_execution(workflow_id: str, user_response: Any):
 
     result = await runner.run(
         graph,
-        inputs={pending["node_name"]: user_response},
+        values={pending["node_name"]: user_response},
         workflow_id=workflow_id,  # Checkpointer auto-detects paused state
     )
     return result
@@ -1278,8 +1318,8 @@ class EventRouter:
         self.observability_layer = LogfuseLayer()
         self.durability_layer = PostgresCheckpointer()
 
-    async def consume(self, graph: Graph, inputs: dict):
-        async with runner.iter(graph, inputs=inputs) as run:
+    async def consume(self, graph: Graph, values: dict):
+        async with runner.iter(graph, values=values) as run:
             async for event in run:
                 # All layers receive all events - they filter what they need
                 await asyncio.gather(
@@ -1568,7 +1608,7 @@ Two distinct patterns for continuing execution:
 # Same workflow_id → checkpointer loads state automatically
 result = await runner.run(
     graph,
-    inputs={"decision": "approve"},
+    values={"decision": "approve"},
     workflow_id="order-123",  # Checkpointer finds and loads state
 )
 ```
@@ -1584,7 +1624,7 @@ checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 # Fork with different inputs - requires NEW workflow_id
 result = await runner.run(
     graph,
-    inputs={"decision": "reject"},  # Different choice this time
+    values={"decision": "reject"},  # Different choice this time
     checkpoint=checkpoint,
     workflow_id="order-123-retry",  # NEW workflow ID for the fork
 )
@@ -1607,9 +1647,9 @@ Fork creates a new workflow that starts from the checkpoint state.
 
 | Pattern | Parameters | Use Case |
 |---------|------------|----------|
-| Fresh start | `inputs=`, `workflow_id=` (new ID) | New workflow |
-| Resume | `inputs=`, `workflow_id=` (existing ID) | Continue paused/crashed workflow |
-| Fork | `inputs=`, `checkpoint=`, `workflow_id=` (new ID) | Retry from past point |
+| Fresh start | `values=`, `workflow_id=` (new ID) | New workflow |
+| Resume | `values=`, `workflow_id=` (existing ID) | Continue paused/crashed workflow |
+| Fork | `values=`, `checkpoint=`, `workflow_id=` (new ID) | Retry from past point |
 
 **Without checkpointer (manual state management):**
 
@@ -1617,7 +1657,7 @@ Fork creates a new workflow that starts from the checkpoint state.
 # You manage storage - must provide checkpoint
 result = await runner.run(
     graph,
-    inputs={**new_inputs},  # New inputs only
+    values={**new_inputs},  # New inputs only
     checkpoint=checkpoint,   # Contains outputs + steps
 )
 # No workflow_id needed without checkpointer

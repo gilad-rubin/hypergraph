@@ -133,11 +133,11 @@ from hypergraph import SyncRunner, DiskCache
 runner = SyncRunner(cache=DiskCache("./cache"))
 
 # First run — all nodes execute, results cached by input hash
-result = runner.run(graph, inputs={"data": "big_file.csv"})
+result = runner.run(graph, values={"data": "big_file.csv"})
 # 💥 CRASH at node 5 of 10
 
 # Restart with same inputs — nodes 1-4 are cache hits, only 5+ execute
-result = runner.run(graph, inputs={"data": "big_file.csv"})
+result = runner.run(graph, values={"data": "big_file.csv"})
 # ✅ Completes from where it left off (approximately)
 ```
 
@@ -199,7 +199,7 @@ def my_sync_node(x: int) -> int:  # Sync function
     return expensive_computation(x)
 
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
-result = await runner.run(graph, inputs={...}, workflow_id="job-123")
+result = await runner.run(graph, values={...}, workflow_id="job-123")
 ```
 
 ---
@@ -229,7 +229,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",  # Required with checkpointer
 )
 ```
@@ -242,7 +242,7 @@ Resume is automatic when a `workflow_id` exists. The checkpointer loads state as
 # First run — creates workflow
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",
 )
 
@@ -250,7 +250,7 @@ result = await runner.run(
 # No resume=True needed!
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",
 )
 # Checkpointed values are loaded, new inputs override if provided
@@ -259,7 +259,7 @@ result = await runner.run(
 **Value Resolution Order:**
 ```
 1. Edge value        ← Produced by upstream node
-2. Runtime input     ← Explicit in runner.run(inputs={...})
+2. Runtime input     ← Explicit in runner.run(values={...})
 3. Checkpoint value  ← Loaded from persistence
 4. Bound value       ← Set via graph.bind()
 5. Function default  ← Default in function signature
@@ -283,7 +283,7 @@ checkpoint = await checkpointer.get_checkpoint("session-123", superstep=1)
 # Fork to a new workflow with that state
 result = await runner.run(
     graph,
-    inputs={**checkpoint.values, "query": "hello"},
+    values={**checkpoint.values, "query": "hello"},
     workflow_id="session-123-retry",  # New workflow
 )
 ```
@@ -322,7 +322,7 @@ graph = Graph(nodes=[generate, approval, finalize])
 # First run — pauses at approval
 result = await runner.run(
     graph,
-    inputs={"prompt": "Write a poem"},
+    values={"prompt": "Write a poem"},
     workflow_id="poem-456",
 )
 
@@ -334,7 +334,7 @@ if result.pause:
 # Pass the response using the response_param name
 result = await runner.run(
     graph,
-    inputs={"decision": "approve"},  # Uses response_param name
+    values={"decision": "approve"},  # Uses response_param name
     workflow_id="poem-456",
 )
 # Checkpointed state is loaded automatically via value resolution
@@ -364,14 +364,14 @@ runner = AsyncRunner(
     checkpointer=SqliteCheckpointer("./dev.db"),
     event_processors=[StreamingHandler()],
 )
-result = await runner.run(graph, inputs={...}, workflow_id="123")
+result = await runner.run(graph, values={...}, workflow_id="123")
 # Chunks printed as they arrive, final value in result.values
 ```
 
 **In `.iter()` mode (pull-based):**
 
 ```python
-async for event in runner.iter(graph, inputs={...}, workflow_id="123"):
+async for event in runner.iter(graph, values={...}, workflow_id="123"):
     match event:
         case StreamingChunkEvent(chunk=chunk):
             print(chunk, end="", flush=True)
@@ -467,7 +467,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./chat.db"))
 # Turn 1: Normal completion
 result = await runner.run(
     chat_graph,
-    inputs={"user_input": "Explain quantum computing"},
+    values={"user_input": "Explain quantum computing"},
     workflow_id="session-123",
 )
 # result.status = COMPLETED
@@ -476,7 +476,7 @@ result = await runner.run(
 # Turn 2: User stops mid-stream
 result = await runner.run(
     chat_graph,
-    inputs={"user_input": "Now explain it simpler"},
+    values={"user_input": "Now explain it simpler"},
     workflow_id="session-123",
 )
 # User clicks STOP while streaming...
@@ -488,7 +488,7 @@ result = await runner.run(
 # Turn 3: User continues with context preserved
 result = await runner.run(
     chat_graph,
-    inputs={"user_input": "Actually let's talk about something else"},
+    values={"user_input": "Actually let's talk about something else"},
     workflow_id="session-123",
 )
 # messages now has full history including partial response
@@ -685,7 +685,7 @@ runner = DBOSAsyncRunner()
 
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="order-123",  # Required for DBOS
 )
 ```
@@ -695,7 +695,7 @@ result = await runner.run(
 ```python
 async def main():
     DBOS.launch()  # User calls this to enable crash recovery
-    result = await runner.run(graph, inputs={...}, workflow_id="order-123")
+    result = await runner.run(graph, values={...}, workflow_id="order-123")
 ```
 
 ### With Postgres (Production)
@@ -741,7 +741,7 @@ runner = DBOSAsyncRunner()
 # Under the hood: hypergraph maps InterruptNode to DBOS.recv("approval")
 result = await runner.run(
     graph,
-    inputs={"prompt": "Write a poem"},
+    values={"prompt": "Write a poem"},
     workflow_id="poem-456",
 )
 
@@ -1200,7 +1200,7 @@ def reminder_workflow(remind_at: datetime, message: str):
 ```python
 result = await runner.run(
     graph,
-    inputs={"query": "hello"},
+    values={"query": "hello"},
     workflow_id="session-123",  # Required with checkpointer
 )
 ```
@@ -1228,7 +1228,7 @@ async def main():
 
     result = await runner.run(
         graph,
-        inputs={"query": "hello"},
+        values={"query": "hello"},
         workflow_id="order-123",    # Required for DBOS
     )
 ```
@@ -1286,12 +1286,12 @@ pip install hypergraph[dbos]
 ```python
 # Before: Implicit resume with checkpointer
 runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
-result = await runner.run(graph, inputs={...}, workflow_id="123")
+result = await runner.run(graph, values={...}, workflow_id="123")
 if result.pause:
     # Wait for user input...
     result = await runner.run(
         graph,
-        inputs={result.pause.response_param: response},
+        values={result.pause.response_key: response},  # Use response_key for nested support
         workflow_id="123",
     )
     # State loaded automatically via value resolution
@@ -1309,7 +1309,7 @@ async def main():
     # 3. User calls DBOS.launch() for auto-recovery
     DBOS.launch()
 
-    result = await runner.run(graph, inputs={...}, workflow_id="123")
+    result = await runner.run(graph, values={...}, workflow_id="123")
     if result.pause:
         # 4. External system resumes via DBOS.send() — NOT wrapped
         # Workflow auto-resumes — no runner.run() call needed

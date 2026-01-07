@@ -948,7 +948,7 @@ result.keys()  # ["answer"]
 # With patterns
 result = runner.run(
     graph,
-    inputs={...},
+    values={...},
     select=["answer", "rag_pipeline/*"]
 )
 ```
@@ -985,7 +985,7 @@ result["rag_pipeline"]  # KeyError - not selected
 ```python
 result = runner.run(
     graph,
-    inputs={...},
+    values={...},
     select=["answer", "rag_pipeline/embedding"]
 )
 result["rag_pipeline"]["embedding"]  # accessible
@@ -1067,13 +1067,68 @@ result["rag"].status               # RunStatus.COMPLETED
 # Filtered execution
 result = await runner.run(
     outer,
-    inputs={"query": "  What is RAG?  "},
+    values={"query": "  What is RAG?  "},
     select=["response", "rag/embedding"]  # Only these
 )
 result["response"]          # Available
 result["rag"]["embedding"]  # Available
 result["rag"]["docs"]       # KeyError - not selected
 ```
+
+### Nested Graph Values
+
+Provide values directly to nested graphs using **dot notation** in the `values` parameter:
+
+```python
+result = await runner.run(outer, values={
+    "query": "hello",              # Top-level value
+    "rag.top_k": 5,                # Value for nested "rag" graph
+    "rag.model": "gpt-4",          # Another nested value
+    "rag.inner.threshold": 0.8,    # Deeply nested (rag → inner)
+})
+```
+
+**Use cases:**
+
+| Pattern | Example | Purpose |
+|---------|---------|---------|
+| Configure nested graph | `{"rag.top_k": 5}` | Override defaults |
+| Skip nested node | `{"rag.embedding": [...]}` | Provide output directly |
+| Resume nested interrupt | `{"review.decision": "approve"}` | Response for nested InterruptNode |
+
+**Routing behavior:**
+When the runner sees `"rag.query"` in values:
+1. Split on first `.` → `("rag", "query")`
+2. Find GraphNode named `"rag"`
+3. Pass `{"query": ...}` to the nested graph's values
+
+**Deeply nested:**
+```python
+# Three levels: outer → middle → inner
+values={"middle.inner.param": "value"}
+# Routes to: middle graph → inner graph → param
+```
+
+### Separator Conventions
+
+hypergraph uses different separators for different contexts:
+
+| Context | Separator | Example | Rationale |
+|---------|-----------|---------|-----------|
+| **Values** (attribute access) | `.` | `{"rag.query": "hello"}` | Like Python's `obj.attr` |
+| **Paths** (navigation) | `/` | `"review/approval"` | Like file paths |
+
+**Where each is used:**
+
+| `.` (values) | `/` (paths) |
+|--------------|-------------|
+| `values={"rag.query": ...}` | `node_name="review/approval"` |
+| `pause.response_key` | `workflow_id="order-123/rag"` |
+| | `select=["rag/*", "**/embedding"]` |
+
+**The mental model:**
+- `.` = "set/get attribute" (what am I accessing?)
+- `/` = "navigate to location" (where am I in the structure?)
 
 ---
 

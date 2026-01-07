@@ -36,7 +36,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./workflows.db"))
 # Run with a workflow_id
 result = await runner.run(
     graph,
-    inputs={"query": "What is RAG?"},
+    values={"query": "What is RAG?"},
     workflow_id="session-123",
 )
 
@@ -55,10 +55,10 @@ The `workflow_id` uniquely identifies a workflow execution. Think of it like a c
 
 ```python
 # First run - creates workflow
-result = await runner.run(graph, inputs={...}, workflow_id="order-456")
+result = await runner.run(graph, values={...}, workflow_id="order-456")
 
 # Later run - automatically loads checkpoint
-result = await runner.run(graph, inputs={...}, workflow_id="order-456")
+result = await runner.run(graph, values={...}, workflow_id="order-456")
 ```
 
 **Naming conventions:**
@@ -72,7 +72,7 @@ When determining what value to use for a parameter, hypergraph checks these sour
 
 ```
 1. Edge value        ← Produced by upstream node (if it has executed)
-2. Runtime input     ← Explicit in runner.run(inputs={...})
+2. Runtime input     ← Explicit in runner.run(values={...})
 3. Checkpoint value  ← Loaded from persistence
 4. Bound value       ← Set via graph.bind()
 5. Function default  ← Default in function signature
@@ -82,8 +82,8 @@ When determining what value to use for a parameter, hypergraph checks these sour
 
 This hierarchy enables powerful patterns:
 - **Skip expensive nodes** by providing their outputs as inputs
-- **Checkpoint provides continuation state** for values not in inputs
-- **Inputs override checkpoint** when you want to change something
+- **Checkpoint provides continuation state** for outputs not in `values`
+- **`values` overrides checkpoint** when you want to change something
 - **Bound values initialize seeds** (like empty message lists)
 
 ### Outputs ARE State
@@ -181,7 +181,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./chats.db"))
 # Turn 1 - no checkpoint exists
 result = await runner.run(
     chat_graph,
-    inputs={"user_input": "What is RAG?"},
+    values={"user_input": "What is RAG?"},
     workflow_id="chat-123",
 )
 # Resolution: messages from bound ([]), user_input from input
@@ -192,7 +192,7 @@ print(result["response"])  # "RAG stands for..."
 # Turn 2 - checkpoint exists
 result = await runner.run(
     chat_graph,
-    inputs={"user_input": "Tell me more"},
+    values={"user_input": "Tell me more"},
     workflow_id="chat-123",
 )
 # Resolution: messages from checkpoint, user_input from input
@@ -206,7 +206,7 @@ print(result["messages"])  # Full conversation history
 - User never passes `messages` — it's handled automatically
 - First turn: `messages` comes from `bind([])`
 - Later turns: `messages` comes from checkpoint
-- New `user_input` always comes from runtime inputs
+- New `user_input` always comes from `values` parameter
 
 ### Why This Works
 
@@ -215,16 +215,16 @@ The value resolution hierarchy:
 ```
 Turn 1:
   messages: checkpoint? NO → bound? YES (=[]) → use []
-  user_input: runtime input → "What is RAG?"
+  user_input: from values → "What is RAG?"
 
 Turn 2:
   messages: checkpoint? YES → use [{user}, {assistant}]
-  user_input: runtime input → "Tell me more"
+  user_input: from values → "Tell me more"
 ```
 
-The checkpoint sits between runtime inputs and bound values, so:
+The checkpoint sits between `values` and bound values, so:
 - **Continuation state** (messages) loads from checkpoint
-- **New inputs** (user_input) come from runtime
+- **New inputs** (user_input) come from `values` parameter
 
 ---
 
@@ -265,19 +265,19 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 # Step 1: Run until interrupt
 result = await runner.run(
     graph,
-    inputs={"prompt": "Write a poem"},
+    values={"prompt": "Write a poem"},
     workflow_id="poem-456",
 )
 
 # Check if paused
 if result.status == RunStatus.PAUSED:
     print(f"Draft: {result.pause.value}")       # Show to user
-    print(f"Waiting for: {result.pause.response_param}")  # "decision"
+    print(f"Waiting for: {result.pause.response_key}")  # "decision"
 
-# Step 2: Resume with user's decision (just run again with same workflow_id)
+# Step 2: Resume with user's decision (use response_key for the values key)
 result = await runner.run(
     graph,
-    inputs={"decision": "approve"},  # User's response
+    values={result.pause.response_key: "approve"},  # User's response
     workflow_id="poem-456",
 )
 
@@ -292,10 +292,15 @@ When a workflow pauses, `result.pause` contains everything you need:
 @dataclass
 class PauseInfo:
     reason: PauseReason      # HUMAN_INPUT, SLEEP, etc.
-    node: str                # Name of the InterruptNode
+    node_name: str           # Path to InterruptNode (uses "/" separator)
     value: Any               # Value to show user (input_param)
-    response_param: str      # Where to put user's response
+    response_param: str      # Local parameter name from InterruptNode
+    response_key: str        # Namespaced key for values dict (uses "." separator)
 ```
+
+**For nested graphs:** `response_key` automatically namespaces the response.
+- Top-level: `response_key == response_param` (e.g., `"decision"`)
+- Nested: `response_key` adds graph path (e.g., `"review.decision"` for `node_name="review/approval"`)
 
 ---
 
@@ -305,11 +310,11 @@ Resume is automatic. Just run with the same `workflow_id`:
 
 ```python
 # First run - workflow created
-result = await runner.run(graph, inputs={...}, workflow_id="session-123")
+result = await runner.run(graph, values={...}, workflow_id="session-123")
 # 💥 CRASH
 
 # Resume - just run with same workflow_id
-result = await runner.run(graph, inputs={...}, workflow_id="session-123")
+result = await runner.run(graph, values={...}, workflow_id="session-123")
 # Checkpoint state loaded → merged with inputs → graph executes → steps appended
 ```
 
@@ -406,7 +411,7 @@ steps = checkpoint.steps
 # Start a NEW workflow with that context
 result = await runner.run(
     graph,
-    inputs={**state, "user_input": "new question"},  # State via spread
+    values={**state, "user_input": "new question"},  # State via spread
     history=steps,                                     # Execution trail
     workflow_id="session-456",                         # NEW workflow
 )
@@ -426,7 +431,7 @@ checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 result = await runner.run(
     graph,
-    inputs={**checkpoint.values, "new_param": "modified"},
+    values={**checkpoint.values, "new_param": "modified"},
     history=checkpoint.steps,
     workflow_id="order-123-retry",
 )
@@ -440,7 +445,7 @@ state = await checkpointer.get_state("chat-old")
 # Start fresh session with that context (no history needed)
 result = await runner.run(
     graph,
-    inputs={**state, "user_input": "Hello again!"},
+    values={**state, "user_input": "Hello again!"},
     workflow_id="chat-new",
 )
 ```
@@ -452,7 +457,7 @@ checkpoint = await checkpointer.get_checkpoint("debug-me", superstep=3)
 
 result = await runner.run(
     graph,
-    inputs=checkpoint.values,
+    values=checkpoint.values,
     history=checkpoint.steps,
     workflow_id="debug-replay-1",
 )
@@ -460,13 +465,13 @@ result = await runner.run(
 
 ### Decoupling Read from Write
 
-The key insight: **`inputs` and `history` control what goes IN, `workflow_id` controls where it's WRITTEN.**
+The key insight: **`values` and `history` control what goes IN, `workflow_id` controls where it's WRITTEN.**
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  READ (from anywhere)          WRITE (to workflow_id)       │
 │                                                             │
-│  inputs={**state, ...}    ──►  Checkpoints saved to         │
+│  values={**state, ...}    ──►  Checkpoints saved to         │
 │  history=history          ──►  "session-456"                │
 │                                                             │
 │  State from "session-123"      New workflow "session-456"   │
@@ -491,7 +496,7 @@ checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 result = await runner.run(
     graph,
-    inputs={**checkpoint.values, "new_input": "value"},  # Merge with new inputs
+    values={**checkpoint.values, "new_input": "value"},  # Merge with new inputs
     workflow_id="order-123-fork",                        # New workflow ID
     history=checkpoint.steps,                             # Carry forward history
 )
@@ -511,9 +516,9 @@ The `run()` method is intentionally simple — it has one behavior regardless of
 ### What `run()` Does
 
 ```
-run(graph, inputs, workflow_id):
+run(graph, values, workflow_id):
   1. Load   — Get checkpoint state (if workflow_id exists)
-  2. Merge  — Combine with inputs (inputs win on conflicts)
+  2. Merge  — Combine with values (values win on conflicts)
   3. Execute — Run the graph
   4. Append — Add new steps to history
   5. Return — Give back result
@@ -527,11 +532,11 @@ When you provide a `workflow_id`, you get automatic load-and-save:
 
 ```python
 # This single line does a lot:
-result = await runner.run(graph, inputs={"user_input": "Hi"}, workflow_id="chat-123")
+result = await runner.run(graph, values={"user_input": "Hi"}, workflow_id="chat-123")
 
 # Equivalent to:
 # 1. state = await checkpointer.get_state("chat-123")  # Load (if exists)
-# 2. merged = {**state, "user_input": "Hi"}            # Merge (inputs win)
+# 2. merged = {**state, "user_input": "Hi"}            # Merge (values win)
 # 3. result = execute(graph, merged)                   # Execute
 # 4. checkpointer.save_step(...) after each node        # Append
 ```
@@ -542,21 +547,21 @@ History never overwrites — each run appends new steps:
 
 ```python
 # Turn 1
-result = await runner.run(graph, inputs={"user_input": "Hi"}, workflow_id="chat")
+result = await runner.run(graph, values={"user_input": "Hi"}, workflow_id="chat")
 # Steps: [0, 1]
 
 # Turn 2
-result = await runner.run(graph, inputs={"user_input": "Tell me more"}, workflow_id="chat")
+result = await runner.run(graph, values={"user_input": "Tell me more"}, workflow_id="chat")
 # Steps: [0, 1, 2, 3]  ← Appended, not replaced
 
 # Turn 3 (even if previous had an error!)
-result = await runner.run(graph, inputs={"user_input": "Try again"}, workflow_id="chat")
+result = await runner.run(graph, values={"user_input": "Try again"}, workflow_id="chat")
 # Steps: [0, 1, 2, 3, 4, 5]  ← Just keeps appending
 ```
 
-### Inputs Override Checkpoint
+### Values Override Checkpoint
 
-Per the value resolution hierarchy, runtime inputs win over checkpointed values:
+Per the value resolution hierarchy, runtime values win over checkpointed values:
 
 ```python
 # Workflow "chat-123" has checkpointed messages=[{...}, {...}]
@@ -564,7 +569,7 @@ Per the value resolution hierarchy, runtime inputs win over checkpointed values:
 # This OVERRIDES the checkpointed messages (intentional)
 result = await runner.run(
     graph,
-    inputs={"messages": [], "user_input": "Hi"},  # Fresh start
+    values={"messages": [], "user_input": "Hi"},  # Fresh start
     workflow_id="chat-123",
 )
 ```
@@ -584,7 +589,7 @@ checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 result = await runner.run(
     graph,
-    inputs={**checkpoint.values, "new_param": "modified"},
+    values={**checkpoint.values, "new_param": "modified"},
     history=checkpoint.steps,     # Seeds the new workflow
     workflow_id="order-123-fork", # Must be NEW workflow
 )
@@ -598,12 +603,12 @@ A workflow can only have one active execution at a time (this is a safety constr
 
 ```python
 # ❌ Error: workflow is already running
-task1 = runner.run(graph, inputs={...}, workflow_id="order-123")
-task2 = runner.run(graph, inputs={...}, workflow_id="order-123")  # Conflict!
+task1 = runner.run(graph, values={...}, workflow_id="order-123")
+task2 = runner.run(graph, values={...}, workflow_id="order-123")  # Conflict!
 
 # ✅ Correct: use different workflow_ids for parallel work
-task1 = runner.run(graph, inputs={...}, workflow_id="order-123-a")
-task2 = runner.run(graph, inputs={...}, workflow_id="order-123-b")
+task1 = runner.run(graph, values={...}, workflow_id="order-123-a")
+task2 = runner.run(graph, values={...}, workflow_id="order-123-b")
 ```
 
 ### Patterns Summary
@@ -611,11 +616,11 @@ task2 = runner.run(graph, inputs={...}, workflow_id="order-123-b")
 | Goal | Pattern |
 |------|---------|
 | Continue conversation | Same `workflow_id`, new `user_input` |
-| Resume from pause | Same `workflow_id`, provide response in inputs |
+| Resume from pause | Same `workflow_id`, provide response in values |
 | Retry after error | Same `workflow_id`, just run again |
-| Fork from any point | New `workflow_id` + spread state as inputs |
+| Fork from any point | New `workflow_id` + spread state as values |
 | Full fork with history | New `workflow_id` + `history=` parameter |
-| Override state | Same `workflow_id` + provide values in inputs |
+| Override state | Same `workflow_id` + provide values explicitly |
 | Parallel processing | Different `workflow_id` per task |
 
 ---
@@ -627,7 +632,7 @@ task2 = runner.run(graph, inputs={...}, workflow_id="order-123-b")
 The simplest way — just access outputs from the result:
 
 ```python
-result = await runner.run(graph, inputs={...}, workflow_id="session-123")
+result = await runner.run(graph, values={...}, workflow_id="session-123")
 
 # Dict-like access
 result["answer"]           # Latest value
@@ -670,7 +675,7 @@ When using nested graphs, each nested graph gets its own workflow:
 rag = Graph(nodes=[embed, retrieve, generate], name="rag")
 outer = Graph(nodes=[preprocess, rag.as_node(), postprocess])
 
-result = await runner.run(outer, inputs={...}, workflow_id="order-123")
+result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Workflow IDs are hierarchical
 # Parent: "order-123"
@@ -831,7 +836,7 @@ hypergraph intentionally doesn't have `update_state()`. Here's why:
 |-------------------|----------------------|
 | `update_state()` for human input | `InterruptNode` |
 | `update_state()` for retries | Fork with `get_checkpoint(superstep=N)` or DBOS `fork_workflow()` |
-| `update_state()` for testing | Pass different inputs to `runner.run()` |
+| `update_state()` for testing | Pass different values to `runner.run()` |
 
 ---
 
@@ -851,7 +856,7 @@ workflow_id = str(uuid.uuid4())
 ### 2. Handle Pauses Gracefully
 
 ```python
-result = await runner.run(graph, inputs={...}, workflow_id="...")
+result = await runner.run(graph, values={...}, workflow_id="...")
 
 match result.status:
     case RunStatus.COMPLETED:
