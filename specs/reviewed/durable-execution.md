@@ -277,13 +277,13 @@ See [State Model](state-model.md#value-resolution-hierarchy) for the full hierar
 To replay from a specific point in history, get the state at that step and fork:
 
 ```python
-# Get state at step 1
-state = await checkpointer.get_state("session-123", at_step=1)
+# Get state at superstep 1
+checkpoint = await checkpointer.get_checkpoint("session-123", superstep=1)
 
 # Fork to a new workflow with that state
 result = await runner.run(
     graph,
-    inputs={**state, "query": "hello"},
+    inputs={**checkpoint.values, "query": "hello"},
     workflow_id="session-123-retry",  # New workflow
 )
 ```
@@ -773,24 +773,16 @@ DBOS.send(
 | Who triggers resume | Your code | External system or webhook |
 | Automatic recovery | No | Yes (via `DBOS.launch()`) |
 
-### Streaming with DBOS
+### Observability with DBOS
 
-**Important:** `.iter()` is not recommended with DBOS due to limitations in how DBOS wraps workflows. Use `EventProcessor` (push-based) instead:
+DBOSAsyncRunner does not emit hypergraph events. Event emission is a feature of the core runners (SyncRunner, AsyncRunner).
 
-```python
-class StreamingHandler(TypedEventProcessor):
-    def on_streaming_chunk(self, event: StreamingChunkEvent) -> None:
-        print(event.chunk, end="", flush=True)
+For DBOS workloads, use DBOS's native observability:
+- **Workflow tracking:** DBOS tracks workflow execution, step completion, and recovery
+- **Tracing:** DBOS integrates with OpenTelemetry for distributed tracing
+- **Logging:** DBOS provides structured logging for workflow events
 
-    def on_interrupt(self, event: InterruptEvent) -> None:
-        # Persist interrupt for external handling
-        save_pending_approval(event.workflow_id, event.value)
-
-runner = DBOSAsyncRunner(event_processors=[StreamingHandler()])
-result = await runner.run(graph, inputs={...}, workflow_id="123")
-```
-
-This aligns with how other frameworks (like Pydantic AI) integrate with DBOS.
+See [DBOS Observability](https://docs.dbos.dev/python/tutorials/logging-and-tracing) for details.
 
 ### DBOS Runner Capabilities
 
@@ -801,7 +793,8 @@ class DBOSRunnerCapabilities(RunnerCapabilities):
     supports_gates: bool = True
     supports_interrupts: bool = True
     supports_async_nodes: bool = True
-    supports_streaming: bool = False  # .iter() not available; use EventProcessor
+    supports_streaming: bool = False  # .iter() not available
+    supports_events: bool = False     # Use DBOS observability
     supports_distributed: bool = False
     returns_coroutine: bool = True
 
@@ -1069,7 +1062,7 @@ async def execute_graph_node(
 | Capability | Checkpointer | DBOS |
 |------------|:------------:|:----:|
 | Resume from latest | ✅ Implicit (load → merge) | ✅ Automatic |
-| Replay from specific step | ✅ (manual fork with `get_state`) | ✅ (`fork_workflow`) |
+| Replay from specific step | ✅ (manual fork with `get_checkpoint`) | ✅ (`fork_workflow`) |
 | Get current state | ✅ | ✅ |
 | List workflows | ✅ | ✅ |
 | Step history | ✅ | ✅ |
@@ -1081,9 +1074,10 @@ async def execute_graph_node(
 | Queue rate limiting | ❌ | ✅ |
 | Workflow messaging | ❌ | ✅ (`send`/`recv`) |
 | Scheduled workflows (cron) | ❌ | ✅ |
-| `.iter()` streaming | ✅ | ❌ (use EventProcessor) |
+| `.iter()` streaming | ✅ | ❌ |
+| Event emission | ✅ | ❌ (use DBOS observability) |
 
-**Forking with Checkpointer:** Use `get_state(at_step=N)` to get state at a point, then run with a new `workflow_id`. History is append-only; forks create new workflows.
+**Forking with Checkpointer:** Use `get_checkpoint(superstep=N)` to get a point-in-time state + steps, then run with a new `workflow_id`. History is append-only; forks create new workflows.
 
 ---
 

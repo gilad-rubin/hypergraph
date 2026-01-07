@@ -126,19 +126,21 @@ Your node outputs become the state. No reducers, no explicit schema.
 A checkpoint is a snapshot of workflow state at a specific step. By default, hypergraph saves a checkpoint after each node completes.
 
 ```
-Step 0: fetch     → checkpoint saved
-Step 1: process   → checkpoint saved
-Step 2: generate  → checkpoint saved ← latest
+Superstep 0: fetch     → checkpoint saved
+Superstep 1: process   → checkpoint saved
+Superstep 2: generate  → checkpoint saved ← latest
 ```
 
-Checkpoints are identified by `workflow_id` + `step_index`:
+Each completed node produces a `StepRecord`. StepRecords have:
+- `superstep`: the user-facing “batch” number (used for time travel queries)
+- `index`: a unique sequential ID (internal ordering / DB key)
 
 ```python
 # Get step records
 steps = await checkpointer.get_steps("order-456")
-# [StepRecord(index=0, node_name="fetch", status="completed", values={...}),
-#  StepRecord(index=1, node_name="process", status="completed", values={...}),
-#  StepRecord(index=2, node_name="generate", status="completed", values={...})]
+# [StepRecord(superstep=0, index=0, node_name="fetch", status="completed", values={...}),
+#  StepRecord(superstep=1, index=1, node_name="process", status="completed", values={...}),
+#  StepRecord(superstep=2, index=2, node_name="generate", status="completed", values={...})]
 ```
 
 ---
@@ -327,8 +329,8 @@ hypergraph separates two concepts:
 
 | Concept | What It Is | API |
 |---------|------------|-----|
-| **State** | Accumulated output values at a point in time | `get_state(workflow_id, at_step=N)` |
-| **History** | Execution audit trail (step records) | `get_history(workflow_id)` |
+| **State** | Accumulated output values at a point in time | `get_state(workflow_id, superstep=N)` |
+| **Steps** | Execution audit trail (step records) | `get_steps(workflow_id, superstep=N)` |
 
 ### Steps Are the Source of Truth
 
@@ -341,13 +343,23 @@ Steps (stored):
   Step 2: node="generate", outputs={"answer": "..."}
 
 State (computed):
-  get_state(at_step=2) → {"data": {...}, "result": {...}, "answer": "..."}
+  get_state(superstep=2) → {"data": {...}, "result": {...}, "answer": "..."}
 ```
 
 This design has important implications:
 - **Single source of truth**: Steps are the authoritative record; state is derived
 - **Time travel**: Get state at any historical point by folding steps up to that point
 - **No sync issues**: State can never be "out of sync" with steps
+
+### State Materialization (Performance)
+
+The semantic definition is “fold steps”, but implementations **SHOULD NOT** literally replay from step 0 on every call. For long-lived workflows, that makes `get_state()` and resume/inspection degrade over time.
+
+To keep “steps as source of truth” *and* keep reads fast, checkpointers should maintain rebuildable materializations, typically:
+- A “latest values” index keyed by `(workflow_id, output_name)` for fast `get_state(..., superstep=None)`
+- Periodic snapshots keyed by `(workflow_id, superstep)` plus “deltas” from StepRecords for historical queries
+
+The result is the same as folding, but the cost is bounded by the snapshot interval and number of outputs, not total workflow age.
 
 ### Why Separate Them?
 
@@ -363,12 +375,12 @@ Different operations need different data:
 ```python
 # Get accumulated state at a point (computed from steps)
 state = await checkpointer.get_state("session-123")           # Latest
-state = await checkpointer.get_state("session-123", at_step=5)  # At step 5
+state = await checkpointer.get_state("session-123", superstep=5)  # Through superstep 5
 # Returns: {"messages": [...], "answer": "..."}
 
-# Get execution history (the actual stored records)
-history = await checkpointer.get_history("session-123")
-# Returns: [StepInfo(index=0, node="embed", output=...), ...]
+# Get step history (the actual stored records)
+steps = await checkpointer.get_steps("session-123")
+# Returns: [StepRecord(index=0, superstep=0, node_name="embed", values={...}), ...]
 
 # Get full workflow metadata
 workflow = await checkpointer.get_workflow("session-123")
@@ -386,15 +398,16 @@ The `runner.run()` method supports explicit injection of state and history, deco
 ### The `history` Parameter
 
 ```python
-# Get state and history from an existing workflow
-state = await checkpointer.get_state("session-123", at_step=5)
-history = await checkpointer.get_history("session-123", up_to_step=5)
+# Get a point-in-time checkpoint from an existing workflow
+checkpoint = await checkpointer.get_checkpoint("session-123", superstep=5)
+state = checkpoint.values
+steps = checkpoint.steps
 
 # Start a NEW workflow with that context
 result = await runner.run(
     graph,
     inputs={**state, "user_input": "new question"},  # State via spread
-    history=history,                                   # Execution trail
+    history=steps,                                     # Execution trail
     workflow_id="session-456",                         # NEW workflow
 )
 ```
@@ -402,20 +415,19 @@ result = await runner.run(
 **What `history` does:**
 - Seeds the step index (new steps continue numbering from where history left off)
 - Copies the step trail into the new workflow
-- Provides full audit trail via `get_history()`
+- Provides full audit trail via `get_steps()`
 
 ### Use Cases
 
 **Fork and continue:**
 ```python
 # Fork from step 5 of workflow X into new workflow Y
-state = await checkpointer.get_state("order-123", at_step=5)
-history = await checkpointer.get_history("order-123", up_to_step=5)
+checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 result = await runner.run(
     graph,
-    inputs={**state, "new_param": "modified"},
-    history=history,
+    inputs={**checkpoint.values, "new_param": "modified"},
+    history=checkpoint.steps,
     workflow_id="order-123-retry",
 )
 ```
@@ -436,13 +448,12 @@ result = await runner.run(
 **Debug replay:**
 ```python
 # Replay from specific point with full history
-state = await checkpointer.get_state("debug-me", at_step=3)
-history = await checkpointer.get_history("debug-me", up_to_step=3)
+checkpoint = await checkpointer.get_checkpoint("debug-me", superstep=3)
 
 result = await runner.run(
     graph,
-    inputs=state,
-    history=history,
+    inputs=checkpoint.values,
+    history=checkpoint.steps,
     workflow_id="debug-replay-1",
 )
 ```
@@ -476,14 +487,13 @@ To fork a workflow (start a new one from a point in an existing workflow), use `
 
 ```python
 # Fork from step 5 of workflow X into new workflow Y
-state = await checkpointer.get_state("order-123", at_step=5)
-history = await checkpointer.get_history("order-123", up_to_step=5)
+checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 result = await runner.run(
     graph,
-    inputs={**state, "new_input": "value"},  # Merge with new inputs
-    workflow_id="order-123-fork",            # New workflow ID
-    history=history,                         # Carry forward history
+    inputs={**checkpoint.values, "new_input": "value"},  # Merge with new inputs
+    workflow_id="order-123-fork",                        # New workflow ID
+    history=checkpoint.steps,                             # Carry forward history
 )
 ```
 
@@ -523,7 +533,7 @@ result = await runner.run(graph, inputs={"user_input": "Hi"}, workflow_id="chat-
 # 1. state = await checkpointer.get_state("chat-123")  # Load (if exists)
 # 2. merged = {**state, "user_input": "Hi"}            # Merge (inputs win)
 # 3. result = execute(graph, merged)                   # Execute
-# 4. await checkpointer.append_steps("chat-123", ...)  # Append
+# 4. checkpointer.save_step(...) after each node        # Append
 ```
 
 ### Append-Only History
@@ -570,13 +580,12 @@ The `history` parameter seeds a **new** workflow with step history. It's for for
 
 ```python
 # Fork from step 5 of workflow X into new workflow Y
-state = await checkpointer.get_state("order-123", at_step=5)
-history = await checkpointer.get_history("order-123", up_to_step=5)
+checkpoint = await checkpointer.get_checkpoint("order-123", superstep=5)
 
 result = await runner.run(
     graph,
-    inputs={**state, "new_param": "modified"},
-    history=history,              # Seeds the new workflow
+    inputs={**checkpoint.values, "new_param": "modified"},
+    history=checkpoint.steps,     # Seeds the new workflow
     workflow_id="order-123-fork", # Must be NEW workflow
 )
 ```
@@ -725,7 +734,7 @@ runner = AsyncRunner(
 | List workflows | ✅ |
 | Step history | ✅ |
 | Automatic crash recovery | ❌ |
-| Workflow forking | ❌ |
+| Workflow forking | ✅ |
 
 For automatic crash recovery and advanced features, use DBOS.
 
@@ -821,7 +830,7 @@ hypergraph intentionally doesn't have `update_state()`. Here's why:
 | LangGraph Pattern | hypergraph Equivalent |
 |-------------------|----------------------|
 | `update_state()` for human input | `InterruptNode` |
-| `update_state()` for retries | Fork with `get_state(at_step=N)` or DBOS `fork_workflow()` |
+| `update_state()` for retries | Fork with `get_checkpoint(superstep=N)` or DBOS `fork_workflow()` |
 | `update_state()` for testing | Pass different inputs to `runner.run()` |
 
 ---
@@ -879,7 +888,7 @@ async def cleanup_old_workflows(days: int = 30):
 | `InterruptNode` | Pause for human input |
 | `RunResult.pause` | Information about why workflow paused |
 | `get_state()` | Get accumulated values at a point in time |
-| `get_history()` | Get execution audit trail (step records) |
+| `get_steps()` | Get execution audit trail (step records) |
 | `history` param | Inject history into a new run (seeds step index) |
 | Checkpointer | Storage backend (SQLite, Postgres) |
 | DBOS | Production upgrade with automatic recovery |

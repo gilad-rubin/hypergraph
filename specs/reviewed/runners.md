@@ -118,11 +118,14 @@ results = df.collect()  # Execution happens here
 | `@branch` / `@route` gates | ✅ | ✅ | ✅ | ❌ |
 | `InterruptNode` | ❌ | ✅ | ✅ | ❌ |
 | `.iter()` streaming | ❌ | ✅ | ❌ | ❌ |
+| Event emission | ✅ | ✅ | ❌ | ❌ |
 | `.map()` batch | ✅ | ✅ | ✅ | ✅ |
 | Async nodes (`async def`) | ❌ | ✅ | ✅ | ✅ |
 | Distributed execution | ❌ | ❌ | ❌ | ✅ |
 | Automatic crash recovery | ❌ | ❌ | ✅ | ❌ |
 | Durable sleep/scheduling | ❌ | ❌ | ✅ | ❌ |
+
+**Note:** Event emission is a feature of the core runners (SyncRunner, AsyncRunner). External runners (DBOSAsyncRunner, DaftRunner) delegate to systems with their own observability.
 
 ---
 
@@ -541,6 +544,7 @@ class RunnerCapabilities:
     supports_interrupts: bool = False
     supports_async_nodes: bool = False
     supports_streaming: bool = False
+    supports_events: bool = True  # Does this runner emit hypergraph events?
     supports_distributed: bool = False
 
     # Execution interface
@@ -558,14 +562,13 @@ Capability values per runner:
 | `supports_gates` | ✅ | ✅ | ✅ | ❌ |
 | `supports_interrupts` | ❌ | ✅ | ✅ | ❌ |
 | `supports_async_nodes` | ❌ | ✅ | ✅ | ✅ |
-| `supports_streaming` | ❌ | ✅ | ❌* | ❌ |
+| `supports_streaming` | ❌ | ✅ | ❌ | ❌ |
+| `supports_events` | ✅ | ✅ | ❌ | ❌ |
 | `supports_distributed` | ❌ | ❌ | ❌ | ✅ |
 | `supports_durable_execution` | ❌ | ❌ | ✅ | ❌ |
 | `returns_coroutine` | ❌ | ✅ | ✅ | ❌ |
 
-*DBOSAsyncRunner does not support `.iter()`. Use `EventProcessor` for streaming with DBOS.
-
-Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner handles async nodes internally but returns a DataFrame synchronously. `DBOSAsyncRunner` inherits most AsyncRunner capabilities and adds DBOS durability, but `.iter()` is not available due to limitations in how DBOS wraps workflows.
+Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner handles async nodes internally but returns a DataFrame synchronously. Event emission is a feature of the core runners; external runners (DBOS, Daft) delegate to systems with their own observability.
 
 ### Design Rationale
 

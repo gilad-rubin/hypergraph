@@ -74,18 +74,20 @@ hypergraph separates two distinct record types:
 | **Contains** | All execution details | All node outputs |
 | **Consumers** | EventProcessor, `.iter()` | Checkpointer |
 
-**Events** are emitted during execution for real-time streaming and observability. They include `NodeStartEvent`, `StreamingChunkEvent`, etc. Events are consumed by `EventProcessor` implementations or via `.iter()` for pull-based access. **Events are NOT persisted by default.**
+**Events** are emitted during execution for real-time streaming and observability. They include `NodeStartEvent`, `StreamingChunkEvent`, etc. Events are consumed by `EventProcessor` implementations or via `.iter()` for pull-based access. **Events are NOT persisted by default.** Note: Not all runners emit events—see [Which Runners Emit Events?](observability.md#which-runners-emit-events)
 
 **Steps** are persisted records saved by the checkpointer. Each step contains the node outputs. Steps enable crash recovery, resume, and workflow forking.
 
 ```
-During Execution:
+During Execution (SyncRunner, AsyncRunner, DBOSAsyncRunner):
   Runner emits Events → EventProcessor (observability)
                      → .iter() (real-time UI)
 
 After Node Completion:
   Runner saves StepRecord → Checkpointer (durability)
                      → All outputs saved
+
+Note: DaftRunner does not emit events (Daft controls execution).
 ```
 
 **Key insight:** When a node produces output, the value exists once in memory. Events reference this value (in memory) for observability. The checkpointer serializes and stores a copy for durability. They are separate concerns with separate interfaces.

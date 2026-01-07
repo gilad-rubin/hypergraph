@@ -34,6 +34,19 @@ hypergraph uses a unified event stream for all observability. The core execution
         └────────────────┘  └──────────┘  └─────────────┘
 ```
 
+### Which Runners Emit Events?
+
+Events are a feature of the **core runners** (SyncRunner, AsyncRunner). External integrations have their own observability:
+
+| Runner | Emits Events? | Notes |
+|--------|:-------------:|-------|
+| **SyncRunner** | ✅ | Core runner |
+| **AsyncRunner** | ✅ | Core runner |
+| **DBOSAsyncRunner** | ❌ | Use DBOS observability |
+| **DaftRunner** | ❌ | Use Daft observability |
+
+External runners (DBOS, Daft) delegate execution to systems that provide their own workflow tracking and tracing.
+
 ### Why Checkpointer Is NOT an EventProcessor
 
 Persistence uses a **separate `Checkpointer` interface**, not `EventProcessor`. This is a deliberate design choice:
@@ -265,9 +278,10 @@ class EventProcessor:
     instead for pre-dispatched typed methods.
 
     Lifecycle:
-    - on_event() is called synchronously for each event during execution
-    - shutdown() is called once after RunEndEvent, before .run() returns
-    - force_flush() is called before checkpoints and on interrupts
+    - Events are delivered in-order per processor (FIFO)
+    - Processor failures do not fail the run by default (best-effort)
+    - shutdown() is called once after RunEndEvent (even on errors)
+    - force_flush() is called at durability boundaries (interrupt/checkpoint)
     """
 
     def on_event(self, event: Event) -> None:
@@ -278,8 +292,8 @@ class EventProcessor:
             event: The event that occurred. Use isinstance() or
                    match/case to filter by type.
 
-        Note: This runs in the execution path. For expensive operations
-        (network calls, disk I/O), buffer internally and flush async.
+        Note: This must be fast and non-blocking. For expensive operations
+        (network calls, disk I/O), buffer internally and export in the background.
         """
         pass
 
@@ -310,6 +324,71 @@ class EventProcessor:
         pass
 ```
 
+---
+
+## Processor Semantics (Failure, Concurrency, Backpressure)
+
+This section is **normative**: it defines what users can rely on across runners.
+
+### Goals (Why this exists)
+
+- **Observability must not change execution behavior by accident.** Logging/tracing should not silently cause workflow failures or large slowdowns.
+- **Users can opt into strictness when they want it.** Tests and debugging sometimes *should* fail if observability is broken.
+
+These defaults mirror common practice in other systems:
+- **LangChain / LangGraph callbacks**: exceptions are logged and ignored by default; optional `raise_error` makes them fatal.
+- **Mastra observability exporters**: export is best-effort; failures are caught and do not stop execution (`Promise.allSettled` / per-target try/catch).
+- **OpenTelemetry SDKs**: exporters run behind bounded queues; exporter exceptions are caught; telemetry may be dropped under pressure.
+- **Temporal interceptors** (contrast): interceptors are in the call path; exceptions can fail activities/workflows unless the interceptor catches them.
+
+### 1) If a processor throws, what happens?
+
+**Default: best-effort (recommended).**
+- If `on_event()` / `on_event_async()` raises, the runner **MUST NOT** fail the graph run.
+- The runner **SHOULD**:
+  - log the exception (including processor name/type and event type),
+  - record it for diagnostics (e.g., in `RunResult` or an internal counter),
+  - optionally **disable that processor for the remainder of the run** after repeated failures (to avoid infinite error spam).
+- The runner **MUST NOT** retry events automatically. Retries (and deduplication) are processor concerns.
+
+**Optional: strict mode (opt-in).**
+- A runner MAY offer a configuration where processor exceptions **fail the run** (useful in tests/CI).
+
+**Example: network outage**
+- You attach `ConsoleLogProcessor()` and `OpenTelemetryProcessor()`.
+- The OTel exporter gets a timeout and raises while exporting spans.
+- The graph still completes; the runner logs the processor failure and continues delivering events to the console logger.
+
+### 2) Are processors called sequentially or concurrently?
+
+- **Per-processor ordering:** events delivered to a single processor are **FIFO** (the same order the runner emitted them).
+- **Across processors:** runners **MAY** deliver the same event to different processors concurrently.
+- **Across spans:** because nodes can run in parallel, events from different spans may interleave arbitrarily; processors must correlate using `run_id` + `span_id`, not arrival order.
+
+### 3) Do async processors backpressure execution?
+
+**Default: no (recommended).**
+- Runners SHOULD treat processors as **out-of-band** (fire-and-forget) so slow processors do not slow node execution.
+- Ordering is preserved by giving each processor a **single-consumer FIFO queue** (one background task/thread per processor).
+
+**Durability boundaries:** the runner MAY block briefly on:
+- `force_flush()` (before checkpoint serialization / on interrupt),
+- `shutdown()` (at the end of the run),
+so processors can export buffered telemetry. Runners SHOULD apply a timeout and continue if the processor cannot flush in time.
+
+**Optional: inline mode (opt-in).**
+- A runner MAY provide an inline delivery mode that calls/awaits processors on the execution path. This can be useful for “stream tokens to UI” processors, but it makes backpressure explicit.
+
+### 4) Backpressure and queue overflow
+
+Runners SHOULD provide bounded buffering for processors. When a processor falls behind:
+- **Default policy:** drop events (typically “drop oldest”) and log a warning with counts.
+- **Opt-in policies:** block the producer (backpressure) or drop newest, depending on the use case.
+
+**Rule of thumb:**
+- Observability exporters (Langfuse/OTel/Datadog) → drop is usually fine.
+- User-facing streaming (“show tokens live”) → prefer `.iter()`; if forced to use processors (e.g., DBOS), opt into inline/backpressure explicitly.
+
 ### Async Processors
 
 For AsyncRunner, processors can optionally implement async event handling:
@@ -319,7 +398,8 @@ class AsyncEventProcessor(EventProcessor):
     """
     Base class for async-aware processors.
 
-    When used with AsyncRunner, on_event_async() is awaited.
+    When used with AsyncRunner, on_event_async() is used for non-blocking I/O.
+    Runners may schedule it out-of-band (recommended) or await it in inline mode.
     Falls back to sync on_event() if not overridden.
     """
 
@@ -338,7 +418,7 @@ class AsyncEventProcessor(EventProcessor):
 
 **Usage:**
 - `SyncRunner` always calls `on_event()` (sync)
-- `AsyncRunner` calls `on_event_async()` if processor is `AsyncEventProcessor`, else `on_event()`
+- `AsyncRunner` calls `on_event_async()` if processor is `AsyncEventProcessor` (typically scheduled out-of-band), else `on_event()`
 
 ### TypedEventProcessor (Convenience)
 
@@ -719,9 +799,9 @@ class OpenTelemetryProcessor(EventProcessor):
 
 ### Performance Considerations
 
-- Processors run synchronously in the execution path
-- For expensive operations (network calls), buffer and flush async
-- Use `force_flush()` before checkpoints to avoid data loss
+- Processors SHOULD be treated as out-of-band (best-effort) so observability does not slow execution
+- For expensive operations (network calls), buffer internally and export in the background
+- `force_flush()` exists for durability boundaries; apply timeouts so flush cannot stall the run indefinitely
 
 ---
 

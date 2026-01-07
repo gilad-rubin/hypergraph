@@ -56,6 +56,7 @@ class RunnerCapabilities:
     supports_interrupts: bool = False
     supports_async_nodes: bool = False
     supports_streaming: bool = False
+    supports_events: bool = True  # Does this runner emit hypergraph events?
     supports_distributed: bool = False
 
     # Execution interface
@@ -75,11 +76,12 @@ class RunnerCapabilities:
 | `supports_interrupts` | ❌ | ✅ | ✅ | ❌ |
 | `supports_async_nodes` | ❌ | ✅ | ✅ | ✅ |
 | `supports_streaming` | ❌ | ✅ | ❌ | ❌ |
+| `supports_events` | ✅ | ✅ | ❌ | ❌ |
 | `supports_distributed` | ❌ | ❌ | ❌ | ✅ |
 | `returns_coroutine` | ❌ | ✅ | ✅ | ❌ |
 | `supports_automatic_recovery` | ❌ | ❌ | ✅ | ❌ |
 
-**Note:** DBOSAsyncRunner does not provide `.iter()`. For streaming with DBOS, use `EventProcessor` (push-based) instead.
+**Note:** Event emission (`supports_events`) is a feature of the core runners. External runners (DBOS, Daft) delegate to systems with their own observability.
 
 ---
 
@@ -387,11 +389,7 @@ For DBOS integration with automatic crash recovery. See [Durable Execution](./du
 
 ```python
 class DBOSAsyncRunner(BaseRunner):
-    def __init__(
-        self,
-        *,
-        event_processors: list[EventProcessor] | None = None,
-    ) -> None:
+    def __init__(self) -> None:
         """
         Create DBOS-integrated async runner.
 
@@ -399,13 +397,10 @@ class DBOSAsyncRunner(BaseRunner):
             from dbos import DBOS
             DBOS(config={"name": "my_app", "database_url": "..."})
 
-        Args:
-            event_processors: Processors that receive execution events.
-                See [Observability](./observability.md) for details.
-
         Note:
             - No database_url parameter — user configures DBOS directly
             - No checkpointer parameter — DBOS handles persistence
+            - No event_processors parameter — use DBOS observability
             - User must call DBOS.launch() for automatic crash recovery
         """
 ```
@@ -423,7 +418,6 @@ async def run(
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
     workflow_id: str,
-    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult:
     """
     Execute graph with DBOS durability.
@@ -441,7 +435,6 @@ async def run(
         max_iterations: Max iterations before InfiniteLoopError.
         max_concurrency: Limit total concurrent async operations.
         workflow_id: REQUIRED. Unique workflow identifier for DBOS.
-        event_processors: Additional processors for this run only.
 
     Returns:
         RunResult with values and status.
@@ -450,6 +443,7 @@ async def run(
         - To resume an interrupted workflow, use DBOS.send() directly:
             DBOS.send(destination_id="workflow_id", message={...}, topic="interrupt_name")
         - Do NOT call runner.run() again to resume — DBOS handles this
+        - No event_processors — use DBOS observability for workflow tracking
     """
 ```
 
@@ -462,7 +456,8 @@ class DBOSRunnerCapabilities(RunnerCapabilities):
     supports_gates: bool = True
     supports_interrupts: bool = True
     supports_async_nodes: bool = True
-    supports_streaming: bool = False  # .iter() not available; use EventProcessor
+    supports_streaming: bool = False  # .iter() not available
+    supports_events: bool = False     # Use DBOS observability
     supports_distributed: bool = False
     returns_coroutine: bool = True
 
@@ -519,6 +514,10 @@ class DaftRunner(BaseRunner):
         Note:
             DaftRunner only supports DAG graphs.
             Cycles, gates, and interrupts are not supported.
+
+            No event_processors parameter: DaftRunner does not emit
+            hypergraph events. Daft controls distributed execution
+            internally; use Daft's native observability instead.
         """
 ```
 
