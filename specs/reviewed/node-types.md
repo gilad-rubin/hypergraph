@@ -1055,7 +1055,7 @@ class GraphNode(HyperNode):
                 complete_on_stop=False (inconsistent guarantees).
 
         Note:
-            Use .with_outputs() to override output names (default: graph's leaf outputs).
+            Use .with_outputs() to override output names (default: graph.outputs).
             Use .map_over() to configure iteration.
 
         See Also:
@@ -1095,7 +1095,14 @@ class GraphNode(HyperNode):
         # Core HyperNode attributes
         self.name = resolved_name
         self.inputs = graph.inputs.all  # Extract tuple from InputSpec
-        self.outputs = graph.leaf_outputs  # Use .with_outputs() to override
+        # Lifted outputs: the only inner values that become available to the
+        # *parent graph’s wiring/value resolution* under normal names.
+        #
+        # Note: this does not limit what the nested RunResult can contain.
+        # All inner outputs remain available under result[self.name][...]
+        # (subject to select= filtering), but only these lifted outputs can be
+        # consumed by other outer nodes without path syntax.
+        self.outputs = graph.outputs  # Use .with_outputs() to rename
 ```
 
 ### GraphNode-Specific Properties
@@ -1280,7 +1287,7 @@ rag_node = inner.as_node()  # Returns GraphNode, uses graph.name
 # Properties (inherited from HyperNode)
 assert rag_node.name == "rag"
 assert rag_node.inputs == ("query",)
-assert rag_node.outputs == ("docs",)  # Default: graph's leaf_outputs
+assert rag_node.outputs == ("embedding", "docs")  # Default: graph.outputs
 
 # Use in outer graph
 outer = Graph(nodes=[preprocess, rag_node, postprocess])

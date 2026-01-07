@@ -423,8 +423,23 @@ def as_node(
             See Graph constructor for behavior details.
 
     Returns:
-        GraphNode with graph's leaf_outputs as default outputs.
-        Use .with_outputs() to override output names.
+        GraphNode with graph's outputs as default *lifted* outputs.
+
+        Important: there are two “surfaces” for nested graphs:
+        1. **Dataflow / wiring surface (lifted outputs)**:
+           GraphNode.outputs determines which inner values are lifted into
+           the parent graph’s value namespace and can be consumed by other
+           outer nodes via normal parameter names. By default, this is the
+           inner graph’s outputs (all node outputs).
+
+        2. **Return surface (nested RunResult)**:
+           The nested graph’s full outputs remain accessible inside the
+           nested RunResult (e.g. result["rag"]["embedding"]), subject to
+           `select=` filtering. Selecting nested outputs via paths like
+           "rag/embedding" does not imply that "embedding" is lifted into
+           the parent value namespace for wiring.
+
+        Use .with_outputs() to rename lifted output names.
         Use .map_over() to configure iteration.
 
     Raises:
