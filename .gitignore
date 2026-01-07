@@ -21,3 +21,5 @@ CLAUDE.md.bak
 # END Ruler Generated Files
 specs/tmp/*
 docs/plans/*
+# Continuous Claude cache (local only)
+.claude/cache/
