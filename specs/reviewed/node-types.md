@@ -1212,7 +1212,7 @@ def map_over(
         # Both result in _map_over = ["user_question"]
 
         # For direct execution - use runner.map() instead:
-        results = runner.map(graph, inputs={...}, map_over=["query"])
+        results = runner.map(graph, values={...}, map_over=["query"])
     """
     _validate_map_over(params, self.inputs, self._rename_history)
     clone = self._copy()

@@ -228,11 +228,11 @@ from hypergraph import SyncRunner, DiskCache
 runner = SyncRunner(cache=DiskCache("./cache"))
 
 # First run — all nodes execute, results cached
-result = runner.run(graph, inputs={"data": big_file})
+result = runner.run(graph, values={"data": big_file})
 # 💥 CRASH at node 5
 
 # Restart with same inputs — nodes 1-4 cache hit, only 5+ execute
-result = runner.run(graph, inputs={"data": big_file})
+result = runner.run(graph, values={"data": big_file})
 ```
 
 **When cache is enough:**

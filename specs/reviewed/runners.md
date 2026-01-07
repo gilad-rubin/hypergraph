@@ -31,7 +31,7 @@ from hypergraph import Graph, SyncRunner, DiskCache
 graph = Graph(nodes=[fetch, process, save])
 
 runner = SyncRunner(cache=DiskCache("./cache"))
-result = runner.run(graph, inputs={"query": "hello"})
+result = runner.run(graph, values={"query": "hello"})
 
 print(result["response"])  # dict[str, Any]
 ```
@@ -59,7 +59,7 @@ graph = Graph(nodes=[embed, process])  # Must be a DAG
 runner = DaftRunner()
 df = runner.map(
     graph,
-    inputs={"texts": large_text_list},
+    values={"texts": large_text_list},
     map_over="texts",
 )
 results = df.collect()  # Execution happens here
@@ -137,7 +137,7 @@ All runners support `.map()` for processing multiple inputs:
 # Process a list of queries
 results = runner.map(
     graph,
-    inputs={"queries": ["q1", "q2", "q3"], "config": shared_config},
+    values={"queries": ["q1", "q2", "q3"], "config": shared_config},
     map_over="queries",  # This parameter gets iterated
 )
 # Returns: [{"response": "r1"}, {"response": "r2"}, {"response": "r3"}]
@@ -152,7 +152,7 @@ The `map_over` parameter specifies which input(s) to iterate. Other inputs are b
 ```python
 results = runner.map(
     graph,
-    inputs={"x": [1, 2], "y": [3, 4]},
+    values={"x": [1, 2], "y": [3, 4]},
     map_over=["x", "y"],
     map_mode="zip",
 )
@@ -164,7 +164,7 @@ results = runner.map(
 ```python
 results = runner.map(
     graph,
-    inputs={"x": [1, 2], "y": [3, 4]},
+    values={"x": [1, 2], "y": [3, 4]},
     map_over=["x", "y"],
     map_mode="product",
 )
@@ -177,11 +177,11 @@ Map operations batch multiple executions, but interrupts pause for human input�
 
 ```python
 # This will raise GraphConfigError
-runner.map(graph_with_interrupts, inputs={...}, map_over="x")
+runner.map(graph_with_interrupts, values={...}, map_over="x")
 
 # Instead, use run() in a loop:
 for item in items:
-    result = await runner.run(graph, inputs={...})
+    result = await runner.run(graph, values={...})
     if result.pause:
         # Handle interrupt individually
 ```
@@ -193,7 +193,7 @@ for item in items:
 Watch execution unfold in real-time:
 
 ```python
-async for event in runner.iter(graph, inputs={"prompt": "Tell me a story"}):
+async for event in runner.iter(graph, values={"prompt": "Tell me a story"}):
     match event:
         case StreamingChunkEvent(chunk=chunk):
             print(chunk, end="", flush=True)
@@ -231,7 +231,7 @@ runner = AsyncRunner(checkpointer=SqliteCheckpointer("./dev.db"))
 
 result = await runner.run(
     graph,
-    inputs={"draft": content},
+    values={"draft": content},
     workflow_id="review-123",
 )
 
@@ -271,7 +271,7 @@ async def fetch_api(url: str) -> str:
 
 # Both work together
 graph = Graph(nodes=[fetch_local, fetch_api, process])
-result = await AsyncRunner().run(graph, inputs={...})
+result = await AsyncRunner().run(graph, values={...})
 ```
 
 ### Concurrency Rules
@@ -339,10 +339,10 @@ Limit the total number of concurrent async operations across the entire executio
 
 ```python
 # Limit total concurrent operations (across all nodes, all levels)
-result = await runner.run(graph, inputs={...}, max_concurrency=10)
+result = await runner.run(graph, values={...}, max_concurrency=10)
 
 # Also works with map
-results = await runner.map(graph, inputs={...}, map_over="x", max_concurrency=20)
+results = await runner.map(graph, values={...}, map_over="x", max_concurrency=20)
 ```
 
 This limit is **shared across all levels** of execution:
@@ -378,7 +378,7 @@ Nested graphs inherit their parent's runner by default:
 inner = Graph(nodes=[node_a, node_b])
 outer = Graph(nodes=[inner.as_node(name="inner"), other_node])
 
-await AsyncRunner().run(outer, inputs={...})
+await AsyncRunner().run(outer, values={...})
 # inner executes with AsyncRunner (inherited)
 ```
 
@@ -395,7 +395,7 @@ outer = Graph(nodes=[
     postprocess,
 ])
 
-await AsyncRunner().run(outer, inputs={...})
+await AsyncRunner().run(outer, values={...})
 # outer: AsyncRunner
 # inner: DaftRunner (explicit override)
 ```
@@ -477,7 +477,7 @@ runner = DaftRunner(cache=DiskCache("./cache"))
 # Returns a Daft DataFrame (lazy)
 df = runner.map(
     graph,
-    inputs={"texts": large_text_list},
+    values={"texts": large_text_list},
     map_over="texts",
 )
 
@@ -491,11 +491,11 @@ DaftRunner validates graph compatibility at execution time:
 
 ```python
 # Graph with cycles → IncompatibleRunnerError
-DaftRunner().map(cyclic_graph, inputs={...}, map_over="x")
+DaftRunner().map(cyclic_graph, values={...}, map_over="x")
 # Error: "This graph has cycles, but DaftRunner doesn't support cycles."
 
 # Graph with gates → IncompatibleRunnerError
-DaftRunner().map(graph_with_routes, inputs={...}, map_over="x")
+DaftRunner().map(graph_with_routes, values={...}, map_over="x")
 # Error: "This graph has gates (@route/@branch), but DaftRunner doesn't support gates."
 ```
 
@@ -612,7 +612,7 @@ class RunResult:
 ```python
 result = await runner.run(
     graph,
-    inputs={...},
+    values={...},
     session_id="conversation-123",  # User-provided: groups related runs
 )
 # result.run_id → "run-abc-456"     # Framework-generated: unique per execution

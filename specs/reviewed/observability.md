@@ -497,7 +497,7 @@ runner = AsyncRunner(
     ]
 )
 
-result = await runner.run(graph, inputs={...})
+result = await runner.run(graph, values={...})
 ```
 
 ### Factory Pattern (For Consistent Configuration)
@@ -535,7 +535,7 @@ def get_runner() -> AsyncRunner:
 
 @app.post("/run")
 async def run_graph(runner: AsyncRunner = Depends(get_runner)):
-    return await runner.run(graph, inputs={...})
+    return await runner.run(graph, values={...})
 ```
 
 ### Per-Run Processors
@@ -548,7 +548,7 @@ runner = AsyncRunner()  # No default processors
 # Add processors for this run only
 result = await runner.run(
     graph,
-    inputs={...},
+    values={...},
     event_processors=[DebugProcessor()],  # This run only
 )
 ```
@@ -566,7 +566,7 @@ When a `GraphNode` (nested graph) executes, the execution context is propagated 
 ```python
 outer = Graph(nodes=[preprocess, inner.as_node(name="rag"), postprocess])
 
-async for event in runner.iter(outer, inputs={...}):
+async for event in runner.iter(outer, values={...}):
     print(f"{event.node_name}: parent={event.parent_span_id}")
 
 # Output:
@@ -585,7 +585,7 @@ Nested graphs **inherit** event processors from the parent runner by default:
 ```python
 # All events (outer + inner) go to same processors
 runner = AsyncRunner(event_processors=[LangfuseProcessor()])
-await runner.run(outer_graph, inputs={...})
+await runner.run(outer_graph, values={...})
 ```
 
 ### Overriding for Nested Graphs
@@ -614,7 +614,7 @@ outer = Graph(nodes=[
 For direct event consumption without processors:
 
 ```python
-async for event in runner.iter(graph, inputs={...}):
+async for event in runner.iter(graph, values={...}):
     match event:
         case StreamingChunkEvent(chunk=chunk):
             print(chunk, end="", flush=True)

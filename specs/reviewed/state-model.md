@@ -69,7 +69,7 @@ At the **start of a run**, the runner merges prior state with your inputs:
 
 ```python
 # What you write:
-result = await runner.run(graph, inputs={"user_input": "Hi"}, workflow_id="chat-123")
+result = await runner.run(graph, values={"user_input": "Hi"}, workflow_id="chat-123")
 
 # What happens internally (three possible cases):
 
@@ -105,13 +105,13 @@ def retrieve(embedding: list[float]) -> list[str]: ...
 
 **Scenario 1: Normal execution**
 ```python
-result = await runner.run(graph, inputs={"query": "hello"})
+result = await runner.run(graph, values={"query": "hello"})
 # embed runs → produces embedding → retrieve uses it
 ```
 
 **Scenario 2: Skip upstream by providing its output**
 ```python
-result = await runner.run(graph, inputs={
+result = await runner.run(graph, values={
     "query": "hello",
     "embedding": [0.1, 0.2, ...],  # Provide embedding directly
 })
@@ -151,13 +151,13 @@ chat_graph = Graph(nodes=[get_response, update_messages]).bind(messages=[])
 
 # Turn 1: no checkpoint exists, messages from bound ([])
 result = await runner.run(chat_graph,
-    inputs={"user_input": "Hi"},
+    values={"user_input": "Hi"},
     workflow_id="chat-1"
 )
 
 # Turn 2: checkpoint loaded and merged, messages=[{...}, {...}]
 result = await runner.run(chat_graph,
-    inputs={"user_input": "Tell me more"},
+    values={"user_input": "Tell me more"},
     workflow_id="chat-1"
 )
 ```
@@ -213,7 +213,7 @@ def chat(messages: list, user_input: str) -> list:
     ]
 
 # Run with previous messages
-result = runner.run(graph, inputs={
+result = runner.run(graph, values={
     "messages": previous_messages,
     "user_input": "Hello!",
 })
