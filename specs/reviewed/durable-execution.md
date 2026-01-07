@@ -801,7 +801,7 @@ class DBOSRunnerCapabilities(RunnerCapabilities):
     supports_gates: bool = True
     supports_interrupts: bool = True
     supports_async_nodes: bool = True
-    supports_streaming: bool = True  # Via EventProcessor only
+    supports_streaming: bool = False  # .iter() not available; use EventProcessor
     supports_distributed: bool = False
     returns_coroutine: bool = True
 

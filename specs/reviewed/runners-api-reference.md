@@ -74,12 +74,12 @@ class RunnerCapabilities:
 | `supports_gates` | ✅ | ✅ | ✅ | ❌ |
 | `supports_interrupts` | ❌ | ✅ | ✅ | ❌ |
 | `supports_async_nodes` | ❌ | ✅ | ✅ | ✅ |
-| `supports_streaming` | ❌ | ✅ | ✅* | ❌ |
+| `supports_streaming` | ❌ | ✅ | ❌ | ❌ |
 | `supports_distributed` | ❌ | ❌ | ❌ | ✅ |
 | `returns_coroutine` | ❌ | ✅ | ✅ | ❌ |
 | `supports_automatic_recovery` | ❌ | ❌ | ✅ | ❌ |
 
-*DBOSAsyncRunner supports streaming via EventProcessor only, not `.iter()`.
+**Note:** DBOSAsyncRunner does not provide `.iter()`. For streaming with DBOS, use `EventProcessor` (push-based) instead.
 
 ---
 
@@ -462,7 +462,7 @@ class DBOSRunnerCapabilities(RunnerCapabilities):
     supports_gates: bool = True
     supports_interrupts: bool = True
     supports_async_nodes: bool = True
-    supports_streaming: bool = True  # Via EventProcessor only
+    supports_streaming: bool = False  # .iter() not available; use EventProcessor
     supports_distributed: bool = False
     returns_coroutine: bool = True
 

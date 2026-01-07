@@ -117,7 +117,7 @@ results = df.collect()  # Execution happens here
 | Cycles (loops) | ✅ | ✅ | ✅ | ❌ |
 | `@branch` / `@route` gates | ✅ | ✅ | ✅ | ❌ |
 | `InterruptNode` | ❌ | ✅ | ✅ | ❌ |
-| `.iter()` streaming | ❌ | ✅ | ✅ | ❌ |
+| `.iter()` streaming | ❌ | ✅ | ❌ | ❌ |
 | `.map()` batch | ✅ | ✅ | ✅ | ✅ |
 | Async nodes (`async def`) | ❌ | ✅ | ✅ | ✅ |
 | Distributed execution | ❌ | ❌ | ❌ | ✅ |
@@ -558,12 +558,14 @@ Capability values per runner:
 | `supports_gates` | ✅ | ✅ | ✅ | ❌ |
 | `supports_interrupts` | ❌ | ✅ | ✅ | ❌ |
 | `supports_async_nodes` | ❌ | ✅ | ✅ | ✅ |
-| `supports_streaming` | ❌ | ✅ | ✅ | ❌ |
+| `supports_streaming` | ❌ | ✅ | ❌* | ❌ |
 | `supports_distributed` | ❌ | ❌ | ❌ | ✅ |
 | `supports_durable_execution` | ❌ | ❌ | ✅ | ❌ |
 | `returns_coroutine` | ❌ | ✅ | ✅ | ❌ |
 
-Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner handles async nodes internally but returns a DataFrame synchronously. `DBOSAsyncRunner` inherits all AsyncRunner capabilities and adds DBOS durability.
+*DBOSAsyncRunner does not support `.iter()`. Use `EventProcessor` for streaming with DBOS.
+
+Note: `returns_coroutine` indicates whether `.run()` must be awaited. DaftRunner handles async nodes internally but returns a DataFrame synchronously. `DBOSAsyncRunner` inherits most AsyncRunner capabilities and adds DBOS durability, but `.iter()` is not available due to limitations in how DBOS wraps workflows.
 
 ### Design Rationale
 
