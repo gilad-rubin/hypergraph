@@ -23,3 +23,4 @@ specs/tmp/*
 docs/plans/*
 # Continuous Claude cache (local only)
 .claude/cache/
+thoughts/*
