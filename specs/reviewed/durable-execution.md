@@ -497,8 +497,8 @@ result = await runner.run(
 **How `complete_on_stop=True` Works:**
 
 1. User clicks stop while `get_response` is streaming
-2. `get_response` receives cancellation, returns partial output, saves with `StepStatus.STOPPED`
-3. The `llm_turn` GraphNode sees STOPPED but has `complete_on_stop=True`
+2. `get_response` receives cancellation, returns partial output, saves with `StepStatus.COMPLETED` and `partial=True`
+3. The `llm_turn` GraphNode detects the stop signal but has `complete_on_stop=True`
 4. GraphNode continues executing remaining nodes (`add_response`)
 5. `add_response` runs with partial response, updates messages
 6. GraphNode completes, propagates `RunStatus.STOPPED` to parent
