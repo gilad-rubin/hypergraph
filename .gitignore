@@ -29,3 +29,4 @@ specs/deprecated/*
 # Documentation manager cache
 .doc-manager/cache/*
 !.doc-manager/cache/.gitkeep
+.DS_Store
