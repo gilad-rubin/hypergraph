@@ -1419,17 +1419,34 @@ class StepRecord:
     """For GraphNode steps, the nested workflow ID (e.g., 'order-123/rag')."""
 ```
 
-**Pause persistence:** When an `InterruptNode` executes and waits for a response, the step is saved with `status=PAUSED` and `pause` containing the pause metadata. This enables external systems to query "what is this workflow waiting for?" even after a crash.
+### Interrupt Persistence Model
+
+An interrupt step represents the entire lifecycle of an `InterruptNode` execution—from pause to response. The step is **updated** (not appended) when the response arrives.
+
+**Step lifecycle:**
+
+```
+Node starts → saves PAUSED step → waits → response arrives → updates to COMPLETED
+         └──────────────────── one step, updated in place ────────────────────┘
+```
+
+**Why update, not append?**
+
+- One step per node per superstep (matches all other node types)
+- Unique constraint `(workflow_id, node_name, superstep)` works naturally
+- No "find latest step" ambiguity
+
+**Initial save (when interrupt triggers):**
 
 ```python
-# Example: StepRecord saved when InterruptNode pauses
-step = StepRecord(
+StepRecord(
     workflow_id="order-123",
     superstep=2,
     node_name="approval",
     index=3,
     status=StepStatus.PAUSED,
     input_versions={"draft": 1},
+    values=None,  # No output yet
     pause=PauseInfo(
         reason=PauseReason.HUMAN_INPUT,
         node_name="approval",
@@ -1438,6 +1455,53 @@ step = StepRecord(
     )
 )
 ```
+
+**After response arrives (update same record):**
+
+```python
+StepRecord(
+    ...  # Same identity fields
+    status=StepStatus.COMPLETED,
+    values={"decision": "approve"},
+    pause=None,  # Cleared
+)
+```
+
+#### Crash-Safety: Write-Ahead Response Pattern
+
+The transition from PAUSED to COMPLETED has a crash-safety gap:
+
+```
+User clicks "Approve"
+    ↓
+Response received         ← In memory only
+    ↓
+💥 CRASH                  ← Response lost
+    ↓
+Step.update(COMPLETED)    ← Never happens
+```
+
+**Solution: Persist the response before updating the step.**
+
+With DBOS, this is automatic—`DBOS.recv()` durably stores the response. On resume, the response is still available.
+
+Without DBOS, implementations should use a **write-ahead log** pattern:
+
+1. **Phase 1:** Write response to `pending_responses` table
+2. **Phase 2:** Update step to COMPLETED
+3. **Phase 3:** Delete pending response
+
+On resume, check for orphaned pending responses and apply them before continuing.
+
+**The invariant:** At any point, exactly one of these is true:
+
+| State | Condition | Resume Action |
+|-------|-----------|---------------|
+| Waiting | Step is PAUSED, no pending response | Re-prompt user |
+| Transitioning | Step is PAUSED, pending response exists | Apply pending → update step |
+| Complete | Step is COMPLETED | Continue execution |
+
+This ensures no response is ever lost, regardless of crash timing.
 
 ### What Gets Saved
 
