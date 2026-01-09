@@ -1333,57 +1333,25 @@ async def main():
 
 ## Retry Configuration
 
-Transient failures are common. hypergraph has no built-in retry — just stack a retry decorator on your node.
+hypergraph provides built-in retry with full observability. See **[Retry and Timeout](retry-timeout.md)** for the complete guide.
 
-### Design Principle
-
-**Decorator stacking.** Use [stamina](https://stamina.hynek.me/) or any retry library you prefer.
+### Quick Example
 
 ```python
-import stamina
-import httpx
-from hypergraph import node
+from hypergraph import node, RetryPolicy
 
-@node(output_name="result")
-@stamina.retry(on=httpx.HTTPError, attempts=5, timeout=60)
+@node(
+    output_name="result",
+    retry=RetryPolicy(
+        attempts=5,
+        on=httpx.HTTPError,
+        non_retryable=ClientError,  # 4xx errors - never retry
+    ),
+    timeout=30.0,
+)
 async def fetch(query: str) -> dict:
     async with httpx.AsyncClient() as client:
         response = await client.get(f"https://api.example.com/search?q={query}")
-        response.raise_for_status()
-        return response.json()
-```
-
-No retry params in `@node()`. No hypergraph retry API. Just decorators.
-
-### Why Stamina?
-
-| Feature | Benefit |
-|---------|---------|
-| Exponential backoff with jitter | Production-ready defaults (100ms → 45s) |
-| Explicit exception types | Forces you to think about what to retry |
-| Built-in observability | Prometheus, structlog integration |
-| Testing mode | `set_testing()` disables retries in tests |
-
-```bash
-pip install stamina
-```
-
-### Selective Retry
-
-```python
-import httpx
-import stamina
-from hypergraph import node
-
-def is_retryable(exc: httpx.HTTPStatusError) -> bool:
-    """Don't retry 4xx client errors (except 429 rate limit)."""
-    return exc.response.status_code >= 500 or exc.response.status_code == 429
-
-@node(output_name="result")
-@stamina.retry(on=is_retryable, attempts=5)
-async def fetch(url: str) -> dict:
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
         response.raise_for_status()
         return response.json()
 ```
@@ -1394,47 +1362,24 @@ Retries happen *inside* the node, before checkpointing:
 
 ```
 Runner calls node
-  → Stamina wraps execution
-    → attempt 1: fails
-    → attempt 2: fails
-    → attempt 3: succeeds ✓
-  → Stamina returns result
+  → attempt 1: fails → RetryAttemptEvent emitted
+  → attempt 2: fails → RetryAttemptEvent emitted
+  → attempt 3: succeeds ✓
 → Checkpointer saves result
+→ NodeEndEvent emitted (includes attempts=3)
 ```
 
-The checkpointer only sees the final result. Same behavior with any runner.
+The checkpointer only sees the final result. Events capture every attempt for observability.
 
-**On crash recovery:** Retry count resets (retry state is in-memory, not persisted).
+**On crash recovery:** Retry count resets (retry state is in-memory, not persisted). This matches [Temporal](https://docs.temporal.io/encyclopedia/retry-policies) and [DBOS](https://docs.dbos.dev/python/tutorials/step-tutorial) behavior.
 
 ### Retry vs Recovery
 
 | Concept | Scope | Trigger | Handled By |
 |---------|-------|---------|------------|
-| **Retry** | Single node | Transient exception | stamina (or any retry lib) |
-| **Resume** | Entire workflow | User calls `resume()` | Checkpointer |
+| **Retry** | Single node | Transient exception | Built-in `RetryPolicy` |
+| **Resume** | Entire workflow | User calls with same `workflow_id` | Checkpointer |
 | **Recovery** | Entire workflow | Process restart | DBOS automatic |
-
-### Best Practices
-
-1. **Be explicit about exceptions** — Never retry on bare `Exception`
-   ```python
-   # ❌ Bad
-   @stamina.retry(on=Exception, attempts=5)
-
-   # ✅ Good
-   @stamina.retry(on=(httpx.HTTPError, asyncio.TimeoutError), attempts=5)
-   ```
-
-2. **Don't retry forever** — Always set `attempts` and/or `timeout`
-
-3. **Consider idempotency** — Retried operations should be safe to repeat
-
-4. **Use testing mode** — Disable retries in tests
-   ```python
-   def test_my_node():
-       with stamina.set_testing(attempts=1):
-           result = my_node("input")
-   ```
 
 ---
 
@@ -1444,20 +1389,21 @@ The checkpointer only sees the final result. Same behavior with any runner.
 |-------|----------------|--------------|
 | **Graph** | Structure, nodes, routing | `hypergraph` |
 | **Runner** | Execution, event dispatch | `hypergraph.runners` |
+| **Retry/Timeout** | Transient failure handling | `hypergraph` (`RetryPolicy`) |
 | **Checkpointer** | Manual persistence | `hypergraph.checkpointers` |
-| **Retries** | Transient failure handling | `stamina` (or any retry lib) |
 | **DBOS (optional)** | Automatic durability, queues, scheduling | `dbos` |
 
 **The principles:**
 - **Graph code stays pure** — No durability imports in nodes
 - **Durability is a runner concern** — Same graph works with any runner
+- **Retries are built-in** — Full observability via events, consistent with Temporal/DBOS/Prefect
 - **DBOS is a thin wrapper** — We wrap the core loop, users call DBOS APIs for advanced features
-- **Retries are decorator stacking** — No hypergraph-specific retry API
 
 ---
 
 ## See Also
 
+- [Retry and Timeout](retry-timeout.md) - Built-in retry policies and timeout configuration
 - [Checkpointer API](checkpointer.md) - Full interface definition and custom implementations
 - [Persistence Tutorial](persistence.md) - How to use persistence
 - [Execution Types](execution-types.md) - StepRecord, Workflow, and other type definitions
