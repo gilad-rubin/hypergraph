@@ -33,7 +33,7 @@ graph = Graph(nodes=[fetch, process, save])
 runner = SyncRunner(cache=DiskCache("./cache"))
 result = runner.run(graph, values={"query": "hello"})
 
-print(result["response"])  # dict[str, Any]
+print(result.values["response"])  # Access output value
 ```
 
 ### AsyncRunner
