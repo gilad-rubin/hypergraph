@@ -17,22 +17,38 @@ Users interact with FunctionNode through two primary patterns:
 @node
 def log_metrics(metrics: dict) -> None:
     logger.info(metrics)
+# log_metrics.name = "log_metrics"  (from func.__name__)
 # log_metrics.outputs = ()
 
-# Pattern 1b: Decorator with output_name for nodes that produce values
+# Pattern 1b: Decorator with single output_name
 @node(output_name="embedding")
 def embed(text: str) -> list[float]:
     return model.embed(text)
+# embed.name = "embed"  (from func.__name__)
 # embed.outputs = ("embedding",)
 
-# Pattern 2: Constructor syntax (for dynamic configuration)
+# Pattern 1c: Decorator with multiple output names
+@node(output_name=("mean", "std"))
+def statistics(data: list) -> tuple[float, float]:
+    return calculate_mean(data), calculate_std(data)
+# statistics.name = "statistics"  (from func.__name__)
+# statistics.outputs = ("mean", "std")
+
+# Pattern 2: Constructor syntax (for dynamic configuration / custom name)
 node_a = FunctionNode(my_func, name="processor", output_name="result")
+# node_a.name = "processor"  (custom name)
+# node_a.outputs = ("result",)
+
+# Constructor with default name (from func.__name__)
+node_b = FunctionNode(my_func, output_name="result")
+# node_b.name = "my_func"  (from func.__name__ since name=None)
 ```
 
 **Key Design Decisions:**
+- **`name` defaults to `func.__name__`**: Both decorator and constructor use function name as default
 - **No `output_name` → `outputs = ()`**: Side-effect only nodes
-- **With `output_name` → `outputs = (output_name,)`**: Nodes that produce values
-- **Warning on return annotation without `output_name`**: Helps catch mistakes
+- **With `output_name` → `outputs = ensure_tuple(output_name)`**: Nodes that produce values
+- **Warning on return annotation without `output_name`**: Helps catch mistakes (same logic for decorator and constructor)
 - **`@node` decorator has no `name` parameter**: Always uses `func.__name__`
 - **`FunctionNode()` has `name` before `output_name`**: More intuitive ordering
 
@@ -760,9 +776,10 @@ def __init__(
 | Test Case | Input | Expected |
 |-----------|-------|----------|
 | Basic sync function (no output) | `FunctionNode(lambda x: x)` | name="\<lambda\>", inputs=("x",), outputs=() |
-| With output_name string | `FunctionNode(foo, output_name="result")` | outputs=("result",) |
-| With output_name tuple | `FunctionNode(foo, output_name=("a", "b"))` | outputs=("a", "b") |
-| With custom name | `FunctionNode(foo, name="custom")` | name="custom" |
+| Name defaults to func.__name__ | `FunctionNode(foo)` where `def foo(): ...` | name="foo" (from func.__name__) |
+| With output_name string | `FunctionNode(foo, output_name="result")` | name="foo", outputs=("result",) |
+| With output_name tuple (multiple) | `FunctionNode(foo, output_name=("a", "b"))` | outputs=("a", "b") |
+| With custom name | `FunctionNode(foo, name="custom")` | name="custom" (overrides func.__name__) |
 | With name and output_name | `FunctionNode(foo, "custom", "result")` | name="custom", outputs=("result",) |
 | With rename_inputs | `FunctionNode(foo, rename_inputs={"x": "y"})` | inputs contains "y" instead of "x" |
 | With cache=True | `FunctionNode(foo, cache=True)` | cache is True |
@@ -816,6 +833,10 @@ def __init__(
 ### `node()` Decorator - Functionality and Tests
 
 **Implementation**:
+
+The decorator is a thin wrapper that delegates to `FunctionNode.__init__()`. This ensures
+**DRY** - all validation, warning logic, and initialization happens in one place.
+
 ```python
 def node(
     source: Callable | None = None,
@@ -824,10 +845,12 @@ def node(
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
+    """Decorator that delegates to FunctionNode for all logic (DRY)."""
     def decorator(func: Callable) -> FunctionNode:
+        # Delegates to FunctionNode - warning logic is in FunctionNode.__init__
         return FunctionNode(
             source=func,
-            name=None,  # Always use func.__name__
+            name=None,  # Always use func.__name__ (handled by FunctionNode)
             output_name=output_name,
             rename_inputs=rename_inputs,
             cache=cache,
@@ -840,6 +863,10 @@ def node(
     return decorator
 ```
 
+**Note on DRY**: The warning for "return annotation without output_name" is implemented
+**only in `FunctionNode.__init__()`**. The decorator simply calls the constructor,
+so both paths share the same validation and warning logic.
+
 **Unit Tests** (`tests/test_nodes_function.py`):
 
 | Test Case | Syntax | Expected |
@@ -847,10 +874,11 @@ def node(
 | Without parens (side-effect) | `@node` | Returns FunctionNode, outputs=() |
 | With empty parens (side-effect) | `@node()` | Returns FunctionNode, outputs=() |
 | With output_name | `@node(output_name="x")` | outputs=("x",) |
+| With multiple outputs | `@node(output_name=("a", "b"))` | outputs=("a", "b") |
 | With all params | `@node(output_name="x", cache=True)` | All params applied |
 | Preserves function behavior | `@node(output_name="r") def foo(x): return x * 2` | `foo(5) == 10` |
-| Name always from function | `@node(output_name="x") def bar(): ...` | name="bar" (not configurable) |
-| Warning on return annotation | `@node def foo() -> int: ...` | Warning emitted |
+| Name always from function | `@node(output_name="x") def bar(): ...` | name="bar" (from func.__name__) |
+| Warning on return annotation | `@node def foo() -> int: ...` | Warning emitted (via FunctionNode) |
 
 ---
 
