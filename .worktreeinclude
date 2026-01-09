@@ -2,3 +2,4 @@
 .env
 AGENTS.md
 CLAUDE.md
+thoughts/*
