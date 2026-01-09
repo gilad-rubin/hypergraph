@@ -13,14 +13,28 @@ This document specifies the implementation of `FunctionNode` - the primary node 
 Users interact with FunctionNode through two primary patterns:
 
 ```python
-# Pattern 1: Decorator syntax (most common)
+# Pattern 1a: Decorator for side-effect only nodes (no output)
+@node
+def log_metrics(metrics: dict) -> None:
+    logger.info(metrics)
+# log_metrics.outputs = ()
+
+# Pattern 1b: Decorator with output_name for nodes that produce values
 @node(output_name="embedding")
 def embed(text: str) -> list[float]:
     return model.embed(text)
+# embed.outputs = ("embedding",)
 
 # Pattern 2: Constructor syntax (for dynamic configuration)
-node_a = FunctionNode(my_func, output_name="result", name="processor")
+node_a = FunctionNode(my_func, name="processor", output_name="result")
 ```
+
+**Key Design Decisions:**
+- **No `output_name` → `outputs = ()`**: Side-effect only nodes
+- **With `output_name` → `outputs = (output_name,)`**: Nodes that produce values
+- **Warning on return annotation without `output_name`**: Helps catch mistakes
+- **`@node` decorator has no `name` parameter**: Always uses `func.__name__`
+- **`FunctionNode()` has `name` before `output_name`**: More intuitive ordering
 
 ### Flow: From User Code to Internal Classes
 
@@ -45,6 +59,23 @@ foo.is_generator             → False       # from inspect.isgeneratorfunction
 foo.definition_hash          → "abc123..." # SHA256 of source
 
 foo(1, 2)                    → foo.func(1, 2)  # __call__ delegates to wrapped func
+
+
+@node                        1. node() called with source=log_func (no parens)
+def log_func(x): ...         2. FunctionNode.__init__(log_func, output_name=None)
+                             3. No return annotation check → no warning
+                             4. outputs = () (empty tuple - side-effect only)
+
+log_func.outputs             → ()
+
+
+@node                        1. node() called with source=bad_func
+def bad_func(x) -> int: ...  2. FunctionNode.__init__(bad_func, output_name=None)
+                             3. Has return annotation (int) but no output_name
+                             4. warnings.warn("Function has return annotation...")
+                             5. outputs = () (still empty, but user is warned)
+
+bad_func.outputs             → ()  # with warning emitted
 ```
 
 ### Renaming Flow
@@ -323,7 +354,7 @@ class FunctionNode(HyperNode):
     Attributes:
         name: Public node name (default: func.__name__)
         inputs: Input parameter names from function signature
-        outputs: Output value names (default: (func.__name__,))
+        outputs: Output value names (empty tuple if no output_name)
         func: The wrapped function
         cache: Whether to cache results (default: False)
 
@@ -342,14 +373,20 @@ class FunctionNode(HyperNode):
         ('doubled',)
         >>> double(5)
         10
+
+        >>> @node  # Side-effect only, no output
+        ... def log(msg: str) -> None:
+        ...     print(msg)
+        >>> log.outputs
+        ()
     """
 
     def __init__(
         self,
         source: Callable | FunctionNode,
+        name: str | None = None,
         output_name: str | tuple[str, ...] | None = None,
         *,
-        name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
         cache: bool = False,
     ) -> None:
@@ -357,10 +394,17 @@ class FunctionNode(HyperNode):
 
         Args:
             source: Function to wrap, or existing FunctionNode (extracts .func)
-            output_name: Name(s) for output value(s). Default: function name.
             name: Public node name (default: func.__name__)
+            output_name: Name(s) for output value(s). If None, outputs = ()
+                         (side-effect only node).
             rename_inputs: Mapping to rename inputs {old: new}
             cache: Whether to cache results (default: False)
+
+        Warning:
+            If the function has a return type annotation but no output_name
+            is provided, a warning is emitted. This helps catch cases where
+            the user forgot to specify output_name for a function that
+            returns a value.
 
         Note:
             When source is a FunctionNode, only source.func is extracted.
@@ -402,7 +446,6 @@ def node(
     source: Callable | None = None,
     output_name: str | tuple[str, ...] | None = None,
     *,
-    name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
@@ -410,21 +453,29 @@ def node(
 
     Can be used with or without parentheses:
 
-        @node
-        def foo(): ...
+        @node  # Side-effect only node, outputs = ()
+        def log(x): ...
 
-        @node(output_name="result")
-        def bar(): ...
+        @node(output_name="result")  # Node with output
+        def process(x): ...
 
     Args:
         source: The function to wrap (when used without parens)
-        output_name: Name(s) for output value(s). Default: function name.
-        name: Public node name (default: func.__name__)
+        output_name: Name(s) for output value(s). If None, outputs = ()
+                     (side-effect only node).
         rename_inputs: Mapping to rename inputs {old: new}
         cache: Whether to cache results (default: False)
 
     Returns:
         FunctionNode if source provided, else decorator function.
+
+    Note:
+        The decorator always uses func.__name__ as the node name.
+        To customize the name, use FunctionNode() constructor directly.
+
+    Warning:
+        If the function has a return type annotation but no output_name
+        is provided, a warning is emitted to help catch mistakes.
     """
 ```
 
@@ -649,12 +700,14 @@ def _make_rename_error(self, name: str, attr: str) -> RenameError:
 
 **`__init__()` Implementation**:
 ```python
+import warnings
+
 def __init__(
     self,
     source: Callable | FunctionNode,
+    name: str | None = None,
     output_name: str | tuple[str, ...] | None = None,
     *,
-    name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
 ) -> None:
@@ -667,7 +720,25 @@ def __init__(
 
     # Core HyperNode attributes
     self.name = name or func.__name__
-    self.outputs = ensure_tuple(output_name) if output_name else (func.__name__,)
+
+    # Output handling: no output_name → outputs = () (side-effect only)
+    if output_name:
+        self.outputs = ensure_tuple(output_name)
+    else:
+        self.outputs = ()
+        # Warn if function has return annotation but no output_name
+        hints = get_type_hints(func) if hasattr(func, '__annotations__') else {}
+        return_hint = hints.get('return')
+        if return_hint is not None and return_hint is not type(None):
+            warnings.warn(
+                f"Function '{func.__name__}' has return type annotation "
+                f"'{return_hint}' but no output_name specified. "
+                f"The node will have no outputs. "
+                f"Use @node(output_name='...') to capture the return value.",
+                UserWarning,
+                stacklevel=2,
+            )
+
     inputs = tuple(inspect.signature(func).parameters.keys())
     self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
@@ -688,13 +759,23 @@ def __init__(
 
 | Test Case | Input | Expected |
 |-----------|-------|----------|
-| Basic sync function | `FunctionNode(lambda x: x)` | name="\<lambda\>", inputs=("x",), outputs=("\<lambda\>",) |
-| With output_name string | `FunctionNode(foo, "result")` | outputs=("result",) |
-| With output_name tuple | `FunctionNode(foo, ("a", "b"))` | outputs=("a", "b") |
+| Basic sync function (no output) | `FunctionNode(lambda x: x)` | name="\<lambda\>", inputs=("x",), outputs=() |
+| With output_name string | `FunctionNode(foo, output_name="result")` | outputs=("result",) |
+| With output_name tuple | `FunctionNode(foo, output_name=("a", "b"))` | outputs=("a", "b") |
 | With custom name | `FunctionNode(foo, name="custom")` | name="custom" |
+| With name and output_name | `FunctionNode(foo, "custom", "result")` | name="custom", outputs=("result",) |
 | With rename_inputs | `FunctionNode(foo, rename_inputs={"x": "y"})` | inputs contains "y" instead of "x" |
 | With cache=True | `FunctionNode(foo, cache=True)` | cache is True |
-| From FunctionNode | `FunctionNode(existing_node, "new")` | Extracts func, ignores old config |
+| From FunctionNode | `FunctionNode(existing_node, "new_name", "new_output")` | Extracts func, ignores old config |
+
+#### Output Warning Tests
+
+| Test Case | Input | Expected |
+|-----------|-------|----------|
+| No annotation, no output_name | `def foo(x): pass` | outputs=(), no warning |
+| None annotation, no output_name | `def foo(x) -> None: pass` | outputs=(), no warning |
+| Return annotation, no output_name | `def foo(x) -> int: pass` | outputs=(), warning emitted |
+| Return annotation, with output_name | `def foo(x) -> int: pass` + `output_name="x"` | outputs=("x",), no warning |
 
 #### Execution Mode Detection Tests
 
@@ -726,9 +807,9 @@ def __init__(
 
 | Test Case | Expected Format |
 |-----------|-----------------|
-| Default name | `FunctionNode(foo, outputs=('foo',))` |
-| Custom outputs | `FunctionNode(foo, outputs=('result',))` |
-| After with_name | `FunctionNode(foo as 'custom', outputs=('foo',))` |
+| No output (side-effect) | `FunctionNode(foo, outputs=())` |
+| With outputs | `FunctionNode(foo, outputs=('result',))` |
+| After with_name | `FunctionNode(foo as 'custom', outputs=('result',))` |
 
 ---
 
@@ -740,15 +821,14 @@ def node(
     source: Callable | None = None,
     output_name: str | tuple[str, ...] | None = None,
     *,
-    name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     def decorator(func: Callable) -> FunctionNode:
         return FunctionNode(
             source=func,
+            name=None,  # Always use func.__name__
             output_name=output_name,
-            name=name,
             rename_inputs=rename_inputs,
             cache=cache,
         )
@@ -764,11 +844,13 @@ def node(
 
 | Test Case | Syntax | Expected |
 |-----------|--------|----------|
-| Without parens | `@node` | Returns FunctionNode, outputs=(func_name,) |
-| With empty parens | `@node()` | Returns FunctionNode, outputs=(func_name,) |
+| Without parens (side-effect) | `@node` | Returns FunctionNode, outputs=() |
+| With empty parens (side-effect) | `@node()` | Returns FunctionNode, outputs=() |
 | With output_name | `@node(output_name="x")` | outputs=("x",) |
-| With all params | `@node(output_name="x", name="y", cache=True)` | All params applied |
-| Preserves function behavior | `@node def foo(x): return x * 2` | `foo(5) == 10` |
+| With all params | `@node(output_name="x", cache=True)` | All params applied |
+| Preserves function behavior | `@node(output_name="r") def foo(x): return x * 2` | `foo(5) == 10` |
+| Name always from function | `@node(output_name="x") def bar(): ...` | name="bar" (not configurable) |
+| Warning on return annotation | `@node def foo() -> int: ...` | Warning emitted |
 
 ---
 
@@ -851,18 +933,26 @@ tests/
 ```python
 from hypergraph import node, FunctionNode, HyperNode, RenameError
 
-# Decorator usage
+# Decorator usage - side-effect only (no output)
 @node
-def simple(x): ...
+def log_event(event: dict) -> None:
+    logger.info(event)
+# log_event.outputs = ()
 
+# Decorator usage - with output
 @node(output_name="result")
-def with_output(x): ...
+def process(x: int) -> int:
+    return x * 2
+# process.outputs = ("result",)
 
-@node(output_name=("a", "b"), cache=True)
-def multi_output(x): ...
+# Decorator usage - multiple outputs
+@node(output_name=("mean", "std"), cache=True)
+def statistics(data: list) -> tuple[float, float]:
+    return calculate_mean(data), calculate_std(data)
+# statistics.outputs = ("mean", "std")
 
-# Constructor usage
-fn = FunctionNode(my_func, output_name="result", name="processor")
+# Constructor usage (when you need custom name)
+fn = FunctionNode(my_func, name="processor", output_name="result")
 
 # Renaming
 renamed = fn.with_inputs(x="input_data").with_outputs(result="output_data")
@@ -873,7 +963,7 @@ result = fn(42)
 # Properties
 fn.name         # str
 fn.inputs       # tuple[str, ...]
-fn.outputs      # tuple[str, ...]
+fn.outputs      # tuple[str, ...] (empty for side-effect nodes)
 fn.func         # Callable
 fn.cache        # bool
 fn.definition_hash  # str (64-char hex)
