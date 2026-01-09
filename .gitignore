@@ -25,3 +25,7 @@ docs/plans/*
 thoughts/*
 specs/deprecated/*
 .claude/*
+
+# Documentation manager cache
+.doc-manager/cache/*
+!.doc-manager/cache/.gitkeep
