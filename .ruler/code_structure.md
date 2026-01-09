@@ -21,14 +21,16 @@ Design specifications for hypergraph - a graph-based workflow framework.
 | [runners.md](runners.md) | Conceptual guide - `SyncRunner`, `AsyncRunner`, `DaftRunner`, choosing the right runner |
 | [runners-api-reference.md](runners-api-reference.md) | Complete API reference - method signatures, `RunnerCapabilities`, cross-runner execution |
 | [execution-types.md](execution-types.md) | Runtime types - `RunResult`, `RunStatus`, `PauseReason`, `GraphState`, events, persistence types |
+| [retry-timeout.md](retry-timeout.md) | Built-in retry and timeout policies, observability integration, per-node configuration |
 
 ### Persistence & Durability
 
 | File | Description |
 |------|-------------|
+| [durability.md](durability.md) | Consolidated durability guide - steps, serialization, artifacts, GraphNode boundaries |
 | [persistence.md](persistence.md) | User tutorial - workflow persistence, multi-turn conversations, human-in-the-loop patterns |
 | [checkpointer.md](checkpointer.md) | `Checkpointer` interface definition, `Step`, `StepResult`, `Workflow` types, built-in implementations |
-| [durable-execution.md](durable-execution.md) | Advanced durability - selective persistence, DBOS integration, parallel execution, retry configuration |
+| [durable-execution.md](durable-execution.md) | Advanced durability - selective persistence, DBOS integration, parallel execution |
 
 ### Observability
 
@@ -53,8 +55,10 @@ Design specifications for hypergraph - a graph-based workflow framework.
 4. `observability.md` - Event system
 
 **For production use:**
-1. `persistence.md` - Practical patterns
-2. `durable-execution.md` - DBOS and advanced features
+1. `durability.md` - Core durability concepts
+2. `persistence.md` - Practical patterns
+3. `durable-execution.md` - DBOS and advanced features
+4. `retry-timeout.md` - Resilience policies
 
 ---
 

@@ -1,10 +1,8 @@
 <project_mode>
-This project is in design mode. Only markdown is needed. 
+This project is in design mode. Only markdown is needed.
 No need to worry about backwards compatability because we're in design phase.
 Updated design specs are in specs/reviewed - search there when uncertain.
 </project_mode>
-
-See @specs/reviewed/README.md for the overview.
 
 ## Workflow
 
