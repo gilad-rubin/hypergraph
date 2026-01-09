@@ -588,10 +588,47 @@ class GateNode(HyperNode):
 
 All gates share:
 - `targets: list[str | type[END]]` - Valid routing destinations
-- `outputs = ()` - Gates don't produce data
+- `outputs = ()` - Gates don't produce data outputs (but decisions ARE persisted)
 - `cache = False` - Default (routing decisions rarely cached)
 
+**Persistence:** Gate decisions are recorded in `StepRecord.decision` to ensure
+deterministic replay on resume. See [Gate Step Persistence](execution-types.md#gate-step-persistence).
+
 Use `isinstance(node, GateNode)` for type checking.
+
+### Output Conflict Validation
+
+Gates affect how the graph validates output name conflicts between branches:
+
+| Mode | Branches | Same Output Name in Targets |
+|------|----------|----------------------------|
+| **Mutually exclusive** (`multi_target=False`) | Only ONE target runs | ✓ Allowed (no conflict) |
+| **Parallel** (`multi_target=True`) | Multiple targets can run | ✗ Error (would overwrite) |
+
+**Example:**
+
+```python
+@node(output_name="result")
+def process_a(data): ...
+
+@node(output_name="result")  # Same output name
+def process_b(data): ...
+
+# ✓ VALID: mutually exclusive (only one runs)
+@route(targets=["process_a", "process_b"])
+def choose_one(score: float) -> str:
+    return "process_a" if score > 0.5 else "process_b"
+
+# ✗ INVALID: parallel targets share output name
+@route(targets=["process_a", "process_b"], multi_target=True)
+def choose_many(flags: dict) -> list[str]:
+    return ["process_a", "process_b"]
+# GraphConfigError: targets ["process_a", "process_b"] share output "result"
+#                   but multi_target=True allows parallel execution
+```
+
+**BranchNode** is always mutually exclusive (exactly one of `when_true`/`when_false` runs),
+so output name conflicts between its two targets are always allowed.
 
 ---
 
@@ -599,38 +636,59 @@ Use `isinstance(node, GateNode)` for type checking.
 
 ### Purpose
 
-**Multi-way routing gate that returns target node name.** Created by the `@route` decorator.
+**Multi-way routing gate that returns target node name(s).** Created by the `@route` decorator.
 
 ### Class Definition
 
 ```python
 class RouteNode(GateNode):
-    """Gate that routes to one of multiple targets based on function return."""
+    """Gate that routes to one or more targets based on function return."""
 
     def __init__(
         self,
-        func: Callable[..., str | None],
+        func: Callable[..., str | list[str] | None],
         targets: list[str | type[END]],
         *,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
         fallback: str | type[END] | None = None,
+        multi_target: bool = False,
         cache: bool = False,
     ):
         """
         Create a routing gate.
 
         Args:
-            func: Function that returns target name (or None to use fallback)
+            func: Function that returns target name(s):
+                  - If multi_target=False: returns str (single target) or None (fallback)
+                  - If multi_target=True: returns list[str] (multiple targets execute in parallel)
             targets: REQUIRED list of valid target node names and/or END
             name: Public node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
-            fallback: Target when func returns None (optional)
+            fallback: Target when func returns None (only valid when multi_target=False)
+            multi_target: If True, func returns list[str] for parallel target execution.
+                          Default False (single target, mutually exclusive branches).
             cache: Whether to cache decisions (default: False)
+
+        Raises:
+            ValueError: If multi_target=True and fallback is set (incompatible).
+                        Use empty list [] instead of None for "no targets".
+
+        Note:
+            When multi_target=True, graph validation is stricter: targets cannot
+            share output names since multiple may execute in parallel.
+            See [Output Conflict Validation](#output-conflict-validation).
         """
+        if multi_target and fallback is not None:
+            raise ValueError(
+                "multi_target=True is incompatible with fallback. "
+                "Return empty list [] instead of None for no targets."
+            )
+
         self.func = func
         self.targets = targets + ([fallback] if fallback else [])
         self.fallback = fallback
+        self.multi_target = multi_target
         self.cache = cache
 
         # Core HyperNode attributes
@@ -645,12 +703,16 @@ Inherits `name`, `inputs`, `outputs` from HyperNode, `targets`, `cache` from Gat
 
 ```python
 @property
-def func(self) -> Callable[..., str | None]:
-    """Function that returns target node name (or None for fallback)."""
+def func(self) -> Callable[..., str | list[str] | None]:
+    """Function that returns target node name(s)."""
 
 @property
 def fallback(self) -> str | type[END] | None:
-    """Target when func returns None."""
+    """Target when func returns None (only when multi_target=False)."""
+
+@property
+def multi_target(self) -> bool:
+    """If True, func returns list[str] for parallel execution."""
 ```
 
 ### Example
@@ -688,6 +750,34 @@ def select_path(score: float) -> str | None:
 assert select_path.fallback == "default_path"
 assert select_path.targets == ["fast_path", "slow_path", "default_path"]
 ```
+
+### With Multi-Target (Parallel Fan-Out)
+
+```python
+@route(targets=["email", "sms", "push", "log"], multi_target=True)
+def get_notify_channels(user_prefs: dict) -> list[str]:
+    """Return channels to notify - multiple can execute in parallel."""
+    channels = []
+    if user_prefs.get("email_enabled"):
+        channels.append("email")
+    if user_prefs.get("sms_enabled"):
+        channels.append("sms")
+    if user_prefs.get("push_enabled"):
+        channels.append("push")
+    channels.append("log")  # Always log
+    return channels
+
+# Properties
+assert get_notify_channels.multi_target == True
+assert get_notify_channels.fallback is None  # Can't use fallback with multi_target
+
+# At runtime, might return ["email", "log"] - both targets execute in parallel
+```
+
+**Note:** When `multi_target=True`:
+- Return `[]` (empty list) to skip all targets
+- `fallback` is not allowed (use empty list instead)
+- Graph validation ensures targets don't share output names (see [Output Conflict Validation](#output-conflict-validation))
 
 ---
 

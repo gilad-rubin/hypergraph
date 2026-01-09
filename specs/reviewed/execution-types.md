@@ -1039,13 +1039,17 @@ class InterruptEvent:
 ```python
 @dataclass
 class RouteDecisionEvent:
+    """Emitted when a gate makes (or replays) a routing decision."""
     run_id: str
     span_id: str
     parent_span_id: str | None
-    node_name: str   # Name of the gate/route node
-    decision: str    # Target node name or "END"
+    node_name: str                    # Name of the gate/route node
+    decision: str | list[str]         # Target(s): single or multiple (multi_target=True)
+    replayed: bool = False            # True if loaded from step history (resume)
     timestamp: float
 ```
+
+**Note:** When `replayed=True`, the decision was loaded from a persisted `StepRecord.decision` rather than executing the gate function. This enables observability tools to distinguish fresh decisions from recovered ones.
 
 ### NodeErrorEvent
 
@@ -1417,6 +1421,27 @@ class StepRecord:
 
     child_workflow_id: str | None = None
     """For GraphNode steps, the nested workflow ID (e.g., 'order-123/rag')."""
+
+    # === Gate-specific ===
+
+    decision: str | list[str] | None = None
+    """Routing decision for gate nodes (RouteNode, BranchNode, TypeRouteNode).
+
+    Contains the target node name(s) that were chosen:
+    - Single target: "process_a" or "END"
+    - Multiple targets (multi_target=True): ["branch_a", "branch_b"]
+
+    This stores the TARGET name(s), not the raw function return value:
+    - RouteNode: stores the returned target name(s) directly
+    - BranchNode: stores when_true or when_false target (not the bool)
+    - TypeRouteNode: stores the matched type's target
+
+    Used on resume to replay routing decisions deterministically, even if
+    the gate function would produce a different result (due to external
+    state, time, randomness, etc.).
+
+    Invariant: If node is a GateNode and status is COMPLETED, decision is set.
+    """
 ```
 
 ### Interrupt Persistence Model
@@ -1502,6 +1527,107 @@ On resume, check for orphaned pending responses and apply them before continuing
 | Complete | Step is COMPLETED | Continue execution |
 
 This ensures no response is ever lost, regardless of crash timing.
+
+### Gate Step Persistence
+
+Gate nodes (RouteNode, BranchNode, TypeRouteNode) record their routing decisions in the `decision` field to ensure deterministic replay on resume.
+
+#### Why Gates Need Steps
+
+Gates have `outputs=()` (no data outputs), but they DO produce a durable artifact: the routing decision. Without recording this:
+
+```
+Gate executes → decides "go to node B" → RouteDecisionEvent (ephemeral)
+                      ↓
+                   CRASH
+                      ↓
+On resume: Gate re-executes → might decide "go to node C" (non-determinism!)
+```
+
+**Solution:** Save a StepRecord with the `decision` field immediately after the gate executes, before the target node starts.
+
+#### Decision Field Semantics
+
+The `decision` field stores **target node names**, not raw return values:
+
+| Gate Type | Function Returns | `decision` Value |
+|-----------|------------------|------------------|
+| RouteNode | `"target_a"` | `"target_a"` |
+| RouteNode (`multi_target=True`) | `["a", "b"]` | `["a", "b"]` |
+| RouteNode | `None` (fallback) | `"fallback_target"` |
+| BranchNode | `True` | `"when_true_target"` |
+| BranchNode | `False` | `"when_false_target"` |
+| TypeRouteNode | N/A | `"matched_target"` |
+
+**Note:** BranchNode normalizes the boolean to the target name. This means resume logic doesn't need to know the gate type—it just routes to `decision`.
+
+#### Single vs Multiple Targets
+
+**Single target (default, `multi_target=False`):**
+
+```python
+StepRecord(
+    node_name="route_by_score",
+    status=StepStatus.COMPLETED,
+    values=None,              # Gates don't produce data values
+    decision="fast_path",     # Single target
+    input_versions={"score": 1},
+)
+```
+
+**Multiple targets (`multi_target=True`):**
+
+```python
+StepRecord(
+    node_name="notify_channels",
+    status=StepStatus.COMPLETED,
+    values=None,
+    decision=["email", "sms", "log"],  # Parallel targets
+    input_versions={"user_prefs": 1},
+)
+```
+
+#### Resume Behavior
+
+On resume, if a gate's step exists with a `decision`:
+
+1. **Skip gate execution** — don't call the gate function
+2. **Use recorded decision** — route to the stored target(s)
+3. **Emit RouteDecisionEvent** — with `replayed=True` for observability
+
+```python
+def execute_gate(gate: GateNode, state: GraphState, steps: list[StepRecord]) -> str | list[str]:
+    """Execute gate or replay recorded decision."""
+
+    last_step = find_step_for_node(gate.name, steps, current_superstep)
+
+    if last_step and last_step.decision is not None:
+        # Replay recorded decision (don't re-execute gate)
+        emit(RouteDecisionEvent(
+            node_name=gate.name,
+            decision=last_step.decision,
+            replayed=True
+        ))
+        return last_step.decision
+
+    # Execute gate function and normalize to target(s)
+    decision = run_gate_and_normalize(gate, state)
+
+    # Save step before routing to target
+    save_gate_step(gate, decision, get_input_versions(gate, state))
+
+    emit(RouteDecisionEvent(node_name=gate.name, decision=decision, replayed=False))
+    return decision
+```
+
+#### Staleness and Cycles
+
+Gate decisions are subject to the same staleness rules as regular nodes:
+
+- If `input_versions` match current state → replay recorded decision
+- If inputs changed (e.g., new cycle iteration) → re-execute gate
+
+This means in a cycle, a gate can make different decisions on each iteration, and each decision is recorded as a separate step.
 
 ### What Gets Saved
 
@@ -1751,7 +1877,11 @@ Persistence Types:
 ├── StepStatus (enum: COMPLETED, FAILED, PAUSED, STOPPED)
 ├── WorkflowStatus (enum: ACTIVE, COMPLETED, FAILED)
 ├── DBOSWorkflowStatus (DBOS adapter: PENDING, ENQUEUED, SUCCESS, ERROR, CANCELLED)
-├── StepRecord (atomic step record: metadata + values in one type)
+├── StepRecord (atomic step record)
+│   ├── values: dict[str, Any] | None       # FunctionNode/InterruptNode outputs
+│   ├── decision: str | list[str] | None    # GateNode routing target(s)
+│   ├── pause: PauseInfo | None             # InterruptNode pause details
+│   └── child_workflow_id: str | None       # GraphNode nested workflow
 ├── Workflow (workflow execution record with steps: list[StepRecord])
 └── Checkpoint (point-in-time snapshot: computed values + step history)
 
@@ -1837,14 +1967,16 @@ Observability:
 │  ├── node_name: str                                                 │
 │  ├── status: StepStatus (COMPLETED, FAILED, PAUSED, STOPPED)        │
 │  ├── input_versions: dict[str, int]  ← for staleness detection      │
-│  ├── values: dict[str, Any] | None  ← THE ACTUAL VALUES             │
+│  ├── values: dict[str, Any] | None  ← FunctionNode/InterruptNode    │
+│  ├── decision: str | list[str] | None  ← GateNode routing target(s) │
 │  ├── error: str | None                                              │
-│  ├── pause: PauseInfo | None                                        │
+│  ├── pause: PauseInfo | None  ← InterruptNode pause details         │
 │  ├── partial: bool  ← True if output was cut short by stop          │
-│  ├── child_workflow_id: str | None  ← nested graph reference        │
+│  ├── child_workflow_id: str | None  ← GraphNode nested workflow     │
 │  └── created_at, completed_at                                       │
 │                                                                     │
 │  KEY: Metadata + values in ONE atomic write = no corrupt state.     │
+│  NODE TYPE FIELDS: values (data), decision (routing), pause (HITL)  │
 │                                                                     │
 │  Nested graphs: GraphNode step has child_workflow_id pointing to    │
 │  child workflow (e.g., "order-123/rag"). Child has its own steps.   │
