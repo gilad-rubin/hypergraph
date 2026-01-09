@@ -716,8 +716,6 @@ def _make_rename_error(self, name: str, attr: str) -> RenameError:
 
 **`__init__()` Implementation**:
 ```python
-import warnings
-
 def __init__(
     self,
     source: Callable | FunctionNode,
@@ -736,24 +734,7 @@ def __init__(
 
     # Core HyperNode attributes
     self.name = name or func.__name__
-
-    # Output handling: no output_name → outputs = () (side-effect only)
-    if output_name:
-        self.outputs = ensure_tuple(output_name)
-    else:
-        self.outputs = ()
-        # Warn if function has return annotation but no output_name
-        hints = get_type_hints(func) if hasattr(func, '__annotations__') else {}
-        return_hint = hints.get('return')
-        if return_hint is not None and return_hint is not type(None):
-            warnings.warn(
-                f"Function '{func.__name__}' has return type annotation "
-                f"'{return_hint}' but no output_name specified. "
-                f"The node will have no outputs. "
-                f"Use @node(output_name='...') to capture the return value.",
-                UserWarning,
-                stacklevel=2,
-            )
+    self.outputs = _resolve_outputs(func, output_name)
 
     inputs = tuple(inspect.signature(func).parameters.keys())
     self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
@@ -766,6 +747,54 @@ def __init__(
     self._is_generator = (
         inspect.isgeneratorfunction(func) or
         inspect.isasyncgenfunction(func)
+    )
+```
+
+**`_resolve_outputs()` Helper** (module-level in `function.py`):
+```python
+import warnings
+from typing import get_type_hints
+
+def _resolve_outputs(
+    func: Callable,
+    output_name: str | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    """Resolve output names, warning if return annotation exists without output_name.
+
+    Args:
+        func: The wrapped function
+        output_name: User-provided output name(s), or None for side-effect only
+
+    Returns:
+        Tuple of output names (empty for side-effect only nodes)
+    """
+    if output_name:
+        return ensure_tuple(output_name)
+
+    # No output_name → side-effect only, but warn if function has return annotation
+    _warn_if_has_return_annotation(func)
+    return ()
+
+
+def _warn_if_has_return_annotation(func: Callable) -> None:
+    """Emit warning if function has a non-None return type annotation."""
+    try:
+        hints = get_type_hints(func)
+    except Exception:
+        # get_type_hints can fail on some edge cases, skip warning
+        return
+
+    return_hint = hints.get('return')
+    if return_hint is None or return_hint is type(None):
+        return
+
+    warnings.warn(
+        f"Function '{func.__name__}' has return type annotation "
+        f"'{return_hint}' but no output_name specified. "
+        f"The node will have no outputs. "
+        f"Use @node(output_name='...') to capture the return value.",
+        UserWarning,
+        stacklevel=3,  # Caller → _resolve_outputs → _warn_if_has_return_annotation
     )
 ```
 
@@ -785,14 +814,25 @@ def __init__(
 | With cache=True | `FunctionNode(foo, cache=True)` | cache is True |
 | From FunctionNode | `FunctionNode(existing_node, "new_name", "new_output")` | Extracts func, ignores old config |
 
-#### Output Warning Tests
+#### `_resolve_outputs()` and `_warn_if_has_return_annotation()` Tests
 
 | Test Case | Input | Expected |
 |-----------|-------|----------|
-| No annotation, no output_name | `def foo(x): pass` | outputs=(), no warning |
-| None annotation, no output_name | `def foo(x) -> None: pass` | outputs=(), no warning |
-| Return annotation, no output_name | `def foo(x) -> int: pass` | outputs=(), warning emitted |
-| Return annotation, with output_name | `def foo(x) -> int: pass` + `output_name="x"` | outputs=("x",), no warning |
+| With output_name string | `_resolve_outputs(foo, "result")` | `("result",)` |
+| With output_name tuple | `_resolve_outputs(foo, ("a", "b"))` | `("a", "b")` |
+| No output_name, no annotation | `_resolve_outputs(foo, None)` where `def foo(): pass` | `()`, no warning |
+| No output_name, None annotation | `_resolve_outputs(foo, None)` where `def foo() -> None: pass` | `()`, no warning |
+| No output_name, has annotation | `_resolve_outputs(foo, None)` where `def foo() -> int: pass` | `()`, warning emitted |
+| get_type_hints fails | Function where `get_type_hints` raises | `()`, no warning (graceful) |
+
+#### Output Warning Tests (Integration)
+
+| Test Case | Input | Expected |
+|-----------|-------|----------|
+| No annotation, no output_name | `FunctionNode(foo)` where `def foo(x): pass` | outputs=(), no warning |
+| None annotation, no output_name | `FunctionNode(foo)` where `def foo(x) -> None: pass` | outputs=(), no warning |
+| Return annotation, no output_name | `FunctionNode(foo)` where `def foo(x) -> int: pass` | outputs=(), warning emitted |
+| Return annotation, with output_name | `FunctionNode(foo, output_name="x")` where `def foo(x) -> int: pass` | outputs=("x",), no warning |
 
 #### Execution Mode Detection Tests
 
