@@ -118,20 +118,20 @@ def run(
     select: list[str] | None = None,
     session_id: str | None = None,
     max_iterations: int | None = None,
-) -> dict[str, Any]:
+) -> RunResult:
     """
     Execute graph synchronously.
 
     Args:
         graph: Graph to execute.
         values: Input values. For cycles, determines starting point.
-        select: Output names to return. Default: all leaf outputs.
+        select: Output names to return. Default: all outputs.
         session_id: Group related runs (for logging/tracing).
         max_iterations: Maximum iterations before InfiniteLoopError.
             None means unlimited (use with caution on graphs with cycles).
 
     Returns:
-        Dict mapping output names to values.
+        RunResult with values and status.
 
     Raises:
         GraphConfigError: Graph structure invalid.
@@ -154,7 +154,7 @@ def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
     session_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> list[RunResult]:
     """
     Execute graph for each item in mapped parameter(s).
 
@@ -169,7 +169,7 @@ def map(
         session_id: Group all runs under one session.
 
     Returns:
-        List of output dicts, one per input item.
+        List of RunResults, one per input item.
 
     Raises:
         GraphConfigError: If graph contains interrupts.
