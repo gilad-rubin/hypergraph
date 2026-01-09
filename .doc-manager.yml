@@ -1,0 +1,113 @@
+# Documentation Manager Configuration
+# Platform: GitBook
+# Project: hypergraph - graph-based workflow framework for AI & ML
+
+platform: gitbook
+
+# Documentation strategy for library/SDK
+# all_then_underscore: Documents all public APIs, then internal with underscore prefix
+strategy: all_then_underscore
+
+# Project metadata
+project:
+  name: hypergraph
+  type: library
+  language: python
+  description: "A hierarchical and modular graph workflow framework for AI & ML"
+  repository: https://github.com/gilad-rubin/hypergraph
+
+# Source patterns for documentation generation
+# NOTE: specs/ is EXCLUDED - it contains internal specifications, not public docs
+sources:
+  include:
+    # Public Python source code
+    - "src/hypergraph/**/*.py"
+    # Public documentation files (when created)
+    - "docs/**/*.md"
+    # Root documentation
+    - "README.md"
+    - "CHANGELOG.md"
+    - "CONTRIBUTING.md"
+  exclude:
+    # Internal specifications (NOT public documentation)
+    - "specs/**"
+    # Build artifacts and caches
+    - ".venv/**"
+    - "**/__pycache__/**"
+    - "*.egg-info/**"
+    - "build/**"
+    - "dist/**"
+    # Test files (internal)
+    - "tests/**"
+    # Development/internal files
+    - ".ruler/**"
+    - ".claude/**"
+    - ".zenflow/**"
+    - "thoughts/**"
+    # Editor/IDE files
+    - ".pytest_cache/**"
+    - ".ruff_cache/**"
+    - ".qlty/**"
+    # Generated agent instructions
+    - "CLAUDE.md"
+    - "AGENTS.md"
+
+# GitBook-specific configuration
+gitbook:
+  # Space configuration (set when GitBook space is created)
+  space_id: null  # Will be set after GitBook setup
+
+# Python library preset configuration
+presets:
+  python_library:
+    # API documentation settings
+    api_docs:
+      enabled: true
+      generator: "auto"  # Auto-generate from docstrings
+      include_private: false
+      include_dunder: false
+
+    # Docstring format
+    docstring_format: "google"
+
+    # Type hints in documentation
+    show_type_hints: true
+
+    # Example extraction
+    extract_examples: true
+    examples_dir: "docs/examples"
+
+# Quality thresholds
+quality:
+  # Minimum documentation coverage for public APIs
+  min_coverage: 80
+
+  # Require docstrings for public functions/classes
+  require_docstrings: true
+
+  # Check for broken links
+  check_links: true
+
+  # Freshness threshold (days since last update)
+  max_staleness_days: 90
+
+# Sync settings
+sync:
+  # Auto-sync documentation with code changes
+  auto_sync: false
+
+  # Files that trigger doc regeneration when changed
+  triggers:
+    - "src/hypergraph/**/*.py"
+    - "docs/**/*.md"
+
+  # Sync direction
+  direction: "code_to_docs"  # docs follow code, not vice versa
+
+# Output configuration
+output:
+  # Local documentation build directory
+  build_dir: "docs/_build"
+
+  # GitBook export format
+  format: "gitbook"

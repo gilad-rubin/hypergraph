@@ -1,80 +1,89 @@
----
-description: Welcome to your team’s developer platform
-layout:
-  width: wide
-  title:
-    visible: false
-  description:
-    visible: false
-  tableOfContents:
-    visible: false
-  outline:
-    visible: false
-  pagination:
-    visible: false
-  metadata:
-    visible: true
-metaLinks:
-  alternates:
-    - https://app.gitbook.com/s/2AwfWOGBWBxQmyvHedqW/
----
+# hypergraph
 
-# Developer Platform
+A graph-based workflow framework for building composable, maintainable execution pipelines.
 
-<h2 align="center">Welcome to HyperGraph's Documentation</h2>
+Hypergraph treats your node outputs as the graph's state. No separate state schema needed. This design eliminates reducers, reducer conflicts, and explicit state management, while maintaining full durability through checkpointing.
 
-<p align="center">Welcome to your team’s new developer platform</p>
+## Installation
 
-<p align="center"><a href="http://app.gitbook.com/join" class="button primary">Sign up</a> <a href="http://app.gitbook.com/join" class="button secondary">Log in</a></p>
+Not yet published. Currently in design phase with core node types implemented.
 
-<table data-view="cards"><thead><tr><th></th><th></th><th></th><th data-hidden data-card-target data-type="content-ref"></th><th data-hidden data-card-cover data-type="files"></th></tr></thead><tbody><tr><td><h4><i class="fa-leaf">:leaf:</i></h4></td><td><strong>No code</strong></td><td>Get started with the developer platform in 5 minutes.</td><td><a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/j5FsaV0I8HjouQOY1k8M/">Documentation</a></td><td><a href=".gitbook/assets/no-code.jpg">no-code.jpg</a></td></tr><tr><td><h4><i class="fa-server">:server:</i></h4></td><td><strong>Hosted</strong></td><td>Learn more about hosting the developer platform.</td><td><a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/j5FsaV0I8HjouQOY1k8M/">Documentation</a></td><td><a href=".gitbook/assets/hosted.jpg">hosted.jpg</a></td></tr><tr><td><h4><i class="fa-terminal">:terminal:</i></h4></td><td><strong>API reference</strong></td><td>Browse, test, and implement APIs.</td><td><a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/MLIUu8DrR942kEZxCX3Y/">API Reference</a></td><td><a href=".gitbook/assets/api-reference.jpg">api-reference.jpg</a></td></tr></tbody></table>
+## Quick Start
 
-{% columns %}
-{% column %}
-### Get started in 5 minutes
+```python
+from hypergraph import node
 
-Setting up your first API call should be the easiest part of getting started. With clear endpoints, copy-paste-ready examples, and quick authentication, you’ll be up and running in minutes—not hours.
+@node(output_name="doubled")
+def double(x: int) -> int:
+    """Double the input value."""
+    return x * 2
 
-No guesswork, no complexity—just your first successful call, fast.
+# Create and call the node
+result = double(5)
+print(result)  # Output: 10
 
-<a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/j5FsaV0I8HjouQOY1k8M/" class="button primary" data-icon="rocket-launch">Get started</a> <a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/MLIUu8DrR942kEZxCX3Y/" class="button secondary" data-icon="terminal">API reference</a>
-{% endcolumn %}
-
-{% column %}
-{% code title="index.js" overflow="wrap" %}
-```javascript
-// Import the SDK
-import ExampleAPI from "example-api";
-
-// Initialize the client
-const client = new ExampleAPI({ apiKey: "YOUR_API_KEY" });
-
-// Send your first message
-const response = await client.messages.send({
-  message: "Hello, world!"
-});
-
+# Access node properties
+print(double.inputs)   # ('x',)
+print(double.outputs)  # ('doubled',)
+print(double.name)     # 'double'
 ```
-{% endcode %}
-{% endcolumn %}
-{% endcolumns %}
 
-{% columns %}
-{% column %}
-<figure><img src="https://gitbookio.github.io/onboarding-template-images/placeholder.png" alt=""><figcaption></figcaption></figure>
-{% endcolumn %}
+## Philosophy: Outputs ARE State
 
-{% column %}
-### Learn more about the developer platform
+In hypergraph, there is no separate "state" to define. Your node outputs **are** the state of the graph.
 
-Read guides, watch tutorials, and learn more about working with the developer platform and integrating it with your own stack.
+```python
+@node(output_name="response")
+def get_response(messages: list, user_input: str) -> str:
+    """Get LLM response for the conversation."""
+    return llm.chat(messages + [{"role": "user", "content": user_input}])
 
-<a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/55xeaGg84c6xGDYjqCKu/" class="button primary" data-icon="book-open">Guides</a> <a href="https://app.gitbook.com/o/qRawStptfVvXtSRUdHP3/s/j5FsaV0I8HjouQOY1k8M/" class="button secondary" data-icon="book">Documentation</a>
-{% endcolumn %}
-{% endcolumns %}
+@node(output_name="messages")
+def update_messages(messages: list, user_input: str, response: str) -> list:
+    """Append user message and response to conversation history."""
+    return messages + [
+        {"role": "user", "content": user_input},
+        {"role": "assistant", "content": response},
+    ]
+```
 
-<h2 align="center">Join a community of over 3,000 developers</h2>
+The outputs (`response` and `messages`) flow between nodes and form the graph's state. No explicit state schema. No reducers. Just pure functions connected via their inputs and outputs.
 
-<p align="center">Join our Discord community or create your first PR in just a few steps.</p>
+**See [Philosophy](docs/philosophy.md)** for deeper explanation and comparison with other frameworks like LangGraph.
 
-<table data-card-size="large" data-view="cards"><thead><tr><th></th><th></th><th></th><th></th><th data-hidden data-card-cover data-type="files"></th></tr></thead><tbody><tr><td><h4><i class="fa-discord">:discord:</i></h4></td><td><strong>Discord community</strong></td><td>Join our Discord community to post questions, get help, and share resources with over 3,000 like-minded developers.</td><td><a href="https://www.gitbook.com/" class="button secondary">Join Discord</a></td><td></td></tr><tr><td><h4><i class="fa-github">:github:</i></h4></td><td><strong>GitHub</strong></td><td>Our product is 100% open source and built by developers just like you. Head to our GitHub repository to learn how to submit your first PR.</td><td><a href="https://www.gitbook.com/" class="button secondary">Submit a PR</a></td><td></td></tr></tbody></table>
+## What's Implemented
+
+Currently implemented:
+- **HyperNode** - Base class for all node types with rename functionality
+- **FunctionNode** - Wraps Python functions (sync, async, sync generator, async generator)
+- **@node** - Decorator for creating FunctionNode instances
+- **Rename capabilities** - Transform inputs and outputs with `with_inputs()`, `with_outputs()`, `with_name()`
+
+Coming soon:
+- Graph composition and wiring
+- GateNode, RouteNode, BranchNode (routing gates)
+- TypeRouteNode (type-based routing)
+- InterruptNode (human-in-the-loop)
+- Runners (SyncRunner, AsyncRunner)
+- Checkpointing and durability
+- Observability and events
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) - Core concepts and creating your first node
+- [API Reference: Nodes](docs/api/nodes.md) - Complete FunctionNode and HyperNode documentation
+- [Philosophy](docs/philosophy.md) - Deep dive into "Outputs ARE State" design
+
+## Design Goals
+
+1. **Explicit over implicit** - No magic. Configuration flows through names and types.
+2. **Full durability** - All outputs checkpointed when persistence is enabled.
+3. **Composable** - Graphs nest as nodes in outer graphs.
+4. **Observable** - Event stream for all execution.
+5. **Simple default** - No state schema, no reducers, just outputs flowing between nodes.
+
+## Project Status
+
+This is **design phase** software. The node types are implemented and thoroughly tested. The specification documents are reviewed and final. The execution layer (runners, checkpointing, events) is in active development.
+
+For the complete specification, see `specs/reviewed/` in the repository.
