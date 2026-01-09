@@ -789,10 +789,9 @@ def _warn_if_has_return_annotation(func: Callable) -> None:
         return
 
     warnings.warn(
-        f"Function '{func.__name__}' has return type annotation "
-        f"'{return_hint}' but no output_name specified. "
-        f"The node will have no outputs. "
-        f"Use @node(output_name='...') to capture the return value.",
+        f"Function '{func.__name__}' has return type '{return_hint}' but no output_name. "
+        f"If you want to capture the return value, use @node(output_name='...'). "
+        f"Otherwise, ignore this warning for side-effect only nodes.",
         UserWarning,
         stacklevel=3,  # Caller → _resolve_outputs → _warn_if_has_return_annotation
     )
