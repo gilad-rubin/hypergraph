@@ -22,6 +22,6 @@ CLAUDE.md.bak
 specs/tmp/*
 docs/plans/*
 # Continuous Claude cache (local only)
-.claude/cache/
 thoughts/*
 specs/deprecated/*
+.claude/*

@@ -46,6 +46,8 @@ Recognize and avoid these anti-patterns. Each smell indicates a design problem w
 
 21. **What-comments instead of why-comments** - Comments that explain what code does (or drift from reality). Aim for self-documenting code; keep only "why"/constraints.
 
+22. **Utilities burying the main class** - When opening a file, the primary class/function should be visible first, not helper utilities. Move internal helpers to a private module (e.g., `_helpers.py`).
+
 ## Python-Specific Smells
 
 1. **Bare except** - `except:` hides real failures and catches `KeyboardInterrupt`/`SystemExit`. Catch specific exceptions (or at least `Exception`) and keep `try` blocks tight.
