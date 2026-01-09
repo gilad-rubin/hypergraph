@@ -20,20 +20,18 @@ Create a Product Requirements Document (PRD) based on the feature description.
 
 Save the PRD to `{@artifacts_path}/requirements.md`.
 
-### [ ] Step: Technical Specification
+### [x] Step: Technical Specification
+<!-- chat-id: 1e56d427-a49f-4081-871a-ea21c7693877 -->
 
 Create a technical specification based on the PRD in `{@artifacts_path}/requirements.md`.
 
 1. Review existing codebase architecture and identify reusable components
-2. Define the implementation approach
-
-Save to `{@artifacts_path}/spec.md` with:
+- Read existing code and internalize the design patterns and preferences
 - Tell the story of how the code flows. Start from the user's perspective (user-facing API syntax) and then show how it propagates into the backend classes and functions, explaining each along the way
-- Show the signatures of each class and functions and the relationships
-- Source code structure changes
-- Data model / API / interface changes
-- Delivery phases (incremental, testable milestones)
-- Verification approach using project lint/test commands
+- Show the signatures of each class and functions and the relationships (new or changing)
+- For each class/fucntion - first tell their functionality and objective. Then show which tests should be implemented in order to test those (unit, integration, end-to-end)
+
+Save to `{@artifacts_path}/spec.md`:
 
 ### [ ] Step: Planning
 
