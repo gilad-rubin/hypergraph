@@ -584,9 +584,10 @@ class PauseInfo:
 ```python
 if result.pause:
     response = get_user_input(result.pause.value)
+    # values= accepts ".", "/", or nested dict - all equivalent:
     result = await runner.run(
         graph,
-        values={result.pause.response_key: response},  # Uses "." for nested
+        values={result.pause.response_key: response},  # e.g., "review.decision"
         workflow_id=result.workflow_id,
     )
 ```

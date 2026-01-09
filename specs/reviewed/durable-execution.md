@@ -885,8 +885,8 @@ async def execute_superstep(superstep_nodes: list[HyperNode], workflow_id: str, 
             raise
 
     # 2. Run all concurrently
-    # Indices assigned alphabetically by node_name for deterministic ordering
-    sorted_nodes = sorted(superstep_nodes, key=lambda n: n.name)
+    # Indices assigned by graph constructor order for deterministic ordering
+    sorted_nodes = sorted(superstep_nodes, key=lambda n: graph.node_order(n.name))
     results = await asyncio.gather(*[
         execute_one(node, idx)
         for idx, node in enumerate(sorted_nodes)
@@ -917,13 +917,15 @@ From [Temporal](https://docs.temporal.io/workflows) and [DBOS](https://docs.dbos
 
 > "Workflows must be deterministic... the order of *starting* steps must be the same on replay."
 
-**Within a superstep, nodes are ordered alphabetically by node_name.** This ensures deterministic `index` assignment regardless of completion order.
+**Within a superstep, nodes are ordered by graph constructor order** (the order nodes were passed to `Graph()`). This ensures deterministic `index` assignment regardless of completion order.
 
 ```
-Superstep 0 starts (nodes sorted alphabetically):
-  → index=0: embed    (alphabetically first)
-  → index=1: fetch    (alphabetically second)
-  → index=2: validate (alphabetically third)
+# Graph([embed, fetch, validate, ...])
+
+Superstep 0 starts (nodes in constructor order):
+  → index=0: embed    (first in Graph() node list)
+  → index=1: fetch    (second in Graph() node list)
+  → index=2: validate (third in Graph() node list)
 
 Completion order may vary, but indices are stable.
 ```
@@ -946,7 +948,7 @@ checkpoint = await checkpointer.get_checkpoint("order-123", superstep=1)
 |---------|:------------:|---------|
 | `superstep` | ✅ Yes | Identifies batch boundaries for checkpointing/forking |
 | `node_name` | ✅ Yes | Identifies which node within a superstep |
-| `index` | ❌ Internal | Unique DB key, assigned alphabetically within superstep |
+| `index` | ❌ Internal | Unique DB key, assigned by graph constructor order within superstep |
 
 ```python
 # Example: Superstep with 3 parallel nodes

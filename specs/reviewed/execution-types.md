@@ -601,7 +601,8 @@ class PauseInfo:
     def response_key(self) -> str:
         """Namespaced key for the values dict when resuming.
 
-        Uses "." separator for values (attribute access convention).
+        Returns dot notation (e.g., "review.decision"), but since values=
+        accepts multiple formats, you can also use "/" or nested dict.
 
         For top-level interrupts: returns response_param as-is.
         For nested interrupts: prefixes with GraphNode path.
@@ -615,11 +616,11 @@ class PauseInfo:
             result = await runner.run(graph, values={...})
             if result.pause:
                 response = get_user_input(result.pause.value)
-                result = await runner.run(
-                    graph,
-                    values={result.pause.response_key: response},
-                    workflow_id=result.workflow_id,
-                )
+
+                # All three are equivalent:
+                values={result.pause.response_key: response}  # "review.decision"
+                values={"review/decision": response}          # slash notation
+                values={"review": {"decision": response}}     # nested dict
         """
         if "/" not in self.node_name:
             return self.response_param
@@ -1378,8 +1379,8 @@ class StepRecord:
     """Unique sequential ID for this step (internal).
 
     Used as DB primary key. Within a superstep, indices are assigned
-    alphabetically by node_name for deterministic ordering regardless
-    of completion order.
+    by graph constructor order (the order nodes were passed to Graph())
+    for deterministic ordering regardless of completion order.
     """
 
     # === Status ===

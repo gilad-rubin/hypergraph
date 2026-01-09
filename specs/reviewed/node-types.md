@@ -1459,7 +1459,7 @@ assert rag_for_chat.inputs == ("chat_message",)
 assert rag_batch._map_over == ["query"]
 
 # Original graph unchanged
-assert inner.inputs.all == frozenset({"query"})
+assert inner.inputs.all == ("query",)
 
 # === Multiple mapped parameters ===
 

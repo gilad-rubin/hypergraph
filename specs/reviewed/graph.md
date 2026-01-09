@@ -93,7 +93,7 @@ class Graph:
 
 ## Properties
 
-**Ordering:** All tuple/frozenset properties maintain deterministic order based on node list order (the order nodes were passed to the constructor). This ensures consistent behavior across runs.
+**Ordering:** All tuple properties maintain deterministic order based on node list order (the order nodes were passed to the constructor). This ensures consistent behavior across runs.
 
 ### Structure Properties
 
@@ -365,17 +365,17 @@ graph.bind(config={"threshold": 0.5})
 graph = Graph(nodes=[process])
 
 # Before binding
-graph.inputs.all       # frozenset({"query", "model", "temperature"})
-graph.inputs.required  # frozenset({"query", "model", "temperature"})  (assuming no defaults)
-graph.inputs.optional  # frozenset()
+graph.inputs.all       # ("query", "model", "temperature")
+graph.inputs.required  # ("query", "model", "temperature")  (assuming no defaults)
+graph.inputs.optional  # ()
 graph.inputs.bound     # {}
 
 # After binding
 bound = graph.bind(model="gpt-4", temperature=0.7)
 
-bound.inputs.all       # frozenset({"query", "model", "temperature"})  (unchanged)
-bound.inputs.required  # frozenset({"query"})  (model & temperature now have fallbacks)
-bound.inputs.optional  # frozenset({"model", "temperature"})  (have bound values)
+bound.inputs.all       # ("query", "model", "temperature")  (unchanged)
+bound.inputs.required  # ("query",)  (model & temperature now have fallbacks)
+bound.inputs.optional  # ("model", "temperature")  (have bound values)
 bound.inputs.bound     # {"model": "gpt-4", "temperature": 0.7}
 ```
 
@@ -511,22 +511,22 @@ def visualize(self, **kwargs):
 class InputSpec:
     """Specification of graph input parameters."""
 
-    required: frozenset[str]
+    required: tuple[str, ...]
     """Must provide: no incoming edge, not bound, no default value."""
 
-    optional: frozenset[str]
+    optional: tuple[str, ...]
     """Has fallback: bound (highest priority) OR has default value."""
 
-    seeds: frozenset[str]
+    seeds: tuple[str, ...]
     """Cycle initialization: params with self/cycle edge that need initial values."""
 
     bound: dict[str, Any]
     """Currently bound values from .bind(). Takes priority over defaults."""
 
     @property
-    def all(self) -> frozenset[str]:
+    def all(self) -> tuple[str, ...]:
         """All input names (required + optional)."""
-        return self.required | self.optional
+        return self.required + self.optional
 ```
 
 ### Priority Rules
@@ -547,15 +547,15 @@ def process(x: int, config: dict = None) -> int:
 graph = Graph(nodes=[process])
 
 # Before binding
-assert graph.inputs.required == frozenset({"x"})
-assert graph.inputs.optional == frozenset({"config"})  # Has default
-assert graph.inputs.all == frozenset({"x", "config"})
+assert graph.inputs.required == ("x",)
+assert graph.inputs.optional == ("config",)  # Has default
+assert graph.inputs.all == ("x", "config")
 assert graph.inputs.bound == {}
 
 # After binding
 bound_graph = graph.bind(x=5)
-assert bound_graph.inputs.required == frozenset()      # x is now bound
-assert bound_graph.inputs.optional == frozenset({"x", "config"})
+assert bound_graph.inputs.required == ()      # x is now bound
+assert bound_graph.inputs.optional == ("x", "config")
 assert bound_graph.inputs.bound == {"x": 5}
 
 # With cycles
@@ -564,7 +564,7 @@ def counter(count: int) -> int:
     return count + 1
 
 cyclic = Graph(nodes=[counter])  # count feeds back to itself
-assert cyclic.inputs.seeds == frozenset({"count"})  # Needs initial value
+assert cyclic.inputs.seeds == ("count",)  # Needs initial value
 ```
 
 ---
@@ -728,38 +728,43 @@ outer = Graph(nodes=[
 ### 6. Node Name Validation
 
 ```python
-def _validate_node_names(self):
-    """Node and output names cannot contain '/'."""
-    for node in self._nodes.values():
-        # Check node name
-        if "/" in node.name:
-            raise GraphConfigError(
-                f"Invalid node name: '{node.name}'\n\n"
-                f"  → Names cannot contain '/'\n\n"
-                f"The problem:\n"
-                f"  The '/' character is reserved as the path separator for\n"
-                f"  nested graphs. When you access nested outputs like:\n\n"
-                f"    result['rag_pipeline/embedding']\n"
-                f"    runner.run(..., select=['outer/inner/*'])\n\n"
-                f"  The '/' tells hypergraph to navigate into nested RunResults.\n"
-                f"  If node names contained '/', paths would be ambiguous:\n\n"
-                f"    'rag/pipeline/embedding' - Is this:\n"
-                f"      • 'rag' → 'pipeline' → 'embedding' (3 levels)?\n"
-                f"      • 'rag/pipeline' → 'embedding' (2 levels)?\n\n"
-                f"How to fix:\n"
-                f"  Use underscores or hyphens instead:\n"
-                f"  • 'rag_pipeline' ✓\n"
-                f"  • 'rag-pipeline' ✓\n"
-                f"  • 'rag/pipeline' ✗"
-            )
+# Reserved characters for path separators
+RESERVED_CHARS = {'.', '/'}
 
-        # Check output name
-        if hasattr(node, 'output_name') and "/" in node.output_name:
-            raise GraphConfigError(
-                f"Invalid output name: '{node.output_name}' (from node '{node.name}')\n\n"
-                f"  → Output names cannot contain '/'\n"
-                f"  → See above for why '/' is reserved"
-            )
+def _validate_node_names(self):
+    """Node and output names cannot contain '.' or '/'."""
+    for node in self._nodes.values():
+        # Check node name for reserved characters
+        for char in RESERVED_CHARS:
+            if char in node.name:
+                raise GraphConfigError(
+                    f"Invalid node name: '{node.name}'\n\n"
+                    f"  → Names cannot contain '{char}'\n\n"
+                    f"The problem:\n"
+                    f"  The '.' and '/' characters are reserved as separators:\n"
+                    f"  - '.' for nested values: values={{'rag.query': 'hello'}}\n"
+                    f"  - '/' for paths: select=['rag/*'], node_name='review/approval'\n\n"
+                    f"  If node names contained these, values would be ambiguous:\n\n"
+                    f"    values={{'rag.query': 'hello'}} - Is this:\n"
+                    f"      • A node named 'rag.query' at top level?\n"
+                    f"      • Nested: node 'rag', input 'query'?\n\n"
+                    f"How to fix:\n"
+                    f"  Use underscores or hyphens instead:\n"
+                    f"  • 'rag_pipeline' ✓\n"
+                    f"  • 'rag-pipeline' ✓\n"
+                    f"  • 'rag.pipeline' ✗\n"
+                    f"  • 'rag/pipeline' ✗"
+                )
+
+        # Check output name for reserved characters
+        if hasattr(node, 'output_name'):
+            for char in RESERVED_CHARS:
+                if char in node.output_name:
+                    raise GraphConfigError(
+                        f"Invalid output name: '{node.output_name}' (from node '{node.name}')\n\n"
+                        f"  → Output names cannot contain '{char}'\n"
+                        f"  → See above for why '.' and '/' are reserved"
+                    )
 ```
 
 ### 7. Namespace Collision Validation
@@ -1113,22 +1118,59 @@ values={"middle.inner.param": "value"}
 
 hypergraph uses different separators for different contexts:
 
-| Context | Separator | Example | Rationale |
-|---------|-----------|---------|-----------|
-| **Values** (attribute access) | `.` | `{"rag.query": "hello"}` | Like Python's `obj.attr` |
-| **Paths** (navigation) | `/` | `"review/approval"` | Like file paths |
+| Context | Accepted Formats | Canonical | Rationale |
+|---------|------------------|-----------|-----------|
+| **`values=` parameter** | `.`, `/`, nested dict | nested dict | Flexible input, user's choice |
+| **All other paths** | `/` only | `/` | File system mental model |
 
-**Where each is used:**
+#### Values Parameter: Flexible Input
 
-| `.` (values) | `/` (paths) |
-|--------------|-------------|
-| `values={"rag.query": ...}` | `node_name="review/approval"` |
-| `pause.response_key` | `workflow_id="order-123/rag"` |
-| | `select=["rag/*", "**/embedding"]` |
+The `values=` parameter in `.run()`, `.map()`, `.iter()` accepts three equivalent formats:
+
+```python
+# All three are equivalent - use whichever you prefer:
+
+# 1. Nested dict (recommended - most Pythonic)
+graph.run(values={"rag": {"query": "hello", "top_k": 5}})
+
+# 2. Dot notation (convenience)
+graph.run(values={"rag.query": "hello", "rag.top_k": 5})
+
+# 3. Slash notation (convenience)
+graph.run(values={"rag/query": "hello", "rag/top_k": 5})
+```
+
+**Why flexible?** The `values=` parameter is the most common user touchpoint. Users from different backgrounds prefer different styles (Python uses dicts, JS uses dots, file systems use slashes). All map unambiguously to the same thing.
+
+#### All Other Paths: Slash Only
+
+Everything else uses `/` consistently:
+
+| Usage | Example |
+|-------|---------|
+| `node_name` in pause info | `"review/approval"` |
+| `workflow_id` for nested graphs | `"order-123/rag"` |
+| `select=` patterns | `["rag/*", "**/embedding"]` |
 
 **The mental model:**
-- `.` = "set/get attribute" (what am I accessing?)
-- `/` = "navigate to location" (where am I in the structure?)
+- `values=` = "provide data" → flexible formats accepted
+- Everything else = "navigate structure" → `/` only (like file paths)
+
+#### Node Names: Reserved Characters
+
+Node and output names **cannot contain `.` or `/`** — these are reserved as separators.
+
+```python
+# Valid names
+"rag_pipeline"    # underscore ✓
+"rag-pipeline"    # hyphen ✓
+
+# Invalid names (will raise GraphConfigError at construction time)
+"rag.pipeline"    # dot ✗
+"rag/pipeline"    # slash ✗
+```
+
+This eliminates ambiguity: `values={"rag.query": "hello"}` always means "node `rag`, input `query`" — never "node named `rag.query`".
 
 ---
 
