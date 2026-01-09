@@ -12,7 +12,7 @@ Checkpointers store workflow state to enable resume, crash recovery, and multi-t
 
 1. **Steps are the source of truth** - State is computed from steps, not stored separately
 2. **Bidirectional interface** - Both read (load) and write (save) operations
-3. **Full persistence** - All outputs are stored when checkpointer is present
+3. **Configurable durability** - Users choose their performance/durability tradeoff via [CheckpointPolicy](#checkpoint-policy)
 4. **Separate from observability** - Checkpointer is not an EventProcessor (see [Why](#why-checkpointer-is-separate))
 
 ### Architecture
@@ -32,6 +32,172 @@ Runner
 
 ---
 
+## Checkpoint Policy
+
+Control when checkpoints are written and what history is retained.
+
+### The Two Dimensions
+
+| Dimension | Question | Trade-off |
+|-----------|----------|-----------|
+| **Durability** | When/how to write? | Performance vs crash recovery |
+| **Retention** | What history to keep? | Storage vs time travel |
+
+### CheckpointPolicy Class
+
+```python
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Literal
+
+@dataclass
+class CheckpointPolicy:
+    """
+    Controls checkpoint behavior.
+
+    Args:
+        durability: When/how to write checkpoints
+            - "sync": After each step, block until written (safest)
+            - "async": After each step, write in background (default)
+            - "exit": Only at run completion (fastest, no mid-run recovery)
+        retention: What history to keep
+            - "full": All steps (time travel enabled)
+            - "latest": Only materialized state (bounded storage)
+            - "windowed": Keep last N supersteps
+        window: Number of supersteps to keep (required if retention="windowed")
+        ttl: Auto-expire completed workflows after duration (optional)
+
+    Raises:
+        ValueError: If durability="exit" with retention="full" or "windowed"
+        ValueError: If retention="windowed" without window parameter
+    """
+    durability: Literal["sync", "async", "exit"] = "async"
+    retention: Literal["full", "latest", "windowed"] = "full"
+    window: int | None = None
+    ttl: timedelta | None = None
+
+    def __post_init__(self):
+        if self.durability == "exit" and self.retention != "latest":
+            raise ValueError(
+                f'durability="exit" requires retention="latest", '
+                f'got retention="{self.retention}". '
+                f'With exit mode, steps are not persisted mid-run, '
+                f'so keeping history is not possible.'
+            )
+
+        if self.retention == "windowed" and self.window is None:
+            raise ValueError(
+                'retention="windowed" requires window parameter'
+            )
+
+        if self.retention != "windowed" and self.window is not None:
+            raise ValueError(
+                f'window parameter only valid with retention="windowed", '
+                f'got retention="{self.retention}"'
+            )
+```
+
+### Durability Options
+
+| Value | Behavior | Use Case |
+|-------|----------|----------|
+| `"sync"` | Block after each step until checkpoint written | HITL, critical workflows where no step can be lost |
+| `"async"` | Write in background while next step runs | Default — good balance of performance and safety |
+| `"exit"` | Only write final state at run completion | Long-running agents, idempotent/retryable work |
+
+**Crash recovery by durability:**
+
+```
+sync:   [node A] → [write] → [node B] → [write] → [node C]
+                   ↑ blocks            ↑ blocks
+        Crash at any point → resume from last completed step
+
+async:  [node A] → [node B] → [node C] → ...
+                   ↳ write A   ↳ write B   (background)
+        Crash → may lose 1 in-flight step
+
+exit:   [node A] → [node B] → [node C] → [write final]
+        Crash mid-run → lose entire run, must restart
+```
+
+### Retention Options
+
+| Value | What's Kept | Time Travel | Use Case |
+|-------|-------------|-------------|----------|
+| `"full"` | All steps | Yes | Debugging, audit trails, compliance |
+| `"latest"` | Only materialized state | No | Chat apps, monitors, long-running agents |
+| `"windowed"` | Last N supersteps | Recent only | Production with limited debugging |
+
+### Valid Combinations
+
+| durability ↓ / retention → | `"full"` | `"latest"` | `"windowed"` |
+|----------------------------|:--------:|:----------:|:------------:|
+| `"sync"` | ✓ | ✓ | ✓ |
+| `"async"` | ✓ | ✓ | ✓ |
+| `"exit"` | ✗ Error | ✓ | ✗ Error |
+
+**Why `exit` + `full` is invalid:** With `durability="exit"`, steps are not persisted mid-run. If the process crashes, there's nothing to recover. Keeping "full history" of steps that were never written is contradictory.
+
+### Usage Examples
+
+```python
+from hypergraph.checkpointers import SqliteCheckpointer, CheckpointPolicy
+
+# Default: good balance of safety and performance
+checkpointer = SqliteCheckpointer("./workflows.db")
+# Equivalent to: CheckpointPolicy(durability="async", retention="full")
+
+# Maximum safety: block on every write, keep all history
+checkpointer = SqliteCheckpointer(
+    "./workflows.db",
+    policy=CheckpointPolicy(durability="sync", retention="full"),
+)
+
+# Bounded storage: checkpoint each step, but prune old history
+checkpointer = SqliteCheckpointer(
+    "./workflows.db",
+    policy=CheckpointPolicy(durability="async", retention="latest"),
+)
+
+# Fast + bounded: only checkpoint at end, keep latest state
+checkpointer = SqliteCheckpointer(
+    "./workflows.db",
+    policy=CheckpointPolicy(durability="exit", retention="latest"),
+)
+
+# Rolling window: keep last 50 supersteps for debugging
+checkpointer = SqliteCheckpointer(
+    "./workflows.db",
+    policy=CheckpointPolicy(
+        durability="async",
+        retention="windowed",
+        window=50,
+    ),
+)
+
+# Auto-expire completed workflows after 7 days
+checkpointer = SqliteCheckpointer(
+    "./workflows.db",
+    policy=CheckpointPolicy(
+        durability="async",
+        retention="full",
+        ttl=timedelta(days=7),
+    ),
+)
+```
+
+### Choosing a Policy
+
+| Scenario | Recommended Policy |
+|----------|-------------------|
+| Development / debugging | `durability="async"`, `retention="full"` (default) |
+| Production chat app | `durability="async"`, `retention="latest"` |
+| Long-running monitor agent | `durability="exit"`, `retention="latest"` |
+| Compliance / audit required | `durability="sync"`, `retention="full"`, `ttl=timedelta(days=90)` |
+| High-throughput pipeline | `durability="async"`, `retention="windowed"`, `window=10` |
+
+---
+
 ## Checkpointer Interface
 
 ### Base Class
@@ -46,7 +212,14 @@ class Checkpointer(ABC):
 
     Implementations store workflow steps and provide state retrieval.
     Steps are the source of truth; state is computed from steps.
+
+    Args:
+        policy: Controls durability and retention behavior.
+                Defaults to CheckpointPolicy() (async + full).
     """
+
+    def __init__(self, policy: CheckpointPolicy | None = None):
+        self.policy = policy or CheckpointPolicy()
 
     # === Write Operations ===
 
@@ -316,11 +489,12 @@ This ensures full crash recovery — on resume, completed nodes are skipped, inc
 
 ## State Materialization (Performance)
 
-`get_state()` is defined as “fold StepRecords”, but long-lived workflows (chat threads, ETL, schedulers) cannot afford O(n) replay on every resume/inspection.
+`get_state()` is defined as "fold StepRecords", but long-lived workflows (chat threads, ETL, schedulers) cannot afford O(n) replay on every resume/inspection.
 
-**Design rule:**
-- **Steps remain the source of truth** (correctness, time travel).
+**Design rules:**
+- **Steps remain the source of truth** (correctness, time travel) when `retention="full"`.
 - **Checkpointers SHOULD materialize derived state** to make the common path fast.
+- **Materialization is REQUIRED** when `retention="latest"` — steps are pruned, so state must be stored directly.
 
 ### Recommended Materializations
 
@@ -363,14 +537,21 @@ Materializations are caches. Implementations should be able to:
 ### SqliteCheckpointer
 
 ```python
-from hypergraph.checkpointers import SqliteCheckpointer
+from hypergraph.checkpointers import SqliteCheckpointer, CheckpointPolicy
 
 checkpointer = SqliteCheckpointer(
-    path="./workflows.db",      # Database file path
+    path="./workflows.db",          # Database file path
+    # policy=CheckpointPolicy(),    # Optional (default: async + full)
     # serializer=JsonSerializer(),  # Optional custom serializer
 )
 
 runner = AsyncRunner(checkpointer=checkpointer)
+
+# Example: bounded storage for long-running workflows
+checkpointer = SqliteCheckpointer(
+    path="./workflows.db",
+    policy=CheckpointPolicy(durability="async", retention="latest"),
+)
 ```
 
 **Best for:** Local development, single-server deployments, simple production.
@@ -378,15 +559,26 @@ runner = AsyncRunner(checkpointer=checkpointer)
 ### PostgresCheckpointer
 
 ```python
-from hypergraph.checkpointers import PostgresCheckpointer
+from hypergraph.checkpointers import PostgresCheckpointer, CheckpointPolicy
 
 checkpointer = PostgresCheckpointer(
     connection_string="postgresql://user:pass@host/db",
-    # pool_size=10,              # Connection pool size
+    # policy=CheckpointPolicy(),    # Optional (default: async + full)
+    # pool_size=10,                 # Connection pool size
     # serializer=JsonSerializer(),  # Optional custom serializer
 )
 
 runner = AsyncRunner(checkpointer=checkpointer)
+
+# Example: production with 30-day retention
+checkpointer = PostgresCheckpointer(
+    connection_string="postgresql://...",
+    policy=CheckpointPolicy(
+        durability="async",
+        retention="full",
+        ttl=timedelta(days=30),
+    ),
+)
 ```
 
 **Best for:** Multi-server deployments, high availability, production.
@@ -403,6 +595,18 @@ runner = AsyncRunner(checkpointer=checkpointer)
 | Automatic crash recovery | ❌ | ❌ | ✅ |
 | Workflow forking (get_checkpoint) | ✅ | ✅ | ✅ |
 | Multi-server | ❌ | ✅ | ✅ |
+| CheckpointPolicy support | ✅ | ✅ | ⚠️ Limited |
+
+> **Note:** DBOS has its own durability model. When using `DBOSAsyncRunner`, the policy is partially respected — `retention` works, but `durability` is controlled by DBOS's internal mechanisms.
+
+### Behavior by Retention Policy
+
+| Method | `retention="full"` | `retention="latest"` | `retention="windowed"` |
+|--------|:------------------:|:--------------------:|:----------------------:|
+| `get_state()` | ✅ Any superstep | ✅ Latest only | ✅ Within window |
+| `get_state(superstep=N)` | ✅ | ❌ Error | ⚠️ If N in window |
+| `get_steps()` | ✅ All steps | ❌ Empty list | ✅ Steps in window |
+| `get_checkpoint()` | ✅ Full fork | ⚠️ State only | ⚠️ Partial history |
 
 ---
 
@@ -610,6 +814,14 @@ rag_state = await checkpointer.get_state("order-123/rag")
 > **Full definitions:** See [Execution Types](execution-types.md#persistence-types) for complete type definitions with docstrings.
 
 ```python
+@dataclass
+class CheckpointPolicy:
+    """Controls checkpoint durability and retention."""
+    durability: Literal["sync", "async", "exit"] = "async"
+    retention: Literal["full", "latest", "windowed"] = "full"
+    window: int | None = None
+    ttl: timedelta | None = None
+
 @dataclass(frozen=True)
 class StepRecord:
     """Single atomic record - metadata + values together."""
