@@ -86,7 +86,14 @@ result = embed("hello world")  # Calls embed.func("hello world")
 
 ### FR-1: HyperNode Base Class
 
-The abstract base class for all node types.
+The abstract base class for all node types. Inherits from `ABC` (from `abc` module).
+
+```python
+from abc import ABC
+
+class HyperNode(ABC):
+    """Base class for all node types with shared rename functionality."""
+```
 
 **Attributes**:
 | Attribute | Type | Description |
@@ -96,16 +103,71 @@ The abstract base class for all node types.
 | `outputs` | `tuple[str, ...]` | Output value names |
 | `_rename_history` | `list[RenameEntry]` | Tracks renames for error messages |
 
-**Methods**:
+**Public Methods**:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `with_name` | `(name: str) -> Self` | Return new node with different name |
 | `with_inputs` | `(mapping?, **kwargs) -> Self` | Return new node with renamed inputs |
 | `with_outputs` | `(mapping?, **kwargs) -> Self` | Return new node with renamed outputs |
 
+**Internal Methods** (implementation helpers):
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `_copy` | `() -> Self` | Create shallow copy with independent history list |
+| `_with_renamed` | `(attr: str, mapping: dict[str, str]) -> Self` | Rename entries in an attribute |
+| `_make_rename_error` | `(name: str, attr: str) -> RenameError` | Build helpful error message using history |
+
+**`_copy()` Implementation**:
+```python
+def _copy(self) -> Self:
+    """Create shallow copy with independent history list."""
+    clone = copy.copy(self)
+    clone._rename_history = list(self._rename_history)
+    return clone
+```
+
+**`_with_renamed()` Implementation**:
+```python
+def _with_renamed(self, attr: str, mapping: dict[str, str]) -> Self:
+    """Rename entries in an attribute (name, inputs, or outputs)."""
+    clone = self._copy()
+    current = getattr(clone, attr)
+
+    if isinstance(current, str):
+        # Single value (name)
+        old, new = current, mapping.get(current, current)
+        if old != new:
+            clone._rename_history.append(RenameEntry(attr, old, new))
+            setattr(clone, attr, new)
+    else:
+        # Tuple (inputs/outputs)
+        for old, new in mapping.items():
+            if old not in current:
+                raise clone._make_rename_error(old, attr)
+            clone._rename_history.append(RenameEntry(attr, old, new))
+        setattr(clone, attr, tuple(mapping.get(v, v) for v in current))
+
+    return clone
+```
+
+**`_make_rename_error()` Implementation**:
+```python
+def _make_rename_error(self, name: str, attr: str) -> RenameError:
+    """Build helpful error message using history."""
+    current = getattr(self, attr)
+    for entry in self._rename_history:
+        if entry.kind == attr and entry.old == name:
+            return RenameError(
+                f"'{name}' was renamed to '{entry.new}'. "
+                f"Current {attr}: {current}"
+            )
+    return RenameError(f"'{name}' not found. Current {attr}: {current}")
+```
+
 **Behavior**:
 - All `with_*` methods return new instances (immutable pattern)
 - Rename history enables helpful error messages when users reference old names
+- `_copy()` creates shallow copy; only `_rename_history` list is deep-copied
 
 ### FR-2: FunctionNode Class
 
@@ -144,7 +206,32 @@ def __init__(
 | Method | Description |
 |--------|-------------|
 | `__call__(*args, **kwargs)` | Delegates to `self.func` |
-| `__repr__()` | Informative string representation |
+| `__repr__()` | Informative string representation (see below) |
+
+**`__repr__()` Implementation**:
+```python
+def __repr__(self) -> str:
+    # Find original name from history (if renamed) or use func name
+    original = self.func.__name__
+    for entry in self._rename_history:
+        if entry.kind == "name" and entry.new == self.name:
+            original = entry.old
+            break
+
+    if self.name == original:
+        return f"FunctionNode({self.name}, outputs={self.outputs})"
+    else:
+        return f"FunctionNode({original} as '{self.name}', outputs={self.outputs})"
+```
+
+**Example Output**:
+```python
+>>> process
+FunctionNode(process, outputs=('result',))
+
+>>> process.with_name("preprocessor")
+FunctionNode(process as 'preprocessor', outputs=('result',))
+```
 
 ### FR-3: @node Decorator
 
@@ -175,27 +262,79 @@ class RenameEntry:
 
 ### FR-5: RenameError Exception
 
-Custom exception with helpful context.
+Custom exception with helpful context. Simple `Exception` subclass.
 
-**Error message format**:
-```
-RenameError: Input 'text' not found.
-
-Current inputs: ('raw', 'config')
-
-Rename history for this node:
-  - 'text' was renamed to 'raw'
-
-Did you mean: node.with_inputs(raw="document")
+```python
+class RenameError(Exception):
+    """Raised when a rename operation references a non-existent name."""
+    pass
 ```
 
-### FR-6: Helper Utilities
+The error message is constructed by `HyperNode._make_rename_error()` (see FR-1).
+
+**Error message format examples**:
+```
+RenameError: 'text' was renamed to 'raw'. Current inputs: ('raw', 'config')
+```
+
+```
+RenameError: 'foo' not found. Current inputs: ('bar', 'baz')
+```
+
+### FR-6: Module-Level Helper Functions
+
+These functions live in `base.py` alongside `HyperNode` and `RenameEntry`.
+
+**`_apply_renames(values, mapping, kind)`**: Apply rename mapping to tuple of values, return (new_values, history_entries).
+
+```python
+def _apply_renames(
+    values: tuple[str, ...],
+    mapping: dict[str, str] | None,
+    kind: Literal["inputs", "outputs"],
+) -> tuple[tuple[str, ...], list[RenameEntry]]:
+    """Apply renames to a tuple, returning (new_values, history)."""
+    if not mapping:
+        return values, []
+
+    history = [RenameEntry(kind, old, new) for old, new in mapping.items()]
+    return tuple(mapping.get(v, v) for v in values), history
+```
+
+### FR-7: Utility Functions
+
+These functions live in `_utils.py` for general use.
 
 **`ensure_tuple(value)`**: Convert single string to 1-tuple, pass tuples through.
 
+```python
+def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
+    """Convert single string to 1-tuple, pass tuples through."""
+    if isinstance(value, str):
+        return (value,)
+    return value
+```
+
 **`hash_definition(func)`**: Compute SHA256 hash of function source code using `inspect.getsource()`.
 
-**`_apply_renames(values, mapping, kind)`**: Apply rename mapping to tuple of values, return (new_values, history).
+```python
+import hashlib
+import inspect
+
+def hash_definition(func: Callable) -> str:
+    """Compute SHA256 hash of function source code."""
+    try:
+        source = inspect.getsource(func)
+    except (OSError, TypeError) as e:
+        # Built-ins, C extensions, or dynamically created functions
+        raise ValueError(f"Cannot hash function {func.__name__}: {e}")
+    return hashlib.sha256(source.encode()).hexdigest()
+```
+
+**Note on `hash_definition` edge cases**:
+- Works for regular functions, lambdas defined in files, methods, closures
+- Raises `ValueError` for built-in functions, C extensions, or functions without source
+- Lambdas in REPL may fail depending on environment
 
 ---
 
@@ -283,9 +422,9 @@ src/hypergraph/
 ├── __init__.py          # Public exports
 ├── nodes/
 │   ├── __init__.py      # Node module exports
-│   ├── base.py          # HyperNode, RenameEntry, RenameError
+│   ├── base.py          # HyperNode, RenameEntry, RenameError, _apply_renames
 │   └── function.py      # FunctionNode, node decorator
-└── _utils.py            # ensure_tuple, hash_definition, _apply_renames
+└── _utils.py            # ensure_tuple, hash_definition
 ```
 
 ---
@@ -318,8 +457,9 @@ from hypergraph import node, FunctionNode, HyperNode, RenameError
 | `node.with_inputs(old="new")` | Returns new node, updates history |
 | `node.with_inputs(nonexistent="x")` | RenameError with helpful message |
 | Chained renames | History shows full chain |
-| `hash_definition` on lambda | Works (uses `inspect.getsource`) |
-| `hash_definition` on built-in | Raises (cannot get source) |
+| `hash_definition` on lambda in file | Works (uses `inspect.getsource`) |
+| `hash_definition` on built-in | Raises `ValueError` (cannot get source) |
+| `hash_definition` on C extension | Raises `ValueError` (cannot get source) |
 
 ---
 
@@ -360,6 +500,6 @@ When wrapping an existing FunctionNode, we want fresh configuration. Inheriting 
 
 ## References
 
-- [specs/reviewed/node-types.md](../../specs/reviewed/node-types.md) - Complete node type specification
-- [specs/reviewed/graph.md](../../specs/reviewed/graph.md) - Graph structure and hashing
-- [specs/reviewed/state-model.md](../../specs/reviewed/state-model.md) - "Outputs ARE state" philosophy
+- `specs/reviewed/node-types.md` - Complete node type specification
+- `specs/reviewed/graph.md` - Graph structure and hashing
+- `specs/reviewed/state-model.md` - "Outputs ARE state" philosophy

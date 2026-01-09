@@ -28,8 +28,8 @@ Create a technical specification based on the PRD in `{@artifacts_path}/requirem
 2. Define the implementation approach
 
 Save to `{@artifacts_path}/spec.md` with:
-- Technical context (language, dependencies)
-- Implementation approach referencing existing code patterns
+- Tell the story of how the code flows. Start from the user's perspective (user-facing API syntax) and then show how it propagates into the backend classes and functions, explaining each along the way
+- Show the signatures of each class and functions and the relationships
 - Source code structure changes
 - Data model / API / interface changes
 - Delivery phases (incremental, testable milestones)
