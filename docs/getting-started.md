@@ -222,7 +222,7 @@ print(stream_llm.is_generator)  # True
 
 Every node created with `@node` has these properties:
 
-### name
+### `name`
 The public identifier for this node (defaults to function name).
 
 ```python
@@ -233,7 +233,7 @@ print(process.name)  # "process"
 print(process.with_name("custom").name)  # "custom"
 ```
 
-### inputs
+### `inputs`
 Tuple of input parameter names from the function signature.
 
 ```python
@@ -243,7 +243,7 @@ def add(x: int, y: int) -> int: pass
 print(add.inputs)  # ("x", "y")
 ```
 
-### outputs
+### `outputs`
 Tuple of output names (empty if no output_name).
 
 ```python
@@ -253,7 +253,7 @@ def add(x: int, y: int) -> int: pass
 print(add.outputs)  # ("sum",)
 ```
 
-### func
+### `func`
 Direct reference to the underlying Python function.
 
 ```python
@@ -265,7 +265,7 @@ result = double.func(5)  # Call directly
 print(result)  # 10
 ```
 
-### cache
+### `cache`
 Whether this node's results are cached (default: False).
 
 ```python
@@ -276,7 +276,7 @@ def expensive(x: int) -> int:
 print(expensive.cache)  # True
 ```
 
-### is_async
+### `is_async`
 True if the function is async or async generator.
 
 ```python
@@ -286,7 +286,7 @@ async def fetch(url: str) -> dict: pass
 print(fetch.is_async)  # True
 ```
 
-### is_generator
+### `is_generator`
 True if the function yields values (sync or async generator).
 
 ```python
@@ -298,7 +298,7 @@ def produce(n: int):
 print(produce.is_generator)  # True
 ```
 
-### definition_hash
+### `definition_hash`
 SHA256 hash of the function's source code (for cache invalidation).
 
 ```python

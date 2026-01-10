@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "A hierarchical and modular graph workflow framework for AI & ML"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "networkx>=3.2",
+]
 authors = [
     {name = "Gilad Rubin", email = "me@giladrubin.com"}
 ]

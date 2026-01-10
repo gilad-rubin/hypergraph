@@ -165,6 +165,16 @@ class FunctionNode(HyperNode):
         """True if yields multiple values (sync or async generator)."""
         return self._is_generator
 
+    @property
+    def defaults(self) -> dict[str, Any]:
+        """Default values for input parameters."""
+        sig = inspect.signature(self.func)
+        return {
+            name: param.default
+            for name, param in sig.parameters.items()
+            if param.default is not inspect.Parameter.empty
+        }
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped function directly.
 

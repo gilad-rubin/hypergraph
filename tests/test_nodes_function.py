@@ -476,3 +476,52 @@ class TestFunctionNodeWithLambda:
         """Lambda function name is '<lambda>'."""
         fn = FunctionNode(lambda x: x)
         assert fn.name == "<lambda>"
+
+
+class TestFunctionNodeDefaults:
+    """Tests for FunctionNode.defaults property."""
+
+    def test_no_defaults(self):
+        """Function with no defaults has empty dict."""
+
+        def foo(a, b, c):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {}
+
+    def test_single_default(self):
+        """Function with one default parameter."""
+
+        def foo(a, b=1):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"b": 1}
+
+    def test_multiple_defaults(self):
+        """Function with multiple default parameters."""
+
+        def foo(a, b=1, c="hello"):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"b": 1, "c": "hello"}
+
+    def test_all_defaults(self):
+        """Function where all parameters have defaults."""
+
+        def foo(a=10, b=20):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"a": 10, "b": 20}
+
+    def test_default_none(self):
+        """Function with None as default value."""
+
+        def foo(a, b=None):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"b": None}
