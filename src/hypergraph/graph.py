@@ -403,8 +403,12 @@ class Graph:
 
     def _validate_valid_identifiers(self) -> None:
         """Node and output names must be valid Python identifiers."""
+        from hypergraph.nodes.graph_node import GraphNode
+
         for node in self._nodes.values():
-            # Skip GraphNode when implemented - it uses graph name validation
+            # Skip GraphNode - it uses graph name validation (allows hyphens)
+            if isinstance(node, GraphNode):
+                continue
             if not node.name.isidentifier():
                 raise GraphConfigError(
                     f"Invalid node name: '{node.name}'\n\n"
@@ -435,28 +439,26 @@ class Graph:
         if not graph_node_names:
             return  # No GraphNodes, nothing to validate
 
-        # Collect outputs from non-GraphNode nodes
-        other_outputs = set()
+        # Collect ALL outputs (including from other GraphNodes)
+        all_outputs: dict[str, str] = {}  # output_name -> source_node_name
         for node in self._nodes.values():
-            if not isinstance(node, GraphNode):
-                other_outputs.update(node.outputs)
+            for output in node.outputs:
+                all_outputs[output] = node.name
 
-        # Check for collision
-        collision = graph_node_names & other_outputs
-        if collision:
-            colliding_name = next(iter(collision))
-            # Find which node is the source of this output
-            source_node = next(
-                n.name for n in self._nodes.values()
-                if colliding_name in n.outputs and not isinstance(n, GraphNode)
-            )
-            raise GraphConfigError(
-                f"GraphNode name '{colliding_name}' collides with output name\n\n"
-                f"  -> GraphNode '{colliding_name}' exists\n"
-                f"  -> Node '{source_node}' outputs '{colliding_name}'\n\n"
-                f"How to fix:\n"
-                f"  Rename the GraphNode: graph.as_node(name='other_name')"
-            )
+        # Check for collision between GraphNode names and any output
+        for gn_name in graph_node_names:
+            if gn_name in all_outputs:
+                source_node = all_outputs[gn_name]
+                # Skip if the GraphNode's own output matches its name (that's fine)
+                if source_node == gn_name:
+                    continue
+                raise GraphConfigError(
+                    f"GraphNode name '{gn_name}' collides with output name\n\n"
+                    f"  -> GraphNode '{gn_name}' exists\n"
+                    f"  -> Node '{source_node}' outputs '{gn_name}'\n\n"
+                    f"How to fix:\n"
+                    f"  Rename the GraphNode: graph.as_node(name='other_name')"
+                )
 
     def _validate_consistent_defaults(self) -> None:
         """Shared input parameters must have ALL-or-NONE consistent defaults."""

@@ -238,3 +238,37 @@ class TestNamespaceCollisionValidation:
         outer = Graph([source_node, inner_graph.as_node()])
         assert "inner" in outer.nodes
         assert "source_node" in outer.nodes
+
+    def test_graphnode_with_hyphenated_name_allowed(self):
+        """GraphNode with hyphenated name (valid graph name) should work."""
+        @node(output_name="result")
+        def source_node(x: int) -> int:
+            return x * 2
+
+        @node(output_name="inner_out")
+        def inner_func(a: int) -> int:
+            return a
+
+        # Hyphenated name is valid for graphs but not Python identifiers
+        inner_graph = Graph([inner_func], name="my-inner-graph")
+
+        # Should not raise - GraphNodes skip identifier validation
+        outer = Graph([source_node, inner_graph.as_node()])
+        assert "my-inner-graph" in outer.nodes
+
+    def test_graphnode_output_collision_with_other_graphnode(self):
+        """GraphNode name colliding with another GraphNode's output raises error."""
+        @node(output_name="collider")
+        def inner1_func(a: int) -> int:
+            return a
+
+        @node(output_name="other")
+        def inner2_func(b: int) -> int:
+            return b
+
+        # inner1 outputs "collider", inner2 is named "collider" -> collision
+        inner1 = Graph([inner1_func], name="inner1")
+        inner2 = Graph([inner2_func], name="collider")
+
+        with pytest.raises(GraphConfigError, match="collides with output"):
+            Graph([inner1.as_node(), inner2.as_node()])
