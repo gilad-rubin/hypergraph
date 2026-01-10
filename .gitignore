@@ -30,3 +30,4 @@ specs/deprecated/*
 .doc-manager/cache/*
 !.doc-manager/cache/.gitkeep
 .DS_Store
+tmp/*
