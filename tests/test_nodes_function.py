@@ -2,7 +2,9 @@
 
 import warnings
 
+import pytest
 
+from hypergraph.nodes._rename import RenameError
 from hypergraph.nodes.function import FunctionNode, node
 
 
@@ -434,6 +436,30 @@ class TestNodeDecoratorWithRenameInputs:
             pass
 
         assert foo.inputs == ("x", "y")
+
+    def test_rename_unknown_input_raises(self):
+        """rename_inputs with unknown key raises RenameError."""
+
+        def foo(x, y):
+            pass
+
+        with pytest.raises(RenameError) as exc_info:
+            FunctionNode(foo, rename_inputs={"z": "renamed"})
+
+        assert "Cannot rename unknown inputs: 'z'" in str(exc_info.value)
+        assert "'x'" in str(exc_info.value)
+        assert "'y'" in str(exc_info.value)
+
+    def test_rename_multiple_unknown_inputs_raises(self):
+        """rename_inputs with multiple unknown keys raises RenameError."""
+
+        def foo(x):
+            pass
+
+        with pytest.raises(RenameError) as exc_info:
+            FunctionNode(foo, rename_inputs={"a": "b", "c": "d"})
+
+        assert "Cannot rename unknown inputs" in str(exc_info.value)
 
 
 class TestFunctionNodeWithLambda:

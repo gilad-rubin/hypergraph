@@ -31,6 +31,33 @@ class RenameError(Exception):
     pass
 
 
+def _validate_rename_keys(
+    mapping: dict[str, str],
+    values: tuple[str, ...],
+    kind: Literal["inputs", "outputs"],
+) -> None:
+    """Validate that all rename keys exist in values.
+
+    Args:
+        mapping: {old: new} rename mapping
+        values: Tuple of valid names
+        kind: Type being renamed (for error messages)
+
+    Raises:
+        RenameError: If any key in mapping is not in values
+    """
+    valid_names = set(values)
+    unknown_keys = [k for k in mapping if k not in valid_names]
+
+    if unknown_keys:
+        unknown_str = ", ".join(repr(k) for k in unknown_keys)
+        valid_str = ", ".join(repr(v) for v in values) if values else "(none)"
+        raise RenameError(
+            f"Cannot rename unknown {kind}: {unknown_str}. "
+            f"Valid {kind}: {valid_str}."
+        )
+
+
 def _apply_renames(
     values: tuple[str, ...],
     mapping: dict[str, str] | None,
@@ -46,12 +73,12 @@ def _apply_renames(
     Returns:
         Tuple of (renamed_values, history_entries)
 
-    Note:
-        Does NOT validate that old names exist in values.
-        Validation is handled by _with_renamed at rename time.
+    Raises:
+        RenameError: If any key in mapping is not in values
     """
     if not mapping:
         return values, []
 
+    _validate_rename_keys(mapping, values, kind)
     history = [RenameEntry(kind, old, new) for old, new in mapping.items()]
     return tuple(mapping.get(v, v) for v in values), history
