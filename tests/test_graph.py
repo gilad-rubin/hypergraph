@@ -330,14 +330,14 @@ class TestGraphInputs:
         """Test edge-connected parameters are excluded (internal values)."""
 
         @node(output_name="x")
-        def producer(a):
+        def source(a):
             return a * 2
 
         @node(output_name="result")
-        def consumer(x, b):
+        def destination(x, b):
             return x + b
 
-        g = Graph([producer, consumer])
+        g = Graph([source, destination])
 
         # 'x' is edge-connected, so only 'a' and 'b' are external inputs
         assert "x" not in g.inputs.all
@@ -385,8 +385,8 @@ class TestGraphInputs:
         assert "x" not in g.inputs.all
         assert "y" not in g.inputs.all
 
-    def test_multiple_consumers_same_param(self):
-        """Test when multiple nodes consume the same external parameter."""
+    def test_multiple_destinations_same_param(self):
+        """Test when multiple nodes receive the same external parameter."""
 
         @node(output_name="x")
         def node1(shared):
@@ -402,21 +402,21 @@ class TestGraphInputs:
         assert g.inputs.required == ("shared",)
 
     def test_fan_out_internal_value(self):
-        """Test internal value fanning out to multiple consumers."""
+        """Test internal value fanning out to multiple destinations."""
 
         @node(output_name="base")
-        def producer(a):
+        def source(a):
             return a * 2
 
         @node(output_name="x")
-        def consumer1(base):
+        def destination1(base):
             return base + 1
 
         @node(output_name="y")
-        def consumer2(base):
+        def destination2(base):
             return base + 2
 
-        g = Graph([producer, consumer1, consumer2])
+        g = Graph([source, destination1, destination2])
 
         # 'base' is edge-connected, should not appear in inputs
         assert "base" not in g.inputs.all
@@ -476,17 +476,17 @@ class TestGraphBind:
         """Test binding an edge-produced value raises ValueError."""
 
         @node(output_name="x")
-        def producer(a):
+        def source(a):
             return a * 2
 
         @node(output_name="result")
-        def consumer(x):
+        def destination(x):
             return x + 1
 
-        g = Graph([producer, consumer])
+        g = Graph([source, destination])
 
-        # 'x' is produced by producer node, cannot bind it
-        with pytest.raises(ValueError, match="Cannot bind 'x': output of node 'producer'"):
+        # 'x' is produced by source node, cannot bind it
+        with pytest.raises(ValueError, match="Cannot bind 'x': output of node 'source'"):
             g.bind(x=10)
 
     def test_bind_unknown_key_raises(self):
@@ -862,3 +862,138 @@ class TestGraphAsNode:
         gnode = g.as_node()
 
         assert gnode.graph is g
+
+
+class TestGraphNodeRename:
+    """Test GraphNode rename operations (with_name, with_inputs, with_outputs)."""
+
+    def test_with_name_returns_new_instance(self):
+        """with_name returns new GraphNode with different name."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="my_graph")
+        original = g.as_node()
+        renamed = original.with_name("new_name")
+
+        assert original.name == "my_graph"
+        assert renamed.name == "new_name"
+        assert original is not renamed
+
+    def test_with_name_preserves_graph_reference(self):
+        """Renamed GraphNode shares same underlying Graph (immutable)."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="my_graph")
+        original = g.as_node()
+        renamed = original.with_name("new_name")
+
+        assert renamed.graph is original.graph
+        assert renamed.definition_hash == original.definition_hash
+
+    def test_with_inputs_renames_inputs(self):
+        """with_inputs renames inputs in returned GraphNode."""
+        @node(output_name="result")
+        def foo(a: int, b: int) -> int:
+            return a + b
+
+        g = Graph([foo], name="my_graph")
+        original = g.as_node()
+        renamed = original.with_inputs(a="x")
+
+        assert original.inputs == ("a", "b")
+        assert renamed.inputs == ("x", "b")
+
+    def test_with_outputs_renames_outputs(self):
+        """with_outputs renames outputs in returned GraphNode."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="my_graph")
+        original = g.as_node()
+        renamed = original.with_outputs(result="output")
+
+        assert original.outputs == ("result",)
+        assert renamed.outputs == ("output",)
+
+    def test_rename_preserves_inputs_outputs_types(self):
+        """Renamed GraphNode has same tuple types for inputs/outputs."""
+        @node(output_name="result")
+        def foo(a: int, b: int = 10) -> int:
+            return a + b
+
+        g = Graph([foo], name="my_graph")
+        gn = g.as_node().with_inputs(a="x")
+
+        assert isinstance(gn.inputs, tuple)
+        assert isinstance(gn.outputs, tuple)
+
+    def test_with_inputs_nonexistent_raises(self):
+        """Renaming non-existent input raises RenameError."""
+        from hypergraph.nodes._rename import RenameError
+
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="my_graph")
+        gn = g.as_node()
+
+        with pytest.raises(RenameError, match="'nonexistent' not found"):
+            gn.with_inputs(nonexistent="y")
+
+    def test_with_outputs_nonexistent_raises(self):
+        """Renaming non-existent output raises RenameError."""
+        from hypergraph.nodes._rename import RenameError
+
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="my_graph")
+        gn = g.as_node()
+
+        with pytest.raises(RenameError, match="'nonexistent' not found"):
+            gn.with_outputs(nonexistent="y")
+
+    def test_rename_history_tracked(self):
+        """Rename history is tracked for error messages."""
+        from hypergraph.nodes._rename import RenameError
+
+        @node(output_name="result")
+        def foo(a: int) -> int:
+            return a * 2
+
+        g = Graph([foo], name="my_graph")
+        gn = g.as_node()
+        renamed = gn.with_inputs(a="x")
+
+        # Try to rename 'a' again - should show history
+        with pytest.raises(RenameError, match="'a' was renamed to 'x'"):
+            renamed.with_inputs(a="y")
+
+    def test_original_unchanged_after_rename(self):
+        """Original GraphNode is not mutated by rename operations."""
+        @node(output_name="result")
+        def foo(a: int, b: int) -> int:
+            return a + b
+
+        g = Graph([foo], name="my_graph")
+        original = g.as_node()
+        original_inputs = original.inputs
+        original_outputs = original.outputs
+        original_name = original.name
+
+        # Do multiple renames
+        original.with_name("new_name")
+        original.with_inputs(a="x", b="y")
+        original.with_outputs(result="out")
+
+        # Original unchanged
+        assert original.name == original_name
+        assert original.inputs == original_inputs
+        assert original.outputs == original_outputs
