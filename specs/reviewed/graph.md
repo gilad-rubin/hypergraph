@@ -267,7 +267,8 @@ def bind(self, **values: Any) -> Graph:
         Original graph is not modified (immutable operation).
 
     Raises:
-        ValueError: If attempting to bind a value produced by an edge
+        ValueError: If attempting to bind a value that is output of another node
+        ValueError: If attempting to bind a key not in graph.inputs.all
 
     Example:
         graph = Graph(nodes=[process])
@@ -351,12 +352,25 @@ def process(data: str, config: dict) -> str:
 
 graph = Graph(nodes=[load_config, process])
 
-# ❌ Error: config is produced by an edge
+# ❌ Error: config is output of another node
 graph.bind(config={"threshold": 0.5})
-# → ValueError: Cannot bind 'config': it is produced by node 'load_config'
+# → ValueError: Cannot bind 'config': output of node 'load_config'
 ```
 
 **Why?** Edge connections define the graph structure. Binding edge-connected values would silently override the graph's dataflow.
+
+**Error: binding unknown keys:**
+
+```python
+graph = Graph(nodes=[process])  # process takes: query, model, temperature
+
+# ❌ Error: typo in parameter name
+graph.bind(temperatur=0.7)  # Missing 'e'
+# → ValueError: Cannot bind 'temperatur': not a graph input.
+#               Valid inputs: ('query', 'model', 'temperature')
+```
+
+**Why?** Fail fast on typos. Silent acceptance would hide bugs.
 
 #### Properties After Binding
 
@@ -525,8 +539,8 @@ class InputSpec:
 
     @property
     def all(self) -> tuple[str, ...]:
-        """All input names (required + optional)."""
-        return self.required + self.optional
+        """All input names (required + optional + seeds)."""
+        return self.required + self.optional + self.seeds
 ```
 
 ### Priority Rules
@@ -594,22 +608,22 @@ def _validate_route_targets(self):
                 )
 ```
 
-### 2. Parallel Producer Validation
+### 2. Parallel Source Validation
 
 ```python
 def _validate_no_conflicts(self):
-    """Multiple producers of same output must be mutually exclusive."""
+    """Multiple source nodes for same output must be mutually exclusive."""
     for output in self.outputs:
-        producers = self._producers_of(output)
-        if len(producers) > 1:
+        sources = self._sources_of(output)
+        if len(sources) > 1:
             # Check if all pairs are mutually exclusive
-            for i, p1 in enumerate(producers):
-                for p2 in producers[i+1:]:
-                    if not self._mutually_exclusive(p1, p2):
+            for i, s1 in enumerate(sources):
+                for s2 in sources[i+1:]:
+                    if not self._mutually_exclusive(s1, s2):
                         raise GraphConfigError(
                             f"Multiple nodes produce '{output}'\n\n"
-                            f"  → {p1} creates '{output}'\n"
-                            f"  → {p2} creates '{output}'\n\n"
+                            f"  → {s1} creates '{output}'\n"
+                            f"  → {s2} creates '{output}'\n\n"
                             f"The problem: If both run, which value should we use?\n\n"
                             f"How to fix:\n"
                             f"  Option A: Rename one output to avoid conflict\n"
@@ -1141,6 +1155,30 @@ graph.run(values={"rag/query": "hello", "rag/top_k": 5})
 ```
 
 **Why flexible?** The `values=` parameter is the most common user touchpoint. Users from different backgrounds prefer different styles (Python uses dicts, JS uses dots, file systems use slashes). All map unambiguously to the same thing.
+
+**Error: Conflicting formats in same call:**
+
+```python
+# ❌ Error: same key via different formats
+graph.run(values={
+    "rag.query": "A",
+    "rag": {"query": "B"},  # Conflict!
+})
+# → ValueError: Conflicting values for 'rag.query':
+#               'A' (from 'rag.query') vs 'B' (from nested dict 'rag')
+#
+#   Use a single format consistently within one values dict.
+
+# ❌ Also an error
+graph.run(values={
+    "rag.query": "A",
+    "rag/query": "B",  # Same key, different separator
+})
+# → ValueError: Conflicting values for 'rag.query':
+#               'A' (via dot) vs 'B' (via slash)
+```
+
+**Why error, not precedence?** Silent overwrites hide bugs. If you provide conflicting values, you likely made a mistake. The error helps you catch it early.
 
 #### All Other Paths: Slash Only
 

@@ -135,7 +135,7 @@ def run(
 
     Raises:
         GraphConfigError: Graph structure invalid.
-        ConflictError: Parallel producers conflict.
+        ConflictError: Parallel source nodes produce conflicting values.
         MissingInputError: Required input not provided.
         InfiniteLoopError: Exceeded max_iterations.
         IncompatibleRunnerError: Graph has async nodes.

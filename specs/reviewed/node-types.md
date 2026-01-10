@@ -45,15 +45,45 @@ class RenameEntry:
     old: str
     new: str
 
+class RenameError(Exception):
+    """Raised when a rename operation references a non-existent name."""
+    pass
+
+def _validate_rename_keys(
+    mapping: dict[str, str],
+    values: tuple[str, ...],
+    kind: Literal["inputs", "outputs"],
+) -> None:
+    """Validate that all rename keys exist in values.
+
+    Raises:
+        RenameError: If any key in mapping is not in values
+    """
+    valid_names = set(values)
+    unknown_keys = [k for k in mapping if k not in valid_names]
+
+    if unknown_keys:
+        unknown_str = ", ".join(repr(k) for k in unknown_keys)
+        valid_str = ", ".join(repr(v) for v in values) if values else "(none)"
+        raise RenameError(
+            f"Cannot rename unknown {kind}: {unknown_str}. "
+            f"Valid {kind}: {valid_str}."
+        )
+
 def _apply_renames(
     values: tuple[str, ...],
     mapping: dict[str, str] | None,
     kind: Literal["inputs", "outputs"],
 ) -> tuple[tuple[str, ...], list[RenameEntry]]:
-    """Apply renames to a tuple, returning (new_values, history)."""
+    """Apply renames to a tuple, returning (new_values, history).
+
+    Raises:
+        RenameError: If any key in mapping is not in values
+    """
     if not mapping:
         return values, []
 
+    _validate_rename_keys(mapping, values, kind)
     history = [RenameEntry(kind, old, new) for old, new in mapping.items()]
     return tuple(mapping.get(v, v) for v in values), history
 
@@ -144,6 +174,8 @@ class HyperNode(ABC):
 | `definition_hash` | Only needed for cacheable nodes | `FunctionNode` only |
 | `is_async` / `is_generator` | Only relevant for function wrappers | `FunctionNode` only (runner discovers for GraphNode) |
 | `func` | Only function wrappers have underlying function | `FunctionNode`, `RouteNode`, `BranchNode` |
+| `input_types` / `output_types` | Only relevant for type validation | `FunctionNode` only |
+| `defaults` | Only function wrappers have parameter defaults | `FunctionNode` only |
 
 **Benefits:**
 - `isinstance(node, HyperNode)` works everywhere
@@ -338,6 +370,37 @@ class FunctionNode(HyperNode):
             inspect.isgeneratorfunction(func) or
             inspect.isasyncgenfunction(func)
         )
+
+        # Type information (for strict_types validation)
+        self._input_types = self._extract_input_types(func)
+        self._output_types = self._extract_output_types(func)
+        self._defaults = self._extract_defaults(func)
+
+    def _extract_input_types(self, func: Callable) -> dict[str, type]:
+        """Extract type annotations for input parameters."""
+        hints = get_type_hints(func) if hasattr(func, '__annotations__') else {}
+        return {k: v for k, v in hints.items() if k != 'return'}
+
+    def _extract_output_types(self, func: Callable) -> dict[str, type]:
+        """Extract type annotation for outputs (from return annotation)."""
+        hints = get_type_hints(func) if hasattr(func, '__annotations__') else {}
+        return_hint = hints.get('return')
+        if return_hint is None:
+            return {}
+        # For single output, map to output name
+        if len(self.outputs) == 1:
+            return {self.outputs[0]: return_hint}
+        # For multiple outputs (tuple return), would need Tuple unpacking
+        return {}
+
+    def _extract_defaults(self, func: Callable) -> dict[str, Any]:
+        """Extract default values for parameters."""
+        sig = inspect.signature(func)
+        return {
+            name: param.default
+            for name, param in sig.parameters.items()
+            if param.default is not inspect.Parameter.empty
+        }
 ```
 
 ### FunctionNode-Specific Properties
@@ -356,6 +419,39 @@ def is_async(self) -> bool:
 @property
 def is_generator(self) -> bool:
     """True if yields multiple values (sync or async generator)."""
+
+@property
+def input_types(self) -> dict[str, type]:
+    """Type annotations for input parameters.
+
+    Maps parameter name → type annotation. Parameters without
+    annotations are not included.
+
+    Used by Graph for strict_types validation.
+    """
+    return self._input_types
+
+@property
+def output_types(self) -> dict[str, type]:
+    """Type annotations for outputs.
+
+    Maps output name → type annotation. Derived from return annotation.
+    Empty if no return annotation or multiple outputs without Tuple type.
+
+    Used by Graph for strict_types validation.
+    """
+    return self._output_types
+
+@property
+def defaults(self) -> dict[str, Any]:
+    """Default values for parameters.
+
+    Maps parameter name → default value. Only parameters with
+    defaults are included.
+
+    Used by Graph to compute InputSpec.optional.
+    """
+    return self._defaults
 ```
 
 ### Special Methods
