@@ -87,16 +87,12 @@ class TestApplyRenames:
         assert RenameEntry("inputs", "a", "x") in history
         assert RenameEntry("inputs", "b", "y") in history
 
-    def test_rename_nonexistent_no_validation(self):
-        """Renaming non-existent name doesn't validate (history still recorded)."""
+    def test_rename_nonexistent_raises(self):
+        """Renaming non-existent name raises RenameError."""
         values = ("a", "b")
-        # "c" doesn't exist in values, but _apply_renames doesn't validate
-        new_values, history = _apply_renames(values, {"c": "x"}, "inputs")
-        # Values unchanged since "c" not in values
-        assert new_values == ("a", "b")
-        # History still recorded
-        assert len(history) == 1
-        assert history[0] == RenameEntry("inputs", "c", "x")
+        # "c" doesn't exist in values, validation should catch this
+        with pytest.raises(RenameError, match="Cannot rename unknown inputs: 'c'"):
+            _apply_renames(values, {"c": "x"}, "inputs")
 
     def test_outputs_kind(self):
         """Kind is correctly set for outputs."""

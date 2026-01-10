@@ -31,3 +31,5 @@ specs/deprecated/*
 !.doc-manager/cache/.gitkeep
 .DS_Store
 tmp/*
+notebooks/*
+specs/*

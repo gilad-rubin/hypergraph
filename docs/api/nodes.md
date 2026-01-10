@@ -29,7 +29,7 @@ node._rename_history: list[RenameEntry]  # Internal: tracks renames for error me
 
 ### Public Methods
 
-#### with_name(name: str) -> HyperNode
+### `with_name(name: str) -> HyperNode`
 
 Return a new node with a different name.
 
@@ -49,7 +49,7 @@ print(process.name)     # "process" (original unchanged)
 
 **Raises:** None (always succeeds)
 
-#### with_inputs(mapping=None, /, **kwargs) -> HyperNode
+### `with_inputs(mapping=None, /, **kwargs) -> HyperNode`
 
 Return a new node with renamed inputs.
 
@@ -76,7 +76,7 @@ adapted = process.with_inputs({"text": "raw_input", "class": "category"})
 - `RenameError` - If any old name not found in current inputs
 - `RenameError` - Includes helpful history if name was already renamed
 
-#### with_outputs(mapping=None, /, **kwargs) -> HyperNode
+### `with_outputs(mapping=None, /, **kwargs) -> HyperNode`
 
 Return a new node with renamed outputs.
 
@@ -142,14 +142,15 @@ isinstance(node, FunctionNode)   # True
 ### Constructor
 
 ```python
-FunctionNode(
+def __init__(
+    self,
     source: Callable | FunctionNode,
     name: str | None = None,
     output_name: str | tuple[str, ...] | None = None,
     *,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
-) -> FunctionNode
+) -> None: ...
 ```
 
 **Args:**
@@ -169,7 +170,7 @@ FunctionNode(
 - `ValueError` - If function source cannot be retrieved (for definition_hash)
 - `UserWarning` - If function has return annotation but no output_name provided
 
-#### Creating from a Function
+### Creating from a function
 
 ```python
 from hypergraph import FunctionNode
@@ -184,7 +185,7 @@ print(node.inputs)   # ("x",)
 print(node.outputs)  # ("result",)
 ```
 
-#### Creating from Existing FunctionNode
+### Creating from existing FunctionNode
 
 When source is a FunctionNode, only the underlying function is extracted. All other config is discarded:
 
@@ -203,7 +204,7 @@ print(original.name)                   # "original_name" (unchanged)
 
 ### Properties
 
-#### func: Callable
+### `func: Callable`
 
 The wrapped Python function. Read-only.
 
@@ -221,7 +222,7 @@ result = process(5)
 print(result)  # 10
 ```
 
-#### name: str
+### `name: str`
 
 Public node name (may differ from function name).
 
@@ -236,7 +237,7 @@ renamed = process.with_name("preprocessor")
 print(renamed.name)  # "preprocessor"
 ```
 
-#### inputs: tuple[str, ...]
+### `inputs: tuple[str, ...]`
 
 Input parameter names from function signature (after renaming).
 
@@ -251,7 +252,7 @@ adapted = add.with_inputs(x="a", y="b")
 print(adapted.inputs)  # ("a", "b")
 ```
 
-#### outputs: tuple[str, ...]
+### `outputs: tuple[str, ...]`
 
 Output value names (empty if no output_name).
 
@@ -277,7 +278,7 @@ def log(msg: str) -> None:
 print(log.outputs)  # ()
 ```
 
-#### cache: bool
+### `cache: bool`
 
 Whether results are cached (default: False). Set via constructor.
 
@@ -289,7 +290,7 @@ def expensive(x: int) -> int:
 print(expensive.cache)  # True
 ```
 
-#### definition_hash: str
+### `definition_hash: str`
 
 SHA256 hash of function source code (64-character hex string). Computed at node creation.
 
@@ -314,7 +315,7 @@ node = FunctionNode(os.path.exists, output_name="exists")
 # ValueError: Cannot hash function exists: could not get source code
 ```
 
-#### is_async: bool
+### `is_async: bool`
 
 True if function is async or async generator. Read-only, auto-detected.
 
@@ -342,7 +343,7 @@ async def async_gen(n: int):
 print(async_gen.is_async)  # True
 ```
 
-#### is_generator: bool
+### `is_generator: bool`
 
 True if function yields values (sync or async generator). Read-only, auto-detected.
 
@@ -373,7 +374,7 @@ print(async_gen.is_generator)  # True
 
 ### Special Methods
 
-#### \_\_call\_\_(\_args, \_\_kwargs)
+### \_\_call\_\_(\*args, \*\*kwargs)
 
 Call the wrapped function directly. Delegates to `self.func(*args, **kwargs)`.
 
@@ -390,7 +391,7 @@ print(result1)  # 10
 print(result2)  # 10
 ```
 
-#### \_\_repr\_\_() -> str
+### \_\_repr\_\_() -> str
 
 Informative string representation showing function name and node config.
 
@@ -432,7 +433,7 @@ def node(
     *,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
-) -> FunctionNode | Callable[[Callable], FunctionNode]
+) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
 **Args:**
