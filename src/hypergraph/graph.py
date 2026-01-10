@@ -44,7 +44,7 @@ class Graph:
     """Define a computation graph from nodes.
 
     Graph is a pure structure definition - it describes what nodes exist and how
-    they connect, but doesn't execute anything. Pass a Graph to a Runner for execution.
+    they connect.
 
     Edges are inferred automatically: if node A produces output "x" and node B
     has input "x", an edge A→B is created.
@@ -53,7 +53,7 @@ class Graph:
         name: Optional graph name (required for nesting via as_node)
         nodes: Map of node name → HyperNode
         outputs: All output names produced by nodes
-        leaf_outputs: Outputs from terminal nodes (no downstream consumers)
+        leaf_outputs: Outputs from terminal nodes (no downstream destinations)
         inputs: InputSpec describing required/optional/seed parameters
         has_cycles: True if graph contains cycles
         has_async_nodes: True if any FunctionNode is async
@@ -111,7 +111,7 @@ class Graph:
 
     @property
     def leaf_outputs(self) -> tuple[str, ...]:
-        """Outputs from leaf nodes (no downstream consumers)."""
+        """Outputs from leaf nodes (no downstream destinations)."""
         leaf_names = [
             name for name in self._nodes if self._nx_graph.out_degree(name) == 0
         ]
@@ -420,9 +420,43 @@ class Graph:
                     )
 
     def _validate_no_namespace_collision(self) -> None:
-        """Output names cannot match GraphNode names."""
-        # Deferred: requires GraphNode implementation
-        pass
+        """Ensure GraphNode names don't collide with output names.
+
+        GraphNode names are used for path-based result access (e.g., results['subgraph.output']).
+        If a GraphNode name matches an output name, it creates ambiguity.
+        """
+        from hypergraph.nodes.graph_node import GraphNode
+
+        graph_node_names = {
+            node.name for node in self._nodes.values()
+            if isinstance(node, GraphNode)
+        }
+
+        if not graph_node_names:
+            return  # No GraphNodes, nothing to validate
+
+        # Collect outputs from non-GraphNode nodes
+        other_outputs = set()
+        for node in self._nodes.values():
+            if not isinstance(node, GraphNode):
+                other_outputs.update(node.outputs)
+
+        # Check for collision
+        collision = graph_node_names & other_outputs
+        if collision:
+            colliding_name = next(iter(collision))
+            # Find which node is the source of this output
+            source_node = next(
+                n.name for n in self._nodes.values()
+                if colliding_name in n.outputs and not isinstance(n, GraphNode)
+            )
+            raise GraphConfigError(
+                f"GraphNode name '{colliding_name}' collides with output name\n\n"
+                f"  -> GraphNode '{colliding_name}' exists\n"
+                f"  -> Node '{source_node}' outputs '{colliding_name}'\n\n"
+                f"How to fix:\n"
+                f"  Rename the GraphNode: graph.as_node(name='other_name')"
+            )
 
     def _validate_consistent_defaults(self) -> None:
         """Shared input parameters must have ALL-or-NONE consistent defaults."""

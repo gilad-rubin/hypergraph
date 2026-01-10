@@ -200,3 +200,41 @@ class TestConsistentDefaultsValidation:
 
         # Bind changes the value but doesn't affect structure validation
         assert g2.inputs.bound == {"x": 100}
+
+
+class TestNamespaceCollisionValidation:
+    """Test GraphNode name collision with output names."""
+
+    def test_graphnode_name_matches_output_raises(self):
+        """GraphNode name colliding with output name raises error."""
+        # Outer node outputs "subgraph" - same as GraphNode name
+        @node(output_name="subgraph")
+        def source_node(x: int) -> int:
+            return x * 2
+
+        # Inner graph will be named "subgraph" - collision!
+        @node(output_name="inner_out")
+        def inner_func(a: int) -> int:
+            return a
+
+        inner_graph = Graph([inner_func], name="subgraph")
+
+        with pytest.raises(GraphConfigError, match="collides with output"):
+            Graph([source_node, inner_graph.as_node()])
+
+    def test_no_collision_different_names(self):
+        """No error when GraphNode name differs from all outputs."""
+        @node(output_name="result")
+        def source_node(x: int) -> int:
+            return x * 2
+
+        @node(output_name="inner_out")
+        def inner_func(a: int) -> int:
+            return a
+
+        inner_graph = Graph([inner_func], name="inner")  # Different from "result"
+
+        # Should not raise
+        outer = Graph([source_node, inner_graph.as_node()])
+        assert "inner" in outer.nodes
+        assert "source_node" in outer.nodes
