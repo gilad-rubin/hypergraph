@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 240" role="img" aria-labelledby="title desc">
+<title id="title">Hypergraph execution spectrum</title>
+<desc id="desc">Visualization showing progression from DAG to branching, agentic loop, and nested composition.</desc>
+<defs>
+  <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+    <stop offset="0%" stop-color="#0c1221"/>
+    <stop offset="100%" stop-color="#111b30"/>
+  </linearGradient>
+  <style>
+    .panel{fill:#121a2d;stroke:#2f3d63;stroke-width:2;rx:16;ry:16;}
+    .label{fill:#cfe5ff;font-family:"Inter","Segoe UI",sans-serif;font-size:16px;font-weight:600;}
+    .hint{fill:#93a7d1;font-family:"Inter","Segoe UI",sans-serif;font-size:13px;}
+    .node{fill:#7ad1ff;stroke:#0b5d8a;stroke-width:2;}
+    .diamond{fill:#ffc857;stroke:#b57a00;stroke-width:2;}
+    .loop{fill:none;stroke:#7ad1ff;stroke-width:3;stroke-linecap:round;stroke-dasharray:4 6;}
+    .arrow{stroke:#8fb2ff;stroke-width:3;stroke-linecap:round;}
+    .arrow-head{fill:#8fb2ff;}
+    .nested{fill:#2b3c64;stroke:#7ad1ff;stroke-width:2;}
+  </style>
+</defs>
+<rect width="960" height="240" fill="url(#bg)"/>
+
+<!-- DAG -->
+<g transform="translate(40,24)">
+  <rect class="panel" width="200" height="192"/>
+  <text class="label" x="16" y="34">DAG</text>
+  <text class="hint" x="16" y="56">Linear flow</text>
+  <circle class="node" cx="64" cy="116" r="12"/>
+  <circle class="node" cx="128" cy="116" r="12"/>
+  <circle class="node" cx="192" cy="116" r="12"/>
+  <line class="arrow" x1="76" y1="116" x2="116" y2="116"/>
+  <polygon class="arrow-head" points="116,116 108,111 108,121"/>
+  <line class="arrow" x1="140" y1="116" x2="180" y2="116"/>
+  <polygon class="arrow-head" points="180,116 172,111 172,121"/>
+</g>
+
+<!-- Branching -->
+<g transform="translate(260,24)">
+  <rect class="panel" width="200" height="192"/>
+  <text class="label" x="16" y="34">Branching</text>
+  <text class="hint" x="16" y="56">Conditional paths</text>
+  <circle class="node" cx="64" cy="116" r="12"/>
+  <polygon class="diamond" points="116,116 136,136 116,156 96,136"/>
+  <circle class="node" cx="172" cy="92" r="12"/>
+  <circle class="node" cx="172" cy="140" r="12"/>
+  <line class="arrow" x1="76" y1="116" x2="96" y2="116"/>
+  <polygon class="arrow-head" points="96,116 88,111 88,121"/>
+  <line class="arrow" x1="136" y1="126" x2="156" y2="102"/>
+  <polygon class="arrow-head" points="156,102 147,104 152,110"/>
+  <line class="arrow" x1="136" y1="146" x2="156" y2="140"/>
+  <polygon class="arrow-head" points="156,140 148,136 148,144"/>
+</g>
+
+<!-- Agentic loop -->
+<g transform="translate(480,24)">
+  <rect class="panel" width="200" height="192"/>
+  <text class="label" x="16" y="34">Agentic loop</text>
+  <text class="hint" x="16" y="56">Iterate until stop</text>
+  <circle class="node" cx="80" cy="112" r="12"/>
+  <circle class="node" cx="140" cy="112" r="12"/>
+  <circle class="node" cx="140" cy="64" r="12"/>
+  <line class="arrow" x1="92" y1="112" x2="128" y2="112"/>
+  <polygon class="arrow-head" points="128,112 120,107 120,117"/>
+  <path class="loop" d="M152 104 C188 90 188 54 152 46"/>
+  <polygon class="arrow-head" points="152,46 161,44 156,38"/>
+  <path class="loop" d="M128 64 C96 64 76 82 76 112 C76 142 98 160 130 160"/>
+  <polygon class="arrow-head" points="130,160 120,156 122,166"/>
+</g>
+
+<!-- Nested composition -->
+<g transform="translate(700,24)">
+  <rect class="panel" width="200" height="192"/>
+  <text class="label" x="16" y="34">Nested composition</text>
+  <text class="hint" x="16" y="56">Graphs as nodes</text>
+  <rect class="nested" x="52" y="84" width="120" height="72" rx="10" ry="10"/>
+  <rect class="nested" x="68" y="96" width="88" height="48" rx="8" ry="8" fill="#1b2744"/>
+  <circle class="node" cx="90" cy="120" r="10"/>
+  <circle class="node" cx="122" cy="120" r="10"/>
+  <line class="arrow" x1="100" y1="120" x2="112" y2="120"/>
+  <polygon class="arrow-head" points="112,120 104,115 104,125"/>
+</g>
+
+<!-- overall separator labels -->
+<text class="hint" x="152" y="218">Deterministic</text>
+<text class="hint" x="372" y="218">Dynamic paths</text>
+<text class="hint" x="592" y="218">Adaptive</text>
+<text class="hint" x="812" y="218">Composed</text>
+</svg>
