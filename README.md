@@ -7,7 +7,11 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
 - **Versatile** - Sync, async, streaming. Branches, loops, human-in-the-loop. No limits.
 - **Minimal** - No state schemas. No boilerplate. Just functions.
 
-![Hypergraph execution spectrum](docs/spectrum.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/spectrum-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/spectrum-light.svg">
+  <img alt="Hypergraph execution spectrum" src="docs/spectrum-light.svg">
+</picture>
 
 ## Installation
 
