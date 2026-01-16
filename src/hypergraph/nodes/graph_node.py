@@ -1,6 +1,6 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode, RenameEntry
 
@@ -81,3 +81,43 @@ class GraphNode(HyperNode):
     def definition_hash(self) -> str:
         """Hash of the nested graph."""
         return self._graph.definition_hash
+
+    @property
+    def output_annotation(self) -> dict[str, Any]:
+        """Type annotations for output values from the inner graph.
+
+        Returns:
+            dict mapping output names to their type annotations.
+            For each output, finds the node in the inner graph that produces it
+            and gets that node's output_annotation for that specific output.
+            Returns empty dict entries for outputs without type annotations.
+
+        Example:
+            >>> @node(output_name="x")
+            ... def inner_func(a: int) -> str: return "hello"
+            >>> inner_graph = Graph([inner_func], name="inner")
+            >>> gn = inner_graph.as_node()
+            >>> gn.output_annotation
+            {'x': str}
+        """
+        result: dict[str, Any] = {}
+
+        # Build mapping: output_name -> source_node
+        output_to_node: dict[str, HyperNode] = {}
+        for node in self._graph._nodes.values():
+            for output in node.outputs:
+                output_to_node[output] = node
+
+        # For each output of this GraphNode, get type from source node
+        for output_name in self.outputs:
+            source_node = output_to_node.get(output_name)
+            if source_node is None:
+                continue
+
+            # Check if source node has output_annotation property
+            if hasattr(source_node, "output_annotation"):
+                node_annotations = source_node.output_annotation
+                if output_name in node_annotations:
+                    result[output_name] = node_annotations[output_name]
+
+        return result

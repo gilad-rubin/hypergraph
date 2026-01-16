@@ -862,3 +862,79 @@ class TestGraphAsNode:
         gnode = g.as_node()
 
         assert gnode.graph is g
+
+
+class TestGraphNodeOutputAnnotation:
+    """Test GraphNode.output_annotation property for type extraction."""
+
+    def test_single_typed_output(self):
+        """Test GraphNode exposes output type from typed function."""
+        @node(output_name="x")
+        def inner_func(a: int) -> str:
+            return "hello"
+
+        inner_graph = Graph([inner_func], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.output_annotation == {"x": str}
+
+    def test_multiple_outputs(self):
+        """Test GraphNode exposes multiple output types."""
+        @node(output_name="x")
+        def func_a(a: int) -> str:
+            return ""
+
+        @node(output_name="y")
+        def func_b(x: str) -> float:
+            return 0.0
+
+        g = Graph([func_a, func_b], name="multi")
+        gn = g.as_node()
+
+        assert gn.output_annotation == {"x": str, "y": float}
+
+    def test_untyped_outputs(self):
+        """Test GraphNode returns empty dict for untyped outputs."""
+        @node(output_name="x")
+        def untyped(a):
+            return a
+
+        g = Graph([untyped], name="untyped")
+        gn = g.as_node()
+
+        assert gn.output_annotation == {}
+
+    def test_mixed_typed_untyped(self):
+        """Test GraphNode includes only typed outputs."""
+        @node(output_name="x")
+        def typed(a: int) -> str:
+            return ""
+
+        @node(output_name="y")
+        def untyped(x):
+            return x
+
+        g = Graph([typed, untyped], name="mixed")
+        gn = g.as_node()
+
+        # Only 'x' has type annotation
+        assert gn.output_annotation == {"x": str}
+
+    def test_nested_graphnode(self):
+        """Test output_annotation works with nested GraphNode."""
+        @node(output_name="x")
+        def inner(a: int) -> str:
+            return ""
+
+        inner_graph = Graph([inner], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="y")
+        def outer(x: str) -> float:
+            return 0.0
+
+        outer_graph = Graph([inner_gn, outer], name="outer")
+        outer_gn = outer_graph.as_node()
+
+        # Both inner and outer produce typed outputs
+        assert outer_gn.output_annotation == {"x": str, "y": float}
