@@ -25,11 +25,9 @@ print(add.inputs)    # ("x", "y")
 print(add.outputs)   # ("result",)
 ```
 
-### Outputs ARE State
+### Automatic Edge Inference
 
-Unlike other frameworks, hypergraph doesn't require a separate state schema. **Your node outputs form the graph's state.**
-
-When you run a graph, outputs flow from one node to the next:
+Hypergraph connects nodes automatically based on matching names. If node A produces output "embedding" and node B takes input "embedding", they're connected.
 
 ```python
 @node(output_name="embedding")
@@ -40,11 +38,10 @@ def embed(text: str) -> list[float]:
 def retrieve(embedding: list[float]) -> list[str]:
     return db.search(embedding)
 
-# State flow:
-# embed → produces "embedding" → retrieve consumes "embedding" → produces "docs"
+# Edges inferred: embed → retrieve (via "embedding")
 ```
 
-No state schema. No reducers. No conflicts. Just outputs flowing.
+No manual wiring. No configuration. Just name your outputs and inputs consistently.
 
 ## Creating Your First Node
 
@@ -517,7 +514,7 @@ renamed.with_inputs(x="different")  # ERROR - x was already renamed to "input"
 ## Next Steps
 
 - Explore [API Reference](api/) for complete documentation on nodes, graphs, and types
-- Read [Philosophy](philosophy.md) to understand "Outputs ARE State"
+- Read [Philosophy](philosophy.md) to understand the design principles
 - Try building a small pipeline with `strict_types=True` to catch errors early
 
 ## Common Patterns

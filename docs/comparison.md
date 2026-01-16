@@ -218,7 +218,7 @@ compiled = graph.compile()
 
 | Framework | State Model |
 |-----------|-------------|
-| hypergraph | Outputs ARE state. No schema needed. |
+| hypergraph | Edges inferred from names. No schema needed. |
 | LangGraph | Explicit TypedDict with reducers for appends |
 | Pydantic-Graph | Pydantic models with explicit read/write |
 | Hamilton | Outputs flow forward, no shared state |
