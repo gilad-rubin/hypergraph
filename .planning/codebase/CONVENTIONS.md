@@ -5,41 +5,37 @@
 ## Naming Patterns
 
 **Files:**
-- snake_case for modules: `graph.py`, `function.py`, `base.py`
-- Leading underscore for internal modules: `_utils.py`, `_rename.py`
-- Test files: `test_<module_name>.py`
+- Module names: lowercase with underscores (e.g., `graph_node.py`, `_typing.py`)
+- Private modules: prefixed with underscore (e.g., `_utils.py`, `_typing.py`, `_rename.py`)
+- Test files: `test_<module>.py` (e.g., `test_graph.py`, `test_nodes_function.py`)
 
 **Functions:**
-- snake_case: `ensure_tuple()`, `hash_definition()`, `_resolve_outputs()`
-- Leading underscore for internal/private: `_warn_if_has_return_annotation()`, `_apply_renames()`
+- snake_case for all functions and methods
+- Private methods prefixed with underscore: `_build_graph()`, `_validate_types()`
+- Helper functions: descriptive verb phrases: `ensure_tuple()`, `hash_definition()`
 
 **Variables:**
-- snake_case: `output_name`, `rename_inputs`, `edge_produced`
-- Leading underscore for internal state: `_bound`, `_nodes`, `_cached_hash`
+- snake_case for local variables and parameters
+- UPPER_CASE for module-level constants (though none currently exist)
+
+**Classes:**
+- PascalCase: `HyperNode`, `FunctionNode`, `GraphNode`, `InputSpec`
+- Exception classes end with `Error`: `RenameError`, `GraphConfigError`
 
 **Types:**
-- PascalCase for classes: `HyperNode`, `FunctionNode`, `GraphNode`, `InputSpec`
-- PascalCase for exceptions: `GraphConfigError`, `RenameError`
-- ALL_CAPS not observed (no constants defined)
-
-**Type Variables:**
-- Single uppercase letter with bound: `_T = TypeVar("_T", bound="HyperNode")`
+- TypeVars use single uppercase: `_T = TypeVar("_T", bound="HyperNode")`
 
 ## Code Style
 
 **Formatting:**
-- No explicit formatter config in project root
-- Uses standard Python formatting (4-space indentation)
+- No explicit formatter configured in pyproject.toml
+- Use Ruff for linting (configured implicitly via `.ruff_cache/` presence)
 - Line length appears to be ~88-100 characters
 
-**Linting:**
-- `.ruff_cache/` present, suggesting ruff is used
-- No explicit ruff.toml in project root
-
 **Type Hints:**
-- Comprehensive type hints throughout codebase
-- Uses `from __future__ import annotations` for forward references
-- Uses `TYPE_CHECKING` guard for circular imports:
+- Use `from __future__ import annotations` at top of all modules
+- Use modern union syntax: `str | None` instead of `Optional[str]`
+- Use `TYPE_CHECKING` blocks for circular imports:
 ```python
 from typing import TYPE_CHECKING
 
@@ -47,35 +43,59 @@ if TYPE_CHECKING:
     from hypergraph.graph import Graph
 ```
 
+**Docstrings:**
+- Google-style docstrings with Args, Returns, Raises, Example sections
+- Class docstrings include Attributes section listing public attributes
+- All public functions and classes have docstrings
+- Examples use doctests format with `>>>` prefix
+
+Example docstring pattern:
+```python
+def method_name(self, param: str) -> str:
+    """Brief description of method.
+
+    Longer description if needed that explains behavior,
+    edge cases, or important notes.
+
+    Args:
+        param: Description of parameter
+
+    Returns:
+        Description of return value.
+
+    Raises:
+        ErrorType: When this error occurs.
+
+    Example:
+        >>> obj.method_name("value")
+        'result'
+    """
+```
+
 ## Import Organization
 
 **Order:**
-1. `from __future__ import annotations` (when needed)
-2. Standard library (`hashlib`, `inspect`, `warnings`, `copy`)
-3. Third-party (`networkx as nx`)
-4. Local package imports
+1. `from __future__ import annotations` (always first when present)
+2. Standard library imports (sorted alphabetically)
+3. Third-party imports (e.g., `networkx`)
+4. Local/relative imports
 
-**Examples from `src/hypergraph/graph.py`:**
+**Import Style:**
+- Explicit imports preferred over `import *`
+- Group related imports from same module:
 ```python
-from __future__ import annotations
-
-import hashlib
-import networkx as nx
-from dataclasses import dataclass
-from typing import Any, Iterator, TYPE_CHECKING
-
-from hypergraph.nodes.base import HyperNode
+from typing import Any, Callable, TypeVar
 ```
 
 **Path Aliases:**
 - No path aliases configured
-- Uses relative package imports: `from hypergraph.nodes.base import HyperNode`
+- Use relative imports within package: `from hypergraph.nodes.base import HyperNode`
 
 ## Error Handling
 
 **Patterns:**
-- Custom exceptions inherit from `Exception` directly
-- Exception message format includes context, problem, and "How to fix" guidance:
+- Use custom exception classes inheriting from `Exception`
+- Error messages include context and "How to fix" guidance:
 ```python
 raise GraphConfigError(
     f"Duplicate node name: '{node.name}'\n\n"
@@ -85,32 +105,25 @@ raise GraphConfigError(
 )
 ```
 
-**Validation approach:**
-- Validate at construction time (fail fast)
-- Use descriptive messages with context
-- Include actionable fix suggestions
-
-**Try/except patterns:**
-- Catch specific exceptions, not bare `except:`
+- Use `try/except` with specific exceptions, not bare `except:`
+- Return sensible defaults or empty structures when safe:
 ```python
 try:
     hints = get_type_hints(func)
 except Exception:
-    # get_type_hints can fail on some edge cases, skip warning
-    return
+    return {}
 ```
 
 ## Logging
 
-**Framework:** None - uses `warnings.warn()` for user-facing warnings
+**Framework:** None configured - using `warnings` module for non-critical issues
 
 **Patterns:**
-- Use `warnings.warn()` with `UserWarning` for recoverable issues:
+- Use `warnings.warn()` for deprecation or potential issues:
 ```python
 warnings.warn(
-    f"Function '{func.__name__}' has return type '{return_hint}' but no output_name. "
-    f"If you want to capture the return value, use @node(output_name='...'). "
-    f"Otherwise, ignore this warning for side-effect only nodes.",
+    f"Function '{func.__name__}' has return type but no output_name. "
+    f"Use @node(output_name='...') to capture the return value.",
     UserWarning,
     stacklevel=4,
 )
@@ -119,36 +132,24 @@ warnings.warn(
 ## Comments
 
 **When to Comment:**
-- Module-level docstring explaining purpose
-- Class-level docstrings with attributes and examples
-- Method docstrings with Args/Returns/Raises
-- Inline comments for non-obvious logic
+- Comments explain "why" not "what"
+- Type ignore comments include reason: `# type: ignore[arg-type]`
+- TODO/FIXME comments for known technical debt (minimal in codebase)
 
-**Docstring Style:**
-- Google-style docstrings with sections: Args, Returns, Raises, Example, Note, Warning
-- Examples use `>>> ` format (doctest compatible):
-```python
-"""Wrap graph as node for composition. Returns new GraphNode.
-
-Args:
-    name: Optional node name. If not provided, uses graph.name.
-
-Returns:
-    GraphNode wrapping this graph
-
-Raises:
-    ValueError: If name is None and graph.name is None
-"""
-```
+**Inline Comments:**
+- Place on same line as code, separated by two spaces
+- Keep brief and relevant
 
 ## Function Design
 
 **Size:**
-- Functions are small and focused (typically 5-20 lines)
-- Complex operations split into helper methods
+- Keep functions focused on single responsibility
+- Split large validation/construction into private helpers
+- Example from `graph.py`: `_validate()` delegates to specific validators
 
 **Parameters:**
-- Use positional-only (`/`) when parameter names might conflict:
+- Use keyword-only args after `*` for optional configuration
+- Use positional-only args with `/` to prevent keyword conflicts:
 ```python
 def with_inputs(
     self: _T,
@@ -157,104 +158,62 @@ def with_inputs(
     **kwargs: str,
 ) -> _T:
 ```
-- Keyword-only (`*`) for optional configuration parameters
 
 **Return Values:**
-- Single return type when possible
-- Use tuples for multiple returns: `tuple[tuple[str, ...], list[RenameEntry]]`
-- None return for side-effect functions
+- Return immutable types (tuples) for collections exposed via properties
+- Return `self` type for fluent/chained methods using TypeVar
+- Return copies to prevent mutation of internal state
 
 ## Module Design
 
 **Exports:**
-- Explicit `__all__` in all public modules:
-```python
-__all__ = [
-    "HyperNode",
-    "RenameEntry",
-    "RenameError",
-    "FunctionNode",
-    "GraphNode",
-    "node",
-]
-```
+- Use `__all__` in `__init__.py` to define public API
+- Keep `__all__` minimal - only user-facing classes/functions
 
-**Barrel Files:**
-- Package `__init__.py` re-exports public API
-- `src/hypergraph/__init__.py` exports top-level symbols
-- `src/hypergraph/nodes/__init__.py` exports all node types
+**Package Structure:**
+- One primary class per module (e.g., `Graph` in `graph.py`)
+- Helper functions can live in same module or `_utils.py`
+- Private modules prefixed with underscore
 
 ## Class Design
 
-**Dataclasses:**
-- Use `@dataclass(frozen=True)` for immutable value objects:
-```python
-@dataclass(frozen=True)
-class InputSpec:
-    required: tuple[str, ...]
-    optional: tuple[str, ...]
-    seeds: tuple[str, ...]
-    bound: dict[str, Any]
-```
+**Immutability:**
+- Prefer immutable patterns: `with_*` methods return new instances
+- Use `frozen=True` for dataclasses: `@dataclass(frozen=True)`
+- Store internal state as private attributes (`_nodes`, `_bound`)
 
-- Use `@dataclass(frozen=True)` for tracking records:
+**Properties:**
+- Use `@property` for computed/derived values
+- Cache expensive computations in private attributes
+- Return defensive copies of mutable internal state:
 ```python
-@dataclass(frozen=True)
-class RenameEntry:
-    kind: Literal["name", "inputs", "outputs"]
-    old: str
-    new: str
+@property
+def nodes(self) -> dict[str, HyperNode]:
+    return dict(self._nodes)  # Return copy
 ```
 
 **Abstract Base Classes:**
-- Use `ABC` for abstract classes
-- Prevent direct instantiation via `__new__`:
-```python
-def __new__(cls, *args, **kwargs):
-    if cls is HyperNode:
-        raise TypeError("HyperNode cannot be instantiated directly")
-    return super().__new__(cls)
-```
+- Use ABC for interface definitions (`HyperNode`)
+- Override `__new__` to prevent direct instantiation of ABC
+- Define abstract interface in docstring, not via `@abstractmethod`
 
-**Immutability Pattern:**
-- All `with_*` methods return new instances
-- Use `_copy()` helper with shallow copy + selective deep copy:
-```python
-def _copy(self: _T) -> _T:
-    clone = copy.copy(self)
-    clone._rename_history = list(self._rename_history)
-    return clone
-```
+## Decorator Patterns
 
-**Properties:**
-- Use `@property` for computed values that should feel like attributes
-- Cache expensive computations with private attributes:
-```python
-@property
-def definition_hash(self) -> str:
-    if self._cached_hash is None:
-        self._cached_hash = self._compute_definition_hash()
-    return self._cached_hash
-```
-
-## Decorator Pattern
-
-**Multi-form decorators:**
-- Support both `@decorator` and `@decorator(args)` syntax:
+**Flexible Decorator:**
+Support both `@decorator` and `@decorator(args)` syntax:
 ```python
 def node(
     source: Callable | None = None,
     output_name: str | tuple[str, ...] | None = None,
     *,
-    rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     def decorator(func: Callable) -> FunctionNode:
-        return FunctionNode(...)
+        return FunctionNode(source=func, output_name=output_name, cache=cache)
 
     if source is not None:
-        return decorator(source)  # @node
-    return decorator  # @node(...)
+        return decorator(source)  # @node without parens
+    return decorator  # @node(...) with parens
 ```
 
 ---

@@ -2,156 +2,134 @@
 
 **Analysis Date:** 2026-01-16
 
-## Spec-Implementation Gap (Major)
+## Tech Debt
 
-**Large gap between specs and implementation:**
-- Issue: The `specs/reviewed/` directory contains comprehensive specifications for a full graph workflow framework, but `src/` only implements ~15% of the design
-- Files:
-  - Specs: `specs/reviewed/runners.md`, `specs/reviewed/node-types.md`, `specs/reviewed/execution-types.md`, `specs/reviewed/checkpointer.md`
-  - Implementation: `src/hypergraph/graph.py`, `src/hypergraph/nodes/`
-- Impact: The codebase cannot execute graphs - only define structure. No runners, no execution, no state management exist yet
-- Missing implementations:
-  - **Runners**: `SyncRunner`, `AsyncRunner`, `DaftRunner`, `DBOSAsyncRunner` - none exist
-  - **Node types**: `GateNode`, `RouteNode`, `BranchNode`, `TypeRouteNode`, `InterruptNode` - none exist
-  - **Execution**: `RunResult`, `RunStatus`, `PauseInfo`, `GraphState` - none exist
-  - **Persistence**: `Checkpointer`, `Step`, `StepResult`, `Workflow` - none exist
-  - **Caching**: `DiskCache`, `MemoryCache` - none exist
-  - **Events**: `NodeStartEvent`, `NodeEndEvent`, `StreamingChunkEvent` - none exist
-- Fix approach: Prioritize implementation phases starting with SyncRunner (simplest), then gate nodes, then AsyncRunner with streaming
+**Design Mode - No Runtime Implementation:**
+- Issue: Project is in "design mode" per `CLAUDE.md`. Graph definition and type checking exist, but no execution/runner implementation yet.
+- Files: `src/hypergraph/graph.py`, `specs/reviewed/runners.md`
+- Impact: Cannot actually run graphs - only structural validation works. The specs describe runners, checkpointers, state management, but none are implemented.
+- Fix approach: Follow the reviewed specs in `specs/reviewed/` to implement runners (likely next major milestone)
 
-## hasattr/isinstance Usage (Code Smell)
+**tmp/ Directory Contains Working Code:**
+- Issue: `tmp/pipefunc_typing.py` contains a more complete type checking implementation that was used as reference, but it depends on numpy
+- Files: `tmp/pipefunc_typing.py`
+- Impact: Reference code is in tmp/ but should probably be cleaned up or moved to deprecated/
+- Fix approach: Either delete or move to `deprecated/` once `_typing.py` is fully validated
 
-**Feature detection via hasattr breaks abstraction:**
-- Issue: Multiple uses of `hasattr()` and `isinstance()` for feature detection
-- Files:
-  - `src/hypergraph/graph.py:183` - `hasattr(node, "defaults")` to check if node has defaults
-  - `src/hypergraph/graph.py:324` - `isinstance(node, FunctionNode) and node.is_async`
-  - `src/hypergraph/graph.py:350` - `hasattr(node, "definition_hash")` for hash computation
-  - `src/hypergraph/graph.py:442` - `hasattr(node, 'defaults')` in param collection
-- Impact: Violates LSP (Liskov Substitution Principle) - indicates the base class interface is incomplete
-- Fix approach:
-  - Add `defaults` as abstract property on `HyperNode` with empty dict default for non-function nodes
-  - Add `definition_hash` as abstract property on `HyperNode`
-  - Add `is_async` property to `HyperNode` (returns False for non-function nodes)
+**hash_depth Parameter Not Implemented:**
+- Issue: `specs/reviewed/graph.md` describes `hash_depth` parameter for controlling import depth in definition hashing, but current implementation only hashes function source
+- Files: `src/hypergraph/_utils.py`, `src/hypergraph/graph.py`
+- Impact: Changes to helper functions in the same package won't invalidate the graph hash, which could cause stale cache issues
+- Fix approach: Implement the hash_depth feature as described in the spec when implementing runners/caching
 
-## HyperNode Not Truly Abstract (Design Issue)
+**complete_on_stop Parameter Not Implemented:**
+- Issue: Spec describes `complete_on_stop` behavior for graceful shutdown, but Graph constructor doesn't accept it
+- Files: `src/hypergraph/graph.py`, `specs/reviewed/graph.md`
+- Impact: No impact yet since runners aren't implemented, but will need to be added
+- Fix approach: Add parameter when implementing runner execution
 
-**HyperNode lacks proper abstract method enforcement:**
-- Issue: `HyperNode` declares attributes via type annotations but doesn't enforce implementation via `@abstractmethod`
-- Files: `src/hypergraph/nodes/base.py:15-37`
-- Impact: Subclasses could forget to set required attributes; no compile-time checks
-- Current workaround: Manual `__new__` check prevents direct instantiation
-- Fix approach: Consider `@abstractproperty` for core attributes, or document/test the contract explicitly
+## Known Bugs
 
-## GraphNode Incomplete Implementation
-
-**GraphNode lacks methods specified in design:**
-- Issue: `GraphNode` is implemented but missing key methods from spec
-- Files:
-  - Implementation: `src/hypergraph/nodes/graph_node.py`
-  - Spec: `specs/reviewed/node-types.md:1192-1599`
-- Missing:
-  - `map_over()` method for batch iteration configuration
-  - `with_inputs()` override that propagates to `_map_over`
-  - `complete_on_stop` property
-  - `runner` property for nested execution
-- Impact: Cannot use nested graphs for batch processing or configure execution behavior
-- Fix approach: Implement missing methods following spec closely
-
-## Test Coverage Gaps
-
-**Critical functionality untested:**
-- Files: `tests/` directory
-- What's not tested:
-  - Nested graph execution flow (only structure tested)
-  - GraphNode `with_inputs`/`with_outputs` behavior
-  - Cyclic graph detection edge cases
-  - Error message formatting for complex scenarios
-  - Multiple output unpacking validation
-- Risk: Regressions could go unnoticed as more features are added
-- Priority: High - tests should be added before implementing runners
-
-## Deprecated/Obsolete Code Presence
-
-**Multiple deprecated directories still present:**
-- Issue: Old code directories exist but are excluded via pyproject.toml
-- Files:
-  - `src/hypergraph/old/` - excluded in pyproject.toml but may still exist
-  - `specs/deprecated/` - old spec versions
-  - `specs/not_reviewed/` - unreviewed specifications
-  - `deprecated/Continuous-Claude-v3/` - appears in git status as untracked
-- Impact: Confusion about what code is current; potential for importing wrong modules
-- Fix approach: Consider removing deprecated directories entirely, or moving to separate archive
-
-## Missing Public API Exports
-
-**Some internal classes not exported:**
-- Issue: `RenameEntry` not exported from main `__init__.py`
-- Files:
-  - `src/hypergraph/__init__.py` - exports `RenameError` but not `RenameEntry`
-  - `src/hypergraph/nodes/__init__.py` - exports `RenameEntry`
-- Impact: Inconsistent import paths for related types
-- Fix approach: Either export `RenameEntry` from top-level or document that it's internal
-
-## FunctionNode Default Output Behavior
-
-**Spec-implementation mismatch on default output_name:**
-- Issue: Spec says `output_name` defaults to function name, but implementation uses empty tuple
-- Files:
-  - Spec: `specs/reviewed/node-types.md:360` - "Default: function name"
-  - Implementation: `src/hypergraph/nodes/function.py:138` - `outputs = ()` when no output_name
-- Impact: Nodes without explicit `output_name` become side-effect only (no output captured)
-- Current behavior: Emits warning if function has return annotation but no `output_name`
-- Fix approach: Decide if current behavior is correct and update spec, or change implementation
-
-## No Runtime Execution Path
-
-**Graph defines structure but cannot execute:**
-- Issue: There is no code path to actually run a graph
-- Files: All of `src/hypergraph/`
-- Impact: The framework is currently unusable for its intended purpose
-- Current state: Only graph construction and validation works
-- Fix approach: Implement `SyncRunner.run()` as first priority - simplest execution model
-
-## Validation Gap for Nested Graphs
-
-**GraphNode validation incomplete:**
-- Issue: `_validate_no_namespace_collision` is a stub (pass)
-- Files: `src/hypergraph/graph.py:422-425`
-- Impact: Could create graphs where output names collide with GraphNode names, causing ambiguous results
-- Risk: Medium - can cause confusing bugs when using nested graphs
-- Fix approach: Implement the validation following the pattern in the spec
-
-## Definition Hash Excludes Bindings Intentionally
-
-**Potential cache invalidation issue:**
-- Issue: `definition_hash` excludes bound values
-- Files: `src/hypergraph/graph.py:329-368`
-- Impact: Two graphs with same structure but different bound values have same hash
-- Current behavior: By design - bindings are runtime values, not structure
-- Consideration: May need separate "execution hash" that includes bindings for cache keys
-
-## Dependencies
-
-**No risky dependencies identified:**
-- Only required dependency: `networkx>=3.2`
-- Optional dependencies are well-scoped (daft, notebook, telemetry)
-- No known security issues
-
-## Scaling Limits
-
-**Not applicable yet:**
-- Framework is in early design phase
-- No runtime execution to measure performance
-- NetworkX handles graph structure - known to scale well for reasonable graph sizes
+No known bugs at this time. All 276 tests pass.
 
 ## Security Considerations
 
-**No current security risks:**
-- No network operations in current implementation
-- No file I/O beyond source inspection
-- No user input handling yet
-- Risk will increase when runners with checkpointing are added (serialization)
+**No Runtime Input Validation:**
+- Risk: Type checking is build-time only (via `strict_types`). No runtime type checking exists.
+- Files: `src/hypergraph/graph.py` (`_validate_types`)
+- Current mitigation: Users must enable `strict_types=True` explicitly; type mismatches caught at Graph construction
+- Recommendations: Consider adding optional runtime type checking when implementing runners
+
+**Function Source Hashing:**
+- Risk: `hash_definition` uses `inspect.getsource()` which could fail silently on certain function types
+- Files: `src/hypergraph/_utils.py`
+- Current mitigation: Raises `ValueError` if source can't be retrieved
+- Recommendations: Document limitation for C extensions and built-ins
+
+## Performance Bottlenecks
+
+No significant performance concerns identified. The codebase is small and focused on graph definition (not execution).
+
+**Potential Future Concern - Graph Validation:**
+- Problem: `_validate_types()` iterates all edges and calls `is_type_compatible()` for each
+- Files: `src/hypergraph/graph.py` (lines 528-575)
+- Cause: Linear scan with recursive type checking
+- Improvement path: Not a concern until graphs reach thousands of nodes; NetworkX handles graph operations efficiently
+
+## Fragile Areas
+
+**Type Compatibility for TypeVars:**
+- Files: `src/hypergraph/_typing.py` (lines 394-428, 479-482)
+- Why fragile: Incoming TypeVars return True unconditionally (can't know concrete type without runtime info). This matches pipefunc behavior but could cause false positives.
+- Safe modification: Any changes should be accompanied by comprehensive test cases in `tests/test_typing.py`
+- Test coverage: Good - see `TestTypeVarCompatibility` class
+
+**Python Version-Specific ForwardRef Handling:**
+- Files: `src/hypergraph/_typing.py` (lines 110-129)
+- Why fragile: `_evaluate_forwardref()` has version-specific code for Python 3.12 vs 3.13+
+- Safe modification: Test on all supported Python versions (3.10-3.13)
+- Test coverage: Forward reference tests exist but version-specific branches may not all be covered
+
+**Graph Copy Operation:**
+- Files: `src/hypergraph/graph.py` (`_shallow_copy` lines 372-383)
+- Why fragile: Uses `copy.copy()` for shallow copy, but only creates new `_bound` dict. If new mutable attributes are added to Graph, they need explicit handling.
+- Safe modification: Document mutable attributes and update `_shallow_copy()` when adding new ones
+- Test coverage: Tested via bind/unbind tests
+
+## Scaling Limits
+
+**No Current Limits:**
+- NetworkX can handle millions of nodes
+- Type checking is O(edges * type_complexity)
+- No known scaling issues for the current scope
+
+## Dependencies at Risk
+
+**networkx:**
+- Risk: None - stable, well-maintained library
+- Impact: Core dependency for graph operations
+- Migration plan: N/A - appropriate choice
+
+**No Other Runtime Dependencies:**
+- Project has minimal dependencies (just networkx for core)
+- Optional dependencies (pyarrow, daft, etc.) are properly isolated
+
+## Missing Critical Features
+
+**Execution Engine:**
+- Problem: No way to actually execute graphs
+- Blocks: Real-world usage
+- Note: This is intentional - project is in design phase per `CLAUDE.md`
+
+**RouteNode, BranchNode, InterruptNode:**
+- Problem: Specs describe these node types for conditional execution and human-in-the-loop, but only FunctionNode and GraphNode are implemented
+- Blocks: Cyclic graph execution, conditional branching, HITL workflows
+- Files: `specs/reviewed/node-types.md`, `src/hypergraph/nodes/`
+
+**Observability/Telemetry:**
+- Problem: No logging, tracing, or metrics infrastructure
+- Blocks: Production debugging and monitoring
+- Note: `pyproject.toml` lists optional telemetry deps (logfire, tqdm, rich)
+
+## Test Coverage Gaps
+
+**Missing pytest-cov:**
+- What's not tested: Cannot measure exact coverage - pytest-cov not in dev dependencies
+- Files: `pyproject.toml` (dev dependencies)
+- Risk: Unknown coverage percentage
+- Priority: Low - test file count and organization suggests good coverage
+
+**Forward Reference Resolution Edge Cases:**
+- What's not tested: Complex nested forward references with version-specific behavior
+- Files: `src/hypergraph/_typing.py`
+- Risk: Edge case failures on specific Python versions
+- Priority: Medium
+
+**GraphNode Type Propagation:**
+- What's not tested: Deep nesting (3+ levels) of GraphNode type annotations
+- Files: `src/hypergraph/nodes/graph_node.py` (`get_input_type`, `output_annotation`)
+- Risk: Type info may not propagate correctly through multiple nesting levels
+- Priority: Low - basic nesting is tested
 
 ---
 
