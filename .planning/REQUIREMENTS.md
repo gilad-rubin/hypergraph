@@ -128,43 +128,43 @@ Which phases cover which requirements. Updated by create-roadmap.
 | API-04 | Phase 6 | Pending |
 | STYLE-02 | Phase 6 | Pending |
 | STYLE-03 | Phase 6 | Pending |
-| GNODE-01 | — | Pending |
-| GNODE-02 | — | Pending |
-| GNODE-03 | — | Pending |
-| GNODE-04 | — | Pending |
-| GNODE-05 | — | Pending |
-| TOPO-01 | — | Pending |
-| TOPO-02 | — | Pending |
-| TOPO-03 | — | Pending |
-| TOPO-04 | — | Pending |
-| TOPO-05 | — | Pending |
-| FUNC-01 | — | Pending |
-| FUNC-02 | — | Pending |
-| FUNC-03 | — | Pending |
-| FUNC-04 | — | Pending |
-| FUNC-05 | — | Pending |
-| TYPE-01 | — | Pending |
-| TYPE-02 | — | Pending |
-| TYPE-03 | — | Pending |
-| TYPE-04 | — | Pending |
-| TYPE-05 | — | Pending |
-| TYPE-06 | — | Pending |
-| TYPE-07 | — | Pending |
-| BIND-01 | — | Pending |
-| BIND-02 | — | Pending |
-| BIND-03 | — | Pending |
-| BIND-04 | — | Pending |
-| NAME-01 | — | Pending |
-| NAME-02 | — | Pending |
-| NAME-03 | — | Pending |
-| NAME-04 | — | Pending |
-| NAME-05 | — | Pending |
+| GNODE-01 | Phase 7 | Pending |
+| GNODE-02 | Phase 7 | Pending |
+| GNODE-03 | Phase 7 | Pending |
+| GNODE-04 | Phase 7 | Pending |
+| GNODE-05 | Phase 7 | Pending |
+| TOPO-01 | Phase 8 | Pending |
+| TOPO-02 | Phase 8 | Pending |
+| TOPO-03 | Phase 8 | Pending |
+| TOPO-04 | Phase 8 | Pending |
+| TOPO-05 | Phase 8 | Pending |
+| FUNC-01 | Phase 9 | Pending |
+| FUNC-02 | Phase 9 | Pending |
+| FUNC-03 | Phase 9 | Pending |
+| FUNC-04 | Phase 9 | Pending |
+| FUNC-05 | Phase 9 | Pending |
+| TYPE-01 | Phase 10 | Pending |
+| TYPE-02 | Phase 10 | Pending |
+| TYPE-03 | Phase 10 | Pending |
+| TYPE-04 | Phase 10 | Pending |
+| TYPE-05 | Phase 10 | Pending |
+| TYPE-06 | Phase 10 | Pending |
+| TYPE-07 | Phase 10 | Pending |
+| BIND-01 | Phase 11 | Pending |
+| BIND-02 | Phase 11 | Pending |
+| BIND-03 | Phase 11 | Pending |
+| BIND-04 | Phase 11 | Pending |
+| NAME-01 | Phase 12 | Pending |
+| NAME-02 | Phase 12 | Pending |
+| NAME-03 | Phase 12 | Pending |
+| NAME-04 | Phase 12 | Pending |
+| NAME-05 | Phase 12 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 10 total (mapped to phases 5-6)
-- v1.2 requirements: 31 total (pending roadmap)
-- Unmapped: 31 (v1.2 pending roadmap creation)
+- v1.2 requirements: 31 total (mapped to phases 7-12)
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-01-16*
-*Last updated: 2026-01-16 after adding v1.2 requirements*
+*Last updated: 2026-01-16 after mapping v1.2 requirements to phases*

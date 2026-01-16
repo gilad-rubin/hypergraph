@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-16)
 
 **Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** Phase 5 — Getting Started Audit
+**Current focus:** Phase 7 — GraphNode Capabilities
 
 ## Current Position
 
-Phase: 5 of 6 (Getting Started Audit)
+Phase: 7 of 12 (GraphNode Capabilities)
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-01-16 — Roadmap created for v1.1
+Last activity: 2026-01-16 — v1.2 phases added to roadmap
 
-Progress: ░░░░░░░░░░ 0%
+Progress: ██████░░░░ 50% (v1.0 complete, v1.1 pending, v1.2 starting)
 
 ## Performance Metrics
 
@@ -53,5 +53,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-16
-Stopped at: Roadmap created
+Stopped at: v1.2 roadmap created
 Resume file: None
