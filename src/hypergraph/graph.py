@@ -408,7 +408,9 @@ class Graph:
                     )
 
     def _validate_valid_identifiers(self) -> None:
-        """Node and output names must be valid Python identifiers."""
+        """Node and output names must be valid Python identifiers (not keywords)."""
+        import keyword
+
         from hypergraph.nodes.graph_node import GraphNode
 
         for node in self._nodes.values():
@@ -422,11 +424,25 @@ class Graph:
                     f"How to fix:\n"
                     f"  Use letters, numbers, underscores only"
                 )
+            if keyword.iskeyword(node.name):
+                raise GraphConfigError(
+                    f"Invalid node name: '{node.name}'\n\n"
+                    f"  -> '{node.name}' is a Python keyword and cannot be used\n\n"
+                    f"How to fix:\n"
+                    f"  Use a different name (e.g., '{node.name}_node' or '{node.name}_func')"
+                )
             for output in node.outputs:
                 if not output.isidentifier():
                     raise GraphConfigError(
                         f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
                         f"  -> Output names must be valid Python identifiers"
+                    )
+                if keyword.iskeyword(output):
+                    raise GraphConfigError(
+                        f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
+                        f"  -> '{output}' is a Python keyword and cannot be used\n\n"
+                        f"How to fix:\n"
+                        f"  Use a different name (e.g., '{output}_value' or '{output}_result')"
                     )
 
     def _validate_no_namespace_collision(self) -> None:

@@ -22,6 +22,7 @@ from typing import (
     Any,
     Callable,
     ForwardRef,
+    Literal,
     NamedTuple,
     TypeVar,
     Union,
@@ -150,6 +151,11 @@ def _resolve_type(type_: Any, memo: TypeCheckMemo) -> Any:
     origin = get_origin(type_)
     if origin:
         args = get_args(type_)
+
+        # Handle Literal specially - its arguments are VALUES, not types
+        # Don't try to resolve strings like "a" or "b" as forward references
+        if origin is Literal:
+            return type_
 
         # Handle Annotated specially - only resolve the primary type, keep metadata as-is
         if origin is Annotated:

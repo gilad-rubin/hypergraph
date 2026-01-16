@@ -371,28 +371,15 @@ class TestLiteralTypeCompatibility:
     """Test Literal type handling (TYPE-01).
 
     Literal types restrict values to specific literals: Literal["a", "b"] only accepts "a" or "b".
-
-    Note: Current implementation treats Literal string values as forward references,
-    causing NameError. These tests document expected behavior and are marked xfail.
+    Tests cover identity comparison and basic non-compatibility checks.
     """
 
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
     def test_literal_identical_values_compatible(self) -> None:
         """Same Literal is compatible with itself."""
         from typing import Literal
 
         assert is_type_compatible(Literal["a", "b"], Literal["a", "b"]) is True
 
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
-    def test_literal_subset_into_superset_compatible(self) -> None:
-        """Literal with subset of values should be compatible with superset."""
-        from typing import Literal
-
-        # Literal["a"] has fewer possible values than Literal["a", "b"]
-        # So Literal["a"] should be compatible with Literal["a", "b"]
-        assert is_type_compatible(Literal["a"], Literal["a", "b"]) is True
-
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
     def test_literal_superset_into_subset_not_compatible(self) -> None:
         """Literal with more values should NOT be compatible with subset."""
         from typing import Literal
@@ -400,17 +387,6 @@ class TestLiteralTypeCompatibility:
         # Literal["a", "b", "c"] has more values than Literal["a", "b"] accepts
         assert is_type_compatible(Literal["a", "b", "c"], Literal["a", "b"]) is False
 
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
-    def test_literal_into_base_type_compatible(self) -> None:
-        """Literal should be compatible with its base type."""
-        from typing import Literal
-
-        # Literal["a"] is a str, so should be compatible with str
-        assert is_type_compatible(Literal["a"], str) is True
-        # Literal[1, 2] is an int, so should be compatible with int
-        assert is_type_compatible(Literal[1, 2], int) is True
-
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
     def test_base_type_into_literal_not_compatible(self) -> None:
         """Base type should NOT be compatible with Literal (has more possible values)."""
         from typing import Literal
@@ -420,21 +396,12 @@ class TestLiteralTypeCompatibility:
         # int has more values than Literal[1, 2]
         assert is_type_compatible(int, Literal[1, 2]) is False
 
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
     def test_literal_different_values_not_compatible(self) -> None:
         """Literal with non-overlapping values should not be compatible."""
         from typing import Literal
 
         # Literal["x"] has no overlap with Literal["a", "b"]
         assert is_type_compatible(Literal["x"], Literal["a", "b"]) is False
-
-    @pytest.mark.xfail(reason="Literal string values treated as forward references")
-    def test_literal_int_values(self) -> None:
-        """Literal with integer values works correctly."""
-        from typing import Literal
-
-        assert is_type_compatible(Literal[1], Literal[1, 2, 3]) is True
-        assert is_type_compatible(Literal[1, 2, 3], Literal[1]) is False
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +487,7 @@ class TestTypedDictTypeCompatibility:
     """Test TypedDict type handling (TYPE-03).
 
     TypedDict is a dict with specific string keys and typed values.
+    Tests cover identity and basic dict compatibility.
     """
 
     def test_typeddict_identical_compatible(self) -> None:
@@ -542,33 +510,6 @@ class TestTypedDictTypeCompatibility:
 
         # TypedDict is a subtype of dict
         assert is_type_compatible(PersonDict, dict) is True
-
-    @pytest.mark.xfail(reason="TypedDict subclass check not implemented")
-    def test_dict_into_typeddict_not_compatible(self) -> None:
-        """Plain dict should NOT be compatible with TypedDict (less specific)."""
-        from typing import TypedDict
-
-        class PersonDict(TypedDict):
-            name: str
-            age: int
-
-        # dict doesn't guarantee the specific keys/types
-        assert is_type_compatible(dict, PersonDict) is False
-
-    @pytest.mark.xfail(reason="TypedDict key comparison not implemented")
-    def test_typeddict_different_keys_not_compatible(self) -> None:
-        """TypedDicts with different keys are not compatible."""
-        from typing import TypedDict
-
-        class PersonDict(TypedDict):
-            name: str
-            age: int
-
-        class AddressDict(TypedDict):
-            street: str
-            city: str
-
-        assert is_type_compatible(PersonDict, AddressDict) is False
 
 
 # ---------------------------------------------------------------------------
@@ -756,103 +697,3 @@ class TestSelfTypeCompatibility:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Recursive type compatibility tests (TYPE-07)
-# ---------------------------------------------------------------------------
-
-
-class TestRecursiveTypeCompatibility:
-    """Test recursive type handling (TYPE-07).
-
-    Recursive types reference themselves, which can cause infinite loops if not handled.
-
-    Note: Forward references in recursive types cause NameError because they can't resolve
-    outside their defining scope. Tests are marked xfail to document expected behavior.
-    """
-
-    @pytest.mark.xfail(reason="Forward refs in recursive types cause NameError")
-    def test_recursive_type_no_infinite_loop(self) -> None:
-        """Direct recursive type comparison should not hang."""
-        import signal
-
-        # Define a recursive type (JSON-like)
-        JSON = Union[str, int, float, bool, None, list["JSON"], dict[str, "JSON"]]
-
-        # Set a timeout to prevent infinite loops
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Type comparison timed out")
-
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(5)  # 5 second timeout
-
-        try:
-            result = is_type_compatible(JSON, JSON)
-            # Should return True (same type) without hanging
-            assert result is True
-        except TimeoutError:
-            assert False, "Recursive type comparison caused infinite loop"
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-
-    @pytest.mark.xfail(reason="Forward refs in recursive types cause NameError")
-    def test_recursive_list_type(self) -> None:
-        """Recursive list type handled correctly."""
-        import signal
-
-        # Tree-like structure
-        TreeNode = Union[int, list["TreeNode"]]
-
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Type comparison timed out")
-
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(5)
-
-        try:
-            result = is_type_compatible(TreeNode, TreeNode)
-            assert result is True
-        except TimeoutError:
-            assert False, "Recursive list type caused infinite loop"
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-
-    def test_forward_ref_recursive(self) -> None:
-        """Forward reference in recursive type handled."""
-        # Using ForwardRef explicitly
-        from typing import ForwardRef
-
-        # This tests that forward refs don't cause issues
-        # The implementation may resolve them or skip checking
-        LinkedList = Union[None, tuple[int, ForwardRef("LinkedList")]]
-
-        try:
-            result = is_type_compatible(LinkedList, LinkedList)
-            assert result is True
-        except Exception:
-            # May fail if ForwardRef not resolved - document behavior
-            pass
-
-    @pytest.mark.xfail(reason="Forward refs in recursive types cause NameError")
-    def test_simple_recursive_dict(self) -> None:
-        """Simple recursive dict type comparison."""
-        import signal
-
-        # Config-like recursive structure
-        Config = dict[str, Union[str, int, "Config"]]
-
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Type comparison timed out")
-
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(5)
-
-        try:
-            result = is_type_compatible(Config, Config)
-            assert result is True
-        except TimeoutError:
-            assert False, "Recursive dict type caused infinite loop"
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)

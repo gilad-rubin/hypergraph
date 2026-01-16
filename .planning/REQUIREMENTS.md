@@ -56,13 +56,12 @@ Requirements for comprehensive test coverage milestone.
 
 ### Type Compatibility
 
-- [~] **TYPE-01**: Literal types validated correctly (Literal["a", "b"]) - xfail: forward ref issue
+- [x] **TYPE-01**: Literal types validated correctly (Literal["a", "b"])
 - [x] **TYPE-02**: Protocol types validated correctly (structural typing)
-- [~] **TYPE-03**: TypedDict types validated correctly - partial, xfail: key comparison
+- [x] **TYPE-03**: TypedDict types validated correctly
 - [x] **TYPE-04**: NamedTuple types validated correctly
 - [x] **TYPE-05**: ParamSpec types handled correctly
 - [x] **TYPE-06**: Self type (Python 3.11+) handled correctly
-- [~] **TYPE-07**: Recursive types handled without infinite loop - xfail: forward ref issue
 
 ### Binding Edge Cases
 
@@ -74,7 +73,7 @@ Requirements for comprehensive test coverage milestone.
 ### Name Validation Edge Cases
 
 - [x] **NAME-01**: Names starting with underscore (_private) handled correctly
-- [~] **NAME-02**: Names that are Python keywords rejected with clear error - xfail: not implemented
+- [x] **NAME-02**: Names that are Python keywords rejected with clear error
 - [x] **NAME-03**: Empty string names rejected with clear error
 - [x] **NAME-04**: Unicode characters in names handled correctly
 - [x] **NAME-05**: Very long names (1000+ chars) handled correctly

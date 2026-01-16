@@ -332,7 +332,6 @@ class TestNameValidationEdgeCases:
 
     # NAME-02: Python keywords (should be rejected)
 
-    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
     def test_node_name_keyword_class_raises(self):
         """Node name 'class' is a Python keyword and should be rejected."""
         import keyword
@@ -352,7 +351,6 @@ class TestNameValidationEdgeCases:
 
         assert "keyword" in str(exc_info.value).lower()
 
-    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
     def test_node_name_keyword_for_raises(self):
         """Node name 'for' is a Python keyword and should be rejected."""
 
@@ -365,7 +363,6 @@ class TestNameValidationEdgeCases:
         with pytest.raises(GraphConfigError):
             Graph([fn])
 
-    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
     def test_node_name_keyword_import_raises(self):
         """Node name 'import' is a Python keyword and should be rejected."""
 
@@ -378,7 +375,6 @@ class TestNameValidationEdgeCases:
         with pytest.raises(GraphConfigError):
             Graph([fn])
 
-    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
     def test_output_name_keyword_raises(self):
         """Output name 'class' is a Python keyword and should be rejected."""
 
