@@ -378,10 +378,14 @@ def _handle_generic_types(
         if not required_args or not incoming_args:
             return True
 
+        # Require same arity for generic args
+        if len(incoming_args) != len(required_args):
+            return False
+
         # Compare args pairwise
         return all(
             is_type_compatible(t1, t2, memo)
-            for t1, t2 in zip(incoming_args, required_args)
+            for t1, t2 in zip(incoming_args, required_args, strict=True)
         )
 
     return None
