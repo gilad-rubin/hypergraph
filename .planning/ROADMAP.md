@@ -10,7 +10,7 @@ Add type annotation validation to hypergraph to catch type mismatches at graph c
 - Integer phases (1, 2, 3, 4): Planned milestone work
 - Decimal phases (e.g., 2.1): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: Type Extraction Infrastructure** - Nodes expose type information
+- [x] **Phase 1: Type Extraction Infrastructure** - Nodes expose type information
 - [ ] **Phase 2: Type Compatibility Engine** - Determine if types are compatible
 - [ ] **Phase 3: Enforcement & Errors** - Strict mode catches problems with helpful messages
 - [ ] **Phase 4: Map Over Transformation** - `map_over` transforms types to `list[T]`
@@ -29,7 +29,7 @@ Add type annotation validation to hypergraph to catch type mismatches at graph c
 **Plans**: TBD
 
 Plans:
-- [ ] 01-01: Type extraction infrastructure (FunctionNode + GraphNode + Graph parameter)
+- [x] 01-01: Type extraction infrastructure (FunctionNode + GraphNode + Graph parameter)
 
 ### Phase 2: Type Compatibility Engine
 **Goal**: System can determine if two types are compatible
@@ -83,7 +83,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Type Extraction Infrastructure | 0/TBD | Not started | - |
+| 1. Type Extraction Infrastructure | 1/1 | Complete | 2026-01-16 |
 | 2. Type Compatibility Engine | 0/TBD | Not started | - |
 | 3. Enforcement & Errors | 0/TBD | Not started | - |
 | 4. Map Over Transformation | 0/TBD | Not started | - |
