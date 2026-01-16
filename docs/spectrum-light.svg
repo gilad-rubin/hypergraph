@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 220" role="img" aria-labelledby="title desc">
+<title id="title">Hypergraph execution spectrum</title>
+<desc id="desc">Visualization showing progression from DAG to branching, agentic loop, and nested composition.</desc>
+<rect width="900" height="220" fill="#f6f8fa" rx="12"/>
+
+<!-- DAG Panel -->
+<g transform="translate(20,16)">
+  <rect width="200" height="188" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5" rx="12"/>
+  <text x="16" y="32" fill="#1f2328" font-family="system-ui,-apple-system,sans-serif" font-size="17" font-weight="600">DAG</text>
+  <text x="16" y="52" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="13">Linear flow</text>
+
+  <!-- 3 nodes in a line -->
+  <circle cx="40" cy="108" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <circle cx="100" cy="108" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <circle cx="160" cy="108" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+
+  <!-- arrows -->
+  <line x1="54" y1="108" x2="82" y2="108" stroke="#0969da" stroke-width="2"/>
+  <polygon points="86,108 78,103 78,113" fill="#0969da"/>
+  <line x1="114" y1="108" x2="142" y2="108" stroke="#0969da" stroke-width="2"/>
+  <polygon points="146,108 138,103 138,113" fill="#0969da"/>
+
+  <text x="100" y="172" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="12" text-anchor="middle">Deterministic</text>
+</g>
+
+<!-- Branching Panel -->
+<g transform="translate(240,16)">
+  <rect width="200" height="188" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5" rx="12"/>
+  <text x="16" y="32" fill="#1f2328" font-family="system-ui,-apple-system,sans-serif" font-size="17" font-weight="600">Branching</text>
+  <text x="16" y="52" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="13">Conditional paths</text>
+
+  <!-- node + diamond + 2 outputs -->
+  <circle cx="36" cy="108" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <polygon points="100,88 120,108 100,128 80,108" fill="#f9a825" stroke="#bf6a02" stroke-width="2"/>
+  <circle cx="164" cy="72" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <circle cx="164" cy="144" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+
+  <!-- arrows -->
+  <line x1="50" y1="108" x2="76" y2="108" stroke="#0969da" stroke-width="2"/>
+  <polygon points="80,108 72,103 72,113" fill="#0969da"/>
+  <line x1="118" y1="94" x2="146" y2="76" stroke="#0969da" stroke-width="2"/>
+  <polygon points="150,74 140,74 144,82" fill="#0969da"/>
+  <line x1="118" y1="122" x2="146" y2="140" stroke="#0969da" stroke-width="2"/>
+  <polygon points="150,142 140,142 144,134" fill="#0969da"/>
+
+  <text x="100" y="172" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="12" text-anchor="middle">Dynamic paths</text>
+</g>
+
+<!-- Agentic loop Panel -->
+<g transform="translate(460,16)">
+  <rect width="200" height="188" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5" rx="12"/>
+  <text x="16" y="32" fill="#1f2328" font-family="system-ui,-apple-system,sans-serif" font-size="17" font-weight="600">Agentic loop</text>
+  <text x="16" y="52" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="13">Iterate until stop</text>
+
+  <!-- Diamond layout: 1 top, 2 middle, 1 bottom -->
+  <!-- Top node -->
+  <circle cx="100" cy="72" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <!-- Middle row: 2 nodes -->
+  <circle cx="50" cy="115" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <circle cx="150" cy="115" r="14" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+
+  <!-- Arrows: top -> left, left -> right, right loops back to top -->
+  <line x1="90" y1="82" x2="60" y2="105" stroke="#0969da" stroke-width="2"/>
+  <polygon points="58,107 60,96 68,102" fill="#0969da"/>
+
+  <line x1="64" y1="115" x2="132" y2="115" stroke="#0969da" stroke-width="2"/>
+  <polygon points="136,115 128,110 128,120" fill="#0969da"/>
+
+  <!-- Loop back: smooth arc from right node up and over to top node -->
+  <path d="M158 102 C175 75, 145 50, 114 64" fill="none" stroke="#0969da" stroke-width="2" stroke-dasharray="6,4" stroke-linecap="round"/>
+  <polygon points="114,64 122,58 120,68" fill="#0969da"/>
+
+  <text x="100" y="172" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="12" text-anchor="middle">Adaptive</text>
+</g>
+
+<!-- Nested composition Panel -->
+<g transform="translate(680,16)">
+  <rect width="200" height="188" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5" rx="12"/>
+  <text x="16" y="32" fill="#1f2328" font-family="system-ui,-apple-system,sans-serif" font-size="17" font-weight="600">Nested composition</text>
+  <text x="16" y="52" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="13">Graphs as nodes</text>
+
+  <!-- Input node (left) -->
+  <circle cx="24" cy="100" r="11" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+
+  <!-- Nested graph box -->
+  <rect x="50" y="74" width="72" height="52" fill="#f6f8fa" stroke="#0969da" stroke-width="2" rx="6"/>
+  <!-- Small nodes inside -->
+  <circle cx="70" cy="100" r="7" fill="#54aeff" stroke="#0969da" stroke-width="1.5"/>
+  <circle cx="102" cy="100" r="7" fill="#54aeff" stroke="#0969da" stroke-width="1.5"/>
+  <!-- Arrow inside -->
+  <line x1="77" y1="100" x2="91" y2="100" stroke="#0969da" stroke-width="1.5"/>
+  <polygon points="95,100 89,97 89,103" fill="#0969da"/>
+
+  <!-- Two output nodes (branching out) -->
+  <circle cx="168" cy="72" r="11" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+  <circle cx="168" cy="128" r="11" fill="#54aeff" stroke="#0969da" stroke-width="2"/>
+
+  <!-- Arrow: input -> nested box -->
+  <line x1="35" y1="100" x2="46" y2="100" stroke="#0969da" stroke-width="2"/>
+  <polygon points="50,100 44,96 44,104" fill="#0969da"/>
+
+  <!-- Arrows: nested box -> outputs (branching) -->
+  <line x1="122" y1="88" x2="153" y2="74" stroke="#0969da" stroke-width="2"/>
+  <polygon points="157,72 147,72 150,80" fill="#0969da"/>
+  <line x1="122" y1="112" x2="153" y2="126" stroke="#0969da" stroke-width="2"/>
+  <polygon points="157,128 147,128 150,120" fill="#0969da"/>
+
+  <text x="100" y="172" fill="#656d76" font-family="system-ui,-apple-system,sans-serif" font-size="12" text-anchor="middle">Composed</text>
+</g>
+</svg>

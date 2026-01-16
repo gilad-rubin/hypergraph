@@ -1,8 +1,6 @@
-# Hypergraph
+# Hypergraph Documentation
 
-A graph-based workflow framework for building composable, maintainable execution pipelines.
-
-Hypergraph supports **DAGs, cycles, runtime conditional branches, and multi-turn interactions** - all while maintaining pure, portable functions.
+A unified framework for Python workflow orchestration. DAG pipelines, agentic workflows, and everything in between.
 
 ## Core Idea: Outputs ARE State
 
@@ -11,48 +9,52 @@ In hypergraph, there is no separate "state" to define. Your node outputs form th
 ## Quick Start
 
 ```python
-from hypergraph import node
+from hypergraph import Graph, node
 
-@node(output_name="doubled")
-def double(x: int) -> int:
-    """Double the input value."""
-    return x * 2
+@node(output_name="embedding")
+def embed(query: str) -> list[float]:
+    return model.embed(query)
 
-# Create and call the node
-result = double(5)
-print(result)  # Output: 10
+@node(output_name="docs")
+def retrieve(embedding: list[float]) -> list[str]:
+    return db.search(embedding)
 
-# Access node properties
-print(double.inputs)   # ('x',)
-print(double.outputs)  # ('doubled',)
-print(double.name)     # 'double'
+@node(output_name="answer")
+def generate(docs: list[str], query: str) -> str:
+    return llm.generate(docs, query)
+
+# Edges inferred from names - no wiring needed
+graph = Graph(nodes=[embed, retrieve, generate])
 ```
 
 ## What's Implemented
 
-Currently implemented:
-- **HyperNode** - Base class for all node types with rename functionality
-- **FunctionNode** - Wraps Python functions (sync, async, sync generator, async generator)
-- **@node** - Decorator for creating FunctionNode instances
-- **Rename capabilities** - Transform inputs and outputs with `with_inputs()`, `with_outputs()`, `with_name()`
+**Working now:**
+- `@node` decorator for wrapping functions (sync, async, generators)
+- `Graph` construction with automatic edge inference
+- `InputSpec` categorization (required, optional, bound, internal)
+- Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
+- Hierarchical composition (`.as_node()`)
+- Build-time validation with helpful error messages
 
-Coming soon:
-- Graph composition and wiring
-- Routing nodes (GateNode, RouteNode, BranchNode)
-- Runners (SyncRunner, AsyncRunner)
+**Coming soon:**
+- Runners (`SyncRunner`, `AsyncRunner`)
+- Control flow (`@route`, `@branch`)
 - Checkpointing and durability
-- Observability and events
+- Event streaming and observability
+- `InterruptNode` for human-in-the-loop
 
 ## Documentation
 
 - [Getting Started](getting-started.md) - Core concepts and creating your first node
 - [Philosophy](philosophy.md) - Why hypergraph exists and design principles
 - [API Reference: Nodes](api/nodes.md) - Complete FunctionNode and HyperNode documentation
+- [Framework Comparison](comparison.md) - How hypergraph compares to LangGraph, Hamilton, and others
 
-## Design Goals
+## Design Principles
 
 1. **Outputs ARE state** - No separate state schema needed
 2. **Pure functions** - Nodes are testable without the framework
-3. **Explicit over implicit** - No magic defaults
-4. **Full durability** - All outputs checkpointed when persistence is enabled
-5. **Composable** - Graphs nest as nodes in outer graphs
+3. **Composition over configuration** - Nest graphs, don't configure flags
+4. **Unified execution** - Same algorithm for DAGs, branches, and loops
+5. **Fail fast** - Validate at build time, not runtime
