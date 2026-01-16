@@ -29,7 +29,7 @@ Add type annotation validation to hypergraph to catch type mismatches at graph c
 **Plans**: TBD
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01: Type extraction infrastructure (FunctionNode + GraphNode + Graph parameter)
 
 ### Phase 2: Type Compatibility Engine
 **Goal**: System can determine if two types are compatible
