@@ -938,3 +938,73 @@ class TestGraphNodeOutputAnnotation:
 
         # Both inner and outer produce typed outputs
         assert outer_gn.output_annotation == {"x": str, "y": float}
+
+
+class TestGraphStrictTypes:
+    """Test Graph strict_types parameter for type validation."""
+
+    def test_strict_types_defaults_false(self):
+        """Test strict_types defaults to False."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo])
+
+        assert g.strict_types is False
+
+    def test_strict_types_true(self):
+        """Test strict_types can be set to True."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo], strict_types=True)
+
+        assert g.strict_types is True
+
+    def test_strict_types_preserved_through_bind(self):
+        """Test strict_types is preserved through bind operation."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        g = Graph([foo], strict_types=True)
+        g2 = g.bind(x=10)
+
+        assert g2.strict_types is True
+
+    def test_strict_types_preserved_through_unbind(self):
+        """Test strict_types is preserved through unbind operation."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        g = Graph([foo], strict_types=True)
+        g2 = g.bind(x=10)
+        g3 = g2.unbind("x")
+
+        assert g3.strict_types is True
+
+    def test_strict_types_with_name(self):
+        """Test strict_types works with name parameter."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo], name="my_graph", strict_types=True)
+
+        assert g.name == "my_graph"
+        assert g.strict_types is True
+
+    def test_strict_types_independent_per_graph(self):
+        """Test each graph has its own strict_types setting."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g1 = Graph([foo], strict_types=True)
+        g2 = Graph([foo], strict_types=False)
+
+        assert g1.strict_types is True
+        assert g2.strict_types is False

@@ -57,6 +57,7 @@ class Graph:
         inputs: InputSpec describing required/optional/seed parameters
         has_cycles: True if graph contains cycles
         has_async_nodes: True if any FunctionNode is async
+        strict_types: If True, type validation between nodes is enabled
         definition_hash: Merkle-tree hash of graph structure (for caching)
 
     Example:
@@ -78,14 +79,19 @@ class Graph:
         nodes: list[HyperNode],
         *,
         name: str | None = None,
+        strict_types: bool = False,
     ) -> None:
         """Create a graph from nodes.
 
         Args:
             nodes: List of HyperNode objects
             name: Optional graph name for nesting
+            strict_types: If True, enable type validation between connected nodes.
+                         Type validation will be performed in a later phase.
+                         Default is False (no type checking).
         """
         self.name = name
+        self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
         self._nodes = self._build_nodes_dict(nodes)
         self._nx_graph = self._build_graph(nodes)
@@ -96,6 +102,15 @@ class Graph:
     def nodes(self) -> dict[str, HyperNode]:
         """Map of node name -> node object."""
         return dict(self._nodes)  # Return copy to prevent mutation
+
+    @property
+    def strict_types(self) -> bool:
+        """Whether type validation is enabled for this graph.
+
+        When True, type compatibility between connected nodes will be validated.
+        Type validation logic is implemented in a later phase.
+        """
+        return self._strict_types
 
     @property
     def nx_graph(self) -> nx.DiGraph:
@@ -370,13 +385,14 @@ class Graph:
     def _shallow_copy(self) -> "Graph":
         """Create a shallow copy of this graph.
 
-        Note: Cache is preserved since structure doesn't change.
+        Preserves: name, strict_types, nodes, nx_graph, cached_hash
+        Creates new: _bound dict (to allow independent modifications)
         """
         import copy
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
-        # Cache preserved: _cached_hash is same since structure unchanged
+        # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 
     def _validate(self) -> None:
