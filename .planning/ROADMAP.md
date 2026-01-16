@@ -2,14 +2,14 @@
 
 ## Milestones
 
-- ✅ **v1.0 MVP** - Phases 1-4 (shipped 2026-01-16)
-- ✅ **v1.1 Documentation** - Phases 5-6 (complete)
-- 🚧 **v1.2 Test Coverage** - Phases 7-12 (in progress)
+- **v1.0 MVP** - Phases 1-4 (shipped 2026-01-16)
+- **v1.1 Documentation** - Phases 5-6 (complete)
+- **v1.2 Test Coverage** - Phases 7-12 (in progress)
 
 ## Phases
 
 <details>
-<summary>✅ v1.0 MVP (Phases 1-4) - SHIPPED 2026-01-16</summary>
+<summary>v1.0 MVP (Phases 1-4) - SHIPPED 2026-01-16</summary>
 
 Type validation system shipped with:
 - `strict_types` parameter on Graph constructor
@@ -20,18 +20,18 @@ Type validation system shipped with:
 
 </details>
 
-### ✅ v1.1 Documentation (Complete)
+### v1.1 Documentation (Complete)
 
 **Milestone Goal:** Polish documentation for type validation system
 
-- [x] **Phase 5: Getting Started Audit** - Verify and polish getting-started.md ✓
-- [x] **Phase 6: API Reference Documentation** - Create comprehensive API reference ✓
+- [x] **Phase 5: Getting Started Audit** - Verify and polish getting-started.md
+- [x] **Phase 6: API Reference Documentation** - Create comprehensive API reference
 
-### 🚧 v1.2 Test Coverage (In Progress)
+### v1.2 Test Coverage (In Progress)
 
 **Milestone Goal:** Close all test coverage gaps for comprehensive quality assurance
 
-- [x] **Phase 7: GraphNode Capabilities** - Test forwarding methods ✓
+- [x] **Phase 7: GraphNode Capabilities** - Test forwarding methods
 - [ ] **Phase 8: Graph Topologies** - Test diamond, cycles, isolated components
 - [ ] **Phase 9: Function Signatures** - Test *args, **kwargs, keyword-only, positional-only
 - [ ] **Phase 10: Type Compatibility** - Test Literal, Protocol, TypedDict, NamedTuple
@@ -46,7 +46,7 @@ Type validation system shipped with:
 **Requirements**: AUDIT-01, AUDIT-02, AUDIT-03, STYLE-01
 **Success Criteria** (what must be TRUE):
   1. Every code example runs without error against current API
-  2. Examples progress from simple → binding → composition → type validation
+  2. Examples progress from simple -> binding -> composition -> type validation
   3. strict_types usage demonstrated with working examples
   4. Language is step-by-step and human-centered
 **Research**: Unlikely (internal documentation, existing guide to polish)
@@ -65,7 +65,7 @@ Plans:
   3. GraphNode reference covers nested composition and .as_node()
   4. InputSpec reference explains all categorization types
   5. Reference format is technical and comprehensive
-  6. Examples follow consistent patterns (code → explanation)
+  6. Examples follow consistent patterns (code -> explanation)
 **Research**: Unlikely (documenting existing code, established patterns)
 **Plans**: 1 plan (complete)
 
@@ -93,8 +93,8 @@ Plans:
 **Depends on**: Nothing (independent test phase)
 **Requirements**: TOPO-01, TOPO-02, TOPO-03, TOPO-04, TOPO-05
 **Success Criteria** (what must be TRUE):
-  1. Diamond dependency pattern (A→B, A→C, B→D, C→D) executes correctly
-  2. Multi-node cycles (A→B→C→A) detected and seeds computed correctly
+  1. Diamond dependency pattern (A->B, A->C, B->D, C->D) executes correctly
+  2. Multi-node cycles (A->B->C->A) detected and seeds computed correctly
   3. Multiple independent cycles in one graph work correctly
   4. Isolated subgraphs (disconnected components) work correctly
   5. Deeply nested graphs (3+ levels) work correctly
@@ -167,12 +167,12 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 12-01: Name validation edge case tests
+- [ ] 12-01-PLAN.md - Name validation edge case tests
 
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
+Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -183,4 +183,4 @@ Phases execute in numeric order: 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
 | 9. Function Signatures | v1.2 | 0/1 | Not started | - |
 | 10. Type Compatibility | v1.2 | 0/1 | Not started | - |
 | 11. Binding Edge Cases | v1.2 | 0/1 | Not started | - |
-| 12. Name Validation | v1.2 | 0/1 | Not started | - |
+| 12. Name Validation | v1.2 | 0/1 | Planned | - |
