@@ -7,11 +7,19 @@ from hypergraph.runners._types import (
     RunResult,
     RunStatus,
 )
+from hypergraph.runners.base import BaseRunner
+from hypergraph.runners.sync import SyncRunner
+from hypergraph.runners.async_ import AsyncRunner
 
 __all__ = [
+    # Core types
+    "RunStatus",
+    "RunResult",
+    "RunnerCapabilities",
     "GraphState",
     "NodeExecution",
-    "RunnerCapabilities",
-    "RunResult",
-    "RunStatus",
+    # Runners
+    "BaseRunner",
+    "SyncRunner",
+    "AsyncRunner",
 ]
