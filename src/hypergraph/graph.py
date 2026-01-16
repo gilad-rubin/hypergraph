@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode
+from hypergraph._typing import is_type_compatible
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -403,6 +404,8 @@ class Graph:
         self._validate_valid_identifiers()
         self._validate_no_namespace_collision()
         self._validate_consistent_defaults()
+        if self._strict_types:
+            self._validate_types()
 
     def _validate_graph_names(self) -> None:
         """Graph names cannot contain reserved path separators."""
@@ -497,6 +500,67 @@ class Graph:
                     f"  -> Node '{node_name}' has default: {value!r}\n\n"
                     f"How to fix:\n"
                     f"  Use the same default in both nodes"
+                )
+
+    def _validate_types(self) -> None:
+        """Validate type compatibility between connected nodes.
+
+        Checks each edge (source_node -> target_node) for:
+        1. Missing type annotations (raises error if either side is missing)
+        2. Type mismatches (raises error if types are incompatible)
+
+        Only called when strict_types=True.
+        """
+        for source_name, target_name, edge_data in self._nx_graph.edges(data=True):
+            value_name = edge_data.get("value_name")
+            if value_name is None:
+                continue
+
+            source_node = self._nodes[source_name]
+            target_node = self._nodes[target_name]
+
+            # Get output type from source node
+            source_annotations = (
+                source_node.output_annotation
+                if hasattr(source_node, "output_annotation")
+                else {}
+            )
+            output_type = source_annotations.get(value_name)
+
+            # Get input type from target node
+            target_annotations = (
+                target_node.parameter_annotations
+                if hasattr(target_node, "parameter_annotations")
+                else {}
+            )
+            input_type = target_annotations.get(value_name)
+
+            # Check for missing annotations
+            if output_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {source_name}(...) -> ReturnType"
+                )
+
+            if input_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{target_name}' parameter '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {target_name}({value_name}: YourType) -> ReturnType"
+                )
+
+            # Check type compatibility
+            if not is_type_compatible(output_type, input_type):
+                raise GraphConfigError(
+                    f"Type mismatch between nodes\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has type: {output_type}\n"
+                    f"  -> Node '{target_name}' input '{value_name}' expects type: {input_type}\n\n"
+                    f"How to fix:\n"
+                    f"  Either change the type annotation on one of the nodes, or add a\n"
+                    f"  conversion node between them."
                 )
 
     def as_node(self, *, name: str | None = None) -> "GraphNode":
