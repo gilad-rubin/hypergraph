@@ -109,9 +109,20 @@ class GraphState:
     node_executions: dict[str, NodeExecution] = field(default_factory=dict)
 
     def update_value(self, name: str, value: Any) -> None:
-        """Update a value and increment its version."""
+        """Update a value and increment its version if value changed.
+
+        Only increments version if:
+        - Name is new (not previously set), or
+        - Value is different from previous value
+        """
+        old_value = self.values.get(name)
+        is_new = name not in self.values
+
         self.values[name] = value
-        self.versions[name] = self.versions.get(name, 0) + 1
+
+        # Only increment version if value actually changed
+        if is_new or old_value != value:
+            self.versions[name] = self.versions.get(name, 0) + 1
 
     def get_version(self, name: str) -> int:
         """Get current version of a value (0 if not set)."""

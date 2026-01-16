@@ -166,7 +166,7 @@ def execute_node_sync(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]
 
     Args:
         node: The node to execute
-        inputs: Input values for the node
+        inputs: Input values for the node (using renamed parameter names)
 
     Returns:
         Dict mapping output names to their values
@@ -175,7 +175,9 @@ def execute_node_sync(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]
     from hypergraph.nodes.function import FunctionNode
 
     if isinstance(node, FunctionNode):
-        result = node.func(**inputs)
+        # Map renamed inputs back to original function parameter names
+        func_inputs = _map_inputs_to_func_params(node, inputs)
+        result = node.func(**func_inputs)
 
         # Handle generators
         if node.is_generator:
@@ -202,7 +204,7 @@ async def execute_node_async(
 
     Args:
         node: The node to execute
-        inputs: Input values for the node
+        inputs: Input values for the node (using renamed parameter names)
 
     Returns:
         Dict mapping output names to their values
@@ -210,7 +212,9 @@ async def execute_node_async(
     from hypergraph.nodes.function import FunctionNode
 
     if isinstance(node, FunctionNode):
-        result = node.func(**inputs)
+        # Map renamed inputs back to original function parameter names
+        func_inputs = _map_inputs_to_func_params(node, inputs)
+        result = node.func(**func_inputs)
 
         # Await if coroutine
         if inspect.iscoroutine(result):
@@ -228,6 +232,36 @@ async def execute_node_async(
     raise NotImplementedError(
         f"GraphNode execution should be handled by runner, not execute_node_async"
     )
+
+
+def _map_inputs_to_func_params(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]:
+    """Map renamed input names back to original function parameter names.
+
+    Args:
+        node: The FunctionNode with potential renames
+        inputs: Dict with renamed input names as keys
+
+    Returns:
+        Dict with original function parameter names as keys
+    """
+    from hypergraph.nodes.function import FunctionNode
+
+    if not isinstance(node, FunctionNode):
+        return inputs
+
+    # Build reverse mapping: renamed_name -> original_name
+    reverse_map: dict[str, str] = {}
+    for entry in node._rename_history:
+        if entry.kind == "inputs":
+            reverse_map[entry.new] = entry.old
+
+    # Map inputs to original parameter names
+    result = {}
+    for key, value in inputs.items():
+        original_name = reverse_map.get(key, key)
+        result[original_name] = value
+
+    return result
 
 
 def _wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
