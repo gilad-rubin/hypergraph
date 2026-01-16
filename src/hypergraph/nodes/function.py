@@ -91,7 +91,7 @@ class FunctionNode(HyperNode):
     """
 
     func: Callable
-    cache: bool
+    _cache: bool
     _definition_hash: str
     _is_async: bool
     _is_generator: bool
@@ -130,7 +130,7 @@ class FunctionNode(HyperNode):
         func = source.func if isinstance(source, FunctionNode) else source
 
         self.func = func
-        self.cache = cache
+        self._cache = cache
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
@@ -164,6 +164,11 @@ class FunctionNode(HyperNode):
     def is_generator(self) -> bool:
         """True if yields multiple values (sync or async generator)."""
         return self._is_generator
+
+    @property
+    def cache(self) -> bool:
+        """Whether results should be cached."""
+        return self._cache
 
     @property
     def defaults(self) -> dict[str, Any]:
@@ -265,6 +270,58 @@ class FunctionNode(HyperNode):
 
         # Can't map tuple elements to outputs - return empty
         return {}
+
+    # === Override base class capability methods ===
+
+    def has_default_for(self, param: str) -> bool:
+        """Check if this parameter has a default value.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            True if parameter has a default value.
+        """
+        return param in self.defaults
+
+    def get_default_for(self, param: str) -> Any:
+        """Get default value for a parameter.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            The default value.
+
+        Raises:
+            KeyError: If parameter has no default.
+        """
+        defaults = self.defaults
+        if param not in defaults:
+            raise KeyError(f"No default for '{param}'")
+        return defaults[param]
+
+    def get_input_type(self, param: str) -> type | None:
+        """Get type annotation for an input parameter.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            The type annotation, or None if not annotated.
+        """
+        return self.parameter_annotations.get(param)
+
+    def get_output_type(self, output: str) -> type | None:
+        """Get type annotation for an output.
+
+        Args:
+            output: Output value name
+
+        Returns:
+            The type annotation, or None if not annotated.
+        """
+        return self.output_annotation.get(output)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped function directly.

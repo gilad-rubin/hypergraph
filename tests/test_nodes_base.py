@@ -255,3 +255,191 @@ class TestHyperNode:
 
         assert node is not copy_node
         assert node.outputs == copy_node.outputs
+
+
+class TestHyperNodeUniversalCapabilities:
+    """Tests for universal capabilities on HyperNode base class."""
+
+    def test_definition_hash_default(self):
+        """Default definition_hash is based on class, name, inputs, outputs."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a, b):
+            return a + b
+
+        node = FunctionNode(foo, output_name="result")
+        hash1 = node.definition_hash
+
+        # Hash should be a non-empty string
+        assert isinstance(hash1, str)
+        assert len(hash1) > 0
+
+        # Same node should have same hash
+        assert node.definition_hash == hash1
+
+    def test_definition_hash_differs_for_different_structure(self):
+        """definition_hash differs when structure differs."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        def bar(a):
+            return a
+
+        node1 = FunctionNode(foo, output_name="result")
+        node2 = FunctionNode(bar, output_name="result")
+
+        # Different function names -> different hashes
+        assert node1.definition_hash != node2.definition_hash
+
+    def test_is_async_default_false(self):
+        """Default is_async is False for sync functions."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.is_async is False
+
+    def test_is_async_true_for_async_func(self):
+        """is_async is True for async functions."""
+        from hypergraph.nodes.function import FunctionNode
+
+        async def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.is_async is True
+
+    def test_is_generator_default_false(self):
+        """Default is_generator is False for regular functions."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.is_generator is False
+
+    def test_is_generator_true_for_generator(self):
+        """is_generator is True for generator functions."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            yield a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.is_generator is True
+
+    def test_cache_default_false(self):
+        """Default cache is False."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.cache is False
+
+    def test_cache_true_when_configured(self):
+        """cache is True when explicitly set."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result", cache=True)
+        assert node.cache is True
+
+    def test_has_default_for_false_when_no_default(self):
+        """has_default_for returns False when param has no default."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.has_default_for("a") is False
+
+    def test_has_default_for_true_when_has_default(self):
+        """has_default_for returns True when param has default."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a=10):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.has_default_for("a") is True
+
+    def test_get_default_for_returns_value(self):
+        """get_default_for returns the default value."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a=42):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.get_default_for("a") == 42
+
+    def test_get_default_for_raises_keyerror(self):
+        """get_default_for raises KeyError when no default."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        with pytest.raises(KeyError, match="No default for 'a'"):
+            node.get_default_for("a")
+
+    def test_get_input_type_returns_annotation(self):
+        """get_input_type returns the type annotation."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a: int) -> str:
+            return str(a)
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.get_input_type("a") is int
+
+    def test_get_input_type_returns_none_when_untyped(self):
+        """get_input_type returns None when parameter is untyped."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.get_input_type("a") is None
+
+    def test_get_output_type_returns_annotation(self):
+        """get_output_type returns the type annotation."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a: int) -> str:
+            return str(a)
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.get_output_type("result") is str
+
+    def test_get_output_type_returns_none_when_untyped(self):
+        """get_output_type returns None when output is untyped."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            return a
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.get_output_type("result") is None
+
+    def test_get_output_type_returns_none_for_nonexistent(self):
+        """get_output_type returns None for nonexistent output."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a: int) -> str:
+            return str(a)
+
+        node = FunctionNode(foo, output_name="result")
+        assert node.get_output_type("nonexistent") is None

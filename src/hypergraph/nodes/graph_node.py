@@ -83,13 +83,21 @@ class GraphNode(HyperNode):
         return self._graph.definition_hash
 
     @property
+    def is_async(self) -> bool:
+        """Does this nested graph contain any async nodes?
+
+        Delegates to the inner graph's has_async_nodes property.
+        """
+        return self._graph.has_async_nodes
+
+    @property
     def output_annotation(self) -> dict[str, Any]:
         """Type annotations for output values from the inner graph.
 
         Returns:
             dict mapping output names to their type annotations.
             For each output, finds the node in the inner graph that produces it
-            and gets that node's output_annotation for that specific output.
+            and gets that node's type annotation for that specific output.
             Returns empty dict entries for outputs without type annotations.
 
         Example:
@@ -114,10 +122,20 @@ class GraphNode(HyperNode):
             if source_node is None:
                 continue
 
-            # Check if source node has output_annotation property
-            if hasattr(source_node, "output_annotation"):
-                node_annotations = source_node.output_annotation
-                if output_name in node_annotations:
-                    result[output_name] = node_annotations[output_name]
+            # Use universal get_output_type method
+            output_type = source_node.get_output_type(output_name)
+            if output_type is not None:
+                result[output_name] = output_type
 
         return result
+
+    def get_output_type(self, output: str) -> type | None:
+        """Get type annotation for an output from the inner graph.
+
+        Args:
+            output: Output value name
+
+        Returns:
+            The type annotation, or None if not annotated.
+        """
+        return self.output_annotation.get(output)

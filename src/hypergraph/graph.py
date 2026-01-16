@@ -194,10 +194,8 @@ class Graph:
     def _any_node_has_default(self, param: str) -> bool:
         """Check if any node consuming this param has a default value."""
         for node in self._nodes.values():
-            if param in node.inputs:
-                # Check if node has defaults attribute (FunctionNode does)
-                if hasattr(node, "defaults") and param in node.defaults:
-                    return True
+            if param in node.inputs and node.has_default_for(param):
+                return True
         return False
 
     def _get_cycle_params(self) -> set[str]:
@@ -333,13 +331,8 @@ class Graph:
 
     @property
     def has_async_nodes(self) -> bool:
-        """True if any FunctionNode is async."""
-        from hypergraph.nodes.function import FunctionNode
-
-        return any(
-            isinstance(node, FunctionNode) and node.is_async
-            for node in self._nodes.values()
-        )
+        """True if any node requires async execution."""
+        return any(node.is_async for node in self._nodes.values())
 
     @property
     def definition_hash(self) -> str:
@@ -362,15 +355,8 @@ class Graph:
         # 1. Collect node hashes (sorted for determinism)
         node_hashes = []
         for node in sorted(self._nodes.values(), key=lambda n: n.name):
-            # FunctionNode has definition_hash, others may not
-            if hasattr(node, "definition_hash"):
-                node_hashes.append(f"{node.name}:{node.definition_hash}")
-            else:
-                # Fallback: hash the node's name and structure
-                node_str = f"{node.name}:{node.inputs}:{node.outputs}"
-                node_hashes.append(
-                    f"{node.name}:{hashlib.sha256(node_str.encode()).hexdigest()}"
-                )
+            # All nodes have definition_hash (universal capability on HyperNode)
+            node_hashes.append(f"{node.name}:{node.definition_hash}")
 
         # 2. Include structure (edges)
         edges = sorted(
@@ -458,12 +444,13 @@ class Graph:
 
         param_info: dict[str, list[tuple[bool, Any, str]]] = defaultdict(list)
         for node in self._nodes.values():
-            if not hasattr(node, 'defaults'):
-                continue
             for param in node.inputs:
-                has_default = param in node.defaults
-                default_value = node.defaults.get(param)
-                param_info[param].append((has_default, default_value, node.name))
+                has_default = node.has_default_for(param)
+                if has_default:
+                    default_value = node.get_default_for(param)
+                    param_info[param].append((True, default_value, node.name))
+                else:
+                    param_info[param].append((False, None, node.name))
         return param_info
 
     def _check_defaults_consistency(
@@ -519,21 +506,9 @@ class Graph:
             source_node = self._nodes[source_name]
             target_node = self._nodes[target_name]
 
-            # Get output type from source node
-            source_annotations = (
-                source_node.output_annotation
-                if hasattr(source_node, "output_annotation")
-                else {}
-            )
-            output_type = source_annotations.get(value_name)
-
-            # Get input type from target node
-            target_annotations = (
-                target_node.parameter_annotations
-                if hasattr(target_node, "parameter_annotations")
-                else {}
-            )
-            input_type = target_annotations.get(value_name)
+            # Get types using universal capability methods
+            output_type = source_node.get_output_type(value_name)
+            input_type = target_node.get_input_type(value_name)
 
             # Check for missing annotations
             if output_type is None:
