@@ -120,12 +120,12 @@ class GraphNode(HyperNode):
         for output_name in self.outputs:
             source_node = output_to_node.get(output_name)
             if source_node is None:
+                result[output_name] = None
                 continue
 
             # Use universal get_output_type method
             output_type = source_node.get_output_type(output_name)
-            if output_type is not None:
-                result[output_name] = output_type
+            result[output_name] = output_type
 
         return result
 

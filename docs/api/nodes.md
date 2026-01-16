@@ -791,7 +791,7 @@ def double(x: int) -> int:
 
 @node(output_name="tripled")
 def triple(doubled: int) -> int:
-    return doubled + doubled // 2
+    return doubled * 3
 
 # Level 2: Inner graph
 inner = Graph([double, triple], name="multiply")

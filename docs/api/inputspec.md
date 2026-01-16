@@ -26,7 +26,7 @@ print(g.inputs.seeds)     # () - none in this graph
 print(g.inputs.bound)     # {} - none bound
 ```
 
-## The InputSpec NamedTuple
+## The InputSpec Dataclass
 
 InputSpec is a frozen dataclass with four fields:
 

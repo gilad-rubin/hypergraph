@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v1.0 MVP** - Phases 1-4 (shipped 2026-01-16)
-- 📋 **v1.1 Documentation** - Phases 5-6 (planned)
+- ✅ **v1.1 Documentation** - Phases 5-6 (complete)
 - 🚧 **v1.2 Test Coverage** - Phases 7-12 (in progress)
 
 ## Phases

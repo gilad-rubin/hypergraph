@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify API documentation examples work correctly."""
 
-from hypergraph import node, Graph, FunctionNode
+from hypergraph import node, Graph
 
 print("=== Graph API Examples ===")
 
@@ -55,7 +55,7 @@ print(f"get_output_type('doubled'): {gn.get_output_type('doubled')}")
 # Nested composition
 @node(output_name="tripled")
 def triple(doubled: int) -> int:
-    return doubled + doubled // 2
+    return doubled * 3
 
 inner2 = Graph([double, triple], name="multiply")
 @node(output_name="final")

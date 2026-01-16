@@ -894,7 +894,7 @@ class TestGraphNodeOutputAnnotation:
         assert gn.output_annotation == {"x": str, "y": float}
 
     def test_untyped_outputs(self):
-        """Test GraphNode returns empty dict for untyped outputs."""
+        """Test GraphNode returns None for untyped outputs."""
         @node(output_name="x")
         def untyped(a):
             return a
@@ -902,10 +902,10 @@ class TestGraphNodeOutputAnnotation:
         g = Graph([untyped], name="untyped")
         gn = g.as_node()
 
-        assert gn.output_annotation == {}
+        assert gn.output_annotation == {"x": None}
 
     def test_mixed_typed_untyped(self):
-        """Test GraphNode includes only typed outputs."""
+        """Test GraphNode includes all outputs, None for untyped."""
         @node(output_name="x")
         def typed(_a: int) -> str:
             return ""
@@ -917,8 +917,8 @@ class TestGraphNodeOutputAnnotation:
         g = Graph([typed, untyped], name="mixed")
         gn = g.as_node()
 
-        # Only 'x' has type annotation
-        assert gn.output_annotation == {"x": str}
+        # 'x' has type annotation, 'y' is None (untyped)
+        assert gn.output_annotation == {"x": str, "y": None}
 
     def test_nested_graphnode(self):
         """Test output_annotation works with nested GraphNode."""
