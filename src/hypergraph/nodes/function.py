@@ -175,6 +175,97 @@ class FunctionNode(HyperNode):
             if param.default is not inspect.Parameter.empty
         }
 
+    @property
+    def parameter_annotations(self) -> dict[str, Any]:
+        """Type annotations for input parameters.
+
+        Returns:
+            dict mapping parameter names (using renamed input names) to their
+            type annotations. Only includes parameters that have annotations.
+            Returns empty dict if get_type_hints fails (e.g., forward references).
+
+        Example:
+            >>> @node(output_name="result")
+            ... def add(x: int, y: str) -> float: return 0.0
+            >>> add.parameter_annotations
+            {'x': int, 'y': str}
+        """
+        try:
+            hints = get_type_hints(self.func)
+        except Exception:
+            # get_type_hints can fail on forward references, etc.
+            return {}
+
+        # Get original parameter names from function signature
+        sig = inspect.signature(self.func)
+        original_params = list(sig.parameters.keys())
+
+        # Build reverse mapping: original param name -> renamed input name
+        # self._rename_history contains RenameEntry objects
+        rename_map: dict[str, str] = {}
+        for entry in self._rename_history:
+            if entry.kind == "inputs":
+                rename_map[entry.old] = entry.new
+
+        result: dict[str, Any] = {}
+        for orig_param in original_params:
+            if orig_param in hints:
+                # Use renamed name if it exists, otherwise original
+                final_name = rename_map.get(orig_param, orig_param)
+                result[final_name] = hints[orig_param]
+
+        return result
+
+    @property
+    def output_annotation(self) -> dict[str, Any]:
+        """Type annotations for output values.
+
+        Returns:
+            dict mapping output names to their type annotations.
+            - For single output: maps output_name to return type
+            - For multiple outputs with tuple return: maps each output to
+              corresponding tuple element type (using typing.get_args)
+            - Returns empty dict if no outputs or no return annotation
+
+        Example:
+            >>> @node(output_name="result")
+            ... def add(x: int, y: int) -> float: return 0.0
+            >>> add.output_annotation
+            {'result': float}
+
+            >>> @node(output_name=("a", "b"))
+            ... def split(x: str) -> tuple[int, str]: return (0, "")
+            >>> split.output_annotation
+            {'a': int, 'b': str}
+        """
+        if not self.outputs:
+            return {}
+
+        try:
+            hints = get_type_hints(self.func)
+        except Exception:
+            return {}
+
+        return_hint = hints.get("return")
+        if return_hint is None:
+            return {}
+
+        # Single output case
+        if len(self.outputs) == 1:
+            return {self.outputs[0]: return_hint}
+
+        # Multiple outputs - try to extract tuple element types
+        from typing import get_args, get_origin
+
+        origin = get_origin(return_hint)
+        if origin is tuple:
+            args = get_args(return_hint)
+            if len(args) == len(self.outputs):
+                return dict(zip(self.outputs, args))
+
+        # Can't map tuple elements to outputs - return empty
+        return {}
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped function directly.
 

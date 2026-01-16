@@ -525,3 +525,122 @@ class TestFunctionNodeDefaults:
 
         fn = FunctionNode(foo)
         assert fn.defaults == {"b": None}
+
+
+class TestFunctionNodeParameterAnnotations:
+    """Tests for FunctionNode.parameter_annotations property."""
+
+    def test_fully_typed_function(self):
+        """Function with all parameters typed."""
+
+        def foo(x: int, y: str) -> float:
+            return 0.0
+
+        fn = FunctionNode(foo, output_name="result")
+        assert fn.parameter_annotations == {"x": int, "y": str}
+
+    def test_untyped_function(self):
+        """Function without type annotations returns empty dict."""
+
+        def foo(a, b):
+            return a + b
+
+        fn = FunctionNode(foo, output_name="out")
+        assert fn.parameter_annotations == {}
+
+    def test_partial_annotations(self):
+        """Function with some parameters typed."""
+
+        def foo(x: int, y) -> str:
+            return str(x)
+
+        fn = FunctionNode(foo, output_name="out")
+        assert fn.parameter_annotations == {"x": int}
+
+    def test_with_renamed_inputs(self):
+        """Renamed inputs use the new names."""
+
+        def foo(x: int, y: str) -> float:
+            return 0.0
+
+        fn = FunctionNode(foo, output_name="result", rename_inputs={"x": "input_val"})
+        assert fn.parameter_annotations == {"input_val": int, "y": str}
+
+    def test_complex_types(self):
+        """Complex type annotations are preserved."""
+        from typing import Optional, List
+
+        def foo(items: List[int], default: Optional[str] = None) -> dict:
+            return {}
+
+        fn = FunctionNode(foo, output_name="result")
+        assert fn.parameter_annotations == {"items": List[int], "default": Optional[str]}
+
+
+class TestFunctionNodeOutputAnnotation:
+    """Tests for FunctionNode.output_annotation property."""
+
+    def test_single_output(self):
+        """Single output maps to return type."""
+
+        def foo(x: int) -> float:
+            return 0.0
+
+        fn = FunctionNode(foo, output_name="result")
+        assert fn.output_annotation == {"result": float}
+
+    def test_no_return_annotation(self):
+        """Function without return annotation returns empty dict."""
+
+        def foo(x: int):
+            return x
+
+        fn = FunctionNode(foo, output_name="result")
+        assert fn.output_annotation == {}
+
+    def test_no_outputs_side_effect(self):
+        """Side-effect only function returns empty dict."""
+
+        def foo(x: int) -> None:
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.output_annotation == {}
+
+    def test_multiple_outputs_tuple(self):
+        """Multiple outputs with tuple return type."""
+
+        def foo(x: int) -> tuple[str, float]:
+            return ("", 0.0)
+
+        fn = FunctionNode(foo, output_name=("a", "b"))
+        assert fn.output_annotation == {"a": str, "b": float}
+
+    def test_multiple_outputs_wrong_tuple_length(self):
+        """Mismatched tuple length returns empty dict."""
+
+        def foo(x: int) -> tuple[str, float, int]:
+            return ("", 0.0, 0)
+
+        fn = FunctionNode(foo, output_name=("a", "b"))
+        # 3 tuple elements but only 2 outputs - can't map
+        assert fn.output_annotation == {}
+
+    def test_multiple_outputs_non_tuple_return(self):
+        """Multiple outputs with non-tuple return returns empty dict."""
+
+        def foo(x: int) -> list:
+            return []
+
+        fn = FunctionNode(foo, output_name=("a", "b"))
+        assert fn.output_annotation == {}
+
+    def test_complex_return_type(self):
+        """Complex return types are preserved."""
+        from typing import Optional, Dict
+
+        def foo(x: int) -> Optional[Dict[str, int]]:
+            return None
+
+        fn = FunctionNode(foo, output_name="result")
+        assert fn.output_annotation == {"result": Optional[Dict[str, int]]}
