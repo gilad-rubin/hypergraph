@@ -1,11 +1,34 @@
-# Requirements: Hypergraph v1.2 Comprehensive Test Coverage
+# Requirements: Hypergraph
 
 **Defined:** 2026-01-16
 **Core Value:** Catch type errors early - before execution, at graph construction time
 
+## v1.1 Requirements
+
+Requirements for documentation milestone. Each maps to roadmap phases.
+
+### Documentation Audit
+
+- [ ] **AUDIT-01**: All code examples in getting-started.md execute without errors against current API
+- [ ] **AUDIT-02**: getting-started.md follows progressive complexity (simple → advanced)
+- [ ] **AUDIT-03**: getting-started.md covers type validation with strict_types
+
+### API Reference
+
+- [ ] **API-01**: Graph class reference documents constructor parameters, methods, and strict_types behavior
+- [ ] **API-02**: FunctionNode reference documents @node decorator, properties, and rename API
+- [ ] **API-03**: GraphNode reference documents nested composition and .as_node() usage
+- [ ] **API-04**: InputSpec reference documents required/optional/bound/seeds categorization
+
+### Style
+
+- [ ] **STYLE-01**: Guides use step-by-step, human-centered language
+- [ ] **STYLE-02**: API reference uses technical, comprehensive format
+- [ ] **STYLE-03**: All documentation uses consistent example patterns (show code, then explain)
+
 ## v1.2 Requirements
 
-Requirements for this milestone. Each maps to roadmap phases.
+Requirements for comprehensive test coverage milestone.
 
 ### GraphNode
 
@@ -60,6 +83,11 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 Deferred to future release. Tracked but not in current roadmap.
 
+### Future Audit
+
+- **AUDIT-V2-01**: Remove "Coming soon" sections after features ship
+- **AUDIT-V2-02**: Update comparison.md with competitive positioning
+
 ### Stress Testing
 
 - **STRESS-01**: Large graphs (100+ nodes) performance test
@@ -76,6 +104,10 @@ Explicitly excluded. Documented to prevent scope creep.
 
 | Feature | Reason |
 |---------|--------|
+| Runner documentation | Feature not implemented |
+| RouteNode/BranchNode docs | Feature not implemented |
+| Checkpointing docs | Feature not implemented |
+| Control flow (@route, @branch) docs | Feature not implemented |
 | Runtime type checking | Framework is construction-time only |
 | Custom type validators | Use Python's typing system as-is |
 | Thread safety tests | Immutable design handles this |
@@ -86,6 +118,16 @@ Which phases cover which requirements. Updated by create-roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| AUDIT-01 | Phase 5 | Pending |
+| AUDIT-02 | Phase 5 | Pending |
+| AUDIT-03 | Phase 5 | Pending |
+| STYLE-01 | Phase 5 | Pending |
+| API-01 | Phase 6 | Pending |
+| API-02 | Phase 6 | Pending |
+| API-03 | Phase 6 | Pending |
+| API-04 | Phase 6 | Pending |
+| STYLE-02 | Phase 6 | Pending |
+| STYLE-03 | Phase 6 | Pending |
 | GNODE-01 | — | Pending |
 | GNODE-02 | — | Pending |
 | GNODE-03 | — | Pending |
@@ -119,10 +161,10 @@ Which phases cover which requirements. Updated by create-roadmap.
 | NAME-05 | — | Pending |
 
 **Coverage:**
-- v1.2 requirements: 31 total
-- Mapped to phases: 0
-- Unmapped: 31 (pending roadmap creation)
+- v1.1 requirements: 10 total (mapped to phases 5-6)
+- v1.2 requirements: 31 total (pending roadmap)
+- Unmapped: 31 (v1.2 pending roadmap creation)
 
 ---
 *Requirements defined: 2026-01-16*
-*Last updated: 2026-01-16 after initial definition*
+*Last updated: 2026-01-16 after adding v1.2 requirements*
