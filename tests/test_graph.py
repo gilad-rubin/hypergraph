@@ -1008,3 +1008,195 @@ class TestGraphStrictTypes:
 
         assert g1.strict_types is True
         assert g2.strict_types is False
+
+
+class TestStrictTypesValidation:
+    """Test type validation when strict_types=True."""
+
+    def test_strict_types_missing_input_annotation(self):
+        """Test missing input annotation raises GraphConfigError."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result):  # Missing type annotation
+            return result
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Missing type annotation" in error_msg
+        assert "consumer" in error_msg
+        assert "result" in error_msg
+        assert "How to fix" in error_msg
+
+    def test_strict_types_missing_output_annotation(self):
+        """Test missing output annotation raises GraphConfigError."""
+        @node(output_name="result")
+        def producer():  # Missing return type annotation
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: int) -> int:
+            return result
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Missing type annotation" in error_msg
+        assert "producer" in error_msg
+        assert "result" in error_msg
+        assert "How to fix" in error_msg
+
+    def test_strict_types_type_mismatch(self):
+        """Test type mismatch raises GraphConfigError."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "producer" in error_msg
+        assert "consumer" in error_msg
+        assert "result" in error_msg
+        assert "How to fix" in error_msg
+
+    def test_strict_types_compatible_types_pass(self):
+        """Test compatible types pass validation."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: int) -> int:
+            return result
+
+        # Should not raise
+        g = Graph([producer, consumer], strict_types=True)
+
+        assert g.strict_types is True
+        assert g.nx_graph.has_edge("producer", "consumer")
+
+    def test_strict_types_union_compatible(self):
+        """Test int is compatible with int | str."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: int | str) -> str:
+            return str(result)
+
+        # Should not raise - int is compatible with int | str
+        g = Graph([producer, consumer], strict_types=True)
+
+        assert g.strict_types is True
+
+    def test_strict_types_disabled_skips_validation(self):
+        """Test type mismatch is ignored when strict_types=False."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        # Should not raise - validation disabled
+        g = Graph([producer, consumer], strict_types=False)
+
+        assert g.strict_types is False
+        assert g.nx_graph.has_edge("producer", "consumer")
+
+    def test_strict_types_graphnode_output_compatible(self):
+        """Test GraphNode output type validates correctly."""
+        @node(output_name="x")
+        def inner_func(a: int) -> str:
+            return "hello"
+
+        inner_graph = Graph([inner_func], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="final")
+        def outer_consumer(x: str) -> str:
+            return x.upper()
+
+        # Should not raise - GraphNode output str is compatible with str input
+        g = Graph([inner_gn, outer_consumer], strict_types=True)
+
+        assert g.strict_types is True
+        assert g.nx_graph.has_edge("inner", "outer_consumer")
+
+    def test_strict_types_graphnode_output_incompatible(self):
+        """Test GraphNode output type mismatch raises error."""
+        @node(output_name="x")
+        def inner_func(a: int) -> str:
+            return "hello"
+
+        inner_graph = Graph([inner_func], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="final")
+        def outer_consumer(x: int) -> int:
+            return x + 1
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([inner_gn, outer_consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "inner" in error_msg
+        assert "outer_consumer" in error_msg
+        assert "x" in error_msg
+
+    def test_strict_types_chain_validation(self):
+        """Test type validation works through a chain of nodes."""
+        @node(output_name="a")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def step2(a: int) -> str:
+            return str(a)
+
+        @node(output_name="c")
+        def step3(b: str) -> float:
+            return float(b)
+
+        # Should not raise - all types are compatible
+        g = Graph([step1, step2, step3], strict_types=True)
+
+        assert g.strict_types is True
+        assert g.nx_graph.number_of_edges() == 2
+
+    def test_strict_types_chain_mismatch_detected(self):
+        """Test type mismatch in middle of chain is detected."""
+        @node(output_name="a")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def step2(a: str) -> str:  # Expects str but a is int
+            return a.upper()
+
+        @node(output_name="c")
+        def step3(b: str) -> float:
+            return float(b)
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([step1, step2, step3], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "step1" in error_msg
+        assert "step2" in error_msg
