@@ -1335,3 +1335,126 @@ class TestGraphNodeRename:
         assert original.name == original_name
         assert original.inputs == original_inputs
         assert original.outputs == original_outputs
+
+
+class TestGraphNodeCapabilities:
+    """Test GraphNode forwarding methods for universal capabilities.
+
+    These tests verify that GraphNode correctly delegates has_default_for,
+    get_default_for, get_input_type, and get_output_type to the inner graph.
+
+    Note: Some tests may fail until GraphNode implements forwarding for
+    has_default_for and get_default_for (documents expected behavior).
+    """
+
+    def test_has_default_for_with_default(self):
+        """Inner graph has node with default, GraphNode.has_default_for returns True."""
+        @node(output_name="result")
+        def foo(x: int, y: int = 10) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.has_default_for("y") is True
+
+    def test_has_default_for_without_default(self):
+        """Inner graph node has no default, returns False."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.has_default_for("x") is False
+
+    def test_has_default_for_nonexistent_param(self):
+        """Param not in inputs, returns False."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.has_default_for("nonexistent") is False
+
+    def test_get_default_for_retrieves_value(self):
+        """Get actual default value from inner graph."""
+        @node(output_name="result")
+        def foo(x: int, y: int = 42) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_default_for("y") == 42
+
+    def test_get_default_for_raises_on_no_default(self):
+        """KeyError when param has no default."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        with pytest.raises(KeyError, match="x"):
+            gn.get_default_for("x")
+
+    def test_get_input_type_returns_type(self):
+        """Returns type annotation from inner graph node."""
+        @node(output_name="result")
+        def foo(x: int, y: str) -> str:
+            return f"{x}: {y}"
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_input_type("x") == int
+        assert gn.get_input_type("y") == str
+
+    def test_get_input_type_untyped_returns_none(self):
+        """Returns None for untyped params."""
+        @node(output_name="result")
+        def foo(x):
+            return x
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_input_type("x") is None
+
+    def test_get_input_type_nonexistent_returns_none(self):
+        """Returns None for nonexistent param."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_input_type("nonexistent") is None
+
+    def test_get_output_type_returns_type(self):
+        """Returns output type from inner graph node."""
+        @node(output_name="result")
+        def foo(x: int) -> str:
+            return str(x)
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_output_type("result") == str
+
+    def test_get_output_type_untyped_returns_none(self):
+        """Returns None for untyped output."""
+        @node(output_name="result")
+        def foo(x):
+            return x
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_output_type("result") is None
