@@ -9,22 +9,22 @@ Requirements for documentation milestone. Each maps to roadmap phases.
 
 ### Documentation Audit
 
-- [ ] **AUDIT-01**: All code examples in getting-started.md execute without errors against current API
-- [ ] **AUDIT-02**: getting-started.md follows progressive complexity (simple → advanced)
-- [ ] **AUDIT-03**: getting-started.md covers type validation with strict_types
+- [x] **AUDIT-01**: All code examples in getting-started.md execute without errors against current API
+- [x] **AUDIT-02**: getting-started.md follows progressive complexity (simple → advanced)
+- [x] **AUDIT-03**: getting-started.md covers type validation with strict_types
 
 ### API Reference
 
-- [ ] **API-01**: Graph class reference documents constructor parameters, methods, and strict_types behavior
-- [ ] **API-02**: FunctionNode reference documents @node decorator, properties, and rename API
-- [ ] **API-03**: GraphNode reference documents nested composition and .as_node() usage
-- [ ] **API-04**: InputSpec reference documents required/optional/bound/seeds categorization
+- [x] **API-01**: Graph class reference documents constructor parameters, methods, and strict_types behavior
+- [x] **API-02**: FunctionNode reference documents @node decorator, properties, and rename API
+- [x] **API-03**: GraphNode reference documents nested composition and .as_node() usage
+- [x] **API-04**: InputSpec reference documents required/optional/bound/seeds categorization
 
 ### Style
 
-- [ ] **STYLE-01**: Guides use step-by-step, human-centered language
-- [ ] **STYLE-02**: API reference uses technical, comprehensive format
-- [ ] **STYLE-03**: All documentation uses consistent example patterns (show code, then explain)
+- [x] **STYLE-01**: Guides use step-by-step, human-centered language
+- [x] **STYLE-02**: API reference uses technical, comprehensive format
+- [x] **STYLE-03**: All documentation uses consistent example patterns (show code, then explain)
 
 ## v1.2 Requirements
 
@@ -118,16 +118,16 @@ Which phases cover which requirements. Updated by create-roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| AUDIT-01 | Phase 5 | Pending |
-| AUDIT-02 | Phase 5 | Pending |
-| AUDIT-03 | Phase 5 | Pending |
-| STYLE-01 | Phase 5 | Pending |
-| API-01 | Phase 6 | Pending |
-| API-02 | Phase 6 | Pending |
-| API-03 | Phase 6 | Pending |
-| API-04 | Phase 6 | Pending |
-| STYLE-02 | Phase 6 | Pending |
-| STYLE-03 | Phase 6 | Pending |
+| AUDIT-01 | Phase 5 | Complete |
+| AUDIT-02 | Phase 5 | Complete |
+| AUDIT-03 | Phase 5 | Complete |
+| STYLE-01 | Phase 5 | Complete |
+| API-01 | Phase 6 | Complete |
+| API-02 | Phase 6 | Complete |
+| API-03 | Phase 6 | Complete |
+| API-04 | Phase 6 | Complete |
+| STYLE-02 | Phase 6 | Complete |
+| STYLE-03 | Phase 6 | Complete |
 | GNODE-01 | Phase 7 | Complete |
 | GNODE-02 | Phase 7 | Complete |
 | GNODE-03 | Phase 7 | Complete |
