@@ -69,7 +69,9 @@ class GraphNode(HyperNode):
 
         # Core HyperNode attributes
         self.name = resolved_name
-        self.inputs = graph.inputs.all
+        # Exclude bound values from inputs - they're already provided
+        bound_keys = set(graph.inputs.bound.keys())
+        self.inputs = tuple(p for p in graph.inputs.all if p not in bound_keys)
         self.outputs = graph.outputs
 
     @property
@@ -157,3 +159,41 @@ class GraphNode(HyperNode):
             if param in inner_node.inputs:
                 return inner_node.get_input_type(param)
         return None
+
+    def has_default_for(self, param: str) -> bool:
+        """Check if a parameter has a default value in the inner graph.
+
+        Delegates to the inner graph's nodes to find if any node
+        that consumes this parameter has a default for it.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            True if any inner node has a default for this parameter.
+        """
+        if param not in self.inputs:
+            return False
+        for inner_node in self._graph._nodes.values():
+            if param in inner_node.inputs and inner_node.has_default_for(param):
+                return True
+        return False
+
+    def get_default_for(self, param: str) -> Any:
+        """Get the default value for a parameter from the inner graph.
+
+        Delegates to the inner graph's nodes to find the default value.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            The default value.
+
+        Raises:
+            KeyError: If no default exists for this parameter.
+        """
+        for inner_node in self._graph._nodes.values():
+            if param in inner_node.inputs and inner_node.has_default_for(param):
+                return inner_node.get_default_for(param)
+        raise KeyError(f"No default value for parameter '{param}'")
