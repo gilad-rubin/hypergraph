@@ -20,18 +20,18 @@ Type validation system shipped with:
 
 </details>
 
-### 📋 v1.1 Documentation (Planned)
+### ✅ v1.1 Documentation (Complete)
 
 **Milestone Goal:** Polish documentation for type validation system
 
 - [x] **Phase 5: Getting Started Audit** - Verify and polish getting-started.md ✓
-- [ ] **Phase 6: API Reference Documentation** - Create comprehensive API reference
+- [x] **Phase 6: API Reference Documentation** - Create comprehensive API reference ✓
 
 ### 🚧 v1.2 Test Coverage (In Progress)
 
 **Milestone Goal:** Close all test coverage gaps for comprehensive quality assurance
 
-- [ ] **Phase 7: GraphNode Capabilities** - Test forwarding methods
+- [x] **Phase 7: GraphNode Capabilities** - Test forwarding methods ✓
 - [ ] **Phase 8: Graph Topologies** - Test diamond, cycles, isolated components
 - [ ] **Phase 9: Function Signatures** - Test *args, **kwargs, keyword-only, positional-only
 - [ ] **Phase 10: Type Compatibility** - Test Literal, Protocol, TypedDict, NamedTuple
@@ -67,10 +67,10 @@ Plans:
   5. Reference format is technical and comprehensive
   6. Examples follow consistent patterns (code → explanation)
 **Research**: Unlikely (documenting existing code, established patterns)
-**Plans**: TBD
+**Plans**: 1 plan (complete)
 
 Plans:
-- [ ] 06-01: TBD
+- [x] 06-01: Create Graph, GraphNode, InputSpec API references
 
 ### Phase 7: GraphNode Capabilities
 **Goal**: Test GraphNode forwarding methods work correctly
@@ -86,7 +86,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 07-01: GraphNode forwarding methods tests
+- [x] 07-01: GraphNode forwarding methods tests
 
 ### Phase 8: Graph Topologies
 **Goal**: Test complex graph topologies work correctly
@@ -177,8 +177,8 @@ Phases execute in numeric order: 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 5. Getting Started Audit | v1.1 | 1/1 | Complete | 2026-01-16 |
-| 6. API Reference Documentation | v1.1 | 0/TBD | Not started | - |
-| 7. GraphNode Capabilities | v1.2 | 0/1 | Not started | - |
+| 6. API Reference Documentation | v1.1 | 1/1 | Complete | 2026-01-16 |
+| 7. GraphNode Capabilities | v1.2 | 1/1 | Complete | 2026-01-16 |
 | 8. Graph Topologies | v1.2 | 0/1 | Not started | - |
 | 9. Function Signatures | v1.2 | 0/1 | Not started | - |
 | 10. Type Compatibility | v1.2 | 0/1 | Not started | - |

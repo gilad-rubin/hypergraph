@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-16)
 
 **Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** Phase 7 — GraphNode Capabilities
+**Current focus:** Phase 8 — Graph Topologies
 
 ## Current Position
 
-Phase: 7 of 12 (GraphNode Capabilities)
-Plan: 1 of ? (GraphNode Capabilities Tests)
-Status: In progress
-Last activity: 2026-01-16 — Completed 07-01-PLAN.md
+Phase: 8 of 12 (Graph Topologies)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-01-16 — Phase 7 complete
 
-Progress: ██████░░░░ 52% (v1.0 complete, v1.1 pending, v1.2 Plan 1 complete)
+Progress: ██████░░░░ 58% (v1.0 complete, v1.1 complete, Phase 7 complete)
 
 ## Performance Metrics
 

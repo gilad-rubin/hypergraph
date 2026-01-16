@@ -32,11 +32,11 @@ Requirements for comprehensive test coverage milestone.
 
 ### GraphNode
 
-- [ ] **GNODE-01**: GraphNode.has_default_for() correctly forwards to inner graph
-- [ ] **GNODE-02**: GraphNode.get_default_for() retrieves default from inner graph
-- [ ] **GNODE-03**: GraphNode.get_input_type() returns type from inner graph node
-- [ ] **GNODE-04**: GraphNode.get_output_type() returns type from inner graph node
-- [ ] **GNODE-05**: GraphNode with bound values from inner graph handled correctly
+- [x] **GNODE-01**: GraphNode.has_default_for() correctly forwards to inner graph
+- [x] **GNODE-02**: GraphNode.get_default_for() retrieves default from inner graph
+- [x] **GNODE-03**: GraphNode.get_input_type() returns type from inner graph node
+- [x] **GNODE-04**: GraphNode.get_output_type() returns type from inner graph node
+- [x] **GNODE-05**: GraphNode with bound values from inner graph handled correctly
 
 ### Graph Topologies
 
@@ -128,11 +128,11 @@ Which phases cover which requirements. Updated by create-roadmap.
 | API-04 | Phase 6 | Pending |
 | STYLE-02 | Phase 6 | Pending |
 | STYLE-03 | Phase 6 | Pending |
-| GNODE-01 | Phase 7 | Pending |
-| GNODE-02 | Phase 7 | Pending |
-| GNODE-03 | Phase 7 | Pending |
-| GNODE-04 | Phase 7 | Pending |
-| GNODE-05 | Phase 7 | Pending |
+| GNODE-01 | Phase 7 | Complete |
+| GNODE-02 | Phase 7 | Complete |
+| GNODE-03 | Phase 7 | Complete |
+| GNODE-04 | Phase 7 | Complete |
+| GNODE-05 | Phase 7 | Complete |
 | TOPO-01 | Phase 8 | Pending |
 | TOPO-02 | Phase 8 | Pending |
 | TOPO-03 | Phase 8 | Pending |
