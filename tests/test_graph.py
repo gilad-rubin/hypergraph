@@ -1461,8 +1461,8 @@ class TestGraphNodeCapabilities:
 
     # --- Tests for bound inner graph values (GNODE-05) ---
 
-    def test_bound_inner_graph_excludes_bound_from_inputs(self):
-        """Bound values not in GraphNode.inputs."""
+    def test_bound_inner_graph_includes_bound_in_inputs(self):
+        """Bound values remain in GraphNode.inputs (as optional)."""
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -1471,8 +1471,8 @@ class TestGraphNodeCapabilities:
         bound_inner = inner_graph.bind(y=10)
         gn = bound_inner.as_node()
 
-        # y is bound, should NOT appear in inputs
-        assert "y" not in gn.inputs
+        # y is bound but still appears in inputs (can be overridden)
+        assert "y" in gn.inputs
 
     def test_bound_inner_graph_preserves_unbound_inputs(self):
         """Unbound inputs still in GraphNode.inputs."""
@@ -1487,8 +1487,8 @@ class TestGraphNodeCapabilities:
         # x is not bound, should still appear in inputs
         assert "x" in gn.inputs
 
-    def test_bound_value_not_accessible_via_has_default(self):
-        """Bound is not same as default - bound inputs are removed from inputs."""
+    def test_bound_value_accessible_via_has_default(self):
+        """Bound values act as defaults - has_default_for returns True."""
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -1497,8 +1497,10 @@ class TestGraphNodeCapabilities:
         bound_inner = inner_graph.bind(y=10)
         gn = bound_inner.as_node()
 
-        # y is not in inputs anymore (bound), so has_default_for should return False
-        assert gn.has_default_for("y") is False
+        # y is bound, so has_default_for returns True (bound acts as default)
+        assert gn.has_default_for("y") is True
+        # get_default_for returns the bound value
+        assert gn.get_default_for("y") == 10
 
     def test_nested_graphnode_with_bound_inner(self):
         """GraphNode of GraphNode with bound values - types flow correctly."""
@@ -1522,6 +1524,9 @@ class TestGraphNodeCapabilities:
         assert outer_gn.get_output_type("intermediate") == str
         assert outer_gn.get_output_type("final") == int
 
-        # bound value b should not appear in outer's inputs
-        assert "b" not in outer_gn.inputs
+        # Both a and b appear in outer's inputs (b is optional due to binding)
         assert "a" in outer_gn.inputs
+        assert "b" in outer_gn.inputs
+        # b has a default (the bound value)
+        assert outer_gn.has_default_for("b") is True
+        assert outer_gn.get_default_for("b") == 10

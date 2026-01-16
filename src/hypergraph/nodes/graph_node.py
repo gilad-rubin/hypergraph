@@ -69,9 +69,7 @@ class GraphNode(HyperNode):
 
         # Core HyperNode attributes
         self.name = resolved_name
-        # Exclude bound values from inputs - they're already provided
-        bound_keys = set(graph.inputs.bound.keys())
-        self.inputs = tuple(p for p in graph.inputs.all if p not in bound_keys)
+        self.inputs = graph.inputs.all
         self.outputs = graph.outputs
 
     @property
@@ -161,38 +159,47 @@ class GraphNode(HyperNode):
         return None
 
     def has_default_for(self, param: str) -> bool:
-        """Check if a parameter has a default value in the inner graph.
+        """Check if a parameter has a default or bound value in the inner graph.
 
-        Delegates to the inner graph's nodes to find if any node
-        that consumes this parameter has a default for it.
+        Returns True if the parameter is bound in the inner graph, or if any
+        inner node has a default for it.
 
         Args:
             param: Input parameter name
 
         Returns:
-            True if any inner node has a default for this parameter.
+            True if param is bound or any inner node has a default.
         """
         if param not in self.inputs:
             return False
+        # Check if bound in inner graph
+        if param in self._graph.inputs.bound:
+            return True
+        # Check if any inner node has a default
         for inner_node in self._graph._nodes.values():
             if param in inner_node.inputs and inner_node.has_default_for(param):
                 return True
         return False
 
     def get_default_for(self, param: str) -> Any:
-        """Get the default value for a parameter from the inner graph.
+        """Get the default or bound value for a parameter from the inner graph.
 
-        Delegates to the inner graph's nodes to find the default value.
+        Returns the bound value if the parameter is bound, otherwise returns
+        the default value from an inner node.
 
         Args:
             param: Input parameter name
 
         Returns:
-            The default value.
+            The bound or default value.
 
         Raises:
-            KeyError: If no default exists for this parameter.
+            KeyError: If no default or bound value exists for this parameter.
         """
+        # Check if bound in inner graph first
+        if param in self._graph.inputs.bound:
+            return self._graph.inputs.bound[param]
+        # Check inner nodes for defaults
         for inner_node in self._graph._nodes.values():
             if param in inner_node.inputs and inner_node.has_default_for(param):
                 return inner_node.get_default_for(param)
