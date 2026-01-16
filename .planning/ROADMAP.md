@@ -24,7 +24,7 @@ Type validation system shipped with:
 
 **Milestone Goal:** Polish documentation for type validation system
 
-- [ ] **Phase 5: Getting Started Audit** - Verify and polish getting-started.md
+- [x] **Phase 5: Getting Started Audit** - Verify and polish getting-started.md ✓
 - [ ] **Phase 6: API Reference Documentation** - Create comprehensive API reference
 
 ### 🚧 v1.2 Test Coverage (In Progress)
@@ -50,10 +50,10 @@ Type validation system shipped with:
   3. strict_types usage demonstrated with working examples
   4. Language is step-by-step and human-centered
 **Research**: Unlikely (internal documentation, existing guide to polish)
-**Plans**: TBD
+**Plans**: 1 plan (complete)
 
 Plans:
-- [ ] 05-01: TBD
+- [x] 05-01: Audit examples, add Graph/strict_types section, polish structure
 
 ### Phase 6: API Reference Documentation
 **Goal**: Complete technical reference for all public APIs
@@ -176,7 +176,7 @@ Phases execute in numeric order: 5 → 6 → 7 → 8 → 9 → 10 → 11 → 12
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 5. Getting Started Audit | v1.1 | 0/TBD | Not started | - |
+| 5. Getting Started Audit | v1.1 | 1/1 | Complete | 2026-01-16 |
 | 6. API Reference Documentation | v1.1 | 0/TBD | Not started | - |
 | 7. GraphNode Capabilities | v1.2 | 0/1 | Not started | - |
 | 8. Graph Topologies | v1.2 | 0/1 | Not started | - |
