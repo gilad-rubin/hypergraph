@@ -108,8 +108,8 @@ class Graph:
     def strict_types(self) -> bool:
         """Whether type validation is enabled for this graph.
 
-        When True, type compatibility between connected nodes will be validated.
-        Type validation logic is implemented in a later phase.
+        When True, type compatibility between connected nodes is validated
+        at graph construction time via _validate_types().
         """
         return self._strict_types
 
