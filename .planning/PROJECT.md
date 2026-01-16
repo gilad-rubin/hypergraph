@@ -8,6 +8,15 @@ A computation graph framework for Python that separates structure definition fro
 
 Catch type errors early - before execution, at graph construction time. If `strict_types=True`, incompatible connections fail immediately with clear error messages.
 
+## Current Milestone: v1.1 Documentation Polish
+
+**Goal:** Update all documentation to reflect current implementation using the clear, example-driven README.md style.
+
+**Target features:**
+- Documentation audit of all docs/ files
+- Complete API reference for implemented features
+- Consistent writing style across all docs
+
 ## Current State
 
 **v1.0 Shipped:** 2026-01-16
@@ -40,7 +49,9 @@ Type validation is complete for existing features:
 
 ### Active
 
-(None - ready for next milestone)
+- [ ] Documentation audit — review and update all docs/ directory files
+- [ ] API reference — complete reference for Graph, FunctionNode, GraphNode, InputSpec, type checking
+- [ ] Style consistency — apply README.md writing style across all documentation
 
 ### Out of Scope
 
@@ -77,4 +88,4 @@ Type validation is complete for existing features:
 | Union directionality | Incoming ALL must satisfy required type | ✓ Good |
 
 ---
-*Last updated: 2026-01-16 after v1.0 milestone*
+*Last updated: 2026-01-16 after starting v1.1 milestone*

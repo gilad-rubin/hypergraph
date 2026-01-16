@@ -5,40 +5,36 @@
 See: .planning/PROJECT.md (updated 2026-01-16)
 
 **Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** PR review fixes complete - ready for merge
+**Current focus:** v1.1 Documentation Polish
 
 ## Current Position
 
-Phase: 04-pr-review-fixes
-Plan: 01 of 01
-Status: Phase complete
-Last activity: 2026-01-16 - Completed 04-01-PLAN.md (PR review fixes)
+Phase: Not started (run /gsd:create-roadmap)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-01-16 — Milestone v1.1 started
 
-Progress: [==========] 100% (1/1 plans complete)
+Progress: Not started
 
 ## Milestones
 
 See: .planning/MILESTONES.md
 
 - **v1.0 Type Validation** - SHIPPED 2026-01-16
+- **v1.1 Documentation Polish** - IN PROGRESS
 
 ## Key Decisions
 
-| Decision | Phase | Rationale |
-|----------|-------|-----------|
-| Task 1 not a bug | 04-01 | has_async_nodes is a property, code was already correct |
-| Explicit arity check before zip | 04-01 | Defense in depth for generic type comparison |
+(None yet for this milestone)
 
 ## Session Continuity
 
 Last session: 2026-01-16
-Stopped at: Completed 04-01-PLAN.md
+Stopped at: Milestone initialized
 Resume file: None
 
 ## Next Steps
 
-PR review fixes complete. Ready to merge PR #3.
-
-Options after merge:
-- `/gsd:discuss-milestone` - thinking partner for what to build next
-- `/gsd:new-milestone` - start planning new work
+Define requirements or create roadmap:
+- `/gsd:define-requirements` — specify checkable acceptance criteria
+- `/gsd:create-roadmap` — break milestone into phases
