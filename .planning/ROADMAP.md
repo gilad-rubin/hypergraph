@@ -12,7 +12,7 @@ Add type annotation validation to hypergraph to catch type mismatches at graph c
 
 - [x] **Phase 1: Type Extraction Infrastructure** - Nodes expose type information
 - [x] **Phase 2: Type Compatibility Engine** - Determine if types are compatible
-- [ ] **Phase 3: Enforcement & Errors** - Strict mode catches problems with helpful messages
+- [x] **Phase 3: Enforcement & Errors** - Strict mode catches problems with helpful messages
 - [ ] **Phase 4: Map Over Transformation** - `map_over` transforms types to `list[T]`
 
 ## Phase Details
@@ -60,7 +60,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 03-01: TBD
+- [x] 03-01: Type validation enforcement (missing annotations + type mismatches)
 
 ### Phase 4: Map Over Transformation
 **Goal**: `map_over` correctly transforms types for validation
@@ -85,5 +85,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Type Extraction Infrastructure | 1/1 | Complete | 2026-01-16 |
 | 2. Type Compatibility Engine | 1/1 | Complete | 2026-01-16 |
-| 3. Enforcement & Errors | 0/TBD | Not started | - |
+| 3. Enforcement & Errors | 1/1 | Complete | 2026-01-16 |
 | 4. Map Over Transformation | 0/TBD | Not started | - |
