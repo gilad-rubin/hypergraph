@@ -4,17 +4,17 @@
 
 See: .planning/PROJECT.md (updated 2026-01-16)
 
-**Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** Planning next milestone
+**Core value:** Execute graphs with structure/execution separation
+**Current focus:** Phase 13 — Runtime Types
 
 ## Current Position
 
-Phase: 12 of 12 complete
-Plan: All complete
-Status: v1.0, v1.1, v1.2 milestones shipped
-Last activity: 2026-01-16 — v1.2 milestone complete
+Phase: 13 of 20 (Runtime Types)
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-01-16 — v1.3 roadmap created
 
-Progress: ████████████ 100% (v1.0, v1.1, v1.2 complete)
+Progress: ░░░░░░░░░░ 0% (v1.3)
 
 ## Performance Metrics
 
@@ -26,17 +26,25 @@ Progress: ████████████ 100% (v1.0, v1.1, v1.2 complete)
 | v1.1 Documentation | 5-6 | 2 | 2026-01-16 |
 | v1.2 Test Coverage | 7-12 | 6 | 2026-01-16 |
 
-**Total:** 12 phases, 11 plans
+**Total:** 12 phases, 11 plans completed
+
+**v1.3 Execution Runtime:**
+- Phases 13-20 (8 phases)
+- Requirements: 40 total
+- Status: Ready to plan Phase 13
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting future work:
+Recent decisions affecting v1.3:
 
-- Tests document expected behavior even when implementation incomplete
-- Bound values should be excluded from GraphNode.inputs
+- Both SyncRunner and AsyncRunner return RunResult
+- Parallel execution via asyncio.gather (supersteps)
+- Events deferred to v1.4
+- Caching deferred to v1.4
+- FunctionNode and GraphNode only (no control flow nodes)
 
 ### Pending Todos
 
@@ -49,5 +57,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-01-16
-Stopped at: v1.2 milestone complete
+Stopped at: v1.3 roadmap created
 Resume file: None
