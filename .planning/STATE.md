@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-16)
 
 **Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** Phase 2 — Type Compatibility Engine
+**Current focus:** Phase 3 — Enforcement and Errors
 
 ## Current Position
 
-Phase: 2 of 4 (Type Compatibility Engine)
+Phase: 3 of 4 (Enforcement and Errors)
 Plan: 1 of 1 complete
-Status: Phase 2 complete
-Last activity: 2026-01-16 — Completed 02-01-PLAN.md
+Status: Phase 3 complete
+Last activity: 2026-01-16 — Completed 03-01-PLAN.md
 
-Progress: █████░░░░░ 50%
+Progress: ███████░░░ 75%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 2
-- Average duration: 10 min
-- Total execution time: 0.32 hours
+- Total plans completed: 3
+- Average duration: 7 min
+- Total execution time: 0.35 hours
 
 **By Phase:**
 
@@ -29,9 +29,10 @@ Progress: █████░░░░░ 50%
 |-------|-------|-------|----------|
 | 01 | 1 | 15 min | 15 min |
 | 02 | 1 | 4 min | 4 min |
+| 03 | 1 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 15 min, 4 min
+- Last 5 plans: 15 min, 4 min, 2 min
 - Trend: Velocity improving
 
 ## Accumulated Context
@@ -49,6 +50,8 @@ Recent decisions affecting current work:
 | Handle Annotated metadata separately from primary type | Avoid resolving string metadata as forward refs | 02-01 |
 | Accept incoming TypeVar without resolution | Unknown concrete type at definition time | 02-01 |
 | Union directionality: incoming ALL must satisfy required | Outgoing type must cover all possibilities | 02-01 |
+| Check output type before input type in validation | Clearer error ordering as data flows source-to-target | 03-01 |
+| Use hasattr for annotation access | Support both FunctionNode and GraphNode flexibility | 03-01 |
 
 ### Pending Todos
 
@@ -61,5 +64,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-16
-Stopped at: Completed 02-01-PLAN.md
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
