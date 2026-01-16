@@ -31,6 +31,11 @@ from typing import (
     get_type_hints,
 )
 
+try:
+    from typing import evaluate_forward_ref as _evaluate_forward_ref_public
+except ImportError:
+    _evaluate_forward_ref_public = None  # type: ignore[misc,assignment]
+
 
 class NoAnnotation:
     """Marker class for missing type annotations.
@@ -111,7 +116,8 @@ class TypeCheckMemo(NamedTuple):
 def _evaluate_forwardref(ref: ForwardRef, memo: TypeCheckMemo) -> Any:
     """Evaluate a forward reference using the provided memo.
 
-    Handles version differences between Python 3.12 and 3.13+.
+    Uses the public evaluate_forward_ref API when available (Python 3.14+),
+    falling back to the private ForwardRef._evaluate for older versions.
 
     Args:
         ref: The ForwardRef to evaluate
@@ -123,6 +129,11 @@ def _evaluate_forwardref(ref: ForwardRef, memo: TypeCheckMemo) -> Any:
     Raises:
         NameError: If the forward reference cannot be resolved
     """
+    if _evaluate_forward_ref_public is not None:
+        return _evaluate_forward_ref_public(
+            ref, globals=memo.globals, locals=memo.locals, type_params=()
+        )
+    # Fallback for Python < 3.14
     if sys.version_info < (3, 13):
         return ref._evaluate(memo.globals, memo.locals, recursive_guard=frozenset())
     return ref._evaluate(
