@@ -150,6 +150,15 @@ def _resolve_type(type_: Any, memo: TypeCheckMemo) -> Any:
     origin = get_origin(type_)
     if origin:
         args = get_args(type_)
+
+        # Handle Annotated specially - only resolve the primary type, keep metadata as-is
+        if origin is Annotated:
+            if args:
+                primary = _resolve_type(args[0], memo)
+                # Reconstruct Annotated with resolved primary type and original metadata
+                return Annotated[(primary, *args[1:])]
+            return type_
+
         resolved_args = tuple(_resolve_type(arg, memo) for arg in args)
         # Handle both Union and UnionType (| syntax)
         if origin in {Union, UnionType}:
