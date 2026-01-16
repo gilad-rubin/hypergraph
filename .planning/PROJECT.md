@@ -22,13 +22,18 @@ Catch type errors early - before execution, at graph construction time. If `stri
 
 ## Current State
 
-**v1.0 Shipped:** 2026-01-16
+**v1.0 Shipped:** 2026-01-16 — Type validation system
+**v1.1 Shipped:** 2026-01-16 — Documentation polish
 
 Type validation is complete for existing features:
 - `strict_types=True` validates all edge connections at construction time
 - FunctionNode and GraphNode expose type annotations
 - Supports Union, generics, forward references
 - Clear error messages with "How to fix" guidance
+
+Documentation is comprehensive:
+- Getting-started.md audited with Graph and strict_types sections
+- API reference for Graph, GraphNode, InputSpec
 
 **Codebase:** 3,142 lines Python, 263 tests passing
 
@@ -49,6 +54,11 @@ Type validation is complete for existing features:
 - ✓ Type compatibility checking (Union, generics, forward refs) — v1.0
 - ✓ Error when `strict_types=True` and nodes lack annotations — v1.0
 - ✓ Clear error messages showing types and how to fix — v1.0
+- ✓ Documentation examples execute without errors — v1.1
+- ✓ Getting-started.md covers type validation with strict_types — v1.1
+- ✓ Graph class API reference with constructor, methods, strict_types — v1.1
+- ✓ GraphNode API reference with nested composition — v1.1
+- ✓ InputSpec API reference with required/optional/bound/seeds — v1.1
 
 ### Active
 
@@ -95,4 +105,4 @@ Type validation is complete for existing features:
 | Union directionality | Incoming ALL must satisfy required type | ✓ Good |
 
 ---
-*Last updated: 2026-01-16 after starting v1.2 milestone*
+*Last updated: 2026-01-16 after v1.1 milestone*

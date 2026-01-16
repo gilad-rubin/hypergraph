@@ -1,5 +1,31 @@
 # Project Milestones: Hypergraph
 
+## v1.1 Documentation (Shipped: 2026-01-16)
+
+**Delivered:** Polished documentation with audited examples and comprehensive API reference for Graph, GraphNode, and InputSpec.
+
+**Phases completed:** 5-6 (2 plans total)
+
+**Key accomplishments:**
+- Audited all 26 code examples in getting-started.md
+- Added Graph construction and strict_types documentation
+- Created comprehensive API reference (Graph, GraphNode, InputSpec)
+- Established consistent documentation patterns (guides vs reference)
+
+**Stats:**
+- 13 files created/modified
+- 2,125 lines added
+- 2 phases, 2 plans
+- 1 day (same day as v1.0)
+
+**Git range:** `90776c4` → `5d66532`
+
+**Archive:** See `.planning/milestones/v1.1-ROADMAP.md` and `v1.1-REQUIREMENTS.md`
+
+**What's next:** v1.2 Comprehensive Test Coverage
+
+---
+
 ## v1.0 Type Validation (Shipped: 2026-01-16)
 
 **Delivered:** Type annotation validation at graph construction time with support for Union, generics, and forward references.

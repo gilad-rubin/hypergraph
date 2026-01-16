@@ -2,9 +2,9 @@
 
 ## Milestones
 
-- **v1.0 MVP** - Phases 1-4 (shipped 2026-01-16)
-- **v1.1 Documentation** - Phases 5-6 (complete)
-- **v1.2 Test Coverage** - Phases 7-12 (in progress)
+- **v1.0 MVP** — Phases 1-4 (shipped 2026-01-16)
+- **v1.1 Documentation** — Phases 5-6 (shipped 2026-01-16)
+- **v1.2 Test Coverage** — Phases 7-12 (in progress)
 
 ## Phases
 
@@ -20,12 +20,13 @@ Type validation system shipped with:
 
 </details>
 
-### v1.1 Documentation (Complete)
+<details>
+<summary>v1.1 Documentation (Phases 5-6) — SHIPPED 2026-01-16</summary>
 
-**Milestone Goal:** Polish documentation for type validation system
+- [x] Phase 5: Getting Started Audit (1/1 plans) — completed 2026-01-16
+- [x] Phase 6: API Reference Documentation (1/1 plans) — completed 2026-01-16
 
-- [x] **Phase 5: Getting Started Audit** - Verify and polish getting-started.md
-- [x] **Phase 6: API Reference Documentation** - Create comprehensive API reference
+</details>
 
 ### v1.2 Test Coverage (In Progress)
 
@@ -39,38 +40,6 @@ Type validation system shipped with:
 - [x] **Phase 12: Name Validation** - Test underscore, keywords, unicode ✓
 
 ## Phase Details
-
-### Phase 5: Getting Started Audit
-**Goal**: getting-started.md is accurate, progressive, and teaches strict_types
-**Depends on**: Nothing (first phase of v1.1)
-**Requirements**: AUDIT-01, AUDIT-02, AUDIT-03, STYLE-01
-**Success Criteria** (what must be TRUE):
-  1. Every code example runs without error against current API
-  2. Examples progress from simple -> binding -> composition -> type validation
-  3. strict_types usage demonstrated with working examples
-  4. Language is step-by-step and human-centered
-**Research**: Unlikely (internal documentation, existing guide to polish)
-**Plans**: 1 plan (complete)
-
-Plans:
-- [x] 05-01: Audit examples, add Graph/strict_types section, polish structure
-
-### Phase 6: API Reference Documentation
-**Goal**: Complete technical reference for all public APIs
-**Depends on**: Phase 5
-**Requirements**: API-01, API-02, API-03, API-04, STYLE-02, STYLE-03
-**Success Criteria** (what must be TRUE):
-  1. Graph class reference covers constructor, methods, strict_types
-  2. FunctionNode reference covers @node decorator and properties
-  3. GraphNode reference covers nested composition and .as_node()
-  4. InputSpec reference explains all categorization types
-  5. Reference format is technical and comprehensive
-  6. Examples follow consistent patterns (code -> explanation)
-**Research**: Unlikely (documenting existing code, established patterns)
-**Plans**: 1 plan (complete)
-
-Plans:
-- [x] 06-01: Create Graph, GraphNode, InputSpec API references
 
 ### Phase 7: GraphNode Capabilities
 **Goal**: Test GraphNode forwarding methods work correctly
@@ -172,12 +141,10 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12
+Phases execute in numeric order: 7 -> 8 -> 9 -> 10 -> 11 -> 12
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 5. Getting Started Audit | v1.1 | 1/1 | Complete | 2026-01-16 |
-| 6. API Reference Documentation | v1.1 | 1/1 | Complete | 2026-01-16 |
 | 7. GraphNode Capabilities | v1.2 | 1/1 | Complete | 2026-01-16 |
 | 8. Graph Topologies | v1.2 | 1/1 | Complete | 2026-01-16 |
 | 9. Function Signatures | v1.2 | 1/1 | Complete | 2026-01-16 |
