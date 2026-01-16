@@ -1,6 +1,6 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
-from typing import Any, TYPE_CHECKING
+from typing import Any, Literal, Self, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode, RenameEntry
 
@@ -66,6 +66,10 @@ class GraphNode(HyperNode):
 
         self._graph = graph
         self._rename_history: list[RenameEntry] = []
+
+        # map_over configuration (None = no mapping)
+        self._map_over: list[str] | None = None
+        self._map_mode: Literal["zip", "product"] = "zip"
 
         # Core HyperNode attributes
         self.name = resolved_name
@@ -204,3 +208,94 @@ class GraphNode(HyperNode):
             if param in inner_node.inputs and inner_node.has_default_for(param):
                 return inner_node.get_default_for(param)
         raise KeyError(f"No default value for parameter '{param}'")
+
+    def map_over(
+        self,
+        *params: str,
+        mode: Literal["zip", "product"] = "zip",
+    ) -> Self:
+        """Configure this GraphNode for iteration over input parameters.
+
+        When a GraphNode is configured with map_over, the runner will execute
+        the inner graph multiple times, once for each combination of values
+        in the mapped parameters. Outputs become lists of results.
+
+        Args:
+            *params: Input parameter names to iterate over. These parameters
+                should receive list values at runtime.
+            mode: How to combine multiple parameters:
+                - "zip": Parallel iteration (default). Parameters must have
+                  equal-length lists. First values together, second together, etc.
+                - "product": Cartesian product. All combinations of values.
+
+        Returns:
+            New GraphNode instance with map_over configuration
+
+        Raises:
+            ValueError: If no parameters specified
+            ValueError: If any parameter is not in this node's inputs
+
+        Example:
+            >>> inner = Graph([double], name="inner")
+            >>> # Execute double() for each x in [1, 2, 3]
+            >>> gn = inner.as_node().map_over("x")
+            >>> # In outer graph, doubled output will be [2, 4, 6]
+
+            >>> # Zip mode: process pairs (x=1,y=10), (x=2,y=20)
+            >>> gn = inner.as_node().map_over("x", "y", mode="zip")
+
+            >>> # Product mode: process all combinations
+            >>> gn = inner.as_node().map_over("x", "y", mode="product")
+        """
+        if not params:
+            raise ValueError("map_over requires at least one parameter")
+
+        # Validate all params exist in inputs
+        for param in params:
+            if param not in self.inputs:
+                raise ValueError(
+                    f"Parameter '{param}' is not an input of this GraphNode. "
+                    f"Available inputs: {self.inputs}"
+                )
+
+        # Create copy with map_over configuration
+        clone = self._copy()
+        clone._map_over = list(params)
+        clone._map_mode = mode
+        return clone
+
+    def _copy(self) -> Self:
+        """Create a shallow copy preserving map_over configuration."""
+        import copy
+
+        clone = copy.copy(self)
+        clone._rename_history = list(self._rename_history)
+        # Preserve map_over as a new list if set
+        if self._map_over is not None:
+            clone._map_over = list(self._map_over)
+        return clone
+
+    def with_inputs(
+        self,
+        mapping: dict[str, str] | None = None,
+        /,
+        **kwargs: str,
+    ) -> Self:
+        """Return new node with renamed inputs, updating map_over if needed.
+
+        Overrides base class to also update _map_over when inputs are renamed.
+        """
+        combined = {**(mapping or {}), **kwargs}
+        if not combined:
+            return self._copy()
+
+        # Call base class rename
+        clone = self._with_renamed("inputs", combined)
+
+        # Update map_over if any mapped params were renamed
+        if clone._map_over is not None:
+            clone._map_over = [
+                combined.get(p, p) for p in clone._map_over
+            ]
+
+        return clone
