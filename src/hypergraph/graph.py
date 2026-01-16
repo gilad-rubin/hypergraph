@@ -87,9 +87,10 @@ class Graph:
         Args:
             nodes: List of HyperNode objects
             name: Optional graph name for nesting
-            strict_types: If True, enable type validation between connected nodes.
-                         Type validation will be performed in a later phase.
-                         Default is False (no type checking).
+            strict_types: If True, validate type compatibility between connected
+                         nodes at graph construction time. Calls _validate_types()
+                         which raises GraphConfigError on missing annotations or
+                         type mismatches. Default is False (no type checking).
         """
         self.name = name
         self._strict_types = strict_types
