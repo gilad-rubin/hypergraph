@@ -5,64 +5,31 @@
 See: .planning/PROJECT.md (updated 2026-01-16)
 
 **Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** Phase 3 — Enforcement and Errors
+**Current focus:** v1.0 complete — ready for next milestone
 
 ## Current Position
 
-Phase: 3 of 4 (Enforcement and Errors)
-Plan: 1 of 1 complete
-Status: Phase 3 complete
-Last activity: 2026-01-16 — Completed 03-01-PLAN.md
+Phase: N/A (milestone complete)
+Plan: N/A
+Status: v1.0 shipped
+Last activity: 2026-01-16 — Completed v1.0 Type Validation milestone
 
-Progress: ███████░░░ 75%
+Progress: Complete
 
-## Performance Metrics
+## Milestones
 
-**Velocity:**
-- Total plans completed: 3
-- Average duration: 7 min
-- Total execution time: 0.35 hours
+See: .planning/MILESTONES.md
 
-**By Phase:**
-
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 01 | 1 | 15 min | 15 min |
-| 02 | 1 | 4 min | 4 min |
-| 03 | 1 | 2 min | 2 min |
-
-**Recent Trend:**
-- Last 5 plans: 15 min, 4 min, 2 min
-- Trend: Velocity improving
-
-## Accumulated Context
-
-### Decisions
-
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
-
-| Decision | Rationale | Plan |
-|----------|-----------|------|
-| Use get_type_hints() for annotation extraction | Handles forward references properly | 01-01 |
-| Return empty dict on extraction failure | Graceful degradation over exceptions | 01-01 |
-| Extract tuple element types for multi-output | Support tuple[A, B] -> {out1: A, out2: B} | 01-01 |
-| Handle Annotated metadata separately from primary type | Avoid resolving string metadata as forward refs | 02-01 |
-| Accept incoming TypeVar without resolution | Unknown concrete type at definition time | 02-01 |
-| Union directionality: incoming ALL must satisfy required | Outgoing type must cover all possibilities | 02-01 |
-| Check output type before input type in validation | Clearer error ordering as data flows source-to-target | 03-01 |
-| Use hasattr for annotation access | Support both FunctionNode and GraphNode flexibility | 03-01 |
-
-### Pending Todos
-
-None yet.
-
-### Blockers/Concerns
-
-None yet.
+- **v1.0 Type Validation** — SHIPPED 2026-01-16
 
 ## Session Continuity
 
 Last session: 2026-01-16
-Stopped at: Completed 03-01-PLAN.md
+Stopped at: v1.0 milestone complete
 Resume file: None
+
+## Next Steps
+
+Ready for next milestone. Options:
+- `/gsd:discuss-milestone` — thinking partner for what to build next
+- `/gsd:new-milestone` — start planning new work
