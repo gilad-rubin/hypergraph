@@ -33,3 +33,5 @@ specs/deprecated/*
 tmp/*
 notebooks/*
 specs/*
+deprecated/*
+.doc-manager/*
