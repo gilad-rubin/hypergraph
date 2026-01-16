@@ -20,6 +20,8 @@ Updated design specs are in specs/reviewed - search there when uncertain.
 
 Follow SOLID principles. Use simple, readable functions rather than deeply nested ones. Split large functions into focused helpers when needed.
 
+**Design for the question, not the data.** Before designing an interface, trace each capability to its consumers. Identify what question they're actually asking, then design methods that answer those questions directly. This avoids hasattr/isinstance checks and lets base classes provide sensible defaults.
+
 ## Tools
 
 Use Context7 and MCP servers to understand unfamiliar libraries.

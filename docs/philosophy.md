@@ -68,7 +68,7 @@ Both solve cycles. Both require:
 
 | Aspect | LangGraph / Pydantic-Graph | Hypergraph |
 |--------|---------------------------|------------|
-| **State definition** | Static TypedDict or Pydantic model required | No state class - outputs ARE state |
+| **State definition** | Static TypedDict or Pydantic model required | No state class needed - edges inferred from names |
 | **Graph construction** | Edges defined at class definition time | Build graphs dynamically at runtime |
 | **Validation timing** | Compile time (static types) | Build time (when Graph() is called) |
 | **Type hints** | Mandatory | Optional (opt-in for extra checks) |
@@ -76,16 +76,16 @@ Both solve cycles. Both require:
 
 ---
 
-## The Core Insight: Outputs ARE State
+## The Core Insight: Automatic Edge Inference
 
-In hypergraph, there is no separate "state" to define. **Your node outputs form the graph's state.**
+In hypergraph, edges are inferred from matching names. **Name your outputs, and the framework connects them to matching inputs.**
 
 Nodes define what flows through the system via their signatures:
 - Input parameters declare what a node needs
 - Output names declare what a node produces
-- Edges are inferred from matching names
+- Edges are inferred from matching names - no manual wiring
 
-No state schema. No reducers. No conflicts. Just outputs flowing between pure functions.
+No edge configuration. No state schemas. Just pure functions with clear contracts.
 
 ---
 
@@ -108,14 +108,11 @@ Both approaches catch errors before runtime. The difference is *when* validation
 
 ## Design Principles
 
-### Outputs ARE State
-No separate state schema needed. Node outputs are the state. When persistence is enabled, all outputs are checkpointed automatically.
+### Automatic Edge Inference
+Edges are inferred from matching output/input names. No manual wiring or edge configuration needed.
 
 ### Pure Functions
-Nodes are pure functions. They take inputs, produce outputs, and have no side effects on shared state. This makes them testable without the framework.
-
-### Implicit Edges
-Edges are inferred from function signatures. If node A produces "embedding" and node B takes "embedding" as input, they're connected. No manual wiring.
+Nodes are pure functions. They take inputs, produce outputs, and have no side effects. This makes them testable without the framework.
 
 ### Explicit Over Implicit
 Output names must be declared explicitly. Rename operations are explicit. No magic defaults or surprise behavior.
@@ -167,6 +164,6 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 
 Hypergraph started as a better DAG framework with hierarchical composition. It evolved to support cycles, runtime conditional branches, and multi-turn interactions when DAGs proved insufficient for modern AI workflows.
 
-Rather than adopting the state-object pattern of LangGraph, hypergraph kept its core insight: **Outputs ARE state.** Define pure functions with clear inputs and outputs. Let the framework infer edges, validate at build time, and handle persistence automatically.
+Rather than adopting the state-object pattern of LangGraph, hypergraph kept its core insight: **automatic edge inference from matching names.** Define pure functions with clear inputs and outputs. Let the framework infer edges, validate at build time, and handle persistence automatically.
 
 The mental model is simple: Nodes are pure functions. Outputs flow between them. DAGs execute in one pass. Cycles iterate until a termination condition. When a checkpointer is present, everything is saved for crash recovery. That's the whole architecture.

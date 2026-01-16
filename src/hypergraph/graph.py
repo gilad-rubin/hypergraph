@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode
+from hypergraph._typing import is_type_compatible
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -57,6 +58,7 @@ class Graph:
         inputs: InputSpec describing required/optional/seed parameters
         has_cycles: True if graph contains cycles
         has_async_nodes: True if any FunctionNode is async
+        strict_types: If True, type validation between nodes is enabled
         definition_hash: Merkle-tree hash of graph structure (for caching)
 
     Example:
@@ -78,14 +80,20 @@ class Graph:
         nodes: list[HyperNode],
         *,
         name: str | None = None,
+        strict_types: bool = False,
     ) -> None:
         """Create a graph from nodes.
 
         Args:
             nodes: List of HyperNode objects
             name: Optional graph name for nesting
+            strict_types: If True, validate type compatibility between connected
+                         nodes at graph construction time. Calls _validate_types()
+                         which raises GraphConfigError on missing annotations or
+                         type mismatches. Default is False (no type checking).
         """
         self.name = name
+        self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
         self._nodes = self._build_nodes_dict(nodes)
         self._nx_graph = self._build_graph(nodes)
@@ -96,6 +104,15 @@ class Graph:
     def nodes(self) -> dict[str, HyperNode]:
         """Map of node name -> node object."""
         return dict(self._nodes)  # Return copy to prevent mutation
+
+    @property
+    def strict_types(self) -> bool:
+        """Whether type validation is enabled for this graph.
+
+        When True, type compatibility between connected nodes is validated
+        at graph construction time via _validate_types().
+        """
+        return self._strict_types
 
     @property
     def nx_graph(self) -> nx.DiGraph:
@@ -178,10 +195,8 @@ class Graph:
     def _any_node_has_default(self, param: str) -> bool:
         """Check if any node consuming this param has a default value."""
         for node in self._nodes.values():
-            if param in node.inputs:
-                # Check if node has defaults attribute (FunctionNode does)
-                if hasattr(node, "defaults") and param in node.defaults:
-                    return True
+            if param in node.inputs and node.has_default_for(param):
+                return True
         return False
 
     def _get_cycle_params(self) -> set[str]:
@@ -317,13 +332,8 @@ class Graph:
 
     @property
     def has_async_nodes(self) -> bool:
-        """True if any FunctionNode is async."""
-        from hypergraph.nodes.function import FunctionNode
-
-        return any(
-            isinstance(node, FunctionNode) and node.is_async
-            for node in self._nodes.values()
-        )
+        """True if any node requires async execution."""
+        return any(node.is_async for node in self._nodes.values())
 
     @property
     def definition_hash(self) -> str:
@@ -346,15 +356,8 @@ class Graph:
         # 1. Collect node hashes (sorted for determinism)
         node_hashes = []
         for node in sorted(self._nodes.values(), key=lambda n: n.name):
-            # FunctionNode has definition_hash, others may not
-            if hasattr(node, "definition_hash"):
-                node_hashes.append(f"{node.name}:{node.definition_hash}")
-            else:
-                # Fallback: hash the node's name and structure
-                node_str = f"{node.name}:{node.inputs}:{node.outputs}"
-                node_hashes.append(
-                    f"{node.name}:{hashlib.sha256(node_str.encode()).hexdigest()}"
-                )
+            # All nodes have definition_hash (universal capability on HyperNode)
+            node_hashes.append(f"{node.name}:{node.definition_hash}")
 
         # 2. Include structure (edges)
         edges = sorted(
@@ -370,13 +373,14 @@ class Graph:
     def _shallow_copy(self) -> "Graph":
         """Create a shallow copy of this graph.
 
-        Note: Cache is preserved since structure doesn't change.
+        Preserves: name, strict_types, nodes, nx_graph, cached_hash
+        Creates new: _bound dict (to allow independent modifications)
         """
         import copy
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
-        # Cache preserved: _cached_hash is same since structure unchanged
+        # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 
     def _validate(self) -> None:
@@ -387,6 +391,8 @@ class Graph:
         self._validate_valid_identifiers()
         self._validate_no_namespace_collision()
         self._validate_consistent_defaults()
+        if self._strict_types:
+            self._validate_types()
 
     def _validate_graph_names(self) -> None:
         """Graph names cannot contain reserved path separators."""
@@ -402,7 +408,9 @@ class Graph:
                     )
 
     def _validate_valid_identifiers(self) -> None:
-        """Node and output names must be valid Python identifiers."""
+        """Node and output names must be valid Python identifiers (not keywords)."""
+        import keyword
+
         from hypergraph.nodes.graph_node import GraphNode
 
         for node in self._nodes.values():
@@ -416,11 +424,25 @@ class Graph:
                     f"How to fix:\n"
                     f"  Use letters, numbers, underscores only"
                 )
+            if keyword.iskeyword(node.name):
+                raise GraphConfigError(
+                    f"Invalid node name: '{node.name}'\n\n"
+                    f"  -> '{node.name}' is a Python keyword and cannot be used\n\n"
+                    f"How to fix:\n"
+                    f"  Use a different name (e.g., '{node.name}_node' or '{node.name}_func')"
+                )
             for output in node.outputs:
                 if not output.isidentifier():
                     raise GraphConfigError(
                         f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
                         f"  -> Output names must be valid Python identifiers"
+                    )
+                if keyword.iskeyword(output):
+                    raise GraphConfigError(
+                        f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
+                        f"  -> '{output}' is a Python keyword and cannot be used\n\n"
+                        f"How to fix:\n"
+                        f"  Use a different name (e.g., '{output}_value' or '{output}_result')"
                     )
 
     def _validate_no_namespace_collision(self) -> None:
@@ -475,12 +497,13 @@ class Graph:
 
         param_info: dict[str, list[tuple[bool, Any, str]]] = defaultdict(list)
         for node in self._nodes.values():
-            if not hasattr(node, 'defaults'):
-                continue
             for param in node.inputs:
-                has_default = param in node.defaults
-                default_value = node.defaults.get(param)
-                param_info[param].append((has_default, default_value, node.name))
+                has_default = node.has_default_for(param)
+                if has_default:
+                    default_value = node.get_default_for(param)
+                    param_info[param].append((True, default_value, node.name))
+                else:
+                    param_info[param].append((False, None, node.name))
         return param_info
 
     def _check_defaults_consistency(
@@ -517,6 +540,55 @@ class Graph:
                     f"  -> Node '{node_name}' has default: {value!r}\n\n"
                     f"How to fix:\n"
                     f"  Use the same default in both nodes"
+                )
+
+    def _validate_types(self) -> None:
+        """Validate type compatibility between connected nodes.
+
+        Checks each edge (source_node -> target_node) for:
+        1. Missing type annotations (raises error if either side is missing)
+        2. Type mismatches (raises error if types are incompatible)
+
+        Only called when strict_types=True.
+        """
+        for source_name, target_name, edge_data in self._nx_graph.edges(data=True):
+            value_name = edge_data.get("value_name")
+            if value_name is None:
+                continue
+
+            source_node = self._nodes[source_name]
+            target_node = self._nodes[target_name]
+
+            # Get types using universal capability methods
+            output_type = source_node.get_output_type(value_name)
+            input_type = target_node.get_input_type(value_name)
+
+            # Check for missing annotations
+            if output_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {source_name}(...) -> ReturnType"
+                )
+
+            if input_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{target_name}' parameter '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {target_name}({value_name}: YourType) -> ReturnType"
+                )
+
+            # Check type compatibility
+            if not is_type_compatible(output_type, input_type):
+                raise GraphConfigError(
+                    f"Type mismatch between nodes\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has type: {output_type}\n"
+                    f"  -> Node '{target_name}' input '{value_name}' expects type: {input_type}\n\n"
+                    f"How to fix:\n"
+                    f"  Either change the type annotation on one of the nodes, or add a\n"
+                    f"  conversion node between them."
                 )
 
     def as_node(self, *, name: str | None = None) -> "GraphNode":

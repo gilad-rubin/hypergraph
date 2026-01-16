@@ -864,6 +864,344 @@ class TestGraphAsNode:
         assert gnode.graph is g
 
 
+class TestGraphNodeOutputAnnotation:
+    """Test GraphNode.output_annotation property for type extraction."""
+
+    def test_single_typed_output(self):
+        """Test GraphNode exposes output type from typed function."""
+        @node(output_name="x")
+        def inner_func(_a: int) -> str:
+            return "hello"
+
+        inner_graph = Graph([inner_func], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.output_annotation == {"x": str}
+
+    def test_multiple_outputs(self):
+        """Test GraphNode exposes multiple output types."""
+        @node(output_name="x")
+        def func_a(_a: int) -> str:
+            return ""
+
+        @node(output_name="y")
+        def func_b(_x: str) -> float:
+            return 0.0
+
+        g = Graph([func_a, func_b], name="multi")
+        gn = g.as_node()
+
+        assert gn.output_annotation == {"x": str, "y": float}
+
+    def test_untyped_outputs(self):
+        """Test GraphNode returns None for untyped outputs."""
+        @node(output_name="x")
+        def untyped(a):
+            return a
+
+        g = Graph([untyped], name="untyped")
+        gn = g.as_node()
+
+        assert gn.output_annotation == {"x": None}
+
+    def test_mixed_typed_untyped(self):
+        """Test GraphNode includes all outputs, None for untyped."""
+        @node(output_name="x")
+        def typed(_a: int) -> str:
+            return ""
+
+        @node(output_name="y")
+        def untyped(x):
+            return x
+
+        g = Graph([typed, untyped], name="mixed")
+        gn = g.as_node()
+
+        # 'x' has type annotation, 'y' is None (untyped)
+        assert gn.output_annotation == {"x": str, "y": None}
+
+    def test_nested_graphnode(self):
+        """Test output_annotation works with nested GraphNode."""
+        @node(output_name="x")
+        def inner(_a: int) -> str:
+            return ""
+
+        inner_graph = Graph([inner], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="y")
+        def outer(_x: str) -> float:
+            return 0.0
+
+        outer_graph = Graph([inner_gn, outer], name="outer")
+        outer_gn = outer_graph.as_node()
+
+        # Both inner and outer produce typed outputs
+        assert outer_gn.output_annotation == {"x": str, "y": float}
+
+
+class TestGraphStrictTypes:
+    """Test Graph strict_types parameter for type validation."""
+
+    def test_strict_types_defaults_false(self):
+        """Test strict_types defaults to False."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo])
+
+        assert g.strict_types is False
+
+    def test_strict_types_true(self):
+        """Test strict_types can be set to True."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo], strict_types=True)
+
+        assert g.strict_types is True
+
+    def test_strict_types_preserved_through_bind(self):
+        """Test strict_types is preserved through bind operation."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        g = Graph([foo], strict_types=True)
+        g2 = g.bind(x=10)
+
+        assert g2.strict_types is True
+
+    def test_strict_types_preserved_through_unbind(self):
+        """Test strict_types is preserved through unbind operation."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        g = Graph([foo], strict_types=True)
+        g2 = g.bind(x=10)
+        g3 = g2.unbind("x")
+
+        assert g3.strict_types is True
+
+    def test_strict_types_with_name(self):
+        """Test strict_types works with name parameter."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo], name="my_graph", strict_types=True)
+
+        assert g.name == "my_graph"
+        assert g.strict_types is True
+
+    def test_strict_types_independent_per_graph(self):
+        """Test each graph has its own strict_types setting."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g1 = Graph([foo], strict_types=True)
+        g2 = Graph([foo], strict_types=False)
+
+        assert g1.strict_types is True
+        assert g2.strict_types is False
+
+
+class TestStrictTypesValidation:
+    """Test type validation when strict_types=True."""
+
+    def test_strict_types_missing_input_annotation(self):
+        """Test missing input annotation raises GraphConfigError."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result):  # Missing type annotation
+            return result
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Missing type annotation" in error_msg
+        assert "consumer" in error_msg
+        assert "result" in error_msg
+        assert "How to fix" in error_msg
+
+    def test_strict_types_missing_output_annotation(self):
+        """Test missing output annotation raises GraphConfigError."""
+        @node(output_name="result")
+        def producer():  # Missing return type annotation
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: int) -> int:
+            return result
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Missing type annotation" in error_msg
+        assert "producer" in error_msg
+        assert "result" in error_msg
+        assert "How to fix" in error_msg
+
+    def test_strict_types_type_mismatch(self):
+        """Test type mismatch raises GraphConfigError."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "producer" in error_msg
+        assert "consumer" in error_msg
+        assert "result" in error_msg
+        assert "How to fix" in error_msg
+
+    def test_strict_types_compatible_types_pass(self):
+        """Test compatible types pass validation."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: int) -> int:
+            return result
+
+        # Should not raise
+        g = Graph([producer, consumer], strict_types=True)
+
+        assert g.strict_types is True
+        assert g.nx_graph.has_edge("producer", "consumer")
+
+    def test_strict_types_union_compatible(self):
+        """Test int is compatible with int | str."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: int | str) -> str:
+            return str(result)
+
+        # Should not raise - int is compatible with int | str
+        g = Graph([producer, consumer], strict_types=True)
+
+        assert g.strict_types is True
+
+    def test_strict_types_disabled_skips_validation(self):
+        """Test type mismatch is ignored when strict_types=False."""
+        @node(output_name="result")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        # Should not raise - validation disabled
+        g = Graph([producer, consumer], strict_types=False)
+
+        assert g.strict_types is False
+        assert g.nx_graph.has_edge("producer", "consumer")
+
+    def test_strict_types_graphnode_output_compatible(self):
+        """Test GraphNode output type validates correctly."""
+        @node(output_name="x")
+        def inner_func(_a: int) -> str:
+            return "hello"
+
+        inner_graph = Graph([inner_func], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="final")
+        def outer_consumer(x: str) -> str:
+            return x.upper()
+
+        # Should not raise - GraphNode output str is compatible with str input
+        g = Graph([inner_gn, outer_consumer], strict_types=True)
+
+        assert g.strict_types is True
+        assert g.nx_graph.has_edge("inner", "outer_consumer")
+
+    def test_strict_types_graphnode_output_incompatible(self):
+        """Test GraphNode output type mismatch raises error."""
+        @node(output_name="x")
+        def inner_func(_a: int) -> str:
+            return "hello"
+
+        inner_graph = Graph([inner_func], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="final")
+        def outer_consumer(x: int) -> int:
+            return x + 1
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([inner_gn, outer_consumer], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "inner" in error_msg
+        assert "outer_consumer" in error_msg
+        assert "x" in error_msg
+
+    def test_strict_types_chain_validation(self):
+        """Test type validation works through a chain of nodes."""
+        @node(output_name="a")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def step2(a: int) -> str:
+            return str(a)
+
+        @node(output_name="c")
+        def step3(b: str) -> float:
+            return float(b)
+
+        # Should not raise - all types are compatible
+        g = Graph([step1, step2, step3], strict_types=True)
+
+        assert g.strict_types is True
+        assert g.nx_graph.number_of_edges() == 2
+
+    def test_strict_types_chain_mismatch_detected(self):
+        """Test type mismatch in middle of chain is detected."""
+        @node(output_name="a")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def step2(a: str) -> str:  # Expects str but a is int
+            return a.upper()
+
+        @node(output_name="c")
+        def step3(b: str) -> float:
+            return float(b)
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([step1, step2, step3], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "step1" in error_msg
+        assert "step2" in error_msg
+
+
 class TestGraphNodeRename:
     """Test GraphNode rename operations (with_name, with_inputs, with_outputs)."""
 
@@ -997,3 +1335,198 @@ class TestGraphNodeRename:
         assert original.name == original_name
         assert original.inputs == original_inputs
         assert original.outputs == original_outputs
+
+
+class TestGraphNodeCapabilities:
+    """Test GraphNode forwarding methods for universal capabilities.
+
+    These tests verify that GraphNode correctly delegates has_default_for,
+    get_default_for, get_input_type, and get_output_type to the inner graph.
+
+    Note: Some tests may fail until GraphNode implements forwarding for
+    has_default_for and get_default_for (documents expected behavior).
+    """
+
+    def test_has_default_for_with_default(self):
+        """Inner graph has node with default, GraphNode.has_default_for returns True."""
+        @node(output_name="result")
+        def foo(x: int, y: int = 10) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.has_default_for("y") is True
+
+    def test_has_default_for_without_default(self):
+        """Inner graph node has no default, returns False."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.has_default_for("x") is False
+
+    def test_has_default_for_nonexistent_param(self):
+        """Param not in inputs, returns False."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.has_default_for("nonexistent") is False
+
+    def test_get_default_for_retrieves_value(self):
+        """Get actual default value from inner graph."""
+        @node(output_name="result")
+        def foo(x: int, y: int = 42) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_default_for("y") == 42
+
+    def test_get_default_for_raises_on_no_default(self):
+        """KeyError when param has no default."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        with pytest.raises(KeyError, match="x"):
+            gn.get_default_for("x")
+
+    def test_get_input_type_returns_type(self):
+        """Returns type annotation from inner graph node."""
+        @node(output_name="result")
+        def foo(x: int, y: str) -> str:
+            return f"{x}: {y}"
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_input_type("x") == int
+        assert gn.get_input_type("y") == str
+
+    def test_get_input_type_untyped_returns_none(self):
+        """Returns None for untyped params."""
+        @node(output_name="result")
+        def foo(x):
+            return x
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_input_type("x") is None
+
+    def test_get_input_type_nonexistent_returns_none(self):
+        """Returns None for nonexistent param."""
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_input_type("nonexistent") is None
+
+    def test_get_output_type_returns_type(self):
+        """Returns output type from inner graph node."""
+        @node(output_name="result")
+        def foo(x: int) -> str:
+            return str(x)
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_output_type("result") == str
+
+    def test_get_output_type_untyped_returns_none(self):
+        """Returns None for untyped output."""
+        @node(output_name="result")
+        def foo(x):
+            return x
+
+        inner_graph = Graph([foo], name="inner")
+        gn = inner_graph.as_node()
+
+        assert gn.get_output_type("result") is None
+
+    # --- Tests for bound inner graph values (GNODE-05) ---
+
+    def test_bound_inner_graph_includes_bound_in_inputs(self):
+        """Bound values remain in GraphNode.inputs (as optional)."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        bound_inner = inner_graph.bind(y=10)
+        gn = bound_inner.as_node()
+
+        # y is bound but still appears in inputs (can be overridden)
+        assert "y" in gn.inputs
+
+    def test_bound_inner_graph_preserves_unbound_inputs(self):
+        """Unbound inputs still in GraphNode.inputs."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        bound_inner = inner_graph.bind(y=10)
+        gn = bound_inner.as_node()
+
+        # x is not bound, should still appear in inputs
+        assert "x" in gn.inputs
+
+    def test_bound_value_accessible_via_has_default(self):
+        """Bound values act as defaults - has_default_for returns True."""
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        inner_graph = Graph([foo], name="inner")
+        bound_inner = inner_graph.bind(y=10)
+        gn = bound_inner.as_node()
+
+        # y is bound, so has_default_for returns True (bound acts as default)
+        assert gn.has_default_for("y") is True
+        # get_default_for returns the bound value
+        assert gn.get_default_for("y") == 10
+
+    def test_nested_graphnode_with_bound_inner(self):
+        """GraphNode of GraphNode with bound values - types flow correctly."""
+        @node(output_name="intermediate")
+        def inner_func(a: int, b: int = 5) -> str:
+            return str(a + b)
+
+        inner_graph = Graph([inner_func], name="inner")
+        bound_inner = inner_graph.bind(b=10)
+        inner_gn = bound_inner.as_node()
+
+        @node(output_name="final")
+        def outer_func(intermediate: str) -> int:
+            return len(intermediate)
+
+        outer_graph = Graph([inner_gn, outer_func], name="outer", strict_types=True)
+        outer_gn = outer_graph.as_node()
+
+        # Types should flow correctly: inner produces str, outer consumes str
+        assert outer_gn.get_input_type("a") == int
+        assert outer_gn.get_output_type("intermediate") == str
+        assert outer_gn.get_output_type("final") == int
+
+        # Both a and b appear in outer's inputs (b is optional due to binding)
+        assert "a" in outer_gn.inputs
+        assert "b" in outer_gn.inputs
+        # b has a default (the bound value)
+        assert outer_gn.has_default_for("b") is True
+        assert outer_gn.get_default_for("b") == 10

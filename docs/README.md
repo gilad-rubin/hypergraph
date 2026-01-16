@@ -2,9 +2,9 @@
 
 A unified framework for Python workflow orchestration. DAG pipelines, agentic workflows, and everything in between.
 
-## Core Idea: Outputs ARE State
+## Core Idea: Automatic Edge Inference
 
-In hypergraph, there is no separate "state" to define. Your node outputs form the graph's state. No state schema. No reducers. No conflicts. Just outputs flowing between pure functions.
+Define functions. Name their outputs. Hypergraph connects them automatically. If node A produces "embedding" and node B takes "embedding" as input, they're connected. No manual wiring needed.
 
 ## Quick Start
 
@@ -53,7 +53,7 @@ graph = Graph(nodes=[embed, retrieve, generate])
 
 ## Design Principles
 
-1. **Outputs ARE state** - No separate state schema needed
+1. **Automatic wiring** - Edges inferred from matching output/input names
 2. **Pure functions** - Nodes are testable without the framework
 3. **Composition over configuration** - Nest graphs, don't configure flags
 4. **Unified execution** - Same algorithm for DAGs, branches, and loops

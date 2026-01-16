@@ -229,15 +229,15 @@ graph = Graph(nodes=[decide, step_a, step_b])
 
 Typos, missing connections, dead ends - caught when you build the graph, not buried in a stack trace at 2am.
 
-**Outputs ARE State**
+**Automatic Edge Inference**
 
-No state schema to define. No reducers. No conflicts. Node outputs flow between nodes automatically.
+Name your outputs. Hypergraph connects them to matching inputs automatically.
 
 ```python
 # embed produces "embedding"
-# retrieve consumes "embedding", produces "docs"
-# generate consumes "docs", produces "answer"
-# That's the entire state model.
+# retrieve takes "embedding", produces "docs"
+# generate takes "docs", produces "answer"
+# Edges inferred - no manual wiring needed.
 ```
 
 ## Design Principles

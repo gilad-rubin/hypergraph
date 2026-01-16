@@ -663,3 +663,179 @@ print(adapted.outputs)  # ("total", "multiply")
 result = node_instance(5, 3)
 print(result)           # (8, 15)
 ```
+
+## GraphNode
+
+**GraphNode** wraps a Graph for use as a node in another graph. This enables hierarchical composition: a graph can contain other graphs as nodes.
+
+### Creating GraphNode
+
+Create via `Graph.as_node()` rather than directly:
+
+```python
+from hypergraph import node, Graph
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+# Inner graph must have a name
+inner = Graph([double], name="doubler")
+
+# Wrap as node
+gn = inner.as_node()
+print(gn.name)     # "doubler"
+print(gn.inputs)   # ('x',)
+print(gn.outputs)  # ('doubled',)
+```
+
+### Overriding the Name
+
+You can override the name when calling `as_node()`:
+
+```python
+gn = inner.as_node(name="my_doubler")
+print(gn.name)  # "my_doubler"
+```
+
+### Properties
+
+GraphNode inherits from HyperNode and has these properties:
+
+#### `name: str`
+
+The node name. Either from `graph.name` or explicitly provided to `as_node()`.
+
+#### `inputs: tuple[str, ...]`
+
+All inputs of the wrapped graph (required + optional + seeds).
+
+```python
+gn = inner.as_node()
+print(gn.inputs)  # ('x',)
+```
+
+#### `outputs: tuple[str, ...]`
+
+All outputs of the wrapped graph.
+
+```python
+gn = inner.as_node()
+print(gn.outputs)  # ('doubled',)
+```
+
+#### `graph: Graph`
+
+The wrapped Graph instance.
+
+```python
+gn = inner.as_node()
+print(gn.graph.name)  # "doubler"
+```
+
+#### `is_async: bool`
+
+True if the wrapped graph contains any async nodes.
+
+```python
+@node(output_name="data")
+async def fetch(url: str) -> dict:
+    return {}
+
+async_graph = Graph([fetch], name="fetcher")
+gn = async_graph.as_node()
+print(gn.is_async)  # True
+```
+
+#### `definition_hash: str`
+
+Delegates to the wrapped graph's `definition_hash`.
+
+```python
+gn = inner.as_node()
+print(gn.definition_hash == inner.definition_hash)  # True
+```
+
+### Type Annotation Forwarding
+
+GraphNode forwards type annotations from the inner graph for `strict_types` validation:
+
+```python
+@node(output_name="value")
+def producer() -> int:
+    return 42
+
+inner = Graph([producer], name="inner")
+gn = inner.as_node()
+
+# Type forwarding works
+print(gn.get_output_type("value"))  # <class 'int'>
+
+# Allows strict_types validation in outer graph
+@node(output_name="result")
+def consumer(value: int) -> int:
+    return value * 2
+
+outer = Graph([gn, consumer], strict_types=True)  # Works!
+```
+
+### Nested Composition Example
+
+```python
+from hypergraph import node, Graph
+
+# Level 1: Simple nodes
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+@node(output_name="tripled")
+def triple(doubled: int) -> int:
+    return doubled * 3
+
+# Level 2: Inner graph
+inner = Graph([double, triple], name="multiply")
+print(inner.inputs.required)  # ('x',)
+print(inner.outputs)          # ('doubled', 'tripled')
+
+# Level 3: Wrap and use in outer graph
+@node(output_name="final")
+def finalize(tripled: int) -> str:
+    return f"Result: {tripled}"
+
+outer = Graph([inner.as_node(), finalize])
+print(outer.inputs.required)  # ('x',)
+print(outer.outputs)          # ('doubled', 'tripled', 'final')
+```
+
+### Rename Methods
+
+GraphNode supports the same rename methods as other nodes:
+
+```python
+gn = inner.as_node()
+
+# Rename inputs
+adapted = gn.with_inputs(x="input_value")
+print(adapted.inputs)  # ('input_value',)
+
+# Rename outputs
+adapted = gn.with_outputs(doubled="result")
+print(adapted.outputs)  # ('result',)
+
+# Rename the node itself
+adapted = gn.with_name("my_processor")
+print(adapted.name)  # "my_processor"
+```
+
+### Error: Missing Name
+
+If neither the graph nor `as_node()` provides a name, an error is raised:
+
+```python
+unnamed = Graph([double])  # No name
+unnamed.as_node()
+
+# ValueError: GraphNode requires a name. Either set name on Graph(..., name='x')
+# or pass name to as_node(name='x')
+```

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from abc import ABC
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from hypergraph.nodes._rename import RenameEntry, RenameError
 
@@ -22,6 +23,16 @@ class HyperNode(ABC):
     - _rename_history: Tracks renames for error messages
 
     All with_* methods return new instances (immutable pattern).
+
+    Universal capabilities (with sensible defaults):
+    - definition_hash: Structural hash for caching/change detection
+    - is_async: Whether async execution is required (default: False)
+    - is_generator: Whether node yields multiple values (default: False)
+    - cache: Whether results should be cached (default: False)
+    - has_default_for(param): Check if input has a fallback value
+    - get_default_for(param): Get fallback value for input
+    - get_input_type(param): Get expected type for input
+    - get_output_type(output): Get type of output
 
     Subclasses must set these attributes in __init__:
     - name: str
@@ -41,6 +52,93 @@ class HyperNode(ABC):
         if cls is HyperNode:
             raise TypeError("HyperNode cannot be instantiated directly")
         return super().__new__(cls)
+
+    # === Universal Capabilities ===
+
+    @property
+    def definition_hash(self) -> str:
+        """Structural hash for caching/change detection.
+
+        Default implementation hashes class name + name + inputs + outputs.
+        Subclasses may override for specialized hashing (e.g., function source).
+        """
+        content = f"{self.__class__.__name__}:{self.name}:{self.inputs}:{self.outputs}"
+        return hashlib.sha256(content.encode()).hexdigest()
+
+    @property
+    def is_async(self) -> bool:
+        """Does this node require async execution?
+
+        Default: False. Override in subclasses that support async.
+        """
+        return False
+
+    @property
+    def is_generator(self) -> bool:
+        """Does this node yield multiple values?
+
+        Default: False. Override in subclasses that support generators.
+        """
+        return False
+
+    @property
+    def cache(self) -> bool:
+        """Should results be cached?
+
+        Default: False. Override in subclasses that support caching.
+        """
+        return False
+
+    def has_default_for(self, param: str) -> bool:
+        """Does this node have a fallback value for this input?
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            True if a default exists, False otherwise.
+            Default implementation returns False.
+        """
+        return False
+
+    def get_default_for(self, param: str) -> Any:
+        """Get fallback value for an input parameter.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            The default value.
+
+        Raises:
+            KeyError: If no default exists for this parameter.
+            Default implementation always raises KeyError.
+        """
+        raise KeyError(f"No default for '{param}'")
+
+    def get_input_type(self, param: str) -> type | None:
+        """Get expected type for an input parameter.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            The type annotation, or None if untyped.
+            Default implementation returns None.
+        """
+        return None
+
+    def get_output_type(self, output: str) -> type | None:
+        """Get type of an output value.
+
+        Args:
+            output: Output value name
+
+        Returns:
+            The type annotation, or None if untyped.
+            Default implementation returns None.
+        """
+        return None
 
     # === Public API ===
 

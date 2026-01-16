@@ -24,7 +24,7 @@ def _resolve_outputs(
     Returns:
         Tuple of output names (empty for side-effect only nodes)
     """
-    if output_name:
+    if output_name is not None:
         return ensure_tuple(output_name)
 
     # No output_name → side-effect only, but warn if function has return annotation
@@ -91,7 +91,7 @@ class FunctionNode(HyperNode):
     """
 
     func: Callable
-    cache: bool
+    _cache: bool
     _definition_hash: str
     _is_async: bool
     _is_generator: bool
@@ -130,7 +130,7 @@ class FunctionNode(HyperNode):
         func = source.func if isinstance(source, FunctionNode) else source
 
         self.func = func
-        self.cache = cache
+        self._cache = cache
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
@@ -166,6 +166,11 @@ class FunctionNode(HyperNode):
         return self._is_generator
 
     @property
+    def cache(self) -> bool:
+        """Whether results should be cached."""
+        return self._cache
+
+    @property
     def defaults(self) -> dict[str, Any]:
         """Default values for input parameters."""
         sig = inspect.signature(self.func)
@@ -174,6 +179,149 @@ class FunctionNode(HyperNode):
             for name, param in sig.parameters.items()
             if param.default is not inspect.Parameter.empty
         }
+
+    @property
+    def parameter_annotations(self) -> dict[str, Any]:
+        """Type annotations for input parameters.
+
+        Returns:
+            dict mapping parameter names (using renamed input names) to their
+            type annotations. Only includes parameters that have annotations.
+            Returns empty dict if get_type_hints fails (e.g., forward references).
+
+        Example:
+            >>> @node(output_name="result")
+            ... def add(x: int, y: str) -> float: return 0.0
+            >>> add.parameter_annotations
+            {'x': int, 'y': str}
+        """
+        try:
+            hints = get_type_hints(self.func)
+        except Exception:
+            # get_type_hints can fail on forward references, etc.
+            return {}
+
+        # Get original parameter names from function signature
+        sig = inspect.signature(self.func)
+        original_params = list(sig.parameters.keys())
+
+        # Build reverse mapping: original param name -> renamed input name
+        # self._rename_history contains RenameEntry objects
+        rename_map: dict[str, str] = {}
+        for entry in self._rename_history:
+            if entry.kind == "inputs":
+                rename_map[entry.old] = entry.new
+
+        result: dict[str, Any] = {}
+        for orig_param in original_params:
+            if orig_param in hints:
+                # Use renamed name if it exists, otherwise original
+                final_name = rename_map.get(orig_param, orig_param)
+                result[final_name] = hints[orig_param]
+
+        return result
+
+    @property
+    def output_annotation(self) -> dict[str, Any]:
+        """Type annotations for output values.
+
+        Returns:
+            dict mapping output names to their type annotations.
+            - For single output: maps output_name to return type
+            - For multiple outputs with tuple return: maps each output to
+              corresponding tuple element type (using typing.get_args)
+            - Returns empty dict if no outputs or no return annotation
+
+        Example:
+            >>> @node(output_name="result")
+            ... def add(x: int, y: int) -> float: return 0.0
+            >>> add.output_annotation
+            {'result': float}
+
+            >>> @node(output_name=("a", "b"))
+            ... def split(x: str) -> tuple[int, str]: return (0, "")
+            >>> split.output_annotation
+            {'a': int, 'b': str}
+        """
+        if not self.outputs:
+            return {}
+
+        try:
+            hints = get_type_hints(self.func)
+        except Exception:
+            return {}
+
+        return_hint = hints.get("return")
+        if return_hint is None:
+            return {}
+
+        # Single output case
+        if len(self.outputs) == 1:
+            return {self.outputs[0]: return_hint}
+
+        # Multiple outputs - try to extract tuple element types
+        from typing import get_args, get_origin
+
+        origin = get_origin(return_hint)
+        if origin is tuple:
+            args = get_args(return_hint)
+            if len(args) == len(self.outputs):
+                return dict(zip(self.outputs, args))
+
+        # Can't map tuple elements to outputs - return empty
+        return {}
+
+    # === Override base class capability methods ===
+
+    def has_default_for(self, param: str) -> bool:
+        """Check if this parameter has a default value.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            True if parameter has a default value.
+        """
+        return param in self.defaults
+
+    def get_default_for(self, param: str) -> Any:
+        """Get default value for a parameter.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            The default value.
+
+        Raises:
+            KeyError: If parameter has no default.
+        """
+        defaults = self.defaults
+        if param not in defaults:
+            raise KeyError(f"No default for '{param}'")
+        return defaults[param]
+
+    def get_input_type(self, param: str) -> type | None:
+        """Get type annotation for an input parameter.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            The type annotation, or None if not annotated.
+        """
+        return self.parameter_annotations.get(param)
+
+    def get_output_type(self, output: str) -> type | None:
+        """Get type annotation for an output.
+
+        Args:
+            output: Output value name
+
+        Returns:
+            The type annotation, or None if not annotated.
+        """
+        return self.output_annotation.get(output)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped function directly.
