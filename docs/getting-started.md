@@ -155,6 +155,188 @@ print(custom.inputs)   # ("raw",)
 print(custom.outputs)  # ("cleaned",)
 ```
 
+## Building Graphs
+
+Now that you know how to create nodes, let's compose them into graphs.
+
+### Basic Graph Construction
+
+A **Graph** connects nodes together automatically based on matching parameter names. If node A produces output "x" and node B takes input "x", they're connected.
+
+```python
+from hypergraph import node, Graph
+
+@node(output_name="result")
+def add(a: int, b: int) -> int:
+    return a + b
+
+@node(output_name="final")
+def double(result: int) -> int:
+    return result * 2
+
+# Create graph - edges are inferred automatically
+g = Graph([add, double])
+
+print(list(g.nodes.keys()))  # ['add', 'double']
+print(g.outputs)             # ('result', 'final')
+print(g.inputs.required)     # ('a', 'b')
+```
+
+The graph automatically connects `add` → `double` because `add` produces "result" and `double` consumes "result".
+
+### Graph Properties
+
+```python
+# What inputs does the graph need?
+print(g.inputs.required)  # ('a', 'b')
+print(g.inputs.optional)  # ()
+
+# What outputs does the graph produce?
+print(g.outputs)  # ('result', 'final')
+
+# Is there a cycle? (A→B→A)
+print(g.has_cycles)  # False
+
+# Are any nodes async?
+print(g.has_async_nodes)  # False
+```
+
+### Binding Values
+
+You can pre-fill some inputs with `bind()`:
+
+```python
+# Bind 'a' to always be 10
+bound = g.bind(a=10)
+
+print(bound.inputs.required)  # ('b',) - only 'b' is needed now
+print(bound.inputs.bound)     # {'a': 10} - 'a' is pre-filled
+```
+
+Binding is immutable - it returns a new graph, leaving the original unchanged.
+
+## Type Validation with strict_types
+
+This is hypergraph's core feature: **catch type errors at graph construction time**, before you run anything.
+
+### Why This Matters
+
+Without type validation, you might wire nodes incorrectly and only discover the error at runtime:
+
+```python
+@node(output_name="count")
+def count_words(text: str) -> int:
+    return len(text.split())
+
+@node(output_name="result")
+def process_list(count: list) -> int:  # Expects list, not int!
+    return len(count)
+
+# Without strict_types, this "works" at construction...
+g = Graph([count_words, process_list])
+
+# ...but fails at runtime when int meets list
+```
+
+### Enable strict_types
+
+Add `strict_types=True` to catch these errors immediately:
+
+```python
+from hypergraph import node, Graph
+
+@node(output_name="value")
+def producer() -> int:
+    return 42
+
+@node(output_name="result")
+def consumer(value: int) -> int:
+    return value * 2
+
+# Types match - construction succeeds
+g = Graph([producer, consumer], strict_types=True)
+print(g.strict_types)  # True
+```
+
+### Type Mismatch Errors
+
+When types don't match, you get a clear error at construction time:
+
+```python
+@node(output_name="value")
+def producer() -> int:
+    return 42
+
+@node(output_name="result")
+def consumer(value: str) -> str:  # Expects str, but producer gives int
+    return value.upper()
+
+# This raises GraphConfigError immediately!
+Graph([producer, consumer], strict_types=True)
+
+# Error: Type mismatch on edge 'producer' → 'consumer' (value='value')
+#   Output type: int
+#   Input type:  str
+#
+# How to fix:
+#   - Change producer's return type to match str
+#   - Change consumer's parameter type to match int
+#   - Use a Union type if both are valid
+```
+
+### Missing Annotations
+
+With `strict_types=True`, all connected nodes must have type annotations:
+
+```python
+@node(output_name="value")
+def producer():  # Missing return type!
+    return 42
+
+@node(output_name="result")
+def consumer(value: int) -> int:
+    return value * 2
+
+Graph([producer, consumer], strict_types=True)
+
+# Error: Missing type annotation in strict_types mode
+#   -> Node 'producer' output 'value' has no type annotation
+#
+# How to fix:
+#   Add type annotation: def producer(...) -> ReturnType
+```
+
+### Union Types
+
+Union types work as you'd expect - a more specific type satisfies a broader one:
+
+```python
+@node(output_name="value")
+def producer() -> int:
+    return 42
+
+@node(output_name="result")
+def consumer(value: int | str) -> str:  # Accepts int OR str
+    return str(value)
+
+# Works! int satisfies int | str
+g = Graph([producer, consumer], strict_types=True)
+```
+
+### When to Use strict_types
+
+- **Development**: Enable it to catch wiring mistakes early
+- **Production**: Enable it for safety in critical pipelines
+- **Prototyping**: Disable it (default) for quick experiments
+
+```python
+# Quick prototype - skip type checking
+g = Graph([node1, node2])  # strict_types=False by default
+
+# Production code - validate everything
+g = Graph([node1, node2], strict_types=True)
+```
+
 ## Execution Modes
 
 Hypergraph supports four execution modes, auto-detected from the function signature:
@@ -334,9 +516,9 @@ renamed.with_inputs(x="different")  # ERROR - x was already renamed to "input"
 
 ## Next Steps
 
-- Explore [API Reference: Nodes](api/nodes.md) for complete documentation
+- Explore [API Reference](api/) for complete documentation on nodes, graphs, and types
 - Read [Philosophy](philosophy.md) to understand "Outputs ARE State"
-- When graphs are available, learn how to compose nodes into workflows
+- Try building a small pipeline with `strict_types=True` to catch errors early
 
 ## Common Patterns
 
@@ -395,21 +577,20 @@ This is useful when you want to completely reconfigure a node rather than just r
 
 ### Conditional Output Names
 
-Choose output names at runtime:
+Choose output names at creation time:
 
 ```python
 def create_processor(mode: str):
-    @node
+    output_name = "doubled" if mode == "double" else "incremented"
+
+    @node(output_name=output_name)
     def process(x: int) -> int:
         if mode == "double":
             return x * 2
         else:
             return x + 1
 
-    if mode == "double":
-        return process.with_outputs(process="doubled")
-    else:
-        return process.with_outputs(process="incremented")
+    return process
 
 processor = create_processor("double")
 print(processor.outputs)  # ("doubled",)
