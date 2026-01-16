@@ -10,7 +10,7 @@
 - [x] **TYPE-01**: Graph constructor accepts `strict_types` parameter (default False)
 - [x] **TYPE-02**: FunctionNode extracts type annotations from parameter and return types
 - [x] **TYPE-03**: GraphNode exposes output type from its output node (no recursive internal validation)
-- [ ] **TYPE-04**: Type compatibility checking supports Union, generics, and forward refs
+- [x] **TYPE-04**: Type compatibility checking supports Union, generics, and forward refs
 - [ ] **TYPE-05**: Graph raises error when `strict_types=True` and connected nodes lack type annotations
 - [ ] **TYPE-06**: Error messages show which types conflict and how to fix
 - [ ] **TYPE-07**: `map_over` transforms types to `list[T]` (both FunctionNode and GraphNode)
@@ -35,7 +35,7 @@
 | TYPE-01 | Phase 1 | Complete |
 | TYPE-02 | Phase 1 | Complete |
 | TYPE-03 | Phase 1 | Complete |
-| TYPE-04 | Phase 2 | Pending |
+| TYPE-04 | Phase 2 | Complete |
 | TYPE-05 | Phase 3 | Pending |
 | TYPE-06 | Phase 3 | Pending |
 | TYPE-07 | Phase 4 | Pending |
@@ -47,4 +47,4 @@
 
 ---
 *Requirements defined: 2026-01-16*
-*Last updated: 2026-01-16 after Phase 1 completion*
+*Last updated: 2026-01-16 after Phase 2 completion*
