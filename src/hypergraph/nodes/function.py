@@ -24,7 +24,7 @@ def _resolve_outputs(
     Returns:
         Tuple of output names (empty for side-effect only nodes)
     """
-    if output_name:
+    if output_name is not None:
         return ensure_tuple(output_name)
 
     # No output_name → side-effect only, but warn if function has return annotation

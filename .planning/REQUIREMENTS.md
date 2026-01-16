@@ -40,44 +40,44 @@ Requirements for comprehensive test coverage milestone.
 
 ### Graph Topologies
 
-- [ ] **TOPO-01**: Diamond dependency pattern (A→B, A→C, B→D, C→D) works correctly
-- [ ] **TOPO-02**: Multi-node cycle (A→B→C→A) detected and seeds computed correctly
-- [ ] **TOPO-03**: Multiple independent cycles in one graph handled correctly
-- [ ] **TOPO-04**: Isolated subgraphs (disconnected components) work correctly
-- [ ] **TOPO-05**: Deeply nested graphs (3+ levels) work correctly
+- [x] **TOPO-01**: Diamond dependency pattern (A→B, A→C, B→D, C→D) works correctly
+- [x] **TOPO-02**: Multi-node cycle (A→B→C→A) detected and seeds computed correctly
+- [x] **TOPO-03**: Multiple independent cycles in one graph handled correctly
+- [x] **TOPO-04**: Isolated subgraphs (disconnected components) work correctly
+- [x] **TOPO-05**: Deeply nested graphs (3+ levels) work correctly
 
 ### Function Signatures
 
-- [ ] **FUNC-01**: FunctionNode handles *args parameter correctly
-- [ ] **FUNC-02**: FunctionNode handles **kwargs parameter correctly
-- [ ] **FUNC-03**: FunctionNode handles keyword-only parameters (*, name) correctly
-- [ ] **FUNC-04**: FunctionNode handles positional-only parameters (param, /) correctly
-- [ ] **FUNC-05**: FunctionNode handles mixed argument types correctly
+- [x] **FUNC-01**: FunctionNode handles *args parameter correctly
+- [x] **FUNC-02**: FunctionNode handles **kwargs parameter correctly
+- [x] **FUNC-03**: FunctionNode handles keyword-only parameters (*, name) correctly
+- [x] **FUNC-04**: FunctionNode handles positional-only parameters (param, /) correctly
+- [x] **FUNC-05**: FunctionNode handles mixed argument types correctly
 
 ### Type Compatibility
 
-- [ ] **TYPE-01**: Literal types validated correctly (Literal["a", "b"])
-- [ ] **TYPE-02**: Protocol types validated correctly (structural typing)
-- [ ] **TYPE-03**: TypedDict types validated correctly
-- [ ] **TYPE-04**: NamedTuple types validated correctly
-- [ ] **TYPE-05**: ParamSpec types handled correctly
-- [ ] **TYPE-06**: Self type (Python 3.11+) handled correctly
-- [ ] **TYPE-07**: Recursive types handled without infinite loop
+- [~] **TYPE-01**: Literal types validated correctly (Literal["a", "b"]) - xfail: forward ref issue
+- [x] **TYPE-02**: Protocol types validated correctly (structural typing)
+- [~] **TYPE-03**: TypedDict types validated correctly - partial, xfail: key comparison
+- [x] **TYPE-04**: NamedTuple types validated correctly
+- [x] **TYPE-05**: ParamSpec types handled correctly
+- [x] **TYPE-06**: Self type (Python 3.11+) handled correctly
+- [~] **TYPE-07**: Recursive types handled without infinite loop - xfail: forward ref issue
 
 ### Binding Edge Cases
 
-- [ ] **BIND-01**: bind(x=None) correctly binds None as a value
-- [ ] **BIND-02**: bind() with multiple values at once works correctly
-- [ ] **BIND-03**: bind() interaction with cycle seeds handled correctly
-- [ ] **BIND-04**: unbind() restores correct required vs optional status
+- [x] **BIND-01**: bind(x=None) correctly binds None as a value
+- [x] **BIND-02**: bind() with multiple values at once works correctly
+- [x] **BIND-03**: bind() interaction with cycle seeds handled correctly
+- [x] **BIND-04**: unbind() restores correct required vs optional status
 
 ### Name Validation Edge Cases
 
-- [ ] **NAME-01**: Names starting with underscore (_private) handled correctly
-- [ ] **NAME-02**: Names that are Python keywords rejected with clear error
-- [ ] **NAME-03**: Empty string names rejected with clear error
-- [ ] **NAME-04**: Unicode characters in names handled correctly
-- [ ] **NAME-05**: Very long names (1000+ chars) handled correctly
+- [x] **NAME-01**: Names starting with underscore (_private) handled correctly
+- [~] **NAME-02**: Names that are Python keywords rejected with clear error - xfail: not implemented
+- [x] **NAME-03**: Empty string names rejected with clear error
+- [x] **NAME-04**: Unicode characters in names handled correctly
+- [x] **NAME-05**: Very long names (1000+ chars) handled correctly
 
 ## v2 Requirements
 

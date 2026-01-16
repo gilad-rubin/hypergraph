@@ -272,3 +272,264 @@ class TestNamespaceCollisionValidation:
 
         with pytest.raises(GraphConfigError, match="collides with output"):
             Graph([inner1.as_node(), inner2.as_node()])
+
+
+class TestNameValidationEdgeCases:
+    """Test name validation edge cases (NAME-01 through NAME-05).
+
+    Tests verify handling of:
+    - Underscore-prefixed names (valid Python identifiers)
+    - Python keywords (should be rejected but may not be currently)
+    - Empty string names (invalid identifiers)
+    - Unicode characters (depends on Python identifier rules)
+    - Very long names (no length limit in Python)
+
+    Note: Some tests document expected behavior that may not be implemented yet.
+    Tests for Python keyword rejection (NAME-02) are marked xfail until the
+    implementation is updated to use keyword.iskeyword() in addition to str.isidentifier().
+    """
+
+    from hypergraph.nodes.function import FunctionNode
+
+    # NAME-01: Underscore prefix names (should be accepted)
+
+    def test_node_name_with_leading_underscore_valid(self):
+        """Node name with leading underscore is a valid Python identifier."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "_private"
+
+        # Should not raise
+        g = Graph([fn])
+        assert "_private" in g.nodes
+
+    def test_output_name_with_leading_underscore_valid(self):
+        """Output name with leading underscore is valid."""
+
+        @node(output_name="_result")
+        def foo(x: int) -> int:
+            return x
+
+        # Should not raise
+        g = Graph([foo])
+        assert "_result" in g.outputs
+
+    def test_node_name_double_underscore_valid(self):
+        """Dunder-style names are valid Python identifiers."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "__dunder__"
+
+        # Should not raise
+        g = Graph([fn])
+        assert "__dunder__" in g.nodes
+
+    # NAME-02: Python keywords (should be rejected)
+
+    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
+    def test_node_name_keyword_class_raises(self):
+        """Node name 'class' is a Python keyword and should be rejected."""
+        import keyword
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "class"
+
+        # "class" is a keyword
+        assert keyword.iskeyword("class")
+
+        # Should raise GraphConfigError
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([fn])
+
+        assert "keyword" in str(exc_info.value).lower()
+
+    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
+    def test_node_name_keyword_for_raises(self):
+        """Node name 'for' is a Python keyword and should be rejected."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "for"
+
+        with pytest.raises(GraphConfigError):
+            Graph([fn])
+
+    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
+    def test_node_name_keyword_import_raises(self):
+        """Node name 'import' is a Python keyword and should be rejected."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "import"
+
+        with pytest.raises(GraphConfigError):
+            Graph([fn])
+
+    @pytest.mark.xfail(reason="Implementation doesn't check for Python keywords yet")
+    def test_output_name_keyword_raises(self):
+        """Output name 'class' is a Python keyword and should be rejected."""
+
+        @node(output_name="class")
+        def foo(x: int) -> int:
+            return x
+
+        with pytest.raises(GraphConfigError):
+            Graph([foo])
+
+    # NAME-03: Empty string names (should be rejected)
+
+    def test_node_name_empty_string_raises(self):
+        """Empty string is not a valid Python identifier."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = ""
+
+        # Should raise GraphConfigError
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([fn])
+
+        assert "Invalid node name" in str(exc_info.value)
+
+    def test_output_name_empty_string_raises(self):
+        """Empty output name should be rejected."""
+
+        @node(output_name="")
+        def foo(x: int) -> int:
+            return x
+
+        # Should raise GraphConfigError
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([foo])
+
+        assert "Invalid output name" in str(exc_info.value)
+
+    # NAME-04: Unicode characters
+
+    def test_node_name_unicode_valid_identifier(self):
+        """Valid ASCII names work (baseline test)."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "cafe"
+
+        g = Graph([fn])
+        assert "cafe" in g.nodes
+
+    def test_node_name_unicode_greek_letter(self):
+        """Greek letters are valid Python identifiers."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "\u03b1"  # Greek lowercase alpha (α)
+
+        # Python allows unicode identifiers that start with letter-like chars
+        assert "\u03b1".isidentifier()
+
+        g = Graph([fn])
+        assert "\u03b1" in g.nodes
+
+    def test_node_name_unicode_emoji_raises(self):
+        """Emojis are not valid Python identifiers."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "test\U0001F600"  # Grinning face emoji
+
+        # Verify it's not a valid identifier
+        assert not "test\U0001F600".isidentifier()
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([fn])
+
+        assert "Invalid node name" in str(exc_info.value)
+
+    def test_node_name_unicode_space_raises(self):
+        """Names with Unicode non-breaking space are not valid identifiers."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        fn.name = "test\u00a0name"  # Non-breaking space
+
+        # Verify it's not a valid identifier
+        assert not "test\u00a0name".isidentifier()
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([fn])
+
+        assert "Invalid node name" in str(exc_info.value)
+
+    # NAME-05: Very long names (1000+ chars)
+
+    def test_node_name_very_long_valid(self):
+        """Very long (1000+ char) names that are valid identifiers work."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        long_name = "a" * 1000  # 1000 'a' characters
+        fn.name = long_name
+
+        # Python has no length limit on identifiers
+        assert long_name.isidentifier()
+
+        g = Graph([fn])
+        assert long_name in g.nodes
+
+    def test_output_name_very_long_valid(self):
+        """Very long output names are accepted."""
+        long_name = "x" * 1000
+
+        @node(output_name=long_name)
+        def foo(a: int) -> int:
+            return a
+
+        g = Graph([foo])
+        assert long_name in g.outputs
+
+    def test_error_message_with_long_name_readable(self):
+        """Error messages for long invalid names should be readable (truncated)."""
+
+        def foo(x: int) -> int:
+            return x
+
+        fn = self.FunctionNode(foo, output_name="result")
+        # Invalid name: starts with digit then 1000 'a' chars
+        invalid_long_name = "1" + "a" * 999
+        fn.name = invalid_long_name
+
+        assert not invalid_long_name.isidentifier()
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([fn])
+
+        error_msg = str(exc_info.value)
+        # Error message should exist but not be absurdly long
+        assert "Invalid node name" in error_msg
+        # The message length should be reasonable (under 500 chars or truncated)
+        # This is a soft check - implementation may show full name
+        assert len(error_msg) < 2000

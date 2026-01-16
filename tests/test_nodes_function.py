@@ -644,3 +644,224 @@ class TestFunctionNodeOutputAnnotation:
 
         fn = FunctionNode(foo, output_name="result")
         assert fn.output_annotation == {"result": Optional[Dict[str, int]]}
+
+
+class TestFunctionSignatures:
+    """Tests for FunctionNode handling of all Python parameter types (FUNC-01 through FUNC-05).
+
+    Python has 5 parameter kinds (from inspect.Parameter.kind):
+    - POSITIONAL_ONLY: def f(a, /)
+    - POSITIONAL_OR_KEYWORD: def f(a) (standard, already tested elsewhere)
+    - VAR_POSITIONAL: def f(*args)
+    - KEYWORD_ONLY: def f(*, kw)
+    - VAR_KEYWORD: def f(**kwargs)
+    """
+
+    # FUNC-01: *args tests
+
+    def test_var_positional_in_inputs(self):
+        """*args parameter appears in inputs (FUNC-01)."""
+
+        def foo(*args):
+            pass
+
+        fn = FunctionNode(foo)
+        assert "args" in fn.inputs
+        assert fn.inputs == ("args",)
+
+    def test_var_positional_no_default(self):
+        """*args has no default (FUNC-01)."""
+
+        def foo(*args):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {}
+        assert not fn.has_default_for("args")
+
+    def test_var_positional_with_annotation(self):
+        """*args can have type annotation (FUNC-01)."""
+
+        def foo(*args: int):
+            pass
+
+        fn = FunctionNode(foo)
+        # The annotation for *args may or may not appear in parameter_annotations
+        # depending on how get_type_hints handles variadic parameters
+        # Just verify no exception is raised
+        assert "args" in fn.inputs
+
+    # FUNC-02: **kwargs tests
+
+    def test_var_keyword_in_inputs(self):
+        """**kwargs parameter appears in inputs (FUNC-02)."""
+
+        def foo(**kwargs):
+            pass
+
+        fn = FunctionNode(foo)
+        assert "kwargs" in fn.inputs
+        assert fn.inputs == ("kwargs",)
+
+    def test_var_keyword_no_default(self):
+        """**kwargs has no default (FUNC-02)."""
+
+        def foo(**kwargs):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {}
+        assert not fn.has_default_for("kwargs")
+
+    # FUNC-03: keyword-only tests
+
+    def test_keyword_only_in_inputs(self):
+        """Keyword-only params appear in inputs (FUNC-03)."""
+
+        def foo(a, *, kw):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.inputs == ("a", "kw")
+
+    def test_keyword_only_with_default(self):
+        """Keyword-only can have defaults (FUNC-03)."""
+
+        def foo(a, *, kw=10):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"kw": 10}
+        assert fn.has_default_for("kw")
+        assert fn.get_default_for("kw") == 10
+
+    def test_keyword_only_without_default(self):
+        """Keyword-only without default has no entry in defaults (FUNC-03)."""
+
+        def foo(a, *, kw):
+            pass
+
+        fn = FunctionNode(foo)
+        assert "kw" not in fn.defaults
+        assert not fn.has_default_for("kw")
+
+    def test_keyword_only_with_annotation(self):
+        """Keyword-only with type annotation (FUNC-03)."""
+
+        def foo(a, *, kw: str):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.parameter_annotations.get("kw") == str
+
+    # FUNC-04: positional-only tests
+
+    def test_positional_only_in_inputs(self):
+        """Positional-only params appear in inputs (FUNC-04)."""
+
+        def foo(a, /, b):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.inputs == ("a", "b")
+
+    def test_positional_only_with_default(self):
+        """Positional-only can have defaults (FUNC-04)."""
+
+        def foo(a=5, /, b=10):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"a": 5, "b": 10}
+
+    def test_positional_only_with_annotation(self):
+        """Positional-only with type annotation (FUNC-04)."""
+
+        def foo(a: int, /) -> str:
+            return ""
+
+        fn = FunctionNode(foo)
+        assert fn.parameter_annotations.get("a") == int
+
+    # FUNC-05: mixed argument types tests
+
+    def test_mixed_all_param_kinds(self):
+        """Function with all parameter kinds (FUNC-05)."""
+
+        def foo(pos_only, /, regular, *args, kw_only, **kwargs):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.inputs == ("pos_only", "regular", "args", "kw_only", "kwargs")
+
+    def test_mixed_with_defaults(self):
+        """Mixed params with various defaults (FUNC-05)."""
+
+        def foo(pos=1, /, reg=2, *args, kw=3, **kwargs):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.defaults == {"pos": 1, "reg": 2, "kw": 3}
+        # *args and **kwargs never have defaults
+        assert "args" not in fn.defaults
+        assert "kwargs" not in fn.defaults
+
+    def test_mixed_with_annotations(self):
+        """Mixed params with type annotations (FUNC-05)."""
+
+        def foo(pos: int, /, reg: str, *args: float, kw: bool, **kwargs: dict) -> list:
+            pass
+
+        fn = FunctionNode(foo, output_name="result")
+        # Verify standard params are annotated
+        assert fn.parameter_annotations.get("pos") == int
+        assert fn.parameter_annotations.get("reg") == str
+        assert fn.parameter_annotations.get("kw") == bool
+
+    def test_mixed_rename_works(self):
+        """rename_inputs works with mixed param kinds (FUNC-05)."""
+
+        def foo(a, /, b, *, c):
+            pass
+
+        fn = FunctionNode(foo, rename_inputs={"a": "x", "b": "y", "c": "z"})
+        assert fn.inputs == ("x", "y", "z")
+
+    def test_mixed_callable(self):
+        """Mixed-signature function is still callable (FUNC-05)."""
+
+        def foo(a, /, b, *args, c, **kwargs):
+            return (a, b, args, c, kwargs)
+
+        fn = FunctionNode(foo, output_name="result")
+        result = fn(1, 2, 3, 4, c=5, extra=6)
+        assert result == (1, 2, (3, 4), 5, {"extra": 6})
+
+    def test_only_var_args_and_kwargs(self):
+        """Function with just *args and **kwargs (FUNC-05)."""
+
+        def foo(*args, **kwargs):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.inputs == ("args", "kwargs")
+        assert fn.defaults == {}
+
+    def test_keyword_only_multiple(self):
+        """Multiple keyword-only params (FUNC-05)."""
+
+        def foo(*, a, b=1, c):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.inputs == ("a", "b", "c")
+        assert fn.defaults == {"b": 1}
+
+    def test_positional_only_multiple(self):
+        """Multiple positional-only params (FUNC-05)."""
+
+        def foo(a, b, c, /):
+            pass
+
+        fn = FunctionNode(foo)
+        assert fn.inputs == ("a", "b", "c")
