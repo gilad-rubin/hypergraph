@@ -1,5 +1,34 @@
 # Project Milestones: Hypergraph
 
+## v1.2 Test Coverage (Shipped: 2026-01-16)
+
+**Delivered:** Comprehensive test coverage for GraphNode capabilities, graph topologies, function signatures, type compatibility, binding edge cases, and name validation.
+
+**Phases completed:** 7-12 (6 plans total)
+
+**Key accomplishments:**
+- GraphNode forwarding methods fully tested (14 tests)
+- Graph topologies: diamond, cycles, isolated components tested
+- Function signatures: *args, **kwargs, keyword-only, positional-only
+- Advanced type compatibility: Literal, Protocol, TypedDict, NamedTuple
+- Binding edge cases: None values, seed interaction
+- Name validation: Python keywords, unicode, empty strings
+
+**Stats:**
+- 33 files created/modified
+- 4,736 lines added
+- 6 phases, 6 plans
+- 382 tests passing (was 263)
+- 1 day (same day as v1.1)
+
+**Git range:** `76c22d0` → `c25a13b`
+
+**Archive:** See `.planning/milestones/v1.2-ROADMAP.md` and `v1.2-REQUIREMENTS.md`
+
+**What's next:** To be determined
+
+---
+
 ## v1.1 Documentation (Shipped: 2026-01-16)
 
 **Delivered:** Polished documentation with audited examples and comprehensive API reference for Graph, GraphNode, and InputSpec.

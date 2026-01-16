@@ -8,22 +8,15 @@ A computation graph framework for Python that separates structure definition fro
 
 Catch type errors early - before execution, at graph construction time. If `strict_types=True`, incompatible connections fail immediately with clear error messages.
 
-## Current Milestone: v1.2 Comprehensive Test Coverage
+## Current Milestone: Planning Next
 
-**Goal:** Close all test coverage gaps identified in the test matrix analysis, ensuring every component, topology, and edge case is thoroughly tested.
-
-**Target features:**
-- GraphNode universal capabilities (has_default_for, get_default_for, get_input_type, get_output_type)
-- Graph topologies (diamond pattern, multi-node cycles, isolated subgraphs)
-- Special function signatures (*args, **kwargs, keyword-only, positional-only)
-- Advanced type patterns (Literal, Protocol, TypedDict, NamedTuple, ParamSpec)
-- Binding edge cases (None values, seed interaction)
-- Name validation edge cases (underscore, keywords, unicode)
+**Goal:** To be determined
 
 ## Current State
 
 **v1.0 Shipped:** 2026-01-16 — Type validation system
 **v1.1 Shipped:** 2026-01-16 — Documentation polish
+**v1.2 Shipped:** 2026-01-16 — Comprehensive test coverage
 
 Type validation is complete for existing features:
 - `strict_types=True` validates all edge connections at construction time
@@ -35,7 +28,11 @@ Documentation is comprehensive:
 - Getting-started.md audited with Graph and strict_types sections
 - API reference for Graph, GraphNode, InputSpec
 
-**Codebase:** 3,142 lines Python, 263 tests passing
+Test coverage is comprehensive:
+- 382 tests passing
+- All topologies, signatures, types, bindings, and names tested
+
+**Codebase:** 2,151 lines Python (src), 382 tests passing
 
 ## Requirements
 
@@ -59,16 +56,16 @@ Documentation is comprehensive:
 - ✓ Graph class API reference with constructor, methods, strict_types — v1.1
 - ✓ GraphNode API reference with nested composition — v1.1
 - ✓ InputSpec API reference with required/optional/bound/seeds — v1.1
+- ✓ GraphNode forwarding methods tested (has_default_for, get_default_for, get_input/output_type) — v1.2
+- ✓ Graph topologies tested (diamond, cycles, isolated, nested) — v1.2
+- ✓ Function signatures tested (*args, **kwargs, keyword-only, positional-only) — v1.2
+- ✓ Advanced type compatibility tested (Literal, Protocol, TypedDict, NamedTuple) — v1.2
+- ✓ Binding edge cases tested (None, multiple, seeds) — v1.2
+- ✓ Name validation tested (keywords, unicode, empty, long) — v1.2
 
 ### Active
 
-- [ ] GraphNode universal capabilities tests — forwarding methods not tested
-- [ ] Diamond topology tests — common pattern completely untested
-- [ ] Multi-node cycle tests — A→B→C→A patterns
-- [ ] Special function signature tests — *args, **kwargs, keyword-only, positional-only
-- [ ] Advanced type compatibility tests — Literal, Protocol, TypedDict, NamedTuple
-- [ ] Binding edge case tests — None values, multiple at once, seed interaction
-- [ ] Name validation edge case tests — underscore, keywords, unicode, empty
+(None — planning next milestone)
 
 ### Out of Scope
 
@@ -103,6 +100,8 @@ Documentation is comprehensive:
 | Use get_type_hints() | Resolves forward references automatically | ✓ Good |
 | Graceful degradation | Empty dict on failure, not exceptions | ✓ Good |
 | Union directionality | Incoming ALL must satisfy required type | ✓ Good |
+| Tests document expected behavior | Even when implementation is incomplete | ✓ Good |
+| Bound values excluded from GraphNode.inputs | Cleaner interface | ✓ Good |
 
 ---
-*Last updated: 2026-01-16 after v1.1 milestone*
+*Last updated: 2026-01-16 after v1.2 milestone*
