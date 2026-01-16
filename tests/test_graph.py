@@ -870,7 +870,7 @@ class TestGraphNodeOutputAnnotation:
     def test_single_typed_output(self):
         """Test GraphNode exposes output type from typed function."""
         @node(output_name="x")
-        def inner_func(a: int) -> str:
+        def inner_func(_a: int) -> str:
             return "hello"
 
         inner_graph = Graph([inner_func], name="inner")
@@ -881,11 +881,11 @@ class TestGraphNodeOutputAnnotation:
     def test_multiple_outputs(self):
         """Test GraphNode exposes multiple output types."""
         @node(output_name="x")
-        def func_a(a: int) -> str:
+        def func_a(_a: int) -> str:
             return ""
 
         @node(output_name="y")
-        def func_b(x: str) -> float:
+        def func_b(_x: str) -> float:
             return 0.0
 
         g = Graph([func_a, func_b], name="multi")
@@ -907,7 +907,7 @@ class TestGraphNodeOutputAnnotation:
     def test_mixed_typed_untyped(self):
         """Test GraphNode includes only typed outputs."""
         @node(output_name="x")
-        def typed(a: int) -> str:
+        def typed(_a: int) -> str:
             return ""
 
         @node(output_name="y")
@@ -923,14 +923,14 @@ class TestGraphNodeOutputAnnotation:
     def test_nested_graphnode(self):
         """Test output_annotation works with nested GraphNode."""
         @node(output_name="x")
-        def inner(a: int) -> str:
+        def inner(_a: int) -> str:
             return ""
 
         inner_graph = Graph([inner], name="inner")
         inner_gn = inner_graph.as_node()
 
         @node(output_name="y")
-        def outer(x: str) -> float:
+        def outer(_x: str) -> float:
             return 0.0
 
         outer_graph = Graph([inner_gn, outer], name="outer")
@@ -1121,7 +1121,7 @@ class TestStrictTypesValidation:
     def test_strict_types_graphnode_output_compatible(self):
         """Test GraphNode output type validates correctly."""
         @node(output_name="x")
-        def inner_func(a: int) -> str:
+        def inner_func(_a: int) -> str:
             return "hello"
 
         inner_graph = Graph([inner_func], name="inner")
@@ -1140,7 +1140,7 @@ class TestStrictTypesValidation:
     def test_strict_types_graphnode_output_incompatible(self):
         """Test GraphNode output type mismatch raises error."""
         @node(output_name="x")
-        def inner_func(a: int) -> str:
+        def inner_func(_a: int) -> str:
             return "hello"
 
         inner_graph = Graph([inner_func], name="inner")

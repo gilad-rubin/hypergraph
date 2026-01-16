@@ -5,8 +5,6 @@ from __future__ import annotations
 import warnings
 from typing import Annotated, Any, ForwardRef, TypeVar, Union
 
-import pytest
-
 from hypergraph._typing import (
     NoAnnotation,
     TypeCheckMemo,
