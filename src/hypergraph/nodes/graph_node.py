@@ -139,3 +139,21 @@ class GraphNode(HyperNode):
             The type annotation, or None if not annotated.
         """
         return self.output_annotation.get(output)
+
+    def get_input_type(self, param: str) -> type | None:
+        """Get expected type for an input parameter from the inner graph.
+
+        Derives the type from whichever node in the inner graph declares
+        this parameter as an input.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            The type annotation, or None if not annotated.
+        """
+        # Find which node in inner graph has this as an input
+        for inner_node in self._graph._nodes.values():
+            if param in inner_node.inputs:
+                return inner_node.get_input_type(param)
+        return None
