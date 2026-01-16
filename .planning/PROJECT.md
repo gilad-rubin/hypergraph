@@ -8,14 +8,17 @@ A computation graph framework for Python that separates structure definition fro
 
 Catch type errors early - before execution, at graph construction time. If `strict_types=True`, incompatible connections fail immediately with clear error messages.
 
-## Current Milestone: v1.1 Documentation Polish
+## Current Milestone: v1.2 Comprehensive Test Coverage
 
-**Goal:** Update all documentation to reflect current implementation using the clear, example-driven README.md style.
+**Goal:** Close all test coverage gaps identified in the test matrix analysis, ensuring every component, topology, and edge case is thoroughly tested.
 
 **Target features:**
-- Documentation audit of all docs/ files
-- Complete API reference for implemented features
-- Consistent writing style across all docs
+- GraphNode universal capabilities (has_default_for, get_default_for, get_input_type, get_output_type)
+- Graph topologies (diamond pattern, multi-node cycles, isolated subgraphs)
+- Special function signatures (*args, **kwargs, keyword-only, positional-only)
+- Advanced type patterns (Literal, Protocol, TypedDict, NamedTuple, ParamSpec)
+- Binding edge cases (None values, seed interaction)
+- Name validation edge cases (underscore, keywords, unicode)
 
 ## Current State
 
@@ -49,9 +52,13 @@ Type validation is complete for existing features:
 
 ### Active
 
-- [ ] Documentation audit — review and update all docs/ directory files
-- [ ] API reference — complete reference for Graph, FunctionNode, GraphNode, InputSpec, type checking
-- [ ] Style consistency — apply README.md writing style across all documentation
+- [ ] GraphNode universal capabilities tests — forwarding methods not tested
+- [ ] Diamond topology tests — common pattern completely untested
+- [ ] Multi-node cycle tests — A→B→C→A patterns
+- [ ] Special function signature tests — *args, **kwargs, keyword-only, positional-only
+- [ ] Advanced type compatibility tests — Literal, Protocol, TypedDict, NamedTuple
+- [ ] Binding edge case tests — None values, multiple at once, seed interaction
+- [ ] Name validation edge case tests — underscore, keywords, unicode, empty
 
 ### Out of Scope
 
@@ -88,4 +95,4 @@ Type validation is complete for existing features:
 | Union directionality | Incoming ALL must satisfy required type | ✓ Good |
 
 ---
-*Last updated: 2026-01-16 after starting v1.1 milestone*
+*Last updated: 2026-01-16 after starting v1.2 milestone*

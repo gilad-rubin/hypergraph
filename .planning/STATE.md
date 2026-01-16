@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-01-16)
 
 **Core value:** Catch type errors early - before execution, at graph construction time
-**Current focus:** v1.1 Documentation Polish
+**Current focus:** v1.2 Comprehensive Test Coverage
 
 ## Current Position
 
 Phase: Not started (run /gsd:create-roadmap)
 Plan: —
 Status: Defining requirements
-Last activity: 2026-01-16 — Milestone v1.1 started
+Last activity: 2026-01-16 — Milestone v1.2 started
 
 Progress: Not started
 
@@ -21,7 +21,8 @@ Progress: Not started
 See: .planning/MILESTONES.md
 
 - **v1.0 Type Validation** - SHIPPED 2026-01-16
-- **v1.1 Documentation Polish** - IN PROGRESS
+- **v1.1 Documentation Polish** - SKIPPED (deferred)
+- **v1.2 Comprehensive Test Coverage** - IN PROGRESS
 
 ## Key Decisions
 
