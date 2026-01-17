@@ -126,6 +126,9 @@ testpaths = [
     "tests",
 ]
 asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (run with pytest -m slow)",
+]
 # Ignore old tests that may be broken or deprecated
 norecursedirs = [
     "old",
