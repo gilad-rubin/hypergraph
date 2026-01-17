@@ -678,3 +678,247 @@ class TestDeeplyNestedAsync:
         assert result["a"] == 10
         assert result["b"] == 15
         assert result["sum"] == 25
+
+
+class TestGlobalConcurrencyLimit:
+    """Tests for global max_concurrency shared across all execution levels.
+
+    The max_concurrency limit should be shared across:
+    - All map items
+    - All nested graphs
+    - All nodes at all levels
+    """
+
+    async def test_nested_graph_shares_concurrency_limit(self):
+        """Nested graphs share the parent's concurrency limit."""
+        # Track concurrent operations
+        concurrent_count = 0
+        max_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="inner_result")
+        async def inner_slow(x: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return x * 2
+
+        inner = Graph([inner_slow], name="inner")
+
+        @node(output_name="outer_result")
+        async def outer_slow(y: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return y + 1
+
+        # Both inner graph and outer node should share the concurrency limit
+        outer = Graph([inner.as_node(), outer_slow])
+        runner = AsyncRunner()
+
+        result = await runner.run(outer, {"x": 5, "y": 10}, max_concurrency=1)
+
+        assert result.status == RunStatus.COMPLETED
+        # With max_concurrency=1, only one operation should run at a time
+        assert max_concurrent == 1
+
+    async def test_map_shares_concurrency_across_items(self):
+        """Map operation shares concurrency limit across all items."""
+        concurrent_count = 0
+        max_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="result")
+        async def tracked_slow(x: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return x * 2
+
+        graph = Graph([tracked_slow])
+        runner = AsyncRunner()
+
+        # 5 items but max_concurrency=2
+        results = await runner.map(
+            graph,
+            {"x": [1, 2, 3, 4, 5]},
+            map_over="x",
+            max_concurrency=2,
+        )
+
+        assert len(results) == 5
+        # Should never exceed the concurrency limit
+        assert max_concurrent <= 2
+
+    async def test_nested_map_shares_global_concurrency(self):
+        """GraphNode with map_over shares concurrency with parent graph."""
+        concurrent_count = 0
+        max_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="inner_result")
+        async def inner_tracked(item: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return item * 2
+
+        inner = Graph([inner_tracked], name="inner")
+        inner_mapped = inner.as_node().map_over("item")
+
+        @node(output_name="outer_result")
+        async def outer_tracked(x: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return x + 100
+
+        outer = Graph([inner_mapped, outer_tracked])
+        runner = AsyncRunner()
+
+        result = await runner.run(
+            outer,
+            {"item": [1, 2, 3], "x": 5},
+            max_concurrency=2,
+        )
+
+        assert result.status == RunStatus.COMPLETED
+        # All operations (outer node + 3 inner map items) share the limit
+        assert max_concurrent <= 2
+
+    async def test_deeply_nested_shares_concurrency(self):
+        """Three levels of nesting all share the same concurrency limit."""
+        concurrent_count = 0
+        max_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="l3")
+        async def level3(a: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return a * 2
+
+        l3_graph = Graph([level3], name="l3")
+
+        @node(output_name="l2")
+        async def level2(l3: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return l3 + 1
+
+        l2_graph = Graph([l3_graph.as_node(), level2], name="l2")
+
+        @node(output_name="l1")
+        async def level1(l2: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return l2 * 3
+
+        l1_graph = Graph([l2_graph.as_node(), level1])
+
+        runner = AsyncRunner()
+        result = await runner.run(l1_graph, {"a": 5}, max_concurrency=1)
+
+        assert result.status == RunStatus.COMPLETED
+        # All three levels share max_concurrency=1
+        assert max_concurrent == 1
+
+    async def test_map_with_nested_graph_shares_concurrency(self):
+        """runner.map() with nested GraphNodes shares global concurrency."""
+        concurrent_count = 0
+        max_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="inner_result")
+        async def inner_tracked(x: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return x * 2
+
+        inner = Graph([inner_tracked], name="inner")
+        outer = Graph([inner.as_node()])
+
+        runner = AsyncRunner()
+
+        # 4 map items, each with a nested graph
+        results = await runner.map(
+            outer,
+            {"x": [1, 2, 3, 4]},
+            map_over="x",
+            max_concurrency=2,
+        )
+
+        assert len(results) == 4
+        # All 4 map items * nested graph operations share the limit
+        assert max_concurrent <= 2
+
+    async def test_concurrency_limit_not_inherited_when_not_set(self):
+        """When max_concurrency is not set, no limit is applied."""
+        concurrent_count = 0
+        max_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="result")
+        async def tracked_node(x: int) -> int:
+            nonlocal concurrent_count, max_concurrent
+            async with lock:
+                concurrent_count += 1
+                max_concurrent = max(max_concurrent, concurrent_count)
+            await asyncio.sleep(0.02)
+            async with lock:
+                concurrent_count -= 1
+            return x
+
+        # 4 independent nodes
+        nodes = [
+            tracked_node.with_name(f"n{i}").with_inputs(x=f"x{i}").with_outputs(result=f"r{i}")
+            for i in range(4)
+        ]
+        graph = Graph(nodes)
+
+        runner = AsyncRunner()
+        result = await runner.run(graph, {f"x{i}": i for i in range(4)})
+
+        assert result.status == RunStatus.COMPLETED
+        # Without limit, all 4 should run concurrently
+        assert max_concurrent == 4

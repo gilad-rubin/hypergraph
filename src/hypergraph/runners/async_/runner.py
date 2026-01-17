@@ -151,8 +151,10 @@ class AsyncRunner(BaseRunner):
         """Execute graph until no more ready nodes or max_iterations reached."""
         state = initialize_state(graph, values)
 
-        # Set up concurrency limiter if specified
-        if max_concurrency is not None:
+        # Set up concurrency limiter only at top level (when none exists)
+        # Nested graphs inherit the parent's semaphore via ContextVar
+        existing_limiter = get_concurrency_limiter()
+        if existing_limiter is None and max_concurrency is not None:
             semaphore = asyncio.Semaphore(max_concurrency)
             token = set_concurrency_limiter(semaphore)
         else:
@@ -166,6 +168,7 @@ class AsyncRunner(BaseRunner):
                     break  # No more nodes to execute
 
                 # Execute all ready nodes concurrently
+                # Concurrency controlled by shared semaphore in ContextVar
                 state = await run_superstep_async(
                     graph,
                     state,
@@ -181,7 +184,7 @@ class AsyncRunner(BaseRunner):
                     raise InfiniteLoopError(max_iterations)
 
         finally:
-            # Reset concurrency limiter
+            # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
 
@@ -234,7 +237,7 @@ class AsyncRunner(BaseRunner):
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
-            max_concurrency: Max parallel executions
+            max_concurrency: Max concurrent operations (shared across all items)
 
         Returns:
             List of RunResult, one per iteration
@@ -253,24 +256,24 @@ class AsyncRunner(BaseRunner):
         if not input_variations:
             return []
 
-        # Execute all variations concurrently (with optional limiting)
-        semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
+        # Set up shared concurrency limiter at map level (if not already set)
+        # All run() calls and their nested operations share this semaphore
+        existing_limiter = get_concurrency_limiter()
+        if existing_limiter is None and max_concurrency is not None:
+            semaphore = asyncio.Semaphore(max_concurrency)
+            token = set_concurrency_limiter(semaphore)
+        else:
+            token = None
 
-        async def run_one(variation_inputs: dict[str, Any]) -> RunResult:
-            if semaphore:
-                async with semaphore:
-                    return await self.run(
-                        graph,
-                        variation_inputs,
-                        select=select,
-                        max_concurrency=max_concurrency,
-                    )
-            return await self.run(
-                graph,
-                variation_inputs,
-                select=select,
-                max_concurrency=max_concurrency,
-            )
-
-        results = await asyncio.gather(*[run_one(v) for v in input_variations])
-        return list(results)
+        try:
+            # Execute all variations concurrently
+            # The shared semaphore controls total concurrent operations
+            tasks = [
+                self.run(graph, v, select=select, max_concurrency=max_concurrency)
+                for v in input_variations
+            ]
+            results = await asyncio.gather(*tasks)
+            return list(results)
+        finally:
+            if token is not None:
+                reset_concurrency_limiter(token)

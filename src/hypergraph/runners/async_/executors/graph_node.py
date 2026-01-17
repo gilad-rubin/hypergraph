@@ -5,11 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.types import RunResult, RunStatus
-from hypergraph.runners.async_.superstep import (
-    get_concurrency_limiter,
-    reset_concurrency_limiter,
-    set_concurrency_limiter,
-)
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -23,6 +18,9 @@ class AsyncGraphNodeExecutor:
     Handles:
     - Simple nested graph execution
     - Map-over execution (delegates to runner.map())
+
+    Nested graphs inherit the parent's concurrency limiter via ContextVar,
+    so max_concurrency is shared across all levels of execution.
     """
 
     def __init__(self, runner: "AsyncRunner"):
@@ -41,8 +39,8 @@ class AsyncGraphNodeExecutor:
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
 
-        Temporarily clears the concurrency limiter to avoid deadlock.
-        Nested executions manage their own concurrency independently.
+        Inherits the parent's concurrency limiter via ContextVar.
+        All nested operations share the same global concurrency budget.
 
         Args:
             node: The GraphNode to execute
@@ -52,25 +50,19 @@ class AsyncGraphNodeExecutor:
         Returns:
             Dict mapping output names to their values
         """
-        # Clear outer concurrency limiter to avoid deadlock
-        # Nested executions should not inherit the outer's semaphore
-        token = set_concurrency_limiter(None)
+        map_config = node.map_config
 
-        try:
-            map_config = node.map_config
+        if map_config:
+            params, mode = map_config
+            results = await self.runner.map(
+                node.graph, inputs, map_over=params, map_mode=mode
+            )
+            return self._collect_as_lists(results, node.outputs)
 
-            if map_config:
-                params, mode = map_config
-                results = await self.runner.map(node.graph, inputs, map_over=params, map_mode=mode)
-                return self._collect_as_lists(results, node.outputs)
-
-            result = await self.runner.run(node.graph, inputs)
-            if result.status == RunStatus.FAILED:
-                raise result.error or RuntimeError("Nested graph execution failed")
-            return result.values
-        finally:
-            # Restore outer limiter
-            reset_concurrency_limiter(token)
+        result = await self.runner.run(node.graph, inputs)
+        if result.status == RunStatus.FAILED:
+            raise result.error or RuntimeError("Nested graph execution failed")
+        return result.values
 
     def _collect_as_lists(
         self,

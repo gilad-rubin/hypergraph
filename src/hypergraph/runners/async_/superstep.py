@@ -45,41 +45,36 @@ async def run_superstep_async(
 ) -> GraphState:
     """Execute one superstep with concurrent node execution.
 
+    Note: Concurrency limiting is handled at the FunctionNode executor level,
+    not here. This allows nested GraphNodes to share the same global semaphore
+    without causing deadlock.
+
     Args:
         graph: The graph being executed
         state: Current state (will be copied, not mutated)
         ready_nodes: Nodes to execute in this superstep
         provided_values: Values provided to runner.run()
         execute_node: Async function to execute a single node
-        max_concurrency: Max parallel tasks (None = unlimited)
+        max_concurrency: Unused (kept for API compatibility)
 
     Returns:
         New state with updated values and versions
     """
     new_state = state.copy()
 
-    # Get or create semaphore for concurrency limiting
-    semaphore = _concurrency_limiter.get()
-    if semaphore is None and max_concurrency is not None:
-        semaphore = asyncio.Semaphore(max_concurrency)
-        _concurrency_limiter.set(semaphore)
-
     async def execute_one(
         node: HyperNode,
     ) -> tuple[HyperNode, dict[str, Any], dict[str, int]]:
-        """Execute a single node, respecting concurrency limit."""
+        """Execute a single node."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         input_versions = {param: state.get_version(param) for param in node.inputs}
 
-        if semaphore:
-            async with semaphore:
-                outputs = await execute_node(node, state, inputs)
-        else:
-            outputs = await execute_node(node, state, inputs)
+        outputs = await execute_node(node, state, inputs)
 
         return node, outputs, input_versions
 
     # Execute all ready nodes concurrently
+    # Concurrency is controlled at the FunctionNode level via the global semaphore
     tasks = [execute_one(node) for node in ready_nodes]
     results = await asyncio.gather(*tasks)
 

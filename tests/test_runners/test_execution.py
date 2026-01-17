@@ -17,7 +17,11 @@ from hypergraph.runners._shared.types import GraphState, NodeExecution
 from hypergraph.runners.sync.executors import SyncFunctionNodeExecutor
 from hypergraph.runners.sync.superstep import run_superstep_sync
 from hypergraph.runners.async_.executors import AsyncFunctionNodeExecutor
-from hypergraph.runners.async_.superstep import run_superstep_async
+from hypergraph.runners.async_.superstep import (
+    run_superstep_async,
+    set_concurrency_limiter,
+    reset_concurrency_limiter,
+)
 
 
 # === Test Fixtures ===
@@ -433,7 +437,11 @@ class TestRunSuperstepAsync:
         assert new_state.values["b"] == 7
 
     async def test_respects_max_concurrency(self):
-        """max_concurrency limits parallel execution."""
+        """max_concurrency limits parallel execution via global semaphore.
+
+        Note: Concurrency is controlled at the FunctionNode executor level
+        via a global ContextVar semaphore, not at the superstep level.
+        """
         execution_times = []
 
         @node(output_name="a")
@@ -454,14 +462,21 @@ class TestRunSuperstepAsync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        start = time.time()
-        new_state = await run_superstep_async(
-            graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1
-        )
-        elapsed = time.time() - start
+        # Set up global concurrency limiter (this is normally done by AsyncRunner)
+        semaphore = asyncio.Semaphore(1)
+        token = set_concurrency_limiter(semaphore)
 
-        # With max_concurrency=1, should be sequential (~0.1s)
-        assert elapsed >= 0.09
+        try:
+            start = time.time()
+            new_state = await run_superstep_async(
+                graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1
+            )
+            elapsed = time.time() - start
+
+            # With max_concurrency=1, should be sequential (~0.1s)
+            assert elapsed >= 0.09
+        finally:
+            reset_concurrency_limiter(token)
 
     async def test_updates_state_atomically(self):
         """All node outputs are in final state."""
