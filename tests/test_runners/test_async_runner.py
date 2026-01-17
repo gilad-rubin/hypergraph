@@ -922,3 +922,52 @@ class TestGlobalConcurrencyLimit:
         assert result.status == RunStatus.COMPLETED
         # Without limit, all 4 should run concurrently
         assert max_concurrent == 4
+
+    async def test_mixed_sync_async_respects_concurrency(self):
+        """Mix of sync and async nodes with concurrency limit.
+
+        Note: Sync functions execute immediately without acquiring the semaphore.
+        Only async operations are limited by max_concurrency.
+        """
+        async_concurrent = 0
+        max_async_concurrent = 0
+        lock = asyncio.Lock()
+
+        @node(output_name="sync_result")
+        def sync_node(x: int) -> int:
+            # Sync functions don't block on semaphore
+            return x * 2
+
+        @node(output_name="async_result")
+        async def async_tracked(y: int) -> int:
+            nonlocal async_concurrent, max_async_concurrent
+            async with lock:
+                async_concurrent += 1
+                max_async_concurrent = max(max_async_concurrent, async_concurrent)
+            await asyncio.sleep(0.02)
+            async with lock:
+                async_concurrent -= 1
+            return y + 1
+
+        # Two sync nodes and two async nodes (all independent)
+        sync1 = sync_node.with_name("sync1").with_inputs(x="x1").with_outputs(sync_result="s1")
+        sync2 = sync_node.with_name("sync2").with_inputs(x="x2").with_outputs(sync_result="s2")
+        async1 = async_tracked.with_name("async1").with_inputs(y="y1").with_outputs(async_result="a1")
+        async2 = async_tracked.with_name("async2").with_inputs(y="y2").with_outputs(async_result="a2")
+
+        graph = Graph([sync1, sync2, async1, async2])
+        runner = AsyncRunner()
+
+        result = await runner.run(
+            graph,
+            {"x1": 1, "x2": 2, "y1": 10, "y2": 20},
+            max_concurrency=1,
+        )
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["s1"] == 2
+        assert result["s2"] == 4
+        assert result["a1"] == 11
+        assert result["a2"] == 21
+        # Async nodes should respect the concurrency limit
+        assert max_async_concurrent == 1
