@@ -197,7 +197,7 @@ class TestHyperNode:
         renamed = node.with_inputs(a="x")
 
         # Now try to rename 'a' again (it was renamed to 'x')
-        with pytest.raises(RenameError, match="'a' was renamed to 'x'"):
+        with pytest.raises(RenameError, match="'a' was renamed: a→x"):
             renamed.with_inputs(a="y")
 
     def test_chained_renames_track_history(self):

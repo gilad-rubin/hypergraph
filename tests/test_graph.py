@@ -1311,7 +1311,7 @@ class TestGraphNodeRename:
         renamed = gn.with_inputs(a="x")
 
         # Try to rename 'a' again - should show history
-        with pytest.raises(RenameError, match="'a' was renamed to 'x'"):
+        with pytest.raises(RenameError, match="'a' was renamed: a→x"):
             renamed.with_inputs(a="y")
 
     def test_original_unchanged_after_rename(self):

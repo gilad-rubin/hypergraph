@@ -68,7 +68,7 @@ class TestEndToEndWorkflow:
             renamed.with_inputs(input_a="y")
 
         error_msg = str(exc_info.value)
-        assert "'input_a' was renamed to 'x'" in error_msg
+        assert "'input_a' was renamed: input_a→x" in error_msg
         assert "Current inputs:" in error_msg
 
     def test_multiple_nodes_from_same_func(self):

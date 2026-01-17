@@ -344,6 +344,49 @@ class TestGraphNodeNameValidation:
         assert "/" in str(exc_info.value) or "reserved" in str(exc_info.value).lower()
 
 
+class TestRenameErrorMessages:
+    """Test that rename error messages show full rename chain."""
+
+    def test_error_shows_single_rename(self):
+        """Error message shows single rename."""
+        from hypergraph.nodes._rename import RenameError
+
+        @node(output_name="result")
+        def func(x: int) -> int:
+            return x
+
+        renamed = func.with_inputs(x="y")
+
+        with pytest.raises(RenameError) as exc_info:
+            renamed.with_inputs(x="z")  # x doesn't exist anymore
+
+        error_msg = str(exc_info.value)
+        assert "x" in error_msg
+        assert "y" in error_msg
+        assert "renamed" in error_msg.lower()
+
+    def test_error_shows_full_rename_chain(self):
+        """Error message shows full rename chain (a→x→z)."""
+        from hypergraph.nodes._rename import RenameError
+
+        @node(output_name="result")
+        def func(a: int) -> int:
+            return a
+
+        # Chain: a -> x -> z
+        chained = func.with_inputs(a="x").with_inputs(x="z")
+
+        with pytest.raises(RenameError) as exc_info:
+            chained.with_inputs(a="w")  # a doesn't exist anymore
+
+        error_msg = str(exc_info.value)
+        # Should show full chain a→x→z
+        assert "a" in error_msg
+        assert "x" in error_msg
+        assert "z" in error_msg
+        assert "→" in error_msg  # Shows chain notation
+
+
 class TestInputValidationOverrides:
     """Edge 4: Input validation allows overriding internal edge values.
 
