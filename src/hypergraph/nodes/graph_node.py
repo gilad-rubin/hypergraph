@@ -131,6 +131,9 @@ class GraphNode(HyperNode):
             and gets that node's type annotation for that specific output.
             Returns empty dict entries for outputs without type annotations.
 
+            When map_over is configured, output types are wrapped in list[T]
+            since mapped execution produces lists of results.
+
         Example:
             >>> @node(output_name="x")
             ... def inner_func(a: int) -> str: return "hello"
@@ -138,6 +141,8 @@ class GraphNode(HyperNode):
             >>> gn = inner_graph.as_node()
             >>> gn.output_annotation
             {'x': str}
+            >>> gn.map_over("a").output_annotation
+            {'x': list[str]}
         """
         result: dict[str, Any] = {}
 
@@ -151,14 +156,30 @@ class GraphNode(HyperNode):
         for output_name in self.outputs:
             source_node = output_to_node.get(output_name)
             if source_node is None:
-                result[output_name] = None
+                result[output_name] = self._wrap_type_for_map_over(None)
                 continue
 
             # Use universal get_output_type method
             output_type = source_node.get_output_type(output_name)
-            result[output_name] = output_type
+            result[output_name] = self._wrap_type_for_map_over(output_type)
 
         return result
+
+    def _wrap_type_for_map_over(self, inner_type: type | None) -> type | None:
+        """Wrap type in list[] if map_over is configured.
+
+        Args:
+            inner_type: The inner type to potentially wrap
+
+        Returns:
+            list[inner_type] if map_over is set, otherwise inner_type unchanged.
+            If inner_type is None and map_over is set, returns bare list.
+        """
+        if not self._map_over:
+            return inner_type
+        if inner_type is None:
+            return list
+        return list[inner_type]
 
     def get_output_type(self, output: str) -> type | None:
         """Get type annotation for an output from the inner graph.

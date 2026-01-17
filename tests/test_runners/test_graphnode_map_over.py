@@ -414,6 +414,64 @@ class TestConcurrentNestedMaps:
         assert result["combined"] == [22, 44]
 
 
+class TestMapOverTypeAnnotations:
+    """Tests for type annotations with map_over."""
+
+    def test_get_output_type_wraps_in_list_when_map_over(self):
+        """get_output_type returns list[T] when map_over is configured."""
+        inner = Graph([double], name="inner")
+        gn = inner.as_node()
+
+        # Without map_over: returns raw type
+        assert gn.get_output_type("doubled") is int
+
+        # With map_over: returns list[int]
+        mapped = gn.map_over("x")
+        output_type = mapped.get_output_type("doubled")
+
+        # Check it's list[int]
+        assert output_type is not None
+        assert hasattr(output_type, "__origin__")
+        assert output_type.__origin__ is list
+        assert output_type.__args__ == (int,)
+
+    def test_get_output_type_wraps_untyped_as_list_any(self):
+        """get_output_type returns list for untyped outputs when map_over is set."""
+
+        @node(output_name="result")
+        def untyped(x):
+            return x
+
+        inner = Graph([untyped], name="inner")
+        mapped = inner.as_node().map_over("x")
+
+        output_type = mapped.get_output_type("result")
+
+        # Should be list (bare list, since inner type is unknown)
+        assert output_type is list
+
+    def test_output_annotation_wraps_all_outputs(self):
+        """output_annotation property wraps all outputs in list when map_over is set."""
+
+        @node(output_name=("a", "b"))
+        def multi_out(x: int) -> tuple[str, float]:
+            return str(x), float(x)
+
+        inner = Graph([multi_out], name="inner")
+        mapped = inner.as_node().map_over("x")
+
+        annotations = mapped.output_annotation
+
+        # Both outputs should be wrapped
+        assert hasattr(annotations["a"], "__origin__")
+        assert annotations["a"].__origin__ is list
+        assert annotations["a"].__args__ == (str,)
+
+        assert hasattr(annotations["b"], "__origin__")
+        assert annotations["b"].__origin__ is list
+        assert annotations["b"].__args__ == (float,)
+
+
 class TestMaxConcurrency:
     """Tests for max_concurrency behavior with map_over."""
 
