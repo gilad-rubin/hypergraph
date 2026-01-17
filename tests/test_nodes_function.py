@@ -780,7 +780,7 @@ class TestFunctionSignatures:
         def foo(a: int, /) -> str:
             return ""
 
-        fn = FunctionNode(foo)
+        fn = FunctionNode(foo, output_name="result")
         assert fn.parameter_annotations.get("a") == int
 
     # FUNC-05: mixed argument types tests

@@ -162,16 +162,38 @@ class GraphNode(HyperNode):
         this parameter as an input.
 
         Args:
-            param: Input parameter name
+            param: Input parameter name (may be a renamed external name)
 
         Returns:
             The type annotation, or None if not annotated.
         """
+        # Resolve param back to original name if renamed
+        original_param = self._resolve_original_input_name(param)
+
         # Find which node in inner graph has this as an input
         for inner_node in self._graph._nodes.values():
-            if param in inner_node.inputs:
-                return inner_node.get_input_type(param)
+            if original_param in inner_node.inputs:
+                return inner_node.get_input_type(original_param)
         return None
+
+    def _resolve_original_input_name(self, param: str) -> str:
+        """Resolve a possibly-renamed input name back to the original.
+
+        Traces back through rename history to find what the input was
+        originally called in the inner graph.
+
+        Args:
+            param: Current input parameter name
+
+        Returns:
+            Original name used in the inner graph.
+        """
+        current = param
+        # Walk rename history in reverse to find original
+        for entry in reversed(self._rename_history):
+            if entry.kind == "inputs" and entry.new == current:
+                current = entry.old
+        return current
 
     def has_default_for(self, param: str) -> bool:
         """Check if a parameter has a default or bound value in the inner graph.
@@ -180,19 +202,23 @@ class GraphNode(HyperNode):
         inner node has a default for it.
 
         Args:
-            param: Input parameter name
+            param: Input parameter name (may be a renamed external name)
 
         Returns:
             True if param is bound or any inner node has a default.
         """
         if param not in self.inputs:
             return False
+
+        # Resolve to original name for inner graph lookup
+        original_param = self._resolve_original_input_name(param)
+
         # Check if bound in inner graph
-        if param in self._graph.inputs.bound:
+        if original_param in self._graph.inputs.bound:
             return True
         # Check if any inner node has a default
         for inner_node in self._graph._nodes.values():
-            if param in inner_node.inputs and inner_node.has_default_for(param):
+            if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
                 return True
         return False
 
@@ -203,7 +229,7 @@ class GraphNode(HyperNode):
         the default value from an inner node.
 
         Args:
-            param: Input parameter name
+            param: Input parameter name (may be a renamed external name)
 
         Returns:
             The bound or default value.
@@ -211,13 +237,16 @@ class GraphNode(HyperNode):
         Raises:
             KeyError: If no default or bound value exists for this parameter.
         """
+        # Resolve to original name for inner graph lookup
+        original_param = self._resolve_original_input_name(param)
+
         # Check if bound in inner graph first
-        if param in self._graph.inputs.bound:
-            return self._graph.inputs.bound[param]
+        if original_param in self._graph.inputs.bound:
+            return self._graph.inputs.bound[original_param]
         # Check inner nodes for defaults
         for inner_node in self._graph._nodes.values():
-            if param in inner_node.inputs and inner_node.has_default_for(param):
-                return inner_node.get_default_for(param)
+            if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
+                return inner_node.get_default_for(original_param)
         raise KeyError(f"No default value for parameter '{param}'")
 
     def map_over(
