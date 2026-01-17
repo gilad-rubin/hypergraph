@@ -2,6 +2,11 @@
 
 Runners execute graphs. They handle the execution loop, node scheduling, and concurrency.
 
+- **SyncRunner** - Sequential execution for synchronous nodes
+- **AsyncRunner** - Concurrent execution with async support and `max_concurrency`
+- **RunResult** - Output values, status, and error information
+- **map()** - Batch processing with zip or cartesian product modes
+
 ## Overview
 
 | Runner | Async Nodes | Concurrent | Returns |

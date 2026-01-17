@@ -1,6 +1,10 @@
 # Node API Reference
 
-Complete API documentation for HyperNode and FunctionNode.
+Nodes are the building blocks of hypergraph. Wrap functions, compose graphs, adapt interfaces.
+
+- **FunctionNode** - Wrap any Python function (sync, async, generator)
+- **GraphNode** - Nest a graph as a node for hierarchical composition
+- **HyperNode** - Abstract base class defining the common interface
 
 ## HyperNode
 

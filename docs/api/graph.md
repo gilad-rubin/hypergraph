@@ -1,10 +1,11 @@
 # Graph API Reference
 
-Complete API documentation for the Graph class.
+A **Graph** defines a computation graph from nodes with automatic edge inference.
 
-## Overview
-
-**Graph** defines a computation graph from nodes. It describes what nodes exist and how they connect through automatic edge inference.
+- **Automatic wiring** - Edges inferred from matching output/input names
+- **Build-time validation** - Type mismatches caught at construction, not runtime
+- **Hierarchical composition** - Graphs nest as nodes via `.as_node()`
+- **Immutable** - `bind()` and other methods return new instances
 
 ```python
 from hypergraph import node, Graph

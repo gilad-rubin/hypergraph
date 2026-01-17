@@ -1,6 +1,10 @@
 # Getting Started with Hypergraph
 
-This guide introduces the core concepts and walks you through creating your first nodes.
+Learn the core concepts: nodes, graphs, and runners.
+
+- **Nodes** - Wrap functions with named inputs and outputs
+- **Graphs** - Connect nodes automatically via matching names
+- **Runners** - Execute graphs synchronously or asynchronously
 
 ## Core Concepts
 
