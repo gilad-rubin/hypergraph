@@ -1,22 +1,14 @@
-"""Core execution logic for runners."""
+"""Shared helper functions for runners."""
 
 from __future__ import annotations
 
-import asyncio
-import inspect
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Iterator
 
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._types import GraphState, NodeExecution
+from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
-
-# Context variable for concurrency limiting across nested graphs
-_concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar(
-    "_concurrency_limiter", default=None
-)
 
 
 def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
@@ -59,9 +51,7 @@ def _has_all_inputs(node: HyperNode, graph: "Graph", state: GraphState) -> bool:
     return True
 
 
-def _has_input(
-    param: str, node: HyperNode, graph: "Graph", state: GraphState
-) -> bool:
+def _has_input(param: str, node: HyperNode, graph: "Graph", state: GraphState) -> bool:
     """Check if a single input parameter is available."""
     # Value in state (from edge or initial input)
     if param in state.values:
@@ -88,9 +78,7 @@ def _needs_execution(node: HyperNode, state: GraphState) -> bool:
     return _is_stale(node, state, last_exec)
 
 
-def _is_stale(
-    node: HyperNode, state: GraphState, last_exec: NodeExecution
-) -> bool:
+def _is_stale(node: HyperNode, state: GraphState, last_exec: NodeExecution) -> bool:
     """Check if node inputs have changed since last execution."""
     for param in node.inputs:
         current_version = state.get_version(param)
@@ -157,88 +145,13 @@ def _resolve_input(
     raise KeyError(f"No value for input '{param}'")
 
 
-def execute_node_sync(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]:
-    """Execute a single node synchronously.
-
-    Handles:
-    - Regular function calls
-    - Sync generators (accumulated to list)
-
-    Args:
-        node: The node to execute
-        inputs: Input values for the node (using renamed parameter names)
-
-    Returns:
-        Dict mapping output names to their values
-    """
-    # Import here to avoid circular imports
-    from hypergraph.nodes.function import FunctionNode
-
-    if isinstance(node, FunctionNode):
-        # Map renamed inputs back to original function parameter names
-        func_inputs = _map_inputs_to_func_params(node, inputs)
-        result = node.func(**func_inputs)
-
-        # Handle generators
-        if node.is_generator:
-            result = list(result)
-
-        return _wrap_outputs(node, result)
-
-    # GraphNode - delegate to its execution (handled by runner)
-    raise NotImplementedError(
-        f"GraphNode execution should be handled by runner, not execute_node_sync"
-    )
-
-
-async def execute_node_async(
+def map_inputs_to_func_params(
     node: HyperNode, inputs: dict[str, Any]
 ) -> dict[str, Any]:
-    """Execute a single node, handling both sync and async functions.
-
-    Handles:
-    - Sync functions (called directly)
-    - Async functions (awaited)
-    - Sync generators (accumulated to list)
-    - Async generators (accumulated to list)
-
-    Args:
-        node: The node to execute
-        inputs: Input values for the node (using renamed parameter names)
-
-    Returns:
-        Dict mapping output names to their values
-    """
-    from hypergraph.nodes.function import FunctionNode
-
-    if isinstance(node, FunctionNode):
-        # Map renamed inputs back to original function parameter names
-        func_inputs = _map_inputs_to_func_params(node, inputs)
-        result = node.func(**func_inputs)
-
-        # Await if coroutine
-        if inspect.iscoroutine(result):
-            result = await result
-
-        # Handle async generators
-        if inspect.isasyncgen(result):
-            result = [item async for item in result]
-        # Handle sync generators
-        elif inspect.isgenerator(result):
-            result = list(result)
-
-        return _wrap_outputs(node, result)
-
-    raise NotImplementedError(
-        f"GraphNode execution should be handled by runner, not execute_node_async"
-    )
-
-
-def _map_inputs_to_func_params(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]:
     """Map renamed input names back to original function parameter names.
 
     Args:
-        node: The FunctionNode with potential renames
+        node: The node with potential renames
         inputs: Dict with renamed input names as keys
 
     Returns:
@@ -264,7 +177,7 @@ def _map_inputs_to_func_params(node: HyperNode, inputs: dict[str, Any]) -> dict[
     return result
 
 
-def _wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
+def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
     """Wrap execution result in a dict mapping output names to values."""
     outputs = node.outputs
 
@@ -283,112 +196,6 @@ def _wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
             f"{len(result)} values"
         )
     return dict(zip(outputs, result))
-
-
-def run_superstep_sync(
-    graph: "Graph",
-    state: GraphState,
-    ready_nodes: list[HyperNode],
-    provided_values: dict[str, Any],
-) -> GraphState:
-    """Execute one superstep: run all ready nodes and update state.
-
-    In sync mode, nodes are executed sequentially.
-
-    Args:
-        graph: The graph being executed
-        state: Current state (will be copied, not mutated)
-        ready_nodes: Nodes to execute in this superstep
-        provided_values: Values provided to runner.run()
-
-    Returns:
-        New state with updated values and versions
-    """
-    new_state = state.copy()
-
-    for node in ready_nodes:
-        inputs = collect_inputs_for_node(node, graph, new_state, provided_values)
-
-        # Record input versions before execution
-        input_versions = {
-            param: new_state.get_version(param) for param in node.inputs
-        }
-
-        # Execute node
-        outputs = execute_node_sync(node, inputs)
-
-        # Update state with outputs
-        for name, value in outputs.items():
-            new_state.update_value(name, value)
-
-        # Record execution
-        new_state.node_executions[node.name] = NodeExecution(
-            node_name=node.name,
-            input_versions=input_versions,
-            outputs=outputs,
-        )
-
-    return new_state
-
-
-async def run_superstep_async(
-    graph: "Graph",
-    state: GraphState,
-    ready_nodes: list[HyperNode],
-    provided_values: dict[str, Any],
-    max_concurrency: int | None = None,
-) -> GraphState:
-    """Execute one superstep with concurrent node execution.
-
-    Args:
-        graph: The graph being executed
-        state: Current state (will be copied, not mutated)
-        ready_nodes: Nodes to execute in this superstep
-        provided_values: Values provided to runner.run()
-        max_concurrency: Max parallel tasks (None = unlimited)
-
-    Returns:
-        New state with updated values and versions
-    """
-    new_state = state.copy()
-
-    # Get or create semaphore for concurrency limiting
-    semaphore = _concurrency_limiter.get()
-    if semaphore is None and max_concurrency is not None:
-        semaphore = asyncio.Semaphore(max_concurrency)
-        _concurrency_limiter.set(semaphore)
-
-    async def execute_one(node: HyperNode) -> tuple[HyperNode, dict[str, Any], dict[str, int]]:
-        """Execute a single node, respecting concurrency limit."""
-        inputs = collect_inputs_for_node(node, graph, state, provided_values)
-        input_versions = {
-            param: state.get_version(param) for param in node.inputs
-        }
-
-        if semaphore:
-            async with semaphore:
-                outputs = await execute_node_async(node, inputs)
-        else:
-            outputs = await execute_node_async(node, inputs)
-
-        return node, outputs, input_versions
-
-    # Execute all ready nodes concurrently
-    tasks = [execute_one(node) for node in ready_nodes]
-    results = await asyncio.gather(*tasks)
-
-    # Update state with all results
-    for node, outputs, input_versions in results:
-        for name, value in outputs.items():
-            new_state.update_value(name, value)
-
-        new_state.node_executions[node.name] = NodeExecution(
-            node_name=node.name,
-            input_versions=input_versions,
-            outputs=outputs,
-        )
-
-    return new_state
 
 
 def initialize_state(

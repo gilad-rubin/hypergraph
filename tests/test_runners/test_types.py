@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph.runners._types import (
+from hypergraph.runners import (
     GraphState,
     NodeExecution,
     RunnerCapabilities,

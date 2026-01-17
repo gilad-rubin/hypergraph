@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.runners._types import RunnerCapabilities, RunResult
+from hypergraph.runners._shared.types import RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph

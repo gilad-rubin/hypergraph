@@ -3,9 +3,7 @@
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.runners._types import RunStatus
-from hypergraph.runners.sync import SyncRunner
-from hypergraph.runners.async_ import AsyncRunner
+from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
 
 
 # === Test Fixtures ===
@@ -179,10 +177,12 @@ class TestMapOverExecution:
     def test_nested_map_over_in_parent_graph(self):
         """map_over works in multi-node parent graph."""
         inner = Graph([double], name="inner")
-        outer = Graph([
-            inner.as_node().map_over("x"),
-            add.with_inputs(a="doubled"),  # "doubled" is now a list
-        ])
+        outer = Graph(
+            [
+                inner.as_node().map_over("x"),
+                add.with_inputs(a="doubled"),  # "doubled" is now a list
+            ]
+        )
         runner = SyncRunner()
 
         # Note: add expects int, but doubled is list[int]
@@ -224,3 +224,140 @@ class TestMapOverExecution:
         result = runner.run(outer, {"a": [1, 2, 3], "b": 10})
 
         assert result["sum"] == [11, 12, 13]
+
+
+class TestConcurrentNestedMaps:
+    """Tests for concurrent nested map executions (GAP-03)."""
+
+    def test_map_within_map_sync(self):
+        """Nested map_over: outer graph has map_over on a graph with map_over."""
+        # Inner: simple transform
+        inner = Graph([double], name="inner")
+
+        # Middle: maps over inner
+        middle = Graph([inner.as_node().map_over("x")], name="middle")
+
+        # Outer: maps over middle with different param structure
+        @node(output_name="results")
+        def collect(doubled: list) -> list:
+            return doubled
+
+        outer = Graph([middle.as_node(), collect])
+        runner = SyncRunner()
+
+        # Pass list to inner map_over
+        result = runner.run(outer, {"x": [1, 2, 3]})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["doubled"] == [2, 4, 6]
+        assert result["results"] == [2, 4, 6]
+
+    async def test_map_within_map_concurrent(self):
+        """Nested map_over executions with AsyncRunner."""
+        import asyncio
+
+        @node(output_name="value")
+        async def slow_transform(x: int) -> int:
+            await asyncio.sleep(0.01)
+            return x * 2
+
+        inner = Graph([slow_transform], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+
+        runner = AsyncRunner()
+
+        # Multiple items should process concurrently
+        result = await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["value"] == [2, 4, 6, 8, 10]
+
+    async def test_nested_map_with_max_concurrency(self):
+        """Concurrency limits work in nested maps."""
+        import asyncio
+        import time
+
+        @node(output_name="value")
+        async def timed_transform(x: int) -> int:
+            await asyncio.sleep(0.03)
+            return x * 2
+
+        inner = Graph([timed_transform], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+
+        runner = AsyncRunner()
+
+        # With max_concurrency=1, should be sequential
+        start = time.time()
+        result = await runner.run(outer, {"x": [1, 2, 3]}, max_concurrency=1)
+        elapsed = time.time() - start
+
+        assert result.status == RunStatus.COMPLETED
+        # Sequential: ~0.09s (3 * 0.03s)
+        # The outer runner has max_concurrency, but inner map iterates
+        assert result["value"] == [2, 4, 6]
+
+    async def test_map_over_graph_with_async_nodes(self):
+        """map_over graph containing async nodes."""
+
+        @node(output_name="a")
+        async def async_step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        async def async_step2(a: int) -> int:
+            return a * 2
+
+        inner = Graph([async_step1, async_step2], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+
+        runner = AsyncRunner()
+        result = await runner.run(outer, {"x": [1, 2, 3]})
+
+        assert result.status == RunStatus.COMPLETED
+        # (1+1)*2=4, (2+1)*2=6, (3+1)*2=8
+        assert result["b"] == [4, 6, 8]
+
+    def test_doubly_nested_map_over(self):
+        """Two levels of map_over nesting."""
+        # Innermost: simple double
+        innermost = Graph([double], name="innermost")
+
+        # Middle: maps over innermost
+        middle = Graph([innermost.as_node().map_over("x")], name="middle")
+
+        # Outer: wraps middle (no additional map)
+        outer = Graph([middle.as_node()])
+
+        runner = SyncRunner()
+        result = runner.run(outer, {"x": [1, 2, 3]})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["doubled"] == [2, 4, 6]
+
+    def test_multiple_mapped_graphnodes_in_parallel(self):
+        """Multiple GraphNodes with map_over in same graph."""
+        # Two independent inner graphs
+        inner_a = Graph([double.with_outputs(doubled="a")], name="inner_a")
+        inner_b = Graph([double.with_outputs(doubled="b")], name="inner_b")
+
+        # Both mapped in outer
+        @node(output_name="combined")
+        def combine(a: list, b: list) -> list:
+            return [x + y for x, y in zip(a, b)]
+
+        outer = Graph(
+            [
+                inner_a.as_node().map_over("x").with_inputs(x="vals_a"),
+                inner_b.as_node().map_over("x").with_inputs(x="vals_b"),
+                combine,
+            ]
+        )
+
+        runner = SyncRunner()
+        result = runner.run(outer, {"vals_a": [1, 2], "vals_b": [10, 20]})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["a"] == [2, 4]
+        assert result["b"] == [20, 40]
+        assert result["combined"] == [22, 44]

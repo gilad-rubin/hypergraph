@@ -865,3 +865,223 @@ class TestFunctionSignatures:
 
         fn = FunctionNode(foo)
         assert fn.inputs == ("a", "b", "c")
+
+
+class TestGeneratorEdgeCases:
+    """Tests for generator node edge cases (GAP-07)."""
+
+    def test_generator_yields_none_values(self):
+        """Generator yielding None values."""
+
+        def gen_none(n: int):
+            for _ in range(n):
+                yield None
+
+        fn = FunctionNode(gen_none, output_name="items")
+        assert fn.is_generator is True
+
+    def test_generator_detection_basic(self):
+        """Basic generator detection."""
+
+        def basic_gen():
+            yield 1
+            yield 2
+
+        fn = FunctionNode(basic_gen, output_name="items")
+        assert fn.is_generator is True
+        assert fn.is_async is False
+
+    def test_empty_generator_detection(self):
+        """Generator that yields nothing is still detected as generator."""
+
+        def empty_gen():
+            return
+            yield  # Makes it a generator
+
+        fn = FunctionNode(empty_gen, output_name="items")
+        assert fn.is_generator is True
+
+    def test_generator_with_return_statement(self):
+        """Generator with return statement."""
+
+        def gen_with_return(n: int):
+            for i in range(n):
+                yield i
+            return  # Explicit return
+
+        fn = FunctionNode(gen_with_return, output_name="items")
+        assert fn.is_generator is True
+
+    def test_async_generator_detection(self):
+        """Async generator detection."""
+
+        async def async_gen():
+            yield 1
+            yield 2
+
+        fn = FunctionNode(async_gen, output_name="items")
+        assert fn.is_generator is True
+        assert fn.is_async is True
+
+    def test_generator_with_complex_yield_patterns(self):
+        """Generator with conditional yields."""
+
+        def conditional_gen(items):
+            for item in items:
+                if item > 0:
+                    yield item
+                elif item == 0:
+                    yield None
+                # Negative items not yielded
+
+        fn = FunctionNode(conditional_gen, output_name="results")
+        assert fn.is_generator is True
+
+    def test_generator_expression_not_generator_node(self):
+        """Function returning generator expression is not a generator node."""
+
+        def returns_genexp(n: int):
+            return (i for i in range(n))
+
+        fn = FunctionNode(returns_genexp, output_name="items")
+        # Function itself is not a generator, it returns one
+        assert fn.is_generator is False
+
+    def test_generator_with_parameters(self):
+        """Generator with multiple parameters."""
+
+        def gen_with_params(start: int, stop: int, step: int = 1):
+            current = start
+            while current < stop:
+                yield current
+                current += step
+
+        fn = FunctionNode(gen_with_params, output_name="items")
+        assert fn.is_generator is True
+        assert fn.inputs == ("start", "stop", "step")
+        assert fn.defaults == {"step": 1}
+
+    def test_generator_with_type_annotations(self):
+        """Generator with full type annotations."""
+        from typing import Iterator
+
+        def typed_gen(n: int) -> Iterator[int]:
+            for i in range(n):
+                yield i
+
+        fn = FunctionNode(typed_gen, output_name="items")
+        assert fn.is_generator is True
+        assert fn.parameter_annotations == {"n": int}
+
+    def test_nested_generator_not_detected(self):
+        """Function with nested generator def is not a generator."""
+
+        def contains_gen():
+            def inner_gen():
+                yield 1
+
+            return list(inner_gen())
+
+        fn = FunctionNode(contains_gen, output_name="result")
+        # Outer function is not a generator
+        assert fn.is_generator is False
+
+
+class TestGeneratorExecution:
+    """Tests for generator execution in graphs."""
+
+    def test_generator_accumulated_to_list(self):
+        """Generator results are accumulated to list by runner."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="items")
+        def gen_items(n: int):
+            for i in range(n):
+                yield i
+
+        graph = Graph([gen_items])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"n": 3})
+
+        assert result["items"] == [0, 1, 2]
+
+    def test_generator_yielding_none(self):
+        """Generator yielding None values accumulates correctly."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="items")
+        def gen_none(n: int):
+            for _ in range(n):
+                yield None
+
+        graph = Graph([gen_none])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"n": 3})
+
+        assert result["items"] == [None, None, None]
+
+    def test_empty_generator_returns_empty_list(self):
+        """Generator yielding nothing returns empty list."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="items")
+        def empty_gen():
+            return
+            yield  # Make it a generator
+
+        graph = Graph([empty_gen])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {})
+
+        assert result["items"] == []
+
+    def test_generator_in_chain(self):
+        """Generator output flows to downstream node."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="items")
+        def gen_items(n: int):
+            for i in range(n):
+                yield i * 2
+
+        @node(output_name="total")
+        def sum_items(items: list) -> int:
+            return sum(items)
+
+        graph = Graph([gen_items, sum_items])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"n": 4})
+
+        assert result["items"] == [0, 2, 4, 6]
+        assert result["total"] == 12
+
+    def test_generator_in_cycle(self):
+        """Generator node in cyclic graph."""
+        from hypergraph import Graph
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="items")
+        def growing_gen(items: list, limit: int = 5):
+            # Yield existing items plus one more
+            for item in items:
+                yield item
+            if len(items) < limit:
+                yield len(items)
+
+        graph = Graph([growing_gen])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"items": [], "limit": 3})
+
+        # Generator should grow the list: [] -> [0] -> [0,1] -> [0,1,2]
+        # At len=3, we stop adding (limit reached)
+        # Final should stabilize at [0,1,2]
+        assert len(result["items"]) <= 3

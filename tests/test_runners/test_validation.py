@@ -4,8 +4,8 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
-from hypergraph.runners._types import RunnerCapabilities
-from hypergraph.runners._validation import (
+from hypergraph.runners import RunnerCapabilities
+from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_map_compatible,
     validate_runner_compatibility,

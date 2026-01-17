@@ -6,32 +6,42 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import InfiniteLoopError
-from hypergraph.runners._execution import (
-    _concurrency_limiter,
-    collect_inputs_for_node,
+from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.function import FunctionNode
+from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.runners._shared.helpers import (
     filter_outputs,
     generate_map_inputs,
     get_ready_nodes,
     initialize_state,
-    run_superstep_async,
 )
-from hypergraph.runners._types import (
+from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.types import (
     GraphState,
-    NodeExecution,
     RunnerCapabilities,
     RunResult,
     RunStatus,
 )
-from hypergraph.runners._validation import (
+from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_map_compatible,
+    validate_node_types,
     validate_runner_compatibility,
+)
+from hypergraph.runners.async_.executors import (
+    AsyncFunctionNodeExecutor,
+    AsyncGraphNodeExecutor,
+)
+from hypergraph.runners.async_.superstep import (
+    get_concurrency_limiter,
+    reset_concurrency_limiter,
+    run_superstep_async,
+    set_concurrency_limiter,
 )
 from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
-    from hypergraph.nodes.base import HyperNode
 
 # Default max iterations for cyclic graphs
 DEFAULT_MAX_ITERATIONS = 1000
@@ -63,6 +73,13 @@ class AsyncRunner(BaseRunner):
         10
     """
 
+    def __init__(self):
+        """Initialize AsyncRunner with its node executors."""
+        self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
+            FunctionNode: AsyncFunctionNodeExecutor(),
+            GraphNode: AsyncGraphNodeExecutor(self),
+        }
+
     @property
     def capabilities(self) -> RunnerCapabilities:
         """AsyncRunner capabilities."""
@@ -72,6 +89,11 @@ class AsyncRunner(BaseRunner):
             supports_streaming=False,  # Phase 2
             returns_coroutine=True,
         )
+
+    @property
+    def supported_node_types(self) -> set[type[HyperNode]]:
+        """Node types this runner can execute."""
+        return set(self._executors.keys())
 
     async def run(
         self,
@@ -100,6 +122,7 @@ class AsyncRunner(BaseRunner):
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
+        validate_node_types(graph, self.supported_node_types)
         validate_inputs(graph, values)
 
         max_iter = max_iterations or DEFAULT_MAX_ITERATIONS
@@ -131,7 +154,7 @@ class AsyncRunner(BaseRunner):
         # Set up concurrency limiter if specified
         if max_concurrency is not None:
             semaphore = asyncio.Semaphore(max_concurrency)
-            token = _concurrency_limiter.set(semaphore)
+            token = set_concurrency_limiter(semaphore)
         else:
             token = None
 
@@ -142,21 +165,15 @@ class AsyncRunner(BaseRunner):
                 if not ready_nodes:
                     break  # No more nodes to execute
 
-                # Filter out GraphNodes - handle separately
-                function_nodes = [n for n in ready_nodes if not self._is_graph_node(n)]
-                graph_nodes = [n for n in ready_nodes if self._is_graph_node(n)]
-
-                # Execute FunctionNodes concurrently
-                if function_nodes:
-                    state = await run_superstep_async(
-                        graph, state, function_nodes, values, max_concurrency
-                    )
-
-                # Execute GraphNodes (possibly concurrently)
-                if graph_nodes:
-                    state = await self._execute_graph_nodes(
-                        graph_nodes, graph, state, values, max_concurrency
-                    )
+                # Execute all ready nodes concurrently
+                state = await run_superstep_async(
+                    graph,
+                    state,
+                    ready_nodes,
+                    values,
+                    self._execute_node,
+                    max_concurrency,
+                )
 
             else:
                 # Loop completed without break = hit max_iterations
@@ -166,134 +183,38 @@ class AsyncRunner(BaseRunner):
         finally:
             # Reset concurrency limiter
             if token is not None:
-                _concurrency_limiter.reset(token)
+                reset_concurrency_limiter(token)
 
         return state
 
-    def _is_graph_node(self, node: "HyperNode") -> bool:
-        """Check if node is a GraphNode."""
-        from hypergraph.nodes.graph_node import GraphNode
-
-        return isinstance(node, GraphNode)
-
-    async def _execute_graph_nodes(
+    async def _execute_node(
         self,
-        graph_nodes: list["HyperNode"],
-        parent_graph: "Graph",
+        node: HyperNode,
         state: GraphState,
-        provided_values: dict[str, Any],
-        max_concurrency: int | None,
-    ) -> GraphState:
-        """Execute multiple GraphNodes, potentially concurrently."""
-        if not graph_nodes:
-            return state
-
-        # Execute all graph nodes concurrently
-        semaphore = _concurrency_limiter.get()
-
-        async def execute_one(
-            gn: "HyperNode",
-        ) -> tuple["HyperNode", dict[str, Any], dict[str, int]]:
-            inputs = collect_inputs_for_node(gn, parent_graph, state, provided_values)
-            input_versions = {
-                param: state.get_version(param) for param in gn.inputs
-            }
-
-            if semaphore:
-                async with semaphore:
-                    outputs = await self._execute_single_graph_node(
-                        gn, inputs, max_concurrency
-                    )
-            else:
-                outputs = await self._execute_single_graph_node(
-                    gn, inputs, max_concurrency
-                )
-
-            return gn, outputs, input_versions
-
-        tasks = [execute_one(gn) for gn in graph_nodes]
-        results = await asyncio.gather(*tasks)
-
-        # Update state with all results
-        new_state = state.copy()
-        for gn, outputs, input_versions in results:
-            for name, value in outputs.items():
-                new_state.update_value(name, value)
-
-            new_state.node_executions[gn.name] = NodeExecution(
-                node_name=gn.name,
-                input_versions=input_versions,
-                outputs=outputs,
-            )
-
-        return new_state
-
-    async def _execute_single_graph_node(
-        self,
-        graph_node: "HyperNode",
         inputs: dict[str, Any],
-        max_concurrency: int | None,
     ) -> dict[str, Any]:
-        """Execute a single GraphNode."""
-        from hypergraph.nodes.graph_node import GraphNode
+        """Execute a single node using its registered executor.
 
-        gn = graph_node  # type: GraphNode
+        Args:
+            node: The node to execute
+            state: Current graph execution state
+            inputs: Input values for the node
 
-        # Check if GraphNode has map_over configured
-        map_over = getattr(gn, "_map_over", None)
-        map_mode = getattr(gn, "_map_mode", "zip")
+        Returns:
+            Dict mapping output names to their values
 
-        if map_over:
-            return await self._execute_graph_node_with_map(
-                gn, inputs, map_over, map_mode, max_concurrency
+        Raises:
+            TypeError: If node type has no registered executor
+        """
+        node_type = type(node)
+        executor = self._executors.get(node_type)
+
+        if executor is None:
+            raise TypeError(
+                f"No executor registered for node type '{node_type.__name__}'"
             )
 
-        # Execute once
-        result = await self.run(gn.graph, inputs, max_concurrency=max_concurrency)
-        if result.status == RunStatus.FAILED:
-            raise result.error or RuntimeError("Nested graph execution failed")
-        return result.values
-
-    async def _execute_graph_node_with_map(
-        self,
-        graph_node: "HyperNode",
-        inputs: dict[str, Any],
-        map_over: list[str],
-        map_mode: str,
-        max_concurrency: int | None,
-    ) -> dict[str, Any]:
-        """Execute a GraphNode with map_over configuration."""
-        from hypergraph.nodes.graph_node import GraphNode
-
-        gn = graph_node  # type: GraphNode
-
-        # Generate input variations
-        input_variations = list(generate_map_inputs(inputs, map_over, map_mode))
-
-        if not input_variations:
-            return {output: [] for output in gn.outputs}
-
-        # Execute all variations concurrently
-        async def run_one(variation_inputs: dict[str, Any]) -> RunResult:
-            return await self.run(
-                gn.graph, variation_inputs, max_concurrency=max_concurrency
-            )
-
-        results = await asyncio.gather(*[run_one(v) for v in input_variations])
-
-        # Check for failures
-        for result in results:
-            if result.status == RunStatus.FAILED:
-                raise result.error or RuntimeError("Nested graph execution failed")
-
-        # Collect outputs as lists
-        outputs: dict[str, list] = {output: [] for output in gn.outputs}
-        for result in results:
-            for output_name in gn.outputs:
-                if output_name in result.values:
-                    outputs[output_name].append(result.values[output_name])
-
-        return outputs
+        return await executor(node, state, inputs)
 
     async def map(
         self,
@@ -320,6 +241,7 @@ class AsyncRunner(BaseRunner):
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
+        validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
 
         # Normalize map_over to list

@@ -5,31 +5,37 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import InfiniteLoopError
-from hypergraph.runners._execution import (
-    collect_inputs_for_node,
+from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.function import FunctionNode
+from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.runners._shared.helpers import (
     filter_outputs,
     generate_map_inputs,
     get_ready_nodes,
     initialize_state,
-    run_superstep_sync,
 )
-from hypergraph.runners._types import (
+from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.types import (
     GraphState,
-    NodeExecution,
     RunnerCapabilities,
     RunResult,
     RunStatus,
 )
-from hypergraph.runners._validation import (
+from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_map_compatible,
+    validate_node_types,
     validate_runner_compatibility,
 )
 from hypergraph.runners.base import BaseRunner
+from hypergraph.runners.sync.executors import (
+    SyncFunctionNodeExecutor,
+    SyncGraphNodeExecutor,
+)
+from hypergraph.runners.sync.superstep import run_superstep_sync
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
-    from hypergraph.nodes.base import HyperNode
 
 # Default max iterations for cyclic graphs
 DEFAULT_MAX_ITERATIONS = 1000
@@ -58,6 +64,13 @@ class SyncRunner(BaseRunner):
         10
     """
 
+    def __init__(self):
+        """Initialize SyncRunner with its node executors."""
+        self._executors: dict[type[HyperNode], NodeExecutor] = {
+            FunctionNode: SyncFunctionNodeExecutor(),
+            GraphNode: SyncGraphNodeExecutor(self),
+        }
+
     @property
     def capabilities(self) -> RunnerCapabilities:
         """SyncRunner capabilities."""
@@ -67,6 +80,11 @@ class SyncRunner(BaseRunner):
             supports_streaming=False,
             returns_coroutine=False,
         )
+
+    @property
+    def supported_node_types(self) -> set[type[HyperNode]]:
+        """Node types this runner can execute."""
+        return set(self._executors.keys())
 
     def run(
         self,
@@ -94,6 +112,7 @@ class SyncRunner(BaseRunner):
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
+        validate_node_types(graph, self.supported_node_types)
         validate_inputs(graph, values)
 
         max_iter = max_iterations or DEFAULT_MAX_ITERATIONS
@@ -127,17 +146,10 @@ class SyncRunner(BaseRunner):
             if not ready_nodes:
                 break  # No more nodes to execute
 
-            # Filter out GraphNodes - handle separately
-            function_nodes = [n for n in ready_nodes if not self._is_graph_node(n)]
-            graph_nodes = [n for n in ready_nodes if self._is_graph_node(n)]
-
-            # Execute FunctionNodes
-            if function_nodes:
-                state = run_superstep_sync(graph, state, function_nodes, values)
-
-            # Execute GraphNodes
-            for gn in graph_nodes:
-                state = self._execute_graph_node(gn, graph, state, values)
+            # Execute all ready nodes
+            state = run_superstep_sync(
+                graph, state, ready_nodes, values, self._execute_node
+            )
 
         else:
             # Loop completed without break = hit max_iterations
@@ -146,96 +158,34 @@ class SyncRunner(BaseRunner):
 
         return state
 
-    def _is_graph_node(self, node: "HyperNode") -> bool:
-        """Check if node is a GraphNode."""
-        from hypergraph.nodes.graph_node import GraphNode
-
-        return isinstance(node, GraphNode)
-
-    def _execute_graph_node(
+    def _execute_node(
         self,
-        graph_node: "HyperNode",
-        parent_graph: "Graph",
+        node: HyperNode,
         state: GraphState,
-        provided_values: dict[str, Any],
-    ) -> GraphState:
-        """Execute a GraphNode by delegating to its inner graph."""
-        from hypergraph.nodes.graph_node import GraphNode
-
-        gn = graph_node  # type: GraphNode
-
-        # Collect inputs for the nested graph
-        inputs = collect_inputs_for_node(gn, parent_graph, state, provided_values)
-
-        # Record input versions before execution
-        input_versions = {
-            param: state.get_version(param) for param in gn.inputs
-        }
-
-        # Check if GraphNode has map_over configured
-        map_over = getattr(gn, "_map_over", None)
-        map_mode = getattr(gn, "_map_mode", "zip")
-
-        if map_over:
-            # Execute with map
-            outputs = self._execute_graph_node_with_map(
-                gn, inputs, map_over, map_mode
-            )
-        else:
-            # Execute once
-            result = self.run(gn.graph, inputs)
-            if result.status == RunStatus.FAILED:
-                raise result.error or RuntimeError("Nested graph execution failed")
-            outputs = result.values
-
-        # Update state with outputs
-        new_state = state.copy()
-        for name, value in outputs.items():
-            new_state.update_value(name, value)
-
-        # Record execution
-        new_state.node_executions[gn.name] = NodeExecution(
-            node_name=gn.name,
-            input_versions=input_versions,
-            outputs=outputs,
-        )
-
-        return new_state
-
-    def _execute_graph_node_with_map(
-        self,
-        graph_node: "HyperNode",
         inputs: dict[str, Any],
-        map_over: list[str],
-        map_mode: str,
     ) -> dict[str, Any]:
-        """Execute a GraphNode with map_over configuration."""
-        from hypergraph.nodes.graph_node import GraphNode
+        """Execute a single node using its registered executor.
 
-        gn = graph_node  # type: GraphNode
+        Args:
+            node: The node to execute
+            state: Current graph execution state
+            inputs: Input values for the node
 
-        # Generate input variations
-        input_variations = list(generate_map_inputs(inputs, map_over, map_mode))
+        Returns:
+            Dict mapping output names to their values
 
-        if not input_variations:
-            return {output: [] for output in gn.outputs}
+        Raises:
+            TypeError: If node type has no registered executor
+        """
+        node_type = type(node)
+        executor = self._executors.get(node_type)
 
-        # Execute each variation
-        results = []
-        for variation_inputs in input_variations:
-            result = self.run(gn.graph, variation_inputs)
-            if result.status == RunStatus.FAILED:
-                raise result.error or RuntimeError("Nested graph execution failed")
-            results.append(result)
+        if executor is None:
+            raise TypeError(
+                f"No executor registered for node type '{node_type.__name__}'"
+            )
 
-        # Collect outputs as lists
-        outputs: dict[str, list] = {output: [] for output in gn.outputs}
-        for result in results:
-            for output_name in gn.outputs:
-                if output_name in result.values:
-                    outputs[output_name].append(result.values[output_name])
-
-        return outputs
+        return executor(node, state, inputs)
 
     def map(
         self,
@@ -260,6 +210,7 @@ class SyncRunner(BaseRunner):
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
+        validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
 
         # Normalize map_over to list

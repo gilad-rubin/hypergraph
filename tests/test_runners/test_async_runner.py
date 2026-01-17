@@ -7,8 +7,7 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.exceptions import InfiniteLoopError, MissingInputError
-from hypergraph.runners._types import RunStatus
-from hypergraph.runners.async_ import AsyncRunner
+from hypergraph.runners import RunStatus, AsyncRunner
 
 
 # === Test Fixtures ===
@@ -126,11 +125,13 @@ class TestAsyncRunnerRun:
     async def test_fan_in_graph(self):
         """Node consumes outputs from multiple nodes."""
         double2 = double.with_name("double2").with_outputs(doubled="doubled2")
-        graph = Graph([
-            double,
-            double2,
-            add.with_inputs(a="doubled", b="doubled2"),
-        ])
+        graph = Graph(
+            [
+                double,
+                double2,
+                add.with_inputs(a="doubled", b="doubled2"),
+            ]
+        )
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"x": 5})
@@ -140,12 +141,14 @@ class TestAsyncRunnerRun:
     async def test_diamond_graph(self):
         """Diamond-shaped graph."""
         double2 = double.with_name("double2").with_outputs(doubled="other")
-        graph = Graph([
-            increment,
-            double.with_inputs(x="incremented"),
-            double2.with_inputs(x="incremented"),
-            add.with_inputs(a="doubled", b="other"),
-        ])
+        graph = Graph(
+            [
+                increment,
+                double.with_inputs(x="incremented"),
+                double2.with_inputs(x="incremented"),
+                add.with_inputs(a="doubled", b="other"),
+            ]
+        )
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"x": 5})
@@ -210,9 +213,7 @@ class TestAsyncRunnerRun:
         runner = AsyncRunner()
 
         start = time.time()
-        result = await runner.run(
-            graph, {"x": 5, "delay": 0.05}, max_concurrency=1
-        )
+        result = await runner.run(graph, {"x": 5, "delay": 0.05}, max_concurrency=1)
         elapsed = time.time() - start
 
         # With max_concurrency=1, should be sequential (~0.1s)
@@ -434,3 +435,246 @@ class TestAsyncRunnerMap:
         assert len(results) == 4
         sums = sorted(r["sum"] for r in results)
         assert sums == [11, 12, 21, 22]
+
+
+class TestDisconnectedSubgraphs:
+    """Tests for disconnected graphs with AsyncRunner (GAP-09)."""
+
+    async def test_disconnected_subgraphs_run_concurrently(self):
+        """Independent subgraphs execute in parallel with AsyncRunner."""
+        import time
+
+        @node(output_name="a")
+        async def slow_a(x: int) -> int:
+            await asyncio.sleep(0.03)
+            return x * 2
+
+        @node(output_name="b")
+        async def slow_b(y: int) -> int:
+            await asyncio.sleep(0.03)
+            return y * 3
+
+        # Two disconnected subgraphs - no edges between them
+        graph = Graph([slow_a, slow_b])
+        runner = AsyncRunner()
+
+        start = time.time()
+        result = await runner.run(graph, {"x": 5, "y": 10})
+        elapsed = time.time() - start
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["a"] == 10
+        assert result["b"] == 30
+        # Should be ~0.03s (concurrent), not ~0.06s (sequential)
+        assert elapsed < 0.05
+
+    async def test_select_from_disconnected_subgraph(self):
+        """select= works correctly with disconnected graphs."""
+
+        @node(output_name="a")
+        async def subgraph_a(x: int) -> int:
+            return x * 2
+
+        @node(output_name="b")
+        async def subgraph_b(y: int) -> int:
+            return y * 3
+
+        graph = Graph([subgraph_a, subgraph_b])
+        runner = AsyncRunner()
+
+        # Select only from one subgraph
+        result = await runner.run(graph, {"x": 5, "y": 10}, select=["a"])
+
+        assert result.status == RunStatus.COMPLETED
+        assert "a" in result
+        assert "b" not in result
+        assert result["a"] == 10
+
+    async def test_deeply_nested_async_three_levels(self):
+        """3+ levels of GraphNode nesting with async nodes."""
+
+        @node(output_name="x")
+        async def level3_node(a: int) -> int:
+            await asyncio.sleep(0.01)
+            return a * 2
+
+        level3 = Graph([level3_node], name="level3")
+
+        @node(output_name="y")
+        async def level2_node(x: int) -> int:
+            await asyncio.sleep(0.01)
+            return x + 1
+
+        level2 = Graph([level3.as_node(), level2_node], name="level2")
+
+        @node(output_name="z")
+        async def level1_node(y: int) -> int:
+            await asyncio.sleep(0.01)
+            return y * 3
+
+        level1 = Graph([level2.as_node(), level1_node])
+
+        runner = AsyncRunner()
+        result = await runner.run(level1, {"a": 5})
+
+        # a=5 -> x=10 -> y=11 -> z=33
+        assert result.status == RunStatus.COMPLETED
+        assert result["x"] == 10
+        assert result["y"] == 11
+        assert result["z"] == 33
+
+    async def test_multiple_disconnected_chains(self):
+        """Multiple disconnected chains run concurrently."""
+
+        @node(output_name="a1")
+        async def chain_a_step1(input_a: int) -> int:
+            await asyncio.sleep(0.01)
+            return input_a + 1
+
+        @node(output_name="a2")
+        async def chain_a_step2(a1: int) -> int:
+            await asyncio.sleep(0.01)
+            return a1 * 2
+
+        @node(output_name="b1")
+        async def chain_b_step1(input_b: int) -> int:
+            await asyncio.sleep(0.01)
+            return input_b + 10
+
+        @node(output_name="b2")
+        async def chain_b_step2(b1: int) -> int:
+            await asyncio.sleep(0.01)
+            return b1 * 3
+
+        # Two independent chains
+        graph = Graph([chain_a_step1, chain_a_step2, chain_b_step1, chain_b_step2])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"input_a": 5, "input_b": 2})
+
+        assert result.status == RunStatus.COMPLETED
+        # Chain A: 5 -> 6 -> 12
+        assert result["a1"] == 6
+        assert result["a2"] == 12
+        # Chain B: 2 -> 12 -> 36
+        assert result["b1"] == 12
+        assert result["b2"] == 36
+
+    async def test_mixed_connected_disconnected(self):
+        """Graph with both connected and disconnected parts."""
+
+        @node(output_name="a")
+        async def node_a(x: int) -> int:
+            return x * 2
+
+        @node(output_name="b")
+        async def node_b(a: int) -> int:
+            return a + 1
+
+        @node(output_name="c")
+        async def node_c(y: int) -> int:
+            return y * 3
+
+        # a -> b is connected, c is disconnected
+        graph = Graph([node_a, node_b, node_c])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"x": 5, "y": 10})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["a"] == 10
+        assert result["b"] == 11
+        assert result["c"] == 30
+
+    async def test_disconnected_with_nested_graphnode(self):
+        """Disconnected subgraphs where one contains a nested GraphNode."""
+
+        @node(output_name="inner_result")
+        async def inner_node(a: int) -> int:
+            return a * 2
+
+        inner = Graph([inner_node], name="inner")
+
+        @node(output_name="other_result")
+        async def other_node(b: int) -> int:
+            return b + 10
+
+        # inner.as_node() and other_node are disconnected
+        outer = Graph([inner.as_node(), other_node])
+        runner = AsyncRunner()
+
+        result = await runner.run(outer, {"a": 5, "b": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["inner_result"] == 10
+        assert result["other_result"] == 13
+
+
+class TestDeeplyNestedAsync:
+    """Additional tests for deeply nested async execution."""
+
+    async def test_four_level_nesting(self):
+        """Four levels of GraphNode nesting with async."""
+
+        @node(output_name="l4")
+        async def level4(x: int) -> int:
+            return x + 1
+
+        l4_graph = Graph([level4], name="l4")
+
+        @node(output_name="l3")
+        async def level3(l4: int) -> int:
+            return l4 + 1
+
+        l3_graph = Graph([l4_graph.as_node(), level3], name="l3")
+
+        @node(output_name="l2")
+        async def level2(l3: int) -> int:
+            return l3 + 1
+
+        l2_graph = Graph([l3_graph.as_node(), level2], name="l2")
+
+        @node(output_name="l1")
+        async def level1(l2: int) -> int:
+            return l2 + 1
+
+        l1_graph = Graph([l2_graph.as_node(), level1])
+
+        runner = AsyncRunner()
+        result = await runner.run(l1_graph, {"x": 0})
+
+        # 0 -> 1 -> 2 -> 3 -> 4
+        assert result.status == RunStatus.COMPLETED
+        assert result["l4"] == 1
+        assert result["l3"] == 2
+        assert result["l2"] == 3
+        assert result["l1"] == 4
+
+    async def test_nested_with_parallel_inner_nodes(self):
+        """Nested graph with parallel nodes inside."""
+
+        @node(output_name="a")
+        async def inner_a(x: int) -> int:
+            await asyncio.sleep(0.01)
+            return x * 2
+
+        @node(output_name="b")
+        async def inner_b(x: int) -> int:
+            await asyncio.sleep(0.01)
+            return x * 3
+
+        @node(output_name="sum")
+        async def inner_combine(a: int, b: int) -> int:
+            return a + b
+
+        inner = Graph([inner_a, inner_b, inner_combine], name="inner")
+        outer = Graph([inner.as_node()])
+
+        runner = AsyncRunner()
+        result = await runner.run(outer, {"x": 5})
+
+        # a=10, b=15, sum=25
+        assert result.status == RunStatus.COMPLETED
+        assert result["a"] == 10
+        assert result["b"] == 15
+        assert result["sum"] == 25

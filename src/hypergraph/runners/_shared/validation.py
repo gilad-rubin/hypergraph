@@ -6,10 +6,11 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
-from hypergraph.runners._types import RunnerCapabilities
+from hypergraph.runners._shared.types import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+    from hypergraph.nodes.base import HyperNode
 
 
 def validate_inputs(
@@ -128,9 +129,7 @@ def validate_runner_compatibility(
     # Check async nodes
     if graph.has_async_nodes and not capabilities.supports_async_nodes:
         # Find the async node(s) for a helpful error message
-        async_nodes = [
-            node.name for node in graph._nodes.values() if node.is_async
-        ]
+        async_nodes = [node.name for node in graph._nodes.values() if node.is_async]
         raise IncompatibleRunnerError(
             f"Graph contains async node(s) but runner doesn't support async: "
             f"{', '.join(async_nodes)}. Use AsyncRunner instead.",
@@ -160,3 +159,26 @@ def validate_map_compatible(graph: "Graph") -> None:
     # Phase 2: Check for interrupt nodes
     # For now, all graphs are map-compatible
     pass
+
+
+def validate_node_types(
+    graph: "Graph",
+    supported_types: set[type["HyperNode"]],
+) -> None:
+    """Validate that all nodes in graph have registered executors.
+
+    Args:
+        graph: The graph to validate
+        supported_types: Set of node types the runner supports
+
+    Raises:
+        TypeError: If a node type is not supported by the runner
+    """
+    for node in graph._nodes.values():
+        node_type = type(node)
+        if node_type not in supported_types:
+            supported_names = [t.__name__ for t in supported_types]
+            raise TypeError(
+                f"Runner does not support node type '{node_type.__name__}'. "
+                f"Supported types: {supported_names}"
+            )

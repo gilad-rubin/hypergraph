@@ -1,20 +1,23 @@
-"""Tests for execution logic: ready nodes, supersteps, etc."""
+"""Tests for execution logic: ready nodes, supersteps, executors, etc."""
+
+import asyncio
+import time
 
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.runners._execution import (
+from hypergraph.runners._shared.helpers import (
     collect_inputs_for_node,
-    execute_node_sync,
-    execute_node_async,
     filter_outputs,
     generate_map_inputs,
     get_ready_nodes,
     initialize_state,
-    run_superstep_sync,
-    run_superstep_async,
 )
-from hypergraph.runners._types import GraphState, NodeExecution
+from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners.sync.executors import SyncFunctionNodeExecutor
+from hypergraph.runners.sync.superstep import run_superstep_sync
+from hypergraph.runners.async_.executors import AsyncFunctionNodeExecutor
+from hypergraph.runners.async_.superstep import run_superstep_async
 
 
 # === Test Fixtures ===
@@ -234,40 +237,44 @@ class TestCollectInputsForNode:
         assert inputs["y"] == 10  # Default value
 
 
-# === Tests for execute_node_sync ===
+# === Tests for SyncFunctionNodeExecutor ===
 
 
-class TestExecuteNodeSync:
+class TestSyncFunctionNodeExecutor:
     """Tests for synchronous node execution."""
+
+    def setup_method(self):
+        self.executor = SyncFunctionNodeExecutor()
+        self.state = GraphState()
 
     def test_executes_function_with_inputs(self):
         """Function is called with provided inputs."""
-        outputs = execute_node_sync(double, {"x": 5})
+        outputs = self.executor(double, self.state, {"x": 5})
         assert outputs == {"doubled": 10}
 
     def test_returns_dict_with_outputs(self):
         """Returns dict mapping output names to values."""
-        outputs = execute_node_sync(add, {"a": 3, "b": 4})
+        outputs = self.executor(add, self.state, {"a": 3, "b": 4})
         assert outputs == {"sum": 7}
 
     def test_single_output_wrapped_in_dict(self):
         """Single return value is wrapped in dict."""
-        outputs = execute_node_sync(double, {"x": 10})
+        outputs = self.executor(double, self.state, {"x": 10})
         assert outputs == {"doubled": 20}
 
     def test_multiple_outputs_unpacked(self):
         """Tuple return is unpacked to multiple outputs."""
-        outputs = execute_node_sync(split, {"x": 5})
+        outputs = self.executor(split, self.state, {"x": 5})
         assert outputs == {"first": 5, "second": 6}
 
     def test_generator_accumulated_to_list(self):
         """Generator output is accumulated to list."""
-        outputs = execute_node_sync(gen_items, {"n": 3})
+        outputs = self.executor(gen_items, self.state, {"n": 3})
         assert outputs == {"items": [0, 1, 2]}
 
     def test_side_effect_node_returns_empty_dict(self):
         """Side-effect only nodes return empty dict."""
-        outputs = execute_node_sync(side_effect, {"x": 5})
+        outputs = self.executor(side_effect, self.state, {"x": 5})
         assert outputs == {}
 
     def test_exception_propagates(self):
@@ -278,33 +285,37 @@ class TestExecuteNodeSync:
             raise ValueError("intentional error")
 
         with pytest.raises(ValueError, match="intentional error"):
-            execute_node_sync(failing, {"x": 1})
+            self.executor(failing, self.state, {"x": 1})
 
 
-# === Tests for execute_node_async ===
+# === Tests for AsyncFunctionNodeExecutor ===
 
 
-class TestExecuteNodeAsync:
+class TestAsyncFunctionNodeExecutor:
     """Tests for async node execution."""
+
+    def setup_method(self):
+        self.executor = AsyncFunctionNodeExecutor()
+        self.state = GraphState()
 
     async def test_executes_sync_function(self):
         """Sync functions work in async context."""
-        outputs = await execute_node_async(double, {"x": 5})
+        outputs = await self.executor(double, self.state, {"x": 5})
         assert outputs == {"doubled": 10}
 
     async def test_executes_async_function(self):
         """Async functions are awaited."""
-        outputs = await execute_node_async(async_double, {"x": 5})
+        outputs = await self.executor(async_double, self.state, {"x": 5})
         assert outputs == {"doubled": 10}
 
     async def test_async_generator_accumulated(self):
         """Async generators are accumulated to list."""
-        outputs = await execute_node_async(async_gen_items, {"n": 3})
+        outputs = await self.executor(async_gen_items, self.state, {"n": 3})
         assert outputs == {"items": [0, 1, 2]}
 
     async def test_sync_generator_in_async(self):
         """Sync generators work in async context."""
-        outputs = await execute_node_async(gen_items, {"n": 3})
+        outputs = await self.executor(gen_items, self.state, {"n": 3})
         assert outputs == {"items": [0, 1, 2]}
 
 
@@ -313,6 +324,13 @@ class TestExecuteNodeAsync:
 
 class TestRunSuperstepSync:
     """Tests for synchronous superstep execution."""
+
+    def setup_method(self):
+        self.executor = SyncFunctionNodeExecutor()
+
+    def _execute_node(self, node, state, inputs):
+        """Simple executor that only handles FunctionNode."""
+        return self.executor(node, state, inputs)
 
     def test_executes_all_ready_nodes(self):
         """All ready nodes are executed."""
@@ -325,7 +343,9 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5})
+        new_state = run_superstep_sync(
+            graph, state, ready, {"x": 5}, self._execute_node
+        )
 
         assert new_state.values["doubled"] == 10
         assert new_state.values["tripled"] == 15
@@ -336,7 +356,9 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5})
+        new_state = run_superstep_sync(
+            graph, state, ready, {"x": 5}, self._execute_node
+        )
 
         assert "doubled" in new_state.values
         assert new_state.values["doubled"] == 10
@@ -347,7 +369,9 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5})
+        new_state = run_superstep_sync(
+            graph, state, ready, {"x": 5}, self._execute_node
+        )
 
         assert new_state.versions["doubled"] == 1
 
@@ -357,7 +381,9 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5})
+        new_state = run_superstep_sync(
+            graph, state, ready, {"x": 5}, self._execute_node
+        )
 
         assert new_state is not state
         assert "doubled" not in state.values
@@ -370,9 +396,15 @@ class TestRunSuperstepSync:
 class TestRunSuperstepAsync:
     """Tests for async superstep execution."""
 
+    def setup_method(self):
+        self.executor = AsyncFunctionNodeExecutor()
+
+    async def _execute_node(self, node, state, inputs):
+        """Simple executor that only handles FunctionNode."""
+        return await self.executor(node, state, inputs)
+
     async def test_executes_nodes_concurrently(self):
         """Multiple nodes execute concurrently."""
-        import time
 
         @node(output_name="a")
         async def slow_a(x: int) -> int:
@@ -389,7 +421,9 @@ class TestRunSuperstepAsync:
         ready = get_ready_nodes(graph, state)
 
         start = time.time()
-        new_state = await run_superstep_async(graph, state, ready, {"x": 5})
+        new_state = await run_superstep_async(
+            graph, state, ready, {"x": 5}, self._execute_node
+        )
         elapsed = time.time() - start
 
         # Should be ~0.05s (concurrent), not ~0.1s (sequential)
@@ -400,8 +434,6 @@ class TestRunSuperstepAsync:
 
     async def test_respects_max_concurrency(self):
         """max_concurrency limits parallel execution."""
-        import time
-
         execution_times = []
 
         @node(output_name="a")
@@ -424,7 +456,7 @@ class TestRunSuperstepAsync:
 
         start = time.time()
         new_state = await run_superstep_async(
-            graph, state, ready, {"x": 5}, max_concurrency=1
+            graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1
         )
         elapsed = time.time() - start
 
@@ -437,7 +469,9 @@ class TestRunSuperstepAsync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = await run_superstep_async(graph, state, ready, {"x": 5})
+        new_state = await run_superstep_async(
+            graph, state, ready, {"x": 5}, self._execute_node
+        )
 
         assert new_state.values["doubled"] == 10
 
@@ -450,11 +484,13 @@ class TestGenerateMapInputs:
 
     def test_zip_mode_single_param(self):
         """Zip mode with single parameter."""
-        inputs = list(generate_map_inputs(
-            {"x": [1, 2, 3], "y": 10},
-            map_over=["x"],
-            map_mode="zip",
-        ))
+        inputs = list(
+            generate_map_inputs(
+                {"x": [1, 2, 3], "y": 10},
+                map_over=["x"],
+                map_mode="zip",
+            )
+        )
         assert inputs == [
             {"x": 1, "y": 10},
             {"x": 2, "y": 10},
@@ -463,11 +499,13 @@ class TestGenerateMapInputs:
 
     def test_zip_mode_multiple_params(self):
         """Zip mode with multiple parameters."""
-        inputs = list(generate_map_inputs(
-            {"x": [1, 2], "y": [10, 20], "z": 100},
-            map_over=["x", "y"],
-            map_mode="zip",
-        ))
+        inputs = list(
+            generate_map_inputs(
+                {"x": [1, 2], "y": [10, 20], "z": 100},
+                map_over=["x", "y"],
+                map_mode="zip",
+            )
+        )
         assert inputs == [
             {"x": 1, "y": 10, "z": 100},
             {"x": 2, "y": 20, "z": 100},
@@ -476,19 +514,23 @@ class TestGenerateMapInputs:
     def test_zip_mode_unequal_lengths_raises(self):
         """Zip mode with unequal lengths raises error."""
         with pytest.raises(ValueError, match="equal lengths"):
-            list(generate_map_inputs(
-                {"x": [1, 2, 3], "y": [10, 20]},
-                map_over=["x", "y"],
-                map_mode="zip",
-            ))
+            list(
+                generate_map_inputs(
+                    {"x": [1, 2, 3], "y": [10, 20]},
+                    map_over=["x", "y"],
+                    map_mode="zip",
+                )
+            )
 
     def test_product_mode_single_param(self):
         """Product mode with single parameter (same as zip)."""
-        inputs = list(generate_map_inputs(
-            {"x": [1, 2], "y": 10},
-            map_over=["x"],
-            map_mode="product",
-        ))
+        inputs = list(
+            generate_map_inputs(
+                {"x": [1, 2], "y": 10},
+                map_over=["x"],
+                map_mode="product",
+            )
+        )
         assert inputs == [
             {"x": 1, "y": 10},
             {"x": 2, "y": 10},
@@ -496,11 +538,13 @@ class TestGenerateMapInputs:
 
     def test_product_mode_two_params(self):
         """Product mode generates cartesian product."""
-        inputs = list(generate_map_inputs(
-            {"x": [1, 2], "y": [10, 20]},
-            map_over=["x", "y"],
-            map_mode="product",
-        ))
+        inputs = list(
+            generate_map_inputs(
+                {"x": [1, 2], "y": [10, 20]},
+                map_over=["x", "y"],
+                map_mode="product",
+            )
+        )
         assert inputs == [
             {"x": 1, "y": 10},
             {"x": 1, "y": 20},
@@ -510,20 +554,24 @@ class TestGenerateMapInputs:
 
     def test_product_mode_count_is_cartesian(self):
         """Product count is product of list lengths."""
-        inputs = list(generate_map_inputs(
-            {"a": [1, 2, 3], "b": [10, 20]},
-            map_over=["a", "b"],
-            map_mode="product",
-        ))
+        inputs = list(
+            generate_map_inputs(
+                {"a": [1, 2, 3], "b": [10, 20]},
+                map_over=["a", "b"],
+                map_mode="product",
+            )
+        )
         assert len(inputs) == 3 * 2  # 6 combinations
 
     def test_empty_list_yields_nothing(self):
         """Empty map_over list still works."""
-        inputs = list(generate_map_inputs(
-            {"x": [1, 2, 3]},
-            map_over=["x"],
-            map_mode="zip",
-        ))
+        inputs = list(
+            generate_map_inputs(
+                {"x": [1, 2, 3]},
+                map_over=["x"],
+                map_mode="zip",
+            )
+        )
         assert len(inputs) == 3
 
 
@@ -536,9 +584,7 @@ class TestFilterOutputs:
     def test_select_filters_outputs(self):
         """Select filters to specified outputs only."""
         graph = Graph([double, add.with_inputs(a="doubled")])
-        state = GraphState(
-            values={"doubled": 10, "sum": 15, "x": 5, "b": 5}
-        )
+        state = GraphState(values={"doubled": 10, "sum": 15, "x": 5, "b": 5})
 
         result = filter_outputs(state, graph, select=["sum"])
         assert result == {"sum": 15}
@@ -559,6 +605,3 @@ class TestFilterOutputs:
 
         result = filter_outputs(state, graph, select=["doubled", "nonexistent"])
         assert result == {"doubled": 10}
-
-
-import asyncio

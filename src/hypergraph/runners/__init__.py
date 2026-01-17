@@ -1,6 +1,6 @@
 """Execution runners for hypergraph."""
 
-from hypergraph.runners._types import (
+from hypergraph.runners._shared.types import (
     GraphState,
     NodeExecution,
     RunnerCapabilities,

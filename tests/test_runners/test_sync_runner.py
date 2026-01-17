@@ -3,9 +3,12 @@
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.exceptions import IncompatibleRunnerError, InfiniteLoopError, MissingInputError
-from hypergraph.runners._types import RunStatus
-from hypergraph.runners.sync import SyncRunner
+from hypergraph.exceptions import (
+    IncompatibleRunnerError,
+    InfiniteLoopError,
+    MissingInputError,
+)
+from hypergraph.runners import RunStatus, SyncRunner
 
 
 # === Test Fixtures ===
@@ -133,11 +136,13 @@ class TestSyncRunnerRun:
     def test_fan_in_graph(self):
         """Node consumes outputs from multiple nodes."""
         double2 = double.with_name("double2").with_outputs(doubled="doubled2")
-        graph = Graph([
-            double,
-            double2,
-            add.with_inputs(a="doubled", b="doubled2"),
-        ])
+        graph = Graph(
+            [
+                double,
+                double2,
+                add.with_inputs(a="doubled", b="doubled2"),
+            ]
+        )
         runner = SyncRunner()
 
         result = runner.run(graph, {"x": 5})
@@ -147,12 +152,14 @@ class TestSyncRunnerRun:
     def test_diamond_graph(self):
         """Diamond-shaped graph with fan-out then fan-in."""
         double2 = double.with_name("double2").with_outputs(doubled="other")
-        graph = Graph([
-            increment,  # x -> incremented (6)
-            double.with_inputs(x="incremented"),  # -> doubled (12)
-            double2.with_inputs(x="incremented"),  # -> other (12)
-            add.with_inputs(a="doubled", b="other"),  # -> sum (24)
-        ])
+        graph = Graph(
+            [
+                increment,  # x -> incremented (6)
+                double.with_inputs(x="incremented"),  # -> doubled (12)
+                double2.with_inputs(x="incremented"),  # -> other (12)
+                add.with_inputs(a="doubled", b="other"),  # -> sum (24)
+            ]
+        )
         runner = SyncRunner()
 
         result = runner.run(graph, {"x": 5})
@@ -297,10 +304,12 @@ class TestSyncRunnerRun:
     def test_nested_graph_values_flow(self):
         """Values flow correctly through nested graphs."""
         inner = Graph([double], name="inner")
-        outer = Graph([
-            inner.as_node(),
-            add.with_inputs(a="doubled"),
-        ])
+        outer = Graph(
+            [
+                inner.as_node(),
+                add.with_inputs(a="doubled"),
+            ]
+        )
         runner = SyncRunner()
 
         result = runner.run(outer, {"x": 5, "b": 3})
@@ -310,7 +319,9 @@ class TestSyncRunnerRun:
     def test_deeply_nested_graph(self):
         """Multiple levels of nesting work."""
         innermost = Graph([double], name="innermost")
-        middle = Graph([innermost.as_node(), increment.with_inputs(x="doubled")], name="middle")
+        middle = Graph(
+            [innermost.as_node(), increment.with_inputs(x="doubled")], name="middle"
+        )
         outer = Graph([middle.as_node()])
         runner = SyncRunner()
 
