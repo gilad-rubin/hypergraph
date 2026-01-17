@@ -9,7 +9,7 @@ Define functions. Name their outputs. Hypergraph connects them automatically. If
 ## Quick Start
 
 ```python
-from hypergraph import Graph, node
+from hypergraph import Graph, node, SyncRunner
 
 @node(output_name="embedding")
 def embed(query: str) -> list[float]:
@@ -25,6 +25,11 @@ def generate(docs: list[str], query: str) -> str:
 
 # Edges inferred from names - no wiring needed
 graph = Graph(nodes=[embed, retrieve, generate])
+
+# Run the graph
+runner = SyncRunner()
+result = runner.run(graph, {"query": "What is RAG?"})
+print(result["answer"])
 ```
 
 ## What's Implemented
@@ -34,21 +39,25 @@ graph = Graph(nodes=[embed, retrieve, generate])
 - `Graph` construction with automatic edge inference
 - `InputSpec` categorization (required, optional, bound, internal)
 - Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
-- Hierarchical composition (`.as_node()`)
+- Hierarchical composition (`.as_node()`, `.map_over()`)
 - Build-time validation with helpful error messages
+- `SyncRunner` for sequential execution
+- `AsyncRunner` with concurrency control (`max_concurrency`)
+- Batch processing with `runner.map()` (zip and product modes)
 
 **Coming soon:**
-- Runners (`SyncRunner`, `AsyncRunner`)
 - Control flow (`@route`, `@branch`)
 - Checkpointing and durability
-- Event streaming and observability
+- Event streaming (`.iter()`)
+- Observability hooks
 - `InterruptNode` for human-in-the-loop
 
 ## Documentation
 
 - [Getting Started](getting-started.md) - Core concepts and creating your first node
 - [Philosophy](philosophy.md) - Why hypergraph exists and design principles
-- [API Reference: Nodes](api/nodes.md) - Complete FunctionNode and HyperNode documentation
+- [API Reference: Nodes](api/nodes.md) - Complete FunctionNode, GraphNode, and HyperNode documentation
+- [API Reference: Runners](api/runners.md) - SyncRunner, AsyncRunner, and execution model
 - [Framework Comparison](comparison.md) - How hypergraph compares to LangGraph, Hamilton, and others
 
 ## Design Principles
