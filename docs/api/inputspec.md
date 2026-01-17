@@ -1,10 +1,11 @@
 # InputSpec API Reference
 
-Complete API documentation for the InputSpec class.
+**InputSpec** describes what inputs a graph needs and how they must be provided.
 
-## Overview
-
-**InputSpec** describes the input parameters a graph needs. It categorizes parameters into four groups based on how they must be provided at runtime.
+- **required** - Must provide at runtime (no default, not bound)
+- **optional** - Can omit (has default value)
+- **seeds** - Initial values for cyclic graphs
+- **bound** - Pre-filled via `graph.bind()`
 
 ```python
 from hypergraph import node, Graph

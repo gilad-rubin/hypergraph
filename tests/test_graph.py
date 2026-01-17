@@ -1311,7 +1311,7 @@ class TestGraphNodeRename:
         renamed = gn.with_inputs(a="x")
 
         # Try to rename 'a' again - should show history
-        with pytest.raises(RenameError, match="'a' was renamed to 'x'"):
+        with pytest.raises(RenameError, match="'a' was renamed: a→x"):
             renamed.with_inputs(a="y")
 
     def test_original_unchanged_after_rename(self):
@@ -1530,3 +1530,185 @@ class TestGraphNodeCapabilities:
         # b has a default (the bound value)
         assert outer_gn.has_default_for("b") is True
         assert outer_gn.get_default_for("b") == 10
+
+
+class TestStrictTypesWithNestedGraphNode:
+    """Tests for strict_types with nested GraphNode (GAP-04)."""
+
+    def test_strict_types_propagates_to_inner_graph(self):
+        """Inner graph respects strict_types from outer graph construction."""
+        @node(output_name="x")
+        def inner_typed(a: int) -> str:
+            return str(a)
+
+        inner_graph = Graph([inner_typed], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="y")
+        def outer_typed(x: str) -> int:
+            return len(x)
+
+        # Outer graph with strict_types should validate inner's output type
+        outer = Graph([inner_gn, outer_typed], strict_types=True)
+
+        # Should pass validation - inner outputs str, outer expects str
+        assert outer.strict_types is True
+
+    def test_strict_types_detects_inner_outer_mismatch(self):
+        """Type mismatch between inner output and outer input is detected."""
+        @node(output_name="x")
+        def inner_typed(a: int) -> int:
+            return a * 2
+
+        inner_graph = Graph([inner_typed], name="inner")
+        inner_gn = inner_graph.as_node()
+
+        @node(output_name="y")
+        def outer_typed(x: str) -> str:  # Expects str, inner produces int
+            return x.upper()
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([inner_gn, outer_typed], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "inner" in error_msg
+        assert "outer_typed" in error_msg
+
+    def test_type_mismatch_at_graphnode_boundary(self):
+        """Type error is detected at GraphNode input boundary."""
+        @node(output_name="x")
+        def producer() -> int:
+            return 42
+
+        @node(output_name="inner_result")
+        def inner_consumer(a: str) -> str:  # Expects str
+            return a
+
+        inner_graph = Graph([inner_consumer], name="inner")
+        inner_gn = inner_graph.as_node().with_inputs(a="x")
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([producer, inner_gn], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+
+    def test_nested_graphnode_chain_type_checking(self):
+        """Multiple nested levels are type checked."""
+        @node(output_name="a")
+        def step1(x: int) -> str:
+            return str(x)
+
+        @node(output_name="b")
+        def step2(a: str) -> float:
+            return float(a)
+
+        @node(output_name="c")
+        def step3(b: float) -> int:
+            return int(b)
+
+        # Inner graph: int -> str -> float
+        inner = Graph([step1, step2], name="inner")
+        inner_gn = inner.as_node()
+
+        # Outer: add step3 which expects float
+        outer = Graph([inner_gn, step3], strict_types=True)
+
+        # All types should match
+        assert outer.strict_types is True
+        # Should have edges from inner to step3
+        assert outer.nx_graph.has_edge("inner", "step3")
+
+    def test_nested_graphnode_chain_type_mismatch(self):
+        """Type mismatch in nested chain is detected."""
+        @node(output_name="a")
+        def step1(x: int) -> str:
+            return str(x)
+
+        inner = Graph([step1], name="inner")
+        inner_gn = inner.as_node()
+
+        @node(output_name="b")
+        def step2(a: int) -> int:  # Expects int, inner produces str
+            return a * 2
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([inner_gn, step2], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+
+    def test_deeply_nested_graphnode_type_checking(self):
+        """Three levels of GraphNode nesting with type checking."""
+        @node(output_name="x")
+        def level3_node(a: int) -> str:
+            return str(a)
+
+        level3 = Graph([level3_node], name="level3")
+
+        @node(output_name="y")
+        def level2_node(x: str) -> float:
+            return float(x)
+
+        level2 = Graph([level3.as_node(), level2_node], name="level2")
+
+        @node(output_name="z")
+        def level1_node(y: float) -> int:
+            return int(y)
+
+        # All types should match through the chain
+        level1 = Graph([level2.as_node(), level1_node], strict_types=True)
+
+        assert level1.strict_types is True
+        # Verify the chain exists
+        assert "level2" in level1.nodes
+        assert "level1_node" in level1.nodes
+
+    def test_graphnode_with_multiple_outputs_type_checked(self):
+        """GraphNode with multiple outputs has all outputs type checked."""
+        @node(output_name=("a", "b"))
+        def multi_output(x: int) -> tuple[str, float]:
+            return str(x), float(x)
+
+        inner = Graph([multi_output], name="inner")
+        inner_gn = inner.as_node()
+
+        @node(output_name="c")
+        def consumer_a(a: str) -> int:
+            return len(a)
+
+        @node(output_name="d")
+        def consumer_b(b: float) -> int:
+            return int(b)
+
+        # Both outputs should match their consumers
+        outer = Graph([inner_gn, consumer_a, consumer_b], strict_types=True)
+
+        assert outer.strict_types is True
+        assert outer.nx_graph.has_edge("inner", "consumer_a")
+        assert outer.nx_graph.has_edge("inner", "consumer_b")
+
+    def test_graphnode_with_multiple_outputs_mismatch(self):
+        """Type mismatch detected when one of multiple outputs doesn't match."""
+        @node(output_name=("a", "b"))
+        def multi_output(x: int) -> tuple[str, float]:
+            return str(x), float(x)
+
+        inner = Graph([multi_output], name="inner")
+        inner_gn = inner.as_node()
+
+        @node(output_name="c")
+        def consumer_a(a: str) -> int:  # Correct type
+            return len(a)
+
+        @node(output_name="d")
+        def consumer_b(b: str) -> int:  # Wrong type - expects str, gets float
+            return len(b)
+
+        with pytest.raises(GraphConfigError) as exc_info:
+            Graph([inner_gn, consumer_a, consumer_b], strict_types=True)
+
+        error_msg = str(exc_info.value)
+        assert "Type mismatch" in error_msg
+        assert "b" in error_msg

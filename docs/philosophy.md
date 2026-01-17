@@ -1,8 +1,11 @@
 # Philosophy: Why Hypergraph Exists
 
-Hypergraph is a graph-native execution system that supports **DAGs, cycles, runtime conditional branches, and multi-turn interactions** - all while maintaining pure, portable functions.
+Hypergraph is a graph-native execution system that supports DAGs, cycles, branches, and multi-turn interactions - all while maintaining pure, portable functions.
 
-This document explains the journey that led to hypergraph and the design philosophy behind it.
+- **Pure functions** - Nodes are testable without the framework
+- **Automatic wiring** - Edges inferred from matching names, no manual configuration
+- **Unified execution** - Same model for DAGs, agents, and everything in between
+- **Build-time validation** - Catch errors at construction, not runtime
 
 ---
 

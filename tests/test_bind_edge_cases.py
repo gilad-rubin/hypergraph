@@ -336,3 +336,243 @@ class TestUnbindRestoresStatus:
         assert g3.inputs.bound == {"c": 3}
         assert "a" in g3.inputs.required
         assert "b" in g3.inputs.required
+
+
+class TestComplexTypeBindings:
+    """Test bind() with complex types (GAP-08)."""
+
+    def test_bind_list_of_dicts(self):
+        """Bind list[dict[str, int]] value."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="total")
+        def sum_dict_values(items: list) -> int:
+            return sum(d.get("value", 0) for d in items)
+
+        g = Graph([sum_dict_values])
+        bound_g = g.bind(items=[{"value": 1}, {"value": 2}, {"value": 3}])
+
+        assert "items" in bound_g.inputs.bound
+        assert bound_g.inputs.bound["items"] == [
+            {"value": 1},
+            {"value": 2},
+            {"value": 3},
+        ]
+
+        # Verify execution works
+        runner = SyncRunner()
+        result = runner.run(bound_g, {})
+        assert result["total"] == 6
+
+    def test_bind_union_type_value(self):
+        """Bind value to union type parameter."""
+        from typing import Union
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="result")
+        def process_union(value: Union[str, int]) -> str:
+            return str(value)
+
+        g = Graph([process_union])
+
+        # Bind string
+        g_str = g.bind(value="hello")
+        runner = SyncRunner()
+        result = runner.run(g_str, {})
+        assert result["result"] == "hello"
+
+        # Bind int
+        g_int = g.bind(value=42)
+        result = runner.run(g_int, {})
+        assert result["result"] == "42"
+
+    def test_bind_optional_type(self):
+        """Bind Optional[T] parameter."""
+        from typing import Optional
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="result")
+        def with_optional(value: Optional[int] = None) -> int:
+            return value if value is not None else 0
+
+        g = Graph([with_optional])
+
+        # Bind with actual value
+        g_bound = g.bind(value=42)
+        runner = SyncRunner()
+        result = runner.run(g_bound, {})
+        assert result["result"] == 42
+
+        # Bind with None explicitly
+        g_none = g.bind(value=None)
+        result = runner.run(g_none, {})
+        assert result["result"] == 0
+
+    def test_bind_nested_dict(self):
+        """Bind nested dictionary value."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="value")
+        def extract_nested(config: dict) -> int:
+            return config["outer"]["inner"]["value"]
+
+        g = Graph([extract_nested])
+        g_bound = g.bind(config={"outer": {"inner": {"value": 42}}})
+
+        runner = SyncRunner()
+        result = runner.run(g_bound, {})
+        assert result["value"] == 42
+
+    def test_bind_callable(self):
+        """Bind callable value."""
+        from typing import Callable
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="result")
+        def apply_func(x: int, func: Callable[[int], int]) -> int:
+            return func(x)
+
+        g = Graph([apply_func])
+        g_bound = g.bind(func=lambda n: n * 2)
+
+        runner = SyncRunner()
+        result = runner.run(g_bound, {"x": 5})
+        assert result["result"] == 10
+
+    def test_bind_tuple_value(self):
+        """Bind tuple value."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="sum")
+        def sum_tuple(values: tuple) -> int:
+            return sum(values)
+
+        g = Graph([sum_tuple])
+        g_bound = g.bind(values=(1, 2, 3, 4))
+
+        runner = SyncRunner()
+        result = runner.run(g_bound, {})
+        assert result["sum"] == 10
+
+
+class TestUnbindPreservesType:
+    """Test unbind doesn't lose type info (GAP-08)."""
+
+    def test_unbind_preserves_type_annotation(self):
+        """Unbind doesn't lose type annotation."""
+
+        @node(output_name="result")
+        def typed_func(x: int, y: str) -> str:
+            return f"{x}: {y}"
+
+        g = Graph([typed_func])
+        g_bound = g.bind(y="hello")
+        g_unbound = g_bound.unbind("y")
+
+        # Type info should still be available in the underlying node
+        typed_node = g_unbound.nodes["typed_func"]
+        assert typed_node.parameter_annotations.get("y") == str
+
+    def test_unbind_restores_original_required_status(self):
+        """Unbind correctly restores required/optional status."""
+
+        @node(output_name="result")
+        def mixed_defaults(a: int, b: int = 10, c: int = 20) -> int:
+            return a + b + c
+
+        g = Graph([mixed_defaults])
+
+        # Bind all
+        g_bound = g.bind(a=1, b=2, c=3)
+
+        # Unbind each
+        g_unbind_a = g_bound.unbind("a")
+        g_unbind_b = g_bound.unbind("b")
+        g_unbind_c = g_bound.unbind("c")
+
+        # a was required, should be required after unbind
+        assert "a" in g_unbind_a.inputs.required
+
+        # b had default, should be optional after unbind
+        assert "b" in g_unbind_b.inputs.optional
+
+        # c had default, should be optional after unbind
+        assert "c" in g_unbind_c.inputs.optional
+
+    def test_rebind_after_unbind(self):
+        """Can rebind after unbind."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="result")
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        g = Graph([add])
+        g_bound = g.bind(a=1, b=2)
+        g_unbound = g_bound.unbind("a")
+        g_rebound = g_unbound.bind(a=100)
+
+        runner = SyncRunner()
+        result = runner.run(g_rebound, {})
+
+        # a was rebound to 100, b still 2
+        assert result["result"] == 102
+
+
+class TestBindWithGraphNode:
+    """Test bind with GraphNode."""
+
+    def test_bind_graphnode_input(self):
+        """Bind input that flows to GraphNode."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="doubled")
+        def double(x: int) -> int:
+            return x * 2
+
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node()])
+
+        outer_bound = outer.bind(x=5)
+
+        runner = SyncRunner()
+        result = runner.run(outer_bound, {})
+        assert result["doubled"] == 10
+
+    def test_bind_nested_graph_parameter(self):
+        """Bind parameter that becomes inner graph input."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="result")
+        def add_offset(x: int, offset: int = 0) -> int:
+            return x + offset
+
+        inner = Graph([add_offset], name="inner")
+        inner_bound = inner.bind(offset=10)
+        outer = Graph([inner_bound.as_node()])
+
+        runner = SyncRunner()
+        result = runner.run(outer, {"x": 5})
+        assert result["result"] == 15
+
+    def test_outer_bind_overrides_inner(self):
+        """Outer graph bind can override inner graph binding."""
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="result")
+        def multiply(x: int, factor: int = 2) -> int:
+            return x * factor
+
+        inner = Graph([multiply], name="inner")
+        inner_bound = inner.bind(factor=2)  # Inner binds factor=2
+        outer = Graph([inner_bound.as_node()])
+
+        runner = SyncRunner()
+
+        # Run with inner's binding
+        result = runner.run(outer, {"x": 5})
+        assert result["result"] == 10
+
+        # Override with runtime value
+        result = runner.run(outer, {"x": 5, "factor": 3})
+        assert result["result"] == 15
