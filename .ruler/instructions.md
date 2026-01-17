@@ -10,19 +10,16 @@
 - Read the relevant code snippets and search online (using the tools) before answering
 
 ## Tools
-- Use context7 to query docs
-- Use deepwiki to query github repos
-- Use Perplexity to ask questions and perform research and get LLM-powered search results. This saves us tokens and time
+
+- Use Context7 and MCP servers to query docs and understand unfamiliar libraries
+- Use DeepWiki to query GitHub repos
+- Use Perplexity to ask questions and perform research with LLM-powered search results (saves tokens and time)
 
 ## Coding Principles
 
-- Follow SOLID principles. 
-- Use simple, readable functions rather than deeply nested ones. 
+- Follow SOLID principles.
+- Use simple, readable functions rather than deeply nested ones.
 - Split large functions into focused helpers when needed.
-
-## Tools
-
-Use Context7 and MCP servers to understand unfamiliar libraries.
 
 ## Maintaining Instructions
 

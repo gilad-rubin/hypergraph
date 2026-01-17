@@ -471,7 +471,7 @@ class TestUnbindPreservesType:
 
         # Type info should still be available in the underlying node
         typed_node = g_unbound.nodes["typed_func"]
-        assert typed_node.parameter_annotations.get("y") == str
+        assert typed_node.parameter_annotations.get("y") is str
 
     def test_unbind_restores_original_required_status(self):
         """Unbind correctly restores required/optional status."""

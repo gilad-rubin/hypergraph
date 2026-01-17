@@ -3,7 +3,7 @@
 A **Graph** defines a computation graph from nodes with automatic edge inference.
 
 - **Automatic wiring** - Edges inferred from matching output/input names
-- **Build-time validation** - Type mismatches caught at construction, not runtime
+- **Build-time validation (`strict_types`)** - Type mismatches caught at construction when `strict_types=True`
 - **Hierarchical composition** - Graphs nest as nodes via `.as_node()`
 - **Immutable** - `bind()` and other methods return new instances
 

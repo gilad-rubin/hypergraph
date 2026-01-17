@@ -121,17 +121,35 @@ class GraphState:
         self.values[name] = value
 
         # Only increment version if value actually changed
-        if is_new or old_value != value:
+        if is_new:
             self.versions[name] = self.versions.get(name, 0) + 1
+        else:
+            # Defensive comparison for types like numpy arrays
+            try:
+                changed = bool(old_value != value)
+            except (ValueError, TypeError):
+                # Comparison failed (e.g., numpy arrays), assume changed
+                changed = old_value is not value
+            if changed:
+                self.versions[name] = self.versions.get(name, 0) + 1
 
     def get_version(self, name: str) -> int:
         """Get current version of a value (0 if not set)."""
         return self.versions.get(name, 0)
 
     def copy(self) -> "GraphState":
-        """Create a shallow copy of this state."""
+        """Create a copy of this state with independent NodeExecution instances.
+
+        Values and versions dicts are shallow-copied (keys are strings).
+        NodeExecution instances are copied to prevent shared mutation.
+        """
+        from dataclasses import replace
+
         return GraphState(
             values=dict(self.values),
             versions=dict(self.versions),
-            node_executions=dict(self.node_executions),
+            node_executions={
+                k: replace(v, input_versions=dict(v.input_versions), outputs=dict(v.outputs))
+                for k, v in self.node_executions.items()
+            },
         )

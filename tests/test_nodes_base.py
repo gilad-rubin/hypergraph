@@ -212,8 +212,10 @@ class TestHyperNode:
         step2 = step1.with_inputs(b="y")
 
         assert len(step2._rename_history) == 2
-        assert RenameEntry("inputs", "a", "x") in step2._rename_history
-        assert RenameEntry("inputs", "b", "y") in step2._rename_history
+        # Check entries by kind/old/new (batch_id varies per call)
+        entries = [(e.kind, e.old, e.new) for e in step2._rename_history]
+        assert ("inputs", "a", "x") in entries
+        assert ("inputs", "b", "y") in entries
 
     def test_copy_independent_history(self):
         """_copy creates independent history list."""

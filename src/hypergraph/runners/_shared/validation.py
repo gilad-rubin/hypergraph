@@ -87,11 +87,18 @@ def _get_suggestions(
     all_inputs: set[str],
     provided: set[str],
 ) -> dict[str, list[str]]:
-    """Find similar names to suggest for typos."""
+    """Find similar names to suggest for typos.
+
+    Checks provided values first (for typo detection), then falls back to
+    valid inputs that weren't provided (for discoverability).
+    """
     suggestions: dict[str, list[str]] = {}
-    # Check if provided values have similar names to missing ones
     for m in missing:
+        # Check provided values first (typo detection)
         matches = get_close_matches(m, provided, n=1, cutoff=0.6)
+        # Fall back to valid inputs that weren't provided
+        if not matches:
+            matches = get_close_matches(m, all_inputs - provided, n=1, cutoff=0.6)
         if matches:
             suggestions[m] = matches
     return suggestions

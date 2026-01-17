@@ -136,6 +136,21 @@ async def async_double_b(a: int) -> int:
     return a * 2
 
 
+@node(output_name="b1")
+async def async_branch1(a: int) -> int:
+    return a + 1
+
+
+@node(output_name="b2")
+async def async_branch2(a: int) -> int:
+    return a + 2
+
+
+@node(output_name="c")
+async def async_merge(b1: int, b2: int) -> int:
+    return b1 + b2
+
+
 # =============================================================================
 # Topology builders
 # =============================================================================
@@ -150,11 +165,31 @@ def _build_linear(prefer_async: bool = False) -> Graph:
 
 def _build_branching(prefer_async: bool = False) -> Graph:
     """Build A -> B1, A -> B2 (fan-out) graph."""
+    if prefer_async:
+        return Graph(
+            [async_double_a, async_branch1.with_inputs(a="a"), async_branch2.with_inputs(a="a")],
+            name="branching",
+        )
     return Graph([double_a, branch1.with_inputs(a="a"), branch2.with_inputs(a="a")], name="branching")
 
 
 def _build_converging(prefer_async: bool = False) -> Graph:
     """Build A -> C, B -> C (fan-in) graph."""
+    if prefer_async:
+
+        @node(output_name="a")
+        async def async_make_a(x: int) -> int:
+            return x
+
+        @node(output_name="b")
+        async def async_make_b(y: int) -> int:
+            return y
+
+        @node(output_name="c")
+        async def async_combine(a: int, b: int) -> int:
+            return a + b
+
+        return Graph([async_make_a, async_make_b, async_combine], name="converging")
 
     @node(output_name="a")
     def make_a(x: int) -> int:
@@ -173,6 +208,16 @@ def _build_converging(prefer_async: bool = False) -> Graph:
 
 def _build_diamond(prefer_async: bool = False) -> Graph:
     """Build A -> B1 -> C, A -> B2 -> C (diamond) graph."""
+    if prefer_async:
+        return Graph(
+            [
+                async_double_a,
+                async_branch1.with_inputs(a="a"),
+                async_branch2.with_inputs(a="a"),
+                async_merge,
+            ],
+            name="diamond",
+        )
     return Graph([double_a, branch1.with_inputs(a="a"), branch2.with_inputs(a="a"), merge], name="diamond")
 
 

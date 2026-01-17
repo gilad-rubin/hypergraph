@@ -7,7 +7,7 @@ import hashlib
 from abc import ABC
 from typing import Any, TypeVar
 
-from hypergraph.nodes._rename import RenameEntry, RenameError
+from hypergraph.nodes._rename import RenameEntry, RenameError, get_next_batch_id
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _T = TypeVar("_T", bound="HyperNode")
@@ -231,18 +231,23 @@ class HyperNode(ABC):
         clone = self._copy()
         current = getattr(clone, attr)
 
+        # All renames in this call share the same batch_id
+        # This allows parallel renames (e.g., x->y, y->z in same call)
+        # to be processed correctly without false chaining
+        batch_id = get_next_batch_id()
+
         if isinstance(current, str):
             # Single value (name)
             old, new = current, mapping.get(current, current)
             if old != new:
-                clone._rename_history.append(RenameEntry(attr, old, new))  # type: ignore[arg-type]
+                clone._rename_history.append(RenameEntry(attr, old, new, batch_id))  # type: ignore[arg-type]
                 setattr(clone, attr, new)
         else:
             # Tuple (inputs/outputs)
             for old, new in mapping.items():
                 if old not in current:
                     raise clone._make_rename_error(old, attr)
-                clone._rename_history.append(RenameEntry(attr, old, new))  # type: ignore[arg-type]
+                clone._rename_history.append(RenameEntry(attr, old, new, batch_id))  # type: ignore[arg-type]
             setattr(clone, attr, tuple(mapping.get(v, v) for v in current))
 
         return clone

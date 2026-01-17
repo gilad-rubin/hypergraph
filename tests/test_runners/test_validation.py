@@ -89,10 +89,11 @@ class TestValidateInputs:
         validate_inputs(graph, {"count": 0})
 
     def test_extra_inputs_ignored(self):
-        """Extra inputs that don't match graph inputs are allowed."""
+        """Extra inputs that don't match graph inputs are allowed (with warning)."""
         graph = Graph([double])
-        # extra_param doesn't exist but shouldn't cause error
-        validate_inputs(graph, {"x": 1, "extra_param": "ignored"})
+        # extra_param doesn't exist - should warn but not error
+        with pytest.warns(UserWarning, match="internal parameters"):
+            validate_inputs(graph, {"x": 1, "extra_param": "ignored"})
 
     def test_error_message_lists_missing_inputs(self):
         """Error message includes list of missing inputs."""

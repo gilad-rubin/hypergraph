@@ -53,6 +53,48 @@ def _warn_if_has_return_annotation(func: Callable) -> None:
     )
 
 
+def _build_forward_rename_map(rename_history: list) -> dict[str, str]:
+    """Build a forward rename map: original_param -> current_name.
+
+    Handles chained renames correctly:
+    - Sequential calls: a->x then x->z → {a: z}
+    - Parallel renames (same batch): x->y, y->z → {x: y, y: z}
+
+    Args:
+        rename_history: List of RenameEntry objects
+
+    Returns:
+        Dict mapping original names to their final current names
+    """
+    input_entries = [e for e in rename_history if e.kind == "inputs"]
+    if not input_entries:
+        return {}
+
+    # Group entries by batch_id
+    batches: dict[int | None, list] = {}
+    for entry in input_entries:
+        batches.setdefault(entry.batch_id, []).append(entry)
+
+    rename_map: dict[str, str] = {}
+
+    # Process batches in order (by first occurrence in history)
+    for batch_id in dict.fromkeys(e.batch_id for e in input_entries):
+        batch_entries = batches[batch_id]
+        # For parallel renames (same batch), compute using map state BEFORE this batch
+        batch_updates = {}
+        for entry in batch_entries:
+            # Find original: look for existing mapping where value == entry.old
+            original = next(
+                (k for k, v in rename_map.items() if v == entry.old),
+                entry.old,
+            )
+            batch_updates[original] = entry.new
+        # Apply all updates from this batch at once
+        rename_map.update(batch_updates)
+
+    return rename_map
+
+
 class FunctionNode(HyperNode):
     """Wraps a Python function as a graph node.
 
@@ -179,16 +221,8 @@ class FunctionNode(HyperNode):
         """
         sig = inspect.signature(self.func)
 
-        # Build rename map: original_param -> current_name
-        rename_map: dict[str, str] = {}
-        for entry in self._rename_history:
-            if entry.kind == "inputs":
-                # If entry.old was already renamed, chain to its current name
-                original = next(
-                    (k for k, v in rename_map.items() if v == entry.old),
-                    entry.old
-                )
-                rename_map[original] = entry.new
+        # Build rename map with batch-aware chaining
+        rename_map = _build_forward_rename_map(self._rename_history)
 
         return {
             rename_map.get(name, name): param.default
@@ -221,17 +255,8 @@ class FunctionNode(HyperNode):
         sig = inspect.signature(self.func)
         original_params = list(sig.parameters.keys())
 
-        # Build transitive rename mapping: original param name -> current input name
-        # Handles chained renames: if a->x->z, then rename_map["a"] = "z"
-        rename_map: dict[str, str] = {}
-        for entry in self._rename_history:
-            if entry.kind == "inputs":
-                # If entry.old was already renamed, chain to its current name
-                original = next(
-                    (k for k, v in rename_map.items() if v == entry.old),
-                    entry.old
-                )
-                rename_map[original] = entry.new
+        # Build transitive rename mapping with batch-aware chaining
+        rename_map = _build_forward_rename_map(self._rename_history)
 
         result: dict[str, Any] = {}
         for orig_param in original_params:

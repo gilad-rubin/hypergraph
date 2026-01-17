@@ -187,7 +187,7 @@ def _check_default_values_match(
 
     first_value, first_node = with_default[0]
     for value, node_name in with_default[1:]:
-        if value != first_value:
+        if not _values_equal(first_value, value):
             raise GraphConfigError(
                 f"Inconsistent defaults for '{param}'\n\n"
                 f"  -> Node '{first_node}' has default: {first_value!r}\n"
@@ -195,6 +195,24 @@ def _check_default_values_match(
                 f"How to fix:\n"
                 f"  Use the same default in both nodes"
             )
+
+
+def _values_equal(a: Any, b: Any) -> bool:
+    """Compare two values, handling types like numpy arrays gracefully.
+
+    Uses identity check first, then equality. Falls back to False if
+    comparison fails or returns ambiguous results.
+    """
+    if a is b:
+        return True
+    try:
+        equal = a == b
+        # Handle numpy-like arrays that return non-scalar from ==
+        if hasattr(equal, "__iter__"):
+            return all(equal)
+        return bool(equal)
+    except (ValueError, TypeError):
+        return False
 
 
 def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None:

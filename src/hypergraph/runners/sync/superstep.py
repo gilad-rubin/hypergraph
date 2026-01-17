@@ -37,10 +37,12 @@ def run_superstep_sync(
     new_state = state.copy()
 
     for node in ready_nodes:
-        inputs = collect_inputs_for_node(node, graph, new_state, provided_values)
+        # Use original state snapshot for input collection to ensure all nodes
+        # in this superstep see the same values (deterministic execution order)
+        inputs = collect_inputs_for_node(node, graph, state, provided_values)
 
-        # Record input versions before execution
-        input_versions = {param: new_state.get_version(param) for param in node.inputs}
+        # Record input versions from the snapshot we used
+        input_versions = {param: state.get_version(param) for param in node.inputs}
 
         # Execute node using the provided executor
         outputs = execute_node(node, new_state, inputs)

@@ -150,7 +150,8 @@ def map_inputs_to_func_params(
 ) -> dict[str, Any]:
     """Map renamed input names back to original function parameter names.
 
-    Handles chained renames correctly: if a->x->z, then z maps to a.
+    Handles chained renames correctly: if a->x->z (via separate calls), z maps to a.
+    Handles parallel renames correctly: if x->y, y->z (same call), they don't chain.
 
     Args:
         node: The node with potential renames
@@ -165,15 +166,29 @@ def map_inputs_to_func_params(
         return inputs
 
     # Build transitive reverse mapping: current_name -> original_func_param
-    # For chain a->x->z: after processing (a,x), reverse_map={"x":"a"}
-    # Then processing (x,z): original = reverse_map.get("x","x") = "a"
-    # So reverse_map["z"] = "a"
+    # Process by batch_id to handle parallel vs sequential renames correctly:
+    # - Entries in the same batch (same with_inputs call) are parallel, don't chain
+    # - Entries from different batches (different calls) can chain
     reverse_map: dict[str, str] = {}
-    for entry in node._rename_history:
-        if entry.kind == "inputs":
-            # If entry.old was already renamed, chain to its original
+
+    # Group entries by batch_id
+    input_entries = [e for e in node._rename_history if e.kind == "inputs"]
+    batches: dict[int | None, list] = {}
+    for entry in input_entries:
+        batches.setdefault(entry.batch_id, []).append(entry)
+
+    # Process batches in order (by first occurrence in history)
+    for batch_id in dict.fromkeys(e.batch_id for e in input_entries):
+        batch_entries = batches[batch_id]
+        # For parallel renames (same batch), compute originals using the
+        # reverse_map state BEFORE this batch, not during
+        batch_updates = {}
+        for entry in batch_entries:
+            # Look up original from previous batches only
             original = reverse_map.get(entry.old, entry.old)
-            reverse_map[entry.new] = original
+            batch_updates[entry.new] = original
+        # Apply all updates from this batch at once
+        reverse_map.update(batch_updates)
 
     # Map inputs to original parameter names
     result = {}

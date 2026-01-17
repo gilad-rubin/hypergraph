@@ -8,7 +8,7 @@ from hypergraph.exceptions import (
     InfiniteLoopError,
     MissingInputError,
 )
-from hypergraph.runners import RunStatus, SyncRunner
+from hypergraph.runners import RunResult, RunStatus, SyncRunner
 
 
 # === Test Fixtures ===
@@ -213,7 +213,7 @@ class TestSyncRunnerRun:
 
         result = runner.run(graph, {"x": 5})
 
-        assert isinstance(result, type(result))  # Is RunResult
+        assert isinstance(result, RunResult)
         assert hasattr(result, "values")
         assert hasattr(result, "status")
         assert hasattr(result, "run_id")
