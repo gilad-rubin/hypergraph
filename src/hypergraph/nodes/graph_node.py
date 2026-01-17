@@ -95,6 +95,17 @@ class GraphNode(HyperNode):
         return self._graph.has_async_nodes
 
     @property
+    def map_config(self) -> tuple[list[str], Literal["zip", "product"]] | None:
+        """Map configuration if set, else None.
+
+        Returns:
+            Tuple of (params, mode) if map_over was configured, else None.
+        """
+        if self._map_over:
+            return (self._map_over, self._map_mode)
+        return None
+
+    @property
     def output_annotation(self) -> dict[str, Any]:
         """Type annotations for output values from the inner graph.
 
