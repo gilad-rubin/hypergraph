@@ -1,8 +1,11 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
-from typing import Any, Literal, Self, TYPE_CHECKING
+from typing import Any, Literal, TYPE_CHECKING, TypeVar
 
 from hypergraph.nodes.base import HyperNode, RenameEntry
+
+# TypeVar for self-referential return types (Python 3.10 compatible)
+_GN = TypeVar("_GN", bound="GraphNode")
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
@@ -43,6 +46,10 @@ class GraphNode(HyperNode):
         ('y',)
     """
 
+    # Reserved characters that cannot appear in GraphNode names
+    # These are used as path separators in nested graph output access
+    _RESERVED_CHARS = frozenset('./')
+
     def __init__(
         self,
         graph: "Graph",
@@ -56,6 +63,7 @@ class GraphNode(HyperNode):
 
         Raises:
             ValueError: If name not provided and graph has no name.
+            ValueError: If name contains reserved characters ('.' or '/').
         """
         resolved_name = name or graph.name
         if resolved_name is None:
@@ -63,6 +71,14 @@ class GraphNode(HyperNode):
                 "GraphNode requires a name. Either set name on Graph(..., name='x') "
                 "or pass name to as_node(name='x')"
             )
+
+        # Validate name doesn't contain reserved path separators
+        for char in self._RESERVED_CHARS:
+            if char in resolved_name:
+                raise ValueError(
+                    f"GraphNode name cannot contain '{char}': {resolved_name!r}. "
+                    f"Reserved characters: {set(self._RESERVED_CHARS)}"
+                )
 
         self._graph = graph
         self._rename_history: list[RenameEntry] = []
@@ -250,10 +266,10 @@ class GraphNode(HyperNode):
         raise KeyError(f"No default value for parameter '{param}'")
 
     def map_over(
-        self,
+        self: _GN,
         *params: str,
         mode: Literal["zip", "product"] = "zip",
-    ) -> Self:
+    ) -> _GN:
         """Configure this GraphNode for iteration over input parameters.
 
         When a GraphNode is configured with map_over, the runner will execute
@@ -304,7 +320,7 @@ class GraphNode(HyperNode):
         clone._map_mode = mode
         return clone
 
-    def _copy(self) -> Self:
+    def _copy(self: _GN) -> _GN:
         """Create a shallow copy preserving map_over configuration."""
         import copy
 
@@ -316,11 +332,11 @@ class GraphNode(HyperNode):
         return clone
 
     def with_inputs(
-        self,
+        self: _GN,
         mapping: dict[str, str] | None = None,
         /,
         **kwargs: str,
-    ) -> Self:
+    ) -> _GN:
         """Return new node with renamed inputs, updating map_over if needed.
 
         Overrides base class to also update _map_over when inputs are renamed.

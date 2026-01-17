@@ -150,6 +150,8 @@ def map_inputs_to_func_params(
 ) -> dict[str, Any]:
     """Map renamed input names back to original function parameter names.
 
+    Handles chained renames correctly: if a->x->z, then z maps to a.
+
     Args:
         node: The node with potential renames
         inputs: Dict with renamed input names as keys
@@ -162,11 +164,16 @@ def map_inputs_to_func_params(
     if not isinstance(node, FunctionNode):
         return inputs
 
-    # Build reverse mapping: renamed_name -> original_name
+    # Build transitive reverse mapping: current_name -> original_func_param
+    # For chain a->x->z: after processing (a,x), reverse_map={"x":"a"}
+    # Then processing (x,z): original = reverse_map.get("x","x") = "a"
+    # So reverse_map["z"] = "a"
     reverse_map: dict[str, str] = {}
     for entry in node._rename_history:
         if entry.kind == "inputs":
-            reverse_map[entry.new] = entry.old
+            # If entry.old was already renamed, chain to its original
+            original = reverse_map.get(entry.old, entry.old)
+            reverse_map[entry.new] = original
 
     # Map inputs to original parameter names
     result = {}
@@ -234,9 +241,30 @@ def filter_outputs(
 
     Returns:
         Dict of output values
+
+    Warns:
+        UserWarning: If select contains names not found in state values
     """
     if select is not None:
-        return {k: state.values[k] for k in select if k in state.values}
+        result = {}
+        missing = []
+        for k in select:
+            if k in state.values:
+                result[k] = state.values[k]
+            else:
+                missing.append(k)
+
+        if missing:
+            import warnings
+            available = list(state.values.keys())
+            warnings.warn(
+                f"Requested outputs not found: {missing}. "
+                f"Available outputs: {available}",
+                UserWarning,
+                stacklevel=4,  # Point to caller's caller (run method)
+            )
+
+        return result
 
     # Default: return all graph outputs
     return {k: state.values[k] for k in graph.outputs if k in state.values}

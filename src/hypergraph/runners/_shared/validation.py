@@ -22,6 +22,7 @@ def validate_inputs(
     Checks:
     - All required inputs must be provided
     - All seed inputs (for cycles) must be provided
+    - Warns if values are provided for edge-produced outputs (internal values)
 
     Args:
         graph: The graph to validate against
@@ -29,9 +30,26 @@ def validate_inputs(
 
     Raises:
         MissingInputError: If required or seed inputs are missing
+
+    Warns:
+        UserWarning: If values are provided for internal edge-produced parameters
     """
     inputs_spec = graph.inputs
     provided = set(values.keys())
+
+    # Warn about providing values for internal edge-produced outputs
+    # These bypass normal graph execution flow (similar to graph.bind() restriction)
+    expected_inputs = set(inputs_spec.all)
+    unexpected = provided - expected_inputs
+    if unexpected:
+        import warnings
+        warnings.warn(
+            f"Providing values for internal parameters: {sorted(unexpected)}. "
+            f"These are produced by graph edges and will override node outputs. "
+            f"Expected inputs: {sorted(expected_inputs)}",
+            UserWarning,
+            stacklevel=3,  # Point to caller's caller (run method)
+        )
 
     # Required inputs must be provided
     required = set(inputs_spec.required)

@@ -172,10 +172,26 @@ class FunctionNode(HyperNode):
 
     @property
     def defaults(self) -> dict[str, Any]:
-        """Default values for input parameters."""
+        """Default values for input parameters (using current/renamed names).
+
+        Returns dict mapping current input names to their default values.
+        If inputs have been renamed, uses the renamed names as keys.
+        """
         sig = inspect.signature(self.func)
+
+        # Build rename map: original_param -> current_name
+        rename_map: dict[str, str] = {}
+        for entry in self._rename_history:
+            if entry.kind == "inputs":
+                # If entry.old was already renamed, chain to its current name
+                original = next(
+                    (k for k, v in rename_map.items() if v == entry.old),
+                    entry.old
+                )
+                rename_map[original] = entry.new
+
         return {
-            name: param.default
+            rename_map.get(name, name): param.default
             for name, param in sig.parameters.items()
             if param.default is not inspect.Parameter.empty
         }
@@ -185,7 +201,7 @@ class FunctionNode(HyperNode):
         """Type annotations for input parameters.
 
         Returns:
-            dict mapping parameter names (using renamed input names) to their
+            dict mapping parameter names (using current/renamed input names) to their
             type annotations. Only includes parameters that have annotations.
             Returns empty dict if get_type_hints fails (e.g., forward references).
 
@@ -205,12 +221,17 @@ class FunctionNode(HyperNode):
         sig = inspect.signature(self.func)
         original_params = list(sig.parameters.keys())
 
-        # Build reverse mapping: original param name -> renamed input name
-        # self._rename_history contains RenameEntry objects
+        # Build transitive rename mapping: original param name -> current input name
+        # Handles chained renames: if a->x->z, then rename_map["a"] = "z"
         rename_map: dict[str, str] = {}
         for entry in self._rename_history:
             if entry.kind == "inputs":
-                rename_map[entry.old] = entry.new
+                # If entry.old was already renamed, chain to its current name
+                original = next(
+                    (k for k, v in rename_map.items() if v == entry.old),
+                    entry.old
+                )
+                rename_map[original] = entry.new
 
         result: dict[str, Any] = {}
         for orig_param in original_params:
