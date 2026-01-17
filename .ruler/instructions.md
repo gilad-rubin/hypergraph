@@ -6,8 +6,8 @@
 
 ## Planning
 - When discussing design, use 'outside-in' explanations with concrete, user-facing examples - one good example is worth a thousand words
-- Before designing an interface, trace each capability to its consumers, then design methods that answer those questions directly.
 - If you need to read a lot of content - use subagents (with haiku, sonnet) to summarize or answer questions in order to keep the context window clean
+- Read the relevant code snippets and search online (using the tools) before answering
 
 ## Tools
 - Use context7 to query docs
