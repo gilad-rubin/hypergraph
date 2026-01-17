@@ -345,7 +345,7 @@ def get_test_inputs(cap: Capability) -> dict:
     return base_inputs
 
 
-def get_expected_status(cap: Capability) -> str:
+def get_expected_status(_cap: Capability) -> str:
     """Get expected run status for a capability."""
     # All valid combinations should complete successfully
     return "COMPLETED"

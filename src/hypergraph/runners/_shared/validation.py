@@ -59,7 +59,7 @@ def validate_inputs(
     seeds = set(inputs_spec.seeds)
     missing_seeds = seeds - provided
 
-    missing = list(missing_required | missing_seeds)
+    missing = sorted(missing_required | missing_seeds)
     if not missing:
         return
 
