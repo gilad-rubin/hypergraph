@@ -1,0 +1,359 @@
+"""Tests for runtime cache behavior validation (GAP-06).
+
+Note: These tests document expected caching behavior. The cache=True flag
+on nodes indicates that results should be cached, but the implementation
+of result caching may be pending.
+"""
+
+import pytest
+
+from hypergraph import Graph, node
+from hypergraph.runners import RunStatus, SyncRunner
+
+
+# === Test Fixtures ===
+
+
+class CallCounter:
+    """Helper to track function calls."""
+
+    def __init__(self):
+        self.count = 0
+
+    def increment(self):
+        self.count += 1
+        return self.count
+
+
+# === Tests ===
+
+
+class TestCachePropertyConfiguration:
+    """Tests for node cache property configuration."""
+
+    def test_cache_defaults_to_false(self):
+        """Node cache defaults to False."""
+
+        @node(output_name="result")
+        def no_cache(x: int) -> int:
+            return x * 2
+
+        assert no_cache.cache is False
+
+    def test_cache_true_sets_property(self):
+        """cache=True sets the cache property."""
+
+        @node(output_name="result", cache=True)
+        def with_cache(x: int) -> int:
+            return x * 2
+
+        assert with_cache.cache is True
+
+    def test_cache_preserved_through_rename(self):
+        """Cache flag preserved through with_name and with_inputs."""
+
+        @node(output_name="result", cache=True)
+        def cached_node(x: int) -> int:
+            return x * 2
+
+        renamed = cached_node.with_name("renamed")
+        assert renamed.cache is True
+
+        with_renamed_inputs = cached_node.with_inputs(x="y")
+        assert with_renamed_inputs.cache is True
+
+    def test_cache_preserved_through_with_outputs(self):
+        """Cache flag preserved through with_outputs."""
+
+        @node(output_name="result", cache=True)
+        def cached_node(x: int) -> int:
+            return x * 2
+
+        with_renamed_outputs = cached_node.with_outputs(result="output")
+        assert with_renamed_outputs.cache is True
+
+
+class TestCachedNodeExecution:
+    """Tests for cached node execution behavior."""
+
+    def test_cached_node_runs_at_least_once(self):
+        """Cached node executes at least once to produce initial result."""
+        counter = CallCounter()
+
+        @node(output_name="result", cache=True)
+        def counting_node(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        graph = Graph([counting_node])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 5})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == 10
+        assert counter.count >= 1
+
+    def test_uncached_node_executes_each_time(self):
+        """Node without cache runs each time it's triggered."""
+        counter = CallCounter()
+
+        @node(output_name="count")
+        def counting_node(count: int, limit: int = 3) -> int:
+            counter.increment()
+            if count >= limit:
+                return count
+            return count + 1
+
+        graph = Graph([counting_node])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"count": 0, "limit": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        # Node should run multiple times: 0->1->2->3 (4 executions)
+        assert counter.count == 4
+
+    def test_cached_node_in_dag(self):
+        """Cached node in a DAG executes correctly."""
+        counter = CallCounter()
+
+        @node(output_name="a", cache=True)
+        def cached_producer(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        @node(output_name="b")
+        def consumer(a: int) -> int:
+            return a + 1
+
+        graph = Graph([cached_producer, consumer])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 5})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["a"] == 10
+        assert result["b"] == 11
+
+
+class TestCacheWithCycles:
+    """Tests for cache behavior in cyclic graphs."""
+
+    def test_cycle_with_cache_flag(self):
+        """Cyclic graph with cache flag behaves correctly."""
+        counter = CallCounter()
+
+        @node(output_name="count", cache=True)
+        def counter_node(count: int, limit: int = 3) -> int:
+            counter.increment()
+            if count >= limit:
+                return count
+            return count + 1
+
+        graph = Graph([counter_node])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"count": 0, "limit": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["count"] == 3
+
+
+class TestCacheWithNestedGraph:
+    """Tests for cache behavior with nested GraphNode."""
+
+    def test_nested_graph_with_cached_inner_node(self):
+        """Inner graph with cached node behaves correctly."""
+        counter = CallCounter()
+
+        @node(output_name="doubled", cache=True)
+        def cached_double(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        inner = Graph([cached_double], name="inner")
+        outer = Graph([inner.as_node()])
+        runner = SyncRunner()
+
+        result = runner.run(outer, {"x": 5})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["doubled"] == 10
+
+    def test_multiple_runs_same_graph(self):
+        """Multiple runs on same graph execute nodes correctly."""
+        counter = CallCounter()
+
+        @node(output_name="result")
+        def counting_node(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        graph = Graph([counting_node])
+        runner = SyncRunner()
+
+        # Run multiple times with same input
+        result1 = runner.run(graph, {"x": 5})
+        result2 = runner.run(graph, {"x": 5})
+        result3 = runner.run(graph, {"x": 5})
+
+        assert result1["result"] == 10
+        assert result2["result"] == 10
+        assert result3["result"] == 10
+        # Without persistent caching, each run executes independently
+        assert counter.count == 3
+
+
+class TestCacheKeyBehavior:
+    """Tests for cache key computation."""
+
+    def test_different_inputs_produce_different_results(self):
+        """Different inputs should produce different results."""
+
+        @node(output_name="result", cache=True)
+        def cached_node(x: int) -> int:
+            return x * 2
+
+        graph = Graph([cached_node])
+        runner = SyncRunner()
+
+        result1 = runner.run(graph, {"x": 5})
+        result2 = runner.run(graph, {"x": 10})
+
+        assert result1["result"] == 10
+        assert result2["result"] == 20
+
+    def test_multi_input_node_different_combinations(self):
+        """Multiple inputs should all contribute to result."""
+
+        @node(output_name="result", cache=True)
+        def multi_input(a: int, b: int) -> int:
+            return a + b
+
+        graph = Graph([multi_input])
+        runner = SyncRunner()
+
+        # Different input combinations
+        r1 = runner.run(graph, {"a": 1, "b": 2})
+        r2 = runner.run(graph, {"a": 2, "b": 1})
+        r3 = runner.run(graph, {"a": 1, "b": 2})
+
+        assert r1["result"] == 3
+        assert r2["result"] == 3
+        assert r3["result"] == 3
+
+
+class TestCacheWithGenerators:
+    """Tests for cache behavior with generator nodes."""
+
+    def test_generator_node_with_cache(self):
+        """Generator node with cache flag accumulates correctly."""
+        counter = CallCounter()
+
+        @node(output_name="items", cache=True)
+        def gen_items(n: int):
+            counter.increment()
+            for i in range(n):
+                yield i
+
+        graph = Graph([gen_items])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"n": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["items"] == [0, 1, 2]
+
+    def test_generator_results_are_lists(self):
+        """Generator results are accumulated to lists."""
+
+        @node(output_name="items")
+        def gen_items(n: int):
+            for i in range(n):
+                yield i * 2
+
+        graph = Graph([gen_items])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"n": 4})
+
+        assert result["items"] == [0, 2, 4, 6]
+
+
+class TestCacheWithMapOver:
+    """Tests for cache behavior with map_over."""
+
+    def test_map_over_cached_graph(self):
+        """map_over with cached inner graph."""
+        counter = CallCounter()
+
+        @node(output_name="doubled", cache=True)
+        def cached_double(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        inner = Graph([cached_double], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+        runner = SyncRunner()
+
+        result = runner.run(outer, {"x": [1, 2, 3]})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["doubled"] == [2, 4, 6]
+        # Each map iteration executes the node
+        assert counter.count >= 3
+
+    def test_map_over_with_repeated_values(self):
+        """map_over with repeated input values."""
+        counter = CallCounter()
+
+        @node(output_name="doubled", cache=True)
+        def cached_double(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        inner = Graph([cached_double], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+        runner = SyncRunner()
+
+        # Same value repeated
+        result = runner.run(outer, {"x": [5, 5, 5]})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["doubled"] == [10, 10, 10]
+
+
+class TestCacheWithBoundValues:
+    """Tests for cache behavior with bound values."""
+
+    def test_cached_node_with_bound_values(self):
+        """Cached node respects bound values."""
+
+        @node(output_name="result", cache=True)
+        def with_bound(x: int, multiplier: int = 2) -> int:
+            return x * multiplier
+
+        graph = Graph([with_bound]).bind(multiplier=3)
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 5})
+
+        assert result["result"] == 15
+
+    def test_different_bindings_produce_different_results(self):
+        """Different bindings should produce different results."""
+
+        @node(output_name="result", cache=True)
+        def with_bound(x: int, multiplier: int = 2) -> int:
+            return x * multiplier
+
+        graph1 = Graph([with_bound]).bind(multiplier=2)
+        graph2 = Graph([with_bound]).bind(multiplier=3)
+        runner = SyncRunner()
+
+        r1 = runner.run(graph1, {"x": 5})
+        r2 = runner.run(graph2, {"x": 5})
+
+        assert r1["result"] == 10
+        assert r2["result"] == 15

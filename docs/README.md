@@ -1,19 +1,22 @@
-# Hypergraph Documentation
+# Hypergraph
 
 A unified framework for Python workflow orchestration. DAG pipelines, agentic workflows, and everything in between.
 
-## Core Idea: Automatic Edge Inference
-
-Define functions. Name their outputs. Hypergraph connects them automatically. If node A produces "embedding" and node B takes "embedding" as input, they're connected. No manual wiring needed.
+- **Unified** - One framework for data pipelines and agentic AI. Same elegant code.
+- **Hierarchical** - Graphs nest as nodes. Build big from small, tested pieces.
+- **Versatile** - Sync, async, streaming. Branches, loops, human-in-the-loop. No limits.
+- **Minimal** - No state schemas. No boilerplate. Just functions.
 
 ## Quick Start
 
+Define functions. Name their outputs. Hypergraph connects them automatically.
+
 ```python
-from hypergraph import Graph, node
+from hypergraph import Graph, node, SyncRunner
 
 @node(output_name="embedding")
-def embed(query: str) -> list[float]:
-    return model.embed(query)
+def embed(text: str) -> list[float]:
+    return model.embed(text)
 
 @node(output_name="docs")
 def retrieve(embedding: list[float]) -> list[str]:
@@ -25,7 +28,54 @@ def generate(docs: list[str], query: str) -> str:
 
 # Edges inferred from names - no wiring needed
 graph = Graph(nodes=[embed, retrieve, generate])
+
+# Run the graph
+runner = SyncRunner()
+result = runner.run(graph, {"query": "What is RAG?"})
+print(result["answer"])
 ```
+
+`embed` produces `embedding`. `retrieve` takes `embedding`. Connected automatically.
+
+## Why Hypergraph?
+
+**Pure Functions Stay Pure**
+
+```python
+# Test without the framework
+def test_embed():
+    result = embed.func("hello")
+    assert len(result) == 768
+```
+
+Your functions are just functions. No state objects to mock. No framework setup.
+
+**Build-Time Validation**
+
+```python
+Graph([producer, consumer], strict_types=True)
+# GraphConfigError: Type mismatch on edge 'producer' → 'consumer'
+#   Output type: int
+#   Input type:  str
+```
+
+Type mismatches, missing connections, invalid configurations - caught when you build the graph, not at runtime.
+
+**Hierarchical Composition**
+
+```python
+# Inner graph: RAG pipeline
+rag = Graph(nodes=[embed, retrieve, generate], name="rag")
+
+# Outer graph: full workflow
+workflow = Graph(nodes=[
+    validate_input,
+    rag.as_node(),      # Nested graph as a node
+    format_output,
+])
+```
+
+Test pieces independently. Reuse across workflows.
 
 ## What's Implemented
 
@@ -34,27 +84,43 @@ graph = Graph(nodes=[embed, retrieve, generate])
 - `Graph` construction with automatic edge inference
 - `InputSpec` categorization (required, optional, bound, internal)
 - Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
-- Hierarchical composition (`.as_node()`)
+- Hierarchical composition (`.as_node()`, `.map_over()`)
 - Build-time validation with helpful error messages
+- `SyncRunner` for sequential execution
+- `AsyncRunner` with concurrency control (`max_concurrency`)
+- Batch processing with `runner.map()` (zip and product modes)
 
 **Coming soon:**
-- Runners (`SyncRunner`, `AsyncRunner`)
 - Control flow (`@route`, `@branch`)
 - Checkpointing and durability
-- Event streaming and observability
+- Event streaming (`.iter()`)
+- Observability hooks
 - `InterruptNode` for human-in-the-loop
 
 ## Documentation
 
-- [Getting Started](getting-started.md) - Core concepts and creating your first node
+### Getting Started
+- [Quick Start](getting-started.md) - Core concepts, creating nodes, building graphs, running workflows
+
+### Concepts
 - [Philosophy](philosophy.md) - Why hypergraph exists and design principles
-- [API Reference: Nodes](api/nodes.md) - Complete FunctionNode and HyperNode documentation
 - [Framework Comparison](comparison.md) - How hypergraph compares to LangGraph, Hamilton, and others
+
+### API Reference
+- [Graph](api/graph.md) - Graph construction, validation, and properties
+- [Nodes](api/nodes.md) - FunctionNode, GraphNode, and HyperNode
+- [Runners](api/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [InputSpec](api/inputspec.md) - Input categorization and requirements
 
 ## Design Principles
 
-1. **Automatic wiring** - Edges inferred from matching output/input names
-2. **Pure functions** - Nodes are testable without the framework
+1. **Pure functions** - Nodes are testable without the framework
+2. **Automatic wiring** - Edges inferred from matching output/input names
 3. **Composition over configuration** - Nest graphs, don't configure flags
 4. **Unified execution** - Same algorithm for DAGs, branches, and loops
 5. **Fail fast** - Validate at build time, not runtime
+6. **Explicit dependencies** - All inputs visible in function signatures
+
+## Beyond AI/ML
+
+While the examples focus on AI/ML use cases, hypergraph is a general-purpose workflow framework. It has no dependencies on LLMs, vector databases, or any AI tooling. Use it for any multi-step workflow: ETL pipelines, business process automation, testing harnesses, or anything else that benefits from graph-based orchestration.

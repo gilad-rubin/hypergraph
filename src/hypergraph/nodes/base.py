@@ -7,7 +7,7 @@ import hashlib
 from abc import ABC
 from typing import Any, TypeVar
 
-from hypergraph.nodes._rename import RenameEntry, RenameError
+from hypergraph.nodes._rename import RenameEntry, RenameError, get_next_batch_id
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _T = TypeVar("_T", bound="HyperNode")
@@ -231,18 +231,23 @@ class HyperNode(ABC):
         clone = self._copy()
         current = getattr(clone, attr)
 
+        # All renames in this call share the same batch_id
+        # This allows parallel renames (e.g., x->y, y->z in same call)
+        # to be processed correctly without false chaining
+        batch_id = get_next_batch_id()
+
         if isinstance(current, str):
             # Single value (name)
             old, new = current, mapping.get(current, current)
             if old != new:
-                clone._rename_history.append(RenameEntry(attr, old, new))  # type: ignore[arg-type]
+                clone._rename_history.append(RenameEntry(attr, old, new, batch_id))  # type: ignore[arg-type]
                 setattr(clone, attr, new)
         else:
             # Tuple (inputs/outputs)
             for old, new in mapping.items():
                 if old not in current:
                     raise clone._make_rename_error(old, attr)
-                clone._rename_history.append(RenameEntry(attr, old, new))  # type: ignore[arg-type]
+                clone._rename_history.append(RenameEntry(attr, old, new, batch_id))  # type: ignore[arg-type]
             setattr(clone, attr, tuple(mapping.get(v, v) for v in current))
 
         return clone
@@ -251,13 +256,36 @@ class HyperNode(ABC):
         """Build helpful error message using history.
 
         Checks if `name` was previously renamed and includes that
-        context in the error message.
+        context in the error message. Shows the full rename chain
+        if multiple renames occurred (e.g., a→x→z).
         """
         current = getattr(self, attr)
-        for entry in self._rename_history:
-            if entry.kind == attr and entry.old == name:
-                return RenameError(
-                    f"'{name}' was renamed to '{entry.new}'. "
-                    f"Current {attr}: {current}"
-                )
+
+        # Build the full rename chain for this name
+        chain = self._get_rename_chain(name, attr)
+        if chain:
+            chain_str = "→".join(chain)
+            return RenameError(
+                f"'{name}' was renamed: {chain_str}. "
+                f"Current {attr}: {current}"
+            )
         return RenameError(f"'{name}' not found. Current {attr}: {current}")
+
+    def _get_rename_chain(self, name: str, attr: str) -> list[str]:
+        """Get the full rename chain starting from a name.
+
+        For a->x->z, _get_rename_chain("a", "inputs") returns ["a", "x", "z"].
+        Returns empty list if name was never renamed.
+        """
+        chain: list[str] = []
+        current_name = name
+
+        # Follow the rename chain forward
+        for entry in self._rename_history:
+            if entry.kind == attr and entry.old == current_name:
+                if not chain:
+                    chain.append(current_name)
+                chain.append(entry.new)
+                current_name = entry.new
+
+        return chain

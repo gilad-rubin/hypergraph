@@ -53,6 +53,48 @@ def _warn_if_has_return_annotation(func: Callable) -> None:
     )
 
 
+def _build_forward_rename_map(rename_history: list) -> dict[str, str]:
+    """Build a forward rename map: original_param -> current_name.
+
+    Handles chained renames correctly:
+    - Sequential calls: a->x then x->z → {a: z}
+    - Parallel renames (same batch): x->y, y->z → {x: y, y: z}
+
+    Args:
+        rename_history: List of RenameEntry objects
+
+    Returns:
+        Dict mapping original names to their final current names
+    """
+    input_entries = [e for e in rename_history if e.kind == "inputs"]
+    if not input_entries:
+        return {}
+
+    # Group entries by batch_id
+    batches: dict[int | None, list] = {}
+    for entry in input_entries:
+        batches.setdefault(entry.batch_id, []).append(entry)
+
+    rename_map: dict[str, str] = {}
+
+    # Process batches in order (by first occurrence in history)
+    for batch_id in dict.fromkeys(e.batch_id for e in input_entries):
+        batch_entries = batches[batch_id]
+        # For parallel renames (same batch), compute using map state BEFORE this batch
+        batch_updates = {}
+        for entry in batch_entries:
+            # Find original: look for existing mapping where value == entry.old
+            original = next(
+                (k for k, v in rename_map.items() if v == entry.old),
+                entry.old,
+            )
+            batch_updates[original] = entry.new
+        # Apply all updates from this batch at once
+        rename_map.update(batch_updates)
+
+    return rename_map
+
+
 class FunctionNode(HyperNode):
     """Wraps a Python function as a graph node.
 
@@ -172,10 +214,18 @@ class FunctionNode(HyperNode):
 
     @property
     def defaults(self) -> dict[str, Any]:
-        """Default values for input parameters."""
+        """Default values for input parameters (using current/renamed names).
+
+        Returns dict mapping current input names to their default values.
+        If inputs have been renamed, uses the renamed names as keys.
+        """
         sig = inspect.signature(self.func)
+
+        # Build rename map with batch-aware chaining
+        rename_map = _build_forward_rename_map(self._rename_history)
+
         return {
-            name: param.default
+            rename_map.get(name, name): param.default
             for name, param in sig.parameters.items()
             if param.default is not inspect.Parameter.empty
         }
@@ -185,7 +235,7 @@ class FunctionNode(HyperNode):
         """Type annotations for input parameters.
 
         Returns:
-            dict mapping parameter names (using renamed input names) to their
+            dict mapping parameter names (using current/renamed input names) to their
             type annotations. Only includes parameters that have annotations.
             Returns empty dict if get_type_hints fails (e.g., forward references).
 
@@ -205,12 +255,8 @@ class FunctionNode(HyperNode):
         sig = inspect.signature(self.func)
         original_params = list(sig.parameters.keys())
 
-        # Build reverse mapping: original param name -> renamed input name
-        # self._rename_history contains RenameEntry objects
-        rename_map: dict[str, str] = {}
-        for entry in self._rename_history:
-            if entry.kind == "inputs":
-                rename_map[entry.old] = entry.new
+        # Build transitive rename mapping with batch-aware chaining
+        rename_map = _build_forward_rename_map(self._rename_history)
 
         result: dict[str, Any] = {}
         for orig_param in original_params:

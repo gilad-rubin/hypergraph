@@ -1,6 +1,10 @@
 # Node API Reference
 
-Complete API documentation for HyperNode and FunctionNode.
+Nodes are the building blocks of hypergraph. Wrap functions, compose graphs, adapt interfaces.
+
+- **FunctionNode** - Wrap any Python function (sync, async, generator)
+- **GraphNode** - Nest a graph as a node for hierarchical composition
+- **HyperNode** - Abstract base class defining the common interface
 
 ## HyperNode
 
@@ -826,6 +830,135 @@ print(adapted.outputs)  # ('result',)
 # Rename the node itself
 adapted = gn.with_name("my_processor")
 print(adapted.name)  # "my_processor"
+```
+
+### map_over()
+
+Configure a GraphNode to iterate over input parameters. When the outer graph runs, the inner graph executes multiple times—once per value in the mapped parameters.
+
+```python
+def map_over(
+    self,
+    *params: str,
+    mode: Literal["zip", "product"] = "zip",
+) -> GraphNode: ...
+```
+
+**Args:**
+- `*params` - Input parameter names to iterate over
+- `mode` - How to combine multiple parameters:
+  - `"zip"` (default): Parallel iteration, equal-length lists required
+  - `"product"`: Cartesian product, all combinations
+
+**Returns:** New GraphNode with map_over configuration
+
+**Raises:**
+- `ValueError` - If no parameters specified
+- `ValueError` - If parameter not in node's inputs
+
+**Example: Basic Iteration**
+
+```python
+from hypergraph import Graph, node, SyncRunner
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+# Inner graph
+inner = Graph([double], name="inner")
+
+# Configure for iteration over x
+gn = inner.as_node().map_over("x")
+
+# Use in outer graph
+outer = Graph([gn])
+
+runner = SyncRunner()
+result = runner.run(outer, {"x": [1, 2, 3]})
+
+# Output is a list of results
+print(result["doubled"])  # [2, 4, 6]
+```
+
+**Example: Zip Mode (Multiple Parameters)**
+
+```python
+@node(output_name="sum")
+def add(a: int, b: int) -> int:
+    return a + b
+
+inner = Graph([add], name="adder")
+gn = inner.as_node().map_over("a", "b", mode="zip")
+
+outer = Graph([gn])
+result = runner.run(outer, {"a": [1, 2, 3], "b": [10, 20, 30]})
+
+# Pairs: (1,10), (2,20), (3,30)
+print(result["sum"])  # [11, 22, 33]
+```
+
+**Example: Product Mode**
+
+```python
+gn = inner.as_node().map_over("a", "b", mode="product")
+
+outer = Graph([gn])
+result = runner.run(outer, {"a": [1, 2], "b": [10, 20]})
+
+# All combinations: (1,10), (1,20), (2,10), (2,20)
+print(result["sum"])  # [11, 21, 12, 22]
+```
+
+**Output Types with map_over**
+
+When `map_over` is configured, output types are automatically wrapped in `list[]`:
+
+```python
+@node(output_name="value")
+def produce() -> int:
+    return 42
+
+inner = Graph([produce], name="inner")
+
+# Without map_over
+gn = inner.as_node()
+print(gn.get_output_type("value"))  # <class 'int'>
+
+# With map_over
+gn_mapped = gn.map_over("x")
+print(gn_mapped.get_output_type("value"))  # list[int]
+```
+
+This enables `strict_types=True` validation in outer graphs.
+
+**Rename Integration**
+
+When you rename inputs, map_over configuration updates automatically:
+
+```python
+gn = inner.as_node().map_over("x")
+renamed = gn.with_inputs(x="input_value")
+
+# map_over now references "input_value"
+print(renamed.inputs)  # ('input_value',)
+```
+
+### map_config Property
+
+Check the current map_over configuration:
+
+```python
+@property
+def map_config(self) -> tuple[list[str], Literal["zip", "product"]] | None: ...
+```
+
+```python
+gn = inner.as_node()
+print(gn.map_config)  # None
+
+gn_mapped = gn.map_over("x", "y", mode="product")
+print(gn_mapped.map_config)  # (['x', 'y'], 'product')
 ```
 
 ### Error: Missing Name

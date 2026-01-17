@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 
+import itertools
+
+_batch_counter = itertools.count()
+
+
 @dataclass(frozen=True)
 class RenameEntry:
     """Tracks a single rename operation for error messages.
@@ -14,11 +19,19 @@ class RenameEntry:
         kind: Which attribute was renamed ("name", "inputs", or "outputs")
         old: Original value before rename
         new: New value after rename
+        batch_id: Groups entries from the same with_inputs/with_outputs call
+                  (entries in the same batch should be treated as parallel transforms)
     """
 
     kind: Literal["name", "inputs", "outputs"]
     old: str
     new: str
+    batch_id: int | None = None
+
+
+def get_next_batch_id() -> int:
+    """Get the next batch ID for grouping rename operations."""
+    return next(_batch_counter)
 
 
 class RenameError(Exception):

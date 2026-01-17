@@ -2,6 +2,10 @@
 
 How hypergraph compares to other Python workflow frameworks.
 
+- **vs LangGraph/Pydantic-Graph** - No state schemas, pure functions, automatic edge inference
+- **vs Hamilton/Pipefunc** - Same clean DAG model, plus cycles and agentic patterns
+- **Best of both** - DAG simplicity meets agent flexibility
+
 ## Quick Comparison
 
 | Feature | hypergraph | LangGraph | Hamilton | Pipefunc | Pydantic-Graph |

@@ -1,6 +1,10 @@
 # Getting Started with Hypergraph
 
-This guide introduces the core concepts and walks you through creating your first nodes.
+Learn the core concepts: nodes, graphs, and runners.
+
+- **Nodes** - Wrap functions with named inputs and outputs
+- **Graphs** - Connect nodes automatically via matching names
+- **Runners** - Execute graphs synchronously or asynchronously
 
 ## Core Concepts
 
@@ -511,9 +515,147 @@ renamed.with_inputs(x="different")  # ERROR - x was already renamed to "input"
 # RenameError: 'x' was renamed to 'input'. Current inputs: ('input',)
 ```
 
+## Running Graphs
+
+Graphs need a **runner** to execute. Hypergraph provides two runners:
+- `SyncRunner` - Sequential execution for synchronous nodes
+- `AsyncRunner` - Concurrent execution with async support
+
+### Basic Execution with SyncRunner
+
+```python
+from hypergraph import Graph, node, SyncRunner
+
+@node(output_name="embedding")
+def embed(query: str) -> list[float]:
+    return [0.1, 0.2, 0.3]  # Simplified example
+
+@node(output_name="docs")
+def retrieve(embedding: list[float]) -> list[str]:
+    return ["doc1", "doc2"]
+
+graph = Graph([embed, retrieve])
+
+# Create runner and execute
+runner = SyncRunner()
+result = runner.run(graph, {"query": "What is RAG?"})
+
+# Access results
+print(result["docs"])         # ["doc1", "doc2"]
+print(result["embedding"])    # [0.1, 0.2, 0.3]
+print(result.status)          # RunStatus.COMPLETED
+```
+
+### Async Execution with Concurrent Nodes
+
+```python
+import asyncio
+from hypergraph import Graph, node, AsyncRunner
+
+@node(output_name="response")
+async def call_llm(prompt: str) -> str:
+    await asyncio.sleep(0.1)  # Simulate API call
+    return f"Response to: {prompt}"
+
+@node(output_name="embedding")
+async def embed(text: str) -> list[float]:
+    await asyncio.sleep(0.1)  # Simulate API call
+    return [0.1, 0.2, 0.3]
+
+# Independent nodes run concurrently
+graph = Graph([call_llm, embed])
+
+runner = AsyncRunner()
+result = await runner.run(
+    graph,
+    {"prompt": "Hello", "text": "World"},
+    max_concurrency=10,  # Limit parallel operations
+)
+
+print(result["response"])    # "Response to: Hello"
+print(result["embedding"])   # [0.1, 0.2, 0.3]
+```
+
+### Batch Processing with runner.map()
+
+Process multiple inputs efficiently:
+
+```python
+from hypergraph import Graph, node, SyncRunner
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+graph = Graph([double])
+runner = SyncRunner()
+
+# Process multiple values
+results = runner.map(
+    graph,
+    {"x": [1, 2, 3, 4, 5]},  # x is a list
+    map_over="x",            # Iterate over x
+)
+
+# Each result contains one output
+print([r["doubled"] for r in results])  # [2, 4, 6, 8, 10]
+```
+
+### Map Modes: zip vs product
+
+When mapping over multiple parameters:
+
+```python
+@node(output_name="result")
+def add(a: int, b: int) -> int:
+    return a + b
+
+graph = Graph([add])
+runner = SyncRunner()
+
+# Zip mode (default): parallel iteration, equal lengths required
+results = runner.map(
+    graph,
+    {"a": [1, 2, 3], "b": [10, 20, 30]},
+    map_over=["a", "b"],
+    map_mode="zip",  # (1,10), (2,20), (3,30)
+)
+print([r["result"] for r in results])  # [11, 22, 33]
+
+# Product mode: cartesian product, all combinations
+results = runner.map(
+    graph,
+    {"a": [1, 2], "b": [10, 20]},
+    map_over=["a", "b"],
+    map_mode="product",  # (1,10), (1,20), (2,10), (2,20)
+)
+print([r["result"] for r in results])  # [11, 21, 12, 22]
+```
+
+### Selecting Specific Outputs
+
+By default, `run()` returns all graph outputs. Use `select` to filter:
+
+```python
+result = runner.run(graph, values, select=["final_answer"])
+print(result.values.keys())  # Only "final_answer"
+```
+
+### Error Handling
+
+```python
+result = runner.run(graph, {"x": 5})
+
+if result.status == RunStatus.COMPLETED:
+    print(result["output"])
+else:
+    print(f"Failed: {result.error}")
+```
+
 ## Next Steps
 
 - Explore [API Reference](api/) for complete documentation on nodes, graphs, and types
+- Read [Runners API](api/runners.md) for detailed runner documentation
 - Read [Philosophy](philosophy.md) to understand the design principles
 - Try building a small pipeline with `strict_types=True` to catch errors early
 
