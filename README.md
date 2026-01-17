@@ -21,14 +21,14 @@ uv add hypergraph-ai
 pip install hypergraph-ai
 ```
 
-> **Alpha**: Core node types and graph construction are working. Runners and control flow are in progress.
+> **Alpha**: Core features are working - nodes, graphs, runners, and execution. Control flow (`@route`, `@branch`) coming soon.
 
 ## Quick Start
 
 Define functions. Name their outputs. hypergraph connects them automatically.
 
 ```python
-from hypergraph import Graph, node
+from hypergraph import Graph, node, SyncRunner
 
 @node(output_name="embedding")
 def embed(text: str) -> list[float]:
@@ -44,6 +44,11 @@ def generate(docs: list[str], query: str) -> str:
 
 # Edges inferred from names - no wiring needed
 graph = Graph(nodes=[embed, retrieve, generate])
+
+# Run the graph
+runner = SyncRunner()
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
+print(result["answer"])
 ```
 
 `embed` produces `embedding`. `retrieve` takes `embedding`. Connected automatically.
@@ -255,14 +260,17 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 - `Graph` construction with automatic edge inference
 - `InputSpec` categorization (required, optional, bound, internal)
 - Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
-- Hierarchical composition (`.as_node()`)
+- Hierarchical composition (`.as_node()`, `.map_over()`)
 - Build-time validation with helpful error messages
+- `SyncRunner` for sequential execution
+- `AsyncRunner` with concurrency control (`max_concurrency`)
+- Batch processing with `runner.map()` (zip and product modes)
 
 **Coming soon:**
-- Runners (`SyncRunner`, `AsyncRunner`)
 - Control flow (`@route`, `@branch`)
 - Checkpointing and durability
-- Event streaming and observability
+- Event streaming (`.iter()`)
+- Observability hooks
 - `InterruptNode` for human-in-the-loop
 
 ## Beyond AI/ML
@@ -273,7 +281,9 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 
 - [Getting Started](docs/getting-started.md) - Core concepts and first steps
 - [Philosophy](docs/philosophy.md) - Why hypergraph exists
-- [API Reference](docs/api/nodes.md) - Complete node documentation
+- [API Reference: Nodes](docs/api/nodes.md) - FunctionNode, GraphNode, and HyperNode
+- [API Reference: Runners](docs/api/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [API Reference: Graph](docs/api/graph.md) - Graph construction and validation
 
 For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/comparison.md).
 
