@@ -18,6 +18,7 @@ def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
     1. All its inputs have values in state (or have defaults/bounds)
     2. The node hasn't been executed yet, OR
     3. The node was executed but its inputs have changed (stale)
+    4. If controlled by a gate, the gate has routed to this node
 
     Args:
         graph: The graph being executed
@@ -26,15 +27,82 @@ def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
     Returns:
         List of nodes ready to execute
     """
+    # First, identify which nodes are activated by gates
+    activated_nodes = _get_activated_nodes(graph, state)
+
     ready = []
     for node in graph._nodes.values():
-        if _is_node_ready(node, graph, state):
+        if _is_node_ready(node, graph, state, activated_nodes):
             ready.append(node)
     return ready
 
 
-def _is_node_ready(node: HyperNode, graph: "Graph", state: GraphState) -> bool:
+def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
+    """Get all nodes that have been activated by gate routing decisions.
+
+    A node is activated if:
+    - It has no controlling gates, OR
+    - At least one controlling gate has routed to it
+
+    Returns:
+        Set of activated node names
+    """
+    from hypergraph.nodes.gate import GateNode, END
+
+    # Build map of node -> controlling gates
+    controlled_by: dict[str, list[str]] = {}  # node_name -> [gate_names]
+    for node in graph._nodes.values():
+        if isinstance(node, GateNode):
+            for target in node.targets:
+                if target is not END and target in graph._nodes:
+                    controlled_by.setdefault(target, []).append(node.name)
+
+    activated = set()
+
+    for node_name in graph._nodes:
+        gates = controlled_by.get(node_name, [])
+        if not gates:
+            # No controlling gates - always activated
+            activated.add(node_name)
+        else:
+            # Check if any controlling gate has routed to this node
+            for gate_name in gates:
+                decision = state.routing_decisions.get(gate_name)
+                if decision is None:
+                    continue  # Gate hasn't made a decision yet
+
+                # Check if this node was activated by the decision
+                if _is_node_activated_by_decision(node_name, decision):
+                    activated.add(node_name)
+                    break
+
+    return activated
+
+
+def _is_node_activated_by_decision(node_name: str, decision: Any) -> bool:
+    """Check if a routing decision activates a specific node."""
+    from hypergraph.nodes.gate import END
+
+    if decision is END:
+        return False
+    if decision is None:
+        return False
+    if isinstance(decision, list):
+        return node_name in decision
+    return decision == node_name
+
+
+def _is_node_ready(
+    node: HyperNode,
+    graph: "Graph",
+    state: GraphState,
+    activated_nodes: set[str],
+) -> bool:
     """Check if a single node is ready to execute."""
+    # Check if node is activated (not blocked by gate decisions)
+    if node.name not in activated_nodes:
+        return False
+
     # Check if all inputs are available
     if not _has_all_inputs(node, graph, state):
         return False

@@ -1,7 +1,17 @@
 """Hypergraph - A hierarchical and modular graph workflow framework."""
 
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
-from hypergraph.nodes import FunctionNode, GraphNode, HyperNode, RenameError, node
+from hypergraph.nodes import (
+    END,
+    FunctionNode,
+    GateNode,
+    GraphNode,
+    HyperNode,
+    RenameError,
+    RouteNode,
+    node,
+    route,
+)
 from hypergraph.exceptions import (
     IncompatibleRunnerError,
     InfiniteLoopError,
@@ -18,9 +28,13 @@ from hypergraph.runners import (
 __all__ = [
     # Decorators and node types
     "node",
+    "route",
     "FunctionNode",
     "GraphNode",
+    "GateNode",
+    "RouteNode",
     "HyperNode",
+    "END",
     # Graph
     "Graph",
     "InputSpec",

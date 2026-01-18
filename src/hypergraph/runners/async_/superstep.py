@@ -69,7 +69,8 @@ async def run_superstep_async(
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         input_versions = {param: state.get_version(param) for param in node.inputs}
 
-        outputs = await execute_node(node, state, inputs)
+        # Pass new_state so routing decisions are stored in the updated state
+        outputs = await execute_node(node, new_state, inputs)
 
         return node, outputs, input_versions
 

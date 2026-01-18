@@ -84,8 +84,15 @@ def _unique_params(nodes: dict[str, "HyperNode"]) -> Iterator[str]:
 
 
 def _get_edge_produced_values(nx_graph: nx.DiGraph) -> set[str]:
-    """Get all value names that are produced by edges."""
-    return {data["value_name"] for _, _, data in nx_graph.edges(data=True)}
+    """Get all value names that are produced by data edges.
+
+    Control edges (from gates) don't have value_name - only data edges do.
+    """
+    return {
+        data["value_name"]
+        for _, _, data in nx_graph.edges(data=True)
+        if "value_name" in data
+    }
 
 
 def _categorize_param(

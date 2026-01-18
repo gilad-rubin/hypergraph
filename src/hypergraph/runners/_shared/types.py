@@ -102,11 +102,13 @@ class GraphState:
         values: Current value for each output/input name
         versions: Version number for each value (incremented on update)
         node_executions: History of node executions (for staleness detection)
+        routing_decisions: Routing decisions made by gate nodes
     """
 
     values: dict[str, Any] = field(default_factory=dict)
     versions: dict[str, int] = field(default_factory=dict)
     node_executions: dict[str, NodeExecution] = field(default_factory=dict)
+    routing_decisions: dict[str, Any] = field(default_factory=dict)
 
     def update_value(self, name: str, value: Any) -> None:
         """Update a value and increment its version if value changed.
@@ -152,4 +154,5 @@ class GraphState:
                 k: replace(v, input_versions=dict(v.input_versions), outputs=dict(v.outputs))
                 for k, v in self.node_executions.items()
             },
+            routing_decisions=dict(self.routing_decisions),
         )
