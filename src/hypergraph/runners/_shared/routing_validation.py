@@ -25,15 +25,16 @@ def validate_routing_decision(node: "RouteNode", decision: Any) -> None:
     """
     from hypergraph.nodes.gate import END
 
-    # Check for string "END" instead of END sentinel
+    # Warn if user likely meant END sentinel but returned string "END"
+    # Only warn when: string "END" is not a valid target, but END sentinel is
     if decision == "END" and decision is not END:
-        warnings.warn(
-            f"Gate '{node.name}' returned string 'END' instead of END sentinel.\n"
-            f"Use 'from hypergraph import END' and return END directly.",
-            UserWarning,
-            stacklevel=5,
-        )
-        return  # Let it proceed, might be intentional (target named "END")
+        if "END" not in node.targets and END in node.targets:
+            warnings.warn(
+                f"Gate '{node.name}' returned string 'END' instead of END sentinel.\n"
+                f"Use 'from hypergraph import END' and return END directly.",
+                UserWarning,
+                stacklevel=5,
+            )
 
     if node.multi_target:
         _validate_multi_target_decision(node, decision)

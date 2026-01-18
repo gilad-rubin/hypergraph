@@ -1,10 +1,10 @@
 """Gate nodes for control flow routing in graphs.
 
 This module provides:
-- END: Sentinel indicating execution should terminate
 - GateNode: Abstract base for routing logic
 - RouteNode: Concrete gate that routes to target nodes
 - route: Decorator for creating RouteNode from a function
+- END: Sentinel indicating execution should terminate
 """
 
 from __future__ import annotations
@@ -16,42 +16,6 @@ from typing import Any, Callable, TypeVar
 from hypergraph._utils import hash_definition
 from hypergraph.nodes._rename import _apply_renames, build_reverse_rename_map
 from hypergraph.nodes.base import HyperNode
-
-# =============================================================================
-# END Sentinel
-# =============================================================================
-
-
-class _ENDMeta(type):
-    """Metaclass for END sentinel to prevent instantiation and provide clean repr."""
-
-    def __repr__(cls) -> str:
-        return "END"
-
-    def __str__(cls) -> str:
-        return "END"
-
-    def __call__(cls, *args, **kwargs):
-        raise TypeError("END cannot be instantiated. Use END directly as a sentinel.")
-
-
-class END(metaclass=_ENDMeta):
-    """Sentinel class indicating execution should terminate along this path.
-
-    Use END in route targets to indicate a path terminates:
-
-        @route(targets=["process", END])
-        def decide(x):
-            return END if x == 0 else "process"
-
-    Note: END is a class, not an instance. Use it directly (END, not END()).
-    """
-
-    pass
-
-
-# Type alias for targets parameter (list or dict with descriptions)
-TargetsSpec = list[str | type[END]] | dict[str | type[END], str]
 
 
 # =============================================================================
@@ -336,3 +300,40 @@ def route(
         )
 
     return decorator
+
+
+# =============================================================================
+# END Sentinel
+# =============================================================================
+
+
+class _ENDMeta(type):
+    """Metaclass for END sentinel to prevent instantiation and provide clean repr."""
+
+    def __repr__(cls) -> str:
+        return "END"
+
+    def __str__(cls) -> str:
+        return "END"
+
+    def __call__(cls, *args, **kwargs):
+        raise TypeError("END cannot be instantiated. Use END directly as a sentinel.")
+
+
+class END(metaclass=_ENDMeta):
+    """Sentinel class indicating execution should terminate along this path.
+
+    Use END in route targets to indicate a path terminates:
+
+        @route(targets=["process", END])
+        def decide(x):
+            return END if x == 0 else "process"
+
+    Note: END is a class, not an instance. Use it directly (END, not END()).
+    """
+
+    pass
+
+
+# Type alias for targets parameter (list or dict with descriptions)
+TargetsSpec = list[str | type[END]] | dict[str | type[END], str]
