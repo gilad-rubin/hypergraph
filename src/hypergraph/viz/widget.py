@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
 from hypergraph.viz.renderer import render_graph
-from hypergraph.viz.html_generator import generate_html
+from hypergraph.viz.html_generator import generate_widget_html
 
 
 class ScrollablePipelineWidget:
@@ -169,6 +169,6 @@ def visualize(
     )
 
     # Generate HTML
-    html_content = generate_html(graph_data, width=width, height=height)
+    html_content = generate_widget_html(graph_data)
 
     return ScrollablePipelineWidget(html_content, width, height)

@@ -1,1 +1,1 @@
-"""Bundled assets for visualization."""
+"""Vendor JavaScript libraries (React, ReactFlow, ELK, etc.)."""

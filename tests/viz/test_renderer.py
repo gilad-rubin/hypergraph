@@ -33,7 +33,7 @@ class TestRenderGraph:
 
         assert "nodes" in result
         assert "edges" in result
-        assert "options" in result
+        assert "meta" in result
 
         assert len(result["nodes"]) == 1
         node = result["nodes"][0]
@@ -112,9 +112,9 @@ class TestRenderGraph:
         graph = Graph(nodes=[double])
         result = render_graph(graph, theme="dark", show_types=True, depth=2)
 
-        assert result["options"]["theme"] == "dark"
-        assert result["options"]["showTypes"] is True
-        assert result["options"]["depth"] == 2
+        assert result["meta"]["theme_preference"] == "dark"
+        assert result["meta"]["show_types"] is True
+        assert result["meta"]["initial_depth"] == 2
 
     def test_render_nested_graph(self):
         """Test rendering a nested graph."""
