@@ -2,10 +2,183 @@
 
 Gate nodes control execution flow. They make routing decisions but produce no data outputs.
 
+- **IfElseNode** - Binary gate for true/false routing decisions
+- **@ifelse** - Decorator to create an IfElseNode from a boolean function
 - **RouteNode** - Routes execution to target nodes based on a function's return value
 - **@route** - Decorator to create a RouteNode from a function
 - **END** - Sentinel indicating execution should terminate
 - **GateNode** - Abstract base class for all gate types
+
+## @ifelse Decorator
+
+Create an IfElseNode from a boolean function. Simplest way to branch on true/false.
+
+### Signature
+
+```python
+def ifelse(
+    when_true: str | type[END],
+    when_false: str | type[END],
+    *,
+    cache: bool = False,
+    name: str | None = None,
+    rename_inputs: dict[str, str] | None = None,
+) -> Callable[[Callable[..., bool]], IfElseNode]: ...
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `when_true` | `str \| END` | required | Target when function returns `True` |
+| `when_false` | `str \| END` | required | Target when function returns `False` |
+| `cache` | `bool` | `False` | Whether to cache routing decisions |
+| `name` | `str \| None` | `None` | Node name (default: function name) |
+| `rename_inputs` | `dict \| None` | `None` | Mapping to rename inputs `{old: new}` |
+
+### Return Value
+
+The decorated function must return exactly `True` or `False` (not truthy/falsy values):
+- `True` - Routes to `when_true` target
+- `False` - Routes to `when_false` target
+
+### Basic Usage
+
+```python
+from hypergraph import ifelse, END
+
+@ifelse(when_true="process", when_false="skip")
+def is_valid(data: dict) -> bool:
+    return data.get("valid", False)
+```
+
+### With END
+
+```python
+@ifelse(when_true="continue", when_false=END)
+def should_continue(count: int) -> bool:
+    return count < 10  # False terminates execution
+```
+
+### Input Renaming
+
+```python
+@ifelse(when_true="yes", when_false="no", rename_inputs={"x": "input_value"})
+def is_positive(x: int) -> bool:
+    return x > 0
+```
+
+---
+
+## IfElseNode Class
+
+Binary gate that routes based on boolean decision. Use `@ifelse` decorator for most cases.
+
+### Constructor
+
+```python
+def __init__(
+    self,
+    func: Callable[..., bool],
+    when_true: str | type[END],
+    when_false: str | type[END],
+    *,
+    cache: bool = False,
+    name: str | None = None,
+    rename_inputs: dict[str, str] | None = None,
+) -> None: ...
+```
+
+### Properties
+
+#### `name: str`
+
+Public node name.
+
+#### `inputs: tuple[str, ...]`
+
+Input parameter names from function signature.
+
+#### `outputs: tuple[str, ...]`
+
+Always empty tuple. Gates produce no data outputs.
+
+#### `targets: list[str | type[END]]`
+
+Always `[when_true, when_false]` (2 elements).
+
+```python
+@ifelse(when_true="process", when_false=END)
+def check(x: int) -> bool:
+    return x > 0
+
+print(check.targets)  # ["process", <class 'END'>]
+```
+
+#### `when_true: str | type[END]`
+
+Target when function returns `True`.
+
+#### `when_false: str | type[END]`
+
+Target when function returns `False`.
+
+#### `descriptions: dict[bool, str]`
+
+Fixed `{True: "True", False: "False"}`.
+
+#### `cache: bool`
+
+Whether routing decisions are cached.
+
+#### `func: Callable`
+
+The wrapped boolean function.
+
+#### `is_async: bool`
+
+Always `False`. Routing functions must be synchronous.
+
+#### `is_generator: bool`
+
+Always `False`. Routing functions cannot be generators.
+
+#### `definition_hash: str`
+
+SHA256 hash of function source code.
+
+### Methods
+
+#### `has_default_for(param: str) -> bool`
+
+Check if parameter has a default value.
+
+#### `get_default_for(param: str) -> Any`
+
+Get default value for a parameter. Raises `KeyError` if no default.
+
+#### `with_name(name: str) -> IfElseNode`
+
+Return a new node with a different name.
+
+#### `with_inputs(mapping=None, /, **kwargs) -> IfElseNode`
+
+Return a new node with renamed inputs.
+
+#### `__call__(*args, **kwargs) -> bool`
+
+Call the boolean function directly.
+
+#### `__repr__() -> str`
+
+Informative string representation.
+
+```python
+print(repr(check))
+# IfElseNode(check, true=process, false=END)
+```
+
+---
 
 ## @route Decorator
 
@@ -402,6 +575,28 @@ def decide(x: int) -> list[str]:
 # ValueError: RouteNode 'decide' cannot have both fallback and multi_target=True.
 ```
 
+**IfElseNode with same targets:**
+
+```python
+@ifelse(when_true="same", when_false="same")  # ERROR
+def check(x: int) -> bool:
+    return x > 0
+
+# ValueError: IfElseNode 'check' has the same target for both branches.
+# when_true='same' == when_false='same'
+```
+
+**String 'END' as target:**
+
+```python
+@ifelse(when_true="END", when_false="process")  # ERROR
+def check(x: int) -> bool:
+    return x > 0
+
+# ValueError: Gate 'check' has 'END' as a string target.
+# Use 'from hypergraph import END' and use END directly.
+```
+
 ### At Graph Build Time
 
 **Invalid target (not a node in graph):**
@@ -472,6 +667,19 @@ def decide(x: int) -> str:  # Should return list!
 result = runner.run(graph, {"x": 5})
 # result.error: TypeError: multi_target=True but returned str, expected list
 ```
+
+**IfElseNode returns non-bool:**
+
+```python
+@ifelse(when_true="yes", when_false="no")
+def check(x: int) -> bool:
+    return 1  # Truthy, but not True!
+
+result = runner.run(graph, {"x": 5})
+# result.error: TypeError: IfElseNode 'check' must return exactly True or False, got int
+```
+
+IfElseNode strictly validates boolean returns. `1`, `"yes"`, or any truthy value that isn't `True` will fail.
 
 ---
 

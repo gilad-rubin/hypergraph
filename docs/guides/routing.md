@@ -2,6 +2,7 @@
 
 Control execution flow with conditional routing. Route to different paths based on data, loop for agentic workflows, or terminate early.
 
+- **@ifelse** - Simple boolean routing: True goes one way, False goes another
 - **@route** - Route execution to one of several target nodes based on a function's return value
 - **END** - Sentinel indicating execution should terminate along this path
 - **multi_target** - Route to multiple nodes in parallel when needed
@@ -18,7 +19,64 @@ Routing solves problems that pure DAGs cannot:
 | **Agentic loops** | Retry until quality threshold | DAGs have no cycles |
 | **Multi-turn conversation** | Continue until user satisfied | DAGs are single-pass |
 
-## Basic Routing
+## Binary Branching with @ifelse
+
+For simple true/false decisions, use `@ifelse`. It's cleaner than `@route` when you only have two paths.
+
+### Basic If/Else
+
+```python
+from hypergraph import Graph, node, ifelse, END, SyncRunner
+
+@node(output_name="is_cached")
+def check_cache(query: str) -> bool:
+    return query in cache
+
+@ifelse(when_true="use_cache", when_false="full_retrieval")
+def cache_gate(is_cached: bool) -> bool:
+    return is_cached
+
+@node(output_name="response")
+def use_cache(query: str) -> str:
+    return cache[query]
+
+@node(output_name="response")
+def full_retrieval(query: str) -> str:
+    return expensive_rag_pipeline(query)
+
+graph = Graph([check_cache, cache_gate, use_cache, full_retrieval])
+runner = SyncRunner()
+
+result = runner.run(graph, {"query": "What is RAG?"})
+print(result["response"])
+```
+
+The function returns `True` or `False`. Based on the result:
+- `True` → routes to `when_true` target
+- `False` → routes to `when_false` target
+
+### Early Termination with END
+
+```python
+from hypergraph import ifelse, END
+
+@ifelse(when_true="process", when_false=END)
+def should_process(is_valid: bool) -> bool:
+    return is_valid  # False terminates, True continues
+```
+
+When `when_false=END`, returning `False` terminates execution along this path.
+
+### When to Use @ifelse vs @route
+
+| Use @ifelse when... | Use @route when... |
+|---------------------|-------------------|
+| Two mutually exclusive paths | Three or more paths |
+| Decision is boolean | Decision returns a name |
+| No fallback needed | Need fallback for None |
+| Simple branching | Multi-target routing |
+
+## Flexible Routing with @route
 
 ### Route to One of Several Targets
 
@@ -433,6 +491,6 @@ graph = Graph([check_length, check_quality, process])
 
 ## Next Steps
 
-- [API Reference: Gates](../api/gates.md) - Complete RouteNode and @route documentation
+- [API Reference: Gates](../api/gates.md) - Complete IfElseNode, RouteNode, and @ifelse/@route documentation
 - [Philosophy](../philosophy.md) - Why hypergraph supports cycles
 - [Getting Started](../getting-started.md) - Core concepts and basics

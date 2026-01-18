@@ -75,9 +75,9 @@ print(pipeline.input_spec)
 Route execution based on conditions.
 
 ```python
-from hypergraph import branch
+from hypergraph import ifelse
 
-@branch(when_true="fast_path", when_false="full_rag")
+@ifelse(when_true="fast_path", when_false="full_rag")
 def check_cache(query: str) -> bool:
     return query in cache
 
@@ -266,10 +266,10 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 - `AsyncRunner` with concurrency control (`max_concurrency`)
 - Batch processing with `runner.map()` (zip and product modes)
 - `@route` for conditional routing with `END` sentinel
+- `@ifelse` for binary boolean routing (simpler than `@route`)
 - Cyclic graphs for agentic loops and multi-turn workflows
 
 **Coming soon:**
-- `@branch` for boolean routing (simpler than `@route`)
 - Checkpointing and durability
 - Event streaming (`.iter()`)
 - Observability hooks
