@@ -14,6 +14,8 @@ from .matrix import (
     Topology,
     MapMode,
     NestingDepth,
+    Renaming,
+    Binding,
     all_valid_combinations,
     combinations_for,
     count_combinations,
@@ -234,5 +236,107 @@ class TestCyclicCombinations:
 
         runner = SyncRunner()
         result = runner.run(graph, inputs, max_iterations=10)
+
+        assert result.status == RunStatus.COMPLETED
+
+
+class TestRenamingCombinations:
+    """Test renaming capability combinations."""
+
+    @pytest.mark.parametrize(
+        "cap",
+        list(combinations_for(renaming=Renaming.INPUTS, runner=Runner.SYNC, nesting=NestingDepth.FLAT))[:5],
+        ids=str,
+    )
+    def test_input_renaming_works(self, cap: Capability):
+        """Graphs with renamed inputs should execute correctly."""
+        graph = build_graph_for_capability(cap)
+        inputs = get_test_inputs(cap)
+
+        runner = SyncRunner()
+
+        kwargs = {}
+        if cap.topology == Topology.CYCLIC:
+            kwargs["max_iterations"] = 5
+
+        result = runner.run(graph, inputs, **kwargs)
+        assert result.status == RunStatus.COMPLETED
+
+    @pytest.mark.parametrize(
+        "cap",
+        list(combinations_for(renaming=Renaming.OUTPUTS, runner=Runner.SYNC, nesting=NestingDepth.FLAT))[:5],
+        ids=str,
+    )
+    def test_output_renaming_works(self, cap: Capability):
+        """Graphs with renamed outputs should execute correctly."""
+        graph = build_graph_for_capability(cap)
+        inputs = get_test_inputs(cap)
+
+        runner = SyncRunner()
+
+        kwargs = {}
+        if cap.topology == Topology.CYCLIC:
+            kwargs["max_iterations"] = 5
+
+        result = runner.run(graph, inputs, **kwargs)
+        assert result.status == RunStatus.COMPLETED
+
+    @pytest.mark.parametrize(
+        "cap",
+        list(combinations_for(renaming=Renaming.NODE_NAME, runner=Runner.SYNC, nesting=NestingDepth.FLAT))[:5],
+        ids=str,
+    )
+    def test_node_name_renaming_works(self, cap: Capability):
+        """Graphs with renamed node names should execute correctly."""
+        graph = build_graph_for_capability(cap)
+        inputs = get_test_inputs(cap)
+
+        runner = SyncRunner()
+
+        kwargs = {}
+        if cap.topology == Topology.CYCLIC:
+            kwargs["max_iterations"] = 5
+
+        result = runner.run(graph, inputs, **kwargs)
+        assert result.status == RunStatus.COMPLETED
+
+
+class TestBindingCombinations:
+    """Test binding capability combinations."""
+
+    @pytest.mark.parametrize(
+        "cap",
+        list(combinations_for(binding=Binding.BOUND, runner=Runner.SYNC, nesting=NestingDepth.FLAT))[:5],
+        ids=str,
+    )
+    def test_bound_graphs_execute(self, cap: Capability):
+        """Graphs with bound values should execute correctly."""
+        graph = build_graph_for_capability(cap)
+        inputs = get_test_inputs(cap)
+
+        runner = SyncRunner()
+
+        kwargs = {}
+        if cap.topology == Topology.CYCLIC:
+            kwargs["max_iterations"] = 5
+
+        result = runner.run(graph, inputs, **kwargs)
+        assert result.status == RunStatus.COMPLETED
+
+    @pytest.mark.parametrize(
+        "cap",
+        list(combinations_for(binding=Binding.BOUND, topology=Topology.CYCLIC, runner=Runner.SYNC))[:3],
+        ids=str,
+    )
+    def test_bound_cyclic_graphs(self, cap: Capability):
+        """Cyclic graphs with bound limit should execute."""
+        graph = build_graph_for_capability(cap)
+        inputs = get_test_inputs(cap)
+
+        # Bound limit means we don't need to provide it
+        assert "limit" not in inputs
+
+        runner = SyncRunner()
+        result = runner.run(graph, inputs, max_iterations=15)
 
         assert result.status == RunStatus.COMPLETED

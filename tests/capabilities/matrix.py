@@ -81,6 +81,22 @@ class TypeValidation(Enum):
     STRICT = auto()  # strict_types=True
 
 
+class Renaming(Enum):
+    """Whether nodes/inputs/outputs are renamed."""
+
+    NONE = auto()  # No renaming applied
+    INPUTS = auto()  # with_inputs() applied
+    OUTPUTS = auto()  # with_outputs() applied
+    NODE_NAME = auto()  # with_name() applied
+
+
+class Binding(Enum):
+    """Whether graph has bound values."""
+
+    NONE = auto()  # No binding
+    BOUND = auto()  # graph.bind() applied
+
+
 # =============================================================================
 # Capability dataclass
 # =============================================================================
@@ -102,6 +118,8 @@ class Capability:
     nesting: NestingDepth
     concurrency: Concurrency
     type_validation: TypeValidation
+    renaming: Renaming
+    binding: Binding
 
     def is_valid(self) -> bool:
         """Check if this capability combination is valid."""
@@ -139,6 +157,10 @@ class Capability:
             parts.append("limited")
         if self.type_validation == TypeValidation.STRICT:
             parts.append("strict")
+        if self.renaming != Renaming.NONE:
+            parts.append(f"rename_{self.renaming.name.lower()}")
+        if self.binding != Binding.NONE:
+            parts.append("bound")
         return "-".join(parts)
 
 
@@ -236,6 +258,8 @@ def all_valid_combinations() -> Iterator[Capability]:
         nesting,
         concurrency,
         type_validation,
+        renaming,
+        binding,
     ) in itertools.product(
         Runner,
         _all_node_type_combinations(),
@@ -244,6 +268,8 @@ def all_valid_combinations() -> Iterator[Capability]:
         NestingDepth,
         Concurrency,
         TypeValidation,
+        Renaming,
+        Binding,
     ):
         cap = Capability(
             runner=runner,
@@ -253,6 +279,8 @@ def all_valid_combinations() -> Iterator[Capability]:
             nesting=nesting,
             concurrency=concurrency,
             type_validation=type_validation,
+            renaming=renaming,
+            binding=binding,
         )
         if cap.is_valid():
             yield cap
