@@ -1,5 +1,17 @@
 # hypergraph
 
+<div align="center">
+  <a href="docs/getting-started.md"><strong>Docs</strong></a> ·
+  <a href="https://github.com/gilad-rubin/hypergraph/issues/new"><strong>Report Bug</strong></a> ·
+  <a href="https://github.com/gilad-rubin/hypergraph/issues/new"><strong>Feature Request</strong></a> ·
+  <a href="docs/comparison.md"><strong>Comparison</strong></a>
+</div>
+
+<p align="center">
+  <a href="https://deepwiki.com/gilad-rubin/hypergraph"><img src="https://deepwiki.com/badge.svg" alt="DeepWiki"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"/></a>
+</p>
+
 A unified framework for Python workflow orchestration. DAG pipelines, agentic workflows, and everything in between.
 
 - **Unified** - One framework for data pipelines and agentic AI. Same elegant code.
