@@ -14,9 +14,8 @@ import inspect
 from typing import Any, Callable, TypeVar
 
 from hypergraph._utils import hash_definition
-from hypergraph.nodes._rename import _apply_renames
+from hypergraph.nodes._rename import _apply_renames, build_reverse_rename_map
 from hypergraph.nodes.base import HyperNode
-
 
 # =============================================================================
 # END Sentinel
@@ -251,12 +250,23 @@ class RouteNode(GateNode):
 
     def _get_original_param_name(self, current_name: str) -> str:
         """Map a current input name back to the original function parameter."""
-        # Build reverse mapping from rename history
-        reverse_map: dict[str, str] = {}
-        for entry in self._rename_history:
-            if entry.kind == "inputs":
-                reverse_map[entry.new] = reverse_map.get(entry.old, entry.old)
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
         return reverse_map.get(current_name, current_name)
+
+    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Map renamed input names back to original function parameter names.
+
+        Args:
+            inputs: Dict with current (potentially renamed) input names as keys
+
+        Returns:
+            Dict with original function parameter names as keys
+        """
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return inputs
+
+        return {reverse_map.get(key, key): value for key, value in inputs.items()}
 
     def __call__(self, *args: Any, **kwargs: Any) -> str | type[END] | list | None:
         """Call the routing function directly."""

@@ -218,8 +218,8 @@ def map_inputs_to_func_params(
 ) -> dict[str, Any]:
     """Map renamed input names back to original function parameter names.
 
-    Handles chained renames correctly: if a->x->z (via separate calls), z maps to a.
-    Handles parallel renames correctly: if x->y, y->z (same call), they don't chain.
+    Delegates to node.map_inputs_to_params() for polymorphic behavior.
+    Each node type handles its own rename mapping logic.
 
     Args:
         node: The node with potential renames
@@ -228,43 +228,7 @@ def map_inputs_to_func_params(
     Returns:
         Dict with original function parameter names as keys
     """
-    from hypergraph.nodes.function import FunctionNode
-
-    if not isinstance(node, FunctionNode):
-        return inputs
-
-    # Build transitive reverse mapping: current_name -> original_func_param
-    # Process by batch_id to handle parallel vs sequential renames correctly:
-    # - Entries in the same batch (same with_inputs call) are parallel, don't chain
-    # - Entries from different batches (different calls) can chain
-    reverse_map: dict[str, str] = {}
-
-    # Group entries by batch_id
-    input_entries = [e for e in node._rename_history if e.kind == "inputs"]
-    batches: dict[int | None, list] = {}
-    for entry in input_entries:
-        batches.setdefault(entry.batch_id, []).append(entry)
-
-    # Process batches in order (by first occurrence in history)
-    for batch_id in dict.fromkeys(e.batch_id for e in input_entries):
-        batch_entries = batches[batch_id]
-        # For parallel renames (same batch), compute originals using the
-        # reverse_map state BEFORE this batch, not during
-        batch_updates = {}
-        for entry in batch_entries:
-            # Look up original from previous batches only
-            original = reverse_map.get(entry.old, entry.old)
-            batch_updates[entry.new] = original
-        # Apply all updates from this batch at once
-        reverse_map.update(batch_updates)
-
-    # Map inputs to original parameter names
-    result = {}
-    for key, value in inputs.items():
-        original_name = reverse_map.get(key, key)
-        result[original_name] = value
-
-    return result
+    return node.map_inputs_to_params(inputs)
 
 
 def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
