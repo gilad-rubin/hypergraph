@@ -69,7 +69,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         /* Reset and Base Styles */
         body {{ margin: 0; overflow: hidden; background: transparent; color: #e5e7eb; font-family: 'Inter', system-ui, -apple-system, sans-serif; }}
         .react-flow__attribution {{ display: none; }}
-        #root {{ height: 100vh; width: 100vw; background: transparent; display: flex; align-items: flex-start; justify-content: center; }}
+        #root {{ height: 100vh; width: 100vw; background: transparent; display: flex; align-items: center; justify-content: center; }}
         #fallback {{ font-size: 13px; letter-spacing: 0.4px; color: #94a3b8; }}
         
         /* Canvas Outline */
@@ -964,7 +964,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             `}>
               <button 
                    type="button"
-                   className=${`absolute -top-3 left-4 px-3 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-2 cursor-pointer transition-colors z-10
+                   className=${`absolute -top-3 left-4 px-3 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-2 cursor-pointer transition-colors z-10 whitespace-nowrap
                         ${isLight
                             ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
                             : 'bg-slate-950 text-amber-400 hover:text-amber-300 border border-amber-500/50'}
