@@ -30,9 +30,9 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
 ## Installation
 
 ```bash
-uv add hypergraph-ai
-# or 
-pip install hypergraph-ai
+uv add git+https://github.com/gilad-rubin/hypergraph.git
+# or
+pip install git+https://github.com/gilad-rubin/hypergraph.git
 ```
 
 > **Alpha**: Core features are working - nodes, graphs, runners, `@route` for conditional routing, and cyclic graphs for agentic loops.
