@@ -173,7 +173,7 @@ class TestFullMatrixAsync:
 
 
 # =============================================================================
-# Focused capability tests
+# Focused capability tests (verify specific behaviors beyond just "it runs")
 # =============================================================================
 
 
@@ -182,7 +182,7 @@ class TestMapOverBehavior:
 
     @pytest.mark.parametrize(
         "cap",
-        [c for c in _sync_pairwise if c.map_mode == MapMode.ZIP and c.has_nesting][:3],
+        [c for c in _sync_pairwise if c.map_mode == MapMode.ZIP and c.has_nesting],
         ids=str,
     )
     def test_zip_mode_produces_equal_length_outputs(self, cap: Capability):
@@ -194,7 +194,7 @@ class TestMapOverBehavior:
         result = runner.run(graph, inputs)
 
         assert result.status == RunStatus.COMPLETED
-        for key, value in result.values.items():
+        for value in result.values.values():
             if isinstance(value, list):
                 input_lengths = [len(v) for v in inputs.values() if isinstance(v, list)]
                 if input_lengths:
@@ -206,7 +206,7 @@ class TestCyclicBehavior:
 
     @pytest.mark.parametrize(
         "cap",
-        [c for c in _sync_pairwise if c.topology == Topology.CYCLIC][:5],
+        [c for c in _sync_pairwise if c.topology == Topology.CYCLIC],
         ids=str,
     )
     def test_cyclic_stabilizes(self, cap: Capability):
@@ -219,7 +219,7 @@ class TestRenamingBehavior:
 
     @pytest.mark.parametrize(
         "cap",
-        [c for c in _sync_pairwise if c.renaming != Renaming.NONE][:5],
+        [c for c in _sync_pairwise if c.renaming != Renaming.NONE],
         ids=str,
     )
     def test_renamed_graphs_execute(self, cap: Capability):
@@ -232,24 +232,19 @@ class TestBindingBehavior:
 
     @pytest.mark.parametrize(
         "cap",
-        [c for c in _sync_pairwise if c.binding == Binding.BOUND][:5],
+        [c for c in _sync_pairwise if c.binding == Binding.BOUND],
         ids=str,
     )
     def test_bound_graphs_execute(self, cap: Capability):
         """Graphs with bound values should execute."""
         run_capability_sync(cap)
 
-    def test_binding_removes_input_requirement(self):
+    @pytest.mark.parametrize(
+        "cap",
+        [c for c in _sync_pairwise if c.binding == Binding.BOUND and c.topology == Topology.CYCLIC],
+        ids=str,
+    )
+    def test_binding_removes_input_requirement(self, cap: Capability):
         """Bound values should not require explicit input."""
-        # Find a cyclic+bound combination
-        cap = next(
-            (c for c in _sync_pairwise
-             if c.binding == Binding.BOUND and c.topology == Topology.CYCLIC),
-            None
-        )
-        if cap is None:
-            pytest.skip("No cyclic+bound combination in pairwise set")
-
         inputs = get_test_inputs(cap)
-        # Limit should be bound, not in inputs
         assert "limit" not in inputs
