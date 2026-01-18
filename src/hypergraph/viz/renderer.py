@@ -146,7 +146,9 @@ def render_graph(
             )
             # Add inner nodes with parent reference
             for inner_node in inner_result["nodes"]:
-                inner_node["parentNode"] = name
+                # Only set parentNode for direct children (not already nested deeper)
+                if "parentNode" not in inner_node:
+                    inner_node["parentNode"] = name
                 inner_node["extent"] = "parent"
                 nodes.append(inner_node)
             # Add inner edges

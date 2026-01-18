@@ -1944,7 +1944,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         // --- Resize Handling (Task 2) ---
         useEffect(() => {
             const handleResize = () => {
-                fitView({ padding: 0.1, duration: 0, minZoom: 0.5, maxZoom: 1 });
+                fitView({ padding: 0.15, duration: 0, minZoom: 0.3, maxZoom: 1.5 });
             };
             window.addEventListener('resize', handleResize);
             return () => window.removeEventListener('resize', handleResize);
@@ -1954,7 +1954,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         useEffect(() => {
             if (layoutedNodes.length > 0) {
                 // Immediate fit with no animation
-                window.requestAnimationFrame(() => fitView({ padding: 0.1, duration: 0, minZoom: 0.5, maxZoom: 1.5 }));
+                window.requestAnimationFrame(() => fitView({ padding: 0.15, duration: 0, minZoom: 0.3, maxZoom: 1.5 }));
             }
         }, [layoutedNodes, fitView]);
 
@@ -2022,7 +2022,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 }
               }}
               fitView
-              fitViewOptions=${{ padding: 0.02, minZoom: 0.5, maxZoom: 1, duration: 0 }}
+              fitViewOptions=${{ padding: 0.15, minZoom: 0.3, maxZoom: 1.5, duration: 0 }}
               minZoom=${0.1}
               maxZoom=${2}
               className=${'bg-transparent'}
