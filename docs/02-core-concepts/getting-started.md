@@ -390,8 +390,8 @@ from typing import AsyncIterator
 @node(output_name="tokens")
 async def stream_llm(prompt: str) -> AsyncIterator[str]:
     """Stream LLM response tokens."""
-    async for chunk in openai.chat.completions.create(
-        model="gpt-4",
+    async for chunk in openai.responses.create(
+        model="gpt-5.2",
         messages=[{"role": "user", "content": prompt}],
         stream=True,
     ):

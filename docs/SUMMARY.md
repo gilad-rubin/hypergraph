@@ -20,15 +20,21 @@
 * [Agentic Loops](03-patterns/03-agentic-loops.md)
 * [Hierarchical Composition](03-patterns/04-hierarchical.md)
 * [Multi-Agent](03-patterns/05-multi-agent.md)
+* [Streaming](03-patterns/06-streaming.md)
 
 ## Real-World Examples
 
+* [RAG Pipeline](04-real-world/rag-pipeline.md)
 * [Multi-Turn RAG](04-real-world/multi-turn-rag.md)
 * [Evaluation Harness](04-real-world/evaluation-harness.md)
+* [Data Pipeline](04-real-world/data-pipeline.md)
+* [Prompt Optimization](04-real-world/prompt-optimization.md)
 
 ## How-To Guides
 
 * [Batch Processing](05-how-to/batch-processing.md)
+* [Rename and Adapt](05-how-to/rename-and-adapt.md)
+* [Integrate with LLMs](05-how-to/integrate-with-llms.md)
 * [Test Without Framework](05-how-to/test-without-framework.md)
 
 ## API Reference
@@ -42,3 +48,4 @@
 ## Design
 
 * [Philosophy](07-design/philosophy.md)
+* [Roadmap](07-design/roadmap.md)

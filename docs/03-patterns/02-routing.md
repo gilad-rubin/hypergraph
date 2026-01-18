@@ -181,7 +181,7 @@ def text_only_response(query: str, doc_analysis: dict) -> str:
     """Generate response using text-only LLM."""
     context = "\n".join(doc_analysis["text_content"])
     return llm.generate(
-        model="gpt-4",
+        model="gpt-5.2",
         messages=[
             {"role": "system", "content": f"Context:\n{context}"},
             {"role": "user", "content": query},
@@ -200,7 +200,7 @@ def multimodal_response(query: str, doc_analysis: dict) -> str:
     # Combine text and images for multimodal LLM
     context = "\n".join(doc_analysis["text_content"])
     return multimodal_llm.generate(
-        model="gpt-4-vision",
+        model="gpt-5.2",
         messages=[
             {"role": "system", "content": f"Context:\n{context}"},
             {"role": "user", "content": [

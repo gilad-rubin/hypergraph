@@ -99,7 +99,7 @@ graph = Graph([process])
 # 'model' is fixed, 'text' varies
 results = runner.map(
     graph,
-    {"text": ["hello", "world"], "model": "gpt-4"},
+    {"text": ["hello", "world"], "model": "gpt-5.2"},
     map_over="text",  # Only text varies
 )
 ```
