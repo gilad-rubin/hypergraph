@@ -91,12 +91,14 @@ The same pattern applies at every level of nesting. A graph that processes one c
 - Show error handling, edge cases, and real-world concerns throughout
 - Users need to see how things work in practice, not just happy paths
 
-### Comparison-Driven
+### Keep Framework Comparisons in One Place
 
-When appropriate, show contrast with other frameworks:
-- LangGraph: "No state schema needed" / "No manual edge wiring" / "DAGs feel natural, not awkward"
-- Hamilton: "Same name-based inference, but with cycles and hierarchical composition"
-- Prefect: "Same orchestration power, but with automatic wiring and nested graphs"
+**Only mention other frameworks (LangGraph, Hamilton, Prefect, etc.) in the comparison section.**
+
+Outside of `comparison.md` and `when-to-use.md`:
+- Focus on what hypergraph does, not how it differs
+- Let the reader discover the benefits without constant "unlike X" references
+- The docs should stand on their own
 
 Key framing: It's not "use hypergraph if you need both DAGs and agents" — it's "master one framework that handles the natural hierarchy of AI workflows."
 

@@ -4,18 +4,28 @@
 
 ## Getting Started
 
-* [Quick Start](getting-started.md)
-* [Philosophy](philosophy.md)
-* [Framework Comparison](comparison.md)
+* [What is Hypergraph?](01-introduction/what-is-hypergraph.md)
+* [When to Use](01-introduction/when-to-use.md)
+* [Quick Start](01-introduction/quick-start.md)
+* [Comparison](01-introduction/comparison.md)
 
-## Guides
+## Core Concepts
 
-* [Routing](guides/routing.md)
+* [Getting Started](02-core-concepts/getting-started.md)
+
+## Patterns
+
+* [Routing](03-patterns/02-routing.md)
+* [Hierarchical Composition](03-patterns/04-hierarchical.md)
 
 ## API Reference
 
-* [Graph](api/graph.md)
-* [Nodes](api/nodes.md)
-* [Gates](api/gates.md)
-* [Runners](api/runners.md)
-* [InputSpec](api/inputspec.md)
+* [Graph](06-api-reference/graph.md)
+* [Nodes](06-api-reference/nodes.md)
+* [Gates](06-api-reference/gates.md)
+* [Runners](06-api-reference/runners.md)
+* [InputSpec](06-api-reference/inputspec.md)
+
+## Design
+
+* [Philosophy](07-design/philosophy.md)
