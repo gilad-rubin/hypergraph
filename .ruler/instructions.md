@@ -21,6 +21,13 @@
 - Use simple, readable functions rather than deeply nested ones.
 - Split large functions into focused helpers when needed.
 
+## Testing
+
+- Capability tests use pairwise combinations locally (~21 tests) for speed.
+- Run `pytest -m full_matrix` for comprehensive coverage (~8K tests, CI only).
+- Tests run in parallel via pytest-xdist. Graph builds are cached.
+- Add new capability dimensions to `tests/capabilities/matrix.py`.
+
 ## Maintaining Instructions
 
 After making significant code structure changes, update the relevant .ruler/ markdown files and run:
