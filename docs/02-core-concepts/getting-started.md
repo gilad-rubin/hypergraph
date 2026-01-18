@@ -390,12 +390,14 @@ from typing import AsyncIterator
 @node(output_name="tokens")
 async def stream_llm(prompt: str) -> AsyncIterator[str]:
     """Stream LLM response tokens."""
-    async for chunk in openai.responses.create(
+    stream = openai.responses.create(
         model="gpt-5.2",
-        messages=[{"role": "user", "content": prompt}],
+        input=prompt,
         stream=True,
-    ):
-        yield chunk.choices[0].delta.content or ""
+    )
+    for part in stream:
+        if part.output_text:
+            yield part.output_text
 
 print(stream_llm.is_async)      # True
 print(stream_llm.is_generator)  # True
@@ -714,14 +716,14 @@ def should_continue(attempts: int, quality: float) -> str:
     return "generate"  # Loop back
 ```
 
-For more patterns including multi-target routing and real-world RAG examples, see the [Routing Guide](guides/routing.md).
+For more patterns including multi-target routing and real-world RAG examples, see the [Routing Guide](../03-patterns/02-routing.md).
 
 ## Next Steps
 
-- [Routing Guide](guides/routing.md) - Conditional routing, agentic loops, and real-world patterns
-- Explore [API Reference](api/) for complete documentation on nodes, graphs, and types
-- Read [Runners API](api/runners.md) for detailed runner documentation
-- Read [Philosophy](philosophy.md) to understand the design principles
+- [Routing Guide](../03-patterns/02-routing.md) - Conditional routing, agentic loops, and real-world patterns
+- Explore [API Reference](../06-api-reference/graph.md) for complete documentation on nodes, graphs, and types
+- Read [Runners API](../06-api-reference/runners.md) for detailed runner documentation
+- Read [Philosophy](../07-design/philosophy.md) to understand the design principles
 - Try building a small pipeline with `strict_types=True` to catch errors early
 
 ## Common Patterns

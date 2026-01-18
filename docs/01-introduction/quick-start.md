@@ -90,6 +90,6 @@ print(result["answer"])
 
 ## What's Next?
 
-- [Core Concepts](../02-core-concepts/nodes.md) — Deeper dive into nodes, graphs, and runners
+- [Core Concepts](../02-core-concepts/getting-started.md) — Deeper dive into nodes, graphs, and runners
 - [Routing](../03-patterns/02-routing.md) — Add conditional logic and loops
 - [Hierarchical Composition](../03-patterns/04-hierarchical.md) — Nest graphs for complex workflows

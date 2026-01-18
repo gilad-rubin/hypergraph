@@ -131,7 +131,7 @@ def decide(x: int) -> str:
     return "step_c"  # Typo
 
 graph = Graph([decide, step_a, step_b])
-# GraphValidationError: Route target 'step_c' not found.
+# GraphConfigError: Route target 'step_c' not found.
 # Valid targets: ['step_a', 'step_b', 'END']
 # Did you mean 'step_a'?
 ```
