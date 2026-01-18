@@ -21,7 +21,7 @@ uv add hypergraph-ai
 pip install hypergraph-ai
 ```
 
-> **Alpha**: Core features are working - nodes, graphs, runners, and execution. Control flow (`@route`, `@branch`) coming soon.
+> **Alpha**: Core features are working - nodes, graphs, runners, `@route` for conditional routing, and cyclic graphs for agentic loops.
 
 ## Quick Start
 
@@ -75,9 +75,9 @@ print(pipeline.input_spec)
 Route execution based on conditions.
 
 ```python
-from hypergraph import branch
+from hypergraph import ifelse
 
-@branch(when_true="fast_path", when_false="full_rag")
+@ifelse(when_true="fast_path", when_false="full_rag")
 def check_cache(query: str) -> bool:
     return query in cache
 
@@ -265,9 +265,11 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 - `SyncRunner` for sequential execution
 - `AsyncRunner` with concurrency control (`max_concurrency`)
 - Batch processing with `runner.map()` (zip and product modes)
+- `@route` for conditional routing with `END` sentinel
+- `@ifelse` for binary boolean routing (simpler than `@route`)
+- Cyclic graphs for agentic loops and multi-turn workflows
 
 **Coming soon:**
-- Control flow (`@route`, `@branch`)
 - Checkpointing and durability
 - Event streaming (`.iter()`)
 - Observability hooks
@@ -280,10 +282,12 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) - Core concepts and first steps
+- [Routing Guide](docs/guides/routing.md) - Conditional routing, agentic loops, and real-world patterns
 - [Philosophy](docs/philosophy.md) - Why hypergraph exists
 - [API Reference: Nodes](docs/api/nodes.md) - FunctionNode, GraphNode, and HyperNode
 - [API Reference: Runners](docs/api/runners.md) - SyncRunner, AsyncRunner, and execution model
 - [API Reference: Graph](docs/api/graph.md) - Graph construction and validation
+- [API Reference: Gates](docs/api/gates.md) - RouteNode, @route decorator, and END sentinel
 
 For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/comparison.md).
 

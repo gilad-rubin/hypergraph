@@ -89,9 +89,11 @@ Test pieces independently. Reuse across workflows.
 - `SyncRunner` for sequential execution
 - `AsyncRunner` with concurrency control (`max_concurrency`)
 - Batch processing with `runner.map()` (zip and product modes)
+- `@route` for conditional routing with `END` sentinel
+- `@ifelse` for binary boolean routing
+- Cyclic graphs for agentic loops and multi-turn workflows
 
 **Coming soon:**
-- Control flow (`@route`, `@branch`)
 - Checkpointing and durability
 - Event streaming (`.iter()`)
 - Observability hooks
@@ -99,18 +101,39 @@ Test pieces independently. Reuse across workflows.
 
 ## Documentation
 
-### Getting Started
-- [Quick Start](getting-started.md) - Core concepts, creating nodes, building graphs, running workflows
+### Introduction
+- [What is Hypergraph?](01-introduction/what-is-hypergraph.md) - The problem, solution, and key differentiators
+- [When to Use](01-introduction/when-to-use.md) - Is hypergraph right for your use case?
+- [Quick Start](01-introduction/quick-start.md) - Get running in 5 minutes
+- [Comparison](01-introduction/comparison.md) - How hypergraph compares to other frameworks
 
-### Concepts
-- [Philosophy](philosophy.md) - Why hypergraph exists and design principles
-- [Framework Comparison](comparison.md) - How hypergraph compares to LangGraph, Hamilton, and others
+### Core Concepts
+- [Getting Started](02-core-concepts/getting-started.md) - Core concepts, creating nodes, building graphs, running workflows
+
+### Patterns
+- [Simple Pipeline](03-patterns/01-simple-pipeline.md) - Linear DAGs, data transformations
+- [Routing](03-patterns/02-routing.md) - Conditional routing with @ifelse and @route
+- [Agentic Loops](03-patterns/03-agentic-loops.md) - Iterative refinement, multi-turn workflows
+- [Hierarchical Composition](03-patterns/04-hierarchical.md) - Nest graphs, Think Singular Scale with Map
+- [Multi-Agent](03-patterns/05-multi-agent.md) - Agent teams, orchestration patterns
+
+### Real-World Examples
+- [Multi-Turn RAG](04-real-world/multi-turn-rag.md) - Conversational RAG with follow-up questions
+- [Evaluation Harness](04-real-world/evaluation-harness.md) - Test conversation systems at scale
+
+### How-To Guides
+- [Batch Processing](05-how-to/batch-processing.md) - Process multiple inputs with runner.map()
+- [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
 
 ### API Reference
-- [Graph](api/graph.md) - Graph construction, validation, and properties
-- [Nodes](api/nodes.md) - FunctionNode, GraphNode, and HyperNode
-- [Runners](api/runners.md) - SyncRunner, AsyncRunner, and execution model
-- [InputSpec](api/inputspec.md) - Input categorization and requirements
+- [Graph](06-api-reference/graph.md) - Graph construction, validation, and properties
+- [Nodes](06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
+- [Gates](06-api-reference/gates.md) - RouteNode, IfElseNode, @route, @ifelse
+- [Runners](06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [InputSpec](06-api-reference/inputspec.md) - Input categorization and requirements
+
+### Design
+- [Philosophy](07-design/philosophy.md) - Why hypergraph exists and design principles
 
 ## Design Principles
 

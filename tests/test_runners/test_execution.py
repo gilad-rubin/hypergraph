@@ -614,9 +614,10 @@ class TestFilterOutputs:
         assert result == {"doubled": 10}
 
     def test_missing_select_key_ignored(self):
-        """Select keys not in state are ignored."""
+        """Select keys not in state are ignored with warning."""
         graph = Graph([double])
         state = GraphState(values={"doubled": 10})
 
-        result = filter_outputs(state, graph, select=["doubled", "nonexistent"])
+        with pytest.warns(UserWarning, match="Requested outputs not found"):
+            result = filter_outputs(state, graph, select=["doubled", "nonexistent"])
         assert result == {"doubled": 10}

@@ -390,12 +390,14 @@ from typing import AsyncIterator
 @node(output_name="tokens")
 async def stream_llm(prompt: str) -> AsyncIterator[str]:
     """Stream LLM response tokens."""
-    async for chunk in openai.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
+    stream = openai.responses.create(
+        model="gpt-5.2",
+        input=prompt,
         stream=True,
-    ):
-        yield chunk.choices[0].delta.content or ""
+    )
+    for part in stream:
+        if part.output_text:
+            yield part.output_text
 
 print(stream_llm.is_async)      # True
 print(stream_llm.is_generator)  # True
@@ -652,11 +654,76 @@ else:
     print(f"Failed: {result.error}")
 ```
 
+## Conditional Routing
+
+Use `@route` to control execution flow based on data.
+
+### Basic Routing
+
+```python
+from hypergraph import Graph, node, route, END, SyncRunner
+
+@node(output_name="doc_type")
+def classify(document: str) -> str:
+    """Classify document type."""
+    if "diagram" in document.lower():
+        return "visual"
+    return "text"
+
+@route(targets=["text_processor", "visual_processor"])
+def route_by_type(doc_type: str) -> str:
+    """Route to appropriate processor."""
+    if doc_type == "visual":
+        return "visual_processor"
+    return "text_processor"
+
+@node(output_name="result")
+def text_processor(document: str) -> str:
+    return f"Text: {document}"
+
+@node(output_name="result")
+def visual_processor(document: str) -> str:
+    return f"Visual: {document}"
+
+graph = Graph([classify, route_by_type, text_processor, visual_processor])
+runner = SyncRunner()
+
+result = runner.run(graph, {"document": "This has a diagram"})
+print(result["result"])  # "Visual: This has a diagram"
+```
+
+### Terminating Early with END
+
+```python
+from hypergraph import route, END
+
+@route(targets=["process", END])
+def check_valid(data: dict) -> str:
+    if not data.get("valid"):
+        return END  # Stop execution
+    return "process"
+```
+
+### Agentic Loops
+
+Routing enables cycles for multi-turn workflows:
+
+```python
+@route(targets=["generate", END])
+def should_continue(attempts: int, quality: float) -> str:
+    if quality >= 0.8 or attempts >= 3:
+        return END
+    return "generate"  # Loop back
+```
+
+For more patterns including multi-target routing and real-world RAG examples, see the [Routing Guide](../03-patterns/02-routing.md).
+
 ## Next Steps
 
-- Explore [API Reference](api/) for complete documentation on nodes, graphs, and types
-- Read [Runners API](api/runners.md) for detailed runner documentation
-- Read [Philosophy](philosophy.md) to understand the design principles
+- [Routing Guide](../03-patterns/02-routing.md) - Conditional routing, agentic loops, and real-world patterns
+- Explore [API Reference](../06-api-reference/graph.md) for complete documentation on nodes, graphs, and types
+- Read [Runners API](../06-api-reference/runners.md) for detailed runner documentation
+- Read [Philosophy](../07-design/philosophy.md) to understand the design principles
 - Try building a small pipeline with `strict_types=True` to catch errors early
 
 ## Common Patterns

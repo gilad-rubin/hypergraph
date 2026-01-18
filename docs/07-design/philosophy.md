@@ -13,7 +13,7 @@ Hypergraph is a graph-native execution system that supports DAGs, cycles, branch
 
 ### Where It Started: DAGs Done Right
 
-Hypergraph began as an answer to existing DAG frameworks like Hamilton and Pipefunc. The key innovation was **hierarchical composition** - pipelines are nodes that can be nested infinitely.
+Hypergraph began as an answer to existing DAG frameworks. The key innovation was **hierarchical composition** - pipelines are nodes that can be nested infinitely.
 
 This enabled:
 - Reusable pipeline components
@@ -53,9 +53,9 @@ Step 4 is **impossible** in a DAG - you cannot loop back to retrieval. The entir
 
 ---
 
-## Why Not LangGraph or Pydantic-Graph?
+## Why Not State-Based Frameworks?
 
-Both solve cycles. Both require:
+Existing agent frameworks solve cycles. But they require:
 
 - **Explicit state objects** that functions must read from and write to
 - **Manual edge wiring** between nodes
@@ -69,7 +69,7 @@ Both solve cycles. Both require:
 
 ## Key Differentiators
 
-| Aspect | LangGraph / Pydantic-Graph | Hypergraph |
+| Aspect | State-Based Frameworks | Hypergraph |
 |--------|---------------------------|------------|
 | **State definition** | Static TypedDict or Pydantic model required | No state class needed - edges inferred from names |
 | **Graph construction** | Edges defined at class definition time | Build graphs dynamically at runtime |
@@ -167,6 +167,6 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 
 Hypergraph started as a better DAG framework with hierarchical composition. It evolved to support cycles, runtime conditional branches, and multi-turn interactions when DAGs proved insufficient for modern AI workflows.
 
-Rather than adopting the state-object pattern of LangGraph, hypergraph kept its core insight: **automatic edge inference from matching names.** Define pure functions with clear inputs and outputs. Let the framework infer edges, validate at build time, and handle persistence automatically.
+Rather than adopting the state-object pattern of existing agent frameworks, hypergraph kept its core insight: **automatic edge inference from matching names.** Define pure functions with clear inputs and outputs. Let the framework infer edges, validate at build time, and handle persistence automatically.
 
 The mental model is simple: Nodes are pure functions. Outputs flow between them. DAGs execute in one pass. Cycles iterate until a termination condition. When a checkpointer is present, everything is saved for crash recovery. That's the whole architecture.

@@ -38,9 +38,13 @@ def validate_graph(
         strict_types: Whether to validate type compatibility
     """
     _validate_graph_name(graph_name)
+    _validate_reserved_names(nodes)
     _validate_valid_identifiers(nodes)
     _validate_no_namespace_collision(nodes)
     _validate_consistent_defaults(nodes)
+    _validate_gate_targets(nodes)
+    _validate_no_gate_self_loop(nodes)
+    _validate_multi_target_output_conflicts(nodes)
     if strict_types:
         _validate_types(nodes, nx_graph)
 
@@ -263,3 +267,98 @@ def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None
                 f"  Either change the type annotation on one of the nodes, or add a\n"
                 f"  conversion node between them."
             )
+
+
+# =============================================================================
+# Gate Validation Functions
+# =============================================================================
+
+
+def _validate_reserved_names(nodes: dict[str, "HyperNode"]) -> None:
+    """Node names cannot be reserved words like 'END'."""
+    for name in nodes:
+        if name == "END":
+            raise GraphConfigError(
+                f"Invalid node name: 'END'\n\n"
+                f"  -> 'END' is reserved for the routing sentinel\n\n"
+                f"How to fix: Use a different name (e.g., 'end_node', 'finish')"
+            )
+
+
+def _validate_gate_targets(nodes: dict[str, "HyperNode"]) -> None:
+    """Validate that all gate targets exist in the graph (or are END)."""
+    from hypergraph.nodes.gate import GateNode, END
+
+    for node in nodes.values():
+        if not isinstance(node, GateNode):
+            continue
+
+        for target in node.targets:
+            if target is END:
+                continue  # END is always valid
+            if target not in nodes:
+                raise GraphConfigError(
+                    f"Gate '{node.name}' targets unknown node '{target}'\n\n"
+                    f"  -> Target '{target}' is not in the graph\n"
+                    f"  -> Available nodes: {sorted(nodes.keys())}\n\n"
+                    f"How to fix:\n"
+                    f"  1. Add a node named '{target}' to the graph, OR\n"
+                    f"  2. Remove '{target}' from the gate's targets"
+                )
+
+
+def _validate_no_gate_self_loop(nodes: dict[str, "HyperNode"]) -> None:
+    """Gates cannot route to themselves."""
+    from hypergraph.nodes.gate import GateNode
+
+    for node in nodes.values():
+        if not isinstance(node, GateNode):
+            continue
+
+        if node.name in node.targets:
+            raise GraphConfigError(
+                f"Gate '{node.name}' cannot target itself\n\n"
+                f"  -> targets include '{node.name}'\n\n"
+                f"How to fix:\n"
+                f"  Create a separate node for the retry logic and route to it"
+            )
+
+
+def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> None:
+    """Validate that multi_target gates don't have targets sharing outputs.
+
+    For multi_target=True, we can't know which targets will run, so if
+    two targets produce the same output name, it's an error (could overwrite).
+
+    For multi_target=False (default), exactly one target runs, so same
+    output names are allowed (mutually exclusive).
+    """
+    from hypergraph.nodes.gate import RouteNode, END
+
+    for node in nodes.values():
+        if not isinstance(node, RouteNode):
+            continue
+        if not node.multi_target:
+            continue  # Mutex - no validation needed
+
+        # Check for duplicate outputs among targets
+        output_producers: dict[str, list[str]] = {}
+        for target_name in node.targets:
+            if target_name is END:
+                continue
+            target = nodes.get(target_name)
+            if target is None:
+                continue
+            for output in target.outputs:
+                output_producers.setdefault(output, []).append(target_name)
+
+        for output, producers in output_producers.items():
+            if len(producers) > 1:
+                raise GraphConfigError(
+                    f"Multi-target gate '{node.name}' has targets sharing output '{output}'\n\n"
+                    f"  -> Targets producing '{output}': {producers}\n"
+                    f"  -> multi_target=True means multiple targets can run in parallel\n\n"
+                    f"How to fix:\n"
+                    f"  - Rename outputs so each target produces unique names, OR\n"
+                    f"  - Use multi_target=False if targets are mutually exclusive"
+                )

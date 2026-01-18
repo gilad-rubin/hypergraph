@@ -117,8 +117,12 @@ class Graph:
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
 
     def _get_edge_produced_values(self) -> set[str]:
-        """Get all value names that are produced by edges."""
-        return {data["value_name"] for _, _, data in self._nx_graph.edges(data=True)}
+        """Get all value names that are produced by data edges."""
+        return {
+            data["value_name"]
+            for _, _, data in self._nx_graph.edges(data=True)
+            if data.get("edge_type") == "data"
+        }
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""
@@ -144,24 +148,89 @@ class Graph:
         output_to_source = self._create_output_source_mapping(nodes)
         self._add_nodes_to_graph(G, nodes)
         self._add_data_edges(G, nodes, output_to_source)
+        self._add_control_edges(G, nodes)
         return G
 
     def _create_output_source_mapping(
         self, nodes: list[HyperNode]
     ) -> dict[str, str]:
-        """Map each output name to its source node name."""
+        """Map each output name to its source node name.
+
+        Multiple nodes can produce the same output if they are in mutex paths
+        controlled by a gate with multi_target=False.
+        """
+        from hypergraph.nodes.gate import GateNode, RouteNode
+
+        # First pass: find which nodes are mutex via gate control
+        mutex_groups = self._find_mutex_output_groups(nodes)
+
         result: dict[str, str] = {}
+        output_sources: dict[str, list[str]] = {}  # output -> [node_names]
+
         for node in nodes:
             for output in node.outputs:
-                if output in result:
-                    raise GraphConfigError(
-                        f"Multiple nodes produce '{output}'\n\n"
-                        f"  -> {result[output]} creates '{output}'\n"
-                        f"  -> {node.name} creates '{output}'\n\n"
-                        f"How to fix: Rename one output to avoid conflict"
-                    )
-                result[output] = node.name
+                output_sources.setdefault(output, []).append(node.name)
+
+        for output, sources in output_sources.items():
+            if len(sources) == 1:
+                result[output] = sources[0]
+            elif self._are_all_mutex(sources, mutex_groups):
+                # All sources are mutually exclusive - pick first for edge building
+                result[output] = sources[0]
+            else:
+                raise GraphConfigError(
+                    f"Multiple nodes produce '{output}'\n\n"
+                    f"  -> {sources[0]} creates '{output}'\n"
+                    f"  -> {sources[1]} creates '{output}'\n\n"
+                    f"How to fix: Rename one output to avoid conflict"
+                )
         return result
+
+    def _find_mutex_output_groups(
+        self, nodes: list[HyperNode]
+    ) -> list[set[str]]:
+        """Find groups of nodes that are mutually exclusive via gate control.
+
+        Nodes in the same group are mutex if they are targets of a gate
+        with multi_target=False (RouteNode) or always-exclusive (IfElseNode).
+        """
+        from hypergraph.nodes.gate import RouteNode, IfElseNode, END
+
+        mutex_groups: list[set[str]] = []
+
+        for node in nodes:
+            # RouteNode with multi_target=False: targets are mutually exclusive
+            if isinstance(node, RouteNode) and not node.multi_target:
+                targets = {
+                    t for t in node.targets
+                    if t is not END and isinstance(t, str)
+                }
+                if len(targets) >= 2:
+                    mutex_groups.append(targets)
+            # IfElseNode: targets are always mutually exclusive (binary gate)
+            elif isinstance(node, IfElseNode):
+                targets = {
+                    t for t in node.targets
+                    if t is not END and isinstance(t, str)
+                }
+                if len(targets) >= 2:
+                    mutex_groups.append(targets)
+
+        return mutex_groups
+
+    def _are_all_mutex(
+        self, node_names: list[str], mutex_groups: list[set[str]]
+    ) -> bool:
+        """Check if all given nodes are mutually exclusive."""
+        if len(node_names) < 2:
+            return True
+
+        # All nodes must be in the same mutex group
+        node_set = set(node_names)
+        for group in mutex_groups:
+            if node_set <= group:  # All nodes are in this group
+                return True
+        return False
 
     def _add_nodes_to_graph(self, G: nx.DiGraph, nodes: list[HyperNode]) -> None:
         """Add all nodes with their attributes to the graph."""
@@ -184,6 +253,29 @@ class Graph:
             for param in node.inputs
             if param in output_to_source
         )
+
+    def _add_control_edges(
+        self,
+        G: nx.DiGraph,
+        nodes: list[HyperNode],
+    ) -> None:
+        """Add control edges from gate nodes to their targets.
+
+        Control edges indicate routing relationships but don't carry data.
+        """
+        from hypergraph.nodes.gate import GateNode, END
+
+        for node in nodes:
+            if not isinstance(node, GateNode):
+                continue
+
+            for target in node.targets:
+                if target is END:
+                    continue  # END is not a node
+                if target in G.nodes:
+                    # Only add control edge if no data edge exists
+                    if not G.has_edge(node.name, target):
+                        G.add_edge(node.name, target, edge_type="control")
 
     def bind(self, **values: Any) -> "Graph":
         """Bind default values. Returns new Graph (immutable).

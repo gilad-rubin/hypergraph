@@ -1,7 +1,11 @@
 """
 Parametrized tests using the capability matrix.
 
-This file demonstrates how to use the capability matrix for systematic testing.
+Test Strategy:
+- Default: Use pairwise combinations (~100 tests) for fast local development
+- CI: Use full matrix (~8000 tests) with `pytest -m full_matrix`
+
+All tests run in parallel via pytest-xdist.
 """
 
 import pytest
@@ -14,11 +18,49 @@ from .matrix import (
     Topology,
     MapMode,
     NestingDepth,
+    Renaming,
+    Binding,
+    NodeType,
     all_valid_combinations,
+    pairwise_combinations,
     combinations_for,
     count_combinations,
 )
 from .builders import build_graph_for_capability, get_test_inputs
+
+
+# =============================================================================
+# Test helpers
+# =============================================================================
+
+
+def run_capability_sync(cap: Capability) -> None:
+    """Run a capability test with SyncRunner."""
+    graph = build_graph_for_capability(cap)
+    inputs = get_test_inputs(cap)
+
+    runner = SyncRunner()
+    kwargs = {"max_iterations": 10} if cap.topology == Topology.CYCLIC else {}
+
+    result = runner.run(graph, inputs, **kwargs)
+    assert result.status == RunStatus.COMPLETED, f"Failed: {cap}"
+
+
+async def run_capability_async(cap: Capability) -> None:
+    """Run a capability test with AsyncRunner."""
+    graph = build_graph_for_capability(cap)
+    inputs = get_test_inputs(cap)
+
+    runner = AsyncRunner()
+    kwargs = {"max_iterations": 10} if cap.topology == Topology.CYCLIC else {}
+
+    result = await runner.run(graph, inputs, **kwargs)
+    assert result.status == RunStatus.COMPLETED, f"Failed: {cap}"
+
+
+# Cache pairwise combinations (computed once at import time)
+_sync_pairwise = [c for c in pairwise_combinations() if c.runner == Runner.SYNC]
+_async_pairwise = [c for c in pairwise_combinations() if c.runner == Runner.ASYNC]
 
 
 # =============================================================================
@@ -34,6 +76,13 @@ class TestMatrixSanity:
         combos = list(all_valid_combinations())
         assert len(combos) > 0
 
+    def test_pairwise_is_smaller_than_full(self):
+        """Pairwise should be much smaller than full matrix."""
+        pairwise = list(pairwise_combinations())
+        full = list(all_valid_combinations())
+        assert len(pairwise) < len(full) / 10, "Pairwise should be <10% of full"
+        assert len(pairwise) >= 20, "Pairwise should have meaningful coverage"
+
     def test_all_combinations_are_valid(self):
         """Every generated combination passes is_valid()."""
         for cap in all_valid_combinations():
@@ -46,8 +95,6 @@ class TestMatrixSanity:
 
     def test_nested_combinations_have_graph_node(self):
         """Nested combinations include GraphNode type."""
-        from .matrix import NodeType
-
         for cap in all_valid_combinations():
             if cap.nesting != NestingDepth.FLAT:
                 assert NodeType.GRAPH_NODE in cap.node_types, f"Nested but no GraphNode: {cap}"
@@ -66,143 +113,80 @@ class TestMatrixSanity:
 
 
 # =============================================================================
-# Subset tests (faster, focused)
+# Pairwise tests (default - fast local development)
 # =============================================================================
 
 
-class TestSyncRunnerSubset:
-    """Test a subset of sync runner combinations."""
+class TestPairwiseSync:
+    """Pairwise sync runner tests - covers all dimension pairs efficiently."""
 
-    @pytest.mark.parametrize(
-        "cap",
-        list(combinations_for(runner=Runner.SYNC, nesting=NestingDepth.FLAT))[:10],
-        ids=str,
-    )
-    def test_sync_flat_combinations(self, cap: Capability):
-        """Sync runner with flat graphs should execute."""
-        graph = build_graph_for_capability(cap)
-        inputs = get_test_inputs(cap)
-
-        runner = SyncRunner()
-
-        # Cyclic graphs need max_iterations
-        kwargs = {}
-        if cap.topology == Topology.CYCLIC:
-            kwargs["max_iterations"] = 5
-
-        result = runner.run(graph, inputs, **kwargs)
-        assert result.status == RunStatus.COMPLETED
+    @pytest.mark.parametrize("cap", _sync_pairwise, ids=str)
+    def test_sync_pairwise(self, cap: Capability):
+        """Execute sync capability from pairwise set."""
+        run_capability_sync(cap)
 
 
-class TestAsyncRunnerSubset:
-    """Test a subset of async runner combinations."""
+class TestPairwiseAsync:
+    """Pairwise async runner tests - covers all dimension pairs efficiently."""
 
-    @pytest.mark.parametrize(
-        "cap",
-        list(combinations_for(runner=Runner.ASYNC, nesting=NestingDepth.FLAT))[:10],
-        ids=str,
-    )
-    async def test_async_flat_combinations(self, cap: Capability):
-        """Async runner with flat graphs should execute."""
-        graph = build_graph_for_capability(cap)
-        inputs = get_test_inputs(cap)
-
-        runner = AsyncRunner()
-
-        kwargs = {}
-        if cap.topology == Topology.CYCLIC:
-            kwargs["max_iterations"] = 5
-
-        result = await runner.run(graph, inputs, **kwargs)
-        assert result.status == RunStatus.COMPLETED
-
-
-class TestNestedSubset:
-    """Test nested graph combinations."""
-
-    @pytest.mark.parametrize(
-        "cap",
-        list(combinations_for(runner=Runner.SYNC, nesting=NestingDepth.ONE_LEVEL))[:5],
-        ids=str,
-    )
-    def test_sync_one_level_nesting(self, cap: Capability):
-        """Sync runner with one level of nesting."""
-        graph = build_graph_for_capability(cap)
-        inputs = get_test_inputs(cap)
-
-        runner = SyncRunner()
-
-        kwargs = {}
-        if cap.topology == Topology.CYCLIC:
-            kwargs["max_iterations"] = 5
-
-        result = runner.run(graph, inputs, **kwargs)
-        assert result.status == RunStatus.COMPLETED
+    @pytest.mark.parametrize("cap", _async_pairwise, ids=str)
+    async def test_async_pairwise(self, cap: Capability):
+        """Execute async capability from pairwise set."""
+        await run_capability_async(cap)
 
 
 # =============================================================================
-# Full matrix test (slow, comprehensive)
+# Full matrix tests (CI only - comprehensive)
 # =============================================================================
 
 
-@pytest.mark.slow
-class TestFullMatrix:
+@pytest.mark.full_matrix
+class TestFullMatrixSync:
     """
-    Full matrix tests - run all valid combinations.
+    Full matrix sync tests - run ALL valid sync combinations.
 
-    Mark with @pytest.mark.slow so they can be skipped in quick runs.
-    Run with: pytest -m slow
+    Run with: pytest -m full_matrix
     """
 
-    @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.SYNC)), ids=str)
+    @pytest.mark.parametrize(
+        "cap", list(combinations_for(runner=Runner.SYNC)), ids=str
+    )
     def test_all_sync_combinations(self, cap: Capability):
         """Every valid sync combination should execute."""
-        graph = build_graph_for_capability(cap)
-        inputs = get_test_inputs(cap)
+        run_capability_sync(cap)
 
-        runner = SyncRunner()
 
-        kwargs = {}
-        if cap.topology == Topology.CYCLIC:
-            kwargs["max_iterations"] = 5
+@pytest.mark.full_matrix
+class TestFullMatrixAsync:
+    """
+    Full matrix async tests - run ALL valid async combinations.
 
-        result = runner.run(graph, inputs, **kwargs)
-        assert result.status == RunStatus.COMPLETED
+    Run with: pytest -m full_matrix
+    """
 
-    @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.ASYNC)), ids=str)
+    @pytest.mark.parametrize(
+        "cap", list(combinations_for(runner=Runner.ASYNC)), ids=str
+    )
     async def test_all_async_combinations(self, cap: Capability):
         """Every valid async combination should execute."""
-        graph = build_graph_for_capability(cap)
-        inputs = get_test_inputs(cap)
-
-        runner = AsyncRunner()
-
-        kwargs = {}
-        if cap.topology == Topology.CYCLIC:
-            kwargs["max_iterations"] = 5
-
-        result = await runner.run(graph, inputs, **kwargs)
-        assert result.status == RunStatus.COMPLETED
+        await run_capability_async(cap)
 
 
 # =============================================================================
-# Specific capability tests
+# Focused capability tests (verify specific behaviors beyond just "it runs")
 # =============================================================================
 
 
-class TestMapOverCombinations:
-    """Test map_over specific combinations."""
+class TestMapOverBehavior:
+    """Test map_over specific behavior."""
 
     @pytest.mark.parametrize(
         "cap",
-        list(combinations_for(map_mode=MapMode.ZIP, runner=Runner.SYNC))[:5],
+        [c for c in _sync_pairwise if c.map_mode == MapMode.ZIP and c.has_nesting],
         ids=str,
     )
     def test_zip_mode_produces_equal_length_outputs(self, cap: Capability):
         """Zip mode should produce outputs matching input length."""
-        if not cap.has_nesting:
-            pytest.skip("Map mode without nesting uses runner.map()")
-
         graph = build_graph_for_capability(cap)
         inputs = get_test_inputs(cap)
 
@@ -210,29 +194,57 @@ class TestMapOverCombinations:
         result = runner.run(graph, inputs)
 
         assert result.status == RunStatus.COMPLETED
-        # Outputs should be lists when mapped
-        for key, value in result.values.items():
+        for value in result.values.values():
             if isinstance(value, list):
-                # Check length matches input
                 input_lengths = [len(v) for v in inputs.values() if isinstance(v, list)]
                 if input_lengths:
                     assert len(value) == input_lengths[0]
 
 
-class TestCyclicCombinations:
-    """Test cyclic graph combinations."""
+class TestCyclicBehavior:
+    """Test cyclic graph specific behavior."""
 
     @pytest.mark.parametrize(
         "cap",
-        list(combinations_for(topology=Topology.CYCLIC, runner=Runner.SYNC, nesting=NestingDepth.FLAT)),
+        [c for c in _sync_pairwise if c.topology == Topology.CYCLIC],
         ids=str,
     )
-    def test_cyclic_requires_max_iterations(self, cap: Capability):
-        """Cyclic graphs need max_iterations to terminate."""
-        graph = build_graph_for_capability(cap)
+    def test_cyclic_stabilizes(self, cap: Capability):
+        """Cyclic graphs should stabilize within max_iterations."""
+        run_capability_sync(cap)
+
+
+class TestRenamingBehavior:
+    """Test renaming specific behavior."""
+
+    @pytest.mark.parametrize(
+        "cap",
+        [c for c in _sync_pairwise if c.renaming != Renaming.NONE],
+        ids=str,
+    )
+    def test_renamed_graphs_execute(self, cap: Capability):
+        """Graphs with renamed nodes/inputs/outputs should execute."""
+        run_capability_sync(cap)
+
+
+class TestBindingBehavior:
+    """Test binding specific behavior."""
+
+    @pytest.mark.parametrize(
+        "cap",
+        [c for c in _sync_pairwise if c.binding == Binding.BOUND],
+        ids=str,
+    )
+    def test_bound_graphs_execute(self, cap: Capability):
+        """Graphs with bound values should execute."""
+        run_capability_sync(cap)
+
+    @pytest.mark.parametrize(
+        "cap",
+        [c for c in _sync_pairwise if c.binding == Binding.BOUND and c.topology == Topology.CYCLIC],
+        ids=str,
+    )
+    def test_binding_removes_input_requirement(self, cap: Capability):
+        """Bound values should not require explicit input."""
         inputs = get_test_inputs(cap)
-
-        runner = SyncRunner()
-        result = runner.run(graph, inputs, max_iterations=10)
-
-        assert result.status == RunStatus.COMPLETED
+        assert "limit" not in inputs

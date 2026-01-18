@@ -4,6 +4,7 @@ Graph builders that create test graphs from Capability specs.
 Each builder function creates nodes/graphs matching the requested capability.
 """
 
+from functools import lru_cache
 from typing import Any
 
 from hypergraph import Graph, node
@@ -15,6 +16,8 @@ from .matrix import (
     Topology,
     NestingDepth,
     MapMode,
+    Renaming,
+    Binding,
 )
 
 
@@ -286,8 +289,93 @@ def _wrap_in_nesting(
 
 
 # =============================================================================
+# Renaming helpers
+# =============================================================================
+
+
+def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
+    """Apply renaming to the graph's nodes based on the renaming mode.
+
+    Returns a new graph with renamed nodes/inputs/outputs.
+    """
+    if renaming == Renaming.NONE:
+        return graph
+
+    nodes = list(graph._nodes.values())
+    if not nodes:
+        return graph
+
+    new_nodes = list(nodes)
+
+    if renaming == Renaming.NODE_NAME:
+        # Rename the first node
+        target_node = nodes[0]
+        renamed = target_node.with_name(f"{target_node.name}_renamed")
+        new_nodes[0] = renamed
+
+    elif renaming == Renaming.INPUTS:
+        # Rename an input on the first node (if it has external inputs)
+        target_node = nodes[0]
+        if target_node.inputs:
+            old_input = target_node.inputs[0]
+            new_input = f"{old_input}_renamed"
+            renamed = target_node.with_inputs({old_input: new_input})
+            new_nodes[0] = renamed
+
+    elif renaming == Renaming.OUTPUTS:
+        # Rename an output on a LEAF node (so we don't break edges)
+        # Find a leaf node (node with out_degree == 0)
+        leaf_nodes = [
+            (i, n) for i, n in enumerate(nodes)
+            if graph._nx_graph.out_degree(n.name) == 0
+        ]
+        if leaf_nodes and leaf_nodes[0][1].outputs:
+            idx, target_node = leaf_nodes[0]
+            old_output = target_node.outputs[0]
+            new_output = f"{old_output}_renamed"
+            renamed = target_node.with_outputs({old_output: new_output})
+            new_nodes[idx] = renamed
+
+    return Graph(new_nodes, name=graph.name, strict_types=graph.strict_types)
+
+
+def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:
+    """Apply binding to the graph based on the binding mode.
+
+    Returns a new graph with bound values.
+    """
+    if binding == Binding.NONE:
+        return graph
+
+    # Find an optional input to bind (one with a default or that we can provide)
+    # For cyclic graphs, we can bind the 'limit' parameter
+    # For other graphs, we can bind any input that has a default
+    if topology == Topology.CYCLIC:
+        # Bind the limit parameter which has a default
+        # Use limit=3 so it stabilizes quickly (within 5 iterations)
+        if "limit" in graph.inputs.all:
+            return graph.bind(limit=3)
+    elif topology == Topology.CONVERGING:
+        # For converging, bind one of the inputs
+        if "y" in graph.inputs.all:
+            return graph.bind(y=100)
+    else:
+        # For other topologies, we need to be careful not to bind required inputs
+        # that don't have defaults. Check if x has a default or is optional
+        optional = graph.inputs.optional
+        if optional:
+            # Bind the first optional input
+            return graph.bind(**{optional[0]: 999})
+
+    return graph
+
+
+# =============================================================================
 # Main builder
 # =============================================================================
+
+# Cache for built graphs - Capability is frozen/hashable
+_graph_cache: dict[Capability, Graph] = {}
 
 
 def build_graph_for_capability(cap: Capability) -> Graph:
@@ -295,19 +383,38 @@ def build_graph_for_capability(cap: Capability) -> Graph:
     Build a test graph matching the given capability spec.
 
     Returns a Graph that can be executed with the appropriate runner.
+    Results are cached since Capability is immutable/hashable.
     """
+    # Check cache first
+    if cap in _graph_cache:
+        return _graph_cache[cap]
+
     # Determine if we should prefer async nodes
     prefer_async = cap.has_async_nodes
 
     # Build base topology
     graph = _build_topology(cap.topology, prefer_async)
 
+    # Apply renaming before nesting (so renamed nodes get wrapped)
+    graph = _apply_renaming(graph, cap.renaming)
+
     # Determine which input to map over (topology-specific)
     map_input = _get_map_input_for_topology(cap.topology)
+
+    # Adjust map_input if inputs were renamed
+    if cap.renaming == Renaming.INPUTS and map_input:
+        # Check if the map_input was the one that got renamed
+        if map_input not in graph.inputs.all:
+            map_input = f"{map_input}_renamed"
 
     # Apply nesting
     graph = _wrap_in_nesting(graph, cap.nesting, cap.map_mode, map_input)
 
+    # Apply binding after nesting
+    graph = _apply_binding(graph, cap.binding, cap.topology)
+
+    # Cache and return
+    _graph_cache[cap] = graph
     return graph
 
 
@@ -331,9 +438,41 @@ def get_test_inputs(cap: Capability) -> dict:
     else:
         base_inputs = {"x": 5}
 
+    # Handle input renaming - rename the key if inputs were renamed
+    if cap.renaming == Renaming.INPUTS:
+        # The first input gets renamed with "_renamed" suffix
+        if cap.topology == Topology.CYCLIC:
+            # 'count' is the first input for cyclic
+            if "count" in base_inputs:
+                base_inputs["count_renamed"] = base_inputs.pop("count")
+        elif cap.topology == Topology.CONVERGING:
+            # 'x' is the first input for converging
+            if "x" in base_inputs:
+                base_inputs["x_renamed"] = base_inputs.pop("x")
+        else:
+            # 'x' is the first input for other topologies
+            if "x" in base_inputs:
+                base_inputs["x_renamed"] = base_inputs.pop("x")
+
+    # Handle binding - remove bound inputs from what we provide
+    if cap.binding == Binding.BOUND:
+        if cap.topology == Topology.CYCLIC:
+            # 'limit' is bound, so don't provide it
+            base_inputs.pop("limit", None)
+        elif cap.topology == Topology.CONVERGING:
+            # 'y' is bound, so don't provide it
+            base_inputs.pop("y", None)
+
     # Map mode needs list inputs for the mapped param only
     if cap.map_mode != MapMode.NONE and cap.has_nesting:
         map_input = _get_map_input_for_topology(cap.topology)
+
+        # Adjust map_input name if it was renamed
+        if cap.renaming == Renaming.INPUTS and map_input:
+            renamed_input = f"{map_input}_renamed"
+            if renamed_input in base_inputs:
+                map_input = renamed_input
+
         if map_input and map_input in base_inputs:
             # Only convert the mapped input to a list, others stay as broadcast
             base_inputs[map_input] = [base_inputs[map_input] + i for i in range(3)]

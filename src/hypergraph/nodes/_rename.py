@@ -95,3 +95,48 @@ def _apply_renames(
     _validate_rename_keys(mapping, values, kind)
     history = [RenameEntry(kind, old, new) for old, new in mapping.items()]
     return tuple(mapping.get(v, v) for v in values), history
+
+
+def build_reverse_rename_map(
+    rename_history: list[RenameEntry],
+    kind: Literal["inputs", "outputs"] = "inputs",
+) -> dict[str, str]:
+    """Build a reverse mapping from current names to original names.
+
+    Handles rename chaining correctly:
+    - Sequential renames (different batches): a->x then x->z → z maps to a
+    - Parallel renames (same batch): x->y, y->z → y maps to x, z maps to y
+
+    Args:
+        rename_history: List of RenameEntry from node._rename_history
+        kind: Which type of renames to process ("inputs" or "outputs")
+
+    Returns:
+        Dict mapping current names to original names.
+        Names that were never renamed won't appear in the dict.
+    """
+    entries = [e for e in rename_history if e.kind == kind]
+    if not entries:
+        return {}
+
+    # Group entries by batch_id
+    batches: dict[int | None, list[RenameEntry]] = {}
+    for entry in entries:
+        batches.setdefault(entry.batch_id, []).append(entry)
+
+    reverse_map: dict[str, str] = {}
+
+    # Process batches in order (by first occurrence in history)
+    for batch_id in dict.fromkeys(e.batch_id for e in entries):
+        batch_entries = batches[batch_id]
+        # For parallel renames (same batch), compute originals using the
+        # reverse_map state BEFORE this batch, not during
+        batch_updates = {}
+        for entry in batch_entries:
+            # Look up original from previous batches only
+            original = reverse_map.get(entry.old, entry.old)
+            batch_updates[entry.new] = original
+        # Apply all updates from this batch at once
+        reverse_map.update(batch_updates)
+
+    return reverse_map

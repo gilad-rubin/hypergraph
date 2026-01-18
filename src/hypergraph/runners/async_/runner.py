@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from hypergraph.exceptions import InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
+from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.helpers import (
     filter_outputs,
@@ -31,6 +32,8 @@ from hypergraph.runners._shared.validation import (
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
+    AsyncIfElseNodeExecutor,
+    AsyncRouteNodeExecutor,
 )
 from hypergraph.runners.async_.superstep import (
     get_concurrency_limiter,
@@ -78,6 +81,8 @@ class AsyncRunner(BaseRunner):
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
+            IfElseNode: AsyncIfElseNodeExecutor(),
+            RouteNode: AsyncRouteNodeExecutor(),
         }
 
     @property

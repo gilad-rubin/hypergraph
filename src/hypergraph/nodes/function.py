@@ -7,7 +7,7 @@ import warnings
 from typing import Any, Callable, get_type_hints
 
 from hypergraph._utils import ensure_tuple, hash_definition
-from hypergraph.nodes._rename import _apply_renames
+from hypergraph.nodes._rename import _apply_renames, build_reverse_rename_map
 from hypergraph.nodes.base import HyperNode
 
 
@@ -368,6 +368,24 @@ class FunctionNode(HyperNode):
             The type annotation, or None if not annotated.
         """
         return self.output_annotation.get(output)
+
+    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Map renamed input names back to original function parameter names.
+
+        Handles chained renames: if a->x->z (via separate calls), z maps to a.
+        Handles parallel renames: if x->y, y->z (same call), they don't chain.
+
+        Args:
+            inputs: Dict with current (potentially renamed) input names as keys
+
+        Returns:
+            Dict with original function parameter names as keys
+        """
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return inputs
+
+        return {reverse_map.get(key, key): value for key, value in inputs.items()}
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped function directly.

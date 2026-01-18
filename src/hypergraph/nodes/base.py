@@ -140,6 +140,24 @@ class HyperNode(ABC):
         """
         return None
 
+    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Map renamed input names to original function parameter names.
+
+        When a node's inputs are renamed (via with_inputs or rename_inputs),
+        this method maps the current/renamed names back to the original
+        parameter names expected by the underlying function.
+
+        Args:
+            inputs: Dict with current (potentially renamed) input names as keys
+
+        Returns:
+            Dict with original function parameter names as keys.
+            Default implementation returns inputs unchanged.
+
+        Override in subclasses that wrap functions with rename support.
+        """
+        return inputs
+
     # === Public API ===
 
     def with_name(self: _T, name: str) -> _T:
