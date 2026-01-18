@@ -11,7 +11,7 @@ How hypergraph compares to other Python workflow frameworks.
 | Feature | hypergraph | LangGraph | Hamilton | Pipefunc | Pydantic-Graph |
 |---------|------------|-----------|----------|----------|----------------|
 | DAG pipelines | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Agentic loops | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Agentic loops | ✓ Working | ✓ | ✗ | ✗ | ✓ |
 | State schema required | ✗ | ✓ | ✗ | ✗ | ✓ |
 | Hierarchical composition | ✓ First-class | ✓ Possible | ✓ Possible | ✓ Possible | ✓ Possible |
 | Dynamic graph construction | ✓ | ✗ | ✓ | ✓ | ✗ |
@@ -294,7 +294,7 @@ Hypergraph is younger than these alternatives. Tradeoffs to consider:
 | Production use | Limited testing at scale |
 | Ecosystem | Smaller community |
 | Integrations | Fewer pre-built connectors |
-| Runners | In progress |
+| Routing | ✓ Working (`@route`, `END`) |
 | Checkpointing | Coming soon |
 
 If you need a battle-tested solution today, LangGraph or Hamilton may be safer choices. If you value the unified model and cleaner API, hypergraph is worth evaluating.

@@ -652,8 +652,73 @@ else:
     print(f"Failed: {result.error}")
 ```
 
+## Conditional Routing
+
+Use `@route` to control execution flow based on data.
+
+### Basic Routing
+
+```python
+from hypergraph import Graph, node, route, END, SyncRunner
+
+@node(output_name="doc_type")
+def classify(document: str) -> str:
+    """Classify document type."""
+    if "diagram" in document.lower():
+        return "visual"
+    return "text"
+
+@route(targets=["text_processor", "visual_processor"])
+def route_by_type(doc_type: str) -> str:
+    """Route to appropriate processor."""
+    if doc_type == "visual":
+        return "visual_processor"
+    return "text_processor"
+
+@node(output_name="result")
+def text_processor(document: str) -> str:
+    return f"Text: {document}"
+
+@node(output_name="result")
+def visual_processor(document: str) -> str:
+    return f"Visual: {document}"
+
+graph = Graph([classify, route_by_type, text_processor, visual_processor])
+runner = SyncRunner()
+
+result = runner.run(graph, {"document": "This has a diagram"})
+print(result["result"])  # "Visual: This has a diagram"
+```
+
+### Terminating Early with END
+
+```python
+from hypergraph import route, END
+
+@route(targets=["process", END])
+def check_valid(data: dict) -> str:
+    if not data.get("valid"):
+        return END  # Stop execution
+    return "process"
+```
+
+### Agentic Loops
+
+Routing enables cycles for multi-turn workflows:
+
+```python
+@route(targets=["generate", END])
+def should_continue(attempts: int, quality: float) -> str:
+    if quality >= 0.8 or attempts >= 3:
+        return END
+    return "generate"  # Loop back
+```
+
+For more patterns including multi-target routing and real-world RAG examples, see the [Routing Guide](guides/routing.md).
+
 ## Next Steps
 
+- [Routing Guide](guides/routing.md) - Conditional routing, agentic loops, and real-world patterns
 - Explore [API Reference](api/) for complete documentation on nodes, graphs, and types
 - Read [Runners API](api/runners.md) for detailed runner documentation
 - Read [Philosophy](philosophy.md) to understand the design principles
