@@ -1,9 +1,3 @@
----
-alwaysApply: true
----
----
-Source: .ruler/instructions.md
----
 ## Workflow
 
 - Use `uv run X` for scripts (ensures consistent dependencies)
@@ -36,8 +30,8 @@ Source: .ruler/instructions.md
 
 ## Maintaining Instructions
 
-After making significant code structure changes, update the relevant .ruler/ markdown files and run:
-```bash
-ruler apply --agents cursor,claude
-```
-This regenerates CLAUDE.md, AGENTS.md and syncs instructions to all configured agents.
+After making significant code structure changes, update the AGENTS.md and README.md markdown files
+
+=========
+
+@README.md
