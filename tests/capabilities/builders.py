@@ -4,6 +4,7 @@ Graph builders that create test graphs from Capability specs.
 Each builder function creates nodes/graphs matching the requested capability.
 """
 
+from functools import lru_cache
 from typing import Any
 
 from hypergraph import Graph, node
@@ -373,13 +374,21 @@ def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:
 # Main builder
 # =============================================================================
 
+# Cache for built graphs - Capability is frozen/hashable
+_graph_cache: dict[Capability, Graph] = {}
+
 
 def build_graph_for_capability(cap: Capability) -> Graph:
     """
     Build a test graph matching the given capability spec.
 
     Returns a Graph that can be executed with the appropriate runner.
+    Results are cached since Capability is immutable/hashable.
     """
+    # Check cache first
+    if cap in _graph_cache:
+        return _graph_cache[cap]
+
     # Determine if we should prefer async nodes
     prefer_async = cap.has_async_nodes
 
@@ -404,6 +413,8 @@ def build_graph_for_capability(cap: Capability) -> Graph:
     # Apply binding after nesting
     graph = _apply_binding(graph, cap.binding, cap.topology)
 
+    # Cache and return
+    _graph_cache[cap] = graph
     return graph
 
 

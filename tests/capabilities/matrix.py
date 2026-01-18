@@ -286,6 +286,79 @@ def all_valid_combinations() -> Iterator[Capability]:
             yield cap
 
 
+def pairwise_combinations() -> Iterator[Capability]:
+    """
+    Generate pairwise (2-way) combinations for efficient testing.
+
+    Uses allpairspy to generate a minimal set of combinations where every
+    pair of dimension values appears at least once. This typically reduces
+    ~8000 combinations to ~100 while catching most interaction bugs.
+
+    Returns:
+        Iterator of valid Capability combinations covering all pairs
+    """
+    from allpairspy import AllPairs
+
+    # Define all dimension values
+    parameters = [
+        list(Runner),
+        list(_all_node_type_combinations()),
+        list(Topology),
+        list(MapMode),
+        list(NestingDepth),
+        list(Concurrency),
+        list(TypeValidation),
+        list(Renaming),
+        list(Binding),
+    ]
+
+    def is_valid_combo(row: list) -> bool:
+        """Filter function for AllPairs - check if partial combo is valid."""
+        if len(row) < 2:
+            return True
+
+        # Build partial capability to check constraints
+        runner = row[0]
+        node_types = row[1] if len(row) > 1 else frozenset([NodeType.SYNC_FUNC])
+
+        # Check sync runner + async nodes constraint
+        async_nodes = {NodeType.ASYNC_FUNC, NodeType.ASYNC_GENERATOR}
+        if runner == Runner.SYNC and (node_types & async_nodes):
+            return False
+
+        # Check concurrency constraint (only if we have that many values)
+        if len(row) > 5:
+            concurrency = row[5]
+            if runner == Runner.SYNC and concurrency == Concurrency.LIMITED:
+                return False
+
+        # Check nesting/graph_node constraints
+        if len(row) > 4:
+            nesting = row[4]
+            if nesting != NestingDepth.FLAT and NodeType.GRAPH_NODE not in node_types:
+                return False
+            if nesting == NestingDepth.FLAT and NodeType.GRAPH_NODE in node_types:
+                return False
+
+        return True
+
+    for combo in AllPairs(parameters, filter_func=is_valid_combo):
+        cap = Capability(
+            runner=combo[0],
+            node_types=combo[1],
+            topology=combo[2],
+            map_mode=combo[3],
+            nesting=combo[4],
+            concurrency=combo[5],
+            type_validation=combo[6],
+            renaming=combo[7],
+            binding=combo[8],
+        )
+        # Final validation (in case filter missed something)
+        if cap.is_valid():
+            yield cap
+
+
 def combinations_for(**filters) -> Iterator[Capability]:
     """
     Generate valid combinations matching specific filters.
