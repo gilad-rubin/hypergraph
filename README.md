@@ -7,6 +7,8 @@
   <a href="docs/comparison.md"><strong>Comparison</strong></a>
 </div>
 
+<br>
+
 <p align="center">
   <a href="https://deepwiki.com/gilad-rubin/hypergraph"><img src="https://deepwiki.com/badge.svg" alt="DeepWiki"/></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"/></a>
