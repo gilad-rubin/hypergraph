@@ -111,8 +111,19 @@ Test pieces independently. Reuse across workflows.
 - [Getting Started](02-core-concepts/getting-started.md) - Core concepts, creating nodes, building graphs, running workflows
 
 ### Patterns
-- [Routing](03-patterns/02-routing.md) - Conditional routing, agentic loops
+- [Simple Pipeline](03-patterns/01-simple-pipeline.md) - Linear DAGs, data transformations
+- [Routing](03-patterns/02-routing.md) - Conditional routing with @ifelse and @route
+- [Agentic Loops](03-patterns/03-agentic-loops.md) - Iterative refinement, multi-turn workflows
 - [Hierarchical Composition](03-patterns/04-hierarchical.md) - Nest graphs, Think Singular Scale with Map
+- [Multi-Agent](03-patterns/05-multi-agent.md) - Agent teams, orchestration patterns
+
+### Real-World Examples
+- [Multi-Turn RAG](04-real-world/multi-turn-rag.md) - Conversational RAG with follow-up questions
+- [Evaluation Harness](04-real-world/evaluation-harness.md) - Test conversation systems at scale
+
+### How-To Guides
+- [Batch Processing](05-how-to/batch-processing.md) - Process multiple inputs with runner.map()
+- [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
 
 ### API Reference
 - [Graph](06-api-reference/graph.md) - Graph construction, validation, and properties

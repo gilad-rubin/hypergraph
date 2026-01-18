@@ -15,8 +15,21 @@
 
 ## Patterns
 
+* [Simple Pipeline](03-patterns/01-simple-pipeline.md)
 * [Routing](03-patterns/02-routing.md)
+* [Agentic Loops](03-patterns/03-agentic-loops.md)
 * [Hierarchical Composition](03-patterns/04-hierarchical.md)
+* [Multi-Agent](03-patterns/05-multi-agent.md)
+
+## Real-World Examples
+
+* [Multi-Turn RAG](04-real-world/multi-turn-rag.md)
+* [Evaluation Harness](04-real-world/evaluation-harness.md)
+
+## How-To Guides
+
+* [Batch Processing](05-how-to/batch-processing.md)
+* [Test Without Framework](05-how-to/test-without-framework.md)
 
 ## API Reference
 
