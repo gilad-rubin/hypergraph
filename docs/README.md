@@ -77,28 +77,6 @@ workflow = Graph(nodes=[
 
 Test pieces independently. Reuse across workflows.
 
-## What's Implemented
-
-**Working now:**
-- `@node` decorator for wrapping functions (sync, async, generators)
-- `Graph` construction with automatic edge inference
-- `InputSpec` categorization (required, optional, bound, internal)
-- Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
-- Hierarchical composition (`.as_node()`, `.map_over()`)
-- Build-time validation with helpful error messages
-- `SyncRunner` for sequential execution
-- `AsyncRunner` with concurrency control (`max_concurrency`)
-- Batch processing with `runner.map()` (zip and product modes)
-- `@route` for conditional routing with `END` sentinel
-- `@ifelse` for binary boolean routing
-- Cyclic graphs for agentic loops and multi-turn workflows
-
-**Coming soon:**
-- Checkpointing and durability
-- Event streaming (`.iter()`)
-- Observability hooks
-- `InterruptNode` for human-in-the-loop
-
 ## Documentation
 
 ### Introduction

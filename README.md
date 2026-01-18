@@ -267,28 +267,6 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 4. **Fail fast** - Validate at build time, not runtime
 5. **Explicit dependencies** - All inputs visible in function signatures
 
-## What's Implemented
-
-**Working now:**
-- `@node` decorator for wrapping functions (sync, async, generators)
-- `Graph` construction with automatic edge inference
-- `InputSpec` categorization (required, optional, bound, internal)
-- Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
-- Hierarchical composition (`.as_node()`, `.map_over()`)
-- Build-time validation with helpful error messages
-- `SyncRunner` for sequential execution
-- `AsyncRunner` with concurrency control (`max_concurrency`)
-- Batch processing with `runner.map()` (zip and product modes)
-- `@route` for conditional routing with `END` sentinel
-- `@ifelse` for binary boolean routing (simpler than `@route`)
-- Cyclic graphs for agentic loops and multi-turn workflows
-
-**Coming soon:**
-- Checkpointing and durability
-- Event streaming (`.iter()`)
-- Observability hooks
-- `InterruptNode` for human-in-the-loop
-
 ## Beyond AI/ML
 
 > **Note**: While the examples above focus on AI/ML use cases, hypergraph is a general-purpose workflow framework. It has no dependencies on LLMs, vector databases, or any AI tooling. Use it for any multi-step workflow: ETL pipelines, business process automation, testing harnesses, or anything else that benefits from graph-based orchestration.
