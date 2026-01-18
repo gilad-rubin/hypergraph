@@ -52,7 +52,7 @@ print(result["result"])    # "short_form"
 
 The magic: **output names match input parameters**.
 
-```
+```text
 clean(raw_data) → "cleaned"
                       ↓
 extract_features(cleaned) → "features"

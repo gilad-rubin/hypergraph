@@ -193,6 +193,7 @@ def generate_with_prompt(query: str, system_prompt: str) -> str:
     return llm.generate(system=system_prompt, user=query)
 
 pipeline = Graph([generate_with_prompt], name="pipeline")
+runner = SyncRunner()
 
 # ─────────────────────────────────────────────────────────────
 # Variant testing loop (cyclic) — tests multiple prompts
@@ -210,7 +211,7 @@ def test_variants(variants: list[str], test_queries: list[str]) -> list[dict]:
     for variant in variants:
         scores = []
         for query in test_queries:
-            response = pipeline.run({"query": query, "system_prompt": variant})
+            response = runner.run(pipeline, {"query": query, "system_prompt": variant})
             scores.append(evaluate(response, query))
         results.append({"prompt": variant, "avg_score": mean(scores)})
     return results

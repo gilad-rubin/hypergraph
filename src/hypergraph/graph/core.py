@@ -117,8 +117,12 @@ class Graph:
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
 
     def _get_edge_produced_values(self) -> set[str]:
-        """Get all value names that are produced by edges."""
-        return {data["value_name"] for _, _, data in self._nx_graph.edges(data=True)}
+        """Get all value names that are produced by data edges."""
+        return {
+            data["value_name"]
+            for _, _, data in self._nx_graph.edges(data=True)
+            if data.get("edge_type") == "data"
+        }
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""

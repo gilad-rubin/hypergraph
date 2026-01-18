@@ -19,7 +19,7 @@ DAG tools can't handle multi-turn conversations or agentic loops. Agent tools ma
 
 Hypergraph spans the full spectrum with a single, minimal API:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                        THE SPECTRUM                             │
 │                                                                 │

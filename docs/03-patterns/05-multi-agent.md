@@ -32,7 +32,7 @@ Each agent encapsulates:
 A team that researches a topic and produces a report:
 
 ```python
-from hypergraph import Graph, node, route, END
+from hypergraph import Graph, node, route, END, SyncRunner, AsyncRunner
 
 # ═══════════════════════════════════════════════════════════════
 # RESEARCHER AGENT

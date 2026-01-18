@@ -576,3 +576,82 @@ class TestBindWithGraphNode:
         # Override with runtime value
         result = runner.run(outer, {"x": 5, "factor": 3})
         assert result["result"] == 15
+
+
+class TestBindWithGates:
+    """Test bind() with graphs containing gates (PR #6 bug fix).
+
+    The bug: _get_edge_produced_values() iterated ALL edges and accessed
+    data["value_name"], but control edges (from gates) don't have this key.
+    This caused KeyError when calling bind() on any graph with routing.
+    """
+
+    def test_bind_with_route_gate(self):
+        """bind() should work on graphs with route gates."""
+        from hypergraph.nodes.gate import route, END
+
+        @route(targets=["a", "b"])
+        def router(x: int) -> str:
+            return "a" if x > 0 else "b"
+
+        @node(output_name="result")
+        def a(val: int) -> int:
+            return val * 2
+
+        @node(output_name="result")
+        def b(val: int) -> int:
+            return val * 3
+
+        g = Graph([router, a, b])
+
+        # This should not raise KeyError
+        g_bound = g.bind(val=5)
+
+        assert "val" in g_bound.inputs.bound
+        assert g_bound.inputs.bound["val"] == 5
+
+    def test_bind_with_route_and_end(self):
+        """bind() should work on graphs with route gates that include END."""
+        from hypergraph.nodes.gate import route, END
+        from hypergraph.runners.sync import SyncRunner
+
+        @route(targets=["process", END])
+        def should_process(x: int) -> str:
+            return "process" if x > 0 else END
+
+        @node(output_name="result")
+        def process(x: int) -> int:
+            return x * 2
+
+        g = Graph([should_process, process])
+
+        # This should not raise KeyError
+        g_bound = g.bind(x=10)
+
+        runner = SyncRunner()
+        result = runner.run(g_bound, {})
+        assert result["result"] == 20
+
+    def test_bind_with_ifelse_gate(self):
+        """bind() should work on graphs with ifelse gates."""
+        from hypergraph.nodes.gate import ifelse
+        from hypergraph.runners.sync import SyncRunner
+
+        @ifelse(when_true="yes_branch", when_false="no_branch")
+        def check(x: int) -> bool:
+            return x > 0
+
+        @node(output_name="result")
+        def yes_branch(val: int) -> str:
+            return "yes"
+
+        @node(output_name="result")
+        def no_branch(val: int) -> str:
+            return "no"
+
+        g = Graph([check, yes_branch, no_branch])
+
+        # This should not raise KeyError
+        g_bound = g.bind(val=5)
+
+        assert "val" in g_bound.inputs.bound

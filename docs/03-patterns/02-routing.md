@@ -491,6 +491,6 @@ graph = Graph([check_length, check_quality, process])
 
 ## Next Steps
 
-- [API Reference: Gates](../api/gates.md) - Complete IfElseNode, RouteNode, and @ifelse/@route documentation
-- [Philosophy](../philosophy.md) - Why hypergraph supports cycles
-- [Getting Started](../getting-started.md) - Core concepts and basics
+- [API Reference: Gates](../06-api-reference/gates.md) - Complete IfElseNode, RouteNode, and @ifelse/@route documentation
+- [Philosophy](../07-design/philosophy.md) - Why hypergraph supports cycles
+- [Getting Started](../02-core-concepts/getting-started.md) - Core concepts and basics
