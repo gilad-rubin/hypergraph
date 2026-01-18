@@ -1,4 +1,4 @@
-# hypergraph
+<h1 align="center">hypergraph</h1>
 
 <div align="center">
   <a href="docs/getting-started.md"><strong>Docs</strong></a> ·
