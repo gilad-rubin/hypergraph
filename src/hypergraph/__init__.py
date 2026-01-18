@@ -7,8 +7,10 @@ from hypergraph.nodes import (
     GateNode,
     GraphNode,
     HyperNode,
+    IfElseNode,
     RenameError,
     RouteNode,
+    ifelse,
     node,
     route,
 )
@@ -28,10 +30,12 @@ from hypergraph.runners import (
 __all__ = [
     # Decorators and node types
     "node",
+    "ifelse",
     "route",
     "FunctionNode",
     "GraphNode",
     "GateNode",
+    "IfElseNode",
     "RouteNode",
     "HyperNode",
     "END",

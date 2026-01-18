@@ -188,15 +188,23 @@ class Graph:
         """Find groups of nodes that are mutually exclusive via gate control.
 
         Nodes in the same group are mutex if they are targets of a gate
-        with multi_target=False.
+        with multi_target=False (RouteNode) or always-exclusive (IfElseNode).
         """
-        from hypergraph.nodes.gate import RouteNode, END
+        from hypergraph.nodes.gate import RouteNode, IfElseNode, END
 
         mutex_groups: list[set[str]] = []
 
         for node in nodes:
+            # RouteNode with multi_target=False: targets are mutually exclusive
             if isinstance(node, RouteNode) and not node.multi_target:
-                # All targets of this gate are mutually exclusive
+                targets = {
+                    t for t in node.targets
+                    if t is not END and isinstance(t, str)
+                }
+                if len(targets) >= 2:
+                    mutex_groups.append(targets)
+            # IfElseNode: targets are always mutually exclusive (binary gate)
+            elif isinstance(node, IfElseNode):
                 targets = {
                     t for t in node.targets
                     if t is not END and isinstance(t, str)
