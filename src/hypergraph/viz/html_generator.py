@@ -151,18 +151,18 @@ const NODE_STYLES = {
     },
     ROUTE: {
         dark: {
-            border: "border-purple-500/50",
+            border: "border-cyan-500/50",
             bg: "bg-slate-800",
-            iconColor: "text-purple-400",
+            iconColor: "text-cyan-400",
             text: "text-slate-100"
         },
         light: {
-            border: "border-purple-400",
+            border: "border-cyan-400",
             bg: "bg-white",
-            iconColor: "text-purple-600",
+            iconColor: "text-cyan-600",
             text: "text-slate-900"
         },
-        icon: "?"
+        icon: "⑂"
     },
     DATA: {
         dark: {
@@ -215,6 +215,9 @@ function CustomNode({ id, data }) {
     const icon = getNodeIcon(nodeType);
 
     const hasOutputs = outputs && outputs.length > 0;
+    const hasInputs = inputs && inputs.length > 0;
+    const boundInputs = inputs ? inputs.filter(i => i.is_bound) : [];
+    const unboundInputs = inputs ? inputs.filter(i => !i.is_bound) : [];
 
     return html`
         <div class="rounded-lg border ${style.border} ${style.bg} shadow-md" style=${{ minWidth: "120px" }}>
@@ -224,6 +227,14 @@ function CustomNode({ id, data }) {
                 position=${Position.Top}
                 style=${{ background: "#64748b", width: "8px", height: "8px" }}
             />
+
+            <!-- Bound Inputs Badge -->
+            ${boundInputs.length > 0 && html`
+                <div class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-indigo-500 ring-2 ring-indigo-500/30 ring-offset-1 ring-offset-slate-900 flex items-center justify-center"
+                     title="${boundInputs.length} bound input${boundInputs.length > 1 ? 's' : ''}: ${boundInputs.map(i => i.name).join(', ')}">
+                    <span class="text-white text-xs font-bold">${boundInputs.length}</span>
+                </div>
+            `}
 
             <!-- Header -->
             <div class="px-3 py-2 flex items-center gap-2">
@@ -236,12 +247,27 @@ function CustomNode({ id, data }) {
                 `}
             </div>
 
+            <!-- Inputs Section (unbound only) -->
+            ${unboundInputs.length > 0 && html`
+                <div class="border-t ${style.border} px-2 py-1 bg-slate-900/30">
+                    ${unboundInputs.map((inp, i) => html`
+                        <div key=${"in_" + i} class="flex items-center gap-1 text-xs">
+                            <span class="text-cyan-400">←</span>
+                            <span class="${style.text} opacity-70">${truncate(inp.name, 20)}</span>
+                            ${showTypes && inp.type && html`
+                                <span class="text-slate-500">: ${truncate(inp.type, 15)}</span>
+                            `}
+                        </div>
+                    `)}
+                </div>
+            `}
+
             <!-- Outputs Section -->
             ${hasOutputs && html`
                 <div class="border-t ${style.border} px-2 py-1">
                     ${outputs.map((out, i) => html`
-                        <div key=${i} class="flex items-center gap-1 text-xs">
-                            <span class="text-slate-400">→</span>
+                        <div key=${"out_" + i} class="flex items-center gap-1 text-xs">
+                            <span class="text-emerald-400">→</span>
                             <span class="${style.text}">${truncate(out.name, 20)}</span>
                             ${showTypes && out.type && html`
                                 <span class="text-slate-500">: ${truncate(out.type, 15)}</span>
@@ -266,29 +292,148 @@ const nodeTypes = {
     custom: CustomNode
 };
 
+// Custom Edge for control flow (dashed)
+const { BaseEdge, getBezierPath } = window.ReactFlow;
+
+function ControlEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, data }) {
+    const [edgePath] = getBezierPath({
+        sourceX, sourceY, sourcePosition,
+        targetX, targetY, targetPosition
+    });
+
+    return html`
+        <${BaseEdge}
+            id=${id}
+            path=${edgePath}
+            markerEnd=${markerEnd}
+            style=${{
+                ...style,
+                strokeDasharray: "5,5",
+                stroke: "#94a3b8"
+            }}
+        />
+    `;
+}
+
+// Register edge types
+const edgeTypes = {
+    control: ControlEdge
+};
+
 // Calculate node dimensions for ELK
 function calculateNodeDimensions(node) {
     const CHAR_WIDTH = 7;
     const HEADER_HEIGHT = 36;
-    const OUTPUT_ROW_HEIGHT = 20;
+    const ROW_HEIGHT = 20;
+    const SECTION_PADDING = 8;
     const PADDING = 48;
     const MAX_WIDTH = 280;
     const MIN_WIDTH = 120;
 
     const labelWidth = (node.data.label?.length || 0) * CHAR_WIDTH;
+
+    // Calculate output widths
     const outputWidths = (node.data.outputs || []).map(o => {
         const nameLen = (o.name?.length || 0);
         const typeLen = node.data.showTypes ? (o.type?.length || 0) + 2 : 0;
         return (nameLen + typeLen) * CHAR_WIDTH;
     });
 
-    const maxContent = Math.max(labelWidth, ...outputWidths, 0);
+    // Calculate input widths (unbound only)
+    const unboundInputs = (node.data.inputs || []).filter(i => !i.is_bound);
+    const inputWidths = unboundInputs.map(i => {
+        const nameLen = (i.name?.length || 0);
+        const typeLen = node.data.showTypes ? (i.type?.length || 0) + 2 : 0;
+        return (nameLen + typeLen) * CHAR_WIDTH;
+    });
+
+    const maxContent = Math.max(labelWidth, ...outputWidths, ...inputWidths, 0);
     const width = Math.min(Math.max(maxContent + PADDING, MIN_WIDTH), MAX_WIDTH);
 
     const outputCount = node.data.outputs?.length || 0;
-    const height = HEADER_HEIGHT + (outputCount > 0 ? outputCount * OUTPUT_ROW_HEIGHT + 8 : 0);
+    const inputCount = unboundInputs.length;
+
+    let height = HEADER_HEIGHT;
+    if (inputCount > 0) height += inputCount * ROW_HEIGHT + SECTION_PADDING;
+    if (outputCount > 0) height += outputCount * ROW_HEIGHT + SECTION_PADDING;
 
     return { width, height };
+}
+
+// Build hierarchical ELK graph
+function buildElkHierarchy(nodes, edges) {
+    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const rootNodes = [];
+    const childrenByParent = new Map();
+
+    // Group nodes by parent
+    for (const node of nodes) {
+        const parentId = node.parentNode;
+        if (parentId) {
+            if (!childrenByParent.has(parentId)) {
+                childrenByParent.set(parentId, []);
+            }
+            childrenByParent.get(parentId).push(node);
+        } else {
+            rootNodes.push(node);
+        }
+    }
+
+    // Build ELK node with potential children
+    function buildElkNode(node) {
+        const dims = calculateNodeDimensions(node);
+        const children = childrenByParent.get(node.id) || [];
+
+        const elkNode = {
+            id: node.id,
+            width: dims.width,
+            height: dims.height
+        };
+
+        if (children.length > 0) {
+            // This is a compound node (pipeline)
+            elkNode.layoutOptions = {
+                "elk.padding": "[top=60,left=20,bottom=20,right=20]"
+            };
+            elkNode.children = children.map(buildElkNode);
+        }
+
+        return elkNode;
+    }
+
+    return {
+        id: "root",
+        layoutOptions: {
+            "elk.algorithm": "layered",
+            "elk.direction": "DOWN",
+            "elk.spacing.nodeNode": "50",
+            "elk.layered.spacing.nodeNodeBetweenLayers": "60",
+            "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+            "elk.hierarchyHandling": "INCLUDE_CHILDREN"
+        },
+        children: rootNodes.map(buildElkNode),
+        edges: edges.map(edge => ({
+            id: edge.id,
+            sources: [edge.source],
+            targets: [edge.target]
+        }))
+    };
+}
+
+// Flatten ELK layout result back to React Flow nodes
+function flattenElkLayout(elkNode, parentPos = { x: 0, y: 0 }, result = new Map()) {
+    const x = (elkNode.x || 0) + parentPos.x;
+    const y = (elkNode.y || 0) + parentPos.y;
+
+    result.set(elkNode.id, { x, y, width: elkNode.width, height: elkNode.height });
+
+    if (elkNode.children) {
+        for (const child of elkNode.children) {
+            flattenElkLayout(child, { x, y }, result);
+        }
+    }
+
+    return result;
 }
 
 // ELK Layout Hook
@@ -307,44 +452,37 @@ function useLayoutedElements(initialNodes, initialEdges) {
             setIsLayouting(true);
 
             const elk = new ELK();
-
-            // Build ELK graph
-            const elkGraph = {
-                id: "root",
-                layoutOptions: {
-                    "elk.algorithm": "layered",
-                    "elk.direction": "DOWN",
-                    "elk.spacing.nodeNode": "50",
-                    "elk.layered.spacing.nodeNodeBetweenLayers": "50",
-                    "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP"
-                },
-                children: initialNodes.map(node => {
-                    const dims = calculateNodeDimensions(node);
-                    return {
-                        id: node.id,
-                        width: dims.width,
-                        height: dims.height
-                    };
-                }),
-                edges: initialEdges.map(edge => ({
-                    id: edge.id,
-                    sources: [edge.source],
-                    targets: [edge.target]
-                }))
-            };
+            const elkGraph = buildElkHierarchy(initialNodes, initialEdges);
 
             try {
                 const layouted = await elk.layout(elkGraph);
 
+                // Flatten positions from hierarchical result
+                const positions = new Map();
+                if (layouted.children) {
+                    for (const child of layouted.children) {
+                        flattenElkLayout(child, { x: 0, y: 0 }, positions);
+                    }
+                }
+
                 // Apply positions back to nodes
+                // For child nodes, position is relative to parent in React Flow
                 const positionedNodes = initialNodes.map(node => {
-                    const elkNode = layouted.children?.find(n => n.id === node.id);
-                    return {
-                        ...node,
-                        position: elkNode
-                            ? { x: elkNode.x || 0, y: elkNode.y || 0 }
-                            : { x: 0, y: 0 }
-                    };
+                    const pos = positions.get(node.id);
+                    let position = pos ? { x: pos.x, y: pos.y } : { x: 0, y: 0 };
+
+                    // If node has parent, make position relative to parent
+                    if (node.parentNode) {
+                        const parentPos = positions.get(node.parentNode);
+                        if (parentPos) {
+                            position = {
+                                x: position.x - parentPos.x,
+                                y: position.y - parentPos.y
+                            };
+                        }
+                    }
+
+                    return { ...node, position };
                 });
 
                 setNodes(positionedNodes);
@@ -403,6 +541,7 @@ function GraphVisualization({ graphData }) {
             nodes=${nodes}
             edges=${edges}
             nodeTypes=${nodeTypes}
+            edgeTypes=${edgeTypes}
             fitView
             fitViewOptions=${{ padding: 0.2 }}
             style=${{ background: bgColor }}

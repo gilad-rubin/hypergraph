@@ -141,8 +141,9 @@ def render_graph(
             "id": edge_id,
             "source": source,
             "target": target,
-            "type": "default",
-            "animated": edge_type == "control",
+            # Use custom "control" edge type for dashed styling
+            "type": "control" if edge_type == "control" else "default",
+            "animated": False,
             "data": {
                 "edgeType": edge_type,
                 "valueName": value_name,
