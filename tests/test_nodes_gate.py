@@ -105,6 +105,14 @@ class TestRouteNodeConstruction:
             def decide(x):
                 return "a"
 
+    def test_string_end_target_raises(self):
+        """String 'END' as target should raise (too confusing with END sentinel)."""
+        with pytest.raises(ValueError, match="'END' as a string target"):
+
+            @route(targets=["END", "process"])
+            def decide(x):
+                return "process"
+
     def test_duplicate_targets_deduplicated(self):
         """Duplicate targets should be deduplicated (preserve order)."""
 

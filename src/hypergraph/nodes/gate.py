@@ -140,6 +140,16 @@ class RouteNode(GateNode):
                 f"How to fix: Provide a non-empty targets list"
             )
 
+        # Reject "END" string as target (too confusing with END sentinel)
+        if "END" in target_list:
+            raise ValueError(
+                f"RouteNode '{func.__name__}' has 'END' as a string target.\n\n"
+                f"The string 'END' is not allowed because it's easily confused "
+                f"with the END sentinel.\n\n"
+                f"How to fix: Use 'from hypergraph import END' and use END directly, "
+                f"or rename your target to something else."
+            )
+
         # Deduplicate targets (preserve order)
         seen: set[str | type[END]] = set()
         unique_targets: list[str | type[END]] = []
