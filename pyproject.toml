@@ -35,7 +35,9 @@ daft = [
     "daft>=0.6.11",
 ]
 
-viz = []
+viz = [
+    "ipykernel>=6.31.0",
+]
 
 notebook = [
     "notebook>=7.5.0",
