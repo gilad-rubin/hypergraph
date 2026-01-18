@@ -5,9 +5,9 @@ Get up and running with hypergraph in 5 minutes.
 ## Installation
 
 ```bash
-uv add hypergraph-ai
+uv add git+https://github.com/gilad-rubin/hypergraph.git
 # or
-pip install hypergraph-ai
+pip install git+https://github.com/gilad-rubin/hypergraph.git
 ```
 
 ## Your First Graph
