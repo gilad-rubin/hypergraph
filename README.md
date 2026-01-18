@@ -1,4 +1,10 @@
-<h1 align="center">hypergraph</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/hypergraph-white-text.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/hypergraph-dark-text.png">
+    <img alt="hypergraph" src="assets/hypergraph-dark-text.png" width="400">
+  </picture>
+</p>
 
 <div align="center">
   <a href="docs/getting-started.md"><strong>Docs</strong></a> ·
