@@ -1782,7 +1782,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 height: (maxY - minY) + PADDING_TOP + PADDING_BOTTOM,
             };
 
-            fitBounds(bounds, { duration: 0, minZoom: 0.3, maxZoom: 1.5 });
+            fitBounds(bounds, { duration: 0, minZoom: 0.1, maxZoom: 1.5 });
         }, [rawLayoutedNodes, fitBounds]);
         
         // ========================================================================
