@@ -1777,6 +1777,21 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 maxY = Math.max(maxY, y + h);
             }
 
+            // Also include edge waypoints in bounds (edges can extend beyond nodes)
+            for (const edge of layoutedEdges) {
+                const points = edge.data?.points || [];
+                for (const pt of points) {
+                    if (pt.x !== undefined) {
+                        minX = Math.min(minX, pt.x);
+                        maxX = Math.max(maxX, pt.x);
+                    }
+                    if (pt.y !== undefined) {
+                        minY = Math.min(minY, pt.y);
+                        maxY = Math.max(maxY, pt.y);
+                    }
+                }
+            }
+
             const contentWidth = maxX - minX;
             const contentHeight = maxY - minY;
 
@@ -1798,7 +1813,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const newX = Math.max(PADDING_LEFT, leftMargin) - minX * zoom;
 
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
-        }, [rawLayoutedNodes, setViewport]);
+        }, [rawLayoutedNodes, layoutedEdges, setViewport]);
         
         // ========================================================================
         // FIX: Force edge recalculation after node size changes (collapse/expand)
