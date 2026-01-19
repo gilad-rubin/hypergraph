@@ -664,44 +664,38 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
         if (data?.points && data.points.length > 0) {
           // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
-          const points = data.points;
+          // Override endpoints with React Flow's handle positions for perfect alignment
+          const points = [...data.points];
+          points[0] = { x: sourceX, y: sourceY };
+          points[points.length - 1] = { x: targetX, y: targetY };
 
           // curveBasis: B-spline interpolation (ported from d3-shape)
           // Creates smooth flowing curves through control points
+          // Duplicate first/last points to clamp the spline to exact endpoints
           const curveBasis = (pts) => {
             if (pts.length < 2) return `M ${pts[0].x} ${pts[0].y}`;
             if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
 
-            let path = `M ${pts[0].x} ${pts[0].y}`;
+            // Clamp B-spline by duplicating endpoints - ensures curve passes through them
+            const clamped = [pts[0], ...pts, pts[pts.length - 1]];
 
-            // For B-spline, we need at least 3 points for curves
-            if (pts.length === 3) {
-              // Special case: 3 points - line to midpoint area, then to end
-              const x0 = pts[0].x, y0 = pts[0].y;
-              const x1 = pts[1].x, y1 = pts[1].y;
-              const x2 = pts[2].x, y2 = pts[2].y;
-              path += ` L ${(5 * x0 + x1) / 6} ${(5 * y0 + y1) / 6}`;
-              path += ` C ${(2 * x0 + x1) / 3} ${(2 * y0 + y1) / 3} ${(x0 + 2 * x1) / 3} ${(y0 + 2 * y1) / 3} ${(x0 + 4 * x1 + x2) / 6} ${(y0 + 4 * y1 + y2) / 6}`;
-              path += ` C ${(2 * x1 + x2) / 3} ${(2 * y1 + y2) / 3} ${(x1 + 2 * x2) / 3} ${(y1 + 2 * y2) / 3} ${x2} ${y2}`;
-              return path;
-            }
+            let path = `M ${clamped[0].x} ${clamped[0].y}`;
 
-            // General case: 4+ points
-            let x0 = pts[0].x, y0 = pts[0].y;
-            let x1 = pts[1].x, y1 = pts[1].y;
+            let x0 = clamped[0].x, y0 = clamped[0].y;
+            let x1 = clamped[1].x, y1 = clamped[1].y;
 
-            // First segment: line to 5/6 point
+            // First segment: line toward second point
             path += ` L ${(5 * x0 + x1) / 6} ${(5 * y0 + y1) / 6}`;
 
             // Middle segments: B-spline cubic beziers
-            for (let i = 2; i < pts.length; i++) {
-              const x = pts[i].x, y = pts[i].y;
+            for (let i = 2; i < clamped.length; i++) {
+              const x = clamped[i].x, y = clamped[i].y;
               path += ` C ${(2 * x0 + x1) / 3} ${(2 * y0 + y1) / 3} ${(x0 + 2 * x1) / 3} ${(y0 + 2 * y1) / 3} ${(x0 + 4 * x1 + x) / 6} ${(y0 + 4 * y1 + y) / 6}`;
               x0 = x1; y0 = y1;
               x1 = x; y1 = y;
             }
 
-            // Final segment: bezier to last point, then line to exact end
+            // Final segment: bezier to exact last point
             path += ` C ${(2 * x0 + x1) / 3} ${(2 * y0 + y1) / 3} ${(x0 + 2 * x1) / 3} ${(y0 + 2 * y1) / 3} ${x1} ${y1}`;
 
             return path;
