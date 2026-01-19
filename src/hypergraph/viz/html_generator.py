@@ -1748,7 +1748,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         }, [nodesWithVisibility, compressedEdges]);
 
         const { layoutedNodes: rawLayoutedNodes, layoutedEdges, layoutError, graphHeight, graphWidth, layoutVersion, isLayouting } = useLayout(groupedNodes, groupedEdges);
-        const { fitView, fitBounds, getViewport } = useReactFlow();
+        const { fitView, fitBounds, getViewport, setViewport } = useReactFlow();
         const updateNodeInternals = useUpdateNodeInternals();
 
         // Custom fit function with FIXED pixel padding (not percentage)
@@ -1782,8 +1782,22 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 height: (maxY - minY) + PADDING_TOP + PADDING_BOTTOM,
             };
 
+            // Use fitBounds to calculate the correct zoom, then adjust to top-align
+            // fitBounds centers content, but we want top-left alignment
             fitBounds(bounds, { duration: 0, minZoom: 0.1, maxZoom: 1.5 });
-        }, [rawLayoutedNodes, fitBounds]);
+
+            // After fitBounds centers, adjust viewport to top-align
+            // Use setTimeout to let fitBounds complete first
+            setTimeout(() => {
+                const viewport = getViewport();
+                // Calculate Y to position topmost content at PADDING_TOP screen pixels
+                // Screen position = flow_position * zoom + viewport_offset
+                // We want: PADDING_TOP = minY * zoom + newY
+                // So: newY = PADDING_TOP - minY * zoom
+                const newY = PADDING_TOP - minY * viewport.zoom;
+                setViewport({ x: viewport.x, y: newY, zoom: viewport.zoom }, { duration: 0 });
+            }, 0);
+        }, [rawLayoutedNodes, fitBounds, getViewport, setViewport]);
         
         // ========================================================================
         // FIX: Force edge recalculation after node size changes (collapse/expand)
