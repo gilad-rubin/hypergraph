@@ -35,31 +35,35 @@ class TestRenderGraph:
         assert "edges" in result
         assert "meta" in result
 
-        assert len(result["nodes"]) == 1
-        node = result["nodes"][0]
-        assert node["id"] == "double"
-        assert node["data"]["nodeType"] == "FUNCTION"
-        assert node["data"]["label"] == "double"
+        # Now always creates: INPUT_GROUP, FUNCTION, DATA nodes
+        node_types = {n["data"]["nodeType"] for n in result["nodes"]}
+        assert "FUNCTION" in node_types
+        assert "INPUT_GROUP" in node_types  # For external input 'x'
+        assert "DATA" in node_types  # For output 'doubled'
+
+        fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
+        assert fn_node["id"] == "double"
+        assert fn_node["data"]["label"] == "double"
 
     def test_render_node_outputs(self):
-        """Test that node outputs are captured correctly."""
+        """Test that node outputs are captured as DATA nodes."""
         graph = Graph(nodes=[double])
         result = render_graph(graph)
 
-        node = result["nodes"][0]
-        outputs = node["data"]["outputs"]
-
-        assert len(outputs) == 1
-        assert outputs[0]["name"] == "doubled"
-        assert outputs[0]["type"] == "int"
+        # Outputs are now separate DATA nodes (always created)
+        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
+        assert len(data_nodes) == 1
+        assert data_nodes[0]["data"]["label"] == "doubled"
+        assert data_nodes[0]["data"]["typeHint"] == "int"
+        assert data_nodes[0]["data"]["sourceId"] == "double"
 
     def test_render_node_inputs(self):
         """Test that node inputs are captured correctly."""
         graph = Graph(nodes=[add])
         result = render_graph(graph)
 
-        node = result["nodes"][0]
-        inputs = node["data"]["inputs"]
+        fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
+        inputs = fn_node["data"]["inputs"]
 
         assert len(inputs) == 2
         input_names = {inp["name"] for inp in inputs}
@@ -70,8 +74,10 @@ class TestRenderGraph:
         graph = Graph(nodes=[double, add])
         result = render_graph(graph)
 
-        assert len(result["nodes"]) == 2
-        node_ids = {n["id"] for n in result["nodes"]}
+        # Check FUNCTION nodes specifically
+        fn_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION"]
+        assert len(fn_nodes) == 2
+        node_ids = {n["id"] for n in fn_nodes}
         assert node_ids == {"double", "add"}
 
     def test_render_edges(self):
@@ -88,18 +94,25 @@ class TestRenderGraph:
         graph = Graph(nodes=[double_fn, use_doubled])
         result = render_graph(graph)
 
-        assert len(result["edges"]) == 1
-        edge = result["edges"][0]
-        assert edge["source"] == "double_fn"
-        assert edge["target"] == "use_doubled"
+        # Edges now flow: INPUT_GROUP → func, func → DATA, DATA → func
+        # Check that the data flow edges exist
+        data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
+        assert len(data_edges) == 1
+        # Data edge goes from DATA node to consumer
+        assert data_edges[0]["source"] == "data_double_fn_doubled"
+        assert data_edges[0]["target"] == "use_doubled"
+
+        # Check output edges (function → DATA node)
+        output_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "output"]
+        assert len(output_edges) == 2  # One for each function's output
 
     def test_render_with_bound_inputs(self):
         """Test that bound inputs are marked correctly."""
         graph = Graph(nodes=[add]).bind(a=5)
         result = render_graph(graph)
 
-        node = result["nodes"][0]
-        inputs = node["data"]["inputs"]
+        fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
+        inputs = fn_node["data"]["inputs"]
 
         a_input = next(inp for inp in inputs if inp["name"] == "a")
         b_input = next(inp for inp in inputs if inp["name"] == "b")
@@ -123,8 +136,12 @@ class TestRenderGraph:
 
         result = render_graph(outer, depth=1)
 
-        # Should have nodes from both outer and inner
-        node_ids = {n["id"] for n in result["nodes"]}
+        # Should have FUNCTION/PIPELINE nodes from both outer and inner
+        fn_and_pipeline_nodes = [
+            n for n in result["nodes"]
+            if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")
+        ]
+        node_ids = {n["id"] for n in fn_and_pipeline_nodes}
         assert "inner" in node_ids  # The pipeline node
         assert "double" in node_ids  # Inner node (expanded)
         assert "add" in node_ids  # Outer node
@@ -145,8 +162,12 @@ class TestRenderGraph:
 
         result = render_graph(outer, depth=0)
 
-        # Should only have outer nodes, inner nodes not expanded
-        node_ids = {n["id"] for n in result["nodes"]}
+        # Should only have outer nodes (FUNCTION/PIPELINE), inner nodes not expanded
+        fn_and_pipeline_nodes = [
+            n for n in result["nodes"]
+            if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")
+        ]
+        node_ids = {n["id"] for n in fn_and_pipeline_nodes}
         assert "inner" in node_ids
         assert "add" in node_ids
         # double should not be present at depth=0

@@ -188,7 +188,21 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         const { expansionState, separateOutputs, showTypes, theme } = options;
         const expMap = expansionState instanceof Map ? expansionState : new Map(Object.entries(expansionState || {}));
 
-        const applyMeta = (nodeList) => nodeList.map((n) => {
+        // Identify DATA nodes (outputs) by their sourceId property
+        const dataNodeIds = new Set(baseNodes.filter(n => n.data?.sourceId).map(n => n.id));
+        // Identify INPUT_GROUP nodes
+        const inputGroupIds = new Set(baseNodes.filter(n => n.data?.nodeType === 'INPUT_GROUP').map(n => n.id));
+
+        // Build function→output mapping for embedding outputs in function nodes
+        const functionOutputs = {};
+        baseNodes.forEach(n => {
+          if (n.data?.sourceId) {
+            if (!functionOutputs[n.data.sourceId]) functionOutputs[n.data.sourceId] = [];
+            functionOutputs[n.data.sourceId].push({ name: n.data.label, type: n.data.typeHint });
+          }
+        });
+
+        const applyMeta = (n) => {
           const isPipeline = n.data?.nodeType === 'PIPELINE';
           const expanded = isPipeline ? Boolean(expMap.get(n.id)) : undefined;
           return {
@@ -202,51 +216,58 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
               isExpanded: expanded,
             },
           };
-        });
+        };
 
         if (separateOutputs) {
-          return {
-            nodes: applyMeta(baseNodes).map((n) => ({
-              ...n,
-              data: { ...n.data, separateOutputs: true },
-            })),
-            edges: baseEdges,
-          };
-        }
-
-        const outputNodes = new Set(baseNodes.filter((n) => n.data?.sourceId).map((n) => n.id));
-        const functionOutputs = {};
-        baseNodes.forEach((n) => {
-          if (n.data?.sourceId) {
-            if (!functionOutputs[n.data.sourceId]) functionOutputs[n.data.sourceId] = [];
-            functionOutputs[n.data.sourceId].push({ name: n.data.label, type: n.data.typeHint });
-          }
-        });
-
-        const nodes = applyMeta(baseNodes)
-          .filter((n) => !outputNodes.has(n.id))
-          .map((n) => ({
-            ...n,
-            data: {
-              ...n.data,
-              separateOutputs: false,
-              outputs: functionOutputs[n.id] || [],
-            },
-          }));
-
-        const edges = baseEdges
-          .filter((e) => !outputNodes.has(e.target))
-          .map((e) => {
-            if (outputNodes.has(e.source)) {
-              const outputNode = baseNodes.find((n) => n.id === e.source);
-              if (outputNode?.data?.sourceId) {
-                return { ...e, id: `e_${outputNode.data.sourceId}_${e.target}`, source: outputNode.data.sourceId };
-              }
-            }
-            return e;
+          // Show DATA nodes and INPUT_GROUP, clear embedded outputs from function nodes
+          const nodes = baseNodes.map(n => {
+            const transformed = applyMeta(n);
+            return {
+              ...transformed,
+              data: {
+                ...transformed.data,
+                separateOutputs: true,
+                outputs: [],  // Clear embedded outputs when showing separate DATA nodes
+              },
+            };
           });
+          return { nodes, edges: baseEdges };
+        } else {
+          // Hide DATA nodes and INPUT_GROUP, embed outputs in function nodes, remap edges
+          const nodes = baseNodes
+            .filter(n => !dataNodeIds.has(n.id) && !inputGroupIds.has(n.id))  // Remove DATA and INPUT_GROUP nodes
+            .map(n => {
+              const transformed = applyMeta(n);
+              return {
+                ...transformed,
+                data: {
+                  ...transformed.data,
+                  separateOutputs: false,
+                  outputs: functionOutputs[n.id] || [],  // Embed outputs in function nodes
+                },
+              };
+            });
 
-        return { nodes, edges };
+          // Remap edges to skip DATA nodes and remove INPUT_GROUP edges
+          const edges = baseEdges
+            .filter(e => !dataNodeIds.has(e.target) && !inputGroupIds.has(e.source))  // Remove edges TO DATA nodes and FROM INPUT_GROUP
+            .map(e => {
+              if (dataNodeIds.has(e.source)) {
+                // Edge FROM DATA node → remap to source function node
+                const dataNode = baseNodes.find(n => n.id === e.source);
+                if (dataNode?.data?.sourceId) {
+                  return {
+                    ...e,
+                    id: `e_${dataNode.data.sourceId}_${e.target}`,
+                    source: dataNode.data.sourceId,
+                  };
+                }
+              }
+              return e;
+            });
+
+          return { nodes, edges };
+        }
       };
 
       const fallbackApplyVisibility = (nodes, expansionState) => {

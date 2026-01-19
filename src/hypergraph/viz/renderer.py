@@ -72,6 +72,38 @@ def render_graph(
         for output in hypernode.outputs:
             output_to_source[output] = name
 
+    # Create INPUT_GROUP node for external inputs
+    external_inputs = list(input_spec.required) + list(input_spec.optional)
+    if external_inputs:
+        param_data = []
+        param_types = []
+        for param in external_inputs:
+            param_type = None
+            # Find the type from consuming nodes
+            for node_name, hypernode in graph.nodes.items():
+                if param in hypernode.inputs:
+                    param_type = hypernode.get_input_type(param)
+                    break
+            param_data.append(param)
+            param_types.append(_format_type(param_type))
+
+        input_group_node = {
+            "id": "__inputs__",
+            "type": "custom",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "nodeType": "INPUT_GROUP",
+                "label": "Inputs",
+                "params": param_data,
+                "paramTypes": param_types,
+                "theme": theme,
+                "showTypes": show_types,
+            },
+            "sourcePosition": "bottom",
+            "targetPosition": "top",
+        }
+        nodes.append(input_group_node)
+
     # Process each node in the graph
     for name, hypernode in graph.nodes.items():
         node_type = _get_node_type(hypernode)
@@ -154,55 +186,69 @@ def render_graph(
             # Add inner edges
             edges.extend(inner_result["edges"])
 
-    # Create separate DATA nodes for outputs if requested
-    if separate_outputs:
-        for name, hypernode in graph.nodes.items():
-            for output_name in hypernode.outputs:
-                output_type = hypernode.get_output_type(output_name)
-                data_node = {
-                    "id": f"data_{name}_{output_name}",
-                    "type": "custom",
-                    "position": {"x": 0, "y": 0},
-                    "data": {
-                        "nodeType": "DATA",
-                        "label": output_name,
-                        "typeHint": _format_type(output_type),
-                        "sourceId": name,  # Link back to source node
-                        "theme": theme,
-                        "showTypes": show_types,
-                    },
-                    "sourcePosition": "bottom",
-                    "targetPosition": "top",
-                }
-                nodes.append(data_node)
+    # Always create DATA nodes for all outputs (visibility controlled by JS)
+    for name, hypernode in graph.nodes.items():
+        for output_name in hypernode.outputs:
+            output_type = hypernode.get_output_type(output_name)
+            data_node = {
+                "id": f"data_{name}_{output_name}",
+                "type": "custom",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "nodeType": "DATA",
+                    "label": output_name,
+                    "typeHint": _format_type(output_type),
+                    "sourceId": name,  # Link back to source node
+                    "theme": theme,
+                    "showTypes": show_types,
+                },
+                "sourcePosition": "bottom",
+                "targetPosition": "top",
+            }
+            nodes.append(data_node)
 
-                # Edge from function to its output
-                edges.append({
-                    "id": f"e_{name}_{data_node['id']}",
-                    "source": name,
-                    "target": data_node["id"],
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                })
+            # Edge from function to its DATA output node
+            edges.append({
+                "id": f"e_{name}_to_{data_node['id']}",
+                "source": name,
+                "target": data_node["id"],
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {"edgeType": "output"},  # Mark as output edge
+            })
 
-    # Build edges from nx_graph
+    # Create edges from INPUT_GROUP to consuming nodes
+    if external_inputs:
+        for param in external_inputs:
+            for node_name, hypernode in graph.nodes.items():
+                if param in hypernode.inputs:
+                    edges.append({
+                        "id": f"e___inputs___{param}_{node_name}",
+                        "source": "__inputs__",
+                        "target": node_name,
+                        "animated": False,
+                        "style": {"stroke": "#64748b", "strokeWidth": 2},
+                        "data": {"edgeType": "input", "valueName": param},
+                    })
+
+    # Build edges from nx_graph - always route data edges through DATA nodes
     for source, target, edge_data in graph.nx_graph.edges(data=True):
         edge_type = edge_data.get("edge_type", "data")
         value_name = edge_data.get("value_name", "")
 
-        edge_id = f"e_{source}_{target}_{value_name}"
-
-        # Determine actual source/target based on separate_outputs mode
-        actual_source = source
-        actual_target = target
-        if separate_outputs and edge_type == "data" and value_name:
-            # Route through DATA node
+        # Data edges go from DATA node to target (function→DATA edge already created above)
+        if edge_type == "data" and value_name:
+            edge_id = f"e_data_{source}_{value_name}_to_{target}"
             actual_source = f"data_{source}_{value_name}"
+        else:
+            # Control edges go directly between nodes
+            edge_id = f"e_{source}_{target}_{value_name}"
+            actual_source = source
 
         rf_edge: dict[str, Any] = {
             "id": edge_id,
             "source": actual_source,
-            "target": actual_target,
+            "target": target,
             "animated": False,
             "style": {"stroke": "#64748b", "strokeWidth": 2},
             "data": {
