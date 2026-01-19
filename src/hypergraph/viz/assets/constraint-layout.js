@@ -564,71 +564,58 @@
       return false;
     };
 
+    // Helper: check if source and target are horizontally aligned
+    const isAligned = (sourceX, targetX, tolerance = spaceX * 0.3) => {
+      return Math.abs(sourceX - targetX) < tolerance;
+    };
+
     // Helper: find safe corridors (x ranges) that avoid all intermediate nodes
     const findSafeCorridors = (sourceRow, targetRow) => {
-      // Collect all node boundaries in intermediate rows
-      const boundaries = [];
-
-      for (let i = sourceRow + 1; i < targetRow; i += 1) {
-        for (const node of rows[i]) {
-          boundaries.push({ x: nodeLeft(node) - spaceX, type: 'start', row: i });
-          boundaries.push({ x: nodeRight(node) + spaceX, type: 'end', row: i });
-        }
+      if (targetRow - sourceRow <= 1) {
+        return [{ left: -Infinity, right: Infinity, center: 0 }];
       }
 
-      if (boundaries.length === 0) {
-        return [{ left: -Infinity, right: Infinity }];
-      }
-
-      // Sort boundaries by x
-      boundaries.sort((a, b) => a.x - b.x);
-
-      // Find the leftmost and rightmost node bounds per row
-      const rowBounds = {};
-      for (let i = sourceRow + 1; i < targetRow; i += 1) {
-        rowBounds[i] = { left: Infinity, right: -Infinity };
-        for (const node of rows[i]) {
-          rowBounds[i].left = Math.min(rowBounds[i].left, nodeLeft(node) - spaceX);
-          rowBounds[i].right = Math.max(rowBounds[i].right, nodeRight(node) + spaceX);
-        }
-      }
-
-      // Global bounds
+      // Find the leftmost and rightmost node bounds across all intermediate rows
       let globalLeft = Infinity;
       let globalRight = -Infinity;
-      for (const row in rowBounds) {
-        globalLeft = Math.min(globalLeft, rowBounds[row].left);
-        globalRight = Math.max(globalRight, rowBounds[row].right);
+
+      for (let i = sourceRow + 1; i < targetRow; i += 1) {
+        for (const node of rows[i]) {
+          globalLeft = Math.min(globalLeft, nodeLeft(node) - spaceX);
+          globalRight = Math.max(globalRight, nodeRight(node) + spaceX);
+        }
       }
 
-      // Safe corridors are: far left, far right, and gaps between nodes
+      // If no nodes in intermediate rows
+      if (globalLeft === Infinity) {
+        return [{ left: -Infinity, right: Infinity, center: 0 }];
+      }
+
       const corridors = [];
 
       // Left corridor (to the left of all nodes)
       corridors.push({
         left: -Infinity,
         right: globalLeft,
-        center: globalLeft - spaceX
+        center: globalLeft - spaceX * 1.5
       });
 
       // Right corridor (to the right of all nodes)
       corridors.push({
         left: globalRight,
         right: Infinity,
-        center: globalRight + spaceX
+        center: globalRight + spaceX * 1.5
       });
 
       // Find gaps between nodes that span all intermediate rows
-      // Collect all unique x positions where gaps might exist
-      const allNodeEdges = [];
       for (let i = sourceRow + 1; i < targetRow; i += 1) {
         const rowNodes = rows[i];
         for (let j = 0; j < rowNodes.length - 1; j++) {
           const gapLeft = nodeRight(rowNodes[j]) + spaceX;
           const gapRight = nodeLeft(rowNodes[j + 1]) - spaceX;
           if (gapRight > gapLeft + minPassageGap) {
-            // Check if this gap is clear in ALL intermediate rows
             const gapCenter = (gapLeft + gapRight) * 0.5;
+            // Check if this gap is clear in ALL intermediate rows
             let clearInAllRows = true;
             for (let k = sourceRow + 1; k < targetRow; k += 1) {
               for (const node of rows[k]) {
@@ -654,9 +641,38 @@
       return corridors;
     };
 
-    // Assign lanes to edges going through the same corridor
-    const edgeLanes = new Map();
-    const corridorUsage = new Map();
+    // Track used x positions per y-range for edge spacing
+    const usedRoutes = [];
+    const minEdgeSpacing = spaceX * 0.8;  // Increased minimum spacing
+
+    const findAvailableX = (preferredX, y1, y2, corridorLeft, corridorRight) => {
+      // Check if preferredX conflicts with existing edges in the same y-range
+      for (const route of usedRoutes) {
+        // Check if y-ranges overlap
+        const yOverlap = !(y2 < route.y1 || y1 > route.y2);
+        if (yOverlap && Math.abs(preferredX - route.x) < minEdgeSpacing) {
+          // Conflict - try to find alternative
+          const tryLeft = route.x - minEdgeSpacing;
+          const tryRight = route.x + minEdgeSpacing;
+
+          // Prefer the option closer to preferredX
+          if (Math.abs(tryLeft - preferredX) < Math.abs(tryRight - preferredX)) {
+            if (corridorLeft === -Infinity || tryLeft >= corridorLeft + spaceX * 0.3) {
+              preferredX = tryLeft;
+            } else if (corridorRight === Infinity || tryRight <= corridorRight - spaceX * 0.3) {
+              preferredX = tryRight;
+            }
+          } else {
+            if (corridorRight === Infinity || tryRight <= corridorRight - spaceX * 0.3) {
+              preferredX = tryRight;
+            } else if (corridorLeft === -Infinity || tryLeft >= corridorLeft + spaceX * 0.3) {
+              preferredX = tryLeft;
+            }
+          }
+        }
+      }
+      return preferredX;
+    };
 
     for (const edge of edges) {
       const source = edge.sourceNode;
@@ -671,26 +687,55 @@
 
       const sourceX = source.x;
       const targetX = target.x;
-      const midX = (sourceX + targetX) * 0.5;
 
-      // Check if direct path is clear
-      const directPathClear = !collidesWithNodes(sourceX, source.row, target.row) &&
-                              !collidesWithNodes(targetX, source.row, target.row) &&
-                              !collidesWithNodes(midX, source.row, target.row);
+      // RULE 1: If source and target are aligned, go straight (no intermediate points)
+      if (isAligned(sourceX, targetX)) {
+        // Check if the straight path is clear
+        if (!collidesWithNodes(sourceX, source.row, target.row)) {
+          continue;  // Straight line, no routing needed
+        }
+      }
 
-      if (directPathClear) {
-        // No routing needed
+      // RULE 2: Check if we can go straight at source.x or target.x
+      const canGoStraightSource = !collidesWithNodes(sourceX, source.row, target.row);
+      const canGoStraightTarget = !collidesWithNodes(targetX, source.row, target.row);
+
+      const firstIntermediateRow = rows[source.row + 1];
+      const lastIntermediateRow = rows[target.row - 1];
+
+      if (!firstIntermediateRow || !lastIntermediateRow) {
         continue;
       }
 
-      // Find safe corridors
+      const y1 = nodeTop(firstIntermediateRow[0]) - spaceY * 0.5;
+      const y2 = nodeBottom(lastIntermediateRow[0]) + spaceY * 0.5;
+
+      // RULE 3: For orthogonal routing, we need explicit horizontal + vertical segments
+      // The path is: source → (sourceX, y1) → (routeX, y1) → (routeX, y2) → (targetX, y2) → target
+
+      if (canGoStraightSource && canGoStraightTarget) {
+        // Can use simple L-shape or straight
+        if (isAligned(sourceX, targetX, spaceX)) {
+          continue;  // Nearly straight
+        }
+        // L-shape: go down from source, then horizontal to target
+        // Points: (sourceX, midY), (targetX, midY)
+        const midY = (y1 + y2) * 0.5;
+        edge.points.push({ x: sourceX, y: midY });
+        edge.points.push({ x: targetX, y: midY });
+        usedRoutes.push({ x: (sourceX + targetX) * 0.5, y1: midY - 10, y2: midY + 10 });
+        continue;
+      }
+
+      // Need corridor routing
       const corridors = findSafeCorridors(source.row, target.row);
 
       if (corridors.length === 0) {
         continue;
       }
 
-      // Choose the best corridor (closest to midpoint of source and target)
+      // Choose the best corridor (closest to midpoint)
+      const midX = (sourceX + targetX) * 0.5;
       let bestCorridor = corridors[0];
       let bestDistance = Infinity;
 
@@ -702,45 +747,35 @@
         }
       }
 
-      // Assign a lane within this corridor
-      const corridorKey = `${source.row}-${target.row}-${Math.round(bestCorridor.center)}`;
-      const laneCount = corridorUsage.get(corridorKey) || 0;
-      corridorUsage.set(corridorKey, laneCount + 1);
+      // Find available x position (avoiding other edges)
+      let routeX = findAvailableX(bestCorridor.center, y1, y2, bestCorridor.left, bestCorridor.right);
 
-      // Calculate lane position within corridor
-      const laneSpacing = spaceX * 0.6;
-      const laneOffset = (laneCount % 3 - 1) * laneSpacing;
-
-      // Ensure the lane stays within the corridor and doesn't collide
-      let routeX = bestCorridor.center + laneOffset;
-
-      // Clamp to corridor bounds (with margin)
-      if (bestCorridor.left !== -Infinity) {
-        routeX = Math.max(routeX, bestCorridor.left + spaceX * 0.3);
-      }
-      if (bestCorridor.right !== Infinity) {
-        routeX = Math.min(routeX, bestCorridor.right - spaceX * 0.3);
-      }
-
-      // Final collision check - if still collides, use corridor center
+      // Final collision check
       if (collidesWithNodes(routeX, source.row, target.row, spaceX * 0.3)) {
         routeX = bestCorridor.center;
       }
 
-      // Store the route X for this edge
-      edgeLanes.set(edge, routeX);
+      // ORTHOGONAL ROUTING: Add points for clean 90° bends
+      // Path: source stem ends at (sourceX, stemEnd)
+      //       → horizontal to (routeX, y1)
+      //       → vertical to (routeX, y2)
+      //       → horizontal to (targetX, y2)
+      //       → target stem starts at (targetX, stemStart)
 
-      // Add TWO intermediate points for a clean S-curve
-      const firstIntermediateRow = rows[source.row + 1];
-      const lastIntermediateRow = rows[target.row - 1];
+      // Add horizontal connector from source.x to routeX
+      edge.points.push({ x: sourceX, y: y1 });      // End of vertical from source
+      edge.points.push({ x: routeX, y: y1 });       // Horizontal move to corridor
 
-      if (firstIntermediateRow && lastIntermediateRow) {
-        const y1 = nodeTop(firstIntermediateRow[0]) - spaceY * 0.5;
-        const y2 = nodeBottom(lastIntermediateRow[0]) + spaceY * 0.5;
-
-        edge.points.push({ x: routeX, y: y1 });
-        edge.points.push({ x: routeX, y: y2 });
+      // Vertical segment through corridor (if y1 != y2)
+      if (Math.abs(y2 - y1) > 10) {
+        edge.points.push({ x: routeX, y: y2 });     // Vertical through corridor
       }
+
+      // Horizontal connector from routeX to target.x
+      edge.points.push({ x: targetX, y: y2 });      // Horizontal move to target
+
+      // Track this route for spacing
+      usedRoutes.push({ x: routeX, y1, y2 });
     }
 
     for (const node of nodes) {
