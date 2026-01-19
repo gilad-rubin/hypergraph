@@ -552,12 +552,111 @@
       );
     }
 
-    // Assign unique edge indices for spacing
-    const edgeSpacing = spaceX * 0.4;
-    let globalEdgeIndex = 0;
-    for (const edge of edges) {
-      edge.globalIndex = globalEdgeIndex++;
-    }
+    // Helper: check if x position collides with any node in intermediate rows
+    const collidesWithNodes = (x, sourceRow, targetRow, margin = spaceX * 0.5) => {
+      for (let i = sourceRow + 1; i < targetRow; i += 1) {
+        for (const node of rows[i]) {
+          if (x >= nodeLeft(node) - margin && x <= nodeRight(node) + margin) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    // Helper: find safe corridors (x ranges) that avoid all intermediate nodes
+    const findSafeCorridors = (sourceRow, targetRow) => {
+      // Collect all node boundaries in intermediate rows
+      const boundaries = [];
+
+      for (let i = sourceRow + 1; i < targetRow; i += 1) {
+        for (const node of rows[i]) {
+          boundaries.push({ x: nodeLeft(node) - spaceX, type: 'start', row: i });
+          boundaries.push({ x: nodeRight(node) + spaceX, type: 'end', row: i });
+        }
+      }
+
+      if (boundaries.length === 0) {
+        return [{ left: -Infinity, right: Infinity }];
+      }
+
+      // Sort boundaries by x
+      boundaries.sort((a, b) => a.x - b.x);
+
+      // Find the leftmost and rightmost node bounds per row
+      const rowBounds = {};
+      for (let i = sourceRow + 1; i < targetRow; i += 1) {
+        rowBounds[i] = { left: Infinity, right: -Infinity };
+        for (const node of rows[i]) {
+          rowBounds[i].left = Math.min(rowBounds[i].left, nodeLeft(node) - spaceX);
+          rowBounds[i].right = Math.max(rowBounds[i].right, nodeRight(node) + spaceX);
+        }
+      }
+
+      // Global bounds
+      let globalLeft = Infinity;
+      let globalRight = -Infinity;
+      for (const row in rowBounds) {
+        globalLeft = Math.min(globalLeft, rowBounds[row].left);
+        globalRight = Math.max(globalRight, rowBounds[row].right);
+      }
+
+      // Safe corridors are: far left, far right, and gaps between nodes
+      const corridors = [];
+
+      // Left corridor (to the left of all nodes)
+      corridors.push({
+        left: -Infinity,
+        right: globalLeft,
+        center: globalLeft - spaceX
+      });
+
+      // Right corridor (to the right of all nodes)
+      corridors.push({
+        left: globalRight,
+        right: Infinity,
+        center: globalRight + spaceX
+      });
+
+      // Find gaps between nodes that span all intermediate rows
+      // Collect all unique x positions where gaps might exist
+      const allNodeEdges = [];
+      for (let i = sourceRow + 1; i < targetRow; i += 1) {
+        const rowNodes = rows[i];
+        for (let j = 0; j < rowNodes.length - 1; j++) {
+          const gapLeft = nodeRight(rowNodes[j]) + spaceX;
+          const gapRight = nodeLeft(rowNodes[j + 1]) - spaceX;
+          if (gapRight > gapLeft + minPassageGap) {
+            // Check if this gap is clear in ALL intermediate rows
+            const gapCenter = (gapLeft + gapRight) * 0.5;
+            let clearInAllRows = true;
+            for (let k = sourceRow + 1; k < targetRow; k += 1) {
+              for (const node of rows[k]) {
+                if (gapCenter >= nodeLeft(node) - spaceX * 0.5 &&
+                    gapCenter <= nodeRight(node) + spaceX * 0.5) {
+                  clearInAllRows = false;
+                  break;
+                }
+              }
+              if (!clearInAllRows) break;
+            }
+            if (clearInAllRows) {
+              corridors.push({
+                left: gapLeft,
+                right: gapRight,
+                center: gapCenter
+              });
+            }
+          }
+        }
+      }
+
+      return corridors;
+    };
+
+    // Assign lanes to edges going through the same corridor
+    const edgeLanes = new Map();
+    const corridorUsage = new Map();
 
     for (const edge of edges) {
       const source = edge.sourceNode;
@@ -570,151 +669,68 @@
         continue;
       }
 
-      // For longer edges, use simplified routing with at most ONE horizontal segment
-      // Find a clear horizontal path that avoids all intermediate nodes
-
-      // Calculate target x position (where we want to end up)
-      const targetX = target.x;
       const sourceX = source.x;
+      const targetX = target.x;
+      const midX = (sourceX + targetX) * 0.5;
 
-      // Check if we can go straight down (no intermediate nodes blocking)
-      let needsDetour = false;
-      let minClearanceLeft = Infinity;
-      let minClearanceRight = Infinity;
+      // Check if direct path is clear
+      const directPathClear = !collidesWithNodes(sourceX, source.row, target.row) &&
+                              !collidesWithNodes(targetX, source.row, target.row) &&
+                              !collidesWithNodes(midX, source.row, target.row);
 
-      for (let i = source.row + 1; i < target.row; i += 1) {
-        for (const node of rows[i]) {
-          const nodeL = nodeLeft(node) - spaceX;
-          const nodeR = nodeRight(node) + spaceX;
-
-          // Check if this node blocks a straight path from source to target
-          const pathMinX = Math.min(sourceX, targetX) - spaceX * 0.5;
-          const pathMaxX = Math.max(sourceX, targetX) + spaceX * 0.5;
-
-          if (nodeL < pathMaxX && nodeR > pathMinX) {
-            needsDetour = true;
-            // Track clearance on each side
-            const leftClear = pathMinX - nodeR;
-            const rightClear = nodeL - pathMaxX;
-            if (leftClear > 0) minClearanceLeft = Math.min(minClearanceLeft, leftClear);
-            if (rightClear > 0) minClearanceRight = Math.min(minClearanceRight, rightClear);
-          }
-        }
-      }
-
-      if (!needsDetour) {
-        // Can go relatively straight - no intermediate points needed
+      if (directPathClear) {
+        // No routing needed
         continue;
       }
 
-      // Need to route around nodes - find the best side
-      // Collect all passages (gaps between nodes) across all intermediate rows
-      const passages = [];
+      // Find safe corridors
+      const corridors = findSafeCorridors(source.row, target.row);
 
-      for (let i = source.row + 1; i < target.row; i += 1) {
-        const rowNodes = rows[i];
-        if (rowNodes.length === 0) continue;
+      if (corridors.length === 0) {
+        continue;
+      }
 
-        // Add passage on the left of all nodes
-        const leftmostNode = rowNodes[0];
-        passages.push({
-          x: nodeLeft(leftmostNode) - spaceX,
-          row: i,
-          side: 'left'
-        });
+      // Choose the best corridor (closest to midpoint of source and target)
+      let bestCorridor = corridors[0];
+      let bestDistance = Infinity;
 
-        // Add passage on the right of all nodes
-        const rightmostNode = rowNodes[rowNodes.length - 1];
-        passages.push({
-          x: nodeRight(rightmostNode) + spaceX,
-          row: i,
-          side: 'right'
-        });
-
-        // Add passages between nodes
-        for (let j = 0; j < rowNodes.length - 1; j++) {
-          const node = rowNodes[j];
-          const nextNode = rowNodes[j + 1];
-          const gap = nodeLeft(nextNode) - nodeRight(node);
-
-          if (gap >= minPassageGap) {
-            passages.push({
-              x: (nodeRight(node) + nodeLeft(nextNode)) * 0.5,
-              row: i,
-              side: 'middle'
-            });
-          }
+      for (const corridor of corridors) {
+        const dist = Math.abs(corridor.center - midX);
+        if (dist < bestDistance) {
+          bestDistance = dist;
+          bestCorridor = corridor;
         }
       }
 
-      // Find the best x position that works for all rows
-      // Prefer positions closer to the midpoint of source and target
-      const midX = (sourceX + targetX) * 0.5;
+      // Assign a lane within this corridor
+      const corridorKey = `${source.row}-${target.row}-${Math.round(bestCorridor.center)}`;
+      const laneCount = corridorUsage.get(corridorKey) || 0;
+      corridorUsage.set(corridorKey, laneCount + 1);
 
-      // Group passages by approximate x position and find one that spans all rows
-      const xTolerance = spaceX;
-      let bestX = null;
-      let bestScore = Infinity;
+      // Calculate lane position within corridor
+      const laneSpacing = spaceX * 0.6;
+      const laneOffset = (laneCount % 3 - 1) * laneSpacing;
 
-      // Try each passage x as a candidate
-      const candidateXs = [...new Set(passages.map(p => p.x))];
+      // Ensure the lane stays within the corridor and doesn't collide
+      let routeX = bestCorridor.center + laneOffset;
 
-      for (const candX of candidateXs) {
-        // Check if this x position has clearance in all intermediate rows
-        let validForAllRows = true;
-
-        for (let i = source.row + 1; i < target.row; i += 1) {
-          let hasPassage = false;
-          for (const node of rows[i]) {
-            const nodeL = nodeLeft(node) - spaceX * 0.3;
-            const nodeR = nodeRight(node) + spaceX * 0.3;
-            if (candX >= nodeL && candX <= nodeR) {
-              validForAllRows = false;
-              break;
-            }
-          }
-          if (!validForAllRows) break;
-        }
-
-        if (validForAllRows) {
-          // Score by distance from midpoint - prefer paths closer to direct line
-          const score = Math.abs(candX - midX);
-          if (score < bestScore) {
-            bestScore = score;
-            bestX = candX;
-          }
-        }
+      // Clamp to corridor bounds (with margin)
+      if (bestCorridor.left !== -Infinity) {
+        routeX = Math.max(routeX, bestCorridor.left + spaceX * 0.3);
+      }
+      if (bestCorridor.right !== Infinity) {
+        routeX = Math.min(routeX, bestCorridor.right - spaceX * 0.3);
       }
 
-      // If no valid passage found, use the side with more clearance
-      if (bestX === null) {
-        // Find leftmost and rightmost bounds across all intermediate rows
-        let globalLeft = Infinity;
-        let globalRight = -Infinity;
-
-        for (let i = source.row + 1; i < target.row; i += 1) {
-          for (const node of rows[i]) {
-            globalLeft = Math.min(globalLeft, nodeLeft(node));
-            globalRight = Math.max(globalRight, nodeRight(node));
-          }
-        }
-
-        // Choose side closer to midpoint
-        const leftOption = globalLeft - spaceX;
-        const rightOption = globalRight + spaceX;
-
-        bestX = Math.abs(leftOption - midX) < Math.abs(rightOption - midX)
-          ? leftOption
-          : rightOption;
+      // Final collision check - if still collides, use corridor center
+      if (collidesWithNodes(routeX, source.row, target.row, spaceX * 0.3)) {
+        routeX = bestCorridor.center;
       }
 
-      // Add spacing offset based on edge index to prevent overlapping
-      const edgeOffset = (edge.globalIndex % 5 - 2) * edgeSpacing;
-      bestX += edgeOffset;
+      // Store the route X for this edge
+      edgeLanes.set(edge, routeX);
 
-      // Add just TWO intermediate points for a clean S-curve
-      // Point 1: horizontal segment start (below source)
-      // Point 2: horizontal segment end (above target)
+      // Add TWO intermediate points for a clean S-curve
       const firstIntermediateRow = rows[source.row + 1];
       const lastIntermediateRow = rows[target.row - 1];
 
@@ -722,8 +738,8 @@
         const y1 = nodeTop(firstIntermediateRow[0]) - spaceY * 0.5;
         const y2 = nodeBottom(lastIntermediateRow[0]) + spaceY * 0.5;
 
-        edge.points.push({ x: bestX, y: y1 });
-        edge.points.push({ x: bestX, y: y2 });
+        edge.points.push({ x: routeX, y: y1 });
+        edge.points.push({ x: routeX, y: y2 });
       }
     }
 
