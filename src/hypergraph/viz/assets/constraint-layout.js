@@ -776,23 +776,23 @@
 
   const defaultOptions = {
     layout: {
-      spaceX: 14,
-      spaceY: 110,
-      layerSpaceY: 100,
-      spreadX: 2.2,
+      spaceX: 20,
+      spaceY: 120,
+      layerSpaceY: 110,
+      spreadX: 2.5,
       padding: 100,
       iterations: 25,
     },
     routing: {
-      spaceX: 26,
-      spaceY: 28,
-      minPassageGap: 40,
-      stemUnit: 8,
-      stemMinSource: 0,
-      stemMinTarget: 15,
-      stemMax: 10,
-      stemSpaceSource: 6,
-      stemSpaceTarget: 10,
+      spaceX: 40,
+      spaceY: 35,
+      minPassageGap: 60,
+      stemUnit: 10,
+      stemMinSource: 5,
+      stemMinTarget: 20,
+      stemMax: 15,
+      stemSpaceSource: 12,
+      stemSpaceTarget: 14,
     },
   };
 

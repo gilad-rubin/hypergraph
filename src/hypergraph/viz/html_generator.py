@@ -642,13 +642,59 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         let edgePath, labelX, labelY;
 
         if (data?.points && data.points.length > 0) {
-          // Build SVG path from constraint layout points
+          // Build SVG path with rounded corners from constraint layout points
           const points = data.points;
-          const pathParts = [`M ${points[0].x} ${points[0].y}`];
-          for (let i = 1; i < points.length; i++) {
-            pathParts.push(`L ${points[i].x} ${points[i].y}`);
-          }
-          edgePath = pathParts.join(' ');
+          const radius = 15; // Corner radius for smooth turns
+
+          // Helper to create rounded corner path
+          const buildSmoothPath = (pts, r) => {
+            if (pts.length < 2) return `M ${pts[0].x} ${pts[0].y}`;
+            if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
+
+            let path = `M ${pts[0].x} ${pts[0].y}`;
+
+            for (let i = 1; i < pts.length - 1; i++) {
+              const prev = pts[i - 1];
+              const curr = pts[i];
+              const next = pts[i + 1];
+
+              // Calculate vectors
+              const v1x = curr.x - prev.x;
+              const v1y = curr.y - prev.y;
+              const v2x = next.x - curr.x;
+              const v2y = next.y - curr.y;
+
+              // Calculate lengths
+              const len1 = Math.sqrt(v1x * v1x + v1y * v1y);
+              const len2 = Math.sqrt(v2x * v2x + v2y * v2y);
+
+              // Skip if segments are too short
+              if (len1 < 1 || len2 < 1) {
+                path += ` L ${curr.x} ${curr.y}`;
+                continue;
+              }
+
+              // Limit radius to half of shortest segment
+              const maxR = Math.min(r, len1 / 2, len2 / 2);
+
+              // Calculate points where the curve starts and ends
+              const startX = curr.x - (v1x / len1) * maxR;
+              const startY = curr.y - (v1y / len1) * maxR;
+              const endX = curr.x + (v2x / len2) * maxR;
+              const endY = curr.y + (v2y / len2) * maxR;
+
+              // Line to curve start, then quadratic bezier through corner
+              path += ` L ${startX} ${startY} Q ${curr.x} ${curr.y} ${endX} ${endY}`;
+            }
+
+            // Final line to last point
+            const last = pts[pts.length - 1];
+            path += ` L ${last.x} ${last.y}`;
+
+            return path;
+          };
+
+          edgePath = buildSmoothPath(points, radius);
 
           // Calculate label position at midpoint of edge
           const midIdx = Math.floor(points.length / 2);
