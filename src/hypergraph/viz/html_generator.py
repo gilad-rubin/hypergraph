@@ -1794,7 +1794,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
             // Calculate scaled dimensions
             const scaledContentWidth = contentWidth * zoom;
-            const scaledContentHeight = contentHeight * zoom;
 
             // Calculate viewport offset
             // Y: top-align with padding
@@ -1807,18 +1806,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const newX = Math.max(PADDING_LEFT, leftMargin) - minX * zoom;
 
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
-
-            // Resize iframe to fit actual scaled content (not zoom=1 size)
-            const actualHeight = scaledContentHeight + PADDING_TOP + PADDING_BOTTOM;
-            const actualWidth = scaledContentWidth + PADDING_LEFT + PADDING_RIGHT;
-            try {
-                if (window.frameElement) {
-                    window.frameElement.style.height = Math.max(200, actualHeight) + 'px';
-                    window.frameElement.style.width = Math.max(300, actualWidth) + 'px';
-                }
-            } catch (e) {
-                // Ignore cross-origin errors
-            }
         }, [rawLayoutedNodes, setViewport]);
         
         // ========================================================================
@@ -1955,7 +1942,21 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
           };
         }, [layoutedNodes, layoutedEdges, layoutVersion]);
 
-        // Note: Iframe resizing is now handled in fitWithFixedPadding for accurate scaled dimensions
+        // --- Iframe Resize Logic ---
+        useEffect(() => {
+            if (graphHeight && graphWidth) {
+                const desiredHeight = Math.max(400, graphHeight + 50);
+                const desiredWidth = Math.max(400, graphWidth + 150);
+                try {
+                    if (window.frameElement) {
+                        window.frameElement.style.height = desiredHeight + 'px';
+                        window.frameElement.style.width = desiredWidth + 'px';
+                    }
+                } catch (e) {
+                    // Ignore cross-origin errors
+                }
+            }
+        }, [graphHeight, graphWidth]);
         // --- Resize Handling (Task 2) ---
         useEffect(() => {
             const handleResize = () => {
