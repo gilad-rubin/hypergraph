@@ -233,9 +233,9 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
           });
           return { nodes, edges: baseEdges };
         } else {
-          // Hide DATA nodes and INPUT_GROUP, embed outputs in function nodes, remap edges
+          // Hide DATA nodes (but keep INPUT_GROUP visible), embed outputs in function nodes, remap edges
           const nodes = baseNodes
-            .filter(n => !dataNodeIds.has(n.id) && !inputGroupIds.has(n.id))  // Remove DATA and INPUT_GROUP nodes
+            .filter(n => !dataNodeIds.has(n.id))  // Remove DATA nodes only, keep INPUT_GROUP
             .map(n => {
               const transformed = applyMeta(n);
               return {
@@ -248,9 +248,9 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
               };
             });
 
-          // Remap edges to skip DATA nodes and remove INPUT_GROUP edges
+          // Remap edges to skip DATA nodes (but keep INPUT_GROUP edges)
           const edges = baseEdges
-            .filter(e => !dataNodeIds.has(e.target) && !inputGroupIds.has(e.source))  // Remove edges TO DATA nodes and FROM INPUT_GROUP
+            .filter(e => !dataNodeIds.has(e.target))  // Remove edges TO DATA nodes only
             .map(e => {
               if (dataNodeIds.has(e.source)) {
                 // Edge FROM DATA node → remap to source function node
@@ -1160,6 +1160,20 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 const labelLen = Math.min(n.data.label?.length || 0, NODE_LABEL_MAX_CHARS);
                 const typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
                 width = Math.min(MAX_NODE_WIDTH, (labelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
+              } else if (n.data?.nodeType === 'INPUT_GROUP') {
+                // INPUT_GROUP shows params as rows
+                const params = n.data?.params || [];
+                const paramTypes = n.data?.paramTypes || [];
+                let maxContentLen = 8; // "Inputs" label minimum
+                params.forEach((p, i) => {
+                  const paramLen = Math.min(p.length, NODE_LABEL_MAX_CHARS);
+                  const typeLen = (n.data?.showTypes && paramTypes[i]) ? Math.min(paramTypes[i].length, TYPE_HINT_MAX_CHARS) + 2 : 0;
+                  const totalLen = paramLen + typeLen + 4;
+                  if (totalLen > maxContentLen) maxContentLen = totalLen;
+                });
+                width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + NODE_BASE_PADDING);
+                // Height: base padding + row height for each param
+                height = 24 + Math.max(1, params.length) * 28;
               } else if (n.data?.nodeType === 'BRANCH') {
                 width = 140;
                 height = 140;
@@ -1181,7 +1195,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
                 height = 52;
                 if (!n.data?.separateOutputs && outputs.length > 0) {
-                  height = 44 + 38 + ((outputs.length - 1) * 24);
+                  // Base height + outputs section with proper spacing
+                  height = 48 + 42 + ((outputs.length - 1) * 28);
                 }
               }
 

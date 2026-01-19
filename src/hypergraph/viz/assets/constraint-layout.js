@@ -811,16 +811,16 @@
   const defaultOptions = {
     layout: {
       spaceX: 14,
-      spaceY: 110,
-      layerSpaceY: 100,
+      spaceY: 140,      // Increased from 110 for more vertical spacing
+      layerSpaceY: 120, // Increased from 100 for more layer spacing
       spreadX: 2.2,
       padding: 100,
       iterations: 25,
     },
     routing: {
       spaceX: 26,
-      spaceY: 28,
-      minPassageGap: 40,
+      spaceY: 36,       // Increased from 28 for better edge routing
+      minPassageGap: 50, // Increased from 40 for wider passages
       stemUnit: 8,
       stemMinSource: 0,
       stemMinTarget: 15,
