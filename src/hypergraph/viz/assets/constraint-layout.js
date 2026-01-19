@@ -555,6 +555,11 @@
 
     // SINGLE-CORRIDOR ROUTING: Find ONE x-position that works for all intermediate rows
     // This eliminates squiggly edges by committing to a single corridor
+
+    // Track used corridor positions to prevent edge overlap
+    const usedCorridorPositions = { left: [], right: [] };
+    const minEdgeSpacing = spaceX * 0.8;  // Minimum spacing between parallel edges
+
     for (const edge of edges) {
       const source = edge.sourceNode;
       const target = edge.targetNode;
@@ -612,10 +617,13 @@
       const rightCorridorX = globalNodeRight + spaceX;
 
       let corridorX;
+      let corridorSide;
       if (Math.abs(naturalX - leftCorridorX) <= Math.abs(naturalX - rightCorridorX)) {
         corridorX = leftCorridorX;
+        corridorSide = 'left';
       } else {
         corridorX = rightCorridorX;
+        corridorSide = 'right';
       }
 
       // Calculate y positions for the routing points
@@ -624,6 +632,25 @@
 
       const y1 = nodeTop(firstBlockedNode) - spaceY;
       const y2 = nodeBottom(lastBlockedNode) + spaceY;
+
+      // Check for conflicts with existing edges in this corridor
+      // and offset if needed to prevent overlapping
+      const usedPositions = usedCorridorPositions[corridorSide];
+      for (const used of usedPositions) {
+        // Check if y-ranges overlap
+        const yOverlap = !(y2 < used.y1 || y1 > used.y2);
+        if (yOverlap && Math.abs(corridorX - used.x) < minEdgeSpacing) {
+          // Offset away from the nodes
+          if (corridorSide === 'left') {
+            corridorX = used.x - minEdgeSpacing;
+          } else {
+            corridorX = used.x + minEdgeSpacing;
+          }
+        }
+      }
+
+      // Record this corridor position
+      usedPositions.push({ x: corridorX, y1, y2 });
 
       // Add just TWO routing points - entry and exit of the single corridor
       edge.points.push({ x: corridorX, y: y1 });
