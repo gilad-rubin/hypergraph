@@ -543,6 +543,7 @@
   }) => {
     const rows = groupByRow(nodes, orientation);
 
+    // Sort edges by angle for each node (Kedro-viz algorithm)
     for (const node of nodes) {
       node.targets.sort((a, b) =>
         compare(
@@ -552,194 +553,104 @@
       );
     }
 
-    // Helper: check if x position collides with any node in intermediate rows
-    const collidesWithNodes = (x, sourceRow, targetRow, margin = spaceX * 0.5) => {
-      for (let i = sourceRow + 1; i < targetRow; i += 1) {
-        for (const node of rows[i]) {
-          if (x >= nodeLeft(node) - margin && x <= nodeRight(node) + margin) {
-            return true;
-          }
-        }
-      }
-      return false;
-    };
-
-    // Helper: find safe corridors (x ranges) that avoid all intermediate nodes
-    const findSafeCorridors = (sourceRow, targetRow) => {
-      // Collect all node boundaries in intermediate rows
-      const boundaries = [];
-
-      for (let i = sourceRow + 1; i < targetRow; i += 1) {
-        for (const node of rows[i]) {
-          boundaries.push({ x: nodeLeft(node) - spaceX, type: 'start', row: i });
-          boundaries.push({ x: nodeRight(node) + spaceX, type: 'end', row: i });
-        }
-      }
-
-      if (boundaries.length === 0) {
-        return [{ left: -Infinity, right: Infinity }];
-      }
-
-      // Sort boundaries by x
-      boundaries.sort((a, b) => a.x - b.x);
-
-      // Find the leftmost and rightmost node bounds per row
-      const rowBounds = {};
-      for (let i = sourceRow + 1; i < targetRow; i += 1) {
-        rowBounds[i] = { left: Infinity, right: -Infinity };
-        for (const node of rows[i]) {
-          rowBounds[i].left = Math.min(rowBounds[i].left, nodeLeft(node) - spaceX);
-          rowBounds[i].right = Math.max(rowBounds[i].right, nodeRight(node) + spaceX);
-        }
-      }
-
-      // Global bounds
-      let globalLeft = Infinity;
-      let globalRight = -Infinity;
-      for (const row in rowBounds) {
-        globalLeft = Math.min(globalLeft, rowBounds[row].left);
-        globalRight = Math.max(globalRight, rowBounds[row].right);
-      }
-
-      // Safe corridors are: far left, far right, and gaps between nodes
-      const corridors = [];
-
-      // Left corridor (to the left of all nodes)
-      corridors.push({
-        left: -Infinity,
-        right: globalLeft,
-        center: globalLeft - spaceX
-      });
-
-      // Right corridor (to the right of all nodes)
-      corridors.push({
-        left: globalRight,
-        right: Infinity,
-        center: globalRight + spaceX
-      });
-
-      // Find gaps between nodes that span all intermediate rows
-      // Collect all unique x positions where gaps might exist
-      const allNodeEdges = [];
-      for (let i = sourceRow + 1; i < targetRow; i += 1) {
-        const rowNodes = rows[i];
-        for (let j = 0; j < rowNodes.length - 1; j++) {
-          const gapLeft = nodeRight(rowNodes[j]) + spaceX;
-          const gapRight = nodeLeft(rowNodes[j + 1]) - spaceX;
-          if (gapRight > gapLeft + minPassageGap) {
-            // Check if this gap is clear in ALL intermediate rows
-            const gapCenter = (gapLeft + gapRight) * 0.5;
-            let clearInAllRows = true;
-            for (let k = sourceRow + 1; k < targetRow; k += 1) {
-              for (const node of rows[k]) {
-                if (gapCenter >= nodeLeft(node) - spaceX * 0.5 &&
-                    gapCenter <= nodeRight(node) + spaceX * 0.5) {
-                  clearInAllRows = false;
-                  break;
-                }
-              }
-              if (!clearInAllRows) break;
-            }
-            if (clearInAllRows) {
-              corridors.push({
-                left: gapLeft,
-                right: gapRight,
-                center: gapCenter
-              });
-            }
-          }
-        }
-      }
-
-      return corridors;
-    };
-
-    // Assign lanes to edges going through the same corridor
-    const edgeLanes = new Map();
-    const corridorUsage = new Map();
-
+    // For each edge - find routing points through intermediate rows (Kedro-viz algorithm)
     for (const edge of edges) {
       const source = edge.sourceNode;
       const target = edge.targetNode;
 
       edge.points = [];
 
-      // Skip routing for adjacent rows - direct connection
-      if (target.row - source.row <= 1) {
-        continue;
-      }
+      // Find the ideal gap between edge source anchors
+      const sourceSeparation = Math.min(
+        (source.width - stemSpaceSource) / source.targets.length,
+        stemSpaceSource
+      );
 
-      const sourceX = source.x;
-      const targetX = target.x;
-      const midX = (sourceX + targetX) * 0.5;
+      const sourceEdgeDistance =
+        source.targets.indexOf(edge) - (source.targets.length - 1) * 0.5;
 
-      // Check if direct path is clear
-      const directPathClear = !collidesWithNodes(sourceX, source.row, target.row) &&
-                              !collidesWithNodes(targetX, source.row, target.row) &&
-                              !collidesWithNodes(midX, source.row, target.row);
+      const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
 
-      if (directPathClear) {
-        // No routing needed
-        continue;
-      }
+      // Start at source node offset
+      const startPoint = { x: source.x, y: source.y };
+      let currentPoint = startPoint;
 
-      // Find safe corridors
-      const corridors = findSafeCorridors(source.row, target.row);
+      // For each row between the source and target rows exclusive
+      for (let i = source.row + 1; i < target.row; i += 1) {
+        const firstNode = rows[i][0];
 
-      if (corridors.length === 0) {
-        continue;
-      }
+        // Initialise search for next point
+        let nearestPoint = { x: nodeLeft(firstNode) - spaceX, y: firstNode.y };
+        let nearestDistance = Infinity;
 
-      // Choose the best corridor (closest to midpoint of source and target)
-      let bestCorridor = corridors[0];
-      let bestDistance = Infinity;
+        // Extend the row 'to infinity' on each side in X
+        const rowExtended = [
+          { ...firstNode, x: Number.MIN_SAFE_INTEGER },
+          ...rows[i],
+          { ...firstNode, x: Number.MAX_SAFE_INTEGER },
+        ];
 
-      for (const corridor of corridors) {
-        const dist = Math.abs(corridor.center - midX);
-        if (dist < bestDistance) {
-          bestDistance = dist;
-          bestCorridor = corridor;
+        // For each gap between each nodes on the row
+        for (let j = 0; j < rowExtended.length - 1; j += 1) {
+          const node = rowExtended[j];
+          const nextNode = rowExtended[j + 1];
+          const nodeGap = nodeLeft(nextNode) - nodeRight(node);
+
+          // Avoid routing through small gaps, increase bundling
+          if (nodeGap < minPassageGap) {
+            continue;
+          }
+
+          const offsetX = Math.min(spaceX, nodeGap * 0.5);
+
+          let sourceX, sourceY, targetX, targetY;
+
+          if (orientation === 'vertical') {
+            sourceX = nodeRight(node) + offsetX;
+            sourceY = nodeTop(node) - spaceY;
+            targetX = nodeLeft(nextNode) - offsetX;
+            targetY = nodeTop(nextNode) - spaceY;
+          }
+
+          // Find the next potential point
+          const candidatePoint = nearestOnLine(
+            currentPoint.x,
+            currentPoint.y,
+            sourceX,
+            sourceY,
+            targetX,
+            targetY
+          );
+
+          const distance = distance1d(currentPoint.x, candidatePoint.x);
+
+          // Early out if diverging
+          if (distance > nearestDistance) {
+            break;
+          }
+
+          // Keep the nearest point
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestPoint = candidatePoint;
+          }
         }
-      }
 
-      // Assign a lane within this corridor
-      const corridorKey = `${source.row}-${target.row}-${Math.round(bestCorridor.center)}`;
-      const laneCount = corridorUsage.get(corridorKey) || 0;
-      corridorUsage.set(corridorKey, laneCount + 1);
+        // Pass the node at nearest point
+        const offsetY = firstNode.height + spaceY;
+        edge.points.push({
+          x: nearestPoint.x + sourceOffsetX,
+          y: nearestPoint.y,
+        });
+        edge.points.push({
+          x: nearestPoint.x + sourceOffsetX,
+          y: nearestPoint.y + offsetY,
+        });
 
-      // Calculate lane position within corridor
-      const laneSpacing = spaceX * 0.6;
-      const laneOffset = (laneCount % 3 - 1) * laneSpacing;
-
-      // Ensure the lane stays within the corridor and doesn't collide
-      let routeX = bestCorridor.center + laneOffset;
-
-      // Clamp to corridor bounds (with margin)
-      if (bestCorridor.left !== -Infinity) {
-        routeX = Math.max(routeX, bestCorridor.left + spaceX * 0.3);
-      }
-      if (bestCorridor.right !== Infinity) {
-        routeX = Math.min(routeX, bestCorridor.right - spaceX * 0.3);
-      }
-
-      // Final collision check - if still collides, use corridor center
-      if (collidesWithNodes(routeX, source.row, target.row, spaceX * 0.3)) {
-        routeX = bestCorridor.center;
-      }
-
-      // Store the route X for this edge
-      edgeLanes.set(edge, routeX);
-
-      // Add TWO intermediate points for a clean S-curve
-      const firstIntermediateRow = rows[source.row + 1];
-      const lastIntermediateRow = rows[target.row - 1];
-
-      if (firstIntermediateRow && lastIntermediateRow) {
-        const y1 = nodeTop(firstIntermediateRow[0]) - spaceY * 0.5;
-        const y2 = nodeBottom(lastIntermediateRow[0]) + spaceY * 0.5;
-
-        edge.points.push({ x: routeX, y: y1 });
-        edge.points.push({ x: routeX, y: y2 });
+        currentPoint = {
+          x: nearestPoint.x,
+          y: nearestPoint.y + offsetY,
+        };
       }
     }
 
@@ -876,25 +787,26 @@
   // GRAPH.JS - Entry point
   // ============================================================================
 
+  // Configuration matching Kedro-viz defaults
   const defaultOptions = {
     layout: {
-      spaceX: 20,
-      spaceY: 120,
-      layerSpaceY: 110,
-      spreadX: 2.5,
+      spaceX: 14,
+      spaceY: 110,
+      layerSpaceY: 100,
+      spreadX: 2.2,
       padding: 100,
       iterations: 25,
     },
     routing: {
-      spaceX: 40,
-      spaceY: 35,
-      minPassageGap: 60,
-      stemUnit: 10,
-      stemMinSource: 5,
-      stemMinTarget: 20,
-      stemMax: 15,
-      stemSpaceSource: 12,
-      stemSpaceTarget: 14,
+      spaceX: 26,
+      spaceY: 28,
+      minPassageGap: 40,
+      stemUnit: 8,
+      stemMinSource: 0,
+      stemMinTarget: 15,
+      stemMax: 10,
+      stemSpaceSource: 6,
+      stemSpaceTarget: 10,
     },
   };
 
