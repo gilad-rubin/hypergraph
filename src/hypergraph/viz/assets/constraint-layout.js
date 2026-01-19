@@ -579,7 +579,25 @@
       for (let i = source.row + 1; i < target.row; i += 1) {
         const firstNode = rows[i][0];
 
-        // Initialise search for next point
+        // Check if current x position is clear in this row (can continue straight)
+        const currentX = currentPoint.x + sourceOffsetX;
+        let canContinueStraight = true;
+
+        for (const node of rows[i]) {
+          // Check if currentX would collide with this node
+          if (currentX >= nodeLeft(node) - spaceX * 0.5 &&
+              currentX <= nodeRight(node) + spaceX * 0.5) {
+            canContinueStraight = false;
+            break;
+          }
+        }
+
+        // If we can continue straight, skip adding routing points for this row
+        if (canContinueStraight) {
+          continue;
+        }
+
+        // Need to route around nodes - find nearest passage
         let nearestPoint = { x: nodeLeft(firstNode) - spaceX, y: firstNode.y };
         let nearestDistance = Infinity;
 
