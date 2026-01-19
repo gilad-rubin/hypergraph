@@ -23,8 +23,8 @@ class LayoutEstimator:
     # Fixed padding values matching JS fitWithFixedPadding
     PADDING_LEFT = 20
     PADDING_RIGHT = 70  # Extra space for control buttons
-    PADDING_TOP = 10
-    PADDING_BOTTOM = 10
+    PADDING_TOP = 16
+    PADDING_BOTTOM = 16
 
     # Separate outputs mode uses tighter spacing
     SEPARATE_LAYOUT_SPACE_Y = 100

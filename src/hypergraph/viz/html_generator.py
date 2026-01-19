@@ -1753,8 +1753,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
         // Custom fit function with FIXED pixel padding (not percentage)
         // This ensures consistent padding regardless of graph size
-        const PADDING_TOP = 10;
-        const PADDING_BOTTOM = 10;
+        const PADDING_TOP = 16;
+        const PADDING_BOTTOM = 16;
         const PADDING_LEFT = 20;
         const PADDING_RIGHT = 70;  // Extra space for control buttons
 
@@ -1774,30 +1774,28 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 maxY = Math.max(maxY, y + h);
             }
 
-            // Add fixed padding to bounds
-            const bounds = {
-                x: minX - PADDING_LEFT,
-                y: minY - PADDING_TOP,
-                width: (maxX - minX) + PADDING_LEFT + PADDING_RIGHT,
-                height: (maxY - minY) + PADDING_TOP + PADDING_BOTTOM,
-            };
+            const contentWidth = maxX - minX;
+            const contentHeight = maxY - minY;
 
-            // Use fitBounds to calculate the correct zoom, then adjust to top-align
-            // fitBounds centers content, but we want top-left alignment
-            fitBounds(bounds, { duration: 0, minZoom: 0.1, maxZoom: 1.5 });
+            // Get viewport dimensions
+            const viewportEl = document.querySelector('.react-flow__viewport')?.parentElement;
+            const viewportWidth = viewportEl?.clientWidth || 800;
+            const viewportHeight = viewportEl?.clientHeight || 600;
 
-            // After fitBounds centers, adjust viewport to top-align
-            // Use setTimeout to let fitBounds complete first
-            setTimeout(() => {
-                const viewport = getViewport();
-                // Calculate Y to position topmost content at PADDING_TOP screen pixels
-                // Screen position = flow_position * zoom + viewport_offset
-                // We want: PADDING_TOP = minY * zoom + newY
-                // So: newY = PADDING_TOP - minY * zoom
-                const newY = PADDING_TOP - minY * viewport.zoom;
-                setViewport({ x: viewport.x, y: newY, zoom: viewport.zoom }, { duration: 0 });
-            }, 0);
-        }, [rawLayoutedNodes, fitBounds, getViewport, setViewport]);
+            // Calculate zoom to fit content with padding
+            const availableWidth = viewportWidth - PADDING_LEFT - PADDING_RIGHT;
+            const availableHeight = viewportHeight - PADDING_TOP - PADDING_BOTTOM;
+            const zoomX = availableWidth / contentWidth;
+            const zoomY = availableHeight / contentHeight;
+            const zoom = Math.min(Math.max(Math.min(zoomX, zoomY), 0.1), 1.5);
+
+            // Calculate viewport offset to position content at top-left with padding
+            // Screen position = flow_position * zoom + viewport_offset
+            const newX = PADDING_LEFT - minX * zoom;
+            const newY = PADDING_TOP - minY * zoom;
+
+            setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
+        }, [rawLayoutedNodes, setViewport]);
         
         // ========================================================================
         // FIX: Force edge recalculation after node size changes (collapse/expand)
