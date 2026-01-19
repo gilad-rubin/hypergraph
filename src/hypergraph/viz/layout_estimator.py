@@ -21,10 +21,10 @@ class LayoutEstimator:
     LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers
     LAYOUT_SPACE_X = 14
     # Fixed padding values matching JS fitWithFixedPadding
-    PADDING_LEFT = 40
-    PADDING_RIGHT = 80  # Extra space for control buttons
-    PADDING_TOP = 40
-    PADDING_BOTTOM = 40
+    PADDING_LEFT = 20
+    PADDING_RIGHT = 70  # Extra space for control buttons
+    PADDING_TOP = 10
+    PADDING_BOTTOM = 10
 
     # Separate outputs mode uses tighter spacing
     SEPARATE_LAYOUT_SPACE_Y = 100
@@ -198,8 +198,8 @@ class LayoutEstimator:
         total_height += self.PADDING_TOP + self.PADDING_BOTTOM
 
         # Enforce minimums
-        total_width = max(400, int(total_width))
-        total_height = max(300, int(total_height))
+        total_width = max(300, int(total_width))
+        total_height = max(150, int(total_height))
 
         return total_width, total_height
 

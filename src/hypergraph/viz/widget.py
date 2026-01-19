@@ -104,8 +104,8 @@ def visualize(
     )
 
     # Use estimated dimensions, applying minimums
-    final_width = width if width is not None else max(600, est_width)
-    final_height = height if height is not None else max(400, est_height)
+    final_width = width if width is not None else max(400, est_width)
+    final_height = height if height is not None else max(200, est_height)
 
     # Render graph to React Flow format
     graph_data = render_graph(

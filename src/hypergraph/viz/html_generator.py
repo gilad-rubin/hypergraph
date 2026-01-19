@@ -1753,10 +1753,10 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
         // Custom fit function with FIXED pixel padding (not percentage)
         // This ensures consistent padding regardless of graph size
-        const PADDING_TOP = 40;
-        const PADDING_BOTTOM = 40;
-        const PADDING_LEFT = 40;
-        const PADDING_RIGHT = 80;  // Extra space for control buttons
+        const PADDING_TOP = 10;
+        const PADDING_BOTTOM = 10;
+        const PADDING_LEFT = 20;
+        const PADDING_RIGHT = 70;  // Extra space for control buttons
 
         const fitWithFixedPadding = useCallback(() => {
             if (rawLayoutedNodes.length === 0) return;
