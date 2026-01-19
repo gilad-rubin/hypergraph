@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.html_generator import generate_widget_html
+from hypergraph.viz.layout_estimator import estimate_layout
 
 
 class ScrollablePipelineWidget:
@@ -38,12 +39,25 @@ class ScrollablePipelineWidget:
     def _repr_html_(self) -> str:
         """Return HTML representation for Jupyter display."""
         # Escape HTML for srcdoc attribute
-        # Use html.escape but preserve quotes since we'll wrap in double quotes
         escaped_html = self.html_content.replace('"', '&quot;')
 
-        return f'''<div id="viz-wrapper-{self._id}" style="
+        # CSS fix for VS Code white background on ipywidgets
+        css_fix = """<style>
+.cell-output-ipywidget-background {
+   background-color: transparent !important;
+}
+.jp-OutputArea-output {
+   background-color: transparent;
+}
+</style>"""
+
+        # Use explicit dimensions on iframe to avoid double scrolling
+        # Width and height are set as both HTML attributes AND CSS for compatibility
+        return f'''{css_fix}
+<div id="viz-wrapper-{self._id}" style="
     position: relative;
     width: {self.width}px;
+    max-width: 100%;
     height: {self.height}px;
     margin: 0 auto;
     display: block;
@@ -51,15 +65,22 @@ class ScrollablePipelineWidget:
     <iframe
         id="viz-iframe-{self._id}"
         srcdoc="{escaped_html}"
+        width="{self.width}"
+        height="{self.height}"
+        frameborder="0"
         style="
             position: absolute;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
+            width: {self.width}px;
+            max-width: 100%;
+            height: {self.height}px;
             border: none;
             border-radius: 8px;
+            display: block;
+            background: transparent;
         "
+        sandbox="allow-scripts allow-same-origin"
     ></iframe>
 
     <div id="overlay-{self._id}" style="
@@ -123,20 +144,6 @@ class ScrollablePipelineWidget:
             overlay.classList.remove("interactive");
         }}
     }});
-
-    // Listen for resize messages from iframe to auto-fit content
-    window.addEventListener("message", function(e) {{
-        if (e.data && e.data.type === "hypergraph-viz-resize") {{
-            var newHeight = e.data.height;
-            var newWidth = e.data.width;
-            if (newHeight && newHeight > 0) {{
-                wrapper.style.height = newHeight + "px";
-            }}
-            if (newWidth && newWidth > 0) {{
-                wrapper.style.width = Math.max(newWidth, {self.width}) + "px";
-            }}
-        }}
-    }});
 }})();
 </script>'''
 
@@ -144,8 +151,8 @@ class ScrollablePipelineWidget:
 def visualize(
     graph: Graph,
     *,
-    width: int = 800,
-    height: int = 600,
+    width: int | None = None,
+    height: int | None = None,
     depth: int = 1,
     theme: str = "auto",
     show_types: bool = False,
@@ -155,8 +162,8 @@ def visualize(
 
     Args:
         graph: The hypergraph Graph to visualize
-        width: Widget width in pixels (default: 800)
-        height: Widget height in pixels (default: 600)
+        width: Widget width in pixels (default: auto-calculated from graph)
+        height: Widget height in pixels (default: auto-calculated from graph)
         depth: How many levels of nested graphs to expand (default: 1)
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
@@ -173,6 +180,18 @@ def visualize(
         >>> graph = Graph(nodes=[double])
         >>> widget = visualize(graph)  # Display in notebook
     """
+    # Estimate dimensions if not provided
+    est_width, est_height = estimate_layout(
+        graph,
+        separate_outputs=separate_outputs,
+        show_types=show_types,
+        depth=depth,
+    )
+
+    # Use estimated dimensions, applying minimums
+    final_width = width if width is not None else max(600, est_width)
+    final_height = height if height is not None else max(400, est_height)
+
     # Render graph to React Flow format
     graph_data = render_graph(
         graph,
@@ -185,4 +204,4 @@ def visualize(
     # Generate HTML
     html_content = generate_widget_html(graph_data)
 
-    return ScrollablePipelineWidget(html_content, width, height)
+    return ScrollablePipelineWidget(html_content, final_width, final_height)
