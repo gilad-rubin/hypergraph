@@ -1214,13 +1214,28 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
               _original: e,
             }));
 
+            // Detect if we're in separate outputs mode (tighter spacing)
+            const isSeparateOutputs = layoutNodes.some(n => n._original?.data?.separateOutputs);
+
+            // Use tighter spacing for separate outputs mode
+            const layoutOptions = isSeparateOutputs
+              ? {
+                  ...ConstraintLayout.defaultOptions,
+                  layout: {
+                    ...ConstraintLayout.defaultOptions.layout,
+                    spaceY: 70,      // Tighter vertical spacing for separate outputs
+                    layerSpaceY: 60, // Tighter layer spacing for separate outputs
+                  }
+                }
+              : ConstraintLayout.defaultOptions;
+
             // Run constraint layout (synchronous)
             const result = ConstraintLayout.graph(
               layoutNodes,
               layoutEdges,
               null,  // layers (not used)
               'vertical',  // orientation
-              ConstraintLayout.defaultOptions
+              layoutOptions
             );
 
             if (debugMode) console.log('[useLayout] layout result:', result);
