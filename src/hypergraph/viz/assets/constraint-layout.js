@@ -823,7 +823,7 @@
       minPassageGap: 50, // Increased from 40 for wider passages
       stemUnit: 4,      // Reduced from 8 - smaller stem spread
       stemMinSource: 0,
-      stemMinTarget: 8, // Reduced from 15 - edges connect closer to target
+      stemMinTarget: 12, // Gap above target node for visual breathing room
       stemMax: 4,       // Reduced from 10 - minimizes gap at source
       stemSpaceSource: 6,
       stemSpaceTarget: 10,
