@@ -1803,14 +1803,30 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             // Use zoom=1 to maintain consistent node sizes across all diagrams
             const zoom = 1;
 
-            // Calculate viewport offset
             // Y: top-align with padding
+            // Screen position = flow_position * zoom + viewport_offset
+            // We want minY to appear at PADDING_TOP: PADDING_TOP = minY * zoom + newY
             const newY = PADDING_TOP - minY * zoom;
 
-            // X: center the diagram+buttons as a unit
-            const combinedWidth = contentWidth + PADDING_RIGHT;  // diagram + button space
-            const leftMargin = (viewportWidth - combinedWidth) / 2;
-            const newX = Math.max(PADDING_LEFT, leftMargin) - minX * zoom;
+            // X: center diagram in the space left of the button panel
+            // Available space for diagram = viewport width minus button area
+            const availableWidth = viewportWidth - PADDING_RIGHT;
+
+            // Find where content center is in flow coordinates
+            const contentCenterX = (minX + maxX) / 2;
+
+            // We want content center to appear at the center of available space
+            const targetScreenCenterX = availableWidth / 2;
+
+            // Calculate viewport.x so that contentCenterX appears at targetScreenCenterX
+            // targetScreenCenterX = contentCenterX * zoom + newX
+            const idealNewX = targetScreenCenterX - contentCenterX * zoom;
+
+            // Ensure minimum left padding (content shouldn't touch left edge)
+            // minX should appear at screen position >= PADDING_LEFT
+            const minNewX = PADDING_LEFT - minX * zoom;
+
+            const newX = Math.max(idealNewX, minNewX);
 
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
         }, [rawLayoutedNodes, layoutedEdges, setViewport]);
