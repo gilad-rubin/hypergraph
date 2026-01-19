@@ -612,7 +612,11 @@
             targetY
           );
 
-          const distance = distance1d(currentPoint.x, candidatePoint.x);
+          // Consider both distance from current point AND distance to final target
+          // This prevents edges from taking huge detours to passages far from the target
+          const distFromCurrent = distance1d(currentPoint.x, candidatePoint.x);
+          const distToTarget = distance1d(candidatePoint.x, target.x);
+          const distance = distFromCurrent * 0.3 + distToTarget * 0.7;
 
           if (distance > nearestDistance) {
             break;
