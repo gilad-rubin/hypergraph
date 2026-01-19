@@ -811,8 +811,8 @@
   const defaultOptions = {
     layout: {
       spaceX: 14,
-      spaceY: 140,      // Increased from 110 for more vertical spacing
-      layerSpaceY: 120, // Increased from 100 for more layer spacing
+      spaceY: 100,      // Reduced from 140 for tighter vertical spacing
+      layerSpaceY: 90,  // Reduced from 120 for tighter layer spacing
       spreadX: 2.2,
       padding: 100,
       iterations: 25,
