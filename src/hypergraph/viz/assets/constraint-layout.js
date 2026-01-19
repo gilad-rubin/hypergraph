@@ -552,96 +552,178 @@
       );
     }
 
+    // Assign unique edge indices for spacing
+    const edgeSpacing = spaceX * 0.4;
+    let globalEdgeIndex = 0;
+    for (const edge of edges) {
+      edge.globalIndex = globalEdgeIndex++;
+    }
+
     for (const edge of edges) {
       const source = edge.sourceNode;
       const target = edge.targetNode;
 
       edge.points = [];
 
-      const sourceSeparation = Math.min(
-        (source.width - stemSpaceSource) / source.targets.length,
-        stemSpaceSource
-      );
+      // Skip routing for adjacent rows - direct connection
+      if (target.row - source.row <= 1) {
+        continue;
+      }
 
-      const sourceEdgeDistance =
-        source.targets.indexOf(edge) - (source.targets.length - 1) * 0.5;
+      // For longer edges, use simplified routing with at most ONE horizontal segment
+      // Find a clear horizontal path that avoids all intermediate nodes
 
-      const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
+      // Calculate target x position (where we want to end up)
+      const targetX = target.x;
+      const sourceX = source.x;
 
-      const startPoint = { x: source.x, y: source.y };
-      let currentPoint = startPoint;
+      // Check if we can go straight down (no intermediate nodes blocking)
+      let needsDetour = false;
+      let minClearanceLeft = Infinity;
+      let minClearanceRight = Infinity;
 
       for (let i = source.row + 1; i < target.row; i += 1) {
-        const firstNode = rows[i][0];
+        for (const node of rows[i]) {
+          const nodeL = nodeLeft(node) - spaceX;
+          const nodeR = nodeRight(node) + spaceX;
 
-        let nearestPoint = { x: nodeLeft(firstNode) - spaceX, y: firstNode.y };
-        let nearestDistance = Infinity;
+          // Check if this node blocks a straight path from source to target
+          const pathMinX = Math.min(sourceX, targetX) - spaceX * 0.5;
+          const pathMaxX = Math.max(sourceX, targetX) + spaceX * 0.5;
 
-        const rowExtended = [
-          { ...firstNode, x: Number.MIN_SAFE_INTEGER },
-          ...rows[i],
-          { ...firstNode, x: Number.MAX_SAFE_INTEGER },
-        ];
-
-        for (let i = 0; i < rowExtended.length - 1; i += 1) {
-          const node = rowExtended[i];
-          const nextNode = rowExtended[i + 1];
-          const nodeGap = nodeLeft(nextNode) - nodeRight(node);
-
-          if (nodeGap < minPassageGap) {
-            continue;
+          if (nodeL < pathMaxX && nodeR > pathMinX) {
+            needsDetour = true;
+            // Track clearance on each side
+            const leftClear = pathMinX - nodeR;
+            const rightClear = nodeL - pathMaxX;
+            if (leftClear > 0) minClearanceLeft = Math.min(minClearanceLeft, leftClear);
+            if (rightClear > 0) minClearanceRight = Math.min(minClearanceRight, rightClear);
           }
+        }
+      }
 
-          const offsetX = Math.min(spaceX, nodeGap * 0.5);
+      if (!needsDetour) {
+        // Can go relatively straight - no intermediate points needed
+        continue;
+      }
 
-          let sourceX, sourceY, targetX, targetY;
+      // Need to route around nodes - find the best side
+      // Collect all passages (gaps between nodes) across all intermediate rows
+      const passages = [];
 
-          if (orientation === 'vertical') {
-            sourceX = nodeRight(node) + offsetX;
-            sourceY = nodeTop(node) - spaceY;
-            targetX = nodeLeft(nextNode) - offsetX;
-            targetY = nodeTop(nextNode) - spaceY;
+      for (let i = source.row + 1; i < target.row; i += 1) {
+        const rowNodes = rows[i];
+        if (rowNodes.length === 0) continue;
+
+        // Add passage on the left of all nodes
+        const leftmostNode = rowNodes[0];
+        passages.push({
+          x: nodeLeft(leftmostNode) - spaceX,
+          row: i,
+          side: 'left'
+        });
+
+        // Add passage on the right of all nodes
+        const rightmostNode = rowNodes[rowNodes.length - 1];
+        passages.push({
+          x: nodeRight(rightmostNode) + spaceX,
+          row: i,
+          side: 'right'
+        });
+
+        // Add passages between nodes
+        for (let j = 0; j < rowNodes.length - 1; j++) {
+          const node = rowNodes[j];
+          const nextNode = rowNodes[j + 1];
+          const gap = nodeLeft(nextNode) - nodeRight(node);
+
+          if (gap >= minPassageGap) {
+            passages.push({
+              x: (nodeRight(node) + nodeLeft(nextNode)) * 0.5,
+              row: i,
+              side: 'middle'
+            });
           }
+        }
+      }
 
-          const candidatePoint = nearestOnLine(
-            currentPoint.x,
-            currentPoint.y,
-            sourceX,
-            sourceY,
-            targetX,
-            targetY
-          );
+      // Find the best x position that works for all rows
+      // Prefer positions closer to the midpoint of source and target
+      const midX = (sourceX + targetX) * 0.5;
 
-          // Consider both distance from current point AND distance to final target
-          // This prevents edges from taking huge detours to passages far from the target
-          const distFromCurrent = distance1d(currentPoint.x, candidatePoint.x);
-          const distToTarget = distance1d(candidatePoint.x, target.x);
-          const distance = distFromCurrent * 0.3 + distToTarget * 0.7;
+      // Group passages by approximate x position and find one that spans all rows
+      const xTolerance = spaceX;
+      let bestX = null;
+      let bestScore = Infinity;
 
-          if (distance > nearestDistance) {
-            break;
+      // Try each passage x as a candidate
+      const candidateXs = [...new Set(passages.map(p => p.x))];
+
+      for (const candX of candidateXs) {
+        // Check if this x position has clearance in all intermediate rows
+        let validForAllRows = true;
+
+        for (let i = source.row + 1; i < target.row; i += 1) {
+          let hasPassage = false;
+          for (const node of rows[i]) {
+            const nodeL = nodeLeft(node) - spaceX * 0.3;
+            const nodeR = nodeRight(node) + spaceX * 0.3;
+            if (candX >= nodeL && candX <= nodeR) {
+              validForAllRows = false;
+              break;
+            }
           }
+          if (!validForAllRows) break;
+        }
 
-          if (distance < nearestDistance) {
-            nearestDistance = distance;
-            nearestPoint = candidatePoint;
+        if (validForAllRows) {
+          // Score by distance from midpoint - prefer paths closer to direct line
+          const score = Math.abs(candX - midX);
+          if (score < bestScore) {
+            bestScore = score;
+            bestX = candX;
+          }
+        }
+      }
+
+      // If no valid passage found, use the side with more clearance
+      if (bestX === null) {
+        // Find leftmost and rightmost bounds across all intermediate rows
+        let globalLeft = Infinity;
+        let globalRight = -Infinity;
+
+        for (let i = source.row + 1; i < target.row; i += 1) {
+          for (const node of rows[i]) {
+            globalLeft = Math.min(globalLeft, nodeLeft(node));
+            globalRight = Math.max(globalRight, nodeRight(node));
           }
         }
 
-        const offsetY = firstNode.height + spaceY;
-        edge.points.push({
-          x: nearestPoint.x + sourceOffsetX,
-          y: nearestPoint.y,
-        });
-        edge.points.push({
-          x: nearestPoint.x + sourceOffsetX,
-          y: nearestPoint.y + offsetY,
-        });
+        // Choose side closer to midpoint
+        const leftOption = globalLeft - spaceX;
+        const rightOption = globalRight + spaceX;
 
-        currentPoint = {
-          x: nearestPoint.x,
-          y: nearestPoint.y + offsetY,
-        };
+        bestX = Math.abs(leftOption - midX) < Math.abs(rightOption - midX)
+          ? leftOption
+          : rightOption;
+      }
+
+      // Add spacing offset based on edge index to prevent overlapping
+      const edgeOffset = (edge.globalIndex % 5 - 2) * edgeSpacing;
+      bestX += edgeOffset;
+
+      // Add just TWO intermediate points for a clean S-curve
+      // Point 1: horizontal segment start (below source)
+      // Point 2: horizontal segment end (above target)
+      const firstIntermediateRow = rows[source.row + 1];
+      const lastIntermediateRow = rows[target.row - 1];
+
+      if (firstIntermediateRow && lastIntermediateRow) {
+        const y1 = nodeTop(firstIntermediateRow[0]) - spaceY * 0.5;
+        const y2 = nodeBottom(lastIntermediateRow[0]) + spaceY * 0.5;
+
+        edge.points.push({ x: bestX, y: y1 });
+        edge.points.push({ x: bestX, y: y2 });
       }
     }
 
