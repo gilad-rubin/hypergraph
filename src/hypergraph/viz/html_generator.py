@@ -1245,7 +1245,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       if (initialDebugOverlays) window.__hypergraph_debug_overlays = true;
 
       const parseColorString = (value) => {
-        if (themeUtils?.parseColorString) return themeUtils.parseColorString(value);
         if (!value) return null;
         const scratch = document.createElement('div');
         scratch.style.color = value;
@@ -1267,8 +1266,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         return null;
       };
       const detectHostTheme = () => {
-        if (themeUtils?.detectHostTheme) return themeUtils.detectHostTheme();
-
         const attempts = [];
         const pushCandidate = (value, source) => {
             if (value && value !== 'transparent' && value !== 'rgba(0, 0, 0, 0)') {
@@ -1529,8 +1526,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
           });
         }, []);
 
-        const applyStateFn = stateUtils.applyState || fallbackApplyState;
-        const applyVisibilityFn = stateUtils.applyVisibility || fallbackApplyVisibility;
+        const applyStateFn = fallbackApplyState;
+        const applyVisibilityFn = fallbackApplyVisibility;
 
         const stateResult = useMemo(() => {
             return applyStateFn(initialData.nodes, initialData.edges, {
@@ -1642,19 +1639,14 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             }
         }, [manualTheme, resolvedDetected.theme]);
 
-        // Compress edges first (remaps to visible ancestors when pipelines collapse)
-        // IMPORTANT: Use nodesWithVisibility and stateResult.edges (synchronous) instead of 
-        // rfNodes/rfEdges (async via setNodes/setEdges) to avoid stale data on first render
+        // For flat graphs, edges don't need compression
         const compressedEdges = useMemo(() => {
-            const compressor = stateUtils.compressEdges || ((nodes, edges) => edges);
-            const debugMode = window.__hypergraph_debug_viz || false;
-            return compressor(nodesWithVisibility, stateResult.edges, debugMode);
-        }, [nodesWithVisibility, stateResult.edges]);
+            return stateResult.edges;
+        }, [stateResult.edges]);
 
-        // Group inputs that share the same targets after compression
+        // For flat graphs, no input grouping needed
         const { nodes: groupedNodes, edges: groupedEdges } = useMemo(() => {
-            const grouper = stateUtils.groupInputs || ((nodes, edges) => ({ nodes, edges }));
-            return grouper(nodesWithVisibility, compressedEdges);
+            return { nodes: nodesWithVisibility, edges: compressedEdges };
         }, [nodesWithVisibility, compressedEdges]);
 
         const { layoutedNodes: rawLayoutedNodes, layoutedEdges, layoutError, graphHeight, graphWidth, layoutVersion, isLayouting } = useLayout(groupedNodes, groupedEdges);
