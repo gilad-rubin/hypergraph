@@ -14,13 +14,10 @@ from hypergraph.viz.layout_estimator import estimate_layout
 
 
 class ScrollablePipelineWidget:
-    """Widget with scroll passthrough for VSCode notebooks.
+    """Widget for visualizing graphs in Jupyter/VSCode notebooks.
 
-    Uses an overlay pattern to handle scroll events:
-    - By default, overlay blocks iframe -> scroll passes through to notebook
-    - Click on overlay -> overlay becomes transparent -> iframe is interactive
-    - Mouse leaves widget -> overlay blocks again -> scroll restored
-    - ESC key -> overlay blocks again -> scroll restored
+    Uses explicit iframe sizing to avoid double scrolling. The iframe
+    dimensions are estimated from the graph structure to fit the content.
     """
 
     def __init__(self, html_content: str, width: int, height: int):
@@ -39,7 +36,7 @@ class ScrollablePipelineWidget:
     def _repr_html_(self) -> str:
         """Return HTML representation for Jupyter display."""
         # Escape HTML for srcdoc attribute
-        escaped_html = self.html_content.replace('"', '&quot;')
+        escaped_html = html_module.escape(self.html_content, quote=True)
 
         # CSS fix for VS Code white background on ipywidgets
         css_fix = """<style>
@@ -51,101 +48,19 @@ class ScrollablePipelineWidget:
 }
 </style>"""
 
-        # Use explicit dimensions on iframe to avoid double scrolling
-        # Width and height are set as both HTML attributes AND CSS for compatibility
-        return f'''{css_fix}
-<div id="viz-wrapper-{self._id}" style="
-    position: relative;
-    width: {self.width}px;
-    max-width: 100%;
-    height: {self.height}px;
-    margin: 0 auto;
-    display: block;
-">
-    <iframe
-        id="viz-iframe-{self._id}"
-        srcdoc="{escaped_html}"
-        width="{self.width}"
-        height="{self.height}"
-        frameborder="0"
-        style="
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: {self.width}px;
-            max-width: 100%;
-            height: {self.height}px;
-            border: none;
-            border-radius: 8px;
-            display: block;
-            background: transparent;
-        "
-        sandbox="allow-scripts allow-same-origin"
-    ></iframe>
-
-    <div id="overlay-{self._id}" style="
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        z-index: 10;
-        cursor: default;
-        background: rgba(0, 0, 0, 0.02);
-        border-radius: 8px;
-        display: flex;
-        align-items: flex-end;
-        justify-content: flex-end;
-        padding: 8px;
-    ">
-        <span id="hint-{self._id}" style="
-            font-size: 11px;
-            color: #94a3b8;
-            opacity: 0;
-            transition: opacity 0.3s;
-            font-family: system-ui, -apple-system, sans-serif;
-        ">Click to interact</span>
-    </div>
-</div>
-
-<style>
-    #viz-wrapper-{self._id}:hover #hint-{self._id} {{
-        opacity: 1;
-    }}
-    #overlay-{self._id}.interactive {{
-        pointer-events: none;
-        background: transparent;
-    }}
-    #overlay-{self._id}.interactive #hint-{self._id} {{
-        display: none;
-    }}
-</style>
-
-<script>
-(function() {{
-    var wrapper = document.getElementById("viz-wrapper-{self._id}");
-    var overlay = document.getElementById("overlay-{self._id}");
-
-    if (!wrapper || !overlay) return;
-
-    // Click to enable interaction
-    overlay.addEventListener("click", function() {{
-        overlay.classList.add("interactive");
-    }});
-
-    // Mouse leave to restore scroll
-    wrapper.addEventListener("mouseleave", function() {{
-        overlay.classList.remove("interactive");
-    }});
-
-    // ESC to restore scroll
-    document.addEventListener("keydown", function(e) {{
-        if (e.key === "Escape") {{
-            overlay.classList.remove("interactive");
-        }}
-    }});
-}})();
-</script>'''
+        # Simple iframe with explicit dimensions - no wrapper needed
+        # Dimensions are set as both HTML attributes AND CSS for compatibility
+        # The JS inside the iframe will resize via window.frameElement if needed
+        return (
+            f"{css_fix}"
+            f'<iframe srcdoc="{escaped_html}" '
+            f'width="{self.width}" height="{self.height}" frameborder="0" '
+            f'style="border: none; width: {self.width}px; max-width: 100%; '
+            f'height: {self.height}px; display: block; background: transparent; '
+            f'margin: 0 auto; border-radius: 8px;" '
+            f'sandbox="allow-scripts allow-same-origin allow-popups allow-forms">'
+            f'</iframe>'
+        )
 
 
 def visualize(
