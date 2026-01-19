@@ -1809,8 +1809,16 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const newY = PADDING_TOP - minY * zoom;
 
             // X: center diagram in the space left of the button panel
-            // Available space for diagram = viewport width minus button area
-            const availableWidth = viewportWidth - PADDING_RIGHT;
+            // Use getBoundingClientRect for precise measurement of actual occupied space
+            const buttonPanel = document.querySelector('.react-flow__panel.bottom-right');
+            let buttonPanelSpace = PADDING_RIGHT;  // Fallback
+            if (buttonPanel && viewportEl) {
+                const panelRect = buttonPanel.getBoundingClientRect();
+                const containerRect = viewportEl.getBoundingClientRect();
+                // Space occupied = from panel's left edge to container's right edge
+                buttonPanelSpace = containerRect.right - panelRect.left;
+            }
+            const availableWidth = viewportWidth - buttonPanelSpace;
 
             // Find where content center is in flow coordinates
             const contentCenterX = (minX + maxX) / 2;
@@ -1829,6 +1837,56 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const newX = Math.max(idealNewX, minNewX);
 
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
+
+            // Debug: Calculate actual screen positions after viewport is set
+            const contentLeftScreen = minX * zoom + newX;
+            const contentRightScreen = maxX * zoom + newX;
+            const contentCenterScreen = contentCenterX * zoom + newX;
+            const distanceFromLeft = contentLeftScreen;
+            const distanceFromRight = availableWidth - contentRightScreen;
+
+            console.log('=== CENTERING DEBUG ===');
+            console.log('Viewport:', { width: viewportWidth, height: viewportHeight });
+            console.log('Content bounds (flow coords):', { minX, maxX, minY, maxY });
+            console.log('Content dimensions:', { width: contentWidth, height: contentHeight });
+            console.log('Available width (minus buttons):', availableWidth);
+            console.log('Content center (flow):', contentCenterX);
+            console.log('Target screen center:', targetScreenCenterX);
+            console.log('Calculated viewport.x:', { idealNewX, minNewX, finalNewX: newX });
+            console.log('--- ACTUAL SCREEN POSITIONS ---');
+            console.log('Content left edge (screen):', contentLeftScreen);
+            console.log('Content right edge (screen):', contentRightScreen);
+            console.log('Content center (screen):', contentCenterScreen);
+            console.log('--- CENTERING VERIFICATION ---');
+            console.log('Distance from left edge:', distanceFromLeft);
+            console.log('Distance from right edge (to button area):', distanceFromRight);
+            console.log('Difference (should be ~0 if centered):', distanceFromLeft - distanceFromRight);
+            console.log('========================');
+
+            // Store debug info globally for programmatic testing
+            window.__hypergraph_centering_debug = {
+                viewport: { width: viewportWidth, height: viewportHeight },
+                content: { width: contentWidth, height: contentHeight, minX, maxX, minY, maxY },
+                availableWidth: availableWidth,
+                screen: { left: contentLeftScreen, right: contentRightScreen, center: contentCenterScreen },
+                margins: { left: distanceFromLeft, right: distanceFromRight },
+                difference: distanceFromLeft - distanceFromRight,
+                isCentered: Math.abs(distanceFromLeft - distanceFromRight) < 5
+            };
+
+            // Create/update debug badge showing centering status
+            let badge = document.getElementById('centering-badge');
+            if (!badge) {
+                badge = document.createElement('div');
+                badge.id = 'centering-badge';
+                badge.style.cssText = 'position:fixed;bottom:10px;left:10px;padding:6px 10px;border-radius:4px;font-family:monospace;font-size:10px;z-index:9999;pointer-events:none;';
+                document.body.appendChild(badge);
+            }
+            const diff = distanceFromLeft - distanceFromRight;
+            const isOk = Math.abs(diff) < 5;
+            badge.style.background = isOk ? '#10b981' : '#ef4444';
+            badge.style.color = '#fff';
+            badge.textContent = 'L:' + distanceFromLeft.toFixed(0) + ' R:' + distanceFromRight.toFixed(0) + ' D:' + diff.toFixed(0) + ' btn:' + buttonPanelSpace.toFixed(0) + (isOk ? ' OK' : ' BAD');
         }, [rawLayoutedNodes, layoutedEdges, setViewport]);
         
         // ========================================================================
