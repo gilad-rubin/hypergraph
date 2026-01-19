@@ -33,3 +33,6 @@ notebooks/*
 specs/*
 deprecated/*
 .doc-manager/*
+
+# Visualization outputs
+outputs/
