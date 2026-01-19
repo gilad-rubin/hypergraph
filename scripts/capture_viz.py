@@ -130,7 +130,15 @@ def postprocess(raw_response: str) -> str:
     return raw_response.strip()
 
 
-async def capture_graph(graph, name, theme="auto", width=1200, height=900):
+# ===============================
+# Nodes for nested pipeline
+# ===============================
+@node(output_name="outer_result")
+def outer_finalize(z: int) -> str:
+    return f"Outer result: {z}"
+
+
+async def capture_graph(graph, name, theme="auto", width=1200, height=900, depth=1, show_types=False):
     from playwright.async_api import async_playwright
     from hypergraph.viz.widget import visualize
 
@@ -138,7 +146,7 @@ async def capture_graph(graph, name, theme="auto", width=1200, height=900):
     output_dir = Path("outputs")
     output_dir.mkdir(exist_ok=True)
 
-    widget = visualize(graph, theme=theme, width=width, height=height)
+    widget = visualize(graph, theme=theme, width=width, height=height, depth=depth, show_types=show_types)
     html = widget.html_content
 
     # Save HTML for debugging
@@ -184,6 +192,20 @@ async def main():
     print(f"Complex graph has {len(complex_rag.nodes)} nodes")
     await capture_graph(complex_rag, "complex_light", theme="light", width=1400, height=1000)
     await capture_graph(complex_rag, "complex_dark", theme="dark", width=1400, height=1000)
+
+    # Nested pipeline (inner graph as node)
+    inner_graph = Graph(nodes=[double, square], name="inner_pipeline")
+    outer_graph = Graph(nodes=[inner_graph.as_node(), outer_finalize])
+    print(f"Nested graph: outer has {len(outer_graph.nodes)} nodes, inner has {len(inner_graph.nodes)} nodes")
+
+    # Test with depth=0 (collapsed)
+    await capture_graph(outer_graph, "nested_collapsed", theme="light", width=900, height=700, depth=0)
+
+    # Test with depth=1 (expanded)
+    await capture_graph(outer_graph, "nested_expanded", theme="light", width=900, height=700, depth=1)
+
+    # Test with types shown
+    await capture_graph(outer_graph, "nested_with_types", theme="dark", width=900, height=700, depth=1, show_types=True)
 
 
 if __name__ == "__main__":
