@@ -1785,23 +1785,15 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const viewportWidth = viewportEl?.clientWidth || 800;
             const viewportHeight = viewportEl?.clientHeight || 600;
 
-            // Calculate zoom to fit content with padding
-            const availableWidth = viewportWidth - PADDING_LEFT - PADDING_RIGHT;
-            const availableHeight = viewportHeight - PADDING_TOP - PADDING_BOTTOM;
-            const zoomX = availableWidth / contentWidth;
-            const zoomY = availableHeight / contentHeight;
-            const zoom = Math.min(Math.max(Math.min(zoomX, zoomY), 0.1), 1.5);
-
-            // Calculate scaled dimensions
-            const scaledContentWidth = contentWidth * zoom;
+            // Use zoom=1 to maintain consistent node sizes across all diagrams
+            const zoom = 1;
 
             // Calculate viewport offset
             // Y: top-align with padding
             const newY = PADDING_TOP - minY * zoom;
 
             // X: center the diagram+buttons as a unit
-            // Treat (diagram + button panel) as a combined block and center that
-            const combinedWidth = scaledContentWidth + PADDING_RIGHT;  // diagram + button space
+            const combinedWidth = contentWidth + PADDING_RIGHT;  // diagram + button space
             const leftMargin = (viewportWidth - combinedWidth) / 2;
             const newX = Math.max(PADDING_LEFT, leftMargin) - minX * zoom;
 
