@@ -20,7 +20,7 @@ class LayoutEstimator:
     LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes
     LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers
     LAYOUT_SPACE_X = 14
-    LAYOUT_PADDING = 50
+    LAYOUT_PADDING = 80  # Extra padding for fitView breathing room
 
     # Separate outputs mode uses tighter spacing
     SEPARATE_LAYOUT_SPACE_Y = 100
