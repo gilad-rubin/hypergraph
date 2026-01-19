@@ -1172,8 +1172,9 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                   if (totalLen > maxContentLen) maxContentLen = totalLen;
                 });
                 width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-                // Height: base padding + row height for each param
-                height = 24 + Math.max(1, params.length) * 28;
+                // Height matches CSS: py-2 (16px padding) + rows (20px each) + gaps (4px between)
+                const numParams = Math.max(1, params.length);
+                height = 16 + (numParams * 20) + ((numParams - 1) * 4);
               } else if (n.data?.nodeType === 'BRANCH') {
                 width = 140;
                 height = 140;

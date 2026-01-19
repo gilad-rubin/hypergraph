@@ -72,37 +72,56 @@ def render_graph(
         for output in hypernode.outputs:
             output_to_source[output] = name
 
-    # Create INPUT_GROUP node for external inputs
+    # Create INPUT_GROUP nodes for external inputs, grouped by (targets, is_bound)
+    # Inputs targeting the same node(s) with the same bound state get grouped together
     external_inputs = list(input_spec.required) + list(input_spec.optional)
     if external_inputs:
-        param_data = []
-        param_types = []
+        # Build mapping: param -> (targets, type, is_bound)
+        param_info: dict[str, tuple[frozenset[str], type | None, bool]] = {}
         for param in external_inputs:
+            targets = set()
             param_type = None
-            # Find the type from consuming nodes
+            is_bound = param in bound_params
+            # Find all nodes that consume this parameter
             for node_name, hypernode in graph.nodes.items():
                 if param in hypernode.inputs:
-                    param_type = hypernode.get_input_type(param)
-                    break
-            param_data.append(param)
-            param_types.append(_format_type(param_type))
+                    targets.add(node_name)
+                    if param_type is None:
+                        param_type = hypernode.get_input_type(param)
+            param_info[param] = (frozenset(targets), param_type, is_bound)
 
-        input_group_node = {
-            "id": "__inputs__",
-            "type": "custom",
-            "position": {"x": 0, "y": 0},
-            "data": {
-                "nodeType": "INPUT_GROUP",
-                "label": "Inputs",
-                "params": param_data,
-                "paramTypes": param_types,
-                "theme": theme,
-                "showTypes": show_types,
-            },
-            "sourcePosition": "bottom",
-            "targetPosition": "top",
-        }
-        nodes.append(input_group_node)
+        # Group params by (targets, is_bound)
+        groups: dict[tuple[frozenset[str], bool], list[tuple[str, type | None]]] = {}
+        for param, (targets, param_type, is_bound) in param_info.items():
+            key = (targets, is_bound)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append((param, param_type))
+
+        # Create an INPUT_GROUP node for each group
+        for idx, ((targets, is_bound), params) in enumerate(groups.items()):
+            group_id = f"__inputs_{idx}__" if len(groups) > 1 else "__inputs__"
+            param_names = [p[0] for p in params]
+            param_types_list = [_format_type(p[1]) for p in params]
+
+            input_group_node = {
+                "id": group_id,
+                "type": "custom",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "nodeType": "INPUT_GROUP",
+                    "label": "Inputs" if not is_bound else "Bound",
+                    "params": param_names,
+                    "paramTypes": param_types_list,
+                    "isBound": is_bound,
+                    "targets": list(targets),  # Store targets for edge creation
+                    "theme": theme,
+                    "showTypes": show_types,
+                },
+                "sourcePosition": "bottom",
+                "targetPosition": "top",
+            }
+            nodes.append(input_group_node)
 
     # Process each node in the graph
     for name, hypernode in graph.nodes.items():
@@ -217,19 +236,23 @@ def render_graph(
                 "data": {"edgeType": "output"},  # Mark as output edge
             })
 
-    # Create edges from INPUT_GROUP to consuming nodes
-    if external_inputs:
-        for param in external_inputs:
-            for node_name, hypernode in graph.nodes.items():
-                if param in hypernode.inputs:
-                    edges.append({
-                        "id": f"e___inputs___{param}_{node_name}",
-                        "source": "__inputs__",
-                        "target": node_name,
-                        "animated": False,
-                        "style": {"stroke": "#64748b", "strokeWidth": 2},
-                        "data": {"edgeType": "input", "valueName": param},
-                    })
+    # Create edges from INPUT_GROUP nodes to their target nodes
+    # Each INPUT_GROUP connects to its specific targets (stored in node data)
+    for node in nodes:
+        if node.get("data", {}).get("nodeType") == "INPUT_GROUP":
+            group_id = node["id"]
+            targets = node["data"].get("targets", [])
+            params = node["data"].get("params", [])
+            for target in targets:
+                # Create one edge per target (the edge represents all params going to this target)
+                edges.append({
+                    "id": f"e_{group_id}_to_{target}",
+                    "source": group_id,
+                    "target": target,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {"edgeType": "input", "params": params},
+                })
 
     # Build edges from nx_graph - always route data edges through DATA nodes
     for source, target, edge_data in graph.nx_graph.edges(data=True):
