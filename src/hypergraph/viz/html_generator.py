@@ -663,79 +663,51 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         let edgePath, labelX, labelY;
 
         if (data?.points && data.points.length > 0) {
-          // Build SVG path with rounded corners from constraint layout points
+          // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
           const points = data.points;
-          const radius = 22; // Corner radius for smooth turns
 
-          // Helper to create rounded corner path
-          const buildSmoothPath = (pts, r) => {
+          // curveBasis: B-spline interpolation (ported from d3-shape)
+          // Creates smooth flowing curves through control points
+          const curveBasis = (pts) => {
             if (pts.length < 2) return `M ${pts[0].x} ${pts[0].y}`;
             if (pts.length === 2) return `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y}`;
 
             let path = `M ${pts[0].x} ${pts[0].y}`;
 
-            for (let i = 1; i < pts.length - 1; i++) {
-              const prev = pts[i - 1];
-              const curr = pts[i];
-              const next = pts[i + 1];
-
-              // Calculate vectors
-              const v1x = curr.x - prev.x;
-              const v1y = curr.y - prev.y;
-              const v2x = next.x - curr.x;
-              const v2y = next.y - curr.y;
-
-              // Calculate lengths
-              const len1 = Math.sqrt(v1x * v1x + v1y * v1y);
-              const len2 = Math.sqrt(v2x * v2x + v2y * v2y);
-
-              // Skip if segments are too short
-              if (len1 < 1 || len2 < 1) {
-                path += ` L ${curr.x} ${curr.y}`;
-                continue;
-              }
-
-              // Limit radius to half of shortest segment
-              const maxR = Math.min(r, len1 / 2, len2 / 2);
-
-              // Calculate points where the curve starts and ends
-              const startX = curr.x - (v1x / len1) * maxR;
-              const startY = curr.y - (v1y / len1) * maxR;
-              const endX = curr.x + (v2x / len2) * maxR;
-              const endY = curr.y + (v2y / len2) * maxR;
-
-              // Line to curve start, then quadratic bezier through corner
-              path += ` L ${startX} ${startY} Q ${curr.x} ${curr.y} ${endX} ${endY}`;
+            // For B-spline, we need at least 3 points for curves
+            if (pts.length === 3) {
+              // Special case: 3 points - line to midpoint area, then to end
+              const x0 = pts[0].x, y0 = pts[0].y;
+              const x1 = pts[1].x, y1 = pts[1].y;
+              const x2 = pts[2].x, y2 = pts[2].y;
+              path += ` L ${(5 * x0 + x1) / 6} ${(5 * y0 + y1) / 6}`;
+              path += ` C ${(2 * x0 + x1) / 3} ${(2 * y0 + y1) / 3} ${(x0 + 2 * x1) / 3} ${(y0 + 2 * y1) / 3} ${(x0 + 4 * x1 + x2) / 6} ${(y0 + 4 * y1 + y2) / 6}`;
+              path += ` C ${(2 * x1 + x2) / 3} ${(2 * y1 + y2) / 3} ${(x1 + 2 * x2) / 3} ${(y1 + 2 * y2) / 3} ${x2} ${y2}`;
+              return path;
             }
 
-            // Final segment - use cubic bezier for smooth Kedro-style approach
-            const last = pts[pts.length - 1];
-            const secondLast = pts[pts.length - 2];
+            // General case: 4+ points
+            let x0 = pts[0].x, y0 = pts[0].y;
+            let x1 = pts[1].x, y1 = pts[1].y;
 
-            // Calculate the approach vector
-            const dx = last.x - secondLast.x;
-            const dy = last.y - secondLast.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            // First segment: line to 5/6 point
+            path += ` L ${(5 * x0 + x1) / 6} ${(5 * y0 + y1) / 6}`;
 
-            if (dist > 10) {
-              // Use cubic bezier for smooth curve into target
-              // CP1: continue in current direction for first third
-              // CP2: approach target vertically (for top-down flow)
-              const cp1x = secondLast.x + dx * 0.33;
-              const cp1y = secondLast.y + dy * 0.33;
-              const cp2x = last.x;
-              const cp2y = last.y - Math.min(dist * 0.4, 15);
-
-              path += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${last.x} ${last.y}`;
-            } else {
-              // Short segment - just use straight line
-              path += ` L ${last.x} ${last.y}`;
+            // Middle segments: B-spline cubic beziers
+            for (let i = 2; i < pts.length; i++) {
+              const x = pts[i].x, y = pts[i].y;
+              path += ` C ${(2 * x0 + x1) / 3} ${(2 * y0 + y1) / 3} ${(x0 + 2 * x1) / 3} ${(y0 + 2 * y1) / 3} ${(x0 + 4 * x1 + x) / 6} ${(y0 + 4 * y1 + y) / 6}`;
+              x0 = x1; y0 = y1;
+              x1 = x; y1 = y;
             }
+
+            // Final segment: bezier to last point, then line to exact end
+            path += ` C ${(2 * x0 + x1) / 3} ${(2 * y0 + y1) / 3} ${(x0 + 2 * x1) / 3} ${(y0 + 2 * y1) / 3} ${x1} ${y1}`;
 
             return path;
           };
 
-          edgePath = buildSmoothPath(points, radius);
+          edgePath = curveBasis(points);
 
           // Calculate label position at midpoint of edge
           const midIdx = Math.floor(points.length / 2);
