@@ -1,1 +1,1 @@
-"""Vendor JavaScript libraries (React, ReactFlow, ELK, etc.)."""
+"""Bundled JavaScript libraries (React, ReactFlow, kiwi.js, etc.)."""

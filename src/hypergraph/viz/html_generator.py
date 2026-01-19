@@ -34,19 +34,18 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     react_js = _read_asset("react.production.min.js", "js")
     react_dom_js = _read_asset("react-dom.production.min.js", "js")
     htm_js = _read_asset("htm.min.js", "js")
-    elk_js = _read_asset("elk.bundled.js", "js")
+    kiwi_js = _read_asset("kiwi.bundled.js", "js")
+    constraint_layout_js = _read_asset("constraint-layout.js", "js")
     rf_js = _read_asset("reactflow.umd.js", "js")
     rf_css = _read_asset("reactflow.css", "css")
-    theme_js = _read_asset("theme_utils.js", "js")
-    state_js = _read_asset("state_utils.js", "js")
     tailwind_css = _read_asset("tailwind.min.css", "css")
 
     # If local assets are missing, keep a minimal external fallback.
     # Check that all required assets are available
-    required_assets = [react_js, react_dom_js, htm_js, elk_js, rf_js, rf_css, tailwind_css]
+    required_assets = [react_js, react_dom_js, htm_js, kiwi_js, constraint_layout_js, rf_js, rf_css, tailwind_css]
     if not all(required_assets):
         missing = []
-        asset_names = ["react", "react-dom", "htm", "elk", "reactflow.js", "reactflow.css", "tailwind.css"]
+        asset_names = ["react", "react-dom", "htm", "kiwi", "constraint-layout", "reactflow.js", "reactflow.css", "tailwind.css"]
         for asset, name in zip(required_assets, asset_names):
             if not asset:
                 missing.append(name)
@@ -95,10 +94,9 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     {react_js}
     {react_dom_js}
     {htm_js}
-    {elk_js}
+    {kiwi_js}
+    {constraint_layout_js}
     {rf_js}
-    {theme_js or ""}
-    {state_js or ""}
 </head>"""
 
     # JavaScript body
@@ -149,13 +147,11 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       const ReactDOM = window.ReactDOM;
       const RF = window.ReactFlow;
       const htm = window.htm;
-      const ELK = window.ELK;
-      const stateUtils = window.HyperGraphVizState || {};
-      const themeUtils = window.HyperGraphTheme || {};
+      const ConstraintLayout = window.ConstraintLayout;
 
-      if (!React || !ReactDOM || !RF || !htm || !ELK) {
+      if (!React || !ReactDOM || !RF || !htm || !ConstraintLayout) {
         throw new Error("Missing globals: " + JSON.stringify({
-          React: !!React, ReactDOM: !!ReactDOM, ReactFlow: !!RF, htm: !!htm, ELK: !!ELK
+          React: !!React, ReactDOM: !!ReactDOM, ReactFlow: !!RF, htm: !!htm, ConstraintLayout: !!ConstraintLayout
         }));
       }
 
@@ -163,7 +159,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
       const html = htm.bind(React.createElement);
-      const elk = new ELK();
       
       // === LAYOUT CONSTANTS ===
       // Truncation limit for type hints (both display and width calculation)
@@ -631,19 +626,45 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       };
 
       // --- Edge Component ---
+      // Renders edges using polyline paths from constraint layout (via edge.data.points)
+      // Falls back to bezier paths if no points are provided
       const CustomEdge = ({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style = {}, markerEnd, label, data, source, target }) => {
         // Debug: Log edge coordinates to help diagnose layout issues
         React.useEffect(() => {
             if (window.__hypergraph_debug_edges) {
-                console.log(`[Edge ${id}] source=${source} target=${target} sourceY=${sourceY} targetY=${targetY}`);
+                console.log(`[Edge ${id}] source=${source} target=${target} points=${data?.points?.length || 0}`);
             }
-        }, [id, sourceX, sourceY, targetX, targetY, source, target]);
-        
-        const [edgePath, labelX, labelY] = getBezierPath({
-          sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition
-        });
-        
+        }, [id, sourceX, sourceY, targetX, targetY, source, target, data?.points]);
+
         const showDebug = data?.debugMode || window.__hypergraph_debug_overlays;
+
+        // Use polyline path from constraint layout if available, otherwise fall back to bezier
+        let edgePath, labelX, labelY;
+
+        if (data?.points && data.points.length > 0) {
+          // Build SVG path from constraint layout points
+          const points = data.points;
+          const pathParts = [`M ${points[0].x} ${points[0].y}`];
+          for (let i = 1; i < points.length; i++) {
+            pathParts.push(`L ${points[i].x} ${points[i].y}`);
+          }
+          edgePath = pathParts.join(' ');
+
+          // Calculate label position at midpoint of edge
+          const midIdx = Math.floor(points.length / 2);
+          if (points.length > 1) {
+            labelX = (points[midIdx - 1].x + points[midIdx].x) / 2;
+            labelY = (points[midIdx - 1].y + points[midIdx].y) / 2;
+          } else {
+            labelX = points[0].x;
+            labelY = points[0].y;
+          }
+        } else {
+          // Fallback to bezier path
+          [edgePath, labelX, labelY] = getBezierPath({
+            sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition
+          });
+        }
 
         return html`
           <${React.Fragment}>
@@ -683,23 +704,23 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                     fontFamily: 'ui-monospace, monospace',
                     fontWeight: '600',
                     letterSpacing: '0.02em',
-                    ...((label || data?.label) === 'True' 
-                      ? { 
-                          background: 'rgba(16, 185, 129, 0.9)', 
-                          border: '1px solid #34d399', 
+                    ...((label || data?.label) === 'True'
+                      ? {
+                          background: 'rgba(16, 185, 129, 0.9)',
+                          border: '1px solid #34d399',
                           color: '#ffffff',
                           boxShadow: '0 2px 6px rgba(16, 185, 129, 0.3)',
                         }
-                      : (label || data?.label) === 'False' 
-                        ? { 
-                            background: 'rgba(239, 68, 68, 0.9)', 
-                            border: '1px solid #f87171', 
+                      : (label || data?.label) === 'False'
+                        ? {
+                            background: 'rgba(239, 68, 68, 0.9)',
+                            border: '1px solid #f87171',
                             color: '#ffffff',
                             boxShadow: '0 2px 6px rgba(239, 68, 68, 0.3)',
                           }
-                        : { 
-                            background: 'rgba(15,23,42,0.9)', 
-                            border: '1px solid #334155', 
+                        : {
+                            background: 'rgba(15,23,42,0.9)',
+                            border: '1px solid #334155',
                             color: '#cbd5e1',
                             boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
                           }
@@ -1032,15 +1053,14 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       const nodeTypes = { custom: CustomNode, pipelineGroup: CustomNode };
       const edgeTypes = { custom: CustomEdge };
 
+      // Layout hook using constraint-based layout algorithm (Cassowary/kiwi.js)
       const useLayout = (nodes, edges) => {
         const [layoutedNodes, setLayoutedNodes] = useState([]);
         const [layoutedEdges, setLayoutedEdges] = useState([]);
         const [layoutError, setLayoutError] = useState(null);
         const [graphHeight, setGraphHeight] = useState(600);
         const [graphWidth, setGraphWidth] = useState(600);
-        // Track layout version to force edge recalculation when layout changes
         const [layoutVersion, setLayoutVersion] = useState(0);
-        // Track if layout is in progress to avoid showing stale edges
         const [isLayouting, setIsLayouting] = useState(false);
 
         useEffect(() => {
@@ -1051,294 +1071,156 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             setIsLayouting(false);
             return;
           }
-          
-          // Mark layout as in progress - this will hide edges temporarily
+
           setIsLayouting(true);
 
-          const buildElkHierarchy = (nodes, edges) => {
-            const visibleNodes = nodes.filter(n => !n.hidden);
+          try {
+            // Filter visible nodes (flat graphs only for now)
+            const visibleNodes = nodes.filter(n => !n.hidden && !n.parentNode);
             const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
-            const visibleEdges = edges.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
-            if (debugMode) console.log('[useLayout] visibleNodes:', visibleNodes.length, 'visibleEdges:', visibleEdges.length);
-            
-            const visibleNodeMap = new Map(visibleNodes.map(n => [n.id, { ...n, children: [], edges: [] }]));
-            const rootChildren = [];
-            
-            visibleNodes.forEach(n => {
-              if (n.parentNode && visibleNodeIds.has(n.parentNode)) {
-                const parent = visibleNodeMap.get(n.parentNode);
-                if (parent) parent.children.push(visibleNodeMap.get(n.id));
+            const visibleEdges = edges.filter(e =>
+              visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target)
+            );
+            if (debugMode) console.log('[useLayout] visible:', visibleNodes.length, 'edges:', visibleEdges.length);
+
+            // Calculate node dimensions for layout
+            const calculateDimensions = (n) => {
+              let width = 80;
+              let height = 90;
+
+              if (n.data?.nodeType === 'DATA') {
+                height = 36;
+                const labelLen = Math.min(n.data.label?.length || 0, NODE_LABEL_MAX_CHARS);
+                const typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
+                width = Math.min(MAX_NODE_WIDTH, (labelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
+              } else if (n.data?.nodeType === 'BRANCH') {
+                width = 140;
+                height = 140;
               } else {
-                rootChildren.push(visibleNodeMap.get(n.id));
+                // Function/Pipeline node
+                const labelLen = Math.min(n.data?.label?.length || 0, NODE_LABEL_MAX_CHARS);
+                let maxContentLen = labelLen;
+                const outputs = n.data?.outputs || [];
+                if (!n.data?.separateOutputs && outputs.length > 0) {
+                  outputs.forEach(o => {
+                    const outName = o.name || o.label || '';
+                    const outType = o.type || o.typeHint || '';
+                    const outLabelLen = Math.min(outName.length, NODE_LABEL_MAX_CHARS);
+                    const outTypeLen = (n.data?.showTypes && outType) ? Math.min(outType.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
+                    const totalLen = outLabelLen + outTypeLen + 4;
+                    if (totalLen > maxContentLen) maxContentLen = totalLen;
+                  });
+                }
+                width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
+                height = 52;
+                if (!n.data?.separateOutputs && outputs.length > 0) {
+                  height = 44 + 38 + ((outputs.length - 1) * 24);
+                }
               }
-            });
-            
-            const mapToElk = (n) => {
-                let width = 80; // Small default, will be calculated based on content
-                let height = 90;
-                
-                if (n.data?.nodeType === 'DATA') {
-                    height = 36;
-                    // Calculate width based on label + optional type hint (both truncated)
-                    const labelLen = Math.min(n.data.label ? n.data.label.length : 0, NODE_LABEL_MAX_CHARS);
-                    const typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0; // +2 for ": "
-                    width = Math.min(MAX_NODE_WIDTH, (labelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-                } else if (n.data?.nodeType === 'PIPELINE' && !n.data?.isExpanded) {
-                    // Collapsed pipeline - dynamic width based on label and outputs
-                    const labelLen = Math.min(n.data.label ? n.data.label.length : 0, NODE_LABEL_MAX_CHARS);
-                    let maxContentLen = labelLen;
-                    
-                    // Consider output widths if combined (separateOutputs=false)
-                    // Note: outputs from fallbackApplyState have { name, type }, not { label, typeHint }
-                    const outputs = n.data.outputs || [];
-                    if (!n.data.separateOutputs && outputs.length > 0) {
-                        outputs.forEach(o => {
-                            const outName = o.name || o.label || '';
-                            const outType = o.type || o.typeHint || '';
-                            const outLabelLen = Math.min(outName.length, NODE_LABEL_MAX_CHARS);
-                            const outTypeLen = (n.data.showTypes && outType) ? Math.min(outType.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
-                            const totalLen = outLabelLen + outTypeLen + 4; // +4 for arrow "→ " and spacing
-                            if (totalLen > maxContentLen) maxContentLen = totalLen;
-                        });
-                    }
-                    width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
-                    height = 52; // Compact height without label
-                    
-                    // Add height for outputs if combined
-                    if (!n.data.separateOutputs && outputs.length > 0) {
-                        height = 44 + 38 + ((outputs.length - 1) * 24);
-                    }
-                } else if (n.data?.nodeType === 'INPUT') {
-                    height = 30;
-                    // Calculate width based on label + optional type hint (both truncated)
-                    const labelLen = Math.min(n.data.label ? n.data.label.length : 0, NODE_LABEL_MAX_CHARS);
-                    const typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0; // +2 for ": "
-                    width = Math.min(MAX_NODE_WIDTH, (labelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-                } else if (n.data?.nodeType === 'INPUT_GROUP') {
-                    // Calculate width based on longest param + type combination (both truncated)
-                    const params = n.data.params || [];
-                    const paramTypes = n.data.paramTypes || [];
-                    let maxLen = 0;
-                    params.forEach((p, i) => {
-                        let len = Math.min(p ? p.length : 0, NODE_LABEL_MAX_CHARS); // Truncate param name
-                        if (n.data.showTypes && paramTypes[i]) {
-                            len += 2 + Math.min(paramTypes[i].length, TYPE_HINT_MAX_CHARS); // ": " + truncated type
-                        }
-                        if (len > maxLen) maxLen = len;
-                    });
-                    width = Math.min(MAX_NODE_WIDTH, maxLen * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-                    // Dynamic height based on number of inputs
-                    const paramCount = params.length || 1;
-                    height = 14 + (paramCount * 22);
-                } else if (n.data?.nodeType === 'BRANCH') {
-                    // Branch node (diamond shape) - larger for better text visibility
-                    width = 140;
-                    height = 140;
-                } else {
-                    // Standard Function Node - dynamic width based on label and outputs
-                    const labelLen = Math.min(n.data.label ? n.data.label.length : 0, NODE_LABEL_MAX_CHARS);
-                    let maxContentLen = labelLen;
-                    
-                    // Consider output widths if combined (separateOutputs=false)
-                    // Note: outputs from fallbackApplyState have { name, type }, not { label, typeHint }
-                    const outputs = n.data.outputs || [];
-                    if (!n.data.separateOutputs && outputs.length > 0) {
-                        outputs.forEach(o => {
-                            const outName = o.name || o.label || '';
-                            const outType = o.type || o.typeHint || '';
-                            const outLabelLen = Math.min(outName.length, NODE_LABEL_MAX_CHARS);
-                            const outTypeLen = (n.data.showTypes && outType) ? Math.min(outType.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
-                            const totalLen = outLabelLen + outTypeLen + 4; // +4 for arrow "→ " and spacing
-                            if (totalLen > maxContentLen) maxContentLen = totalLen;
-                        });
-                    }
-                    width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
-                    height = 52; // Compact height without FUNCTION/PIPELINE label
-                    
-                    // Add height for outputs if combined
-                    if (!n.data.separateOutputs && outputs.length > 0) {
-                        height = 44 + 38 + ((outputs.length - 1) * 24);
-                    }
-                }
-                
-                if (n.style && n.style.width) width = n.style.width;
-                if (n.style && n.style.height) height = n.style.height;
 
-                // For compound nodes (with children), let ELK calculate dimensions unless explicit
-                const isCompound = n.children && n.children.length > 0;
-                
-                const elkNode = {
-                  id: n.id,
-                  width: width,
-                  height: height,
-                  children: n.children.length ? n.children.map(mapToElk) : undefined,
-                  layoutOptions: {
-                     'elk.padding': '[top=60,left=24,bottom=40,right=24]',
-                     'elk.spacing.nodeNode': '24',
-                     'elk.layered.spacing.nodeNodeBetweenLayers': '48',
-                     'elk.direction': 'DOWN',
-                     // Ensure compound nodes are sized by content
-                     'elk.resize.fixed': 'false', 
-                  }
-                };
-                
-                // For branch nodes, add explicit ports with fixed order for True (left) and False (right)
-                if (n.data?.nodeType === 'BRANCH') {
-                  elkNode.ports = [
-                    { 
-                      id: `${n.id}_port_true`, 
-                      layoutOptions: { 
-                        'elk.port.side': 'SOUTH',
-                        'elk.port.index': '0'  // Left position
-                      } 
-                    },
-                    { 
-                      id: `${n.id}_port_false`, 
-                      layoutOptions: { 
-                        'elk.port.side': 'SOUTH',
-                        'elk.port.index': '1'  // Right position
-                      } 
-                    }
-                  ];
-                  elkNode.layoutOptions['elk.portConstraints'] = 'FIXED_ORDER';
-                }
-                
-                return elkNode;
+              if (n.style?.width) width = n.style.width;
+              if (n.style?.height) height = n.style.height;
+
+              return { width, height };
             };
 
-            const elkGraph = {
-              id: 'root',
-              layoutOptions: {
-                // Sugiyama-style layered algorithm (like Kedro-viz)
-                'elk.algorithm': 'layered',
-                'elk.direction': 'DOWN',
-                
-                // POLYLINE routing for straight edges with gentle curves at corners
-                'elk.edgeRouting': 'POLYLINE',
-                'elk.layered.edgeRouting.polyline.slopedEdgeZoneWidth': '3.0',
-                
-                // Increased spacing to ensure edges don't touch nodes and room for edge labels
-                'elk.layered.spacing.nodeNodeBetweenLayers': '80', // More breathing room vertically (was 60)
-                'elk.spacing.nodeNode': '30', // Space between nodes in same layer (was 24)
-                'elk.spacing.edgeNode': '45', // Increased from 40 - prevents edge-node contact
-                'elk.spacing.edgeEdge': '20', // Increased from 15 - space between parallel edges
-                'elk.spacing.edgeLabel': '10', // Space around edge labels
-                
-                // Advanced crossing minimization (Sugiyama algorithm core)
-                'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-                'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
-                'elk.layered.thoroughness': '10', // Higher = better quality (default 7)
-                
-                // Node placement for symmetric, balanced layouts
-                'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF', // Better for symmetric layouts
-                'elk.layered.nodePlacement.bk.fixedAlignment': 'BALANCED', // Balanced alignment for symmetry
-                'elk.layered.nodePlacement.favorStraightEdges': 'true',
-                
-                // Alignment and centering for symmetric layouts
-                'elk.alignment': 'CENTER', // Center nodes within their layer
-                'elk.contentAlignment': 'V_CENTER H_CENTER', // Center content in compound nodes
-                
-                // Compaction - use LEFT_RIGHT_CONNECTION_LOCKING for more symmetric results
-                'elk.layered.compaction.postCompaction.strategy': 'LEFT_RIGHT_CONNECTION_LOCKING',
-                'elk.layered.compaction.connectedComponents': 'true',
-                
-                // Hierarchical handling for nested pipelines
-                'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-                'elk.resize.fixed': 'false',
-                
-                // Port and edge aesthetics
-                'elk.portConstraints': 'FIXED_ORDER',
-                'elk.layered.unnecessaryBendpoints': 'false', // Remove redundant bends
-                'elk.layered.mergeEdges': 'false', // Keep edges separate for clarity
-              },
-              children: rootChildren.map(mapToElk),
-              edges: visibleEdges.map(e => {
-                const elkEdge = {
-                  id: e.id,
-                  sources: [e.source],
-                  targets: [e.target],
-                };
-                // For branch edges, connect to specific ports: True=left port, False=right port
-                if (e.data?.label === 'True') {
-                  elkEdge.sources = [`${e.source}_port_true`];
-                } else if (e.data?.label === 'False') {
-                  elkEdge.sources = [`${e.source}_port_false`];
-                }
-                return elkEdge;
-              }),
-            };
-            
-            return { elkGraph, visibleEdges };
-          };
-
-          const { elkGraph, visibleEdges } = buildElkHierarchy(nodes, edges);
-
-          elk.layout(elkGraph).then((graph) => {
-              setLayoutError(null);
-              const positionedNodes = [];
-              const debugMode = window.__hypergraph_debug_viz || false;
-              
-              const traverse = (node, parentX = 0, parentY = 0) => {
-                const x = node.x || 0;
-                const y = node.y || 0;
-                const w = node.width || 200;
-                const h = node.height || 68;
-                
-                const original = nodes.find(n => n.id === node.id);
-                if (original) {
-                  // FIX: Provide explicit handle positions so React Flow doesn't need
-                  // to measure from DOM. This fixes edge path calculation issues when
-                  // node dimensions change (e.g., collapse/expand pipelines).
-                  // See: https://reactflow.dev/learn/advanced-use/ssr-ssg-configuration
-                  // NodeHandle requires: type, position, x, y, width, height
-                  const nodeWithHandles = {
-                    ...original,
-                    position: { x, y },
-                    width: w,
-                    height: h,
-                    style: { ...original.style, width: w, height: h },
-                    handles: [
-                      { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
-                      { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
-                    ],
-                  };
-                  if (debugMode) console.log('[layout] Node with handles:', node.id, nodeWithHandles.handles);
-                  positionedNodes.push(nodeWithHandles);
-                }
-                if (node.children) node.children.forEach(child => traverse(child, x, y));
+            // Prepare nodes for constraint layout (expects center coordinates, width, height)
+            const layoutNodes = visibleNodes.map(n => {
+              const { width, height } = calculateDimensions(n);
+              return {
+                id: n.id,
+                width,
+                height,
+                x: 0,  // Will be set by layout
+                y: 0,  // Will be set by layout
+                _original: n,  // Keep reference to original
               };
-              
-              (graph.children || []).forEach(n => traverse(n));
-              setLayoutedNodes(positionedNodes);
-              setLayoutedEdges(visibleEdges);
-              setLayoutVersion(v => v + 1); // Increment version to force edge recalculation
-              setIsLayouting(false); // Layout complete - safe to show edges
-              if (graph.height) setGraphHeight(graph.height);
-              if (graph.width) setGraphWidth(graph.width);
-            })
-            .catch((err) => {
-                console.error('ELK layout error', err);
-                setLayoutError(err?.message || 'Layout error');
-                // Fallback with explicit handle positions
-                const fallbackNodes = nodes.map((n, idx) => {
-                    const w = n.style?.width || 200;
-                    const h = n.style?.height || 68;
-                    return {
-                        ...n,
-                        position: { x: 80 * (idx % 4), y: 120 * Math.floor(idx / 4) },
-                        width: w,
-                        height: h,
-                        handles: [
-                            { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
-                            { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
-                        ],
-                    };
-                });
-                setLayoutedNodes(fallbackNodes);
-                setLayoutedEdges(edges);
-                setLayoutVersion(v => v + 1);
-                setIsLayouting(false);
             });
+
+            // Prepare edges for constraint layout
+            const layoutEdges = visibleEdges.map(e => ({
+              id: e.id,
+              source: e.source,
+              target: e.target,
+              _original: e,
+            }));
+
+            // Run constraint layout (synchronous)
+            const result = ConstraintLayout.graph(
+              layoutNodes,
+              layoutEdges,
+              null,  // layers (not used)
+              'vertical',  // orientation
+              ConstraintLayout.defaultOptions
+            );
+
+            if (debugMode) console.log('[useLayout] layout result:', result);
+
+            // Convert back to React Flow format
+            // Note: Constraint layout returns center coordinates; React Flow expects top-left
+            const positionedNodes = result.nodes.map(n => {
+              const w = n.width;
+              const h = n.height;
+              // Convert from center to top-left corner
+              const x = n.x - w / 2;
+              const y = n.y - h / 2;
+
+              return {
+                ...n._original,
+                position: { x, y },
+                width: w,
+                height: h,
+                style: { ...n._original.style, width: w, height: h },
+                handles: [
+                  { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
+                  { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
+                ],
+              };
+            });
+
+            // Convert edges with points from constraint layout
+            const positionedEdges = result.edges.map(e => ({
+              ...e._original,
+              data: {
+                ...e._original.data,
+                points: e.points,  // Polyline points from constraint layout
+              },
+            }));
+
+            setLayoutedNodes(positionedNodes);
+            setLayoutedEdges(positionedEdges);
+            setLayoutVersion(v => v + 1);
+            setIsLayouting(false);
+            setLayoutError(null);
+
+            if (result.size) {
+              setGraphWidth(result.size.width);
+              setGraphHeight(result.size.height);
+            }
+          } catch (err) {
+            console.error('Constraint layout error:', err);
+            setLayoutError(err?.message || 'Layout error');
+
+            // Fallback layout (grid)
+            const fallbackNodes = nodes.map((n, idx) => {
+              const w = n.style?.width || 200;
+              const h = n.style?.height || 68;
+              return {
+                ...n,
+                position: { x: 80 * (idx % 4), y: 120 * Math.floor(idx / 4) },
+                width: w,
+                height: h,
+                handles: [
+                  { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
+                  { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
+                ],
+              };
+            });
+            setLayoutedNodes(fallbackNodes);
+            setLayoutedEdges(edges);
+            setLayoutVersion(v => v + 1);
+            setIsLayouting(false);
+          }
         }, [nodes, edges]);
 
         return { layoutedNodes, layoutedEdges, layoutError, graphHeight, graphWidth, layoutVersion, isLayouting };
