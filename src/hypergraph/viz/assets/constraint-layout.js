@@ -560,7 +560,15 @@
     const usedCorridorPositions = { left: [], right: [] };
     const minEdgeSpacing = spaceX * 0.8;  // Minimum spacing between parallel edges
 
-    for (const edge of edges) {
+    // Sort edges by span length (ascending) - shorter edges processed first get inner positions
+    // Longer edges get processed later and pushed to outer positions
+    const sortedEdges = [...edges].sort((a, b) => {
+      const spanA = a.targetNode.row - a.sourceNode.row;
+      const spanB = b.targetNode.row - b.sourceNode.row;
+      return spanA - spanB;  // Shorter spans first (inner), longer spans later (outer)
+    });
+
+    for (const edge of sortedEdges) {
       const source = edge.sourceNode;
       const target = edge.targetNode;
 
