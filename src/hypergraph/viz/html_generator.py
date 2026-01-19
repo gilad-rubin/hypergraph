@@ -665,7 +665,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         if (data?.points && data.points.length > 0) {
           // Build SVG path with rounded corners from constraint layout points
           const points = data.points;
-          const radius = 15; // Corner radius for smooth turns
+          const radius = 22; // Corner radius for smooth turns
 
           // Helper to create rounded corner path
           const buildSmoothPath = (pts, r) => {
