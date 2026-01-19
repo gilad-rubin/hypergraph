@@ -708,9 +708,29 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
               path += ` L ${startX} ${startY} Q ${curr.x} ${curr.y} ${endX} ${endY}`;
             }
 
-            // Final line to last point
+            // Final segment - use cubic bezier for smooth Kedro-style approach
             const last = pts[pts.length - 1];
-            path += ` L ${last.x} ${last.y}`;
+            const secondLast = pts[pts.length - 2];
+
+            // Calculate the approach vector
+            const dx = last.x - secondLast.x;
+            const dy = last.y - secondLast.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist > 10) {
+              // Use cubic bezier for smooth curve into target
+              // CP1: continue in current direction for first third
+              // CP2: approach target vertically (for top-down flow)
+              const cp1x = secondLast.x + dx * 0.33;
+              const cp1y = secondLast.y + dy * 0.33;
+              const cp2x = last.x;
+              const cp2y = last.y - Math.min(dist * 0.4, 15);
+
+              path += ` C ${cp1x} ${cp1y} ${cp2x} ${cp2y} ${last.x} ${last.y}`;
+            } else {
+              // Short segment - just use straight line
+              path += ` L ${last.x} ${last.y}`;
+            }
 
             return path;
           };
