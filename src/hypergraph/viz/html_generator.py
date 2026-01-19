@@ -1223,8 +1223,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                   ...ConstraintLayout.defaultOptions,
                   layout: {
                     ...ConstraintLayout.defaultOptions.layout,
-                    spaceY: 70,      // Tighter vertical spacing for separate outputs
-                    layerSpaceY: 60, // Tighter layer spacing for separate outputs
+                    spaceY: 90,      // Tighter vertical spacing for separate outputs
+                    layerSpaceY: 80, // Tighter layer spacing for separate outputs
                   }
                 }
               : ConstraintLayout.defaultOptions;

@@ -814,13 +814,13 @@
       spaceY: 140,      // Vertical spacing between nodes
       layerSpaceY: 120, // Vertical spacing between layers
       spreadX: 2.2,
-      padding: 100,
+      padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
     },
     routing: {
-      spaceX: 26,
+      spaceX: 45,       // Increased from 26 for more edge-to-node clearance
       spaceY: 36,       // Increased from 28 for better edge routing
-      minPassageGap: 50, // Increased from 40 for wider passages
+      minPassageGap: 60, // Increased from 50 for wider passages
       stemUnit: 4,      // Reduced from 8 - smaller stem spread
       stemMinSource: 0,
       stemMinTarget: 28, // Gap above target node for visual breathing room
