@@ -1792,16 +1792,33 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const zoomY = availableHeight / contentHeight;
             const zoom = Math.min(Math.max(Math.min(zoomX, zoomY), 0.1), 1.5);
 
+            // Calculate scaled dimensions
+            const scaledContentWidth = contentWidth * zoom;
+            const scaledContentHeight = contentHeight * zoom;
+
             // Calculate viewport offset
             // Y: top-align with padding
             const newY = PADDING_TOP - minY * zoom;
 
-            // X: center horizontally (accounting for control buttons on right)
-            const scaledContentWidth = contentWidth * zoom;
-            const effectiveViewportWidth = viewportWidth - PADDING_RIGHT;  // Reserve space for buttons
-            const newX = (effectiveViewportWidth - scaledContentWidth) / 2 - minX * zoom;
+            // X: center the diagram+buttons as a unit
+            // Treat (diagram + button panel) as a combined block and center that
+            const combinedWidth = scaledContentWidth + PADDING_RIGHT;  // diagram + button space
+            const leftMargin = (viewportWidth - combinedWidth) / 2;
+            const newX = Math.max(PADDING_LEFT, leftMargin) - minX * zoom;
 
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
+
+            // Resize iframe to fit actual scaled content (not zoom=1 size)
+            const actualHeight = scaledContentHeight + PADDING_TOP + PADDING_BOTTOM;
+            const actualWidth = scaledContentWidth + PADDING_LEFT + PADDING_RIGHT;
+            try {
+                if (window.frameElement) {
+                    window.frameElement.style.height = Math.max(200, actualHeight) + 'px';
+                    window.frameElement.style.width = Math.max(300, actualWidth) + 'px';
+                }
+            } catch (e) {
+                // Ignore cross-origin errors
+            }
         }, [rawLayoutedNodes, setViewport]);
         
         // ========================================================================
@@ -1938,34 +1955,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
           };
         }, [layoutedNodes, layoutedEdges, layoutVersion]);
 
-        // --- Iframe Resize Logic (Task 2) ---
-        useEffect(() => {
-            if (graphHeight && graphWidth) {
-                const desiredHeight = Math.max(400, graphHeight + 50);
-                // Add extra width (100px) for the control buttons on the right side
-                const desiredWidth = Math.max(400, graphWidth + 150);
-                try {
-                    // Try to resize the hosting iframe to avoid internal scrollbars and excess padding
-                    if (window.frameElement) {
-                        window.frameElement.style.height = desiredHeight + 'px';
-                        window.frameElement.style.width = desiredWidth + 'px';
-                    }
-                } catch (e) {
-                    // Ignore cross-origin errors or missing frameElement
-                }
-                
-                // Notify parent window of size changes (for ScrollablePipelineWidget)
-                try {
-                    window.parent.postMessage({
-                        type: 'hypergraph-viz-resize',
-                        height: desiredHeight,
-                        width: desiredWidth
-                    }, '*');
-                } catch (e) {
-                    // Ignore if parent communication fails
-                }
-            }
-        }, [graphHeight, graphWidth]);
+        // Note: Iframe resizing is now handled in fitWithFixedPadding for accurate scaled dimensions
         // --- Resize Handling (Task 2) ---
         useEffect(() => {
             const handleResize = () => {
