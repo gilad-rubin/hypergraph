@@ -20,7 +20,8 @@ class LayoutEstimator:
     LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes
     LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers
     LAYOUT_SPACE_X = 14
-    LAYOUT_PADDING = 80  # Extra padding for fitView breathing room
+    LAYOUT_PADDING_X = 80  # Extra horizontal padding for fitView breathing room
+    LAYOUT_PADDING_Y = 50  # Vertical padding (original value)
 
     # Separate outputs mode uses tighter spacing
     SEPARATE_LAYOUT_SPACE_Y = 100
@@ -189,9 +190,9 @@ class LayoutEstimator:
             if lvl < num_levels - 1:
                 total_height += self.layer_space_y
 
-        # Add padding
-        total_width = max_level_width + self.LAYOUT_PADDING * 2
-        total_height += self.LAYOUT_PADDING * 2
+        # Add padding (separate horizontal and vertical)
+        total_width = max_level_width + self.LAYOUT_PADDING_X * 2
+        total_height += self.LAYOUT_PADDING_Y * 2
 
         # Enforce minimums
         total_width = max(400, int(total_width))
