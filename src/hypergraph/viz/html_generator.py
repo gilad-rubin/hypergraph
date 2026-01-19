@@ -944,7 +944,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
              const typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
              
              return html`
-                <div className=${`px-3 py-2 w-full relative rounded-xl border shadow-sm flex flex-col gap-1 min-w-[120px] transition-colors transition-shadow duration-200 hover:shadow-lg
+                <div className=${`px-3 py-2 w-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg
                     ${isBound ? 'border-dashed' : ''}
                     ${isLight
                         ? 'bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
@@ -1161,17 +1161,20 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 const typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
                 width = Math.min(MAX_NODE_WIDTH, (labelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
               } else if (n.data?.nodeType === 'INPUT_GROUP') {
-                // INPUT_GROUP shows params as rows
+                // INPUT_GROUP shows params as rows (icon + param name + optional type)
                 const params = n.data?.params || [];
                 const paramTypes = n.data?.paramTypes || [];
-                let maxContentLen = 8; // "Inputs" label minimum
+                let maxContentLen = 0;
                 params.forEach((p, i) => {
                   const paramLen = Math.min(p.length, NODE_LABEL_MAX_CHARS);
                   const typeLen = (n.data?.showTypes && paramTypes[i]) ? Math.min(paramTypes[i].length, TYPE_HINT_MAX_CHARS) + 2 : 0;
-                  const totalLen = paramLen + typeLen + 4;
+                  // Account for icon (2 chars equivalent) + gap (1 char) + param + type
+                  const totalLen = 3 + paramLen + typeLen;
                   if (totalLen > maxContentLen) maxContentLen = totalLen;
                 });
-                width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + NODE_BASE_PADDING);
+                // Minimum width for very short params (ensures icon + short name look good)
+                maxContentLen = Math.max(maxContentLen, 6);
+                width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + 32);  // Smaller padding for inputs
                 // Height matches CSS: py-2 (16px padding) + rows (20px each) + gaps (4px between)
                 const numParams = Math.max(1, params.length);
                 height = 16 + (numParams * 20) + ((numParams - 1) * 4);
@@ -1789,10 +1792,14 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             const zoomY = availableHeight / contentHeight;
             const zoom = Math.min(Math.max(Math.min(zoomX, zoomY), 0.1), 1.5);
 
-            // Calculate viewport offset to position content at top-left with padding
-            // Screen position = flow_position * zoom + viewport_offset
-            const newX = PADDING_LEFT - minX * zoom;
+            // Calculate viewport offset
+            // Y: top-align with padding
             const newY = PADDING_TOP - minY * zoom;
+
+            // X: center horizontally (accounting for control buttons on right)
+            const scaledContentWidth = contentWidth * zoom;
+            const effectiveViewportWidth = viewportWidth - PADDING_RIGHT;  // Reserve space for buttons
+            const newX = (effectiveViewportWidth - scaledContentWidth) / 2 - minX * zoom;
 
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
         }, [rawLayoutedNodes, setViewport]);

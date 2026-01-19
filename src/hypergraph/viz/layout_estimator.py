@@ -245,17 +245,20 @@ class LayoutEstimator:
 
     def _estimate_input_group_width(self, inputs: list[str]) -> int:
         """Estimate width of an INPUT_GROUP node."""
-        max_content_len = 8  # "Inputs" label minimum
+        max_content_len = 0
         for param in inputs:
             param_len = min(len(param), self.NODE_LABEL_MAX_CHARS)
             type_len = 0
             if self.show_types:
                 # Would need to look up type from consuming nodes
                 type_len = 10  # Estimate
-            total_len = param_len + type_len + 4
+            # Account for icon (2 chars equivalent) + gap (1 char) + param + type
+            total_len = 3 + param_len + type_len
             max_content_len = max(max_content_len, total_len)
 
-        width = max_content_len * self.CHAR_WIDTH_PX + self.NODE_BASE_PADDING
+        # Minimum width for very short params
+        max_content_len = max(max_content_len, 6)
+        width = max_content_len * self.CHAR_WIDTH_PX + 32  # Smaller padding for inputs
         return min(width, self.MAX_NODE_WIDTH)
 
     def _estimate_input_group_height(self, inputs: list[str]) -> int:
