@@ -123,6 +123,20 @@ class ScrollablePipelineWidget:
             overlay.classList.remove("interactive");
         }}
     }});
+
+    // Listen for resize messages from iframe to auto-fit content
+    window.addEventListener("message", function(e) {{
+        if (e.data && e.data.type === "hypergraph-viz-resize") {{
+            var newHeight = e.data.height;
+            var newWidth = e.data.width;
+            if (newHeight && newHeight > 0) {{
+                wrapper.style.height = newHeight + "px";
+            }}
+            if (newWidth && newWidth > 0) {{
+                wrapper.style.width = Math.max(newWidth, {self.width}) + "px";
+            }}
+        }}
+    }});
 }})();
 </script>'''
 
