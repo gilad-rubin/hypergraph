@@ -349,14 +349,14 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         const { zoomIn, zoomOut, fitView } = useReactFlow();
 
         return html`
-            <${Panel} position="bottom-right" className="flex flex-col gap-2 pb-4 mr-4">
+            <${Panel} position="bottom-right" className="flex flex-col gap-2 pb-4 mr-6">
                 <${TooltipButton} onClick=${() => zoomIn()} tooltip="Zoom In" theme=${theme}>
                     <${Icons.ZoomIn} />
                 <//>
                 <${TooltipButton} onClick=${() => zoomOut()} tooltip="Zoom Out" theme=${theme}>
                     <${Icons.ZoomOut} />
                 <//>
-                <${TooltipButton} onClick=${() => fitView({ padding: 0.12, duration: 0 })} tooltip="Fit View" theme=${theme}>
+                <${TooltipButton} onClick=${() => fitView({ padding: 0.15, duration: 0 })} tooltip="Fit View" theme=${theme}>
                     <${Icons.Center} />
                 <//>
                 <div className=${`h-px my-1 ${theme === 'light' ? 'bg-slate-200' : 'bg-slate-700'}`}></div>
@@ -669,6 +669,12 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
           points[0] = { x: sourceX, y: sourceY };
           points[points.length - 1] = { x: targetX, y: targetY };
 
+          // Simplify "mostly vertical" edges - avoid kinked appearance
+          // If the horizontal distance is small relative to vertical, use a simple S-curve
+          const dx = Math.abs(targetX - sourceX);
+          const dy = Math.abs(targetY - sourceY);
+          const isNearlyVertical = dx < 30 && dy > dx * 2;
+
           // curveBasis: B-spline interpolation (ported from d3-shape)
           // Creates smooth flowing curves through control points
           // Duplicate first/last points to clamp the spline to exact endpoints
@@ -701,7 +707,15 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             return path;
           };
 
-          edgePath = curveBasis(points);
+          // For nearly vertical edges, use a simple smooth S-curve instead of B-spline
+          // This avoids the "kinked" appearance when source and target have small X offset
+          if (isNearlyVertical) {
+            // Simple S-curve: straight down with gentle horizontal transition
+            const midY = (sourceY + targetY) / 2;
+            edgePath = `M ${sourceX} ${sourceY} C ${sourceX} ${midY} ${targetX} ${midY} ${targetX} ${targetY}`;
+          } else {
+            edgePath = curveBasis(points);
+          }
 
           // Calculate label position at midpoint of edge
           const midIdx = Math.floor(points.length / 2);
@@ -1902,7 +1916,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         // --- Resize Handling (Task 2) ---
         useEffect(() => {
             const handleResize = () => {
-                fitView({ padding: 0.12, duration: 0, minZoom: 0.3, maxZoom: 1.5 });
+                fitView({ padding: 0.15, duration: 0, minZoom: 0.3, maxZoom: 1.5 });
             };
             window.addEventListener('resize', handleResize);
             return () => window.removeEventListener('resize', handleResize);
@@ -1912,7 +1926,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         useEffect(() => {
             if (layoutedNodes.length > 0) {
                 // Immediate fit with no animation
-                window.requestAnimationFrame(() => fitView({ padding: 0.12, duration: 0, minZoom: 0.3, maxZoom: 1.5 }));
+                window.requestAnimationFrame(() => fitView({ padding: 0.15, duration: 0, minZoom: 0.3, maxZoom: 1.5 }));
             }
         }, [layoutedNodes, fitView]);
 
@@ -1980,7 +1994,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 }
               }}
               fitView
-              fitViewOptions=${{ padding: 0.12, minZoom: 0.3, maxZoom: 1.5, duration: 0 }}
+              fitViewOptions=${{ padding: 0.15, minZoom: 0.3, maxZoom: 1.5, duration: 0 }}
               minZoom=${0.1}
               maxZoom=${2}
               className=${'bg-transparent'}
