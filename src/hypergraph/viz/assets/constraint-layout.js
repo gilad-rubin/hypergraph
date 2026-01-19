@@ -591,26 +591,23 @@
       // First pass: find which rows block the natural path
       let firstBlockedRow = -1;
       let lastBlockedRow = -1;
-      let globalNodeLeft = Infinity;
-      let globalNodeRight = -Infinity;
+      const blockedRows = [];
 
       for (let i = source.row + 1; i < target.row; i += 1) {
         let rowBlocks = false;
         for (const node of rows[i]) {
-          // Track global node bounds for corridor calculation
-          globalNodeLeft = Math.min(globalNodeLeft, nodeLeft(node));
-          globalNodeRight = Math.max(globalNodeRight, nodeRight(node));
-
           // Check if this node blocks the natural path
           if (naturalX >= nodeLeft(node) - spaceX * 0.5 &&
               naturalX <= nodeRight(node) + spaceX * 0.5) {
             rowBlocks = true;
+            break;
           }
         }
 
         if (rowBlocks) {
           if (firstBlockedRow === -1) firstBlockedRow = i;
           lastBlockedRow = i;
+          blockedRows.push(i);
         }
       }
 
@@ -619,7 +616,19 @@
         continue;
       }
 
-      // Choose a single corridor x-position that clears ALL nodes
+      // Calculate node bounds ONLY from the blocked rows
+      // This ensures short edges don't get pushed far out due to nodes in unrelated rows
+      let globalNodeLeft = Infinity;
+      let globalNodeRight = -Infinity;
+
+      for (const rowIdx of blockedRows) {
+        for (const node of rows[rowIdx]) {
+          globalNodeLeft = Math.min(globalNodeLeft, nodeLeft(node));
+          globalNodeRight = Math.max(globalNodeRight, nodeRight(node));
+        }
+      }
+
+      // Choose a single corridor x-position that clears the blocking nodes
       // Use left or right side, whichever is closer to the natural path
       const leftCorridorX = globalNodeLeft - spaceX;
       const rightCorridorX = globalNodeRight + spaceX;
