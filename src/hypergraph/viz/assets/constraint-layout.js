@@ -543,7 +543,7 @@
   }) => {
     const rows = groupByRow(nodes, orientation);
 
-    // Sort edges by angle for each node (Kedro-viz algorithm)
+    // Sort edges by angle for each node (standard algorithm)
     for (const node of nodes) {
       node.targets.sort((a, b) =>
         compare(
@@ -553,7 +553,8 @@
       );
     }
 
-    // For each edge - find routing points through intermediate rows (Kedro-viz algorithm)
+    // SINGLE-CORRIDOR ROUTING: Find ONE x-position that works for all intermediate rows
+    // This eliminates squiggly edges by committing to a single corridor
     for (const edge of edges) {
       const source = edge.sourceNode;
       const target = edge.targetNode;
@@ -571,105 +572,62 @@
 
       const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
 
-      // Start at source node offset
-      const startPoint = { x: source.x, y: source.y };
-      let currentPoint = startPoint;
+      // The x position where the edge would naturally go (source.x + offset)
+      const naturalX = source.x + sourceOffsetX;
 
-      // For each row between the source and target rows exclusive
+      // First pass: find which rows block the natural path
+      let firstBlockedRow = -1;
+      let lastBlockedRow = -1;
+      let globalNodeLeft = Infinity;
+      let globalNodeRight = -Infinity;
+
       for (let i = source.row + 1; i < target.row; i += 1) {
-        const firstNode = rows[i][0];
-
-        // Check if current x position is clear in this row (can continue straight)
-        const currentX = currentPoint.x + sourceOffsetX;
-        let canContinueStraight = true;
-
+        let rowBlocks = false;
         for (const node of rows[i]) {
-          // Check if currentX would collide with this node
-          if (currentX >= nodeLeft(node) - spaceX * 0.5 &&
-              currentX <= nodeRight(node) + spaceX * 0.5) {
-            canContinueStraight = false;
-            break;
+          // Track global node bounds for corridor calculation
+          globalNodeLeft = Math.min(globalNodeLeft, nodeLeft(node));
+          globalNodeRight = Math.max(globalNodeRight, nodeRight(node));
+
+          // Check if this node blocks the natural path
+          if (naturalX >= nodeLeft(node) - spaceX * 0.5 &&
+              naturalX <= nodeRight(node) + spaceX * 0.5) {
+            rowBlocks = true;
           }
         }
 
-        // If we can continue straight, skip adding routing points for this row
-        if (canContinueStraight) {
-          continue;
+        if (rowBlocks) {
+          if (firstBlockedRow === -1) firstBlockedRow = i;
+          lastBlockedRow = i;
         }
-
-        // Need to route around nodes - find nearest passage
-        let nearestPoint = { x: nodeLeft(firstNode) - spaceX, y: firstNode.y };
-        let nearestDistance = Infinity;
-
-        // Extend the row 'to infinity' on each side in X
-        const rowExtended = [
-          { ...firstNode, x: Number.MIN_SAFE_INTEGER },
-          ...rows[i],
-          { ...firstNode, x: Number.MAX_SAFE_INTEGER },
-        ];
-
-        // For each gap between each nodes on the row
-        for (let j = 0; j < rowExtended.length - 1; j += 1) {
-          const node = rowExtended[j];
-          const nextNode = rowExtended[j + 1];
-          const nodeGap = nodeLeft(nextNode) - nodeRight(node);
-
-          // Avoid routing through small gaps, increase bundling
-          if (nodeGap < minPassageGap) {
-            continue;
-          }
-
-          const offsetX = Math.min(spaceX, nodeGap * 0.5);
-
-          let sourceX, sourceY, targetX, targetY;
-
-          if (orientation === 'vertical') {
-            sourceX = nodeRight(node) + offsetX;
-            sourceY = nodeTop(node) - spaceY;
-            targetX = nodeLeft(nextNode) - offsetX;
-            targetY = nodeTop(nextNode) - spaceY;
-          }
-
-          // Find the next potential point
-          const candidatePoint = nearestOnLine(
-            currentPoint.x,
-            currentPoint.y,
-            sourceX,
-            sourceY,
-            targetX,
-            targetY
-          );
-
-          const distance = distance1d(currentPoint.x, candidatePoint.x);
-
-          // Early out if diverging
-          if (distance > nearestDistance) {
-            break;
-          }
-
-          // Keep the nearest point
-          if (distance < nearestDistance) {
-            nearestDistance = distance;
-            nearestPoint = candidatePoint;
-          }
-        }
-
-        // Pass the node at nearest point
-        const offsetY = firstNode.height + spaceY;
-        edge.points.push({
-          x: nearestPoint.x + sourceOffsetX,
-          y: nearestPoint.y,
-        });
-        edge.points.push({
-          x: nearestPoint.x + sourceOffsetX,
-          y: nearestPoint.y + offsetY,
-        });
-
-        currentPoint = {
-          x: nearestPoint.x,
-          y: nearestPoint.y + offsetY,
-        };
       }
+
+      // If no rows block, no routing needed
+      if (firstBlockedRow === -1) {
+        continue;
+      }
+
+      // Choose a single corridor x-position that clears ALL nodes
+      // Use left or right side, whichever is closer to the natural path
+      const leftCorridorX = globalNodeLeft - spaceX;
+      const rightCorridorX = globalNodeRight + spaceX;
+
+      let corridorX;
+      if (Math.abs(naturalX - leftCorridorX) <= Math.abs(naturalX - rightCorridorX)) {
+        corridorX = leftCorridorX;
+      } else {
+        corridorX = rightCorridorX;
+      }
+
+      // Calculate y positions for the routing points
+      const firstBlockedNode = rows[firstBlockedRow][0];
+      const lastBlockedNode = rows[lastBlockedRow][0];
+
+      const y1 = nodeTop(firstBlockedNode) - spaceY;
+      const y2 = nodeBottom(lastBlockedNode) + spaceY;
+
+      // Add just TWO routing points - entry and exit of the single corridor
+      edge.points.push({ x: corridorX, y: y1 });
+      edge.points.push({ x: corridorX, y: y2 });
     }
 
     for (const node of nodes) {
@@ -805,7 +763,7 @@
   // GRAPH.JS - Entry point
   // ============================================================================
 
-  // Configuration matching Kedro-viz defaults
+  // Configuration matching standard defaults
   const defaultOptions = {
     layout: {
       spaceX: 14,
