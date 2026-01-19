@@ -345,8 +345,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       };
 
       // --- Custom Controls ---
-      const CustomControls = ({ theme, onToggleTheme, separateOutputs, onToggleSeparate, showTypes, onToggleTypes }) => {
-        const { zoomIn, zoomOut, fitView } = useReactFlow();
+      const CustomControls = ({ theme, onToggleTheme, separateOutputs, onToggleSeparate, showTypes, onToggleTypes, onFitView }) => {
+        const { zoomIn, zoomOut } = useReactFlow();
 
         return html`
             <${Panel} position="bottom-right" className="flex flex-col gap-2 pb-4 mr-6">
@@ -356,7 +356,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 <${TooltipButton} onClick=${() => zoomOut()} tooltip="Zoom Out" theme=${theme}>
                     <${Icons.ZoomOut} />
                 <//>
-                <${TooltipButton} onClick=${() => fitView({ padding: 0.15, duration: 0 })} tooltip="Fit View" theme=${theme}>
+                <${TooltipButton} onClick=${onFitView} tooltip="Fit View" theme=${theme}>
                     <${Icons.Center} />
                 <//>
                 <div className=${`h-px my-1 ${theme === 'light' ? 'bg-slate-200' : 'bg-slate-700'}`}></div>
@@ -1748,8 +1748,42 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         }, [nodesWithVisibility, compressedEdges]);
 
         const { layoutedNodes: rawLayoutedNodes, layoutedEdges, layoutError, graphHeight, graphWidth, layoutVersion, isLayouting } = useLayout(groupedNodes, groupedEdges);
-        const { fitView } = useReactFlow();
+        const { fitView, fitBounds, getViewport } = useReactFlow();
         const updateNodeInternals = useUpdateNodeInternals();
+
+        // Custom fit function with FIXED pixel padding (not percentage)
+        // This ensures consistent padding regardless of graph size
+        const PADDING_TOP = 40;
+        const PADDING_BOTTOM = 40;
+        const PADDING_LEFT = 40;
+        const PADDING_RIGHT = 80;  // Extra space for control buttons
+
+        const fitWithFixedPadding = useCallback(() => {
+            if (rawLayoutedNodes.length === 0) return;
+
+            // Calculate bounds from nodes
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const node of rawLayoutedNodes) {
+                const x = node.position?.x ?? 0;
+                const y = node.position?.y ?? 0;
+                const w = node.width ?? node.style?.width ?? 200;
+                const h = node.height ?? node.style?.height ?? 50;
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x + w);
+                maxY = Math.max(maxY, y + h);
+            }
+
+            // Add fixed padding to bounds
+            const bounds = {
+                x: minX - PADDING_LEFT,
+                y: minY - PADDING_TOP,
+                width: (maxX - minX) + PADDING_LEFT + PADDING_RIGHT,
+                height: (maxY - minY) + PADDING_TOP + PADDING_BOTTOM,
+            };
+
+            fitBounds(bounds, { duration: 0, minZoom: 0.3, maxZoom: 1.5 });
+        }, [rawLayoutedNodes, fitBounds]);
         
         // ========================================================================
         // FIX: Force edge recalculation after node size changes (collapse/expand)
@@ -1916,19 +1950,19 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         // --- Resize Handling (Task 2) ---
         useEffect(() => {
             const handleResize = () => {
-                fitView({ padding: 0.15, duration: 0, minZoom: 0.3, maxZoom: 1.5 });
+                fitWithFixedPadding();
             };
             window.addEventListener('resize', handleResize);
             return () => window.removeEventListener('resize', handleResize);
-        }, [fitView]);
-        
+        }, [fitWithFixedPadding]);
+
         // Re-fit when layout changes - Instant fit without animation
         useEffect(() => {
             if (layoutedNodes.length > 0) {
                 // Immediate fit with no animation
-                window.requestAnimationFrame(() => fitView({ padding: 0.15, duration: 0, minZoom: 0.3, maxZoom: 1.5 }));
+                window.requestAnimationFrame(() => fitWithFixedPadding());
             }
-        }, [layoutedNodes, fitView]);
+        }, [layoutedNodes, fitWithFixedPadding]);
 
         const edgeOptions = {
             type: 'custom',
@@ -1993,8 +2027,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                   node.data.onToggleExpand();
                 }
               }}
-              fitView
-              fitViewOptions=${{ padding: 0.15, minZoom: 0.3, maxZoom: 1.5, duration: 0 }}
               minZoom=${0.1}
               maxZoom=${2}
               className=${'bg-transparent'}
@@ -2006,13 +2038,14 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
               style=${{ width: '100%', height: '100%' }}
             >
               <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
-              <${CustomControls} 
-                theme=${theme} 
-                onToggleTheme=${toggleTheme} 
+              <${CustomControls}
+                theme=${theme}
+                onToggleTheme=${toggleTheme}
                 separateOutputs=${separateOutputs}
                 onToggleSeparate=${() => setSeparateOutputs(s => !s)}
                 showTypes=${showTypes}
                 onToggleTypes=${() => setShowTypes(t => !t)}
+                onFitView=${fitWithFixedPadding}
               />
               ${(showThemeDebug || debugOverlays) ? html`
               <${Panel} position="bottom-left" className=${`backdrop-blur-sm rounded-lg shadow-lg border text-xs px-3 py-2 mb-3 ml-3 max-w-xs pointer-events-auto
