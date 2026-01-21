@@ -2,7 +2,7 @@
 
 **Milestone:** v1.1 Fix Visualization Edge Routing
 **Created:** 2026-01-21
-**Updated:** 2026-01-21 after planning Phase 3
+**Updated:** 2026-01-21 after planning Phase 4
 **Phases:** 4
 
 ## Overview
@@ -101,17 +101,17 @@ Plans:
 
 ---
 
-## Phase 3: Fix Edge Routing Bugs
+## Phase 3: Fix Edge Routing Bugs (COMPLETE)
 
 **Goal:** Using new abstractions, fix all edge routing issues.
 
 **Requirements covered:** EDGE-01, EDGE-02, EDGE-03, EDGE-04
 
-**Plans:** 2 plans
+**Plans:** 2 plans (complete)
 
 Plans:
-- [ ] 03-01-PLAN.md — Coordinate transformation system and absolute position tracking
-- [ ] 03-02-PLAN.md — Fix edge routing algorithm using absolute coordinates
+- [x] 03-01-PLAN.md — Coordinate transformation system and absolute position tracking
+- [x] 03-02-PLAN.md — Fix edge routing algorithm using absolute coordinates
 
 **Approach:**
 1. Create explicit CoordinateTransform functions to eliminate inline arithmetic
@@ -142,10 +142,12 @@ Plans:
 
 **Requirements covered:** VERIFY-01, VERIFY-02, VERIFY-03, TEST-01, TEST-02, TEST-03, TEST-04
 
-**Plans:** (created by /gsd:plan-phase)
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD — created during Phase 4 planning
+- [ ] 04-01-PLAN.md — Geometric verification tests with Playwright and Shapely
+- [ ] 04-02-PLAN.md — Visual regression tests with baseline screenshots
+- [ ] 04-03-PLAN.md — CI workflow for automated testing
 
 **Approach:**
 1. Create Python script to extract coordinates from rendered output
@@ -160,7 +162,9 @@ Plans:
 
 **Key files:**
 - `tests/viz/test_edge_routing.py` — automated verification
+- `tests/viz/test_visual_regression.py` — screenshot comparison
 - `tests/viz/conftest.py` — Playwright fixtures
+- `.github/workflows/viz-tests.yml` — CI workflow
 
 ---
 
@@ -183,4 +187,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-01-21*
-*Updated: 2026-01-21 after planning Phase 3*
+*Updated: 2026-01-21 after planning Phase 4*
