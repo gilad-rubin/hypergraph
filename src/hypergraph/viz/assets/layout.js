@@ -32,6 +32,9 @@
   // Constants for nested graph layout
   var GRAPH_PADDING = 40;
   var HEADER_HEIGHT = 32;
+  // Shadow offset - edges should start/end at visual node border, not shadow boundary
+  // CSS drop-shadow extends ~14px below function nodes
+  var SHADOW_OFFSET = 14;
 
   /**
    * Calculate dimensions for a node based on its type and content
@@ -351,11 +354,13 @@
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
     var nodeDimensions = new Map();
+    var nodeTypes = new Map();
     var childLayoutResults = new Map();
 
-    // Calculate base dimensions for all nodes
+    // Calculate base dimensions and store node types for all nodes
     visibleNodes.forEach(function(n) {
       nodeDimensions.set(n.id, calculateDimensions(n));
+      nodeTypes.set(n.id, n.data && n.data.nodeType);
     });
 
     // Step 1: Layout children bottom-up (deepest expanded graphs first)
@@ -615,15 +620,21 @@
         var innerSourceId = innerSources[0];
         var innerSourcePos = nodePositions.get(innerSourceId);
         var innerSourceDims = nodeDimensions.get(innerSourceId);
+        var innerSourceType = nodeTypes.get(innerSourceId);
 
         if (innerSourcePos && innerSourceDims) {
-          // Start from inner node's center-bottom
+          // Function nodes have drop-shadow that extends below the visual border
+          // Adjust edge start to be at the visual node edge, not shadow boundary
+          var hasShadow = innerSourceType === 'FUNCTION' || innerSourceType === 'PIPELINE';
+          var shadowAdjust = hasShadow ? SHADOW_OFFSET : 0;
+
+          // Start from inner node's center-bottom (minus shadow offset)
           startPoint = {
             x: innerSourcePos.x + innerSourceDims.width / 2,
-            y: innerSourcePos.y + innerSourceDims.height
+            y: innerSourcePos.y + innerSourceDims.height - shadowAdjust
           };
           if (debugMode) {
-            console.log('[recursive layout] rerouting edge start to inner source:', edgeInfo.original.id, innerSourceId, startPoint);
+            console.log('[recursive layout] rerouting edge start to inner source:', edgeInfo.original.id, innerSourceId, startPoint, 'shadowAdjust:', shadowAdjust);
           }
         }
       }
