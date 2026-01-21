@@ -512,25 +512,37 @@
       var parentPos = nodePositions.get(graphNode.id);
       if (!parentPos) return;
 
-      // Children are positioned relative to parent's top-left corner
-      // Add padding and header offset
-      var offsetX = parentPos.x + GRAPH_PADDING;
-      var offsetY = parentPos.y + GRAPH_PADDING + HEADER_HEIGHT;
+      // Get layout bounds to normalize child positions
+      // The constraint layout may not start at (0,0)
+      var boundsMinX = 0;
+      var boundsMinY = 0;
+      if (childResult.size && childResult.size.min) {
+        boundsMinX = childResult.size.min.x;
+        boundsMinY = childResult.size.min.y;
+      }
+
+      // For absolute positioning (edge routing), offset from parent's top-left
+      var absOffsetX = parentPos.x + GRAPH_PADDING;
+      var absOffsetY = parentPos.y + GRAPH_PADDING + HEADER_HEIGHT;
 
       childResult.nodes.forEach(function(n) {
         var w = n.width;
         var h = n.height;
-        // Child positions are relative to parent
-        var childX = n.x - w / 2;
-        var childY = n.y - h / 2;
+        // Convert from center to top-left, normalized against layout bounds
+        var childX = n.x - w / 2 - boundsMinX;
+        var childY = n.y - h / 2 - boundsMinY;
 
         // Store absolute position for edge routing
-        nodePositions.set(n.id, { x: offsetX + childX, y: offsetY + childY });
+        nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
 
         allPositionedNodes.push({
           ...n._original,
-          // React Flow uses relative positions for children
-          position: { x: childX, y: childY + HEADER_HEIGHT },
+          // React Flow child positions are relative to parent's top-left corner
+          // Add padding so children are inside the parent's content area
+          position: {
+            x: GRAPH_PADDING + childX,
+            y: GRAPH_PADDING + HEADER_HEIGHT + childY
+          },
           width: w,
           height: h,
           style: { ...n._original.style, width: w, height: h },
@@ -541,10 +553,13 @@
         });
       });
 
-      // Position child edges with offset
+      // Position child edges with offset (also normalize against bounds)
       childResult.edges.forEach(function(e) {
         var offsetPoints = (e.points || []).map(function(pt) {
-          return { x: pt.x + offsetX, y: pt.y + offsetY };
+          return {
+            x: pt.x - boundsMinX + absOffsetX,
+            y: pt.y - boundsMinY + absOffsetY
+          };
         });
 
         allPositionedEdges.push({

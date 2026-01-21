@@ -162,7 +162,8 @@ class TestRenderGraph:
 
         result = render_graph(outer, depth=0)
 
-        # Should only have outer nodes (FUNCTION/PIPELINE), inner nodes not expanded
+        # All nodes should be present (children included for click-to-expand)
+        # Visibility is controlled by JS based on expansion state
         fn_and_pipeline_nodes = [
             n for n in result["nodes"]
             if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")
@@ -170,11 +171,16 @@ class TestRenderGraph:
         node_ids = {n["id"] for n in fn_and_pipeline_nodes}
         assert "inner" in node_ids
         assert "add" in node_ids
-        # double should not be present at depth=0
-        assert "double" not in node_ids
+        # double is now always included (visibility controlled by JS)
+        assert "double" in node_ids
 
+        # Inner graph should be marked as collapsed
         inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
         assert inner_node["data"]["isExpanded"] is False
+
+        # Child node should have parentNode reference
+        double_node = next(n for n in result["nodes"] if n["id"] == "double")
+        assert double_node.get("parentNode") == "inner"
 
 
 class TestGetNodeType:

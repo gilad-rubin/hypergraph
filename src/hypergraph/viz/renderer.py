@@ -186,11 +186,14 @@ def render_graph(
 
         nodes.append(rf_node)
 
-        # Handle nested graphs - recursively render children
-        if isinstance(hypernode, GraphNode) and depth > 0:
+        # Handle nested graphs - always include children for expandability
+        # Children are hidden by default when collapsed (handled by JS visibility)
+        if isinstance(hypernode, GraphNode):
+            # Recursively render inner graph with depth-1 (or 0 if already 0)
+            inner_depth = max(0, depth - 1)
             inner_result = render_graph(
                 hypernode.graph,
-                depth=depth - 1,
+                depth=inner_depth,
                 theme=theme,
                 show_types=show_types,
                 separate_outputs=separate_outputs,
