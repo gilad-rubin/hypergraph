@@ -324,6 +324,44 @@ class TestMapOverRenameExecution:
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [10, 20, 30]
 
+    def test_parallel_renames_with_map_over(self):
+        """Parallel renames (same batch) work correctly with map_over.
+
+        Regression test for handling parallel renames like with_inputs(a='b', b='a')
+        which require special handling via build_reverse_rename_map.
+        """
+
+        @node(output_name="xs")
+        def produce_xs() -> list[int]:
+            return [1, 2, 3]
+
+        @node(output_name="ys")
+        def produce_ys() -> list[int]:
+            return [10, 20, 30]
+
+        @node(output_name="sum")
+        def add_nums(a: int, b: int) -> int:
+            return a + b
+
+        inner = Graph(nodes=[add_nums], name="inner")
+        # Swap parameter names in a single call (parallel renames)
+        mapped_node = (
+            inner.as_node(name="adder")
+            .with_inputs({"a": "temp_a", "b": "temp_b"})  # Parallel batch 1
+            .with_inputs({"temp_a": "ys", "temp_b": "xs"})  # Parallel batch 2
+            .map_over("xs", "ys", mode="zip")
+        )
+
+        outer = Graph(nodes=[produce_xs, produce_ys, mapped_node])
+        runner = SyncRunner()
+
+        result = runner.run(outer, {})
+
+        assert result.status == RunStatus.COMPLETED
+        # a takes ys values, b takes xs values (swapped)
+        # ys=[10,20,30], xs=[1,2,3] -> sums are 11, 22, 33
+        assert result["sum"] == [11, 22, 33]
+
 
 class TestMapOverExecution:
     """Tests for execution with map_over configuration."""

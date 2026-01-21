@@ -255,12 +255,19 @@ class GraphNode(HyperNode):
     def _original_map_params(self) -> list[str] | None:
         """Get map_over params translated to original inner graph names.
 
+        Uses build_reverse_rename_map() to handle parallel renames correctly
+        (e.g., with_inputs(x='y', y='x')), matching the semantics of
+        map_inputs_to_params().
+
         Returns:
             List of original param names if map_over is set, else None.
         """
         if self._map_over is None:
             return None
-        return [self._resolve_original_input_name(p) for p in self._map_over]
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return list(self._map_over)
+        return [reverse_map.get(p, p) for p in self._map_over]
 
     def map_outputs_from_original(self, outputs: dict[str, Any]) -> dict[str, Any]:
         """Map original inner graph output names to renamed external names.
