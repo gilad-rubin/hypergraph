@@ -264,7 +264,7 @@ class TestGraphConstruction:
         assert edge_data["value_name"] == "a_out"
 
     def test_nx_graph_has_node_attributes(self):
-        """Test NetworkX nodes contain hypernode references."""
+        """Test NetworkX nodes contain flattened attributes."""
         @node(output_name="result")
         def single(x: int) -> int:
             return x
@@ -272,7 +272,11 @@ class TestGraphConstruction:
         g = Graph([single])
 
         node_data = g.nx_graph.nodes["single"]
-        assert node_data["hypernode"] is single
+        assert node_data["node_type"] == "FUNCTION"
+        assert node_data["label"] == "single"
+        assert node_data["inputs"] == ("x",)
+        assert node_data["outputs"] == ("result",)
+        assert node_data["parent"] is None
 
     def test_graph_with_optional_name(self):
         """Test Graph can be created with optional name."""

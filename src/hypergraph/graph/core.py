@@ -233,8 +233,11 @@ class Graph:
         return False
 
     def _add_nodes_to_graph(self, G: nx.DiGraph, nodes: list[HyperNode]) -> None:
-        """Add all nodes with their attributes to the graph."""
-        G.add_nodes_from((node.name, {"hypernode": node}) for node in nodes)
+        """Add nodes with flattened attributes to the graph."""
+        for node in nodes:
+            attrs = node.nx_attrs
+            attrs["parent"] = None  # Root-level nodes
+            G.add_node(node.name, **attrs)
 
     def _add_data_edges(
         self,
@@ -437,3 +440,66 @@ class Graph:
             show_types=show_types,
             output=output,
         )
+
+    def to_flat_graph(self) -> nx.DiGraph:
+        """Create a flattened NetworkX graph with all nested nodes.
+
+        Returns a new DiGraph where:
+        - All nodes (root + nested) are in one graph
+        - Node attributes include `parent` for hierarchy
+        - Edges include both root-level and nested edges
+        - Graph attributes include `input_spec`
+
+        This is the canonical representation for visualization and analysis.
+        """
+        G = nx.DiGraph()
+        self._flatten_nodes(G, list(self._nodes.values()), parent=None)
+        self._flatten_edges(G)
+
+        # Add graph-level attributes
+        input_spec = self.inputs
+        G.graph["input_spec"] = {
+            "required": input_spec.required,
+            "optional": input_spec.optional,
+            "bound": dict(input_spec.bound),
+            "seeds": input_spec.seeds,
+        }
+        return G
+
+    def _flatten_nodes(
+        self,
+        G: nx.DiGraph,
+        nodes: list[HyperNode],
+        parent: str | None,
+    ) -> None:
+        """Recursively add nodes to graph with parent relationships."""
+        for node in nodes:
+            attrs = node.nx_attrs
+            attrs["parent"] = parent
+            G.add_node(node.name, **attrs)
+
+            inner = node.nested_graph
+            if inner is not None:
+                self._flatten_nodes(G, list(inner.nodes.values()), parent=node.name)
+
+    def _flatten_edges(self, G: nx.DiGraph) -> None:
+        """Add all edges (root + nested) to the flattened graph."""
+        # Add root-level edges
+        for src, tgt, data in self._nx_graph.edges(data=True):
+            G.add_edge(src, tgt, **data)
+
+        # Recursively add edges from nested graphs
+        for node in self._nodes.values():
+            self._add_nested_edges(G, node)
+
+    def _add_nested_edges(self, G: nx.DiGraph, node: HyperNode) -> None:
+        """Recursively add edges from nested graphs."""
+        inner = node.nested_graph
+        if inner is None:
+            return
+
+        for src, tgt, data in inner.nx_graph.edges(data=True):
+            G.add_edge(src, tgt, **data)
+
+        for child_node in inner.nodes.values():
+            self._add_nested_edges(G, child_node)

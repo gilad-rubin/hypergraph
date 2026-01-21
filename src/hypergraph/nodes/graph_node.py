@@ -111,6 +111,16 @@ class GraphNode(HyperNode):
         return self._graph.has_async_nodes
 
     @property
+    def node_type(self) -> str:
+        """Node type for NetworkX representation."""
+        return "GRAPH"
+
+    @property
+    def nested_graph(self) -> "Graph":
+        """Returns the nested Graph."""
+        return self._graph
+
+    @property
     def map_config(self) -> tuple[list[str], Literal["zip", "product"]] | None:
         """Map configuration if set, else None.
 
