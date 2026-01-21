@@ -2,12 +2,12 @@
 
 ## Current Position
 
-Phase: 2 of 4 (Unify Edge Routing Logic)
-Plan: 2 of 2 complete
-Status: Phase 2 complete
-Last activity: 2026-01-21 — Completed 02-02-PLAN.md
+Phase: 3 of 4 (Unify Edge Routing Logic)
+Plan: 1 of 2 complete
+Status: In progress
+Last activity: 2026-01-21 — Completed 03-01-PLAN.md
 
-Progress: █████░░░░░░░ 42% (5/12 plans complete)
+Progress: ██████░░░░░░ 50% (6/12 plans complete)
 
 ## Project Reference
 
@@ -38,6 +38,9 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Resolve edges after layout completes | 02-02 | Layout logic stays pure, resolution as final step |
 | Store resolved targets as edge properties | 02-02 | _resolvedSource/_resolvedTarget for visual endpoints |
 | Python provides logical structure | 02-02 | JavaScript resolves visual targets based on expansion |
+| Use frozen 4-space coordinate model | 03-01 | Layout, Parent-Relative, Absolute, React Flow spaces |
+| Track both parent-relative and absolute positions | 03-01 | React Flow uses relative, edge routing uses absolute |
+| CoordinateTransform owns all space conversions | 03-01 | Explicit functions for each transformation type |
 
 ### Technical Notes
 
@@ -51,6 +54,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 - Phase 2 approach: JavaScript builds hierarchy from flat nodes, resolves edge targets dynamically
 - Edge resolution flow: logical edges → layout → resolve visual targets → render
 - Resolved edge properties: _resolvedSource, _resolvedTarget, _logicalSource, _logicalTarget
+- Coordinate spaces defined: Layout (centers+50px), Parent-Relative (top-left), Absolute (viewport), React Flow (DOM)
+- absolutePositions Map available in performRecursiveLayout result for edge routing
 
 ### Blockers
 
@@ -58,10 +63,10 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21T14:18:44Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-01-21T14:32:37Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
 
 ---
 *State initialized: 2026-01-21*
-*Last updated: 2026-01-21T14:18:44Z*
+*Last updated: 2026-01-21T14:32:37Z*
