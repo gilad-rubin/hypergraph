@@ -39,7 +39,7 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
 
     Returns:
         Dict with:
-        - nodes: List of {id, bbox: {x, y, width, height}}
+        - nodes: List of {id, bbox: {x, y, width, height}, is_expanded_container: bool}
         - edges: List of {id, path: [(x, y), ...]}
     """
     js_code = """
@@ -51,6 +51,13 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
         document.querySelectorAll('.react-flow__node').forEach(nodeEl => {
             const id = nodeEl.getAttribute('data-id');
             const rect = nodeEl.getBoundingClientRect();
+
+            // Check if this is an expanded container (PIPELINE node with children)
+            // Expanded containers have child nodes rendered inside them
+            const isExpandedContainer = nodeEl.classList.contains('react-flow__node-group') ||
+                nodeEl.querySelector('.react-flow__node') !== null ||
+                (nodeEl.style.width && parseInt(nodeEl.style.width) > 200);  // Large nodes are likely containers
+
             nodes.push({
                 id: id,
                 bbox: {
@@ -58,7 +65,8 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
                     y: rect.y,
                     width: rect.width,
                     height: rect.height
-                }
+                },
+                is_expanded_container: isExpandedContainer
             });
         });
 
@@ -132,6 +140,9 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
 def verify_no_edge_node_intersections(coords: dict[str, Any]) -> dict[str, Any]:
     """Verify that edges don't cross nodes using Shapely geometric checks.
 
+    Expanded containers are excluded from intersection checks because edges
+    connecting to internal nodes necessarily cross container boundaries.
+
     Args:
         coords: Output from extract_coordinates_from_page
 
@@ -144,9 +155,13 @@ def verify_no_edge_node_intersections(coords: dict[str, Any]) -> dict[str, Any]:
     edges = coords["edges"]
     intersections = []
 
-    # Create Shapely geometries for nodes
+    # Create Shapely geometries for nodes (excluding expanded containers)
     node_polygons = {}
     for node in nodes:
+        # Skip expanded containers - edges to internal nodes cross container bounds
+        if node.get("is_expanded_container", False):
+            continue
+
         bbox = node["bbox"]
         # Create polygon from bounding box
         poly = Polygon(

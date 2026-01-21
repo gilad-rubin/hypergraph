@@ -612,8 +612,8 @@
           }
         : ConstraintLayout.defaultOptions;
 
-      // Run layout for children
-      var childResult = ConstraintLayout.graph(
+      // Run layout for children (without routing - will be done globally)
+      var childResult = ConstraintLayout.graphLayoutOnly(
         childLayoutNodes,
         childLayoutEdges,
         null,
@@ -673,7 +673,8 @@
         }
       : ConstraintLayout.defaultOptions;
 
-    var rootResult = ConstraintLayout.graph(
+    // Run layout for root nodes (without routing - will be done globally)
+    var rootResult = ConstraintLayout.graphLayoutOnly(
       rootLayoutNodes,
       rootLayoutEdges,
       null,
@@ -723,8 +724,8 @@
       });
     });
 
-    // Position children within their parents
-    layoutOrder.forEach(function(graphNode) {
+    // Position children within their parents (shallowest-first, so parent positions are available)
+    layoutOrder.slice().reverse().forEach(function(graphNode) {
       var childResult = childLayoutResults.get(graphNode.id);
       if (!childResult) return;
 
@@ -803,8 +804,81 @@
       });
     });
 
-    // Resolve edge targets based on expansion state
+    // Resolve edge targets FIRST (before routing)
+    // This determines the visual endpoints for edges to/from expanded containers
     var resolvedEdges = resolveAllEdgeTargets(allPositionedEdges, expansionState, hierarchy);
+
+    // === GLOBAL EDGE ROUTING ===
+    // Route ALL edges with ALL nodes visible (in absolute coordinates)
+
+    // Build routing nodes from absolute positions
+    // EXCLUDE expanded containers - they're visual groupings, not obstacles
+    // Edges to internal nodes will cross container bounds, which is expected
+    var routingNodes = [];
+    absolutePositions.forEach(function(pos, nodeId) {
+      var origNode = allPositionedNodes.find(function(n) { return n.id === nodeId; });
+      if (!origNode) return;
+
+      // Skip expanded containers - edges need to enter them to reach children
+      var isExpandedContainer = origNode.data &&
+        origNode.data.nodeType === 'PIPELINE' &&
+        expansionState.get(nodeId) === true;
+      if (isExpandedContainer) return;
+
+      routingNodes.push({
+        id: nodeId,
+        x: pos.x + origNode.width / 2,   // Center X
+        y: pos.y + origNode.height / 2,  // Center Y
+        width: origNode.width,
+        height: origNode.height,
+        sources: [],
+        targets: [],
+      });
+    });
+
+    // Build node lookup
+    var routingNodeById = {};
+    routingNodes.forEach(function(n) { routingNodeById[n.id] = n; });
+
+    // Build routing edges using RESOLVED source/target (for expanded containers)
+    var routingEdges = resolvedEdges.map(function(e) {
+      // Use resolved IDs if available, otherwise fall back to original
+      var sourceId = e._resolvedSource || e.source;
+      var targetId = e._resolvedTarget || e.target;
+      return {
+        id: e.id,
+        source: sourceId,
+        target: targetId,
+        sourceNode: routingNodeById[sourceId],
+        targetNode: routingNodeById[targetId],
+        points: [],
+        _original: e,
+      };
+    }).filter(function(e) {
+      return e.sourceNode && e.targetNode;
+    });
+
+    // Link edges to nodes
+    routingEdges.forEach(function(e) {
+      if (e.sourceNode) e.sourceNode.targets.push(e);
+      if (e.targetNode) e.targetNode.sources.push(e);
+    });
+
+    // Run global routing
+    if (routingEdges.length > 0 && routingNodes.length > 0) {
+      ConstraintLayout.routing({
+        nodes: routingNodes,
+        edges: routingEdges,
+        orientation: 'vertical',
+        ...ConstraintLayout.defaultOptions.routing,
+      });
+
+      // Copy routed points back to resolved edges
+      routingEdges.forEach(function(re) {
+        re._original.data = re._original.data || {};
+        re._original.data.points = re.points;
+      });
+    }
 
     return {
       nodes: allPositionedNodes,

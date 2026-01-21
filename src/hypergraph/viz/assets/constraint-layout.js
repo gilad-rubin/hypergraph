@@ -880,6 +880,43 @@
   };
 
   /**
+   * Layout nodes and edges WITHOUT routing.
+   * Used for two-phase layout where routing happens globally.
+   * @param {Array} nodes The input nodes
+   * @param {Array} edges The input edges
+   * @param {Object=} layers The node layers if specified
+   * @param {String=} orientation 'vertical' or 'horizontal'
+   * @param {Object=} options The graph options
+   * @returns {Object} The generated graph (without edge routing)
+   */
+  const graphLayoutOnly = (
+    nodes,
+    edges,
+    layers = null,
+    orientation = 'vertical',
+    options = defaultOptions
+  ) => {
+    addEdgeLinks(nodes, edges);
+
+    layout({
+      nodes,
+      edges,
+      layers,
+      orientation,
+      ...options.layout,
+    });
+    // NOTE: routing is NOT called - will be done globally
+
+    const size = bounds(nodes, options.layout.padding);
+    nodes.forEach((node) => offsetNode(node, size.min));
+    edges.forEach((edge) => {
+      edge.points = [];  // Empty - will be filled by global routing
+    });
+
+    return { nodes, edges, layers, size };
+  };
+
+  /**
    * Generates a diagram of the given DAG.
    * Input nodes and edges are updated in-place.
    * Results are stored as `x, y` properties on nodes
@@ -924,7 +961,9 @@
   // Export to global scope
   window.ConstraintLayout = {
     graph,
+    graphLayoutOnly,
     defaultOptions,
+    routing,
   };
 
 })();
