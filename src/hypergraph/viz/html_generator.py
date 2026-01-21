@@ -1155,7 +1155,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
               let width = 80;
               let height = 90;
 
-              if (n.data?.nodeType === 'DATA') {
+              if (n.data?.nodeType === 'DATA' || n.data?.nodeType === 'INPUT') {
+                // DATA and INPUT nodes use the same compact pill styling
                 height = 36;
                 const labelLen = Math.min(n.data.label?.length || 0, NODE_LABEL_MAX_CHARS);
                 const typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
@@ -1766,6 +1767,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
             // Calculate bounds from nodes
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            let nodeDebugInfo = [];
             for (const node of rawLayoutedNodes) {
                 const x = node.position?.x ?? 0;
                 const y = node.position?.y ?? 0;
@@ -1775,7 +1777,9 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                 minY = Math.min(minY, y);
                 maxX = Math.max(maxX, x + w);
                 maxY = Math.max(maxY, y + h);
+                nodeDebugInfo.push({ id: node.id, x, y, w, h, label: node.data?.label });
             }
+            console.log('Node dimensions used for bounds:', nodeDebugInfo);
 
             // Also include edge waypoints in bounds (edges can extend beyond nodes)
             for (const edge of layoutedEdges) {
@@ -1803,10 +1807,13 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             // Use zoom=1 to maintain consistent node sizes across all diagrams
             const zoom = 1;
 
-            // Y: top-align with padding
-            // Screen position = flow_position * zoom + viewport_offset
-            // We want minY to appear at PADDING_TOP: PADDING_TOP = minY * zoom + newY
-            const newY = PADDING_TOP - minY * zoom;
+            // Y: center vertically in viewport
+            const contentCenterY = (minY + maxY) / 2;
+            const targetScreenCenterY = viewportHeight / 2;
+            const idealNewY = targetScreenCenterY - contentCenterY * zoom;
+            // Ensure minimum top padding
+            const minNewY = PADDING_TOP - minY * zoom;
+            const newY = Math.max(idealNewY, minNewY);
 
             // X: center diagram in the space left of the button panel
             // Use getBoundingClientRect for precise measurement of actual occupied space
@@ -1823,8 +1830,8 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             // Find where content center is in flow coordinates
             const contentCenterX = (minX + maxX) / 2;
 
-            // We want content center to appear at the center of available space
-            const targetScreenCenterX = availableWidth / 2;
+            // We want content center to appear at the center of the FULL viewport
+            const targetScreenCenterX = viewportWidth / 2;
 
             // Calculate viewport.x so that contentCenterX appears at targetScreenCenterX
             // targetScreenCenterX = contentCenterX * zoom + newX
@@ -1836,57 +1843,138 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
             const newX = Math.max(idealNewX, minNewX);
 
+            // Set initial viewport position
             setViewport({ x: newX, y: newY, zoom }, { duration: 0 });
 
-            // Debug: Calculate actual screen positions after viewport is set
-            const contentLeftScreen = minX * zoom + newX;
-            const contentRightScreen = maxX * zoom + newX;
-            const contentCenterScreen = contentCenterX * zoom + newX;
-            const distanceFromLeft = contentLeftScreen;
-            const distanceFromRight = availableWidth - contentRightScreen;
+            // Debug mode: set window.__hypergraph_debug_viz = true to show overlays
+            const debugMode = window.__hypergraph_debug_viz || false;
 
-            console.log('=== CENTERING DEBUG ===');
-            console.log('Viewport:', { width: viewportWidth, height: viewportHeight });
-            console.log('Content bounds (flow coords):', { minX, maxX, minY, maxY });
-            console.log('Content dimensions:', { width: contentWidth, height: contentHeight });
-            console.log('Available width (minus buttons):', availableWidth);
-            console.log('Content center (flow):', contentCenterX);
-            console.log('Target screen center:', targetScreenCenterX);
-            console.log('Calculated viewport.x:', { idealNewX, minNewX, finalNewX: newX });
-            console.log('--- ACTUAL SCREEN POSITIONS ---');
-            console.log('Content left edge (screen):', contentLeftScreen);
-            console.log('Content right edge (screen):', contentRightScreen);
-            console.log('Content center (screen):', contentCenterScreen);
-            console.log('--- CENTERING VERIFICATION ---');
-            console.log('Distance from left edge:', distanceFromLeft);
-            console.log('Distance from right edge (to button area):', distanceFromRight);
-            console.log('Difference (should be ~0 if centered):', distanceFromLeft - distanceFromRight);
-            console.log('========================');
+            // Create/remove overlay container based on debug mode
+            let overlay = document.getElementById('centering-overlay');
+            if (debugMode && !overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'centering-overlay';
+                overlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9998;';
+                viewportEl?.appendChild(overlay);
+            } else if (!debugMode && overlay) {
+                overlay.remove();
+                overlay = null;
+            }
 
-            // Store debug info globally for programmatic testing
-            window.__hypergraph_centering_debug = {
-                viewport: { width: viewportWidth, height: viewportHeight },
-                content: { width: contentWidth, height: contentHeight, minX, maxX, minY, maxY },
-                availableWidth: availableWidth,
-                screen: { left: contentLeftScreen, right: contentRightScreen, center: contentCenterScreen },
-                margins: { left: distanceFromLeft, right: distanceFromRight },
-                difference: distanceFromLeft - distanceFromRight,
-                isCentered: Math.abs(distanceFromLeft - distanceFromRight) < 5
-            };
-
-            // Create/update debug badge showing centering status
+            // Create/remove debug badge based on debug mode
             let badge = document.getElementById('centering-badge');
-            if (!badge) {
+            if (debugMode && !badge) {
                 badge = document.createElement('div');
                 badge.id = 'centering-badge';
-                badge.style.cssText = 'position:fixed;bottom:10px;left:10px;padding:6px 10px;border-radius:4px;font-family:monospace;font-size:10px;z-index:9999;pointer-events:none;';
+                badge.style.cssText = 'position:fixed;top:10px;left:10px;padding:8px 12px;border-radius:6px;font-family:monospace;font-size:11px;z-index:99999;pointer-events:none;line-height:1.5;';
                 document.body.appendChild(badge);
+            } else if (!debugMode && badge) {
+                badge.remove();
+                badge = null;
             }
-            const diff = distanceFromLeft - distanceFromRight;
-            const isOk = Math.abs(diff) < 5;
-            badge.style.background = isOk ? '#10b981' : '#ef4444';
-            badge.style.color = '#fff';
-            badge.textContent = 'L:' + distanceFromLeft.toFixed(0) + ' R:' + distanceFromRight.toFixed(0) + ' D:' + diff.toFixed(0) + ' btn:' + buttonPanelSpace.toFixed(0) + (isOk ? ' OK' : ' BAD');
+
+            // Wait for DOM to update, then measure ACTUAL node positions (excludes shadows)
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    const vpEl = document.querySelector('.react-flow__viewport')?.parentElement;
+                    const nodeWrappers = document.querySelectorAll('.react-flow__node');
+
+                    if (!vpEl || nodeWrappers.length === 0) {
+                        if (badge) {
+                            badge.style.background = '#ef4444';
+                            badge.innerHTML = 'ERROR: Could not find elements';
+                        }
+                        return;
+                    }
+
+                    const vpRect = vpEl.getBoundingClientRect();
+
+                    // Find topmost and bottommost edges across ALL nodes
+                    let topmostEdge = Infinity;
+                    let bottommostEdge = -Infinity;
+
+                    nodeWrappers.forEach(wrapper => {
+                        // Get the INNER visible content, not the React Flow wrapper
+                        const innerNode = wrapper.querySelector('.group.rounded-lg') || wrapper.firstElementChild;
+                        if (innerNode) {
+                            const rect = innerNode.getBoundingClientRect();
+                            topmostEdge = Math.min(topmostEdge, rect.top);
+                            bottommostEdge = Math.max(bottommostEdge, rect.bottom);
+                        }
+                    });
+
+                    // Calculate margins from viewport edges to content bounds
+                    const topMarginBefore = Math.round(topmostEdge - vpRect.top);
+                    const bottomMarginBefore = Math.round(vpRect.bottom - bottommostEdge);
+                    const diffBefore = topMarginBefore - bottomMarginBefore;
+
+                    if (badge) badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diff=' + diffBefore + ')';
+
+                    // Helper to measure current bounds
+                    const measureBounds = () => {
+                        let top = Infinity, bottom = -Infinity;
+                        nodeWrappers.forEach(wrapper => {
+                            const inner = wrapper.querySelector('.group.rounded-lg') || wrapper.firstElementChild;
+                            if (inner) {
+                                const r = inner.getBoundingClientRect();
+                                top = Math.min(top, r.top);
+                                bottom = Math.max(bottom, r.bottom);
+                            }
+                        });
+                        const vp = vpEl.getBoundingClientRect();
+                        return {
+                            topMargin: Math.round(top - vp.top),
+                            bottomMargin: Math.round(vp.bottom - bottom)
+                        };
+                    };
+
+                    // If margins are unequal, correct
+                    if (Math.abs(diffBefore) > 2) {
+                        const currentVp = getViewport();
+                        const correctedY = currentVp.y - diffBefore / 2;
+                        setViewport({ x: currentVp.x, y: correctedY, zoom: currentVp.zoom }, { duration: 0 });
+
+                        // Measure again after correction (for debug display)
+                        requestAnimationFrame(() => {
+                            if (!badge && !overlay) return;  // Skip if no debug elements
+
+                            const { topMargin: topMarginAfter, bottomMargin: bottomMarginAfter } = measureBounds();
+                            const diffAfter = topMarginAfter - bottomMarginAfter;
+                            const isOk = Math.abs(diffAfter) <= 2;
+
+                            if (badge) {
+                                badge.style.background = isOk ? '#10b981' : '#ef4444';
+                                badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diff=' + diffBefore + ')<br>' +
+                                                 'AFTER:  T=' + topMarginAfter + ' B=' + bottomMarginAfter + ' (diff=' + diffAfter + ') ' +
+                                                 (isOk ? '✓' : '✗');
+                            }
+
+                            if (overlay) {
+                                overlay.innerHTML = `
+                                    <div style="position:absolute;left:50%;transform:translateX(-50%);top:${topMarginAfter/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${topMarginAfter}</div>
+                                    <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:${bottomMarginAfter/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${bottomMarginAfter}</div>
+                                    <div style="position:absolute;top:${topMarginAfter}px;left:0;right:0;height:1px;background:#10b981;"></div>
+                                    <div style="position:absolute;bottom:${bottomMarginAfter}px;left:0;right:0;height:1px;background:#10b981;"></div>
+                                `;
+                            }
+                        });
+                    } else {
+                        if (badge) {
+                            badge.style.background = '#10b981';
+                            badge.innerHTML += '<br>No correction needed ✓';
+                        }
+
+                        if (overlay) {
+                            overlay.innerHTML = `
+                                <div style="position:absolute;left:50%;transform:translateX(-50%);top:${topMarginBefore/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${topMarginBefore}</div>
+                                <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:${bottomMarginBefore/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${bottomMarginBefore}</div>
+                                <div style="position:absolute;top:${topMarginBefore}px;left:0;right:0;height:1px;background:#10b981;"></div>
+                                <div style="position:absolute;bottom:${bottomMarginBefore}px;left:0;right:0;height:1px;background:#10b981;"></div>
+                            `;
+                        }
+                    }
+                });
+            });
         }, [rawLayoutedNodes, layoutedEdges, setViewport]);
         
         // ========================================================================

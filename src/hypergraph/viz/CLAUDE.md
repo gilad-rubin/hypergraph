@@ -97,9 +97,134 @@ const naturalX = source.x + (target.x - source.x) * 0.5;
 - **Cause**: 3-point stem structure with vertical alignment
 - **Fix**: Simplify to 2-point stem with minimal offset
 
+## Centering and Bounds Calculation
+
+### Bounds Calculation (`constraint-layout.js`)
+
+The `bounds()` function must use **node edges**, not node centers:
+
+```javascript
+// CORRECT - use node edges
+const left = nodeLeft(node);   // node.x - node.width * 0.5
+const right = nodeRight(node); // node.x + node.width * 0.5
+if (left < size.min.x) size.min.x = left;
+if (right > size.max.x) size.max.x = right;
+
+// WRONG - using centers causes clipping
+if (node.x < size.min.x) size.min.x = node.x;  // Don't do this!
+```
+
+Helper functions `nodeLeft`, `nodeRight`, `nodeTop`, `nodeBottom` exist at the top of the file.
+
+### Viewport Centering (`html_generator.py`)
+
+Content must be centered in the **full viewport**, not "available width":
+
+```javascript
+// CORRECT - center in full viewport
+const targetScreenCenterX = viewportWidth / 2;
+
+// WRONG - excludes button panel, shifts content left
+const targetScreenCenterX = availableWidth / 2;  // Don't do this!
+```
+
+### Node Dimension Calculation (`html_generator.py`)
+
+The `calculateDimensions()` function must handle ALL node types. Missing a type causes width mismatch between layout and render:
+
+```javascript
+// INPUT nodes use same styling as DATA nodes
+if (n.data?.nodeType === 'DATA' || n.data?.nodeType === 'INPUT') {
+  height = 36;
+  width = /* calculated from label */;
+}
+```
+
+### Vertical Centering Correction (`html_generator.py`)
+
+The graph's vertical centering requires a post-layout DOM measurement because:
+1. Calculated positions don't account for actual rendered node dimensions
+2. React Flow wrapper elements differ from visible node content
+3. Shadows extend beyond node bounds but shouldn't affect centering
+
+**Algorithm** (in `fitWithFixedPadding`):
+1. Set initial viewport position
+2. Wait for DOM update (double `requestAnimationFrame`)
+3. Find **topmost** and **bottommost** edges across ALL visible nodes
+   - Query all `.react-flow__node` elements
+   - Get inner visible content (`.group.rounded-lg` or first child) - excludes shadows
+   - Track min top and max bottom using `getBoundingClientRect()`
+4. Calculate margins: `topMargin = topmostEdge - viewport.top`, `bottomMargin = viewport.bottom - bottommostEdge`
+5. If `|topMargin - bottomMargin| > 2px`, adjust viewport.y by half the difference
+6. Verify correction with another measurement
+
+```javascript
+// Key: measure INNER node content, not React Flow wrapper
+const innerNode = wrapper.querySelector('.group.rounded-lg') || wrapper.firstElementChild;
+const rect = innerNode.getBoundingClientRect();  // Excludes shadows
+```
+
+### Debug Overlay
+
+Enable with `window.__hypergraph_debug_viz = true` in browser console before rendering.
+
+Shows:
+- Green lines at content top/bottom edges
+- Margin labels (T: top margin, B: bottom margin)
+- Badge shows BEFORE/AFTER correction values
+- Badge turns green when margins are equal (diff ≤ 2px)
+
+## Double-Wiggle Issue (Unsolved)
+
+### The Problem
+Edges from left-to-right (e.g., `embed_expanded` → `search_expanded`) can have **two bends** instead of one smooth curve. The edge goes left first, then corrects back right.
+
+### Root Cause Analysis
+The corridor selection uses `naturalX` (midpoint between source and target):
+```javascript
+const naturalX = source.x + (target.x - source.x) * 0.5;
+// Then chooses corridor closer to naturalX
+if (Math.abs(naturalX - leftCorridorX) <= Math.abs(naturalX - rightCorridorX)) {
+  corridorX = leftCorridorX;  // May go LEFT even when target is RIGHT
+}
+```
+
+For a left-to-right edge, the midpoint can be closer to the LEFT corridor, causing the edge to route left first, then correct back right = double wiggle.
+
+### Attempted Fix (Reverted)
+Changed corridor selection to use target direction:
+```javascript
+if (target.x > source.x + 10) {
+  corridorX = rightCorridorX;  // Target is right, go right
+} else if (target.x < source.x - 10) {
+  corridorX = leftCorridorX;   // Target is left, go left
+}
+```
+
+**Why it failed**: This fix caused edges to go OVER nodes in the target row. The blocking detection only checks rows BETWEEN source and target (`i < target.row`), missing nodes in the same row as the target.
+
+### Further Attempts (All Reverted)
+1. **Include target row in blocking**: `i <= target.row` with `if (node === target) continue`
+   - Caused edges to connect to bottom of nodes instead of top
+
+2. **Fix y2 calculation**: Exit corridor above target row nodes
+   - Caused corridor to go extremely far (included ALL nodes in row for bounds)
+
+3. **Filter bounds to path-overlapping nodes only**
+   - Still produced awkward angles
+
+### Current State
+Reverted to original logic. Double-wiggle persists for some left-to-right edges. A proper fix requires rethinking how blocking detection and corridor selection work together.
+
+### Key Insight
+The problem is architectural: the routing algorithm detects blocking based on `naturalX` (midpoint), but the actual path depends on corridor choice. When corridor direction differs from the detection path, edges can cross undetected nodes.
+
 ## File Locations
 
 - **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 530)
 - **Routing config**: `assets/constraint-layout.js` (layoutConfig ~line 820)
+- **Bounds calculation**: `assets/constraint-layout.js` (bounds function ~line 848)
 - **Edge rendering**: `html_generator.py` (CustomEdge component ~line 652)
 - **Edge styling**: `html_generator.py` (edgeOptions ~line 2058)
+- **Centering logic**: `html_generator.py` (fitWithFixedPadding ~line 1764)
+- **Node dimensions**: `html_generator.py` (calculateDimensions ~line 1154)

@@ -578,7 +578,8 @@
       // Use target position to guide routing - edges should trend toward their destination
       const naturalX = source.x + (target.x - source.x) * 0.5;
 
-      // First pass: find which rows block the natural path
+      // First pass: find which rows block the path from source to target
+      // Check the full horizontal range the edge might traverse, not just the midpoint
       let firstBlockedRow = -1;
       let lastBlockedRow = -1;
       const blockedRows = [];
@@ -852,21 +853,16 @@
     };
 
     for (const node of nodes) {
-      const x = node.x;
-      const y = node.y;
+      // Use node EDGES, not centers
+      const left = nodeLeft(node);
+      const right = nodeRight(node);
+      const top = nodeTop(node);
+      const bottom = nodeBottom(node);
 
-      if (x < size.min.x) {
-        size.min.x = x;
-      }
-      if (x > size.max.x) {
-        size.max.x = x;
-      }
-      if (y < size.min.y) {
-        size.min.y = y;
-      }
-      if (y > size.max.y) {
-        size.max.y = y;
-      }
+      if (left < size.min.x) size.min.x = left;
+      if (right > size.max.x) size.max.x = right;
+      if (top < size.min.y) size.min.y = top;
+      if (bottom > size.max.y) size.max.y = bottom;
     }
 
     size.width = size.max.x - size.min.x + 2 * padding;
