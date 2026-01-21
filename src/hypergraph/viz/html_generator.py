@@ -1930,11 +1930,10 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                             const inner = wrapper.querySelector('.group.rounded-lg') || wrapper.firstElementChild;
                             if (inner) bounds.push(inner.getBoundingClientRect());
                         });
-                        if (bounds.length === 0) return { topMargin: 0, bottomMargin: 0, diffX: 0, rightMargin: 0 };
+                        if (bounds.length === 0) return { topMargin: 0, bottomMargin: 0, diffX: 0 };
 
                         const top = Math.min(...bounds.map(r => r.top));
                         const bottom = Math.max(...bounds.map(r => r.bottom));
-                        const rightmost = Math.max(...bounds.map(r => r.right));
                         const topRow = bounds.filter(r => r.top <= top + 5);
                         const topRowCenter = (Math.min(...topRow.map(r => r.left)) + Math.max(...topRow.map(r => r.right))) / 2;
 
@@ -1942,82 +1941,76 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                         return {
                             topMargin: Math.round(top - vp.top),
                             bottomMargin: Math.round(vp.bottom - bottom),
-                            diffX: Math.round(topRowCenter - (vp.left + vp.width / 2)),
-                            rightMargin: Math.round(vp.right - rightmost)
+                            diffX: Math.round(topRowCenter - (vp.left + vp.width / 2))
                         };
                     };
 
-                    // Apply corrections if needed (vertical AND horizontal centering)
+                    // ========================================================
+                    // Calculate ALL corrections first, then apply ONCE
+                    // This avoids the loop of: center → check margin → shift → re-check
+                    // ========================================================
+
+                    const currentVp = getViewport();
+
+                    // 1. Calculate ideal centered position
                     const needsYCorrection = Math.abs(diffY) > 2;
                     const needsXCorrection = Math.abs(diffX) > 2;
 
-                    if (needsYCorrection || needsXCorrection) {
-                        const currentVp = getViewport();
-                        const correctedY = needsYCorrection ? currentVp.y - diffY / 2 : currentVp.y;
-                        const correctedX = needsXCorrection ? currentVp.x - diffX : currentVp.x;
-                        setViewport({ x: correctedX, y: correctedY, zoom: currentVp.zoom }, { duration: 0 });
+                    let finalY = needsYCorrection ? currentVp.y - diffY / 2 : currentVp.y;
+                    let finalX = needsXCorrection ? currentVp.x - diffX : currentVp.x;
 
-                        // After centering, enforce minimum right margin (don't overlap buttons)
-                        requestAnimationFrame(() => {
-                            const { rightMargin } = measureBounds();
-                            if (rightMargin < PADDING_RIGHT) {
-                                // Shift left to maintain minimum button spacing
-                                const shiftNeeded = PADDING_RIGHT - rightMargin;
-                                const vp = getViewport();
-                                setViewport({ x: vp.x - shiftNeeded, y: vp.y, zoom: vp.zoom }, { duration: 0 });
-                            }
+                    // 2. Check right margin constraint BEFORE applying
+                    // Calculate where rightmost node would be after centering shift
+                    const rightmostNode = Math.max(...nodeBounds.map(r => r.right));
+                    const xShift = finalX - currentVp.x;  // How much we're shifting (positive = content moves right)
+                    const newRightmost = rightmostNode + xShift;
+                    const rightMarginAfterCenter = vpRect.right - newRightmost;
 
-                            // Measure again after all corrections (for debug display)
-                            requestAnimationFrame(() => {
-                                if (!badge && !overlay) return;  // Skip if no debug elements
+                    // 3. If centering would violate right margin, adjust
+                    let rightMarginAdjustment = 0;
+                    if (rightMarginAfterCenter < PADDING_RIGHT) {
+                        rightMarginAdjustment = PADDING_RIGHT - rightMarginAfterCenter;
+                        finalX -= rightMarginAdjustment;  // Shift left to maintain button spacing
+                    }
 
-                                const { topMargin: topMarginAfter, bottomMargin: bottomMarginAfter, diffX: diffXAfter, rightMargin: rightMarginAfter } = measureBounds();
-                                const diffYAfter = topMarginAfter - bottomMarginAfter;
-                                const isOkY = Math.abs(diffYAfter) <= 2;
-                                const isOkX = Math.abs(diffXAfter) <= 2;
-                                const isOkRight = rightMarginAfter >= PADDING_RIGHT - 2;
-                                const isOk = isOkY && isOkX && isOkRight;
+                    // 4. Apply ALL corrections in ONE setViewport call
+                    const needsAnyCorrection = finalX !== currentVp.x || finalY !== currentVp.y;
 
-                                if (badge) {
-                                    badge.style.background = isOk ? '#10b981' : '#ef4444';
-                                    badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diffY=' + diffY + ', diffX=' + diffX + ')<br>' +
-                                                     'AFTER:  T=' + topMarginAfter + ' B=' + bottomMarginAfter + ' R=' + rightMarginAfter + ' (diffY=' + diffYAfter + ', diffX=' + diffXAfter + ') ' +
-                                                     (isOk ? '✓' : '✗');
-                                }
+                    if (needsAnyCorrection) {
+                        setViewport({ x: finalX, y: finalY, zoom: currentVp.zoom }, { duration: 0 });
+                    }
 
-                                if (overlay) {
-                                    overlay.innerHTML = `
-                                        <div style="position:absolute;left:50%;transform:translateX(-50%);top:${topMarginAfter/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${topMarginAfter}</div>
-                                        <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:${bottomMarginAfter/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${bottomMarginAfter}</div>
-                                        <div style="position:absolute;top:${topMarginAfter}px;left:0;right:0;height:1px;background:#10b981;"></div>
-                                        <div style="position:absolute;bottom:${bottomMarginAfter}px;left:0;right:0;height:1px;background:#10b981;"></div>
-                                    `;
-                                }
-                            });
-                        });
-                    } else {
-                        // Even without centering correction, check right margin constraint
-                        const { rightMargin: rightMarginInitial } = measureBounds();
-                        if (rightMarginInitial < PADDING_RIGHT) {
-                            const shiftNeeded = PADDING_RIGHT - rightMarginInitial;
-                            const vp = getViewport();
-                            setViewport({ x: vp.x - shiftNeeded, y: vp.y, zoom: vp.zoom }, { duration: 0 });
-                        }
+                    // Debug display (measure after single correction)
+                    requestAnimationFrame(() => {
+                        if (!badge && !overlay) return;
+
+                        const { topMargin: topMarginAfter, bottomMargin: bottomMarginAfter, diffX: diffXAfter } = measureBounds();
+                        const diffYAfter = topMarginAfter - bottomMarginAfter;
+                        const isOkY = Math.abs(diffYAfter) <= 2;
+                        // If we applied right margin adjustment, centering might be intentionally off
+                        const isOkX = rightMarginAdjustment > 0 || Math.abs(diffXAfter) <= 2;
+                        const isOk = isOkY && isOkX;
 
                         if (badge) {
-                            badge.style.background = '#10b981';
-                            badge.innerHTML += '<br>No centering correction needed ✓';
+                            badge.style.background = isOk ? '#10b981' : '#ef4444';
+                            let msg = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diffY=' + diffY + ', diffX=' + diffX + ')<br>' +
+                                     'AFTER:  T=' + topMarginAfter + ' B=' + bottomMarginAfter + ' (diffY=' + diffYAfter + ', diffX=' + diffXAfter + ')';
+                            if (rightMarginAdjustment > 0) {
+                                msg += '<br>Right margin shift: ' + rightMarginAdjustment + 'px';
+                            }
+                            msg += ' ' + (isOk ? '✓' : '✗');
+                            badge.innerHTML = msg;
                         }
 
                         if (overlay) {
                             overlay.innerHTML = `
-                                <div style="position:absolute;left:50%;transform:translateX(-50%);top:${topMarginBefore/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${topMarginBefore}</div>
-                                <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:${bottomMarginBefore/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${bottomMarginBefore}</div>
-                                <div style="position:absolute;top:${topMarginBefore}px;left:0;right:0;height:1px;background:#10b981;"></div>
-                                <div style="position:absolute;bottom:${bottomMarginBefore}px;left:0;right:0;height:1px;background:#10b981;"></div>
+                                <div style="position:absolute;left:50%;transform:translateX(-50%);top:${topMarginAfter/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${topMarginAfter}</div>
+                                <div style="position:absolute;left:50%;transform:translateX(-50%);bottom:${bottomMarginAfter/2 - 8}px;background:#10b981;color:#fff;padding:2px 6px;font-size:11px;font-family:monospace;border-radius:3px;">${bottomMarginAfter}</div>
+                                <div style="position:absolute;top:${topMarginAfter}px;left:0;right:0;height:1px;background:#10b981;"></div>
+                                <div style="position:absolute;bottom:${bottomMarginAfter}px;left:0;right:0;height:1px;background:#10b981;"></div>
                             `;
                         }
-                    }
+                    });
                 });
             });
         }, [rawLayoutedNodes, layoutedEdges, setViewport]);

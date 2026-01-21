@@ -154,12 +154,14 @@ The graph's vertical centering requires a post-layout DOM measurement because:
    - Query all `.react-flow__node` elements
    - Get inner visible content (`.group.rounded-lg` or first child) - excludes shadows
    - Track min top and max bottom using `getBoundingClientRect()`
-4. Calculate margins: `topMargin = topmostEdge - viewport.top`, `bottomMargin = viewport.bottom - bottommostEdge`
-5. If `|topMargin - bottomMargin| > 2px`, adjust viewport.y by half the difference
-6. **Right margin constraint**: After centering, check if rightmost content edge is within `PADDING_RIGHT` (100px) of viewport right edge. If so, shift viewport left just enough to maintain button spacing.
-7. Verify correction with another measurement
+4. **Calculate ALL corrections at once** (avoid sequential adjustments that fight each other):
+   - Vertical centering: `diffY = topMargin - bottomMargin`, shift by `diffY/2`
+   - Horizontal centering: `diffX = topRowCenter - viewportCenter`, shift by `diffX`
+   - Right margin constraint: After centering, would rightmost node be within `PADDING_RIGHT` (100px) of buttons? If so, calculate additional left shift needed.
+5. **Apply ALL corrections in ONE setViewport call**
+6. Verify correction with measurement (for debug display only)
 
-**Key principle**: Content is first centered in the TRUE viewport center (not accounting for buttons), then shifted left ONLY IF it would overlap with the button panel. This keeps small graphs perfectly centered while preventing overlap for wide graphs.
+**Key principle**: Calculate the final position first, then apply once. Never do: center → measure → adjust → measure again. This avoids the loop where centering and margin constraints fight each other.
 
 ```javascript
 // Key: measure INNER node content, not React Flow wrapper
