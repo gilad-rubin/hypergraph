@@ -29,6 +29,64 @@ def _get_node_type(hypernode: HyperNode) -> str:
     return "FUNCTION"
 
 
+def _find_deepest_consumers(
+    graph_node: GraphNode, param: str, remaining_depth: int
+) -> list[str]:
+    """Find the deepest nodes that consume a parameter, recursing into nested graphs.
+
+    For depth=2 with structure: middle -> inner -> process
+    If 'x' is consumed by 'inner' which passes it to 'process',
+    returns ['process'] not ['inner'].
+    """
+    inner_graph = graph_node.graph
+    consumers = []
+
+    for inner_name, inner_node in inner_graph.nodes.items():
+        if param in inner_node.inputs:
+            # Found a consumer - but is it a GraphNode we should recurse into?
+            if isinstance(inner_node, GraphNode) and remaining_depth > 1:
+                # Recurse into nested graph to find deeper consumers
+                deeper = _find_deepest_consumers(inner_node, param, remaining_depth - 1)
+                if deeper:
+                    consumers.extend(deeper)
+                else:
+                    # No deeper consumers, use this node
+                    consumers.append(inner_name)
+            else:
+                consumers.append(inner_name)
+
+    return consumers
+
+
+def _find_deepest_producers(
+    graph_node: GraphNode, output_name: str, remaining_depth: int
+) -> list[str]:
+    """Find the deepest nodes that produce an output, recursing into nested graphs.
+
+    For depth=2 with structure: middle -> inner -> process
+    If 'processed' is produced by 'inner' which contains 'process' that produces it,
+    returns ['process'] not ['inner'].
+    """
+    inner_graph = graph_node.graph
+    producers = []
+
+    for inner_name, inner_node in inner_graph.nodes.items():
+        if output_name in inner_node.outputs:
+            # Found a producer - but is it a GraphNode we should recurse into?
+            if isinstance(inner_node, GraphNode) and remaining_depth > 1:
+                # Recurse into nested graph to find deeper producers
+                deeper = _find_deepest_producers(inner_node, output_name, remaining_depth - 1)
+                if deeper:
+                    producers.extend(deeper)
+                else:
+                    # No deeper producers, use this node
+                    producers.append(inner_name)
+            else:
+                producers.append(inner_name)
+
+    return producers
+
+
 def _format_type(t: type | None) -> str | None:
     """Format a type annotation for display."""
     if t is None:
@@ -260,14 +318,13 @@ def render_graph(
                     and depth > 0
                 )
 
-                # Find inner nodes that consume these params (for visual routing)
+                # Find deepest inner nodes that consume these params (for visual routing)
+                # Uses recursive search to handle multiple levels of nesting
                 inner_targets = []
                 if is_expanded_pipeline:
-                    inner_graph = hypernode.graph
                     for param in params:
-                        for inner_name, inner_node in inner_graph.nodes.items():
-                            if param in inner_node.inputs:
-                                inner_targets.append(inner_name)
+                        consumers = _find_deepest_consumers(hypernode, param, depth)
+                        inner_targets.extend(consumers)
 
                 edges.append({
                     "id": f"e_{group_id}_to_{target}",
@@ -311,14 +368,10 @@ def render_graph(
 
         # For expanded pipelines, include inner sources for visual routing
         # This allows edges to start from the inner node that produces the output
+        # Uses recursive search to handle multiple levels of nesting
         source_node = graph.nodes.get(source)
         if isinstance(source_node, GraphNode) and depth > 0 and value_name:
-            inner_graph = source_node.graph
-            # Find which inner node produces this output
-            inner_sources = []
-            for inner_name, inner_node in inner_graph.nodes.items():
-                if value_name in inner_node.outputs:
-                    inner_sources.append(inner_name)
+            inner_sources = _find_deepest_producers(source_node, value_name, depth)
             if inner_sources:
                 rf_edge["data"]["innerSources"] = inner_sources
 
