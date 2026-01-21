@@ -308,6 +308,12 @@ This ensures containers don't overlap with external nodes below them.
 - Fix: Reverse `layoutOrder` for Step 3: `var positioningOrder = layoutOrder.slice().reverse();`
 - Key insight: Step 1 needs deepest-first (to calculate sizes), Step 3 needs parent-first (to position children)
 
+**"Edges in double-nested graphs connect to intermediate container, not deepest node"**
+- Cause: `innerTargets`/`innerSources` only searched one level deep
+- Why: For `outer -> middle -> inner -> process`, edges stopped at `inner` instead of reaching `process`
+- Fix: Added recursive `_find_deepest_consumers()` and `_find_deepest_producers()` in renderer.py
+- These recurse through nested GraphNodes to find the actual deepest node that consumes/produces a value
+
 ### Cross-Hierarchy Edge Routing
 
 Edges that cross hierarchy levels (e.g., from root-level INPUT_GROUP to a child node inside a container) need special handling:
