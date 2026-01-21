@@ -1973,8 +1973,24 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
                         finalX -= rightMarginAdjustment;  // Shift left to maintain button spacing
                     }
 
+                    // Debug: log all values to understand what's happening
+                    console.log('[Centering] BEFORE:', {
+                        topMarginBefore, bottomMarginBefore, diffY,
+                        topRowLeft, topRowRight, topRowCenterX,
+                        viewportCenterX, diffX,
+                        needsXCorrection, needsYCorrection
+                    });
+                    console.log('[Centering] CALCULATION:', {
+                        currentVpX: currentVp.x, currentVpY: currentVp.y,
+                        xShift, rightmostNode, newRightmost,
+                        vpRectRight: vpRect.right, rightMarginAfterCenter,
+                        PADDING_RIGHT, rightMarginAdjustment,
+                        finalX, finalY
+                    });
+
                     // 4. Apply ALL corrections in ONE setViewport call
                     const needsAnyCorrection = finalX !== currentVp.x || finalY !== currentVp.y;
+                    console.log('[Centering] Will apply:', needsAnyCorrection, '-> setViewport({x:', finalX, ', y:', finalY, '})');
 
                     if (needsAnyCorrection) {
                         setViewport({ x: finalX, y: finalY, zoom: currentVp.zoom }, { duration: 0 });
