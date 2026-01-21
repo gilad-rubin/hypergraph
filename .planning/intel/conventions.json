@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "updated": 1769016451623,
+  "naming": {},
+  "directories": {
+    "assets": {
+      "purpose": "Static assets",
+      "files": 3
+    }
+  },
+  "suffixes": {}
+}

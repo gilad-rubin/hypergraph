@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "updated": 1769016451622,
+  "files": {
+    "/Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/layout.js": {
+      "exports": [],
+      "imports": [],
+      "indexed": 1769016451622
+    },
+    "/Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/state_utils.js": {
+      "exports": [],
+      "imports": [],
+      "indexed": 1769004858901
+    },
+    "/Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/constraint-layout.js": {
+      "exports": [],
+      "imports": [],
+      "indexed": 1769016157586
+    }
+  }
+}
