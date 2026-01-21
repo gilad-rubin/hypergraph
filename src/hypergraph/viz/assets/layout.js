@@ -380,6 +380,77 @@
   }
 
   /**
+   * Resolve edge endpoints from logical to visual based on expansion state
+   * When a container is collapsed, edges connect to the container
+   * When a container is expanded, edges connect to entry/exit nodes inside
+   * @param {Object} edge - Edge with source and target IDs
+   * @param {Map} expansionState - Which nodes are expanded
+   * @param {Object} hierarchy - Result of buildHierarchy()
+   * @param {Array} allEdges - All edges for entry/exit calculation
+   * @returns {Object} { visualSource, visualTarget, logicalSource, logicalTarget }
+   */
+  function resolveEdgeTargets(edge, expansionState, hierarchy, allEdges) {
+    var VizState = root.HypergraphVizState;
+    var maxDepth = 10;  // Prevent infinite recursion
+
+    var resolveTarget = function(logicalId, depth) {
+      if (depth <= 0) return logicalId;
+
+      var node = hierarchy.nodeMap.get(logicalId);
+      if (!node) return logicalId;
+
+      // Not a pipeline OR not expanded -> use logical ID
+      var isPipeline = node.data && node.data.nodeType === 'PIPELINE';
+      var isExpanded = expansionState.get(logicalId);
+
+      if (!isPipeline || !isExpanded) {
+        return logicalId;
+      }
+
+      // Expanded container -> find entry nodes
+      if (!node.children || node.children.length === 0) {
+        return logicalId;  // Empty container
+      }
+
+      var entryNodes = VizState.findEntryNodes(node.children, allEdges);
+      if (entryNodes.length === 0) return logicalId;
+
+      // Recurse into first entry node
+      return resolveTarget(entryNodes[0].id, depth - 1);
+    };
+
+    var resolveSource = function(logicalId, depth) {
+      if (depth <= 0) return logicalId;
+
+      var node = hierarchy.nodeMap.get(logicalId);
+      if (!node) return logicalId;
+
+      var isPipeline = node.data && node.data.nodeType === 'PIPELINE';
+      var isExpanded = expansionState.get(logicalId);
+
+      if (!isPipeline || !isExpanded) {
+        return logicalId;
+      }
+
+      if (!node.children || node.children.length === 0) {
+        return logicalId;
+      }
+
+      var exitNodes = VizState.findExitNodes(node.children, allEdges);
+      if (exitNodes.length === 0) return logicalId;
+
+      return resolveSource(exitNodes[0].id, depth - 1);
+    };
+
+    return {
+      visualSource: resolveSource(edge.source, maxDepth),
+      visualTarget: resolveTarget(edge.target, maxDepth),
+      logicalSource: edge.source,
+      logicalTarget: edge.target
+    };
+  }
+
+  /**
    * Perform recursive layout for nested graphs
    * Layouts children first (deepest), then uses their bounds to size parent nodes
    * @param {Array} visibleNodes - All visible nodes
@@ -630,6 +701,7 @@
     getLayoutOrder: getLayoutOrder,
     performRecursiveLayout: performRecursiveLayout,
     buildHierarchy: buildHierarchy,
+    resolveEdgeTargets: resolveEdgeTargets,
     // Constants
     TYPE_HINT_MAX_CHARS: TYPE_HINT_MAX_CHARS,
     NODE_LABEL_MAX_CHARS: NODE_LABEL_MAX_CHARS,
