@@ -223,3 +223,65 @@ class TestEdgeRoutingToCenters:
             f"Edge start X={result['edgeStartX']:.1f} not at inner node center X={result['nodeCenterX']:.1f} (diff={diff_x:.1f})"
         assert diff_y < 15, \
             f"Edge start Y={result['edgeStartY']:.1f} not at inner node bottom Y={result['nodeBottomY']:.1f} (diff={diff_y:.1f}, container bottom={result.get('containerBottom', 'N/A')})"
+
+
+class TestDoubleNestedGraphs:
+    @pytest.mark.asyncio
+    async def test_double_nested_nodes_visible(self, tmp_path):
+        """Nodes inside double-nested graphs should be visible when depth=2."""
+        from playwright.async_api import async_playwright
+
+        @node(output_name='processed')
+        def process(x: str) -> str:
+            return x.upper()
+
+        @node(output_name='validated')
+        def validate(processed: str) -> str:
+            return f"valid: {processed}"
+
+        inner = Graph(nodes=[process], name='inner')
+        middle = Graph(nodes=[inner.as_node()], name='middle')
+        outer = Graph(nodes=[middle.as_node(), validate])
+
+        html_path = tmp_path / "test.html"
+        graph_data = render_graph(outer, depth=2)
+        html_content = generate_widget_html(graph_data)
+        html_path.write_text(html_content)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page(viewport={'width': 1200, 'height': 900})
+            await page.goto(f'file://{html_path}')
+            await page.wait_for_timeout(2000)
+
+            result = await page.evaluate('''() => {
+                const nodeIds = ['middle', 'inner', 'process'];
+                const results = {};
+                for (const id of nodeIds) {
+                    const node = document.querySelector(`[data-id="${id}"]`);
+                    if (node) {
+                        const rect = node.getBoundingClientRect();
+                        results[id] = {
+                            found: true,
+                            visible: rect.width > 0 && rect.height > 0,
+                            width: rect.width,
+                            height: rect.height
+                        };
+                    } else {
+                        results[id] = { found: false, visible: false };
+                    }
+                }
+                return results;
+            }''')
+
+            await browser.close()
+
+        # All three nodes should be visible
+        assert result['middle']['found'], "middle container not found"
+        assert result['middle']['visible'], "middle container not visible"
+
+        assert result['inner']['found'], "inner container not found"
+        assert result['inner']['visible'], "inner container not visible"
+
+        assert result['process']['found'], "process node not found in double-nested graph"
+        assert result['process']['visible'], "process node not visible in double-nested graph"

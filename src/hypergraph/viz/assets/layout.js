@@ -533,7 +533,10 @@
     });
 
     // Position children within their parents
-    layoutOrder.forEach(function(graphNode) {
+    // IMPORTANT: We need parent-first order here (opposite of Step 1)
+    // so that parent positions are known before positioning grandchildren
+    var positioningOrder = layoutOrder.slice().reverse();
+    positioningOrder.forEach(function(graphNode) {
       var childResult = childLayoutResults.get(graphNode.id);
       if (!childResult) return;
 
