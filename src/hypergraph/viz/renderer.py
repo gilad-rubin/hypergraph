@@ -46,6 +46,7 @@ def render_graph(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
+    _is_nested: bool = False,
 ) -> dict[str, Any]:
     """Convert a Graph to React Flow JSON format.
 
@@ -55,6 +56,7 @@ def render_graph(
         theme: "dark", "light", or "auto" (detect from environment)
         show_types: Whether to show type annotations
         separate_outputs: Whether to render outputs as separate DATA nodes
+        _is_nested: Internal flag - True when rendering a nested subgraph
 
     Returns:
         Dict with "nodes", "edges", and "meta" keys ready for React Flow
@@ -74,8 +76,9 @@ def render_graph(
 
     # Create INPUT_GROUP nodes for external inputs, grouped by (targets, is_bound)
     # Inputs targeting the same node(s) with the same bound state get grouped together
+    # Skip INPUT_GROUP creation for nested graphs - their inputs are pass-through from parent
     external_inputs = list(input_spec.required) + list(input_spec.optional)
-    if external_inputs:
+    if external_inputs and not _is_nested:
         # Build mapping: param -> (targets, type, is_bound)
         param_info: dict[str, tuple[frozenset[str], type | None, bool]] = {}
         for param in external_inputs:
@@ -197,6 +200,7 @@ def render_graph(
                 theme=theme,
                 show_types=show_types,
                 separate_outputs=separate_outputs,
+                _is_nested=True,  # Mark as nested to skip INPUT_GROUP creation
             )
             # Add inner nodes with parent reference
             for inner_node in inner_result["nodes"]:

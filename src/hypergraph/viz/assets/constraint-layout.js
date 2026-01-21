@@ -311,13 +311,20 @@
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => ({
-      base: rowConstraint,
-      property: layoutConfig.coordSecondary,
-      a: edge.targetNode,
-      b: edge.sourceNode,
-      separation: layoutConfig.spaceY,
-    }));
+    edges.map((edge) => {
+      // Calculate separation based on node heights to prevent overlap
+      // For vertical layout: separation = (sourceHeight/2 + targetHeight/2 + spaceY)
+      var sourceHeight = edge.sourceNode.height || 0;
+      var targetHeight = edge.targetNode.height || 0;
+      var heightBasedSeparation = (sourceHeight / 2) + (targetHeight / 2) + layoutConfig.spaceY;
+      return {
+        base: rowConstraint,
+        property: layoutConfig.coordSecondary,
+        a: edge.targetNode,
+        b: edge.sourceNode,
+        separation: heightBasedSeparation,
+      };
+    });
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
