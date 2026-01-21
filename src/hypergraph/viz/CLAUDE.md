@@ -302,6 +302,12 @@ This ensures containers don't overlap with external nodes below them.
 - Cause: Layout filtered edges into "root edges" (both ends at root) or "internal edges" (both ends inside container), missing cross-hierarchy edges
 - Fix: Added Step 4 in `performRecursiveLayout` to detect and route cross-hierarchy edges using absolute positions stored in `nodePositions`
 
+**"Double-nested graphs render empty inner containers"**
+- Cause: Step 3 iterated `layoutOrder` (deepest-first), but positioning requires parent-first order
+- Why: When positioning `inner`'s children, we need `inner`'s position, but `inner` is positioned as part of `middle`'s children - which happens later in deepest-first order
+- Fix: Reverse `layoutOrder` for Step 3: `var positioningOrder = layoutOrder.slice().reverse();`
+- Key insight: Step 1 needs deepest-first (to calculate sizes), Step 3 needs parent-first (to position children)
+
 ### Cross-Hierarchy Edge Routing
 
 Edges that cross hierarchy levels (e.g., from root-level INPUT_GROUP to a child node inside a container) need special handling:
