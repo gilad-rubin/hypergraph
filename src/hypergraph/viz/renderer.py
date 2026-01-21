@@ -245,21 +245,44 @@ def render_graph(
 
     # Create edges from INPUT_GROUP nodes to their target nodes
     # Each INPUT_GROUP connects to its specific targets (stored in node data)
+    # For expanded PIPELINE targets, route to the actual inner nodes that consume the inputs
     for node in nodes:
         if node.get("data", {}).get("nodeType") == "INPUT_GROUP":
             group_id = node["id"]
             targets = node["data"].get("targets", [])
             params = node["data"].get("params", [])
             for target in targets:
-                # Create one edge per target (the edge represents all params going to this target)
-                edges.append({
-                    "id": f"e_{group_id}_to_{target}",
-                    "source": group_id,
-                    "target": target,
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                    "data": {"edgeType": "input", "params": params},
-                })
+                # Check if target is an expanded PIPELINE
+                hypernode = graph.nodes.get(target)
+                is_expanded_pipeline = (
+                    isinstance(hypernode, GraphNode)
+                    and depth > 0
+                )
+
+                if is_expanded_pipeline:
+                    # Find inner nodes that consume these params and create edges to them
+                    inner_graph = hypernode.graph
+                    for param in params:
+                        for inner_name, inner_node in inner_graph.nodes.items():
+                            if param in inner_node.inputs:
+                                edges.append({
+                                    "id": f"e_{group_id}_to_{inner_name}_{param}",
+                                    "source": group_id,
+                                    "target": inner_name,
+                                    "animated": False,
+                                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                                    "data": {"edgeType": "input", "params": [param]},
+                                })
+                else:
+                    # Regular edge to the target node
+                    edges.append({
+                        "id": f"e_{group_id}_to_{target}",
+                        "source": group_id,
+                        "target": target,
+                        "animated": False,
+                        "style": {"stroke": "#64748b", "strokeWidth": 2},
+                        "data": {"edgeType": "input", "params": params},
+                    })
 
     # Build edges from nx_graph - always route data edges through DATA nodes
     for source, target, edge_data in graph.nx_graph.edges(data=True):

@@ -294,6 +294,53 @@ This ensures containers don't overlap with external nodes below them.
 - Cause: spaceY (140px) + height-based separation was excessive
 - Fix: Reduce spaceY to 50px since heights are now accounted for
 
+**"Excessive padding inside container"**
+- Cause: Container sizing added GRAPH_PADDING on top of layoutPadding already in childResult.size
+- Fix: Subtract layoutPadding from childResult.size before adding GRAPH_PADDING
+
+**"Edges not connecting to inner nodes"**
+- Cause: Layout filtered edges into "root edges" (both ends at root) or "internal edges" (both ends inside container), missing cross-hierarchy edges
+- Fix: Added Step 4 in `performRecursiveLayout` to detect and route cross-hierarchy edges using absolute positions stored in `nodePositions`
+
+### Cross-Hierarchy Edge Routing
+
+Edges that cross hierarchy levels (e.g., from root-level INPUT_GROUP to a child node inside a container) need special handling:
+
+1. **Detection**: After processing root and internal edges, find any unprocessed edges
+2. **Positioning**: Use absolute coordinates from `nodePositions` map (populated for all nodes)
+3. **Path**: Simple two-point path from source center-bottom to target center-top
+
+```javascript
+// In performRecursiveLayout() - Step 4
+var processedEdgeIds = new Set(allPositionedEdges.map(e => e.id));
+var crossHierarchyEdges = edges.filter(e => !processedEdgeIds.has(e.id));
+
+crossHierarchyEdges.forEach(function(e) {
+  var sourcePos = nodePositions.get(e.source);  // Absolute position
+  var targetPos = nodePositions.get(e.target);
+  // ... create edge path using absolute coordinates
+});
+```
+
+### Collapsed vs Expanded Edge Routing
+
+When a pipeline container is:
+- **Collapsed**: INPUT_GROUP edges connect to the container itself
+- **Expanded**: INPUT_GROUP edges connect to inner nodes that consume the inputs
+
+This is handled in `renderer.py`:
+```python
+if is_expanded_pipeline:
+    # Find inner nodes that consume these params
+    for param in params:
+        for inner_name, inner_node in inner_graph.nodes.items():
+            if param in inner_node.inputs:
+                edges.append({...source: group_id, target: inner_name...})
+else:
+    # Edge goes to container
+    edges.append({...source: group_id, target: target...})
+```
+
 ## File Locations
 
 - **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 530)

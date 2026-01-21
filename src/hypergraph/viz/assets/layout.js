@@ -581,6 +581,59 @@
       });
     });
 
+    // Step 4: Handle cross-hierarchy edges (edges between root and child nodes)
+    // These edges were filtered out from both rootEdges and internalEdges
+    var processedEdgeIds = new Set(allPositionedEdges.map(function(e) { return e.id; }));
+    var crossHierarchyEdges = edges.filter(function(e) {
+      return !processedEdgeIds.has(e.id);
+    });
+
+    if (debugMode && crossHierarchyEdges.length > 0) {
+      console.log('[recursive layout] cross-hierarchy edges:', crossHierarchyEdges.length);
+    }
+
+    crossHierarchyEdges.forEach(function(e) {
+      var sourcePos = nodePositions.get(e.source);
+      var targetPos = nodePositions.get(e.target);
+
+      if (!sourcePos || !targetPos) {
+        if (debugMode) {
+          console.log('[recursive layout] skipping cross-hierarchy edge - missing position:', e.id, 'source:', e.source, 'target:', e.target);
+        }
+        return;
+      }
+
+      var sourceDims = nodeDimensions.get(e.source);
+      var targetDims = nodeDimensions.get(e.target);
+
+      if (!sourceDims || !targetDims) {
+        if (debugMode) {
+          console.log('[recursive layout] skipping cross-hierarchy edge - missing dimensions:', e.id);
+        }
+        return;
+      }
+
+      // Calculate edge points: from source center-bottom to target center-top
+      var sourceX = sourcePos.x + sourceDims.width / 2;
+      var sourceY = sourcePos.y + sourceDims.height;
+      var targetX = targetPos.x + targetDims.width / 2;
+      var targetY = targetPos.y;
+
+      var points = [
+        { x: sourceX, y: sourceY },
+        { x: targetX, y: targetY }
+      ];
+
+      if (debugMode) {
+        console.log('[recursive layout] cross-hierarchy edge:', e.id, 'points:', points);
+      }
+
+      allPositionedEdges.push({
+        ...e,
+        data: { ...e.data, points: points },
+      });
+    });
+
     return {
       nodes: allPositionedNodes,
       edges: allPositionedEdges,
