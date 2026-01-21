@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 2 of 4 (Unify Edge Routing Logic)
-Plan: 1 of 2 complete
-Status: Phase 2 in progress
-Last activity: 2026-01-21 — Completed 02-01-PLAN.md
+Plan: 2 of 2 complete
+Status: Phase 2 complete
+Last activity: 2026-01-21 — Completed 02-02-PLAN.md
 
-Progress: █████▓░░░░░░ 33% (4/12 plans complete)
+Progress: █████░░░░░░░ 42% (5/12 plans complete)
 
 ## Project Reference
 
@@ -35,6 +35,9 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Object reference hierarchy building | 02-01 | O(n) complexity, two-phase map creation then linking |
 | Topological entry/exit detection | 02-01 | Identifies edge connection points from sibling edges |
 | Recursive resolution with depth limit | 02-01 | Max depth 10 prevents infinite loops in expansion |
+| Resolve edges after layout completes | 02-02 | Layout logic stays pure, resolution as final step |
+| Store resolved targets as edge properties | 02-02 | _resolvedSource/_resolvedTarget for visual endpoints |
+| Python provides logical structure | 02-02 | JavaScript resolves visual targets based on expansion |
 
 ### Technical Notes
 
@@ -46,6 +49,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 - Current renderer behavior documented: 29 characterization tests as refactoring baseline
 - Branch nodes store 'targets' list (not when_true/when_false), depth>0 expands all pipelines
 - Phase 2 approach: JavaScript builds hierarchy from flat nodes, resolves edge targets dynamically
+- Edge resolution flow: logical edges → layout → resolve visual targets → render
+- Resolved edge properties: _resolvedSource, _resolvedTarget, _logicalSource, _logicalTarget
 
 ### Blockers
 
@@ -53,10 +58,10 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21T14:15:07Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-01-21T14:18:44Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
 
 ---
 *State initialized: 2026-01-21*
-*Last updated: 2026-01-21T14:15:07Z*
+*Last updated: 2026-01-21T14:18:44Z*
