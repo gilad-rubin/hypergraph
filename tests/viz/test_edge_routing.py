@@ -225,6 +225,134 @@ class TestEdgeRoutingToCenters:
             f"Edge start Y={result['edgeStartY']:.1f} not at inner node bottom Y={result['nodeBottomY']:.1f} (diff={diff_y:.1f}, container bottom={result.get('containerBottom', 'N/A')})"
 
 
+class TestDynamicExpansion:
+    """Tests for edge routing when expansion state changes at runtime."""
+
+    @pytest.mark.asyncio
+    async def test_edge_updates_when_pipeline_expanded(self, tmp_path):
+        """When user expands a pipeline, edges should update to route to inner nodes.
+
+        This tests the dynamic expansion case:
+        1. Render with depth=1 (inner container visible but collapsed)
+        2. Click to expand inner container
+        3. Verify edge now routes to the deepest node inside
+        """
+        from playwright.async_api import async_playwright
+
+        @node(output_name='processed')
+        def process(x: str) -> str:
+            return x.upper()
+
+        # inner: contains 'process' which consumes 'x'
+        inner = Graph(nodes=[process], name='inner')
+        # outer: contains 'inner' as a node
+        outer = Graph(nodes=[inner.as_node()])
+
+        html_path = tmp_path / "test.html"
+        # Render with depth=0 - 'inner' is visible but collapsed
+        graph_data = render_graph(outer, depth=0)
+        html_content = generate_widget_html(graph_data)
+        html_path.write_text(html_content)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page(viewport={'width': 1200, 'height': 900})
+            await page.goto(f'file://{html_path}')
+            await page.wait_for_timeout(2000)
+
+            # Get edge endpoint BEFORE expansion (should point to 'inner' container)
+            before_result = await page.evaluate('''() => {
+                const edge = document.querySelector('[data-testid*="inputs"] path');
+                if (!edge) return { error: 'Edge not found' };
+
+                const innerContainer = document.querySelector('[data-id="inner"]');
+                if (!innerContainer) return { error: 'Inner container not found' };
+
+                // Edge should currently target the container
+                const pathLen = edge.getTotalLength();
+                const endPoint = edge.getPointAtLength(pathLen);
+
+                const svg = edge.ownerSVGElement;
+                const ctm = svg.getScreenCTM();
+                const screenEndY = ctm.b * endPoint.x + ctm.d * endPoint.y + ctm.f;
+
+                const containerRect = innerContainer.getBoundingClientRect();
+
+                return {
+                    edgeEndY: screenEndY,
+                    containerTopY: containerRect.top,
+                    containerBottomY: containerRect.bottom,
+                };
+            }''')
+
+            if 'error' in before_result:
+                await browser.close()
+                pytest.fail(before_result['error'])
+
+            # Now CLICK to expand the 'inner' pipeline
+            await page.click('[data-id="inner"]')
+            await page.wait_for_timeout(1000)  # Wait for expansion + relayout
+
+            # Get edge endpoint AFTER expansion (should now point to 'process' node)
+            after_result = await page.evaluate('''() => {
+                const edge = document.querySelector('[data-testid*="inputs"] path');
+                if (!edge) return { error: 'Edge not found after expansion' };
+
+                const processNode = document.querySelector('[data-id="process"]');
+                if (!processNode) return { error: 'Process node not found after expansion' };
+
+                // Edge should now target the inner 'process' node
+                const pathLen = edge.getTotalLength();
+                const endPoint = edge.getPointAtLength(pathLen);
+
+                const svg = edge.ownerSVGElement;
+                const ctm = svg.getScreenCTM();
+                const screenEndX = ctm.a * endPoint.x + ctm.c * endPoint.y + ctm.e;
+                const screenEndY = ctm.b * endPoint.x + ctm.d * endPoint.y + ctm.f;
+
+                const nodeRect = processNode.getBoundingClientRect();
+                const nodeCenterX = nodeRect.x + nodeRect.width / 2;
+                const nodeTopY = nodeRect.top;
+
+                // Also get the container bounds to verify edge goes INSIDE
+                const innerContainer = document.querySelector('[data-id="inner"]');
+                const containerRect = innerContainer ? innerContainer.getBoundingClientRect() : null;
+
+                return {
+                    edgeEndX: screenEndX,
+                    edgeEndY: screenEndY,
+                    nodeCenterX: nodeCenterX,
+                    nodeTopY: nodeTopY,
+                    containerTopY: containerRect ? containerRect.top : null,
+                };
+            }''')
+
+            await browser.close()
+
+        if 'error' in after_result:
+            pytest.fail(after_result['error'])
+
+        # After expansion, the edge should point to the 'process' node, not the container
+        diff_x = abs(after_result['edgeEndX'] - after_result['nodeCenterX'])
+        diff_y = abs(after_result['edgeEndY'] - after_result['nodeTopY'])
+
+        # Edge Y should be at or below container top (meaning it goes INTO the container)
+        edge_enters_container = after_result['edgeEndY'] > after_result['containerTopY']
+
+        assert edge_enters_container, (
+            f"Edge endpoint Y={after_result['edgeEndY']:.1f} is above container top "
+            f"Y={after_result['containerTopY']:.1f} - edge doesn't enter expanded container"
+        )
+        assert diff_x < 20, (
+            f"Edge X={after_result['edgeEndX']:.1f} not at process node center "
+            f"X={after_result['nodeCenterX']:.1f} (diff={diff_x:.1f})"
+        )
+        assert diff_y < 20, (
+            f"Edge Y={after_result['edgeEndY']:.1f} not at process node top "
+            f"Y={after_result['nodeTopY']:.1f} (diff={diff_y:.1f})"
+        )
+
+
 class TestDoubleNestedGraphs:
     @pytest.mark.asyncio
     async def test_double_nested_nodes_visible(self, tmp_path):

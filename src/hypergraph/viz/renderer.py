@@ -29,62 +29,89 @@ def _get_node_type(hypernode: HyperNode) -> str:
     return "FUNCTION"
 
 
-def _find_deepest_consumers(
-    graph_node: GraphNode, param: str, remaining_depth: int
-) -> list[str]:
-    """Find the deepest nodes that consume a parameter, recursing into nested graphs.
+def _build_consumer_hierarchy(
+    graph_node: GraphNode, param: str
+) -> dict[str, Any]:
+    """Build hierarchy tree of nodes that consume a parameter.
 
-    For depth=2 with structure: middle -> inner -> process
-    If 'x' is consumed by 'inner' which passes it to 'process',
-    returns ['process'] not ['inner'].
+    Returns a tree structure that JavaScript can traverse based on expansion state.
+    Example for: outer -> inner -> process (where process consumes 'x'):
+    {
+        "inner": {
+            "children": {
+                "process": {}
+            }
+        }
+    }
+
+    This allows JavaScript to:
+    - If "inner" collapsed → route to "inner"
+    - If "inner" expanded → route to "process"
     """
     inner_graph = graph_node.graph
-    consumers = []
+    hierarchy: dict[str, Any] = {}
 
     for inner_name, inner_node in inner_graph.nodes.items():
         if param in inner_node.inputs:
-            # Found a consumer - but is it a GraphNode we should recurse into?
-            if isinstance(inner_node, GraphNode) and remaining_depth > 1:
-                # Recurse into nested graph to find deeper consumers
-                deeper = _find_deepest_consumers(inner_node, param, remaining_depth - 1)
-                if deeper:
-                    consumers.extend(deeper)
-                else:
-                    # No deeper consumers, use this node
-                    consumers.append(inner_name)
-            else:
-                consumers.append(inner_name)
+            node_entry: dict[str, Any] = {}
+            # If this is also a GraphNode, recurse to build children hierarchy
+            if isinstance(inner_node, GraphNode):
+                children = _build_consumer_hierarchy(inner_node, param)
+                if children:
+                    node_entry["children"] = children
+            hierarchy[inner_name] = node_entry
 
-    return consumers
+    return hierarchy
 
 
-def _find_deepest_producers(
-    graph_node: GraphNode, output_name: str, remaining_depth: int
-) -> list[str]:
-    """Find the deepest nodes that produce an output, recursing into nested graphs.
+def _build_producer_hierarchy(
+    graph_node: GraphNode, output_name: str
+) -> dict[str, Any]:
+    """Build hierarchy tree of nodes that produce an output.
 
-    For depth=2 with structure: middle -> inner -> process
-    If 'processed' is produced by 'inner' which contains 'process' that produces it,
-    returns ['process'] not ['inner'].
+    Returns a tree structure that JavaScript can traverse based on expansion state.
+    Example for: outer -> inner -> process (where process produces 'result'):
+    {
+        "inner": {
+            "children": {
+                "process": {}
+            }
+        }
+    }
     """
     inner_graph = graph_node.graph
-    producers = []
+    hierarchy: dict[str, Any] = {}
 
     for inner_name, inner_node in inner_graph.nodes.items():
         if output_name in inner_node.outputs:
-            # Found a producer - but is it a GraphNode we should recurse into?
-            if isinstance(inner_node, GraphNode) and remaining_depth > 1:
-                # Recurse into nested graph to find deeper producers
-                deeper = _find_deepest_producers(inner_node, output_name, remaining_depth - 1)
-                if deeper:
-                    producers.extend(deeper)
-                else:
-                    # No deeper producers, use this node
-                    producers.append(inner_name)
-            else:
-                producers.append(inner_name)
+            node_entry: dict[str, Any] = {}
+            # If this is also a GraphNode, recurse to build children hierarchy
+            if isinstance(inner_node, GraphNode):
+                children = _build_producer_hierarchy(inner_node, output_name)
+                if children:
+                    node_entry["children"] = children
+            hierarchy[inner_name] = node_entry
 
-    return producers
+    return hierarchy
+
+
+def _find_deepest_in_hierarchy(hierarchy: dict[str, Any], depth: int) -> list[str]:
+    """Find deepest nodes in hierarchy up to given depth.
+
+    Used for backward compatibility with existing code that expects flat lists.
+    """
+    if depth <= 0 or not hierarchy:
+        return list(hierarchy.keys())
+
+    result = []
+    for name, entry in hierarchy.items():
+        children = entry.get("children", {})
+        if children and depth > 0:
+            deeper = _find_deepest_in_hierarchy(children, depth - 1)
+            result.extend(deeper) if deeper else result.append(name)
+        else:
+            result.append(name)
+    return result
 
 
 def _format_type(t: type | None) -> str | None:
@@ -318,13 +345,29 @@ def render_graph(
                     and depth > 0
                 )
 
-                # Find deepest inner nodes that consume these params (for visual routing)
-                # Uses recursive search to handle multiple levels of nesting
-                inner_targets = []
-                if is_expanded_pipeline:
+                # Build hierarchy of inner nodes that consume these params
+                # This allows JavaScript to route edges based on current expansion state
+                inner_targets_hierarchy: dict[str, Any] = {}
+                inner_targets: list[str] = []
+                if isinstance(hypernode, GraphNode):
                     for param in params:
-                        consumers = _find_deepest_consumers(hypernode, param, depth)
-                        inner_targets.extend(consumers)
+                        param_hierarchy = _build_consumer_hierarchy(hypernode, param)
+                        for node_name, node_data in param_hierarchy.items():
+                            if node_name not in inner_targets_hierarchy:
+                                inner_targets_hierarchy[node_name] = node_data
+                            else:
+                                # Merge children if both have them
+                                existing = inner_targets_hierarchy[node_name]
+                                if "children" in node_data:
+                                    if "children" not in existing:
+                                        existing["children"] = node_data["children"]
+                                    else:
+                                        existing["children"].update(node_data["children"])
+                    # Also compute flat list for current depth (backward compat)
+                    if is_expanded_pipeline:
+                        inner_targets = _find_deepest_in_hierarchy(
+                            inner_targets_hierarchy, depth
+                        )
 
                 edges.append({
                     "id": f"e_{group_id}_to_{target}",
@@ -337,6 +380,10 @@ def render_graph(
                         "params": params,
                         # For expanded pipelines, include inner targets for visual routing
                         "innerTargets": inner_targets if inner_targets else None,
+                        # Full hierarchy for dynamic expansion
+                        "innerTargetsHierarchy": (
+                            inner_targets_hierarchy if inner_targets_hierarchy else None
+                        ),
                     },
                 })
 
@@ -366,14 +413,20 @@ def render_graph(
             },
         }
 
-        # For expanded pipelines, include inner sources for visual routing
-        # This allows edges to start from the inner node that produces the output
-        # Uses recursive search to handle multiple levels of nesting
+        # For pipelines, include inner sources hierarchy for visual routing
+        # This allows JavaScript to route edges based on current expansion state
         source_node = graph.nodes.get(source)
-        if isinstance(source_node, GraphNode) and depth > 0 and value_name:
-            inner_sources = _find_deepest_producers(source_node, value_name, depth)
-            if inner_sources:
-                rf_edge["data"]["innerSources"] = inner_sources
+        if isinstance(source_node, GraphNode) and value_name:
+            inner_sources_hierarchy = _build_producer_hierarchy(source_node, value_name)
+            if inner_sources_hierarchy:
+                rf_edge["data"]["innerSourcesHierarchy"] = inner_sources_hierarchy
+                # Also compute flat list for current depth (backward compat)
+                if depth > 0:
+                    inner_sources = _find_deepest_in_hierarchy(
+                        inner_sources_hierarchy, depth
+                    )
+                    if inner_sources:
+                        rf_edge["data"]["innerSources"] = inner_sources
 
         # Add label for branch edges
         if edge_type == "control" and isinstance(graph.nodes.get(source), IfElseNode):

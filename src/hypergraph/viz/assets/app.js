@@ -852,7 +852,9 @@
           ...edgeOptions,
           style: { ...edgeOptions.style, strokeWidth: isDataLink ? 1.5 : 2 },
           markerEnd: edgeOptions.markerEnd,
-          data: { ...e.data, debugMode: debugOverlays }
+          data: { ...e.data, debugMode: debugOverlays },
+          // Render edges above nested container backgrounds
+          zIndex: 1000,
         };
       });
     }, [layoutedEdges, theme, isLayouting, debugOverlays, expansionKey]);

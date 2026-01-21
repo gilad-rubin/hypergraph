@@ -37,6 +37,70 @@
   var SHADOW_OFFSET = 14;
 
   /**
+   * Find the deepest visible target node in a hierarchy based on expansion state.
+   * Traverses the hierarchy tree following expanded paths.
+   *
+   * @param {Object} hierarchy - Hierarchy tree from Python (e.g., {inner: {children: {process: {}}}})
+   * @param {Map} expansionState - Current expansion state of pipelines
+   * @returns {string|null} - ID of deepest visible node, or null if none found
+   */
+  function findVisibleTarget(hierarchy, expansionState) {
+    if (!hierarchy || typeof hierarchy !== 'object') return null;
+
+    var nodeIds = Object.keys(hierarchy);
+    if (nodeIds.length === 0) return null;
+
+    // For each node in the hierarchy, check if it's expanded
+    // If expanded and has children, recurse; otherwise return this node
+    for (var i = 0; i < nodeIds.length; i++) {
+      var nodeId = nodeIds[i];
+      var nodeData = hierarchy[nodeId] || {};
+      var isExpanded = expansionState && expansionState.get(nodeId) === true;
+      var children = nodeData.children;
+
+      if (isExpanded && children && Object.keys(children).length > 0) {
+        // This node is expanded, look for deeper target
+        var deeper = findVisibleTarget(children, expansionState);
+        if (deeper) return deeper;
+      }
+      // Either not expanded or no children - this is our target
+      return nodeId;
+    }
+    return null;
+  }
+
+  /**
+   * Calculate edge attachment point for a node.
+   * Handles shadow offset for function/pipeline nodes.
+   *
+   * @param {string} nodeId - ID of the node
+   * @param {string} position - 'top' for target, 'bottom' for source
+   * @param {Map} nodePositions - Map of nodeId -> {x, y} absolute positions
+   * @param {Map} nodeDimensions - Map of nodeId -> {width, height}
+   * @param {Map} nodeTypes - Map of nodeId -> nodeType string
+   * @returns {{x: number, y: number}|null} - Point or null if node not found
+   */
+  function getEdgePoint(nodeId, position, nodePositions, nodeDimensions, nodeTypes) {
+    var pos = nodePositions.get(nodeId);
+    var dims = nodeDimensions.get(nodeId);
+    if (!pos || !dims) return null;
+
+    var nodeType = nodeTypes.get(nodeId);
+    var hasShadow = nodeType === 'FUNCTION' || nodeType === 'PIPELINE';
+    var shadowAdjust = hasShadow ? SHADOW_OFFSET : 0;
+
+    var x = pos.x + dims.width / 2;
+    var y;
+    if (position === 'top') {
+      y = pos.y;
+    } else {
+      // bottom - subtract shadow offset
+      y = pos.y + dims.height - shadowAdjust;
+    }
+    return { x: x, y: y };
+  }
+
+  /**
    * Calculate dimensions for a node based on its type and content
    * @param {Object} n - Node object with data
    * @returns {Object} { width, height }
@@ -508,20 +572,31 @@
       });
     });
 
-    // Position root edges (will be rerouted later if they have innerTargets or innerSources)
+    // Position root edges (will be rerouted later if they have hierarchy data)
+    // Hierarchy data allows dynamic routing based on current expansion state
     var rootEdgesToReroute = [];
     rootResult.edges.forEach(function(e) {
       var edgeData = e._original.data || {};
+      var innerTargetsHierarchy = edgeData.innerTargetsHierarchy;
+      var innerSourcesHierarchy = edgeData.innerSourcesHierarchy;
+      // Also check flat lists for backward compatibility
       var innerTargets = edgeData.innerTargets;
       var innerSources = edgeData.innerSources;
 
-      if ((innerTargets && innerTargets.length > 0) || (innerSources && innerSources.length > 0)) {
+      var hasHierarchy = (innerTargetsHierarchy && Object.keys(innerTargetsHierarchy).length > 0) ||
+                         (innerSourcesHierarchy && Object.keys(innerSourcesHierarchy).length > 0);
+      var hasFlatTargets = (innerTargets && innerTargets.length > 0) ||
+                           (innerSources && innerSources.length > 0);
+
+      if (hasHierarchy || hasFlatTargets) {
         // Store for later rerouting after child positions are known
         rootEdgesToReroute.push({
           original: e._original,
           points: e.points,
           innerTargets: innerTargets,
           innerSources: innerSources,
+          innerTargetsHierarchy: innerTargetsHierarchy,
+          innerSourcesHierarchy: innerSourcesHierarchy,
         });
       } else {
         // No inner targets/sources - use original routed points
@@ -608,8 +683,12 @@
       });
     });
 
-    // Step 4: Reroute edges with innerTargets/innerSources now that child positions are known
+    // Step 4: Reroute edges with hierarchy data now that child positions are known
+    // Use findVisibleTarget to determine correct routing based on current expansion state
     rootEdgesToReroute.forEach(function(edgeInfo) {
+      var innerTargetsHierarchy = edgeInfo.innerTargetsHierarchy;
+      var innerSourcesHierarchy = edgeInfo.innerSourcesHierarchy;
+      // Fallback to flat lists if no hierarchy (backward compat)
       var innerTargets = edgeInfo.innerTargets;
       var innerSources = edgeInfo.innerSources;
       var originalPoints = edgeInfo.points || [];
@@ -618,42 +697,38 @@
       var startPoint = originalPoints.length > 0 ? originalPoints[0] : null;
       var endPoint = originalPoints.length > 0 ? originalPoints[originalPoints.length - 1] : null;
 
-      // Reroute start point if we have innerSources
-      if (innerSources && innerSources.length > 0) {
-        var innerSourceId = innerSources[0];
-        var innerSourcePos = nodePositions.get(innerSourceId);
-        var innerSourceDims = nodeDimensions.get(innerSourceId);
-        var innerSourceType = nodeTypes.get(innerSourceId);
+      // Reroute start point based on innerSources
+      // Use hierarchy + expansion state if available, fall back to flat list
+      var innerSourceId = null;
+      if (innerSourcesHierarchy && Object.keys(innerSourcesHierarchy).length > 0) {
+        innerSourceId = findVisibleTarget(innerSourcesHierarchy, expansionState);
+      } else if (innerSources && innerSources.length > 0) {
+        innerSourceId = innerSources[0];
+      }
 
-        if (innerSourcePos && innerSourceDims) {
-          // Function nodes have drop-shadow that extends below the visual border
-          // Adjust edge start to be at the visual node edge, not shadow boundary
-          var hasShadow = innerSourceType === 'FUNCTION' || innerSourceType === 'PIPELINE';
-          var shadowAdjust = hasShadow ? SHADOW_OFFSET : 0;
-
-          // Start from inner node's center-bottom (minus shadow offset)
-          startPoint = {
-            x: innerSourcePos.x + innerSourceDims.width / 2,
-            y: innerSourcePos.y + innerSourceDims.height - shadowAdjust
-          };
+      if (innerSourceId) {
+        var sourcePoint = getEdgePoint(innerSourceId, 'bottom', nodePositions, nodeDimensions, nodeTypes);
+        if (sourcePoint) {
+          startPoint = sourcePoint;
           if (debugMode) {
-            console.log('[recursive layout] rerouting edge start to inner source:', edgeInfo.original.id, innerSourceId, startPoint, 'shadowAdjust:', shadowAdjust);
+            console.log('[recursive layout] rerouting edge start to inner source:', edgeInfo.original.id, innerSourceId, startPoint);
           }
         }
       }
 
-      // Reroute end point if we have innerTargets
-      if (innerTargets && innerTargets.length > 0) {
-        var innerTargetId = innerTargets[0];
-        var innerTargetPos = nodePositions.get(innerTargetId);
-        var innerTargetDims = nodeDimensions.get(innerTargetId);
+      // Reroute end point based on innerTargets
+      // Use hierarchy + expansion state if available, fall back to flat list
+      var innerTargetId = null;
+      if (innerTargetsHierarchy && Object.keys(innerTargetsHierarchy).length > 0) {
+        innerTargetId = findVisibleTarget(innerTargetsHierarchy, expansionState);
+      } else if (innerTargets && innerTargets.length > 0) {
+        innerTargetId = innerTargets[0];
+      }
 
-        if (innerTargetPos && innerTargetDims) {
-          // End at inner node's center-top
-          endPoint = {
-            x: innerTargetPos.x + innerTargetDims.width / 2,
-            y: innerTargetPos.y
-          };
+      if (innerTargetId) {
+        var targetPoint = getEdgePoint(innerTargetId, 'top', nodePositions, nodeDimensions, nodeTypes);
+        if (targetPoint) {
+          endPoint = targetPoint;
           if (debugMode) {
             console.log('[recursive layout] rerouting edge end to inner target:', edgeInfo.original.id, innerTargetId, endPoint);
           }
@@ -696,36 +771,18 @@
     }
 
     crossHierarchyEdges.forEach(function(e) {
-      var sourcePos = nodePositions.get(e.source);
-      var targetPos = nodePositions.get(e.target);
+      // Use getEdgePoint for consistent point calculation with shadow offset
+      var startPoint = getEdgePoint(e.source, 'bottom', nodePositions, nodeDimensions, nodeTypes);
+      var endPoint = getEdgePoint(e.target, 'top', nodePositions, nodeDimensions, nodeTypes);
 
-      if (!sourcePos || !targetPos) {
+      if (!startPoint || !endPoint) {
         if (debugMode) {
-          console.log('[recursive layout] skipping cross-hierarchy edge - missing position:', e.id, 'source:', e.source, 'target:', e.target);
+          console.log('[recursive layout] skipping cross-hierarchy edge - missing position/dims:', e.id, 'source:', e.source, 'target:', e.target);
         }
         return;
       }
 
-      var sourceDims = nodeDimensions.get(e.source);
-      var targetDims = nodeDimensions.get(e.target);
-
-      if (!sourceDims || !targetDims) {
-        if (debugMode) {
-          console.log('[recursive layout] skipping cross-hierarchy edge - missing dimensions:', e.id);
-        }
-        return;
-      }
-
-      // Calculate edge points: from source center-bottom to target center-top
-      var sourceX = sourcePos.x + sourceDims.width / 2;
-      var sourceY = sourcePos.y + sourceDims.height;
-      var targetX = targetPos.x + targetDims.width / 2;
-      var targetY = targetPos.y;
-
-      var points = [
-        { x: sourceX, y: sourceY },
-        { x: targetX, y: targetY }
-      ];
+      var points = [startPoint, endPoint];
 
       if (debugMode) {
         console.log('[recursive layout] cross-hierarchy edge:', e.id, 'points:', points);
@@ -751,6 +808,9 @@
     groupNodesByParent: groupNodesByParent,
     getLayoutOrder: getLayoutOrder,
     performRecursiveLayout: performRecursiveLayout,
+    // Helper functions for edge routing
+    findVisibleTarget: findVisibleTarget,
+    getEdgePoint: getEdgePoint,
     // Constants
     TYPE_HINT_MAX_CHARS: TYPE_HINT_MAX_CHARS,
     NODE_LABEL_MAX_CHARS: NODE_LABEL_MAX_CHARS,
@@ -760,5 +820,6 @@
     MAX_NODE_WIDTH: MAX_NODE_WIDTH,
     GRAPH_PADDING: GRAPH_PADDING,
     HEADER_HEIGHT: HEADER_HEIGHT,
+    SHADOW_OFFSET: SHADOW_OFFSET,
   };
 });
