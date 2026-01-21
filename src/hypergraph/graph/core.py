@@ -12,6 +12,7 @@ from hypergraph.graph.validation import GraphConfigError, validate_graph
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
+    from hypergraph.viz.debug import VizDebugger
 
 
 class Graph:
@@ -503,3 +504,22 @@ class Graph:
 
         for child_node in inner.nodes.values():
             self._add_nested_edges(G, child_node)
+
+    def debug_viz(self) -> "VizDebugger":
+        """Get a debugger for this graph's visualization.
+
+        Returns a VizDebugger instance for tracing nodes/edges and finding issues.
+
+        Returns:
+            VizDebugger instance
+
+        Example:
+            >>> debugger = graph.debug_viz()
+            >>> info = debugger.trace_node("my_node")
+            >>> print(f"Points from: {info.incoming_edges}")
+            >>> print(f"Points to: {info.outgoing_edges}")
+            >>> issues = debugger.find_issues()
+        """
+        from hypergraph.viz.debug import VizDebugger
+
+        return VizDebugger(self)
