@@ -311,8 +311,14 @@ This ensures containers don't overlap with external nodes below them.
 **"Edges in double-nested graphs connect to intermediate container, not deepest node"**
 - Cause: `innerTargets`/`innerSources` only searched one level deep
 - Why: For `outer -> middle -> inner -> process`, edges stopped at `inner` instead of reaching `process`
-- Fix: Added recursive `_find_deepest_consumers()` and `_find_deepest_producers()` in renderer.py
-- These recurse through nested GraphNodes to find the actual deepest node that consumes/produces a value
+- Fix: Build hierarchy trees with `_build_consumer_hierarchy()` and `_build_producer_hierarchy()` in renderer.py
+- These recurse through nested GraphNodes to build a traversable tree structure
+
+**"Edges don't update when pipeline is dynamically expanded in browser"**
+- Cause: `innerTargets`/`innerSources` were computed at **render time** (Python) with fixed `depth`
+- Why: Expansion happens at **runtime** (JavaScript) but edge data still had OLD routing info
+- Fix: Store full hierarchy trees (`innerTargetsHierarchy`/`innerSourcesHierarchy`) in edge data
+- JavaScript uses `findVisibleTarget(hierarchy, expansionState)` to traverse based on current state
 
 ### Cross-Hierarchy Edge Routing
 
@@ -368,18 +374,128 @@ if (innerTargets && innerTargets.length > 0) {
 
 Similar to `innerTargets` for inbound edges, `innerSources` handles outbound edges from expanded pipelines:
 
-1. **renderer.py**: When an edge originates from an expanded GraphNode, find inner nodes that produce the output
-2. **renderer.py**: Store `innerSources` in edge data (e.g., the `normalize` node that outputs `normalized`)
-3. **layout.js**: During edge routing, detect `innerSources` and reroute edge START to inner node
+1. **renderer.py**: When an edge originates from a GraphNode, build hierarchy of inner nodes that produce the output
+2. **renderer.py**: Store both flat list (`innerSources`) and hierarchy tree (`innerSourcesHierarchy`) in edge data
+3. **layout.js**: During edge routing, use `findVisibleTarget()` to find correct source based on expansion state
+
+### Dynamic Edge Routing with Hierarchy Trees
+
+**Problem**: Edge routing was computed at **render time** (Python) with a fixed `depth` parameter, but expansion happens at **runtime** (JavaScript). When a user clicks to expand a collapsed pipeline, edges would still point to the container instead of routing to the newly visible inner nodes.
+
+**Solution**: Store full hierarchy trees in edge data, allowing JavaScript to traverse and find the correct target based on current expansion state.
+
+#### Hierarchy Tree Format
+
+Python builds a recursive tree structure showing all nested consumers/producers:
 
 ```python
-# renderer.py - find inner sources for expanded pipeline outputs
-if isinstance(source_node, GraphNode) and depth > 0:
-    inner_graph = source_node.graph
-    for inner_name, inner_node in inner_graph.nodes.items():
-        if value_name in inner_node.outputs:
-            inner_sources.append(inner_name)
+# For structure: outer -> inner -> process (where process consumes 'x')
+innerTargetsHierarchy = {
+    "inner": {
+        "children": {
+            "process": {}
+        }
+    }
+}
 ```
+
+#### Python Functions (`renderer.py`)
+
+```python
+def _build_consumer_hierarchy(graph_node: GraphNode, param: str) -> dict:
+    """Build hierarchy tree of nodes that consume a parameter."""
+    hierarchy = {}
+    for inner_name, inner_node in graph_node.graph.nodes.items():
+        if param in inner_node.inputs:
+            node_entry = {}
+            if isinstance(inner_node, GraphNode):
+                children = _build_consumer_hierarchy(inner_node, param)
+                if children:
+                    node_entry["children"] = children
+            hierarchy[inner_name] = node_entry
+    return hierarchy
+
+def _build_producer_hierarchy(graph_node: GraphNode, output_name: str) -> dict:
+    """Build hierarchy tree of nodes that produce an output."""
+    # Same pattern as _build_consumer_hierarchy but checks outputs
+```
+
+#### JavaScript Functions (`layout.js`)
+
+```javascript
+/**
+ * Find the deepest visible target node in a hierarchy based on expansion state.
+ * @param {Object} hierarchy - Hierarchy tree from Python
+ * @param {Map} expansionState - Current expansion state of pipelines
+ * @returns {string|null} - ID of deepest visible node
+ */
+function findVisibleTarget(hierarchy, expansionState) {
+    for (var nodeId of Object.keys(hierarchy)) {
+        var nodeData = hierarchy[nodeId];
+        var isExpanded = expansionState.get(nodeId) === true;
+        var children = nodeData.children;
+
+        if (isExpanded && children && Object.keys(children).length > 0) {
+            // Node is expanded, look deeper
+            var deeper = findVisibleTarget(children, expansionState);
+            if (deeper) return deeper;
+        }
+        // Not expanded or no children - this is our target
+        return nodeId;
+    }
+    return null;
+}
+
+/**
+ * Calculate edge attachment point for a node with shadow offset.
+ */
+function getEdgePoint(nodeId, position, nodePositions, nodeDimensions, nodeTypes) {
+    var pos = nodePositions.get(nodeId);
+    var dims = nodeDimensions.get(nodeId);
+    if (!pos || !dims) return null;
+
+    var hasShadow = nodeTypes.get(nodeId) === 'FUNCTION' || nodeTypes.get(nodeId) === 'PIPELINE';
+    var shadowAdjust = hasShadow ? SHADOW_OFFSET : 0;
+
+    return {
+        x: pos.x + dims.width / 2,
+        y: position === 'top' ? pos.y : pos.y + dims.height - shadowAdjust
+    };
+}
+```
+
+#### Edge Data Structure
+
+Edges now include both flat lists (backward compat) and hierarchy trees:
+
+```javascript
+{
+    "id": "e___inputs___to_outer",
+    "source": "__inputs__",
+    "target": "outer",
+    "data": {
+        "edgeType": "input",
+        // Flat list for current depth (backward compat)
+        "innerTargets": ["process"],
+        // Full hierarchy for dynamic routing
+        "innerTargetsHierarchy": {
+            "inner": {
+                "children": {
+                    "process": {}
+                }
+            }
+        }
+    }
+}
+```
+
+#### Routing Flow
+
+1. **Initial render**: Python builds hierarchy trees for all edges
+2. **Layout**: JavaScript uses `findVisibleTarget(hierarchy, expansionState)` to find correct target
+3. **User clicks to expand**: Expansion state changes, layout re-runs
+4. **Re-route**: `findVisibleTarget` now traverses deeper, finding newly visible nodes
+5. **Edge updates**: Edge visually routes to the inner node instead of container
 
 ### Shadow Offset
 
@@ -426,3 +542,6 @@ if (data && data.points && data.points.length > 0) {
 - **Edge styling**: `html_generator.py` (edgeOptions ~line 2058)
 - **Centering logic**: `html_generator.py` (fitWithFixedPadding ~line 1764)
 - **Node dimensions**: `html_generator.py` (calculateDimensions ~line 1154)
+- **Hierarchy tree builders**: `renderer.py` (`_build_consumer_hierarchy`, `_build_producer_hierarchy` ~line 32)
+- **Dynamic edge routing**: `assets/layout.js` (`findVisibleTarget`, `getEdgePoint` ~line 39)
+- **Recursive layout**: `assets/layout.js` (`performRecursiveLayout` ~line 410)
