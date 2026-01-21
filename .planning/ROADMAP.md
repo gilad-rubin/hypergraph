@@ -2,7 +2,7 @@
 
 **Milestone:** v1.1 Fix Visualization Edge Routing
 **Created:** 2026-01-21
-**Updated:** 2026-01-21 after planning Phase 2
+**Updated:** 2026-01-21 after planning Phase 3
 **Phases:** 4
 
 ## Overview
@@ -68,17 +68,17 @@ Plans:
 
 ---
 
-## Phase 2: Unify Edge Routing Logic
+## Phase 2: Unify Edge Routing Logic (COMPLETE)
 
 **Goal:** Single source of truth for edge routing decisions (eliminate Python/JS duplication).
 
 **Requirements covered:** REFAC-05
 
-**Plans:** 2 plans
+**Plans:** 2 plans (complete)
 
 Plans:
-- [ ] 02-01-PLAN.md — Add hierarchy building and edge target resolution to JavaScript
-- [ ] 02-02-PLAN.md — Integrate edge resolution with rendering and verify dynamic expand/collapse
+- [x] 02-01-PLAN.md — Add hierarchy building and edge target resolution to JavaScript
+- [x] 02-02-PLAN.md — Integrate edge resolution with rendering and verify dynamic expand/collapse
 
 **Approach:**
 1. Decide ownership: JavaScript handles all hierarchy (Python provides full graph structure)
@@ -107,15 +107,16 @@ Plans:
 
 **Requirements covered:** EDGE-01, EDGE-02, EDGE-03, EDGE-04
 
-**Plans:** (created by /gsd:plan-phase)
+**Plans:** 2 plans
 
 Plans:
-- [ ] TBD — created during Phase 3 planning
+- [ ] 03-01-PLAN.md — Coordinate transformation system and absolute position tracking
+- [ ] 03-02-PLAN.md — Fix edge routing algorithm using absolute coordinates
 
 **Approach:**
-1. Fix edges going over nodes (regression from recent commits)
-2. Fix gap between edges and collapsed nested graph boundaries
-3. Fix deeply nested graph edge routing (2+ levels)
+1. Create explicit CoordinateTransform functions to eliminate inline arithmetic
+2. Track absolute positions for all nodes regardless of nesting depth
+3. Fix target row blocking detection (include target row, skip target node)
 4. Verify unified algorithm works for arbitrary nesting depth
 
 **Success criteria:**
@@ -182,4 +183,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-01-21*
-*Updated: 2026-01-21 after planning Phase 2*
+*Updated: 2026-01-21 after planning Phase 3*
