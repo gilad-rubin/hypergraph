@@ -538,9 +538,10 @@
       // are already normalized. We just need to convert from center to top-left.
       var layoutPadding = ConstraintLayout.defaultOptions.layout.padding || 50;
 
-      // For absolute positioning (edge routing), offset from parent's top-left
-      var absOffsetX = parentPos.x + GRAPH_PADDING;
-      var absOffsetY = parentPos.y + GRAPH_PADDING + HEADER_HEIGHT;
+      // For edge point transformation, we need to convert from constraint layout coords
+      // to React Flow coords: subtract layoutPadding, add GRAPH_PADDING, add parent position
+      var edgeOffsetX = parentPos.x + GRAPH_PADDING;
+      var edgeOffsetY = parentPos.y + GRAPH_PADDING + HEADER_HEIGHT;
 
       childResult.nodes.forEach(function(n) {
         var w = n.width;
@@ -553,7 +554,9 @@
         var childY = n.y - h / 2 - layoutPadding + GRAPH_PADDING;
 
         // Store absolute position for edge routing
-        nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
+        // React Flow positions children relative to parent's top-left, so:
+        // absolute = parentPos + childPos (childPos already includes GRAPH_PADDING adjustment)
+        nodePositions.set(n.id, { x: parentPos.x + childX, y: parentPos.y + childY + HEADER_HEIGHT });
 
         if (debugMode) {
           console.log('[recursive layout] child', n.id, 'position:', { x: childX, y: childY + HEADER_HEIGHT }, 'parentNode:', n._original.parentNode);
@@ -578,13 +581,13 @@
       });
 
       // Position child edges with offset
-      // Edge points are in the same coordinate space as nodes (already include layout padding)
-      // Transform them to absolute coordinates for edge rendering
+      // Edge points are in constraint layout coordinate space (include layoutPadding)
+      // Transform them to React Flow absolute coordinates for edge rendering
       childResult.edges.forEach(function(e) {
         var offsetPoints = (e.points || []).map(function(pt) {
           return {
-            x: pt.x - layoutPadding + absOffsetX,
-            y: pt.y - layoutPadding + absOffsetY
+            x: pt.x - layoutPadding + edgeOffsetX,
+            y: pt.y - layoutPadding + edgeOffsetY
           };
         });
 
