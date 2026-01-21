@@ -574,19 +574,9 @@
 
       edge.points = [];
 
-      // Find the ideal gap between edge source anchors
-      const sourceSeparation = Math.min(
-        (source.width - stemSpaceSource) / source.targets.length,
-        stemSpaceSource
-      );
-
-      const sourceEdgeDistance =
-        source.targets.indexOf(edge) - (source.targets.length - 1) * 0.5;
-
-      const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
-
-      // The x position where the edge would naturally go (source.x + offset)
-      const naturalX = source.x + sourceOffsetX;
+      // The x position where the edge would naturally go
+      // Use target position to guide routing - edges should trend toward their destination
+      const naturalX = source.x + (target.x - source.x) * 0.5;
 
       // First pass: find which rows block the natural path
       let firstBlockedRow = -1;
@@ -823,7 +813,7 @@
       minPassageGap: 60, // Increased from 50 for wider passages
       stemUnit: 4,      // Reduced from 8 - smaller stem spread
       stemMinSource: 0,
-      stemMinTarget: 28, // Gap above target node for visual breathing room
+      stemMinTarget: 14, // Just enough for arrowhead visibility
       stemMax: 4,       // Reduced from 10 - minimizes gap at source
       stemSpaceSource: 6,
       stemSpaceTarget: 10,
