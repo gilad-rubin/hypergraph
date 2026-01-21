@@ -174,6 +174,74 @@
       return ['DATA', 'INPUT', 'INPUT_GROUP'].includes(n.nodeType);
     });
 
+    // Build node position map for edge validation
+    var nodeMap = {};
+    visibleNodes.forEach(function(n) {
+      nodeMap[n.id] = {
+        x: Math.round((n.position && n.position.x) || 0),
+        y: Math.round((n.position && n.position.y) || 0),
+        width: Math.round((n.style && n.style.width) || 200),
+        height: Math.round((n.style && n.style.height) || 68),
+        nodeType: n.data && n.data.nodeType,
+        label: (n.data && n.data.label) || n.id,
+      };
+    });
+
+    // Validate edges
+    var edgeValidation = edges.map(function(e) {
+      var srcNode = nodeMap[e.source];
+      var tgtNode = nodeMap[e.target];
+
+      if (!srcNode || !tgtNode) {
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          status: 'MISSING',
+          issue: !srcNode ? 'Source not visible' : 'Target not visible',
+          srcBottom: null,
+          tgtTop: null,
+          vertDist: null,
+          horizDist: null,
+        };
+      }
+
+      var srcCenterX = srcNode.x + srcNode.width / 2;
+      var tgtCenterX = tgtNode.x + tgtNode.width / 2;
+      var srcBottom = srcNode.y + srcNode.height;
+      var tgtTop = tgtNode.y;
+
+      var vertDist = tgtTop - srcBottom;
+      var horizDist = tgtCenterX - srcCenterX;
+
+      var issues = [];
+      if (vertDist < 0) {
+        issues.push('Target above source (' + vertDist + 'px)');
+      }
+      if (Math.abs(horizDist) > 500) {
+        issues.push('Large horizontal gap (' + horizDist + 'px)');
+      }
+      if (vertDist > 300) {
+        issues.push('Large vertical gap (' + vertDist + 'px)');
+      }
+
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        srcLabel: srcNode.label,
+        tgtLabel: tgtNode.label,
+        status: issues.length > 0 ? 'WARN' : 'OK',
+        issue: issues.join('; ') || null,
+        srcBottom: srcBottom,
+        tgtTop: tgtTop,
+        vertDist: vertDist,
+        horizDist: horizDist,
+      };
+    });
+
+    var edgeIssues = edgeValidation.filter(function(e) { return e.status !== 'OK'; });
+
     var handleCopy = function() {
       var info = {
         nodes: nodeBounds,
@@ -206,6 +274,10 @@
                 onClick=${function() { setActiveTab('texts'); }}
                 className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'texts' ? (isLight ? 'bg-cyan-100 text-cyan-800' : 'bg-cyan-900/50 text-cyan-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
               >TEXTS</button>
+              <button
+                onClick=${function() { setActiveTab('edges'); }}
+                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'edges' ? (isLight ? 'bg-purple-100 text-purple-800' : 'bg-purple-900/50 text-purple-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
+              >EDGES${edgeIssues.length > 0 ? ' (' + edgeIssues.length + ')' : ''}</button>
               <button
                 onClick=${function() { setShowPanel(function(p) { return !p; }); }}
                 className=${'px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700')}
@@ -301,6 +373,43 @@
                           <td className=${'px-2 py-0.5 truncate max-w-[120px] ' + (n.typeHint && n.typeHint.length > TYPE_HINT_MAX_CHARS ? 'text-red-500 font-bold' : '')} title=${n.typeHint}>${n.typeHint || '-'}</td>
                           <td className=${'px-2 py-0.5 text-right ' + truncClass}>${n.longestTextLen}</td>
                           <td className="px-2 py-0.5 text-right">${n.width}</td>
+                        </tr>
+                      `;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ` : null}
+            ${showPanel && activeTab === 'edges' ? html`
+              <div className="overflow-y-auto max-h-[50vh]">
+                <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-purple-50 text-purple-800' : 'bg-purple-900/30 text-purple-300')}>
+                  Edge validation: srcBottom → tgtTop | VertDist should be positive | ${edgeValidation.length} edges, ${edgeIssues.length} issues
+                </div>
+                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
+                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
+                    <tr>
+                      <th className="px-2 py-1 text-left">Source</th>
+                      <th className="px-2 py-1 text-left">Target</th>
+                      <th className="px-2 py-1 text-right">SrcBot</th>
+                      <th className="px-2 py-1 text-right">TgtTop</th>
+                      <th className="px-2 py-1 text-right">V.Dist</th>
+                      <th className="px-2 py-1 text-right">H.Dist</th>
+                      <th className="px-2 py-1 text-left">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${edgeValidation.map(function(e, i) {
+                      var statusClass = e.status === 'OK' ? 'text-green-500' : e.status === 'WARN' ? 'text-amber-500' : 'text-red-500';
+                      var rowClass = e.status !== 'OK' ? (isLight ? '!bg-amber-50' : '!bg-amber-900/20') : '';
+                      return html`
+                        <tr key=${e.id} className=${(i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')) + ' ' + rowClass}>
+                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${e.source}>${e.srcLabel || e.source}</td>
+                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${e.target}>${e.tgtLabel || e.target}</td>
+                          <td className="px-2 py-0.5 text-right">${e.srcBottom !== null ? e.srcBottom : '-'}</td>
+                          <td className="px-2 py-0.5 text-right">${e.tgtTop !== null ? e.tgtTop : '-'}</td>
+                          <td className=${'px-2 py-0.5 text-right ' + (e.vertDist !== null && e.vertDist < 0 ? 'text-red-500 font-bold' : '')}>${e.vertDist !== null ? e.vertDist : '-'}</td>
+                          <td className="px-2 py-0.5 text-right">${e.horizDist !== null ? e.horizDist : '-'}</td>
+                          <td className=${'px-2 py-0.5 ' + statusClass} title=${e.issue || ''}>${e.status}${e.issue ? ' ⚠' : ''}</td>
                         </tr>
                       `;
                     })}
