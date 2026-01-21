@@ -7,26 +7,9 @@ using ELK (Eclipse Layout Kernel).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from hypergraph.graph.core import Graph
-
-from hypergraph.nodes.base import HyperNode
-from hypergraph.nodes.function import FunctionNode
-from hypergraph.nodes.graph_node import GraphNode
-from hypergraph.nodes.gate import GateNode, RouteNode, IfElseNode, END
-
-
-def _get_node_type(hypernode: HyperNode) -> str:
-    """Determine visualization node type from HyperNode class."""
-    if isinstance(hypernode, GraphNode):
-        return "PIPELINE"
-    if isinstance(hypernode, (RouteNode, IfElseNode)):
-        return "BRANCH"
-    if isinstance(hypernode, GateNode):
-        return "BRANCH"
-    return "FUNCTION"
+import networkx as nx
 
 
 def _format_type(t: type | None) -> str | None:
@@ -40,17 +23,17 @@ def _format_type(t: type | None) -> str | None:
 
 
 def render_graph(
-    graph: Graph,
+    viz_graph: nx.DiGraph,
     *,
     depth: int = 1,
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
 ) -> dict[str, Any]:
-    """Convert a Graph to React Flow JSON format.
+    """Convert a NetworkX visualization graph to React Flow JSON format.
 
     Args:
-        graph: The hypergraph Graph to render
+        viz_graph: NetworkX DiGraph from Graph.to_viz_graph()
         depth: How many levels of nested graphs to expand (0 = collapsed)
         theme: "dark", "light", or "auto" (detect from environment)
         show_types: Whether to show type annotations
@@ -62,19 +45,21 @@ def render_graph(
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
 
-    # Get bound parameters from graph's InputSpec
-    input_spec = graph.inputs
-    bound_params = set(input_spec.bound)
+    # Get input spec from graph attributes
+    input_spec = viz_graph.graph.get("input_spec", {})
+    bound_params = set(input_spec.get("bound", {}).keys())
 
     # Track which outputs are produced by which nodes (for DATA node sourceId)
     output_to_source: dict[str, str] = {}
-    for name, hypernode in graph.nodes.items():
-        for output in hypernode.outputs:
-            output_to_source[output] = name
+    for node_id, node_attrs in viz_graph.nodes(data=True):
+        for output in node_attrs.get("outputs", ()):
+            output_to_source[output] = node_id
 
     # Create INPUT_GROUP nodes for external inputs, grouped by (targets, is_bound)
     # Inputs targeting the same node(s) with the same bound state get grouped together
-    external_inputs = list(input_spec.required) + list(input_spec.optional)
+    required_inputs = input_spec.get("required", ())
+    optional_inputs = input_spec.get("optional", ())
+    external_inputs = list(required_inputs) + list(optional_inputs)
     if external_inputs:
         # Build mapping: param -> (targets, type, is_bound)
         param_info: dict[str, tuple[frozenset[str], type | None, bool]] = {}
@@ -83,11 +68,13 @@ def render_graph(
             param_type = None
             is_bound = param in bound_params
             # Find all nodes that consume this parameter
-            for node_name, hypernode in graph.nodes.items():
-                if param in hypernode.inputs:
-                    targets.add(node_name)
+            for node_id, node_attrs in viz_graph.nodes(data=True):
+                node_inputs = node_attrs.get("inputs", ())
+                if param in node_inputs:
+                    targets.add(node_id)
                     if param_type is None:
-                        param_type = hypernode.get_input_type(param)
+                        input_types = node_attrs.get("input_types", {})
+                        param_type = input_types.get(param)
             param_info[param] = (frozenset(targets), param_type, is_bound)
 
         # Group params by (targets, is_bound)
@@ -124,17 +111,18 @@ def render_graph(
             nodes.append(input_group_node)
 
     # Process each node in the graph
-    for name, hypernode in graph.nodes.items():
-        node_type = _get_node_type(hypernode)
+    for node_id, node_attrs in viz_graph.nodes(data=True):
+        node_type = node_attrs.get("node_type", "FUNCTION")
+        parent_id = node_attrs.get("parent")
         is_expanded = depth > 0 if node_type == "PIPELINE" else None
 
         rf_node: dict[str, Any] = {
-            "id": name,
+            "id": node_id,
             "type": "pipelineGroup" if node_type == "PIPELINE" and is_expanded else "custom",
             "position": {"x": 0, "y": 0},  # ELK will calculate
             "data": {
                 "nodeType": node_type,
-                "label": name,
+                "label": node_attrs.get("label", node_id),
                 "theme": theme,
                 "showTypes": show_types,
                 "separateOutputs": separate_outputs,
@@ -142,6 +130,11 @@ def render_graph(
             "sourcePosition": "bottom",
             "targetPosition": "top",
         }
+
+        # Add parent reference if this is a nested node
+        if parent_id is not None:
+            rf_node["parentNode"] = parent_id
+            rf_node["extent"] = "parent"
 
         # Add expansion state for pipelines
         if node_type == "PIPELINE":
@@ -152,8 +145,10 @@ def render_graph(
         # Add outputs for function/pipeline nodes (when not separate_outputs mode)
         if not separate_outputs and node_type in ("FUNCTION", "PIPELINE"):
             outputs = []
-            for output_name in hypernode.outputs:
-                output_type = hypernode.get_output_type(output_name)
+            node_outputs = node_attrs.get("outputs", ())
+            output_types = node_attrs.get("output_types", {})
+            for output_name in node_outputs:
+                output_type = output_types.get(output_name)
                 outputs.append({
                     "name": output_name,
                     "type": _format_type(output_type),
@@ -162,9 +157,12 @@ def render_graph(
 
         # Add inputs info for bound input badge
         inputs = []
-        for param in hypernode.inputs:
-            input_type = hypernode.get_input_type(param)
-            has_default = hypernode.has_default_for(param)
+        node_inputs = node_attrs.get("inputs", ())
+        input_types = node_attrs.get("input_types", {})
+        has_defaults = node_attrs.get("has_defaults", {})
+        for param in node_inputs:
+            input_type = input_types.get(param)
+            has_default = has_defaults.get(param, False)
             is_bound = param in bound_params
             inputs.append({
                 "name": param,
@@ -175,52 +173,33 @@ def render_graph(
         rf_node["data"]["inputs"] = inputs
 
         # Add branch-specific data
-        if isinstance(hypernode, IfElseNode):
-            rf_node["data"]["whenTrueTarget"] = hypernode.when_true
-            rf_node["data"]["whenFalseTarget"] = hypernode.when_false
-        elif isinstance(hypernode, RouteNode):
-            # Convert END sentinel to string "END" for JSON serialization
-            rf_node["data"]["targets"] = [
-                "END" if t is END else t for t in hypernode.targets
-            ]
+        branch_data = node_attrs.get("branch_data", {})
+        if node_type == "BRANCH":
+            # Check if this is an IfElse node (has whenTrue/whenFalse)
+            if "when_true" in branch_data:
+                rf_node["data"]["whenTrueTarget"] = branch_data["when_true"]
+                rf_node["data"]["whenFalseTarget"] = branch_data["when_false"]
+            # Check if this is a Route node (has targets)
+            if "targets" in branch_data:
+                rf_node["data"]["targets"] = branch_data["targets"]
 
         nodes.append(rf_node)
 
-        # Handle nested graphs - always include children for expandability
-        # Children are hidden by default when collapsed (handled by JS visibility)
-        if isinstance(hypernode, GraphNode):
-            # Recursively render inner graph with depth-1 (or 0 if already 0)
-            inner_depth = max(0, depth - 1)
-            inner_result = render_graph(
-                hypernode.graph,
-                depth=inner_depth,
-                theme=theme,
-                show_types=show_types,
-                separate_outputs=separate_outputs,
-            )
-            # Add inner nodes with parent reference
-            for inner_node in inner_result["nodes"]:
-                # Only set parentNode for direct children (not already nested deeper)
-                if "parentNode" not in inner_node:
-                    inner_node["parentNode"] = name
-                inner_node["extent"] = "parent"
-                nodes.append(inner_node)
-            # Add inner edges
-            edges.extend(inner_result["edges"])
-
     # Always create DATA nodes for all outputs (visibility controlled by JS)
-    for name, hypernode in graph.nodes.items():
-        for output_name in hypernode.outputs:
-            output_type = hypernode.get_output_type(output_name)
+    for node_id, node_attrs in viz_graph.nodes(data=True):
+        node_outputs = node_attrs.get("outputs", ())
+        output_types = node_attrs.get("output_types", {})
+        for output_name in node_outputs:
+            output_type = output_types.get(output_name)
             data_node = {
-                "id": f"data_{name}_{output_name}",
+                "id": f"data_{node_id}_{output_name}",
                 "type": "custom",
                 "position": {"x": 0, "y": 0},
                 "data": {
                     "nodeType": "DATA",
                     "label": output_name,
                     "typeHint": _format_type(output_type),
-                    "sourceId": name,  # Link back to source node
+                    "sourceId": node_id,  # Link back to source node
                     "theme": theme,
                     "showTypes": show_types,
                 },
@@ -231,8 +210,8 @@ def render_graph(
 
             # Edge from function to its DATA output node
             edges.append({
-                "id": f"e_{name}_to_{data_node['id']}",
-                "source": name,
+                "id": f"e_{node_id}_to_{data_node['id']}",
+                "source": node_id,
                 "target": data_node["id"],
                 "animated": False,
                 "style": {"stroke": "#64748b", "strokeWidth": 2},
@@ -257,8 +236,8 @@ def render_graph(
                     "data": {"edgeType": "input", "params": params},
                 })
 
-    # Build edges from nx_graph - always route data edges through DATA nodes
-    for source, target, edge_data in graph.nx_graph.edges(data=True):
+    # Build edges from viz_graph - always route data edges through DATA nodes
+    for source, target, edge_data in viz_graph.edges(data=True):
         edge_type = edge_data.get("edge_type", "data")
         value_name = edge_data.get("value_name", "")
 
@@ -283,14 +262,16 @@ def render_graph(
             },
         }
 
-        # Add label for branch edges
-        if edge_type == "control" and isinstance(graph.nodes.get(source), IfElseNode):
-            # Determine if this is true or false branch
-            gate = graph.nodes[source]
-            if target == gate.when_true:
-                rf_edge["data"]["label"] = "True"
-            elif target == gate.when_false:
-                rf_edge["data"]["label"] = "False"
+        # Add label for branch edges (IfElse nodes)
+        if edge_type == "control":
+            source_attrs = viz_graph.nodes.get(source, {})
+            branch_data = source_attrs.get("branch_data", {})
+            if "when_true" in branch_data:
+                # This is an IfElse node
+                if target == branch_data["when_true"]:
+                    rf_edge["data"]["label"] = "True"
+                elif target == branch_data["when_false"]:
+                    rf_edge["data"]["label"] = "False"
 
         edges.append(rf_edge)
 
