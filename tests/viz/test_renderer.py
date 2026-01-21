@@ -181,3 +181,31 @@ class TestRenderGraph:
         # Child node should have parentNode reference
         double_node = next(n for n in result["nodes"] if n["id"] == "double")
         assert double_node.get("parentNode") == "inner"
+
+    def test_edge_resolution_with_expansion(self):
+        """Test that edges exist for both collapsed and expanded states."""
+        # Create a nested graph: inner pipeline with double -> triple
+        inner = Graph(nodes=[double, triple], name="inner_pipeline")
+        outer = Graph(nodes=[inner.as_node(), add])
+
+        # Test collapsed state (depth=0)
+        result_collapsed = render_graph(outer.to_viz_graph(), depth=0)
+
+        # Edges should exist (Python provides logical IDs)
+        assert len(result_collapsed["edges"]) > 0
+        edge_ids = {e["id"] for e in result_collapsed["edges"]}
+
+        # Should have edges for the graph structure
+        # (exact edge count depends on DATA node visibility)
+        assert len(edge_ids) > 0
+
+        # Test expanded state (depth=1)
+        result_expanded = render_graph(outer.to_viz_graph(), depth=1)
+
+        # Edges should exist in expanded state too
+        assert len(result_expanded["edges"]) > 0
+
+        # Both states should have edges (resolution happens in JavaScript)
+        # Python just provides the logical structure
+        assert len(result_collapsed["edges"]) > 0
+        assert len(result_expanded["edges"]) > 0
