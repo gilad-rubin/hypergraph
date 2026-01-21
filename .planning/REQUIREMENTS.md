@@ -5,7 +5,13 @@
 
 ## v1.1 Requirements
 
-Fix visualization edge routing regression and implement unified algorithm for nested graphs.
+Refactor visualization code to add missing abstractions, then fix edge routing regression.
+
+### Refactoring (Abstractions)
+
+- [ ] **REFAC-01**: Hierarchy traversal abstraction — eliminate manual depth tracking
+- [ ] **REFAC-02**: Coordinate transformation types — explicit transforms between 4 coordinate spaces
+- [ ] **REFAC-03**: Unify edge routing logic — single source of truth (not split Python/JS)
 
 ### Edge Routing
 
@@ -22,6 +28,12 @@ These specific scenarios must render correctly:
 - [ ] **TEST-02**: Single nested graph, collapsed state — edge connects to outer node boundary
 - [ ] **TEST-03**: Single nested graph, expanded state — edge routes to inner node
 - [ ] **TEST-04**: Double nested graph (graph inside graph inside graph) — edges route correctly at all levels
+
+### Automated Verification
+
+- [ ] **VERIFY-01**: Python script extracts node/edge coordinates from rendered output
+- [ ] **VERIFY-02**: Geometric tests verify edge paths don't intersect node bounding boxes
+- [ ] **VERIFY-03**: CI runs visual regression tests with Playwright screenshots
 
 ## Future Requirements
 
@@ -54,18 +66,24 @@ Deferred to later milestones. Not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EDGE-01 | Phase 1 | Pending |
-| EDGE-02 | Phase 1 | Pending |
-| EDGE-03 | Phase 1 | Pending |
-| EDGE-04 | Phase 1 | Pending |
-| TEST-01 | Phase 1 | Pending |
-| TEST-02 | Phase 1 | Pending |
-| TEST-03 | Phase 1 | Pending |
-| TEST-04 | Phase 1 | Pending |
+| REFAC-01 | Phase 1 | Pending |
+| REFAC-02 | Phase 1 | Pending |
+| REFAC-03 | Phase 2 | Pending |
+| EDGE-01 | Phase 3 | Pending |
+| EDGE-02 | Phase 3 | Pending |
+| EDGE-03 | Phase 3 | Pending |
+| EDGE-04 | Phase 3 | Pending |
+| VERIFY-01 | Phase 4 | Pending |
+| VERIFY-02 | Phase 4 | Pending |
+| VERIFY-03 | Phase 4 | Pending |
+| TEST-01 | Phase 4 | Pending |
+| TEST-02 | Phase 4 | Pending |
+| TEST-03 | Phase 4 | Pending |
+| TEST-04 | Phase 4 | Pending |
 
 **Coverage:**
-- v1.1 requirements: 8 total
-- Mapped to phases: 8
+- v1.1 requirements: 14 total
+- Mapped to phases: 14
 - Unmapped: 0
 
 ---
