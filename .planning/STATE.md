@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 3 of 4 (Unify Edge Routing Logic)
-Plan: 1 of 2 complete
-Status: In progress
-Last activity: 2026-01-21 — Completed 03-01-PLAN.md
+Plan: 2 of 2 complete
+Status: Phase complete
+Last activity: 2026-01-21 — Completed 03-02-PLAN.md
 
-Progress: ██████░░░░░░ 50% (6/12 plans complete)
+Progress: ███████░░░░░ 58% (7/12 plans complete)
 
 ## Project Reference
 
@@ -41,6 +41,9 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Use frozen 4-space coordinate model | 03-01 | Layout, Parent-Relative, Absolute, React Flow spaces |
 | Track both parent-relative and absolute positions | 03-01 | React Flow uses relative, edge routing uses absolute |
 | CoordinateTransform owns all space conversions | 03-01 | Explicit functions for each transformation type |
+| Include target row in blocking detection | 03-02 | Changed i < target.row to i <= target.row |
+| Skip target node in blocking checks | 03-02 | Target not considered blocking obstacle or in bounds |
+| Store absolute positions in edge data | 03-02 | _sourceAbsPos/_targetAbsPos for routing algorithm |
 
 ### Technical Notes
 
@@ -56,6 +59,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 - Resolved edge properties: _resolvedSource, _resolvedTarget, _logicalSource, _logicalTarget
 - Coordinate spaces defined: Layout (centers+50px), Parent-Relative (top-left), Absolute (viewport), React Flow (DOM)
 - absolutePositions Map available in performRecursiveLayout result for edge routing
+- Blocking detection fixed: includes target row, skips target node in both checks and bounds
+- Edge data augmented: _sourceAbsPos/_targetAbsPos stored from absolutePositions Map
 
 ### Blockers
 
@@ -63,10 +68,10 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21T14:32:37Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-01-21T14:38:03Z
+Stopped at: Completed 03-02-PLAN.md (Phase 3 complete)
 Resume file: None
 
 ---
 *State initialized: 2026-01-21*
-*Last updated: 2026-01-21T14:32:37Z*
+*Last updated: 2026-01-21T14:38:03Z*
