@@ -512,14 +512,10 @@
       var parentPos = nodePositions.get(graphNode.id);
       if (!parentPos) return;
 
-      // Get layout bounds to normalize child positions
-      // The constraint layout may not start at (0,0)
-      var boundsMinX = 0;
-      var boundsMinY = 0;
-      if (childResult.size && childResult.size.min) {
-        boundsMinX = childResult.size.min.x;
-        boundsMinY = childResult.size.min.y;
-      }
+      // Get the layout's internal padding (used by ConstraintLayout.graph)
+      // The constraint layout already offsets nodes by size.min, so returned positions
+      // are already normalized. We just need to convert from center to top-left.
+      var layoutPadding = ConstraintLayout.defaultOptions.layout.padding || 50;
 
       // For absolute positioning (edge routing), offset from parent's top-left
       var absOffsetX = parentPos.x + GRAPH_PADDING;
@@ -528,20 +524,27 @@
       childResult.nodes.forEach(function(n) {
         var w = n.width;
         var h = n.height;
-        // Convert from center to top-left, normalized against layout bounds
-        var childX = n.x - w / 2 - boundsMinX;
-        var childY = n.y - h / 2 - boundsMinY;
+        // Convert from center to top-left
+        // The constraint layout positions are already offset with internal padding (50px default)
+        // We want positions relative to parent's content area (which has GRAPH_PADDING)
+        // So we adjust: subtract layout padding, add our GRAPH_PADDING
+        var childX = n.x - w / 2 - layoutPadding + GRAPH_PADDING;
+        var childY = n.y - h / 2 - layoutPadding + GRAPH_PADDING;
 
         // Store absolute position for edge routing
         nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
 
+        if (debugMode) {
+          console.log('[recursive layout] child', n.id, 'position:', { x: childX, y: childY + HEADER_HEIGHT }, 'parentNode:', n._original.parentNode);
+        }
+
         allPositionedNodes.push({
           ...n._original,
           // React Flow child positions are relative to parent's top-left corner
-          // Add padding so children are inside the parent's content area
+          // childX/childY already include GRAPH_PADDING adjustment
           position: {
-            x: GRAPH_PADDING + childX,
-            y: GRAPH_PADDING + HEADER_HEIGHT + childY
+            x: childX,
+            y: childY + HEADER_HEIGHT
           },
           width: w,
           height: h,
@@ -553,12 +556,14 @@
         });
       });
 
-      // Position child edges with offset (also normalize against bounds)
+      // Position child edges with offset
+      // Edge points are in the same coordinate space as nodes (already include layout padding)
+      // Transform them to absolute coordinates for edge rendering
       childResult.edges.forEach(function(e) {
         var offsetPoints = (e.points || []).map(function(pt) {
           return {
-            x: pt.x - boundsMinX + absOffsetX,
-            y: pt.y - boundsMinY + absOffsetY
+            x: pt.x - layoutPadding + absOffsetX,
+            y: pt.y - layoutPadding + absOffsetY
           };
         });
 
