@@ -72,7 +72,8 @@ def visualize(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-) -> ScrollablePipelineWidget:
+    output: str | None = None,
+) -> ScrollablePipelineWidget | None:
     """Create a visualization widget for a graph.
 
     Args:
@@ -83,9 +84,10 @@ def visualize(
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
+        output: Path to save HTML file (default: None, display in notebook)
 
     Returns:
-        ScrollablePipelineWidget that can be displayed in Jupyter/VSCode notebooks
+        ScrollablePipelineWidget if output is None, otherwise None (saves to file)
 
     Example:
         >>> from hypergraph import Graph, node
@@ -94,6 +96,7 @@ def visualize(
         ...     return x * 2
         >>> graph = Graph(nodes=[double])
         >>> widget = visualize(graph)  # Display in notebook
+        >>> visualize(graph, output="graph.html")  # Save to HTML file
     """
     # Estimate dimensions if not provided
     est_width, est_height = estimate_layout(
@@ -118,5 +121,14 @@ def visualize(
 
     # Generate HTML
     html_content = generate_widget_html(graph_data)
+
+    # If output path specified, save to HTML file
+    if output is not None:
+        # Ensure .html extension
+        if not output.endswith(".html"):
+            output = output + ".html"
+        with open(output, "w") as f:
+            f.write(html_content)
+        return None
 
     return ScrollablePipelineWidget(html_content, final_width, final_height)

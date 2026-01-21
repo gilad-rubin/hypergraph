@@ -402,6 +402,7 @@ class Graph:
         depth: int = 1,
         theme: str = "auto",
         show_types: bool = False,
+        output: str | None = None,
     ) -> Any:
         """Create an interactive visualization of this graph.
 
@@ -414,14 +415,16 @@ class Graph:
             depth: How many levels of nested graphs to expand (default: 1)
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
+            output: Path to save HTML file (default: None, display in notebook)
 
         Returns:
-            ScrollablePipelineWidget that displays in Jupyter/VSCode notebooks
+            ScrollablePipelineWidget if output is None, otherwise None (saves to file)
 
         Example:
             >>> graph = Graph(nodes=[double, add_one])
             >>> graph.visualize()  # Displays interactive graph
             >>> graph.visualize(theme="light", show_types=True)
+            >>> graph.visualize(output="graph.html")  # Save to HTML file
         """
         from hypergraph.viz import visualize as viz_func
 
@@ -432,4 +435,5 @@ class Graph:
             depth=depth,
             theme=theme,
             show_types=show_types,
+            output=output,
         )
