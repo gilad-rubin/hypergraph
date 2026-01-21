@@ -339,6 +339,47 @@
   }
 
   /**
+   * Build hierarchical structure from flat node array
+   * Converts flat nodes with parentNode references into tree structure
+   * @param {Array} flatNodes - Flat array of nodes with optional parentNode property
+   * @returns {Object} { nodeMap, roots } - Map of nodes with children, array of root nodes
+   */
+  function buildHierarchy(flatNodes) {
+    var nodeMap = new Map();
+    var roots = [];
+
+    // Phase 1: Create node objects with empty children arrays
+    flatNodes.forEach(function(node) {
+      nodeMap.set(node.id, {
+        id: node.id,
+        data: node.data,
+        parentNode: node.parentNode,
+        children: [],
+        _original: node
+      });
+    });
+
+    // Phase 2: Build parent-child relationships using object references
+    flatNodes.forEach(function(node) {
+      var nodeObj = nodeMap.get(node.id);
+      if (node.parentNode) {
+        var parent = nodeMap.get(node.parentNode);
+        if (parent) {
+          parent.children.push(nodeObj);
+        } else {
+          // Parent doesn't exist, treat as root
+          console.warn('[buildHierarchy] Parent not found:', node.parentNode, 'for node:', node.id);
+          roots.push(nodeObj);
+        }
+      } else {
+        roots.push(nodeObj);
+      }
+    });
+
+    return { nodeMap: nodeMap, roots: roots };
+  }
+
+  /**
    * Perform recursive layout for nested graphs
    * Layouts children first (deepest), then uses their bounds to size parent nodes
    * @param {Array} visibleNodes - All visible nodes
@@ -588,6 +629,7 @@
     groupNodesByParent: groupNodesByParent,
     getLayoutOrder: getLayoutOrder,
     performRecursiveLayout: performRecursiveLayout,
+    buildHierarchy: buildHierarchy,
     // Constants
     TYPE_HINT_MAX_CHARS: TYPE_HINT_MAX_CHARS,
     NODE_LABEL_MAX_CHARS: NODE_LABEL_MAX_CHARS,
