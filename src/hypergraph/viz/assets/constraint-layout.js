@@ -716,31 +716,20 @@
         target.sources.length *
         (1 - Math.abs(targetEdgeDistance) / target.sources.length);
 
-      // Calculate X offsets for fanning edges at source and target nodes
-      // Use up to 60% of node width for fanning, leaving margins on edges
-      const maxSourceFanWidth = source.width * 0.6;
-      const maxTargetFanWidth = target.width * 0.6;
-
-      const sourceSeparation = maxSourceFanWidth / Math.max(1, source.targets.length);
-      const targetSeparation = maxTargetFanWidth / Math.max(1, target.sources.length);
-
-      const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
-      const targetOffsetX = targetSeparation * targetEdgeDistance;
-
       let sourceStem, targetStem;
 
       if (orientation === 'vertical') {
         sourceStem = [
           {
-            x: source.x + sourceOffsetX,
+            x: source.x,
             y: nodeBottom(source),
           },
           {
-            x: source.x + sourceOffsetX,
+            x: source.x,
             y: nodeBottom(source) + stemMinSource,
           },
           {
-            x: source.x + sourceOffsetX,
+            x: source.x,
             y:
               nodeBottom(source) +
               stemMinSource +
@@ -749,31 +738,30 @@
         ];
         targetStem = [
           {
-            x: target.x + targetOffsetX,
+            x: target.x,
             y: nodeTop(target) - stemMinTarget - Math.min(targetOffsetY, stemMax),
           },
           {
-            x: target.x + targetOffsetX,
+            x: target.x,
             y: nodeTop(target) - stemMinTarget,
           },
           {
-            x: target.x + targetOffsetX,
+            x: target.x,
             y: nodeTop(target),
           },
         ];
       } else {
-        // For horizontal orientation, fan edges vertically
         sourceStem = [
           {
             x: nodeRight(source),
-            y: source.y + sourceOffsetX,  // Use X offset for Y in horizontal mode
+            y: source.y,
           },
           {
-            y: source.y + sourceOffsetX,
+            y: source.y,
             x: nodeRight(source) + stemMinSource,
           },
           {
-            y: source.y + sourceOffsetX,
+            y: source.y,
             x:
               nodeRight(source) +
               stemMinSource +
@@ -782,16 +770,16 @@
         ];
         targetStem = [
           {
-            y: target.y + targetOffsetX,  // Use X offset for Y in horizontal mode
+            y: target.y,
             x:
               nodeLeft(target) - stemMinTarget - Math.min(targetOffsetY, stemMax),
           },
           {
-            y: target.y + targetOffsetX,
+            y: target.y,
             x: nodeLeft(target) - stemMinTarget,
           },
           {
-            y: target.y + targetOffsetX,
+            y: target.y,
             x: nodeLeft(target),
           },
         ];
