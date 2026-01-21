@@ -454,7 +454,6 @@ class TestRenderedPositions:
             f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
         )
 
-    @pytest.mark.xfail(reason="BUG: Nested edge routing inverted - Phase 4")
     def test_workflow_expanded_edges_valid(self, workflow_graph):
         """Expanded workflow should have valid edge positions."""
         from hypergraph.viz import extract_debug_data
@@ -464,7 +463,6 @@ class TestRenderedPositions:
             f"Expected 0 edge issues:\n{_format_edge_issues(data)}"
         )
 
-    @pytest.mark.xfail(reason="BUG: Nested edge routing inverted - Phase 4")
     def test_outer_expanded_edges_valid(self, outer_graph):
         """Expanded outer graph should have valid edge positions."""
         from hypergraph.viz import extract_debug_data

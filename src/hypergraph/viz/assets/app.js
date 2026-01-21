@@ -1150,7 +1150,10 @@
     var debugFromUrl = debugParam === 'overlays' || debugParam === 'true' || debugParam === '1';
     var debugFromMeta = Boolean(initialData.meta && initialData.meta.debug_overlays);
     var initialDebugOverlays = debugFromUrl || debugFromMeta;
-    if (initialDebugOverlays) root.__hypergraph_debug_overlays = true;
+    if (initialDebugOverlays) {
+      root.__hypergraph_debug_overlays = true;
+      root.__hypergraph_debug_viz = true;  // Enable layout debug logging
+    }
 
     var rootEl = document.getElementById('root');
     var fallback = document.getElementById('fallback');

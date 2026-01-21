@@ -2,8 +2,6 @@
 
 These tests verify that edges connecting to/from expanded nested graphs
 have correct positions (target below source, positive vertical distance).
-
-BUG: Currently failing - see .claude/plans/viz_refactor_ledger.md
 """
 
 import pytest
@@ -78,7 +76,6 @@ def make_outer():
 class TestNestedEdgeRouting:
     """Tests for nested graph edge validation using Playwright extraction."""
 
-    @pytest.mark.xfail(reason="BUG: Nested edge routing inverted - Phase 4")
     def test_workflow_depth1_no_edge_issues(self):
         """Test 1-level nesting: edges should flow downward."""
         from hypergraph.viz import extract_debug_data
@@ -95,7 +92,6 @@ class TestNestedEdgeRouting:
             )
         )
 
-    @pytest.mark.xfail(reason="BUG: Nested edge routing inverted - Phase 4")
     def test_workflow_edges_target_below_source(self):
         """Test that all edges have target.y > source.bottom."""
         from hypergraph.viz import extract_debug_data
@@ -110,7 +106,6 @@ class TestNestedEdgeRouting:
                     f"srcBottom={edge.src_bottom}, tgtTop={edge.tgt_top}, vDist={edge.vert_dist}"
                 )
 
-    @pytest.mark.xfail(reason="BUG: Nested edge routing inverted - Phase 4")
     def test_outer_depth2_no_edge_issues(self):
         """Test 2-level nesting: edges should flow downward."""
         from hypergraph.viz import extract_debug_data

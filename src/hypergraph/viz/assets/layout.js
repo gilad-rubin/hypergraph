@@ -339,6 +339,36 @@
   }
 
   /**
+   * Recalculate bounds after post-layout shifts
+   * Mirrors the logic in constraint-layout.js bounds()
+   */
+  function recalculateBounds(nodes, padding) {
+    var size = {
+      min: { x: Infinity, y: Infinity },
+      max: { x: -Infinity, y: -Infinity },
+    };
+
+    nodes.forEach(function(node) {
+      var left = node.x - node.width / 2;
+      var right = node.x + node.width / 2;
+      var top = node.y - node.height / 2;
+      var bottom = node.y + node.height / 2;
+
+      if (left < size.min.x) size.min.x = left;
+      if (right > size.max.x) size.max.x = right;
+      if (top < size.min.y) size.min.y = top;
+      if (bottom > size.max.y) size.max.y = bottom;
+    });
+
+    size.width = size.max.x - size.min.x + 2 * padding;
+    size.height = size.max.y - size.min.y + 2 * padding;
+    size.min.x -= padding;
+    size.min.y -= padding;
+
+    return size;
+  }
+
+  /**
    * Perform recursive layout for nested graphs
    * Layouts children first (deepest), then uses their bounds to size parent nodes
    * @param {Array} visibleNodes - All visible nodes
@@ -410,6 +440,37 @@
         layoutOptions
       );
 
+      // Post-layout correction for tall nodes within nested graph
+      // Same fix as Step 2.5 for root level - ensure node edges don't overlap
+      var CHILD_EDGE_GAP = 30;
+      var childNodeById = new Map(childResult.nodes.map(function(n) { return [n.id, n]; }));
+
+      childLayoutEdges.forEach(function(e) {
+        var srcNode = childNodeById.get(e.source);
+        var tgtNode = childNodeById.get(e.target);
+        if (!srcNode || !tgtNode) return;
+
+        var srcBottom = srcNode.y + srcNode.height / 2;
+        var tgtTop = tgtNode.y - tgtNode.height / 2;
+        var gap = tgtTop - srcBottom;
+
+        if (gap < CHILD_EDGE_GAP) {
+          var shift = CHILD_EDGE_GAP - gap;
+          var targetY = tgtNode.y;
+          if (debugMode) {
+            console.log('[recursive layout] child shift:', graphNode.id, '- shifting', tgtNode.id, 'down by', shift);
+          }
+          childResult.nodes.forEach(function(n) {
+            if (n.y >= targetY) {
+              n.y += shift;
+            }
+          });
+        }
+      });
+
+      // Recalculate bounds after shifts
+      childResult.size = recalculateBounds(childResult.nodes, ConstraintLayout.defaultOptions.layout.padding);
+
       childLayoutResults.set(graphNode.id, childResult);
 
       if (debugMode) {
@@ -426,8 +487,54 @@
     // Step 2: Layout root level nodes
     var rootNodes = nodeGroups.get(null) || [];
     var rootNodeIds = new Set(rootNodes.map(function(n) { return n.id; }));
-    var rootEdges = edges.filter(function(e) {
-      return rootNodeIds.has(e.source) && rootNodeIds.has(e.target);
+
+    if (debugMode) {
+      console.log('[recursive layout] rootNodes:', rootNodes.map(function(n) { return n.id; }));
+      console.log('[recursive layout] nodeDimensions:', Array.from(nodeDimensions.entries()).map(function(e) {
+        return { id: e[0], w: e[1].width, h: e[1].height };
+      }));
+    }
+
+    // Build map of child -> parent for edge lifting
+    var childToParent = new Map();
+    visibleNodes.forEach(function(n) {
+      if (n.parentNode && rootNodeIds.has(n.parentNode)) {
+        childToParent.set(n.id, n.parentNode);
+      }
+    });
+
+    // Collect and lift edges that cross into/out of expanded nested graphs
+    // If an edge connects a root node to a child of another root node,
+    // treat it as connecting to the parent container for layout purposes
+    var rootEdgeSet = new Set();
+    var rootEdges = [];
+
+    edges.forEach(function(e) {
+      var source = e.source;
+      var target = e.target;
+
+      // Lift source if it's a child of a root-level nested graph
+      if (childToParent.has(source)) {
+        source = childToParent.get(source);
+      }
+      // Lift target if it's a child of a root-level nested graph
+      if (childToParent.has(target)) {
+        target = childToParent.get(target);
+      }
+
+      // Only include if both endpoints are now root-level and it's not a self-loop
+      if (rootNodeIds.has(source) && rootNodeIds.has(target) && source !== target) {
+        var edgeKey = source + '->' + target;
+        if (!rootEdgeSet.has(edgeKey)) {
+          rootEdgeSet.add(edgeKey);
+          rootEdges.push({
+            id: edgeKey,
+            source: source,
+            target: target,
+            _original: e,
+          });
+        }
+      }
     });
 
     var rootLayoutNodes = rootNodes.map(function(n) {
@@ -442,9 +549,8 @@
       };
     });
 
-    var rootLayoutEdges = rootEdges.map(function(e) {
-      return { id: e.id, source: e.source, target: e.target, _original: e };
-    });
+    // rootEdges already has the lifted structure we need
+    var rootLayoutEdges = rootEdges;
 
     // Detect separate outputs mode for root
     var isSeparateOutputs = rootNodes.some(function(n) {
@@ -470,10 +576,60 @@
       layoutOptions
     );
 
+    if (debugMode) {
+      console.log('[recursive layout] BEFORE SHIFTS - rootResult.nodes:', JSON.stringify(rootResult.nodes.map(function(n) {
+        return { id: n.id, x: n.x, y: n.y, h: n.height };
+      })));
+    }
+
+    // Step 2.5: Post-layout correction for tall nodes
+    // The constraint layout uses center coordinates, but tall expanded nodes
+    // may still overlap if the spacing isn't sufficient. Shift nodes down to fix.
+    var EDGE_GAP = 30; // Minimum gap between source bottom and target top
+    var nodeById = new Map(rootResult.nodes.map(function(n) { return [n.id, n]; }));
+
+    rootLayoutEdges.forEach(function(e) {
+      var srcNode = nodeById.get(e.source);
+      var tgtNode = nodeById.get(e.target);
+      if (!srcNode || !tgtNode) return;
+
+      var srcBottom = srcNode.y + srcNode.height / 2;
+      var tgtTop = tgtNode.y - tgtNode.height / 2;
+      var gap = tgtTop - srcBottom;
+
+      if (gap < EDGE_GAP) {
+        // Need to shift target down
+        var shift = EDGE_GAP - gap;
+        // Capture target Y BEFORE modification (tgtNode.y will change during iteration)
+        var targetY = tgtNode.y;
+        if (debugMode) {
+          console.log('[recursive layout] shifting', tgtNode.id, 'down by', shift, 'for proper spacing (nodes at y >=', targetY, ')');
+        }
+        // Shift this node and all nodes below it
+        rootResult.nodes.forEach(function(n) {
+          if (n.y >= targetY) {
+            n.y += shift;
+          }
+        });
+      }
+    });
+
     // Step 3: Compose final positions
     var nodePositions = new Map();
     var allPositionedNodes = [];
     var allPositionedEdges = [];
+
+    if (debugMode) {
+      console.log('[recursive layout] rootLayoutNodes (input):', JSON.stringify(rootLayoutNodes.map(function(n) {
+        return { id: n.id, w: n.width, h: n.height };
+      })));
+      console.log('[recursive layout] rootLayoutEdges (input):', JSON.stringify(rootLayoutEdges.map(function(e) {
+        return { source: e.source, target: e.target };
+      })));
+      console.log('[recursive layout] rootResult.nodes (output):', JSON.stringify(rootResult.nodes.map(function(n) {
+        return { id: n.id, x: n.x, y: n.y, w: n.width, h: n.height };
+      })));
+    }
 
     // Position root nodes
     rootResult.nodes.forEach(function(n) {
@@ -496,13 +652,9 @@
       });
     });
 
-    // Position root edges
-    rootResult.edges.forEach(function(e) {
-      allPositionedEdges.push({
-        ...e._original,
-        data: { ...e._original.data, points: e.points },
-      });
-    });
+    // Note: rootResult.edges are LIFTED edges for layout ordering only.
+    // We don't output them directly - actual cross-boundary edges will be
+    // handled in Step 4 after all node positions are computed.
 
     // Position children within their parents
     layoutOrder.forEach(function(graphNode) {
@@ -571,6 +723,51 @@
           ...e._original,
           data: { ...e._original.data, points: offsetPoints },
         });
+      });
+    });
+
+    // Step 4: Handle cross-boundary edges
+    // These are edges where source and target are in different scopes
+    // (e.g., root level to inside a nested graph, or between nested graphs)
+    var handledEdges = new Set(allPositionedEdges.map(function(e) {
+      return e.source + '->' + e.target;
+    }));
+
+    edges.forEach(function(e) {
+      var edgeKey = e.source + '->' + e.target;
+      if (handledEdges.has(edgeKey)) return; // Already positioned
+
+      var srcPos = nodePositions.get(e.source);
+      var tgtPos = nodePositions.get(e.target);
+
+      if (!srcPos || !tgtPos) return; // One or both endpoints not visible
+
+      // Get dimensions for proper anchor points
+      var srcDims = nodeDimensions.get(e.source);
+      var tgtDims = nodeDimensions.get(e.target);
+
+      if (!srcDims || !tgtDims) return;
+
+      // Compute edge points: source bottom center -> target top center
+      var srcCenterX = srcPos.x + srcDims.width / 2;
+      var srcBottomY = srcPos.y + srcDims.height;
+      var tgtCenterX = tgtPos.x + tgtDims.width / 2;
+      var tgtTopY = tgtPos.y;
+
+      // Simple 2-point edge for cross-boundary connections
+      var points = [
+        { x: srcCenterX, y: srcBottomY },
+        { x: tgtCenterX, y: tgtTopY }
+      ];
+
+      if (debugMode) {
+        console.log('[recursive layout] cross-boundary edge', e.source, '->', e.target,
+          'srcBottom:', srcBottomY, 'tgtTop:', tgtTopY);
+      }
+
+      allPositionedEdges.push({
+        ...e,
+        data: { ...e.data, points: points },
       });
     });
 
