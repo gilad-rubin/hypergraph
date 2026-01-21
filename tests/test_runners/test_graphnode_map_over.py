@@ -138,6 +138,193 @@ class TestMapOverRenameIntegration:
         assert renamed._map_over == ["a"]
 
 
+class TestMapOverRenameExecution:
+    """Tests for map_over execution with renamed inputs/outputs.
+
+    These tests verify that renamed inputs and outputs work correctly
+    when the GraphNode is connected to upstream producers via edges.
+    """
+
+    def test_map_over_with_renamed_input_from_producer(self):
+        """map_over works when renamed input matches upstream producer.
+
+        This is a regression test for the bug where:
+        - Producer outputs "items" (a list)
+        - Inner graph expects "item" (singular)
+        - with_inputs(item="items") renames to match producer
+        - map_over("items") iterates over the list
+        """
+
+        @node(output_name="items")
+        def produce_items(count: int) -> list[dict]:
+            return [{"id": i, "value": i * 10} for i in range(count)]
+
+        @node(output_name="processed")
+        def process_item(item: dict, multiplier: int) -> dict:
+            return {"id": item["id"], "result": item["value"] * multiplier}
+
+        inner = Graph(nodes=[process_item], name="inner")
+        mapped_node = (
+            inner.as_node(name="process_all")
+            .with_inputs(item="items")
+            .map_over("items")
+        )
+
+        outer = Graph(nodes=[produce_items, mapped_node]).bind(multiplier=2)
+        runner = SyncRunner()
+
+        result = runner.run(outer, {"count": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["items"] == [
+            {"id": 0, "value": 0},
+            {"id": 1, "value": 10},
+            {"id": 2, "value": 20},
+        ]
+        assert result["processed"] == [
+            {"id": 0, "result": 0},
+            {"id": 1, "result": 20},
+            {"id": 2, "result": 40},
+        ]
+
+    def test_map_over_with_renamed_input_and_output(self):
+        """map_over works with both renamed input and output."""
+
+        @node(output_name="items")
+        def produce() -> list[int]:
+            return [1, 2, 3]
+
+        @node(output_name="doubled")
+        def process(x: int) -> int:
+            return x * 2
+
+        inner = Graph(nodes=[process], name="inner")
+        mapped_node = (
+            inner.as_node(name="mapper")
+            .with_inputs(x="items")
+            .with_outputs(doubled="results")
+            .map_over("items")
+        )
+
+        outer = Graph(nodes=[produce, mapped_node])
+        runner = SyncRunner()
+
+        result = runner.run(outer, {})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["results"] == [2, 4, 6]
+
+    async def test_map_over_with_renamed_input_async(self):
+        """map_over with renamed input works with AsyncRunner."""
+
+        @node(output_name="items")
+        def produce() -> list[int]:
+            return [10, 20, 30]
+
+        @node(output_name="result")
+        async def process(value: int) -> int:
+            return value + 1
+
+        inner = Graph(nodes=[process], name="inner")
+        mapped_node = (
+            inner.as_node(name="mapper")
+            .with_inputs(value="items")
+            .map_over("items")
+        )
+
+        outer = Graph(nodes=[produce, mapped_node])
+        runner = AsyncRunner()
+
+        result = await runner.run(outer, {})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == [11, 21, 31]
+
+    def test_map_over_with_multiple_renamed_inputs(self):
+        """map_over works with multiple renamed inputs in zip mode."""
+
+        @node(output_name="xs")
+        def produce_xs() -> list[int]:
+            return [1, 2, 3]
+
+        @node(output_name="ys")
+        def produce_ys() -> list[int]:
+            return [10, 20, 30]
+
+        @node(output_name="sum")
+        def add_nums(a: int, b: int) -> int:
+            return a + b
+
+        inner = Graph(nodes=[add_nums], name="inner")
+        mapped_node = (
+            inner.as_node(name="adder")
+            .with_inputs(a="xs", b="ys")
+            .map_over("xs", "ys", mode="zip")
+        )
+
+        outer = Graph(nodes=[produce_xs, produce_ys, mapped_node])
+        runner = SyncRunner()
+
+        result = runner.run(outer, {})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["sum"] == [11, 22, 33]
+
+    def test_map_over_renamed_input_with_broadcast(self):
+        """Non-mapped values broadcast correctly with renamed inputs."""
+
+        @node(output_name="items")
+        def produce() -> list[int]:
+            return [1, 2, 3]
+
+        @node(output_name="result")
+        def multiply(value: int, factor: int) -> int:
+            return value * factor
+
+        inner = Graph(nodes=[multiply], name="inner")
+        mapped_node = (
+            inner.as_node(name="multiplier")
+            .with_inputs(value="items")
+            .map_over("items")
+        )
+
+        outer = Graph(nodes=[produce, mapped_node])
+        runner = SyncRunner()
+
+        # "factor" is broadcast to all iterations
+        result = runner.run(outer, {"factor": 10})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == [10, 20, 30]
+
+    def test_chained_renames_with_map_over(self):
+        """Chained renames (a->b->c) work correctly with map_over."""
+
+        @node(output_name="data")
+        def produce() -> list[int]:
+            return [5, 10, 15]
+
+        @node(output_name="result")
+        def process(x: int) -> int:
+            return x * 2
+
+        inner = Graph(nodes=[process], name="inner")
+        mapped_node = (
+            inner.as_node(name="processor")
+            .with_inputs(x="temp")  # x -> temp
+            .with_inputs(temp="data")  # temp -> data
+            .map_over("data")
+        )
+
+        outer = Graph(nodes=[produce, mapped_node])
+        runner = SyncRunner()
+
+        result = runner.run(outer, {})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == [10, 20, 30]
+
+
 class TestMapOverExecution:
     """Tests for execution with map_over configuration."""
 
