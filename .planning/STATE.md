@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 1 of 4 (Add Core Abstractions)
-Plan: 1 of 3 complete
+Plan: 2 of 3 complete
 Status: In progress
-Last activity: 2026-01-21 — Completed 01-01-PLAN.md
+Last activity: 2026-01-21 — Completed 01-02-PLAN.md
 
-Progress: ███░░░░░░░░░ 8% (1/12 plans complete)
+Progress: ████░░░░░░░░ 17% (2/12 plans complete)
 
 ## Project Reference
 
@@ -27,6 +27,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Use duck typing for node classification | 01-01 | Avoid import dependencies, use hasattr checks |
 | Frozen dataclasses for coordinates | 01-01 | Ensure immutability during transformations |
 | Recursive flattening to single NetworkX graph | 01-01 | Parent references instead of separate graph objects |
+| Renderer operates on pure NetworkX DiGraph | 01-02 | Eliminates domain dependencies, reads from attributes |
+| Conversion at widget boundary | 01-02 | graph.to_viz_graph() before render_graph() |
 
 ### Technical Notes
 
@@ -42,8 +44,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21 13:50:01
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-01-21 13:56:00
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None
 
 ---
