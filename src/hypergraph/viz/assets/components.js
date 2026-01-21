@@ -206,7 +206,11 @@
       // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
       var points = data.points.slice();
       points[0] = { x: sourceX, y: sourceY };
-      points[points.length - 1] = { x: targetX, y: targetY };
+      // For edges rerouted to inner nodes, keep the custom target point
+      // (don't override with React Flow's target position which points to the container)
+      if (!data.reroutedToInner) {
+        points[points.length - 1] = { x: targetX, y: targetY };
+      }
 
       // Simplify "mostly vertical" edges
       var dx = Math.abs(targetX - sourceX);
@@ -240,9 +244,13 @@
         return path;
       };
 
+      // For rerouted edges, use the actual target point from points array
+      var actualTargetX = points[points.length - 1].x;
+      var actualTargetY = points[points.length - 1].y;
+
       if (isNearlyVertical) {
-        var midY = (sourceY + targetY) / 2;
-        edgePath = 'M ' + sourceX + ' ' + sourceY + ' C ' + sourceX + ' ' + midY + ' ' + targetX + ' ' + midY + ' ' + targetX + ' ' + targetY;
+        var midY = (sourceY + actualTargetY) / 2;
+        edgePath = 'M ' + sourceX + ' ' + sourceY + ' C ' + sourceX + ' ' + midY + ' ' + actualTargetX + ' ' + midY + ' ' + actualTargetX + ' ' + actualTargetY;
       } else {
         edgePath = curveBasis(points);
       }
