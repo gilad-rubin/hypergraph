@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 4 of 4 (Verification & Testing)
-Plan: 1 of 2 complete
-Status: In progress
-Last activity: 2026-01-21 — Completed 04-01-PLAN.md
+Plan: 2 of 2 complete
+Status: Phase complete
+Last activity: 2026-01-21 — Completed 04-02-PLAN.md
 
-Progress: ████████░░░░ 67% (8/12 plans complete)
+Progress: █████████░░░ 75% (9/12 plans complete)
 
 ## Project Reference
 
@@ -48,6 +48,9 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Extract coordinates via JavaScript DOM APIs | 04-01 | Actual rendered positions, not predicted |
 | Parse SVG paths with bezier sampling | 04-01 | Sample cubic bezier curves at 10 points per segment |
 | Extract edge IDs from data-testid | 04-01 | React Flow format: rf__edge-{id} |
+| Use Pillow for screenshot comparison | 04-02 | Pixel-by-pixel visual regression testing |
+| Skip-on-create pattern for baselines | 04-02 | First run creates, subsequent runs compare |
+| Keep failures for inspection | 04-02 | Save actual screenshot on test failure for debugging |
 
 ### Technical Notes
 
@@ -68,6 +71,9 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 - Geometric verification tests detect 12 edge-node intersections in complex_rag graph
 - Test infrastructure: Playwright browser automation, Shapely geometric analysis
 - Edge ID format: data-testid="rf__edge-{id}" in React Flow DOM
+- Visual regression tests show 96% pixel difference (expected with current bugs)
+- Baseline screenshots: complex_rag.png, nested_collapsed.png, double_nested.png
+- Pillow added for pixel-by-pixel image comparison
 
 ### Blockers
 
@@ -75,10 +81,10 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21T14:56:12Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-01-21T15:00:20Z
+Stopped at: Completed 04-02-PLAN.md (Phase 4 complete)
 Resume file: None
 
 ---
 *State initialized: 2026-01-21*
-*Last updated: 2026-01-21T14:56:12Z*
+*Last updated: 2026-01-21T15:00:20Z*
