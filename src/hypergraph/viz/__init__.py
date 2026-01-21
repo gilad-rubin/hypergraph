@@ -6,5 +6,20 @@ Usage:
 """
 
 from hypergraph.viz.widget import visualize, ScrollablePipelineWidget
+from hypergraph.viz.traversal import (
+    get_children,
+    traverse_to_leaves,
+    build_expansion_predicate,
+)
+from hypergraph.viz.coordinates import Point, CoordinateSpace, layout_to_absolute
 
-__all__ = ["visualize", "ScrollablePipelineWidget"]
+__all__ = [
+    "visualize",
+    "ScrollablePipelineWidget",
+    "get_children",
+    "traverse_to_leaves",
+    "build_expansion_predicate",
+    "Point",
+    "CoordinateSpace",
+    "layout_to_absolute",
+]
