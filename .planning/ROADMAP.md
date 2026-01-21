@@ -2,7 +2,7 @@
 
 **Milestone:** v1.1 Fix Visualization Edge Routing
 **Created:** 2026-01-21
-**Updated:** 2026-01-21 after research
+**Updated:** 2026-01-21 after planning Phase 1
 **Phases:** 4
 
 ## Overview
@@ -29,6 +29,13 @@ The hypergraph viz was derived from **hypernodes**. Use as reference for underst
 **Goal:** Decouple viz from hypergraph types and add reusable abstractions for hierarchy and coordinates.
 
 **Requirements covered:** REFAC-01, REFAC-02, REFAC-03, REFAC-04
+
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Foundation abstractions (to_viz_graph, traversal, coordinates)
+- [ ] 01-02-PLAN.md — Refactor renderer to consume NetworkX only
+- [ ] 01-03-PLAN.md — Characterization tests for safety net
 
 **Approach:**
 1. **Decouple viz from hypergraph types** — renderer takes NetworkX graph only, not `Graph` object
@@ -67,6 +74,11 @@ The hypergraph viz was derived from **hypernodes**. Use as reference for underst
 
 **Requirements covered:** REFAC-05
 
+**Plans:** (created by /gsd:plan-phase)
+
+Plans:
+- [ ] TBD — created during Phase 2 planning
+
 **Approach:**
 1. Decide ownership: JavaScript handles all hierarchy (Python provides full graph structure)
 2. Remove `_find_deepest_consumers` / `_find_deepest_producers` from Python
@@ -93,6 +105,11 @@ The hypergraph viz was derived from **hypernodes**. Use as reference for underst
 **Goal:** Using new abstractions, fix all edge routing issues.
 
 **Requirements covered:** EDGE-01, EDGE-02, EDGE-03, EDGE-04
+
+**Plans:** (created by /gsd:plan-phase)
+
+Plans:
+- [ ] TBD — created during Phase 3 planning
 
 **Approach:**
 1. Fix edges going over nodes (regression from recent commits)
@@ -122,6 +139,11 @@ The hypergraph viz was derived from **hypernodes**. Use as reference for underst
 **Goal:** Automated verification that edge routing is correct.
 
 **Requirements covered:** VERIFY-01, VERIFY-02, VERIFY-03, TEST-01, TEST-02, TEST-03, TEST-04
+
+**Plans:** (created by /gsd:plan-phase)
+
+Plans:
+- [ ] TBD — created during Phase 4 planning
 
 **Approach:**
 1. Create Python script to extract coordinates from rendered output
@@ -159,4 +181,4 @@ The hypergraph viz was derived from **hypernodes**. Use as reference for underst
 
 ---
 *Roadmap created: 2026-01-21*
-*Updated: 2026-01-21 after research*
+*Updated: 2026-01-21 after planning Phase 1*
