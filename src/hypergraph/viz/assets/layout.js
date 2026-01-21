@@ -451,6 +451,27 @@
   }
 
   /**
+   * Resolve all edge targets from logical to visual based on expansion state
+   * Adds _resolvedSource and _resolvedTarget properties to each edge
+   * @param {Array} edges - Edges with logical source/target IDs
+   * @param {Map} expansionState - Which nodes are expanded
+   * @param {Object} hierarchy - Result of buildHierarchy()
+   * @returns {Array} Edges with resolved visual endpoints
+   */
+  function resolveAllEdgeTargets(edges, expansionState, hierarchy) {
+    return edges.map(function(edge) {
+      var resolved = resolveEdgeTargets(edge, expansionState, hierarchy, edges);
+      return {
+        ...edge,
+        _resolvedSource: resolved.visualSource,
+        _resolvedTarget: resolved.visualTarget,
+        _logicalSource: resolved.logicalSource,
+        _logicalTarget: resolved.logicalTarget
+      };
+    });
+  }
+
+  /**
    * Perform recursive layout for nested graphs
    * Layouts children first (deepest), then uses their bounds to size parent nodes
    * @param {Array} visibleNodes - All visible nodes
@@ -464,6 +485,9 @@
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
     var nodeDimensions = new Map();
     var childLayoutResults = new Map();
+
+    // Build hierarchy for edge resolution
+    var hierarchy = buildHierarchy(visibleNodes);
 
     // Calculate base dimensions for all nodes
     visibleNodes.forEach(function(n) {
@@ -686,9 +710,12 @@
       });
     });
 
+    // Resolve edge targets based on expansion state
+    var resolvedEdges = resolveAllEdgeTargets(allPositionedEdges, expansionState, hierarchy);
+
     return {
       nodes: allPositionedNodes,
-      edges: allPositionedEdges,
+      edges: resolvedEdges,
       size: rootResult.size,
     };
   }
@@ -702,6 +729,7 @@
     performRecursiveLayout: performRecursiveLayout,
     buildHierarchy: buildHierarchy,
     resolveEdgeTargets: resolveEdgeTargets,
+    resolveAllEdgeTargets: resolveAllEdgeTargets,
     // Constants
     TYPE_HINT_MAX_CHARS: TYPE_HINT_MAX_CHARS,
     NODE_LABEL_MAX_CHARS: NODE_LABEL_MAX_CHARS,
