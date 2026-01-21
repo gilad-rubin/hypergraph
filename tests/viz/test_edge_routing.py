@@ -47,6 +47,22 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
         const nodes = [];
         const edges = [];
 
+        // Get viewport transform to convert SVG coords to DOM coords
+        const viewport = document.querySelector('.react-flow__viewport');
+        let offsetX = 0, offsetY = 0, scale = 1;
+        if (viewport) {
+            const transform = viewport.style.transform;
+            const translateMatch = transform.match(/translate\\(([\\d.-]+)px,\\s*([\\d.-]+)px\\)/);
+            const scaleMatch = transform.match(/scale\\(([\\d.-]+)\\)/);
+            if (translateMatch) {
+                offsetX = parseFloat(translateMatch[1]);
+                offsetY = parseFloat(translateMatch[2]);
+            }
+            if (scaleMatch) {
+                scale = parseFloat(scaleMatch[1]);
+            }
+        }
+
         // Extract node bounding boxes
         document.querySelectorAll('.react-flow__node').forEach(nodeEl => {
             const id = nodeEl.getAttribute('data-id');
@@ -70,12 +86,18 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
             });
         });
 
-        // Extract edge paths
+        // Extract edge paths (converting SVG coords to DOM coords)
         document.querySelectorAll('.react-flow__edge').forEach(edgeEl => {
             // Get edge ID from data-testid (format: rf__edge-{id})
             const testId = edgeEl.getAttribute('data-testid') || '';
             const idMatch = testId.match(/rf__edge-(.+)/);
             const id = idMatch ? idMatch[1] : 'unknown';
+
+            // Get source and target from aria attributes or data attributes
+            const source = edgeEl.getAttribute('data-source') ||
+                          (edgeEl.getAttribute('aria-label') || '').match(/from (\\S+) to/)?.[1] || null;
+            const target = edgeEl.getAttribute('data-target') ||
+                          (edgeEl.getAttribute('aria-label') || '').match(/to (\\S+)/)?.[1] || null;
 
             const pathEl = edgeEl.querySelector('path');
             if (!pathEl) return;
@@ -83,6 +105,9 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
             // Parse SVG path to points
             const d = pathEl.getAttribute('d');
             const points = [];
+
+            // Helper to transform SVG coord to DOM coord
+            const toDOM = (x, y) => [x * scale + offsetX, y * scale + offsetY];
 
             // Simple path parser for M/L/C commands
             const commands = d.match(/[MLCmlc][^MLCmlc]*/g) || [];
@@ -95,12 +120,12 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
                 if (type === 'M' || type === 'm') {
                     currentX = type === 'M' ? coords[0] : currentX + coords[0];
                     currentY = type === 'M' ? coords[1] : currentY + coords[1];
-                    points.push([currentX, currentY]);
+                    points.push(toDOM(currentX, currentY));
                 } else if (type === 'L' || type === 'l') {
                     for (let i = 0; i < coords.length; i += 2) {
                         currentX = type === 'L' ? coords[i] : currentX + coords[i];
                         currentY = type === 'L' ? coords[i+1] : currentY + coords[i+1];
-                        points.push([currentX, currentY]);
+                        points.push(toDOM(currentX, currentY));
                     }
                 } else if (type === 'C' || type === 'c') {
                     // For cubic bezier, sample the curve
@@ -117,7 +142,7 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
                             const mt = 1 - t;
                             const x = mt*mt*mt*currentX + 3*mt*mt*t*x1 + 3*mt*t*t*x2 + t*t*t*x3;
                             const y = mt*mt*mt*currentY + 3*mt*mt*t*y1 + 3*mt*t*t*y2 + t*t*t*y3;
-                            points.push([x, y]);
+                            points.push(toDOM(x, y));
                         }
 
                         currentX = x3;
@@ -127,7 +152,7 @@ def extract_coordinates_from_page(page: Page) -> dict[str, Any]:
             });
 
             if (points.length > 0) {
-                edges.push({id: id, path: points});
+                edges.push({id: id, path: points, source: source, target: target});
             }
         });
 
@@ -179,10 +204,45 @@ def verify_no_edge_node_intersections(coords: dict[str, Any]) -> dict[str, Any]:
         if len(edge["path"]) < 2:
             continue
 
+        # Get source and target - prefer DOM attributes, fall back to ID parsing
+        source_node = edge.get("source")
+        target_node = edge.get("target")
+
+        # If not available from DOM, try parsing from edge ID
+        if not source_node or not target_node:
+            edge_id = edge["id"]
+            # Try _to_ format first (e.g., e___inputs_0___to_middle)
+            if "_to_" in edge_id:
+                parts = edge_id.split("_to_")
+                if len(parts) == 2:
+                    source_node = source_node or (
+                        parts[0][2:] if parts[0].startswith("e_") else parts[0]
+                    )
+                    target_node = target_node or parts[1]
+            # Otherwise, try to match known node IDs in the edge ID
+            elif not source_node or not target_node:
+                clean_id = edge_id[2:] if edge_id.startswith("e_") else edge_id
+                # Sort by length (longest first) to avoid substring issues
+                all_node_ids = sorted(node_polygons.keys(), key=len, reverse=True)
+                for src_id in all_node_ids:
+                    if clean_id.startswith(src_id + "_"):
+                        remainder = clean_id[len(src_id) + 1:]
+                        for tgt_id in all_node_ids:
+                            if remainder == tgt_id or remainder.endswith(tgt_id):
+                                source_node = source_node or src_id
+                                target_node = target_node or tgt_id
+                                break
+                        if source_node and target_node:
+                            break
+
         # Create LineString from edge path
         edge_line = LineString(edge["path"])
 
         for node_id, node_poly in node_polygons.items():
+            # Skip source and target nodes - edges legitimately start/end inside them
+            if node_id == source_node or node_id == target_node:
+                continue
+
             # Check if edge crosses node (excluding touches at endpoints)
             if edge_line.crosses(node_poly):
                 intersections.append(
