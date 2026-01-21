@@ -503,52 +503,26 @@
       });
     });
 
-    // Position root edges
-    // For edges with innerTargets (INPUT_GROUP -> expanded pipeline), visually route
-    // to the inner node instead of the container boundary
+    // Position root edges (will be rerouted later if they have innerTargets)
+    var rootEdgesWithInnerTargets = [];
     rootResult.edges.forEach(function(e) {
       var edgeData = e._original.data || {};
       var innerTargets = edgeData.innerTargets;
 
-      // Check if this edge should route to an inner node
       if (innerTargets && innerTargets.length > 0) {
-        // Route to the first inner target
-        var innerTargetId = innerTargets[0];
-        var innerPos = nodePositions.get(innerTargetId);
-        var innerDims = nodeDimensions.get(innerTargetId);
-
-        if (innerPos && innerDims) {
-          // Get source position from the edge points (first point is source)
-          var sourcePoint = e.points && e.points.length > 0 ? e.points[0] : null;
-
-          if (sourcePoint) {
-            // Create new path to inner node
-            var innerX = innerPos.x + innerDims.width / 2;
-            var innerY = innerPos.y;
-
-            var newPoints = [
-              sourcePoint,
-              { x: innerX, y: innerY }
-            ];
-
-            if (debugMode) {
-              console.log('[recursive layout] rerouting edge to inner target:', e.id, innerTargetId, newPoints);
-            }
-
-            allPositionedEdges.push({
-              ...e._original,
-              data: { ...edgeData, points: newPoints, reroutedToInner: true },
-            });
-            return;
-          }
-        }
+        // Store for later rerouting after child positions are known
+        rootEdgesWithInnerTargets.push({
+          original: e._original,
+          points: e.points,
+          innerTargets: innerTargets,
+        });
+      } else {
+        // No inner targets - use original routed points
+        allPositionedEdges.push({
+          ...e._original,
+          data: { ...e._original.data, points: e.points },
+        });
       }
-
-      // Default: use the original routed points
-      allPositionedEdges.push({
-        ...e._original,
-        data: { ...e._original.data, points: e.points },
-      });
     });
 
     // Position children within their parents
@@ -621,7 +595,49 @@
       });
     });
 
-    // Step 4: Handle cross-hierarchy edges (edges between root and child nodes)
+    // Step 4: Reroute edges with innerTargets now that child positions are known
+    rootEdgesWithInnerTargets.forEach(function(edgeInfo) {
+      var innerTargetId = edgeInfo.innerTargets[0];
+      var innerPos = nodePositions.get(innerTargetId);
+      var innerDims = nodeDimensions.get(innerTargetId);
+
+      if (innerPos && innerDims) {
+        // Get source position from the edge points (first point is source)
+        var sourcePoint = edgeInfo.points && edgeInfo.points.length > 0 ? edgeInfo.points[0] : null;
+
+        if (sourcePoint) {
+          // Create new path to inner node
+          var innerX = innerPos.x + innerDims.width / 2;
+          var innerY = innerPos.y;
+
+          var newPoints = [
+            sourcePoint,
+            { x: innerX, y: innerY }
+          ];
+
+          if (debugMode) {
+            console.log('[recursive layout] rerouting edge to inner target:', edgeInfo.original.id, innerTargetId, newPoints);
+          }
+
+          allPositionedEdges.push({
+            ...edgeInfo.original,
+            data: { ...edgeInfo.original.data, points: newPoints, reroutedToInner: true },
+          });
+          return;
+        }
+      }
+
+      // Fallback: use original points if rerouting failed
+      if (debugMode) {
+        console.log('[recursive layout] could not reroute edge:', edgeInfo.original.id, 'innerPos:', innerPos, 'innerDims:', innerDims);
+      }
+      allPositionedEdges.push({
+        ...edgeInfo.original,
+        data: { ...edgeInfo.original.data, points: edgeInfo.points },
+      });
+    });
+
+    // Step 5: Handle cross-hierarchy edges (edges between root and child nodes)
     // These edges were filtered out from both rootEdges and internalEdges
     var processedEdgeIds = new Set(allPositionedEdges.map(function(e) { return e.id; }));
     var crossHierarchyEdges = edges.filter(function(e) {
