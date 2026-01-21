@@ -112,6 +112,65 @@
   }
 
   /**
+   * Find entry nodes for a container (nodes where edges should enter)
+   * Entry nodes have no incoming edges from siblings
+   * @param {Array} children - Child nodes of the container
+   * @param {Array} edges - All edges in the graph
+   * @returns {Array} Entry node objects
+   */
+  function findEntryNodes(children, edges) {
+    if (!children || children.length === 0) return [];
+
+    // Build set of child IDs for efficient lookup
+    var childIds = new Set(children.map(function(c) { return c.id; }));
+    var hasIncoming = new Set();
+
+    // Find nodes that receive edges from siblings
+    edges.forEach(function(e) {
+      if (childIds.has(e.source) && childIds.has(e.target)) {
+        hasIncoming.add(e.target);
+      }
+    });
+
+    // Entry nodes have no incoming edges from siblings
+    var entryNodes = children.filter(function(c) {
+      return !hasIncoming.has(c.id);
+    });
+
+    // Fallback: if all have incoming (cycle), use first child
+    return entryNodes.length > 0 ? entryNodes : [children[0]];
+  }
+
+  /**
+   * Find exit nodes for a container (nodes where edges should exit)
+   * Exit nodes have no outgoing edges to siblings
+   * @param {Array} children - Child nodes of the container
+   * @param {Array} edges - All edges in the graph
+   * @returns {Array} Exit node objects
+   */
+  function findExitNodes(children, edges) {
+    if (!children || children.length === 0) return [];
+
+    var childIds = new Set(children.map(function(c) { return c.id; }));
+    var hasOutgoing = new Set();
+
+    // Find nodes that send edges to siblings
+    edges.forEach(function(e) {
+      if (childIds.has(e.source) && childIds.has(e.target)) {
+        hasOutgoing.add(e.source);
+      }
+    });
+
+    // Exit nodes have no outgoing edges to siblings
+    var exitNodes = children.filter(function(c) {
+      return !hasOutgoing.has(c.id);
+    });
+
+    // Fallback: if all have outgoing (cycle), use last child
+    return exitNodes.length > 0 ? exitNodes : [children[children.length - 1]];
+  }
+
+  /**
    * Apply visibility based on expansion state
    * Nodes inside collapsed pipelines are hidden
    * @param {Array} nodes - Nodes with state applied
@@ -147,6 +206,8 @@
   // Export API
   return {
     applyState: applyState,
-    applyVisibility: applyVisibility
+    applyVisibility: applyVisibility,
+    findEntryNodes: findEntryNodes,
+    findExitNodes: findExitNodes
   };
 });
