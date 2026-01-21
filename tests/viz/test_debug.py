@@ -318,6 +318,45 @@ class TestGraphDebugViz:
         assert info.status == "FOUND"
 
 
+class TestDebugVisualize:
+    """Tests for VizDebugger.visualize() method."""
+
+    def test_visualize_returns_widget(self, capsys):
+        """Test that visualize() returns a widget with debug overlays."""
+        from hypergraph.viz.widget import ScrollablePipelineWidget
+
+        graph = Graph(nodes=[double, add_one])
+        debugger = VizDebugger(graph)
+
+        widget = debugger.visualize()
+
+        assert isinstance(widget, ScrollablePipelineWidget)
+        # Check debug info was printed
+        captured = capsys.readouterr()
+        assert "Debug Visualization" in captured.out
+        assert "Nodes:" in captured.out
+
+    def test_visualize_prints_issues(self, capsys):
+        """Test that visualize() prints issues when found."""
+        graph = Graph(nodes=[standalone])
+        debugger = VizDebugger(graph)
+
+        debugger.visualize()
+
+        captured = capsys.readouterr()
+        assert "Disconnected nodes" in captured.out
+
+    def test_visualize_enables_debug_overlays(self):
+        """Test that visualize() enables debug overlays in the HTML."""
+        graph = Graph(nodes=[double])
+        debugger = VizDebugger(graph)
+
+        widget = debugger.visualize()
+
+        # The HTML should contain debug_overlays: true in the meta
+        assert '"debug_overlays": true' in widget.html_content
+
+
 class TestCacheInvalidation:
     """Tests for cache invalidation."""
 

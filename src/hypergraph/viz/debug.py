@@ -101,6 +101,10 @@ class VizDebugger:
     Works with the flattened NetworkX graph produced by Graph.to_flat_graph().
     Provides validation, tracing, and issue discovery for debugging visualization
     problems before rendering.
+
+    Example:
+        >>> debugger = graph.debug_viz()
+        >>> debugger.visualize(depth=1)  # Shows viz with debug overlays
     """
 
     def __init__(self, graph: "Graph"):
@@ -415,6 +419,75 @@ class VizDebugger:
                 "has_cycles": self.graph.has_cycles,
             },
         }
+
+    def visualize(
+        self,
+        *,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        depth: int = 1,
+        theme: str = "auto",
+        show_types: bool = False,
+        output: Optional[str] = None,
+    ) -> Any:
+        """Visualize the graph with debug overlays enabled.
+
+        Prints issues and stats before rendering, then shows the visualization
+        with debug overlays (BOUNDS/WIDTHS/TEXTS tabs, edge debug points).
+
+        Args:
+            width: Widget width in pixels (default: auto-calculated)
+            height: Widget height in pixels (default: auto-calculated)
+            depth: How many levels of nested graphs to expand (default: 1)
+            theme: "dark", "light", or "auto" (default: "auto")
+            show_types: Whether to show type annotations (default: False)
+            output: Path to save HTML file (default: None, display in notebook)
+
+        Returns:
+            ScrollablePipelineWidget if output is None, otherwise None
+
+        Example:
+            >>> debugger = graph.debug_viz()
+            >>> debugger.visualize(depth=1)
+        """
+        from hypergraph.viz.widget import visualize as viz_func
+
+        # Print debug info
+        issues = self.find_issues()
+        stats = self.debug_dump()["stats"]
+
+        print("=== Debug Visualization ===")
+        print(f"Nodes: {stats['total_nodes']} | Edges: {stats['total_edges']} | "
+              f"Types: {stats['node_types']} | Cycles: {stats['has_cycles']}")
+
+        if issues.has_issues:
+            print("\n--- Issues Found ---")
+            if issues.validation_errors:
+                print(f"  Validation errors: {issues.validation_errors}")
+            if issues.orphan_edges:
+                print(f"  Orphan edges: {issues.orphan_edges}")
+            if issues.disconnected_nodes:
+                print(f"  Disconnected nodes: {issues.disconnected_nodes}")
+            if issues.missing_parents:
+                print(f"  Missing parents: {issues.missing_parents}")
+            if issues.self_loops:
+                print(f"  Self-loops: {issues.self_loops}")
+        else:
+            print("No issues found.")
+
+        print("\nDebug overlays enabled. Use tabs: BOUNDS | WIDTHS | TEXTS")
+        print("=" * 28)
+
+        return viz_func(
+            self.graph,
+            width=width,
+            height=height,
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            output=output,
+            _debug_overlays=True,
+        )
 
 
 def validate_graph(graph: "Graph") -> ValidationResult:

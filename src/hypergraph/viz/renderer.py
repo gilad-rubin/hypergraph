@@ -27,6 +27,7 @@ def render_graph(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
+    debug_overlays: bool = False,
 ) -> dict[str, Any]:
     """Convert a flattened NetworkX graph to React Flow JSON format.
 
@@ -36,6 +37,7 @@ def render_graph(
         theme: "dark", "light", or "auto" (detect from environment)
         show_types: Whether to show type annotations
         separate_outputs: Whether to render outputs as separate DATA nodes
+        debug_overlays: Whether to enable debug overlays (internal use)
 
     Returns:
         Dict with "nodes", "edges", and "meta" keys ready for React Flow
@@ -88,6 +90,7 @@ def render_graph(
             "initial_depth": depth,
             "separate_outputs": separate_outputs,
             "show_types": show_types,
+            "debug_overlays": debug_overlays,
         },
     }
 

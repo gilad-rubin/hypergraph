@@ -73,6 +73,7 @@ def visualize(
     show_types: bool = False,
     separate_outputs: bool = False,
     output: str | None = None,
+    _debug_overlays: bool = False,
 ) -> ScrollablePipelineWidget | None:
     """Create a visualization widget for a graph.
 
@@ -85,6 +86,7 @@ def visualize(
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
         output: Path to save HTML file (default: None, display in notebook)
+        _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 
     Returns:
         ScrollablePipelineWidget if output is None, otherwise None (saves to file)
@@ -118,6 +120,7 @@ def visualize(
         theme=theme,
         show_types=show_types,
         separate_outputs=separate_outputs,
+        debug_overlays=_debug_overlays,
     )
 
     # Generate HTML

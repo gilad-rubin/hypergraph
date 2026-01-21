@@ -956,7 +956,9 @@
     // Parse URL parameters for debug mode
     var urlParams = new URLSearchParams(root.location.search);
     var debugParam = urlParams.get('debug');
-    var initialDebugOverlays = debugParam === 'overlays' || debugParam === 'true' || debugParam === '1';
+    var debugFromUrl = debugParam === 'overlays' || debugParam === 'true' || debugParam === '1';
+    var debugFromMeta = Boolean(initialData.meta && initialData.meta.debug_overlays);
+    var initialDebugOverlays = debugFromUrl || debugFromMeta;
     if (initialDebugOverlays) root.__hypergraph_debug_overlays = true;
 
     var rootEl = document.getElementById('root');
