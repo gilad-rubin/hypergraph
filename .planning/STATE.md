@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 1 of 4 (Add Core Abstractions)
-Plan: 2 of 3 complete
-Status: In progress
-Last activity: 2026-01-21 — Completed 01-02-PLAN.md
+Plan: 3 of 3 complete
+Status: Phase complete
+Last activity: 2026-01-21 — Completed 01-03-PLAN.md (characterization tests)
 
-Progress: ████░░░░░░░░ 17% (2/12 plans complete)
+Progress: █████░░░░░░░ 25% (3/12 plans complete)
 
 ## Project Reference
 
@@ -29,6 +29,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Recursive flattening to single NetworkX graph | 01-01 | Parent references instead of separate graph objects |
 | Renderer operates on pure NetworkX DiGraph | 01-02 | Eliminates domain dependencies, reads from attributes |
 | Conversion at widget boundary | 01-02 | graph.to_viz_graph() before render_graph() |
+| Use characterization tests before refactoring | 01-03 | Document current behavior for safety net |
+| Assert on structure not positions | 01-03 | Node types, edges, hierarchy - not coordinates |
 
 ### Technical Notes
 
@@ -37,6 +39,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 - Problem: Edge routing breaks with nested graphs, edges go over nodes
 - Node classification: hasattr('graph') → PIPELINE, hasattr('targets') → BRANCH
 - Coordinate spaces: local → parent → absolute → viewport
+- Current renderer behavior documented: 29 characterization tests as refactoring baseline
+- Branch nodes store 'targets' list (not when_true/when_false), depth>0 expands all pipelines
 
 ### Blockers
 
@@ -44,8 +48,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21 13:56:00
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-01-21 14:01:33
+Stopped at: Completed 01-03-PLAN.md (Phase 1 complete)
 Resume file: None
 
 ---
