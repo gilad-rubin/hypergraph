@@ -9,9 +9,11 @@ Refactor visualization code to add missing abstractions, then fix edge routing r
 
 ### Refactoring (Abstractions)
 
-- [ ] **REFAC-01**: Hierarchy traversal abstraction — eliminate manual depth tracking
-- [ ] **REFAC-02**: Coordinate transformation types — explicit transforms between 4 coordinate spaces
-- [ ] **REFAC-03**: Unify edge routing logic — single source of truth (not split Python/JS)
+- [ ] **REFAC-01**: Decouple viz from hypergraph types — renderer takes NetworkX only
+- [ ] **REFAC-02**: Include InputSpec in NetworkX graph attrs (required, optional, bound)
+- [ ] **REFAC-03**: Hierarchy traversal abstraction — eliminate manual depth tracking
+- [ ] **REFAC-04**: Coordinate transformation types — explicit transforms between 4 coordinate spaces
+- [ ] **REFAC-05**: Unify edge routing logic — single source of truth (not split Python/JS)
 
 ### Edge Routing
 
@@ -68,7 +70,9 @@ Deferred to later milestones. Not in current roadmap.
 |-------------|-------|--------|
 | REFAC-01 | Phase 1 | Pending |
 | REFAC-02 | Phase 1 | Pending |
-| REFAC-03 | Phase 2 | Pending |
+| REFAC-03 | Phase 1 | Pending |
+| REFAC-04 | Phase 1 | Pending |
+| REFAC-05 | Phase 2 | Pending |
 | EDGE-01 | Phase 3 | Pending |
 | EDGE-02 | Phase 3 | Pending |
 | EDGE-03 | Phase 3 | Pending |
@@ -82,8 +86,8 @@ Deferred to later milestones. Not in current roadmap.
 | TEST-04 | Phase 4 | Pending |
 
 **Coverage:**
-- v1.1 requirements: 14 total
-- Mapped to phases: 14
+- v1.1 requirements: 16 total
+- Mapped to phases: 16
 - Unmapped: 0
 
 ---

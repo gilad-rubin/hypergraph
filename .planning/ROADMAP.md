@@ -9,26 +9,55 @@
 
 Refactor visualization code to add missing abstractions, then fix edge routing. The "refactor first" approach prevents future regressions by eliminating the code smells that caused the original regression.
 
+## Reference Codebase
+
+The hypergraph viz was derived from **hypernodes**. Use as reference for understanding original design:
+
+```
+/Users/giladrubin/python_workspace/hypernodes/src/hypernodes/viz/
+├── js/
+│   ├── html_generator.py  (112KB - embedded JS)
+│   └── renderer.py
+├── assets/
+│   ├── state_utils.js
+│   └── theme_utils.js
+└── graph_walker.py
+```
+
 ## Phase 1: Add Core Abstractions
 
-**Goal:** Eliminate manual depth tracking and coordinate arithmetic with reusable abstractions.
+**Goal:** Decouple viz from hypergraph types and add reusable abstractions for hierarchy and coordinates.
 
-**Requirements covered:** REFAC-01, REFAC-02
+**Requirements covered:** REFAC-01, REFAC-02, REFAC-03, REFAC-04
 
 **Approach:**
-1. Create `traverse_to_leaves(node, predicate)` — recursive traversal that handles depth automatically
-2. Create `CoordinateSpace` class — explicit transforms between layout, parent-relative, absolute, and React Flow spaces
-3. Add characterization tests to document current behavior before refactoring
-4. Refactor existing code to use new abstractions
+1. **Decouple viz from hypergraph types** — renderer takes NetworkX graph only, not `Graph` object
+   - Add `Graph.to_viz_graph()` that returns flattened NetworkX with all viz-needed attrs
+   - Include in node attrs: `node_type`, `inputs`, `outputs`, `input_types`, `output_types`, `defaults`, `parent`, `branch_data`
+   - Include in graph attrs: `input_spec` (required, optional, **bound** — used for viz logic)
+   - Renderer reads attrs only, no `isinstance()` checks
+2. Create `traverse_to_leaves(node, predicate)` — recursive traversal that handles depth automatically
+3. Create `CoordinateSpace` class — explicit transforms between layout, parent-relative, absolute, and React Flow spaces
+4. Add characterization tests to document current behavior before refactoring
 
 **Success criteria:**
-1. No manual `remaining_depth` or `depth` parameter passing in viz code
-2. All coordinate transforms go through `CoordinateSpace` methods
-3. Existing tests still pass (behavior unchanged)
+1. `render_graph()` takes `nx.DiGraph`, not `Graph`
+2. No `isinstance(hypernode, GraphNode)` in viz code
+3. InputSpec (including bound params) accessible from NetworkX graph attrs
+4. No manual `remaining_depth` or `depth` parameter passing
+5. All coordinate transforms go through `CoordinateSpace` methods
+6. Existing tests still pass (behavior unchanged)
 
 **Key files:**
-- `src/hypergraph/viz/renderer.py` — hierarchy traversal
+- `src/hypergraph/graph/core.py` — add `to_viz_graph()` method
+- `src/hypergraph/viz/renderer.py` — change to consume NetworkX only
 - `src/hypergraph/viz/assets/layout.js` — coordinate transforms
+- `src/hypergraph/viz/assets/constraint-layout.js` — edge routing coords
+- `src/hypergraph/viz/assets/components.js` — React components
+- `src/hypergraph/viz/assets/state_utils.js` — state management
+- `src/hypergraph/viz/html_generator.py` — HTML/JS generation
+
+**Reference:** Compare with `hypernodes/src/hypernodes/viz/js/renderer.py` for original design
 
 ---
 
@@ -36,7 +65,7 @@ Refactor visualization code to add missing abstractions, then fix edge routing. 
 
 **Goal:** Single source of truth for edge routing decisions (eliminate Python/JS duplication).
 
-**Requirements covered:** REFAC-03
+**Requirements covered:** REFAC-05
 
 **Approach:**
 1. Decide ownership: JavaScript handles all hierarchy (Python provides full graph structure)
@@ -50,8 +79,12 @@ Refactor visualization code to add missing abstractions, then fix edge routing. 
 3. Dynamic expand/collapse works without re-rendering from Python
 
 **Key files:**
-- `src/hypergraph/viz/renderer.py` — remove routing logic
+- `src/hypergraph/viz/renderer.py` — remove routing logic, just provide graph structure
 - `src/hypergraph/viz/assets/layout.js` — owns all routing decisions
+- `src/hypergraph/viz/assets/constraint-layout.js` — edge path calculation
+- `src/hypergraph/viz/html_generator.py` — JS embedding and generation
+
+**Reference:** Compare with `hypernodes/src/hypernodes/viz/js/html_generator.py` for original approach
 
 ---
 
@@ -74,8 +107,13 @@ Refactor visualization code to add missing abstractions, then fix edge routing. 
 4. Adding triple-nesting works without code changes
 
 **Key files:**
-- `src/hypergraph/viz/assets/constraint-layout.js` — edge routing
-- `src/hypergraph/viz/assets/layout.js` — node positioning
+- `src/hypergraph/viz/assets/constraint-layout.js` — edge routing algorithm
+- `src/hypergraph/viz/assets/layout.js` — node positioning and hierarchy
+- `src/hypergraph/viz/assets/components.js` — React Flow node components
+- `src/hypergraph/viz/assets/app.js` — main application logic
+- `src/hypergraph/viz/html_generator.py` — coordinate calculations, centering
+
+**Reference:** `hypernodes/src/hypernodes/viz/assets/` for original JS implementations
 
 ---
 
@@ -106,12 +144,12 @@ Refactor visualization code to add missing abstractions, then fix edge routing. 
 
 | Phase | Name | Requirements | Success Criteria |
 |-------|------|--------------|------------------|
-| 1 | Add Core Abstractions | REFAC-01, REFAC-02 | 3 criteria |
-| 2 | Unify Edge Routing Logic | REFAC-03 | 3 criteria |
+| 1 | Add Core Abstractions | REFAC-01 to REFAC-04 | 6 criteria |
+| 2 | Unify Edge Routing Logic | REFAC-05 | 3 criteria |
 | 3 | Fix Edge Routing Bugs | EDGE-01 to EDGE-04 | 4 criteria |
 | 4 | Verification & Testing | VERIFY-01 to VERIFY-03, TEST-01 to TEST-04 | 3 criteria |
 
-**Total:** 14 requirements, 4 phases
+**Total:** 16 requirements, 4 phases
 
 **Phase ordering rationale:**
 - Phase 1 establishes abstractions needed for clean fixes
