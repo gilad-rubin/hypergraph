@@ -412,14 +412,21 @@
 
       childLayoutResults.set(graphNode.id, childResult);
 
+      // childResult.size includes the constraint layout's internal padding (layoutPadding)
+      // We need to replace that padding with our GRAPH_PADDING
+      var layoutPadding = ConstraintLayout.defaultOptions.layout.padding || 50;
+      var contentWidth = childResult.size.width - 2 * layoutPadding;
+      var contentHeight = childResult.size.height - 2 * layoutPadding;
+
       if (debugMode) {
-        console.log('[recursive layout] graph', graphNode.id, 'children:', children.length, 'size:', childResult.size);
+        console.log('[recursive layout] graph', graphNode.id, 'children:', children.length,
+                    'layoutSize:', childResult.size, 'contentSize:', { width: contentWidth, height: contentHeight });
       }
 
-      // Update graph node size from children bounds
+      // Update graph node size: content + our padding + header
       nodeDimensions.set(graphNode.id, {
-        width: childResult.size.width + GRAPH_PADDING * 2,
-        height: childResult.size.height + GRAPH_PADDING * 2 + HEADER_HEIGHT,
+        width: contentWidth + GRAPH_PADDING * 2,
+        height: contentHeight + GRAPH_PADDING * 2 + HEADER_HEIGHT,
       });
     });
 

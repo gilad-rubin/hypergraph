@@ -224,6 +224,76 @@ Reverted to original logic. Double-wiggle persists for some left-to-right edges.
 ### Key Insight
 The problem is architectural: the routing algorithm detects blocking based on `naturalX` (midpoint), but the actual path depends on corridor choice. When corridor direction differs from the detection path, edges can cross undetected nodes.
 
+## Nested Graph Rendering
+
+### Architecture
+
+Nested graphs (pipelines within pipelines) are rendered using React Flow's parent-child node system:
+
+1. **Python Renderer** (`renderer.py`):
+   - Sets `parentNode` on child nodes to reference parent pipeline
+   - Sets `extent: "parent"` to constrain children within parent bounds
+   - Uses `_is_nested=True` to skip INPUT_GROUP creation for inner graphs (they're pass-through)
+
+2. **Layout Engine** (`layout.js`):
+   - `performRecursiveLayout()` handles nested graphs bottom-up (deepest children first)
+   - Child layout runs first, then parent container is sized based on child bounds
+   - Child positions are relative to parent's top-left corner
+
+3. **Key Constants** (`layout.js`):
+   - `GRAPH_PADDING = 40` - padding inside container around children
+   - `HEADER_HEIGHT = 32` - height of pipeline label header
+
+### Container Sizing
+
+Container size is calculated from child layout bounds:
+```javascript
+nodeDimensions.set(graphNode.id, {
+  width: childResult.size.width + GRAPH_PADDING * 2,
+  height: childResult.size.height + GRAPH_PADDING * 2 + HEADER_HEIGHT,
+});
+```
+
+### Child Position Calculation
+
+Children are positioned relative to parent's content area:
+```javascript
+// Constraint layout already includes its own padding (50px default)
+// Adjust from layout coordinates to parent-relative coordinates
+var childX = n.x - w / 2 - layoutPadding + GRAPH_PADDING;
+var childY = n.y - h / 2 - layoutPadding + GRAPH_PADDING;
+
+// Final position includes header offset
+position: {
+  x: childX,
+  y: childY + HEADER_HEIGHT
+}
+```
+
+### Height-Based Separation (Overlap Prevention)
+
+Row constraints now account for node heights to prevent tall containers from overlapping:
+```javascript
+// In createRowConstraints()
+var heightBasedSeparation = (sourceHeight / 2) + (targetHeight / 2) + layoutConfig.spaceY;
+```
+
+This ensures containers don't overlap with external nodes below them.
+
+### Common Issues
+
+**"Duplicate __inputs__ nodes"**
+- Cause: Both outer and inner graphs create INPUT_GROUP nodes with same ID
+- Fix: Skip INPUT_GROUP creation for nested graphs (`_is_nested=True`)
+
+**"External nodes appear inside container"**
+- Cause: Fixed spaceY didn't account for tall container heights
+- Fix: Height-based separation in row constraints
+
+**"Too much space between container and external nodes"**
+- Cause: spaceY (140px) + height-based separation was excessive
+- Fix: Reduce spaceY to 50px since heights are now accounted for
+
 ## File Locations
 
 - **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 530)
