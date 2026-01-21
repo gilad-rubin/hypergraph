@@ -717,14 +717,12 @@
         (1 - Math.abs(targetEdgeDistance) / target.sources.length);
 
       // Calculate X offsets for fanning edges at source and target nodes
-      const sourceSeparation = Math.min(
-        (source.width - stemSpaceSource) / Math.max(1, source.targets.length),
-        stemSpaceSource
-      );
-      const targetSeparation = Math.min(
-        (target.width - stemSpaceTarget) / Math.max(1, target.sources.length),
-        stemSpaceTarget
-      );
+      // Use up to 60% of node width for fanning, leaving margins on edges
+      const maxSourceFanWidth = source.width * 0.6;
+      const maxTargetFanWidth = target.width * 0.6;
+
+      const sourceSeparation = maxSourceFanWidth / Math.max(1, source.targets.length);
+      const targetSeparation = maxTargetFanWidth / Math.max(1, target.sources.length);
 
       const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
       const targetOffsetX = targetSeparation * targetEdgeDistance;
