@@ -714,7 +714,12 @@
     rootResult.edges.forEach(function(e) {
       allPositionedEdges.push({
         ...e._original,
-        data: { ...e._original.data, points: e.points },
+        data: {
+          ...e._original.data,
+          points: e.points,
+          _sourceAbsPos: absolutePositions.get(e.source),
+          _targetAbsPos: absolutePositions.get(e.target),
+        },
       });
     });
 
@@ -788,7 +793,12 @@
 
         allPositionedEdges.push({
           ...e._original,
-          data: { ...e._original.data, points: offsetPoints },
+          data: {
+            ...e._original.data,
+            points: offsetPoints,
+            _sourceAbsPos: absolutePositions.get(e.source),
+            _targetAbsPos: absolutePositions.get(e.target),
+          },
         });
       });
     });
