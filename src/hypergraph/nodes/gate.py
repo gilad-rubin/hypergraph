@@ -472,6 +472,14 @@ class IfElseNode(GateNode):
             return f"IfElseNode({self.name}, true={true_str}, false={false_str})"
         return f"IfElseNode({original} as '{self.name}', true={true_str}, false={false_str})"
 
+    @property
+    def branch_data(self) -> dict[str, Any]:
+        """Branch-specific data for visualization."""
+        return {
+            "when_true": "END" if self.when_true is END else self.when_true,
+            "when_false": "END" if self.when_false is END else self.when_false,
+        }
+
 
 # =============================================================================
 # @ifelse Decorator
