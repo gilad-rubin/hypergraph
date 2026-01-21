@@ -551,8 +551,18 @@
     var nodeDimensions = new Map();
     var childLayoutResults = new Map();
 
+    // Track absolute positions for edge routing
+    var absolutePositions = new Map();
+
     // Build hierarchy for edge resolution
     var hierarchy = buildHierarchy(visibleNodes);
+
+    // Build parent-child map for coordinate transformations
+    var parentNodeMap = new Map(
+      visibleNodes.map(function(n) {
+        return [n.id, n.parentNode || null];
+      })
+    );
 
     // Calculate base dimensions for all nodes
     visibleNodes.forEach(function(n) {
@@ -684,6 +694,9 @@
       var y = n.y - h / 2;
       nodePositions.set(n.id, { x: x, y: y });
 
+      // Root nodes: position is already absolute (no parent)
+      absolutePositions.set(n.id, { x: x, y: y });
+
       allPositionedNodes.push({
         ...n._original,
         position: { x: x, y: y },
@@ -725,27 +738,32 @@
       childResult.nodes.forEach(function(n) {
         var w = n.width;
         var h = n.height;
-        // Convert from center to top-left
-        // The constraint layout positions are already offset with internal padding (50px default)
-        // We want positions relative to parent's content area (which has GRAPH_PADDING)
-        // So we adjust: subtract layout padding, add our GRAPH_PADDING
-        var childX = n.x - w / 2 - layoutPadding + GRAPH_PADDING;
-        var childY = n.y - h / 2 - layoutPadding + GRAPH_PADDING;
 
-        // Store absolute position for edge routing
-        nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
+        // Step 1: Convert from layout space to parent-relative space
+        var parentRelative = CoordinateTransform.layoutToParentRelative(n, layoutPadding, GRAPH_PADDING);
+
+        // Step 2: Convert from parent-relative to absolute viewport space
+        var absolutePos = CoordinateTransform.parentRelativeToAbsolute(
+          parentRelative,
+          parentPos,
+          HEADER_HEIGHT,
+          GRAPH_PADDING
+        );
+
+        // Store both coordinate systems
+        nodePositions.set(n.id, parentRelative);  // For React Flow rendering
+        absolutePositions.set(n.id, absolutePos);  // For edge routing
 
         if (debugMode) {
-          console.log('[recursive layout] child', n.id, 'position:', { x: childX, y: childY + HEADER_HEIGHT }, 'parentNode:', n._original.parentNode);
+          console.log('[recursive layout] child', n.id, 'position:', { x: parentRelative.x, y: parentRelative.y + HEADER_HEIGHT }, 'parentNode:', n._original.parentNode);
         }
 
         allPositionedNodes.push({
           ...n._original,
           // React Flow child positions are relative to parent's top-left corner
-          // childX/childY already include GRAPH_PADDING adjustment
           position: {
-            x: childX,
-            y: childY + HEADER_HEIGHT
+            x: parentRelative.x,
+            y: parentRelative.y + HEADER_HEIGHT
           },
           width: w,
           height: h,
@@ -782,6 +800,7 @@
       nodes: allPositionedNodes,
       edges: resolvedEdges,
       size: rootResult.size,
+      absolutePositions: absolutePositions,
     };
   }
 
@@ -795,6 +814,7 @@
     buildHierarchy: buildHierarchy,
     resolveEdgeTargets: resolveEdgeTargets,
     resolveAllEdgeTargets: resolveAllEdgeTargets,
+    CoordinateTransform: CoordinateTransform,
     // Constants
     TYPE_HINT_MAX_CHARS: TYPE_HINT_MAX_CHARS,
     NODE_LABEL_MAX_CHARS: NODE_LABEL_MAX_CHARS,
