@@ -352,6 +352,59 @@ if (innerTargets && innerTargets.length > 0) {
 }
 ```
 
+### innerSources for Outbound Edges
+
+Similar to `innerTargets` for inbound edges, `innerSources` handles outbound edges from expanded pipelines:
+
+1. **renderer.py**: When an edge originates from an expanded GraphNode, find inner nodes that produce the output
+2. **renderer.py**: Store `innerSources` in edge data (e.g., the `normalize` node that outputs `normalized`)
+3. **layout.js**: During edge routing, detect `innerSources` and reroute edge START to inner node
+
+```python
+# renderer.py - find inner sources for expanded pipeline outputs
+if isinstance(source_node, GraphNode) and depth > 0:
+    inner_graph = source_node.graph
+    for inner_name, inner_node in inner_graph.nodes.items():
+        if value_name in inner_node.outputs:
+            inner_sources.append(inner_name)
+```
+
+### Shadow Offset
+
+CSS `drop-shadow` on function nodes extends the visual bounds. Edges should connect to the **visual border**, not the shadow boundary.
+
+**Constants** (`layout.js`):
+- `SHADOW_OFFSET = 14` - pixels to subtract from function node bottom
+
+**Application** (Step 4 edge rerouting):
+```javascript
+var hasShadow = innerSourceType === 'FUNCTION' || innerSourceType === 'PIPELINE';
+var shadowAdjust = hasShadow ? SHADOW_OFFSET : 0;
+startPoint = {
+    x: innerSourcePos.x + innerSourceDims.width / 2,
+    y: innerSourcePos.y + innerSourceDims.height - shadowAdjust
+};
+```
+
+### CustomEdge and reroutedToInner Flag
+
+When edges are rerouted to inner nodes, the `data.points` array contains custom start/end coordinates. React Flow provides its own `sourceX/sourceY` based on container positions, which would override our routing.
+
+**Solution**: Set `data.reroutedToInner = true` and check it in CustomEdge:
+
+```javascript
+// components.js - CustomEdge
+if (data && data.points && data.points.length > 0) {
+    var points = data.points.slice();
+    // Only override endpoints if NOT rerouted to inner nodes
+    if (!data.reroutedToInner) {
+        points[0] = { x: sourceX, y: sourceY };
+        points[points.length - 1] = { x: targetX, y: targetY };
+    }
+    // Use actualSourceX/Y from points for path calculation
+}
+```
+
 ## File Locations
 
 - **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 530)
