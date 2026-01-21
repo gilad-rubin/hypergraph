@@ -33,6 +33,71 @@
   var GRAPH_PADDING = 40;
   var HEADER_HEIGHT = 32;
 
+  // === COORDINATE TRANSFORMATION ===
+  /**
+   * CoordinateTransform handles conversions between different coordinate spaces:
+   * - Layout Space: Centers with 50px padding (constraint solver output)
+   * - Parent-Relative Space: Top-left relative to parent (React Flow positions)
+   * - Absolute Viewport Space: Top-left relative to viewport (edge routing)
+   */
+  var CoordinateTransform = {
+    /**
+     * Convert from layout space (centers) to parent-relative space (top-left)
+     * @param {Object} layoutNode - Node from constraint layout (x=center, y=center)
+     * @param {number} layoutPadding - Internal padding used by constraint layout (default 50)
+     * @param {number} graphPadding - Graph container padding (GRAPH_PADDING = 40)
+     * @returns {Object} { x, y } - Top-left position relative to parent content area
+     */
+    layoutToParentRelative: function(layoutNode, layoutPadding, graphPadding) {
+      var w = layoutNode.width;
+      var h = layoutNode.height;
+      // Convert center to top-left, then adjust padding
+      var x = layoutNode.x - w / 2 - layoutPadding + graphPadding;
+      var y = layoutNode.y - h / 2 - layoutPadding + graphPadding;
+      return { x: x, y: y };
+    },
+
+    /**
+     * Convert from parent-relative to absolute viewport space
+     * @param {Object} childPos - { x, y } relative to parent content area
+     * @param {Object} parentAbsPos - { x, y } absolute position of parent's top-left
+     * @param {number} headerHeight - Height of parent's header (HEADER_HEIGHT = 32)
+     * @param {number} graphPadding - Graph container padding (GRAPH_PADDING = 40)
+     * @returns {Object} { x, y } - Absolute position in viewport
+     */
+    parentRelativeToAbsolute: function(childPos, parentAbsPos, headerHeight, graphPadding) {
+      return {
+        x: parentAbsPos.x + graphPadding + childPos.x,
+        y: parentAbsPos.y + graphPadding + headerHeight + childPos.y
+      };
+    },
+
+    /**
+     * Get absolute viewport position for a node, traversing parent hierarchy
+     * @param {string} nodeId - ID of node to find position for
+     * @param {Map} nodePositions - Map of nodeId -> { x, y } (mix of absolute and relative)
+     * @param {Map} parentNodeMap - Map of nodeId -> parentNodeId
+     * @returns {Object} { x, y } - Absolute position in viewport
+     */
+    getAbsolutePosition: function(nodeId, nodePositions, parentNodeMap) {
+      var pos = nodePositions.get(nodeId);
+      if (!pos) return { x: 0, y: 0 };
+
+      var parentId = parentNodeMap.get(nodeId);
+      if (!parentId) {
+        // Root node - position is already absolute
+        return pos;
+      }
+
+      // Child node - position is relative to parent, need to add parent's absolute position
+      var parentAbsPos = this.getAbsolutePosition(parentId, nodePositions, parentNodeMap);
+      return {
+        x: parentAbsPos.x + GRAPH_PADDING + pos.x,
+        y: parentAbsPos.y + GRAPH_PADDING + HEADER_HEIGHT + pos.y
+      };
+    }
+  };
+
   /**
    * Calculate dimensions for a node based on its type and content
    * @param {Object} n - Node object with data
