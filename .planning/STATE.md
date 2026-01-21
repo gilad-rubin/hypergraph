@@ -3,11 +3,11 @@
 ## Current Position
 
 Phase: 4 of 4 (Verification & Testing)
-Plan: 2 of 2 complete
+Plan: 3 of 3 complete
 Status: Phase complete
-Last activity: 2026-01-21 — Completed 04-02-PLAN.md
+Last activity: 2026-01-21 — Completed 04-03-PLAN.md
 
-Progress: █████████░░░ 75% (9/12 plans complete)
+Progress: ██████████░░ 83% (10/12 plans complete)
 
 ## Project Reference
 
@@ -51,6 +51,10 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Use Pillow for screenshot comparison | 04-02 | Pixel-by-pixel visual regression testing |
 | Skip-on-create pattern for baselines | 04-02 | First run creates, subsequent runs compare |
 | Keep failures for inspection | 04-02 | Save actual screenshot on test failure for debugging |
+| Pinned ubuntu-22.04 for consistent screenshots | 04-03 | Different Ubuntu versions render fonts/graphics differently |
+| Separate jobs for geometric vs visual tests | 04-03 | Clearer failure isolation and parallel execution |
+| Path filters on viz source/tests | 04-03 | Avoid running viz tests on unrelated changes |
+| Upload artifacts only on failure | 04-03 | Saves GitHub storage, provides debugging context |
 
 ### Technical Notes
 
@@ -74,6 +78,9 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 - Visual regression tests show 96% pixel difference (expected with current bugs)
 - Baseline screenshots: complex_rag.png, nested_collapsed.png, double_nested.png
 - Pillow added for pixel-by-pixel image comparison
+- GitHub Actions workflow: .github/workflows/viz-tests.yml
+- CI runs on push/PR to main, develop, fix-viz-* branches
+- Test artifacts uploaded on failure for debugging
 
 ### Blockers
 
@@ -81,10 +88,10 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21T15:00:20Z
-Stopped at: Completed 04-02-PLAN.md (Phase 4 complete)
+Last session: 2026-01-21T15:00:37Z
+Stopped at: Completed 04-03-PLAN.md (Phase 4 complete - verification infrastructure ready)
 Resume file: None
 
 ---
 *State initialized: 2026-01-21*
-*Last updated: 2026-01-21T15:00:20Z*
+*Last updated: 2026-01-21T15:00:37Z*
