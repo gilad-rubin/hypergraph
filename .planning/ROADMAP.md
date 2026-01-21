@@ -2,7 +2,7 @@
 
 **Milestone:** v1.1 Fix Visualization Edge Routing
 **Created:** 2026-01-21
-**Updated:** 2026-01-21 after planning Phase 1
+**Updated:** 2026-01-21 after planning Phase 2
 **Phases:** 4
 
 ## Overview
@@ -24,18 +24,18 @@ The hypergraph viz was derived from **hypernodes**. Use as reference for underst
 └── graph_walker.py
 ```
 
-## Phase 1: Add Core Abstractions
+## Phase 1: Add Core Abstractions (COMPLETE)
 
 **Goal:** Decouple viz from hypergraph types and add reusable abstractions for hierarchy and coordinates.
 
 **Requirements covered:** REFAC-01, REFAC-02, REFAC-03, REFAC-04
 
-**Plans:** 3 plans
+**Plans:** 3 plans (complete)
 
 Plans:
-- [ ] 01-01-PLAN.md — Foundation abstractions (to_viz_graph, traversal, coordinates)
-- [ ] 01-02-PLAN.md — Refactor renderer to consume NetworkX only
-- [ ] 01-03-PLAN.md — Characterization tests for safety net
+- [x] 01-01-PLAN.md — Foundation abstractions (to_viz_graph, traversal, coordinates)
+- [x] 01-02-PLAN.md — Refactor renderer to consume NetworkX only
+- [x] 01-03-PLAN.md — Characterization tests for safety net
 
 **Approach:**
 1. **Decouple viz from hypergraph types** — renderer takes NetworkX graph only, not `Graph` object
@@ -74,10 +74,11 @@ Plans:
 
 **Requirements covered:** REFAC-05
 
-**Plans:** (created by /gsd:plan-phase)
+**Plans:** 2 plans
 
 Plans:
-- [ ] TBD — created during Phase 2 planning
+- [ ] 02-01-PLAN.md — Add hierarchy building and edge target resolution to JavaScript
+- [ ] 02-02-PLAN.md — Integrate edge resolution with rendering and verify dynamic expand/collapse
 
 **Approach:**
 1. Decide ownership: JavaScript handles all hierarchy (Python provides full graph structure)
@@ -181,4 +182,4 @@ Plans:
 
 ---
 *Roadmap created: 2026-01-21*
-*Updated: 2026-01-21 after planning Phase 1*
+*Updated: 2026-01-21 after planning Phase 2*

@@ -2,10 +2,10 @@
 
 ## Current Position
 
-Phase: 1 of 4 (Add Core Abstractions)
-Plan: 3 of 3 complete
-Status: Phase complete
-Last activity: 2026-01-21 — Completed 01-03-PLAN.md (characterization tests)
+Phase: 2 of 4 (Unify Edge Routing Logic)
+Plan: 0 of 2 complete
+Status: Phase 2 planned, ready to execute
+Last activity: 2026-01-21 — Created Phase 2 plans
 
 Progress: █████░░░░░░░ 25% (3/12 plans complete)
 
@@ -31,16 +31,18 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 | Conversion at widget boundary | 01-02 | graph.to_viz_graph() before render_graph() |
 | Use characterization tests before refactoring | 01-03 | Document current behavior for safety net |
 | Assert on structure not positions | 01-03 | Node types, edges, hierarchy - not coordinates |
+| JavaScript owns edge routing | 02-planning | Single source of truth, Python provides flat structure |
 
 ### Technical Notes
 
 - Known-good commit: `b111b075a6385d23ce0e3a85b8d55662a8fcd9d0`
 - Test to validate: `complex_rag` in `test_viz_layout`
 - Problem: Edge routing breaks with nested graphs, edges go over nodes
-- Node classification: hasattr('graph') → PIPELINE, hasattr('targets') → BRANCH
-- Coordinate spaces: local → parent → absolute → viewport
+- Node classification: hasattr('graph') -> PIPELINE, hasattr('targets') -> BRANCH
+- Coordinate spaces: local -> parent -> absolute -> viewport
 - Current renderer behavior documented: 29 characterization tests as refactoring baseline
 - Branch nodes store 'targets' list (not when_true/when_false), depth>0 expands all pipelines
+- Phase 2 approach: JavaScript builds hierarchy from flat nodes, resolves edge targets dynamically
 
 ### Blockers
 
@@ -48,8 +50,8 @@ See: .planning/PROJECT.md (updated 2026-01-21)
 
 ## Session Continuity
 
-Last session: 2026-01-21 14:01:33
-Stopped at: Completed 01-03-PLAN.md (Phase 1 complete)
+Last session: 2026-01-21
+Stopped at: Created Phase 2 plans (02-01, 02-02)
 Resume file: None
 
 ---
