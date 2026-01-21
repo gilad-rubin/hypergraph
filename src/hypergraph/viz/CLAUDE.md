@@ -148,7 +148,7 @@ The graph's vertical centering requires a post-layout DOM measurement because:
 3. Shadows extend beyond node bounds but shouldn't affect centering
 
 **Algorithm** (in `fitWithFixedPadding`):
-1. Set initial viewport position
+1. Set initial viewport position (centered in true viewport center)
 2. Wait for DOM update (double `requestAnimationFrame`)
 3. Find **topmost** and **bottommost** edges across ALL visible nodes
    - Query all `.react-flow__node` elements
@@ -156,7 +156,10 @@ The graph's vertical centering requires a post-layout DOM measurement because:
    - Track min top and max bottom using `getBoundingClientRect()`
 4. Calculate margins: `topMargin = topmostEdge - viewport.top`, `bottomMargin = viewport.bottom - bottommostEdge`
 5. If `|topMargin - bottomMargin| > 2px`, adjust viewport.y by half the difference
-6. Verify correction with another measurement
+6. **Right margin constraint**: After centering, check if rightmost content edge is within `PADDING_RIGHT` (100px) of viewport right edge. If so, shift viewport left just enough to maintain button spacing.
+7. Verify correction with another measurement
+
+**Key principle**: Content is first centered in the TRUE viewport center (not accounting for buttons), then shifted left ONLY IF it would overlap with the button panel. This keeps small graphs perfectly centered while preventing overlap for wide graphs.
 
 ```javascript
 // Key: measure INNER node content, not React Flow wrapper
