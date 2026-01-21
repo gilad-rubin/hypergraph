@@ -110,9 +110,12 @@ def visualize(
     final_width = width if width is not None else max(400, est_width)
     final_height = height if height is not None else max(200, est_height)
 
+    # Convert graph to NetworkX visualization format
+    viz_graph = graph.to_viz_graph()
+
     # Render graph to React Flow format
     graph_data = render_graph(
-        graph,
+        viz_graph,
         depth=depth,
         theme=theme,
         show_types=show_types,
