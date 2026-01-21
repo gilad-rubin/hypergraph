@@ -150,3 +150,76 @@ class TestEdgeRoutingToCenters:
             f"Edge X={result['edgeEndX']:.1f} not at node center X={result['nodeCenterX']:.1f} (diff={diff_x:.1f})"
         assert diff_y < 20, \
             f"Edge Y={result['edgeEndY']:.1f} not at node top Y={result['nodeTopY']:.1f} (diff={diff_y:.1f})"
+
+    @pytest.mark.asyncio
+    async def test_edge_from_inner_node_starts_at_inner_node(self, nested_graph, tmp_path):
+        """Edge from inner node should START at inner node's center-bottom, not container edge."""
+        from playwright.async_api import async_playwright
+
+        html_path = tmp_path / "test.html"
+        graph_data = render_graph(nested_graph, depth=1)
+        html_content = generate_widget_html(graph_data)
+        html_path.write_text(html_content)
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page(viewport={'width': 1200, 'height': 900})
+            await page.goto(f'file://{html_path}')
+            await page.wait_for_timeout(2000)
+
+            # Get edge START point and inner node position
+            result = await page.evaluate('''() => {
+                // Find edge from preprocess to analyze
+                const edges = document.querySelectorAll('.react-flow__edge');
+                let edge = null;
+                for (const e of edges) {
+                    const testId = e.getAttribute('data-testid') || '';
+                    if (testId.includes('analyze') && testId.includes('preprocess')) {
+                        edge = e.querySelector('path');
+                        break;
+                    }
+                }
+                if (!edge) return { error: 'Edge not found' };
+
+                // Get the inner node that produces the output (normalize)
+                const innerNode = document.querySelector('[data-id="normalize"]');
+                if (!innerNode) return { error: 'Inner node (normalize) not found' };
+
+                // Get visual START point of edge path (point at length 0)
+                const startPoint = edge.getPointAtLength(0);
+
+                // Transform to screen coordinates
+                const svg = edge.ownerSVGElement;
+                const ctm = svg.getScreenCTM();
+                const screenStartX = ctm.a * startPoint.x + ctm.c * startPoint.y + ctm.e;
+                const screenStartY = ctm.b * startPoint.x + ctm.d * startPoint.y + ctm.f;
+
+                // Get inner node center-bottom in screen coordinates
+                const nodeRect = innerNode.getBoundingClientRect();
+                const nodeCenterX = nodeRect.x + nodeRect.width / 2;
+                const nodeBottomY = nodeRect.y + nodeRect.height;
+
+                // Also get container position for debugging
+                const container = document.querySelector('[data-id="preprocess"]');
+                const containerRect = container ? container.getBoundingClientRect() : null;
+
+                return {
+                    edgeStartX: screenStartX,
+                    edgeStartY: screenStartY,
+                    nodeCenterX: nodeCenterX,
+                    nodeBottomY: nodeBottomY,
+                    containerBottom: containerRect ? containerRect.y + containerRect.height : null,
+                };
+            }''')
+
+            await browser.close()
+
+        assert 'error' not in result, result.get('error', '')
+
+        diff_x = abs(result['edgeStartX'] - result['nodeCenterX'])
+        diff_y = abs(result['edgeStartY'] - result['nodeBottomY'])
+
+        assert diff_x < 15, \
+            f"Edge start X={result['edgeStartX']:.1f} not at inner node center X={result['nodeCenterX']:.1f} (diff={diff_x:.1f})"
+        assert diff_y < 15, \
+            f"Edge start Y={result['edgeStartY']:.1f} not at inner node bottom Y={result['nodeBottomY']:.1f} (diff={diff_y:.1f}, container bottom={result.get('containerBottom', 'N/A')})"

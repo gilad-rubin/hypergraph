@@ -205,16 +205,22 @@
     if (data && data.points && data.points.length > 0) {
       // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
       var points = data.points.slice();
-      points[0] = { x: sourceX, y: sourceY };
-      // For edges rerouted to inner nodes, keep the custom target point
-      // (don't override with React Flow's target position which points to the container)
+      // For edges rerouted to inner nodes, keep the custom source/target points
+      // (don't override with React Flow's positions which point to the container)
       if (!data.reroutedToInner) {
+        points[0] = { x: sourceX, y: sourceY };
         points[points.length - 1] = { x: targetX, y: targetY };
       }
 
-      // Simplify "mostly vertical" edges
-      var dx = Math.abs(targetX - sourceX);
-      var dy = Math.abs(targetY - sourceY);
+      // Get actual source/target from points array (may be rerouted to inner nodes)
+      var actualSourceX = points[0].x;
+      var actualSourceY = points[0].y;
+      var actualTargetX = points[points.length - 1].x;
+      var actualTargetY = points[points.length - 1].y;
+
+      // Simplify "mostly vertical" edges - use actual points for comparison
+      var dx = Math.abs(actualTargetX - actualSourceX);
+      var dy = Math.abs(actualTargetY - actualSourceY);
       var isNearlyVertical = dx < 30 && dy > dx * 2;
 
       // curveBasis: B-spline interpolation
@@ -244,13 +250,9 @@
         return path;
       };
 
-      // For rerouted edges, use the actual target point from points array
-      var actualTargetX = points[points.length - 1].x;
-      var actualTargetY = points[points.length - 1].y;
-
       if (isNearlyVertical) {
-        var midY = (sourceY + actualTargetY) / 2;
-        edgePath = 'M ' + sourceX + ' ' + sourceY + ' C ' + sourceX + ' ' + midY + ' ' + actualTargetX + ' ' + midY + ' ' + actualTargetX + ' ' + actualTargetY;
+        var midY = (actualSourceY + actualTargetY) / 2;
+        edgePath = 'M ' + actualSourceX + ' ' + actualSourceY + ' C ' + actualSourceX + ' ' + midY + ' ' + actualTargetX + ' ' + midY + ' ' + actualTargetX + ' ' + actualTargetY;
       } else {
         edgePath = curveBasis(points);
       }

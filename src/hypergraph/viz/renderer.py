@@ -309,6 +309,19 @@ def render_graph(
             },
         }
 
+        # For expanded pipelines, include inner sources for visual routing
+        # This allows edges to start from the inner node that produces the output
+        source_node = graph.nodes.get(source)
+        if isinstance(source_node, GraphNode) and depth > 0 and value_name:
+            inner_graph = source_node.graph
+            # Find which inner node produces this output
+            inner_sources = []
+            for inner_name, inner_node in inner_graph.nodes.items():
+                if value_name in inner_node.outputs:
+                    inner_sources.append(inner_name)
+            if inner_sources:
+                rf_edge["data"]["innerSources"] = inner_sources
+
         # Add label for branch edges
         if edge_type == "control" and isinstance(graph.nodes.get(source), IfElseNode):
             # Determine if this is true or false branch

@@ -503,21 +503,23 @@
       });
     });
 
-    // Position root edges (will be rerouted later if they have innerTargets)
-    var rootEdgesWithInnerTargets = [];
+    // Position root edges (will be rerouted later if they have innerTargets or innerSources)
+    var rootEdgesToReroute = [];
     rootResult.edges.forEach(function(e) {
       var edgeData = e._original.data || {};
       var innerTargets = edgeData.innerTargets;
+      var innerSources = edgeData.innerSources;
 
-      if (innerTargets && innerTargets.length > 0) {
+      if ((innerTargets && innerTargets.length > 0) || (innerSources && innerSources.length > 0)) {
         // Store for later rerouting after child positions are known
-        rootEdgesWithInnerTargets.push({
+        rootEdgesToReroute.push({
           original: e._original,
           points: e.points,
           innerTargets: innerTargets,
+          innerSources: innerSources,
         });
       } else {
-        // No inner targets - use original routed points
+        // No inner targets/sources - use original routed points
         allPositionedEdges.push({
           ...e._original,
           data: { ...e._original.data, points: e.points },
@@ -598,46 +600,74 @@
       });
     });
 
-    // Step 4: Reroute edges with innerTargets now that child positions are known
-    rootEdgesWithInnerTargets.forEach(function(edgeInfo) {
-      var innerTargetId = edgeInfo.innerTargets[0];
-      var innerPos = nodePositions.get(innerTargetId);
-      var innerDims = nodeDimensions.get(innerTargetId);
+    // Step 4: Reroute edges with innerTargets/innerSources now that child positions are known
+    rootEdgesToReroute.forEach(function(edgeInfo) {
+      var innerTargets = edgeInfo.innerTargets;
+      var innerSources = edgeInfo.innerSources;
+      var originalPoints = edgeInfo.points || [];
 
-      if (innerPos && innerDims) {
-        // Get source position from the edge points (first point is source)
-        var sourcePoint = edgeInfo.points && edgeInfo.points.length > 0 ? edgeInfo.points[0] : null;
+      // Start with original points
+      var startPoint = originalPoints.length > 0 ? originalPoints[0] : null;
+      var endPoint = originalPoints.length > 0 ? originalPoints[originalPoints.length - 1] : null;
 
-        if (sourcePoint) {
-          // Create new path to inner node
-          var innerX = innerPos.x + innerDims.width / 2;
-          var innerY = innerPos.y;
+      // Reroute start point if we have innerSources
+      if (innerSources && innerSources.length > 0) {
+        var innerSourceId = innerSources[0];
+        var innerSourcePos = nodePositions.get(innerSourceId);
+        var innerSourceDims = nodeDimensions.get(innerSourceId);
 
-          var newPoints = [
-            sourcePoint,
-            { x: innerX, y: innerY }
-          ];
-
+        if (innerSourcePos && innerSourceDims) {
+          // Start from inner node's center-bottom
+          startPoint = {
+            x: innerSourcePos.x + innerSourceDims.width / 2,
+            y: innerSourcePos.y + innerSourceDims.height
+          };
           if (debugMode) {
-            console.log('[recursive layout] rerouting edge to inner target:', edgeInfo.original.id, innerTargetId, newPoints);
+            console.log('[recursive layout] rerouting edge start to inner source:', edgeInfo.original.id, innerSourceId, startPoint);
           }
-
-          allPositionedEdges.push({
-            ...edgeInfo.original,
-            data: { ...edgeInfo.original.data, points: newPoints, reroutedToInner: true },
-          });
-          return;
         }
       }
 
-      // Fallback: use original points if rerouting failed
-      if (debugMode) {
-        console.log('[recursive layout] could not reroute edge:', edgeInfo.original.id, 'innerPos:', innerPos, 'innerDims:', innerDims);
+      // Reroute end point if we have innerTargets
+      if (innerTargets && innerTargets.length > 0) {
+        var innerTargetId = innerTargets[0];
+        var innerTargetPos = nodePositions.get(innerTargetId);
+        var innerTargetDims = nodeDimensions.get(innerTargetId);
+
+        if (innerTargetPos && innerTargetDims) {
+          // End at inner node's center-top
+          endPoint = {
+            x: innerTargetPos.x + innerTargetDims.width / 2,
+            y: innerTargetPos.y
+          };
+          if (debugMode) {
+            console.log('[recursive layout] rerouting edge end to inner target:', edgeInfo.original.id, innerTargetId, endPoint);
+          }
+        }
       }
-      allPositionedEdges.push({
-        ...edgeInfo.original,
-        data: { ...edgeInfo.original.data, points: edgeInfo.points },
-      });
+
+      // Create new points array
+      var newPoints = [];
+      if (startPoint) newPoints.push(startPoint);
+      if (endPoint && (newPoints.length === 0 || endPoint.x !== startPoint.x || endPoint.y !== startPoint.y)) {
+        newPoints.push(endPoint);
+      }
+
+      if (newPoints.length >= 2) {
+        allPositionedEdges.push({
+          ...edgeInfo.original,
+          data: { ...edgeInfo.original.data, points: newPoints, reroutedToInner: true },
+        });
+      } else {
+        // Fallback: use original points if rerouting failed
+        if (debugMode) {
+          console.log('[recursive layout] could not reroute edge:', edgeInfo.original.id);
+        }
+        allPositionedEdges.push({
+          ...edgeInfo.original,
+          data: { ...edgeInfo.original.data, points: originalPoints },
+        });
+      }
     });
 
     // Step 5: Handle cross-hierarchy edges (edges between root and child nodes)
