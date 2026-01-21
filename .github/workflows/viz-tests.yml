@@ -50,7 +50,7 @@ jobs:
 
       - name: Run geometric verification tests
         run: |
-          uv run pytest tests/viz/test_geometric_verification.py -v
+          uv run pytest tests/viz/test_edge_routing.py -v
 
       - name: Upload test artifacts on failure
         if: failure()
