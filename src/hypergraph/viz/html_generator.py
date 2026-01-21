@@ -1889,63 +1889,86 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
                     const vpRect = vpEl.getBoundingClientRect();
 
-                    // Find topmost and bottommost edges across ALL nodes
-                    let topmostEdge = Infinity;
-                    let bottommostEdge = -Infinity;
-
+                    // Collect all node bounds
+                    const nodeBounds = [];
                     nodeWrappers.forEach(wrapper => {
-                        // Get the INNER visible content, not the React Flow wrapper
                         const innerNode = wrapper.querySelector('.group.rounded-lg') || wrapper.firstElementChild;
                         if (innerNode) {
-                            const rect = innerNode.getBoundingClientRect();
-                            topmostEdge = Math.min(topmostEdge, rect.top);
-                            bottommostEdge = Math.max(bottommostEdge, rect.bottom);
+                            nodeBounds.push(innerNode.getBoundingClientRect());
                         }
                     });
 
-                    // Calculate margins from viewport edges to content bounds
+                    if (nodeBounds.length === 0) return;
+
+                    // Find topmost and bottommost edges across ALL nodes (for vertical centering)
+                    let topmostEdge = Math.min(...nodeBounds.map(r => r.top));
+                    let bottommostEdge = Math.max(...nodeBounds.map(r => r.bottom));
+
+                    // Find the TOPMOST ROW nodes (within 5px of the topmost edge)
+                    const topRowNodes = nodeBounds.filter(r => r.top <= topmostEdge + 5);
+
+                    // Calculate horizontal bounds of topmost row
+                    const topRowLeft = Math.min(...topRowNodes.map(r => r.left));
+                    const topRowRight = Math.max(...topRowNodes.map(r => r.right));
+                    const topRowCenterX = (topRowLeft + topRowRight) / 2;
+                    const viewportCenterX = vpRect.left + vpRect.width / 2;
+
+                    // Calculate margins
                     const topMarginBefore = Math.round(topmostEdge - vpRect.top);
                     const bottomMarginBefore = Math.round(vpRect.bottom - bottommostEdge);
-                    const diffBefore = topMarginBefore - bottomMarginBefore;
+                    const diffY = topMarginBefore - bottomMarginBefore;
 
-                    if (badge) badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diff=' + diffBefore + ')';
+                    // Horizontal offset needed to center topmost row
+                    const diffX = Math.round(topRowCenterX - viewportCenterX);
+
+                    if (badge) badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diffY=' + diffY + ', diffX=' + diffX + ')';
 
                     // Helper to measure current bounds
                     const measureBounds = () => {
-                        let top = Infinity, bottom = -Infinity;
+                        const bounds = [];
                         nodeWrappers.forEach(wrapper => {
                             const inner = wrapper.querySelector('.group.rounded-lg') || wrapper.firstElementChild;
-                            if (inner) {
-                                const r = inner.getBoundingClientRect();
-                                top = Math.min(top, r.top);
-                                bottom = Math.max(bottom, r.bottom);
-                            }
+                            if (inner) bounds.push(inner.getBoundingClientRect());
                         });
+                        if (bounds.length === 0) return { topMargin: 0, bottomMargin: 0, diffX: 0 };
+
+                        const top = Math.min(...bounds.map(r => r.top));
+                        const bottom = Math.max(...bounds.map(r => r.bottom));
+                        const topRow = bounds.filter(r => r.top <= top + 5);
+                        const topRowCenter = (Math.min(...topRow.map(r => r.left)) + Math.max(...topRow.map(r => r.right))) / 2;
+
                         const vp = vpEl.getBoundingClientRect();
                         return {
                             topMargin: Math.round(top - vp.top),
-                            bottomMargin: Math.round(vp.bottom - bottom)
+                            bottomMargin: Math.round(vp.bottom - bottom),
+                            diffX: Math.round(topRowCenter - (vp.left + vp.width / 2))
                         };
                     };
 
-                    // If margins are unequal, correct
-                    if (Math.abs(diffBefore) > 2) {
+                    // Apply corrections if needed (vertical AND horizontal)
+                    const needsYCorrection = Math.abs(diffY) > 2;
+                    const needsXCorrection = Math.abs(diffX) > 2;
+
+                    if (needsYCorrection || needsXCorrection) {
                         const currentVp = getViewport();
-                        const correctedY = currentVp.y - diffBefore / 2;
-                        setViewport({ x: currentVp.x, y: correctedY, zoom: currentVp.zoom }, { duration: 0 });
+                        const correctedY = needsYCorrection ? currentVp.y - diffY / 2 : currentVp.y;
+                        const correctedX = needsXCorrection ? currentVp.x - diffX : currentVp.x;
+                        setViewport({ x: correctedX, y: correctedY, zoom: currentVp.zoom }, { duration: 0 });
 
                         // Measure again after correction (for debug display)
                         requestAnimationFrame(() => {
                             if (!badge && !overlay) return;  // Skip if no debug elements
 
-                            const { topMargin: topMarginAfter, bottomMargin: bottomMarginAfter } = measureBounds();
-                            const diffAfter = topMarginAfter - bottomMarginAfter;
-                            const isOk = Math.abs(diffAfter) <= 2;
+                            const { topMargin: topMarginAfter, bottomMargin: bottomMarginAfter, diffX: diffXAfter } = measureBounds();
+                            const diffYAfter = topMarginAfter - bottomMarginAfter;
+                            const isOkY = Math.abs(diffYAfter) <= 2;
+                            const isOkX = Math.abs(diffXAfter) <= 2;
+                            const isOk = isOkY && isOkX;
 
                             if (badge) {
                                 badge.style.background = isOk ? '#10b981' : '#ef4444';
-                                badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diff=' + diffBefore + ')<br>' +
-                                                 'AFTER:  T=' + topMarginAfter + ' B=' + bottomMarginAfter + ' (diff=' + diffAfter + ') ' +
+                                badge.innerHTML = 'BEFORE: T=' + topMarginBefore + ' B=' + bottomMarginBefore + ' (diffY=' + diffY + ', diffX=' + diffX + ')<br>' +
+                                                 'AFTER:  T=' + topMarginAfter + ' B=' + bottomMarginAfter + ' (diffY=' + diffYAfter + ', diffX=' + diffXAfter + ') ' +
                                                  (isOk ? '✓' : '✗');
                             }
 
