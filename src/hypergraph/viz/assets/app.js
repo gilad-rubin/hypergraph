@@ -890,6 +890,63 @@
         return { x: absX, y: absY };
       };
 
+      // Build node position map for edge validation
+      var nodePositionMap = {};
+      layoutedNodes.forEach(function(n) {
+        if (n.hidden) return;
+        var absPos = getAbsolutePosition(n);
+        nodePositionMap[n.id] = {
+          x: absPos.x,
+          y: absPos.y,
+          width: n.style && n.style.width || 200,
+          height: n.style && n.style.height || 68,
+          nodeType: n.data && n.data.nodeType,
+          label: (n.data && n.data.label) || n.id,
+        };
+      });
+
+      // Validate all edges
+      var edgeValidation = layoutedEdges.map(function(e) {
+        var srcNode = nodePositionMap[e.source];
+        var tgtNode = nodePositionMap[e.target];
+
+        if (!srcNode || !tgtNode) {
+          return {
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            status: 'MISSING',
+            issue: !srcNode ? 'Source not visible' : 'Target not visible',
+          };
+        }
+
+        var srcCenterX = srcNode.x + srcNode.width / 2;
+        var tgtCenterX = tgtNode.x + tgtNode.width / 2;
+        var srcBottom = srcNode.y + srcNode.height;
+        var tgtTop = tgtNode.y;
+        var vertDist = tgtTop - srcBottom;
+        var horizDist = tgtCenterX - srcCenterX;
+
+        var issues = [];
+        if (vertDist < 0) issues.push('Target above source (' + vertDist + 'px)');
+        if (Math.abs(horizDist) > 500) issues.push('Large horizontal gap (' + horizDist + 'px)');
+        if (vertDist > 300) issues.push('Large vertical gap (' + vertDist + 'px)');
+
+        return {
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          sourceLabel: srcNode.label,
+          targetLabel: tgtNode.label,
+          srcBottom: srcBottom,
+          tgtTop: tgtTop,
+          vertDist: vertDist,
+          horizDist: horizDist,
+          status: issues.length > 0 ? 'WARN' : 'OK',
+          issue: issues.length > 0 ? issues.join('; ') : null,
+        };
+      });
+
       root.__hypergraphVizLayout = {
         nodes: layoutedNodes.map(function(n) {
           var absPos = getAbsolutePosition(n);
@@ -909,6 +966,31 @@
           return { id: e.id, source: e.source, target: e.target };
         }),
         version: layoutVersion,
+      };
+
+      // Expose debug data for Python/Playwright extraction
+      root.__hypergraphVizDebug = {
+        version: layoutVersion,
+        timestamp: Date.now(),
+        nodes: Object.keys(nodePositionMap).map(function(id) {
+          var n = nodePositionMap[id];
+          return {
+            id: id,
+            label: n.label,
+            x: n.x,
+            y: n.y,
+            width: n.width,
+            height: n.height,
+            bottom: n.y + n.height,
+            nodeType: n.nodeType,
+          };
+        }),
+        edges: edgeValidation,
+        summary: {
+          totalNodes: Object.keys(nodePositionMap).length,
+          totalEdges: edgeValidation.length,
+          edgeIssues: edgeValidation.filter(function(e) { return e.status !== 'OK'; }).length,
+        },
       };
     }, [layoutedNodes, layoutedEdges, layoutVersion]);
 

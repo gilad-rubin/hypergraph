@@ -13,7 +13,14 @@ Debug:
 """
 
 from hypergraph.viz.widget import visualize, ScrollablePipelineWidget
-from hypergraph.viz.debug import VizDebugger, validate_graph, find_issues
+from hypergraph.viz.debug import (
+    VizDebugger,
+    validate_graph,
+    find_issues,
+    extract_debug_data,
+    RenderedDebugData,
+    RenderedEdge,
+)
 
 __all__ = [
     "visualize",
@@ -21,4 +28,7 @@ __all__ = [
     "VizDebugger",
     "validate_graph",
     "find_issues",
+    "extract_debug_data",
+    "RenderedDebugData",
+    "RenderedEdge",
 ]

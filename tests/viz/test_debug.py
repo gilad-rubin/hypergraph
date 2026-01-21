@@ -376,3 +376,44 @@ class TestCacheInvalidation:
         # Recompute on next access
         _ = debugger.flat_graph
         assert debugger._flat_graph is not None
+
+
+try:
+    import playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestExtractDebugData:
+    """Tests for Playwright-based debug data extraction."""
+
+    def test_extract_debug_data(self):
+        """Test extracting debug data via Playwright."""
+        from hypergraph.viz.debug import extract_debug_data
+
+        graph = Graph(nodes=[double, add_one])
+        data = extract_debug_data(graph, depth=1)
+
+        # Check structure
+        assert data.version > 0
+        assert data.timestamp > 0
+        assert len(data.nodes) >= 2
+        assert len(data.edges) >= 1
+
+        # Check summary
+        assert data.summary["totalNodes"] >= 2
+        assert data.summary["totalEdges"] >= 1
+
+    def test_extract_debug_data_print_report(self, capsys):
+        """Test that print_report works."""
+        from hypergraph.viz.debug import extract_debug_data
+
+        graph = Graph(nodes=[double, add_one])
+        data = extract_debug_data(graph)
+        data.print_report()
+
+        captured = capsys.readouterr()
+        assert "Rendered Debug Data" in captured.out
+        assert "Nodes:" in captured.out

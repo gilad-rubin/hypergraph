@@ -522,3 +522,147 @@ def find_issues(graph: "Graph") -> IssueReport:
         ...     print("Orphan edges:", issues.orphan_edges)
     """
     return VizDebugger(graph).find_issues()
+
+
+@dataclass
+class RenderedEdge:
+    """Edge validation result from rendered visualization."""
+
+    source: str
+    target: str
+    source_label: Optional[str] = None
+    target_label: Optional[str] = None
+    src_bottom: Optional[float] = None
+    tgt_top: Optional[float] = None
+    vert_dist: Optional[float] = None
+    horiz_dist: Optional[float] = None
+    status: str = "OK"
+    issue: Optional[str] = None
+
+
+@dataclass
+class RenderedDebugData:
+    """Debug data extracted from rendered visualization."""
+
+    version: int
+    timestamp: int
+    nodes: list[dict[str, Any]]
+    edges: list[RenderedEdge]
+    summary: dict[str, int]
+
+    @property
+    def edge_issues(self) -> list[RenderedEdge]:
+        """Return edges with issues."""
+        return [e for e in self.edges if e.status != "OK"]
+
+    def print_report(self) -> None:
+        """Print a human-readable report."""
+        print(f"=== Rendered Debug Data ===")
+        print(f"Nodes: {self.summary.get('totalNodes', 0)}")
+        print(f"Edges: {self.summary.get('totalEdges', 0)}")
+        print(f"Edge Issues: {self.summary.get('edgeIssues', 0)}")
+
+        if self.edge_issues:
+            print("\n--- Edge Issues ---")
+            for e in self.edge_issues:
+                print(f"  {e.source} -> {e.target}: {e.issue}")
+                print(f"    srcBottom={e.src_bottom}, tgtTop={e.tgt_top}, "
+                      f"vDist={e.vert_dist}, hDist={e.horiz_dist}")
+        else:
+            print("\nNo edge issues found.")
+
+
+def extract_debug_data(
+    graph: "Graph",
+    *,
+    depth: int = 1,
+    theme: str = "auto",
+    headless: bool = True,
+    timeout: int = 5000,
+) -> RenderedDebugData:
+    """Extract debug data from rendered visualization using Playwright.
+
+    Renders the graph in a headless browser and extracts the edge validation
+    data computed by the JavaScript layout engine.
+
+    Args:
+        graph: Graph to visualize and debug
+        depth: How many levels of nested graphs to expand (default: 1)
+        theme: "dark", "light", or "auto" (default: "auto")
+        headless: Run browser in headless mode (default: True)
+        timeout: Max time to wait for layout in ms (default: 5000)
+
+    Returns:
+        RenderedDebugData with nodes, edges, and validation results
+
+    Raises:
+        ImportError: If playwright is not installed
+        TimeoutError: If layout doesn't complete in time
+
+    Example:
+        >>> data = extract_debug_data(graph)
+        >>> data.print_report()
+        >>> for edge in data.edge_issues:
+        ...     print(f"{edge.source} -> {edge.target}: {edge.issue}")
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise ImportError(
+            "playwright is required for extract_debug_data. "
+            "Install with: pip install playwright && playwright install chromium"
+        )
+
+    import tempfile
+    from hypergraph.viz.widget import visualize
+
+    # Render to temp HTML file
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        temp_path = f.name
+
+    visualize(graph, depth=depth, theme=theme, output=temp_path, _debug_overlays=True)
+
+    # Open in headless browser and extract debug data
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        page = browser.new_page()
+        page.goto(f"file://{temp_path}")
+
+        # Wait for layout to complete (check for __hypergraphVizDebug)
+        page.wait_for_function(
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            timeout=timeout,
+        )
+
+        # Extract debug data
+        debug_data = page.evaluate("window.__hypergraphVizDebug")
+        browser.close()
+
+    # Clean up temp file
+    import os
+    os.unlink(temp_path)
+
+    # Parse into dataclass
+    edges = [
+        RenderedEdge(
+            source=e.get("source", ""),
+            target=e.get("target", ""),
+            source_label=e.get("sourceLabel"),
+            target_label=e.get("targetLabel"),
+            src_bottom=e.get("srcBottom"),
+            tgt_top=e.get("tgtTop"),
+            vert_dist=e.get("vertDist"),
+            horiz_dist=e.get("horizDist"),
+            status=e.get("status", "OK"),
+            issue=e.get("issue"),
+        )
+        for e in debug_data.get("edges", [])
+    ]
+
+    return RenderedDebugData(
+        version=debug_data.get("version", 0),
+        timestamp=debug_data.get("timestamp", 0),
+        nodes=debug_data.get("nodes", []),
+        edges=edges,
+        summary=debug_data.get("summary", {}),
+    )
