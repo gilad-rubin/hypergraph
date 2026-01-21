@@ -326,19 +326,30 @@ crossHierarchyEdges.forEach(function(e) {
 
 When a pipeline container is:
 - **Collapsed**: INPUT_GROUP edges connect to the container itself
-- **Expanded**: INPUT_GROUP edges connect to inner nodes that consume the inputs
+- **Expanded**: INPUT_GROUP edges connect to the container for **layout** but visually route to inner nodes
 
-This is handled in `renderer.py`:
+This two-step approach is necessary because layout positioning uses edge targets:
+1. **renderer.py**: Always creates edge to container, but stores `innerTargets` in edge data
+2. **layout.js**: During root edge positioning, detects `innerTargets` and re-routes the visual path
+
 ```python
-if is_expanded_pipeline:
-    # Find inner nodes that consume these params
-    for param in params:
-        for inner_name, inner_node in inner_graph.nodes.items():
-            if param in inner_node.inputs:
-                edges.append({...source: group_id, target: inner_name...})
-else:
-    # Edge goes to container
-    edges.append({...source: group_id, target: target...})
+# renderer.py - always target container for layout, store inner info for visual
+edges.append({
+    "source": group_id,
+    "target": target,  # Container ID for layout positioning
+    "data": {
+        "edgeType": "input",
+        "innerTargets": inner_targets if inner_targets else None,  # For visual routing
+    },
+})
+```
+
+```javascript
+// layout.js - visually route to inner node if innerTargets present
+if (innerTargets && innerTargets.length > 0) {
+    var innerPos = nodePositions.get(innerTargets[0]);
+    // Create path to inner node instead of container
+}
 ```
 
 ## File Locations

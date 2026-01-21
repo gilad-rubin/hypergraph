@@ -504,7 +504,47 @@
     });
 
     // Position root edges
+    // For edges with innerTargets (INPUT_GROUP -> expanded pipeline), visually route
+    // to the inner node instead of the container boundary
     rootResult.edges.forEach(function(e) {
+      var edgeData = e._original.data || {};
+      var innerTargets = edgeData.innerTargets;
+
+      // Check if this edge should route to an inner node
+      if (innerTargets && innerTargets.length > 0) {
+        // Route to the first inner target
+        var innerTargetId = innerTargets[0];
+        var innerPos = nodePositions.get(innerTargetId);
+        var innerDims = nodeDimensions.get(innerTargetId);
+
+        if (innerPos && innerDims) {
+          // Get source position from the edge points (first point is source)
+          var sourcePoint = e.points && e.points.length > 0 ? e.points[0] : null;
+
+          if (sourcePoint) {
+            // Create new path to inner node
+            var innerX = innerPos.x + innerDims.width / 2;
+            var innerY = innerPos.y;
+
+            var newPoints = [
+              sourcePoint,
+              { x: innerX, y: innerY }
+            ];
+
+            if (debugMode) {
+              console.log('[recursive layout] rerouting edge to inner target:', e.id, innerTargetId, newPoints);
+            }
+
+            allPositionedEdges.push({
+              ...e._original,
+              data: { ...edgeData, points: newPoints, reroutedToInner: true },
+            });
+            return;
+          }
+        }
+      }
+
+      // Default: use the original routed points
       allPositionedEdges.push({
         ...e._original,
         data: { ...e._original.data, points: e.points },
