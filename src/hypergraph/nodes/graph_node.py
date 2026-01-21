@@ -3,6 +3,7 @@
 from typing import Any, Literal, TYPE_CHECKING, TypeVar
 
 from hypergraph.nodes.base import HyperNode, RenameEntry
+from hypergraph.nodes._rename import build_reverse_rename_map
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
@@ -231,6 +232,63 @@ class GraphNode(HyperNode):
             if entry.kind == "inputs" and entry.new == current:
                 current = entry.old
         return current
+
+    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Map renamed input names back to original inner graph parameter names.
+
+        When a GraphNode's inputs are renamed (via with_inputs), this method
+        maps the current/renamed names back to the original parameter names
+        expected by the inner graph.
+
+        Args:
+            inputs: Dict with current (potentially renamed) input names as keys
+
+        Returns:
+            Dict with original inner graph parameter names as keys
+        """
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return inputs
+
+        return {reverse_map.get(key, key): value for key, value in inputs.items()}
+
+    def _original_map_params(self) -> list[str] | None:
+        """Get map_over params translated to original inner graph names.
+
+        Uses build_reverse_rename_map() to handle parallel renames correctly
+        (e.g., with_inputs(x='y', y='x')), matching the semantics of
+        map_inputs_to_params().
+
+        Returns:
+            List of original param names if map_over is set, else None.
+        """
+        if self._map_over is None:
+            return None
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return list(self._map_over)
+        return [reverse_map.get(p, p) for p in self._map_over]
+
+    def map_outputs_from_original(self, outputs: dict[str, Any]) -> dict[str, Any]:
+        """Map original inner graph output names to renamed external names.
+
+        When a GraphNode's outputs are renamed (via with_outputs), this method
+        maps the original names produced by the inner graph to the renamed names
+        expected by the outer graph.
+
+        Args:
+            outputs: Dict with original inner graph output names as keys
+
+        Returns:
+            Dict with renamed (external) output names as keys
+        """
+        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
+        if not reverse_map:
+            return outputs
+
+        # Build forward map (original -> renamed) by inverting reverse map
+        forward_map = {v: k for k, v in reverse_map.items()}
+        return {forward_map.get(key, key): value for key, value in outputs.items()}
 
     def has_default_for(self, param: str) -> bool:
         """Check if a parameter has a default or bound value in the inner graph.
