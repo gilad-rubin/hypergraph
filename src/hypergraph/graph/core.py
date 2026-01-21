@@ -394,6 +394,172 @@ class Graph:
 
         return GraphNode(self, name=name)
 
+    def to_viz_graph(self) -> nx.DiGraph:
+        """Convert graph to NetworkX DiGraph with visualization attributes.
+
+        Creates a flattened NetworkX graph suitable for visualization, with all
+        nested graphs recursively expanded. Each node gets visualization-specific
+        attributes, and edges preserve their types and value names.
+
+        Node attributes:
+            - node_type: "PIPELINE" (GraphNode), "BRANCH" (GateNode), or "FUNCTION"
+            - label: Display name
+            - inputs: Tuple of input parameter names
+            - outputs: Tuple of output value names
+            - input_types: Dict mapping input names to type annotations
+            - output_types: Dict mapping output names to type annotations
+            - has_defaults: Dict mapping input names to bool (has default/bound value)
+            - parent: Parent node ID for nested graphs (None for top-level)
+            - branch_data: Dict with routing info for BRANCH nodes (targets, descriptions)
+
+        Graph attributes:
+            - input_spec: Dict with "required", "optional", "seeds", "bound" keys
+            - name: Graph name (or None)
+
+        Edge attributes:
+            - edge_type: "data" or "control"
+            - value_name: Parameter/value name for data edges
+
+        Returns:
+            NetworkX DiGraph with all visualization attributes attached
+
+        Example:
+            >>> g = Graph([double, add_one])
+            >>> viz_g = g.to_viz_graph()
+            >>> viz_g.nodes['double']['node_type']
+            'FUNCTION'
+            >>> viz_g.graph['input_spec']['required']
+            ('x',)
+        """
+        G = nx.DiGraph()
+
+        # Add graph-level attributes
+        G.graph["input_spec"] = {
+            "required": self.inputs.required,
+            "optional": self.inputs.optional,
+            "seeds": self.inputs.seeds,
+            "bound": dict(self.inputs.bound),
+        }
+        G.graph["name"] = self.name
+
+        # Add all nodes with attributes, recursively flattening nested graphs
+        self._add_viz_nodes(G, parent_id=None)
+
+        # Copy edges with their attributes
+        for u, v, data in self._nx_graph.edges(data=True):
+            G.add_edge(
+                u,
+                v,
+                edge_type=data.get("edge_type", "data"),
+                value_name=data.get("value_name"),
+            )
+
+        return G
+
+    def _add_viz_nodes(
+        self, G: nx.DiGraph, parent_id: str | None
+    ) -> None:
+        """Recursively add nodes to visualization graph.
+
+        For GraphNodes (nested graphs), recursively flattens children with
+        prefixed IDs and parent reference.
+
+        Args:
+            G: NetworkX graph to add nodes to
+            parent_id: Parent node ID for nested graphs (None for top-level)
+        """
+        for node_name, node in self._nodes.items():
+            # Classify node type using duck typing
+            node_type = self._classify_node_type(node)
+
+            # Build node attributes
+            attrs: dict[str, Any] = {
+                "node_type": node_type,
+                "label": node.name,
+                "inputs": node.inputs,
+                "outputs": node.outputs,
+                "input_types": self._get_input_types(node),
+                "output_types": self._get_output_types(node),
+                "has_defaults": self._get_has_defaults(node),
+                "parent": parent_id,
+            }
+
+            # Add branch-specific data for gate nodes
+            if node_type == "BRANCH":
+                attrs["branch_data"] = self._get_branch_data(node)
+
+            G.add_node(node_name, **attrs)
+
+            # Recursively flatten nested graphs
+            if hasattr(node, "graph"):
+                # This is a GraphNode - recursively add its children
+                nested_graph = node.graph
+                nested_graph._add_viz_nodes(G, parent_id=node_name)
+
+    def _classify_node_type(self, node: HyperNode) -> str:
+        """Classify node type using duck typing.
+
+        Uses hasattr checks to avoid importing concrete node types.
+
+        Returns:
+            "PIPELINE" for GraphNode, "BRANCH" for GateNode, "FUNCTION" otherwise
+        """
+        if hasattr(node, "graph"):
+            return "PIPELINE"
+        if hasattr(node, "targets"):
+            return "BRANCH"
+        return "FUNCTION"
+
+    def _get_input_types(self, node: HyperNode) -> dict[str, str | None]:
+        """Get type annotations for node inputs."""
+        result = {}
+        for param in node.inputs:
+            type_obj = node.get_input_type(param)
+            result[param] = self._format_type(type_obj)
+        return result
+
+    def _get_output_types(self, node: HyperNode) -> dict[str, str | None]:
+        """Get type annotations for node outputs."""
+        result = {}
+        for output in node.outputs:
+            type_obj = node.get_output_type(output)
+            result[output] = self._format_type(type_obj)
+        return result
+
+    def _format_type(self, type_obj: type | None) -> str | None:
+        """Format a type annotation for display."""
+        if type_obj is None:
+            return None
+        if hasattr(type_obj, "__name__"):
+            return type_obj.__name__
+        # Handle generic types like list[str], dict[str, int]
+        return str(type_obj).replace("typing.", "")
+
+    def _get_has_defaults(self, node: HyperNode) -> dict[str, bool]:
+        """Check which inputs have defaults or bound values."""
+        return {param: node.has_default_for(param) for param in node.inputs}
+
+    def _get_branch_data(self, node: HyperNode) -> dict[str, Any]:
+        """Extract branch-specific data from gate nodes.
+
+        Args:
+            node: A gate node (has 'targets' attribute)
+
+        Returns:
+            Dict with targets and descriptions
+        """
+        from hypergraph.nodes.gate import END
+
+        # Convert targets to strings (END becomes "END")
+        targets_list = [
+            "END" if t is END else t for t in node.targets  # type: ignore[attr-defined]
+        ]
+
+        return {
+            "targets": targets_list,
+            "descriptions": getattr(node, "descriptions", {}),
+        }
+
     def visualize(
         self,
         *,
