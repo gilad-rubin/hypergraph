@@ -2,7 +2,7 @@
 
 import pytest
 from hypergraph import Graph, node
-from hypergraph.viz.renderer import render_graph, _get_node_type
+from hypergraph.viz.renderer import render_graph
 
 
 @node(output_name="doubled")
@@ -29,7 +29,7 @@ class TestRenderGraph:
     def test_render_single_node(self):
         """Test rendering a graph with a single node."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph)
+        result = render_graph(graph.to_viz_graph())
 
         assert "nodes" in result
         assert "edges" in result
@@ -48,7 +48,7 @@ class TestRenderGraph:
     def test_render_node_outputs(self):
         """Test that node outputs are captured as DATA nodes."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph)
+        result = render_graph(graph.to_viz_graph())
 
         # Outputs are now separate DATA nodes (always created)
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
@@ -60,7 +60,7 @@ class TestRenderGraph:
     def test_render_node_inputs(self):
         """Test that node inputs are captured correctly."""
         graph = Graph(nodes=[add])
-        result = render_graph(graph)
+        result = render_graph(graph.to_viz_graph())
 
         fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
         inputs = fn_node["data"]["inputs"]
@@ -72,7 +72,7 @@ class TestRenderGraph:
     def test_render_multiple_nodes(self):
         """Test rendering a graph with multiple nodes."""
         graph = Graph(nodes=[double, add])
-        result = render_graph(graph)
+        result = render_graph(graph.to_viz_graph())
 
         # Check FUNCTION nodes specifically
         fn_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION"]
@@ -92,7 +92,7 @@ class TestRenderGraph:
             return doubled + 1
 
         graph = Graph(nodes=[double_fn, use_doubled])
-        result = render_graph(graph)
+        result = render_graph(graph.to_viz_graph())
 
         # Edges now flow: INPUT_GROUP → func, func → DATA, DATA → func
         # Check that the data flow edges exist
@@ -109,7 +109,7 @@ class TestRenderGraph:
     def test_render_with_bound_inputs(self):
         """Test that bound inputs are marked correctly."""
         graph = Graph(nodes=[add]).bind(a=5)
-        result = render_graph(graph)
+        result = render_graph(graph.to_viz_graph())
 
         fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
         inputs = fn_node["data"]["inputs"]
@@ -123,7 +123,7 @@ class TestRenderGraph:
     def test_render_options_passthrough(self):
         """Test that options are included in the result."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph, theme="dark", show_types=True, depth=2)
+        result = render_graph(graph.to_viz_graph(), theme="dark", show_types=True, depth=2)
 
         assert result["meta"]["theme_preference"] == "dark"
         assert result["meta"]["show_types"] is True
@@ -134,7 +134,7 @@ class TestRenderGraph:
         inner = Graph(nodes=[double], name="inner")
         outer = Graph(nodes=[inner.as_node(), add])
 
-        result = render_graph(outer, depth=1)
+        result = render_graph(outer.to_viz_graph(), depth=1)
 
         # Should have FUNCTION/PIPELINE nodes from both outer and inner
         fn_and_pipeline_nodes = [
@@ -160,7 +160,7 @@ class TestRenderGraph:
         inner = Graph(nodes=[double], name="inner")
         outer = Graph(nodes=[inner.as_node(), add])
 
-        result = render_graph(outer, depth=0)
+        result = render_graph(outer.to_viz_graph(), depth=0)
 
         # All nodes should be present (children included for click-to-expand)
         # Visibility is controlled by JS based on expansion state
@@ -181,20 +181,3 @@ class TestRenderGraph:
         # Child node should have parentNode reference
         double_node = next(n for n in result["nodes"] if n["id"] == "double")
         assert double_node.get("parentNode") == "inner"
-
-
-class TestGetNodeType:
-    """Tests for _get_node_type function."""
-
-    def test_function_node_type(self):
-        """Test that FunctionNode maps to FUNCTION."""
-        from hypergraph.nodes.function import FunctionNode
-
-        fn = FunctionNode(lambda x: x, output_name="y")
-        assert _get_node_type(fn) == "FUNCTION"
-
-    def test_graph_node_type(self):
-        """Test that GraphNode maps to PIPELINE."""
-        inner = Graph(nodes=[double], name="inner")
-        gn = inner.as_node()
-        assert _get_node_type(gn) == "PIPELINE"
