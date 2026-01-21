@@ -584,9 +584,12 @@
       let lastBlockedRow = -1;
       const blockedRows = [];
 
-      for (let i = source.row + 1; i < target.row; i += 1) {
+      for (let i = source.row + 1; i <= target.row; i += 1) {
         let rowBlocks = false;
         for (const node of rows[i]) {
+          // Skip the target node itself
+          if (node === target) continue;
+
           // Check if this node blocks the natural path
           if (naturalX >= nodeLeft(node) - spaceX * 0.5 &&
               naturalX <= nodeRight(node) + spaceX * 0.5) {
@@ -624,6 +627,9 @@
 
       for (const rowIdx of blockedRows) {
         for (const node of rows[rowIdx]) {
+          // Skip the target node itself
+          if (node === target) continue;
+
           globalNodeLeft = Math.min(globalNodeLeft, nodeLeft(node));
           globalNodeRight = Math.max(globalNodeRight, nodeRight(node));
         }
