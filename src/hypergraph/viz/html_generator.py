@@ -2059,7 +2059,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             type: 'custom',
             sourcePosition: Position.Bottom,
             targetPosition: Position.Top,
-            style: { stroke: theme === 'light' ? '#94a3b8' : '#64748b', strokeWidth: 2 },
+            style: { stroke: theme === 'light' ? 'rgba(148, 163, 184, 0.9)' : 'rgba(100, 116, 139, 0.9)', strokeWidth: 1.5 },
             markerEnd: { type: MarkerType.ArrowClosed, color: theme === 'light' ? '#94a3b8' : '#64748b' },
         };
 

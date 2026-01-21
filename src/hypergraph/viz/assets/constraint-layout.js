@@ -601,8 +601,18 @@
         }
       }
 
-      // If no rows block, no routing needed
+      // If no rows block, add subtle "shoulder" waypoint for gentle fan-out
       if (firstBlockedRow === -1) {
+        const horizontalDist = Math.abs(target.x - source.x);
+        const verticalDist = nodeTop(target) - nodeBottom(source);
+
+        // Only add shoulder if there's significant horizontal distance
+        if (horizontalDist > 20 && verticalDist > 50) {
+          // Subtle fan: move 50% toward target X, at 50% of vertical distance
+          const shoulderX = source.x + (target.x - source.x) * 0.6;
+          const shoulderY = nodeBottom(source) + verticalDist * 0.5;
+          edge.points.push({ x: shoulderX, y: shoulderY });
+        }
         continue;
       }
 
@@ -709,6 +719,7 @@
       let sourceStem, targetStem;
 
       if (orientation === 'vertical') {
+        // Simplified to 2 points to reduce vertical segment
         sourceStem = [
           {
             x: source.x,
@@ -716,14 +727,7 @@
           },
           {
             x: source.x,
-            y: nodeBottom(source) + stemMinSource,
-          },
-          {
-            x: source.x,
-            y:
-              nodeBottom(source) +
-              stemMinSource +
-              Math.min(sourceOffsetY, stemMax),
+            y: nodeBottom(source) + 4,  // Minimal vertical offset
           },
         ];
         targetStem = [
@@ -813,10 +817,10 @@
       minPassageGap: 60, // Increased from 50 for wider passages
       stemUnit: 4,      // Reduced from 8 - smaller stem spread
       stemMinSource: 0,
-      stemMinTarget: 14, // Just enough for arrowhead visibility
+      stemMinTarget: 12, // Just enough for arrowhead visibility
       stemMax: 4,       // Reduced from 10 - minimizes gap at source
       stemSpaceSource: 6,
-      stemSpaceTarget: 10,
+      stemSpaceTarget: 2,
     },
   };
 
