@@ -813,8 +813,8 @@
   const defaultOptions = {
     layout: {
       spaceX: 14,
-      spaceY: 140,      // Vertical spacing between nodes
-      layerSpaceY: 120, // Vertical spacing between layers
+      spaceY: 50,       // Vertical spacing between nodes (node heights handled separately)
+      layerSpaceY: 60,  // Vertical spacing between layers
       spreadX: 2.2,
       padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
