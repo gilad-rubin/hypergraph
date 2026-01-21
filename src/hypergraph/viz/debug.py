@@ -572,7 +572,7 @@ class RenderedDebugData:
             print("\nNo edge issues found.")
 
 
-def extract_debug_data(
+async def _extract_debug_data_async(
     graph: "Graph",
     *,
     depth: int = 1,
@@ -580,40 +580,11 @@ def extract_debug_data(
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
-    """Extract debug data from rendered visualization using Playwright.
-
-    Renders the graph in a headless browser and extracts the edge validation
-    data computed by the JavaScript layout engine.
-
-    Args:
-        graph: Graph to visualize and debug
-        depth: How many levels of nested graphs to expand (default: 1)
-        theme: "dark", "light", or "auto" (default: "auto")
-        headless: Run browser in headless mode (default: True)
-        timeout: Max time to wait for layout in ms (default: 5000)
-
-    Returns:
-        RenderedDebugData with nodes, edges, and validation results
-
-    Raises:
-        ImportError: If playwright is not installed
-        TimeoutError: If layout doesn't complete in time
-
-    Example:
-        >>> data = extract_debug_data(graph)
-        >>> data.print_report()
-        >>> for edge in data.edge_issues:
-        ...     print(f"{edge.source} -> {edge.target}: {edge.issue}")
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise ImportError(
-            "playwright is required for extract_debug_data. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
+    """Async implementation of extract_debug_data."""
+    from playwright.async_api import async_playwright
 
     import tempfile
+    import os
     from hypergraph.viz.widget import visualize
 
     # Render to temp HTML file
@@ -622,27 +593,71 @@ def extract_debug_data(
 
     visualize(graph, depth=depth, theme=theme, output=temp_path, _debug_overlays=True)
 
-    # Open in headless browser and extract debug data
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        page = browser.new_page()
-        page.goto(f"file://{temp_path}")
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            page = await browser.new_page()
+            await page.goto(f"file://{temp_path}")
 
-        # Wait for layout to complete (check for __hypergraphVizDebug)
-        page.wait_for_function(
-            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
-            timeout=timeout,
-        )
+            # Wait for layout to complete
+            await page.wait_for_function(
+                "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                timeout=timeout,
+            )
 
-        # Extract debug data
-        debug_data = page.evaluate("window.__hypergraphVizDebug")
-        browser.close()
+            # Extract debug data
+            debug_data = await page.evaluate("window.__hypergraphVizDebug")
+            await browser.close()
+    finally:
+        os.unlink(temp_path)
 
-    # Clean up temp file
+    return _parse_debug_data(debug_data)
+
+
+def _extract_debug_data_sync(
+    graph: "Graph",
+    *,
+    depth: int = 1,
+    theme: str = "auto",
+    headless: bool = True,
+    timeout: int = 5000,
+) -> RenderedDebugData:
+    """Sync implementation of extract_debug_data."""
+    from playwright.sync_api import sync_playwright
+
+    import tempfile
     import os
-    os.unlink(temp_path)
+    from hypergraph.viz.widget import visualize
 
-    # Parse into dataclass
+    # Render to temp HTML file
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        temp_path = f.name
+
+    visualize(graph, depth=depth, theme=theme, output=temp_path, _debug_overlays=True)
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            page = browser.new_page()
+            page.goto(f"file://{temp_path}")
+
+            # Wait for layout to complete
+            page.wait_for_function(
+                "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                timeout=timeout,
+            )
+
+            # Extract debug data
+            debug_data = page.evaluate("window.__hypergraphVizDebug")
+            browser.close()
+    finally:
+        os.unlink(temp_path)
+
+    return _parse_debug_data(debug_data)
+
+
+def _parse_debug_data(debug_data: dict) -> RenderedDebugData:
+    """Parse raw debug data dict into RenderedDebugData."""
     edges = [
         RenderedEdge(
             source=e.get("source", ""),
@@ -666,3 +681,89 @@ def extract_debug_data(
         edges=edges,
         summary=debug_data.get("summary", {}),
     )
+
+
+def _is_in_async_context() -> bool:
+    """Check if we're running inside an async event loop."""
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def extract_debug_data(
+    graph: "Graph",
+    *,
+    depth: int = 1,
+    theme: str = "auto",
+    headless: bool = True,
+    timeout: int = 5000,
+) -> RenderedDebugData:
+    """Extract debug data from rendered visualization using Playwright.
+
+    Renders the graph in a headless browser and extracts the edge validation
+    data computed by the JavaScript layout engine.
+
+    Automatically uses async API when running in Jupyter/async context.
+
+    Args:
+        graph: Graph to visualize and debug
+        depth: How many levels of nested graphs to expand (default: 1)
+        theme: "dark", "light", or "auto" (default: "auto")
+        headless: Run browser in headless mode (default: True)
+        timeout: Max time to wait for layout in ms (default: 5000)
+
+    Returns:
+        RenderedDebugData with nodes, edges, and validation results
+
+    Raises:
+        ImportError: If playwright is not installed
+        TimeoutError: If layout doesn't complete in time
+
+    Example:
+        >>> data = extract_debug_data(graph)
+        >>> data.print_report()
+        >>> for edge in data.edge_issues:
+        ...     print(f"{edge.source} -> {edge.target}: {edge.issue}")
+    """
+    try:
+        import playwright
+    except ImportError:
+        raise ImportError(
+            "playwright is required for extract_debug_data. "
+            "Install with: pip install playwright && playwright install chromium"
+        )
+
+    if _is_in_async_context():
+        # Running in Jupyter or async context - use nest_asyncio or asyncio.run
+        import asyncio
+        try:
+            import nest_asyncio
+            nest_asyncio.apply()
+        except ImportError:
+            pass
+
+        # Create new event loop for the async call
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _extract_debug_data_async(
+                    graph,
+                    depth=depth,
+                    theme=theme,
+                    headless=headless,
+                    timeout=timeout,
+                )
+            )
+        finally:
+            loop.close()
+    else:
+        return _extract_debug_data_sync(
+            graph,
+            depth=depth,
+            theme=theme,
+            headless=headless,
+            timeout=timeout,
+        )
