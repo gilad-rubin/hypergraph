@@ -556,20 +556,54 @@ class RenderedDebugData:
         return [e for e in self.edges if e.status != "OK"]
 
     def print_report(self) -> None:
-        """Print a human-readable report."""
-        print(f"=== Rendered Debug Data ===")
-        print(f"Nodes: {self.summary.get('totalNodes', 0)}")
-        print(f"Edges: {self.summary.get('totalEdges', 0)}")
-        print(f"Edge Issues: {self.summary.get('edgeIssues', 0)}")
+        """Print a human-readable report with expected vs actual values."""
+        total_nodes = self.summary.get('totalNodes', 0)
+        total_edges = self.summary.get('totalEdges', 0)
+        issue_count = self.summary.get('edgeIssues', 0)
 
-        if self.edge_issues:
-            print("\n--- Edge Issues ---")
-            for e in self.edge_issues:
-                print(f"  {e.source} -> {e.target}: {e.issue}")
-                print(f"    srcBottom={e.src_bottom}, tgtTop={e.tgt_top}, "
-                      f"vDist={e.vert_dist}, hDist={e.horiz_dist}")
+        print(f"=== Edge Validation Report ===")
+        print(f"Nodes: {total_nodes} | Edges: {total_edges} | Issues: {issue_count}")
+        print()
+
+        # Separate valid and invalid edges
+        invalid = [e for e in self.edges if e.status != "OK"]
+        valid = [e for e in self.edges if e.status == "OK"]
+
+        # Print invalid edges first
+        if invalid:
+            print("INVALID EDGES")
+            print("-" * 70)
+            print(f"{'Edge':<35} {'Expected':<15} {'Actual':<15}")
+            print("-" * 70)
+            for e in invalid:
+                edge_name = f"{e.source} → {e.target}"
+                if len(edge_name) > 33:
+                    edge_name = edge_name[:30] + "..."
+                expected = "vDist >= 0"
+                actual = f"vDist = {e.vert_dist}"
+                print(f"{edge_name:<35} {expected:<15} {actual:<15}")
+            print()
+
+        # Print valid edges
+        if valid:
+            print("VALID EDGES")
+            print("-" * 70)
+            print(f"{'Edge':<35} {'vDist':<10} {'hDist':<10}")
+            print("-" * 70)
+            for e in valid:
+                edge_name = f"{e.source} → {e.target}"
+                if len(edge_name) > 33:
+                    edge_name = edge_name[:30] + "..."
+                v = f"{e.vert_dist:.0f}" if e.vert_dist is not None else "N/A"
+                h = f"{e.horiz_dist:.0f}" if e.horiz_dist is not None else "N/A"
+                print(f"{edge_name:<35} {v:<10} {h:<10}")
+            print()
+
+        # Summary
+        if issue_count == 0:
+            print("✓ All edges valid")
         else:
-            print("\nNo edge issues found.")
+            print(f"✗ {issue_count} edge(s) have issues")
 
 
 async def _extract_debug_data_async(

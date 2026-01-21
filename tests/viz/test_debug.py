@@ -415,5 +415,5 @@ class TestExtractDebugData:
         data.print_report()
 
         captured = capsys.readouterr()
-        assert "Rendered Debug Data" in captured.out
+        assert "Edge Validation Report" in captured.out
         assert "Nodes:" in captured.out
