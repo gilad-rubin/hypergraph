@@ -784,6 +784,9 @@
     // Get output_to_producer from routing data
     var outputToProducer = (routingData && routingData.output_to_producer) || {};
 
+    // Get node_to_parent for re-routing edges when containers collapse
+    var nodeToParent = (routingData && routingData.node_to_parent) || {};
+
     edges.forEach(function(e) {
       var edgeKey = e.source + '->' + e.target;
       if (handledEdges.has(edgeKey)) return; // Already positioned
