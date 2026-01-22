@@ -369,3 +369,4 @@ assert edge_after['target'] == 'embed_sentences_internal'
 - **Edge styling**: `html_generator.py` (edgeOptions ~line 2058)
 - **Centering logic**: `html_generator.py` (fitWithFixedPadding ~line 1764)
 - **Node dimensions**: `html_generator.py` (calculateDimensions ~line 1154)
+- **Debugging tools**: `DEBUGGING.md` (comprehensive guide to all debug dataclasses and helpers)
