@@ -13,7 +13,7 @@ Measurement Rules:
 - Node boundaries exclude shadow/glow - measure the actual box element
 - 0px tolerance - any gap is a bug, no "acceptable" deviation
 
-Test Graphs (from notebooks/test_viz_layout.ipynb):
+Test Graphs:
 - simple: 2-node chain (a -> b)
 - chain: 3-node chain (a -> b -> c)
 - workflow: 1-level nesting (preprocess[clean_text, normalize] -> analyze)
@@ -21,7 +21,7 @@ Test Graphs (from notebooks/test_viz_layout.ipynb):
 """
 
 import pytest
-from hypergraph import Graph, node
+from hypergraph import Graph
 from hypergraph.viz.geometry import (
     NodeGeometry,
     EdgeGeometry,
@@ -29,98 +29,23 @@ from hypergraph.viz.geometry import (
     format_issues,
 )
 
-try:
-    import playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
-
-
-# =============================================================================
-# Test Graph Definitions (matching notebooks/test_viz_layout.ipynb)
-# =============================================================================
-
-# --- Simple graphs ---
-@node(output_name="a_out")
-def node_a(x: int) -> int:
-    return x + 1
-
-
-@node(output_name="b_out")
-def node_b(a_out: int) -> int:
-    return a_out * 2
-
-
-@node(output_name="c_out")
-def node_c(b_out: int) -> int:
-    return b_out + 10
-
-
-def make_simple_graph() -> Graph:
-    """Simple 2-node graph: a -> b."""
-    return Graph(nodes=[node_a, node_b])
-
-
-def make_chain_graph() -> Graph:
-    """3-node chain: a -> b -> c."""
-    return Graph(nodes=[node_a, node_b, node_c])
-
-
-# --- 1-level nesting: workflow ---
-@node(output_name="cleaned")
-def clean_text(text: str) -> str:
-    return text.strip()
-
-
-@node(output_name="normalized")
-def normalize_text(cleaned: str) -> str:
-    return cleaned.lower()
-
-
-@node(output_name="result")
-def analyze(normalized: str) -> dict:
-    return {"length": len(normalized)}
-
-
-def make_workflow() -> Graph:
-    """1-level nested graph: preprocess[clean_text, normalize] -> analyze."""
-    preprocess = Graph(nodes=[clean_text, normalize_text], name="preprocess")
-    return Graph(nodes=[preprocess.as_node(), analyze])
-
-
-# --- 2-level nesting: outer ---
-@node(output_name="step1_out")
-def step1(x: int) -> int:
-    return x + 1
-
-
-@node(output_name="step2_out")
-def step2(step1_out: int) -> int:
-    return step1_out * 2
-
-
-@node(output_name="validated")
-def validate(step2_out: int) -> int:
-    return step2_out
-
-
-@node(output_name="logged")
-def log_result(validated: int) -> int:
-    return validated
-
-
-def make_outer() -> Graph:
-    """2-level nested graph: middle[inner[step1, step2], validate] -> log_result."""
-    inner = Graph(nodes=[step1, step2], name="inner")
-    middle = Graph(nodes=[inner.as_node(), validate], name="middle")
-    return Graph(nodes=[middle.as_node(), log_result])
+# Import shared fixtures and helpers from conftest
+from tests.viz.conftest import (
+    HAS_PLAYWRIGHT,
+    make_simple_graph,
+    make_chain_graph,
+    make_workflow,
+    make_outer,
+    extract_inner_bounds_and_edge_paths,
+    convert_layout_to_screen,
+)
 
 
 # =============================================================================
 # Extraction Helper
 # =============================================================================
 
-def extract_geometries(page, graph: Graph, depth: int) -> tuple[dict[str, NodeGeometry], list[EdgeGeometry]]:
+def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry], list[EdgeGeometry]]:
     """Extract node and edge geometry from rendered visualization.
 
     Args:
@@ -185,19 +110,7 @@ def extract_geometries(page, graph: Graph, depth: int) -> tuple[dict[str, NodeGe
         os.unlink(temp_path)
 
 
-# =============================================================================
-# Shared Fixtures
-# =============================================================================
-
-@pytest.fixture
-def page():
-    """Create a Playwright page for testing."""
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        yield page
-        browser.close()
+# Note: page fixture is provided by conftest.py
 
 
 # =============================================================================
