@@ -1294,6 +1294,7 @@
         routingData: {
           output_to_producer: (initialData.meta && initialData.meta.output_to_producer) || {},
           param_to_consumer: (initialData.meta && initialData.meta.param_to_consumer) || {},
+          node_to_parent: (initialData.meta && initialData.meta.node_to_parent) || {},
         },
       };
 

@@ -63,6 +63,8 @@ def render_graph(
     # For JS meta data: use deepest targets (for interactive expand routing)
     param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
     output_to_producer_deepest = _build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+    # For JS meta data: node-to-parent map for routing
+    node_to_parent = _build_node_to_parent_map(flat_graph)
 
     # Create individual INPUT nodes for external inputs
     input_node_map = _create_input_nodes(
@@ -111,6 +113,7 @@ def render_graph(
             # Use deepest targets so interactive expand can route correctly
             "output_to_producer": output_to_producer_deepest,
             "param_to_consumer": param_to_consumer_deepest,
+            "node_to_parent": node_to_parent,
         },
     }
 
@@ -123,6 +126,15 @@ def _build_expansion_state(flat_graph: nx.DiGraph, depth: int) -> dict[str, bool
             parent_id = attrs.get("parent")
             expansion_state[node_id] = _is_node_expanded(node_id, parent_id, depth, flat_graph)
     return expansion_state
+
+
+def _build_node_to_parent_map(flat_graph: nx.DiGraph) -> dict[str, str]:
+    """Build mapping from node name to parent name for routing."""
+    return {
+        node_id: attrs.get("parent")
+        for node_id, attrs in flat_graph.nodes(data=True)
+        if attrs.get("parent") is not None
+    }
 
 
 def _build_param_to_consumer_map(
