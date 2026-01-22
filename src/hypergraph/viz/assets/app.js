@@ -174,9 +174,17 @@
       return ['DATA', 'INPUT', 'INPUT_GROUP'].includes(n.nodeType);
     });
 
-    // Build node position map for edge validation
+    // Build node position map with parent info for edge validation
     var nodeMap = {};
+    var childrenMap = {};  // parentId -> [childIds]
+
+    // First pass: collect all nodes and build children map
     visibleNodes.forEach(function(n) {
+      var parentId = n.parentNode || null;
+      if (parentId) {
+        if (!childrenMap[parentId]) childrenMap[parentId] = [];
+        childrenMap[parentId].push(n.id);
+      }
       nodeMap[n.id] = {
         x: Math.round((n.position && n.position.x) || 0),
         y: Math.round((n.position && n.position.y) || 0),
@@ -184,10 +192,85 @@
         height: Math.round((n.style && n.style.height) || 68),
         nodeType: n.data && n.data.nodeType,
         label: (n.data && n.data.label) || n.id,
+        parentId: parentId,
+        isExpanded: n.data && n.data.isExpanded,
       };
     });
 
-    // Validate edges
+    // Second pass: compute absolute positions and padding info
+    var computeAbsolutePos = function(nodeId) {
+      var node = nodeMap[nodeId];
+      if (!node) return { x: 0, y: 0 };
+      if (node._absX !== undefined) return { x: node._absX, y: node._absY };
+
+      var absX = node.x;
+      var absY = node.y;
+      if (node.parentId && nodeMap[node.parentId]) {
+        var parentAbs = computeAbsolutePos(node.parentId);
+        absX += parentAbs.x;
+        absY += parentAbs.y;
+      }
+      node._absX = absX;
+      node._absY = absY;
+      return { x: absX, y: absY };
+    };
+
+    // Compute absolute positions and padding for all nodes
+    Object.keys(nodeMap).forEach(function(nodeId) {
+      var node = nodeMap[nodeId];
+      var absPos = computeAbsolutePos(nodeId);
+      node.absX = absPos.x;
+      node.absY = absPos.y;
+
+      // Canvas padding (distance from origin)
+      node.canvasPadLeft = absPos.x;
+      node.canvasPadTop = absPos.y;
+
+      // Parent padding (distance from parent edges)
+      if (node.parentId && nodeMap[node.parentId]) {
+        var parent = nodeMap[node.parentId];
+        node.parentPadLeft = node.x;  // relative position IS the left padding
+        node.parentPadTop = node.y;
+        node.parentPadRight = parent.width - node.x - node.width;
+        node.parentPadBottom = parent.height - node.y - node.height;
+        // Centering offset: positive = shifted right of parent center
+        var parentCenterX = parent.width / 2;
+        var nodeCenterX = node.x + node.width / 2;
+        node.centerOffset = Math.round(nodeCenterX - parentCenterX);
+      }
+    });
+
+    // Build list of nodes with their children for NODES tab
+    var nodeDetails = Object.keys(nodeMap).map(function(nodeId) {
+      var node = nodeMap[nodeId];
+      return {
+        id: nodeId,
+        label: node.label,
+        nodeType: node.nodeType,
+        parentId: node.parentId,
+        isExpanded: node.isExpanded,
+        children: childrenMap[nodeId] || [],
+        position: { x: node.x, y: node.y },
+        absPosition: { x: node.absX, y: node.absY },
+        size: { w: node.width, h: node.height },
+        canvasPad: { left: node.canvasPadLeft, top: node.canvasPadTop },
+        parentPad: node.parentId ? {
+          left: node.parentPadLeft,
+          top: node.parentPadTop,
+          right: node.parentPadRight,
+          bottom: node.parentPadBottom,
+          centerOffset: node.centerOffset,
+        } : null,
+      };
+    }).sort(function(a, b) {
+      // Sort: root nodes first, then by parent, then by name
+      if (!a.parentId && b.parentId) return -1;
+      if (a.parentId && !b.parentId) return 1;
+      if (a.parentId !== b.parentId) return (a.parentId || '').localeCompare(b.parentId || '');
+      return a.id.localeCompare(b.id);
+    });
+
+    // Validate edges with boundary-crossing info
     var edgeValidation = edges.map(function(e) {
       var srcNode = nodeMap[e.source];
       var tgtNode = nodeMap[e.target];
@@ -206,13 +289,57 @@
         };
       }
 
-      var srcCenterX = srcNode.x + srcNode.width / 2;
-      var tgtCenterX = tgtNode.x + tgtNode.width / 2;
-      var srcBottom = srcNode.y + srcNode.height;
-      var tgtTop = tgtNode.y;
+      // Use absolute positions for edge validation
+      var srcCenterX = srcNode.absX + srcNode.width / 2;
+      var tgtCenterX = tgtNode.absX + tgtNode.width / 2;
+      var srcBottom = srcNode.absY + srcNode.height;
+      var tgtTop = tgtNode.absY;
 
       var vertDist = tgtTop - srcBottom;
-      var horizDist = tgtCenterX - srcCenterX;
+      var horizDist = Math.round(tgtCenterX - srcCenterX);
+
+      // Check if this is a boundary-crossing edge
+      var srcIsContainer = srcNode.isExpanded && (childrenMap[e.source] || []).length > 0;
+      var tgtIsContainer = tgtNode.isExpanded && (childrenMap[e.target] || []).length > 0;
+
+      // Find logical connection points
+      var logicalSource = e.source;
+      var logicalTarget = e.target;
+      var boundaryInfo = null;
+
+      // If source is expanded container, edge should come from last child
+      if (srcIsContainer) {
+        var srcChildren = childrenMap[e.source] || [];
+        // Find bottommost child (last in data flow)
+        var bottomChild = srcChildren.reduce(function(best, childId) {
+          var child = nodeMap[childId];
+          if (!child) return best;
+          if (!best) return childId;
+          var bestNode = nodeMap[best];
+          return (child.absY + child.height) > (bestNode.absY + bestNode.height) ? childId : best;
+        }, null);
+        if (bottomChild) {
+          logicalSource = bottomChild;
+          boundaryInfo = (boundaryInfo || '') + 'src→' + nodeMap[bottomChild].label + ' ';
+        }
+      }
+
+      // If target is expanded container, edge should go to first child
+      if (tgtIsContainer) {
+        var tgtChildren = childrenMap[e.target] || [];
+        // Find topmost child (first in data flow)
+        var topChild = tgtChildren.reduce(function(best, childId) {
+          var child = nodeMap[childId];
+          if (!child) return best;
+          if (!best) return childId;
+          var bestNode = nodeMap[best];
+          return child.absY < bestNode.absY ? childId : best;
+        }, null);
+        if (topChild) {
+          logicalTarget = topChild;
+          boundaryInfo = (boundaryInfo || '') + 'tgt→' + nodeMap[topChild].label;
+        }
+      }
 
       var issues = [];
       if (vertDist < 0) {
@@ -224,6 +351,9 @@
       if (vertDist > 300) {
         issues.push('Large vertical gap (' + vertDist + 'px)');
       }
+      if (boundaryInfo) {
+        issues.push('Boundary: ' + boundaryInfo.trim());
+      }
 
       return {
         id: e.id,
@@ -231,11 +361,17 @@
         target: e.target,
         srcLabel: srcNode.label,
         tgtLabel: tgtNode.label,
-        status: issues.length > 0 ? 'WARN' : 'OK',
+        logicalSource: logicalSource,
+        logicalTarget: logicalTarget,
+        logicalSrcLabel: logicalSource !== e.source ? (nodeMap[logicalSource] || {}).label : null,
+        logicalTgtLabel: logicalTarget !== e.target ? (nodeMap[logicalTarget] || {}).label : null,
+        srcIsContainer: srcIsContainer,
+        tgtIsContainer: tgtIsContainer,
+        status: issues.length > 0 ? (vertDist < 0 ? 'WARN' : 'INFO') : 'OK',
         issue: issues.join('; ') || null,
-        srcBottom: srcBottom,
-        tgtTop: tgtTop,
-        vertDist: vertDist,
+        srcBottom: Math.round(srcBottom),
+        tgtTop: Math.round(tgtTop),
+        vertDist: Math.round(vertDist),
         horizDist: horizDist,
       };
     });
@@ -274,6 +410,10 @@
                 onClick=${function() { setActiveTab('texts'); }}
                 className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'texts' ? (isLight ? 'bg-cyan-100 text-cyan-800' : 'bg-cyan-900/50 text-cyan-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
               >TEXTS</button>
+              <button
+                onClick=${function() { setActiveTab('nodes'); }}
+                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'nodes' ? (isLight ? 'bg-green-100 text-green-800' : 'bg-green-900/50 text-green-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
+              >NODES</button>
               <button
                 onClick=${function() { setActiveTab('edges'); }}
                 className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'edges' ? (isLight ? 'bg-purple-100 text-purple-800' : 'bg-purple-900/50 text-purple-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
@@ -380,16 +520,58 @@
                 </table>
               </div>
             ` : null}
+            ${showPanel && activeTab === 'nodes' ? html`
+              <div className="overflow-y-auto max-h-[50vh]">
+                <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-green-50 text-green-800' : 'bg-green-900/30 text-green-300')}>
+                  Node positioning: Absolute position, parent padding, center offset | ${nodeDetails.length} nodes
+                </div>
+                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
+                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
+                    <tr>
+                      <th className="px-2 py-1 text-left">Node</th>
+                      <th className="px-2 py-1 text-left">Parent</th>
+                      <th className="px-2 py-1 text-right">AbsX</th>
+                      <th className="px-2 py-1 text-right">AbsY</th>
+                      <th className="px-2 py-1 text-right">W×H</th>
+                      <th className="px-2 py-1 text-right" title="Left/Top/Right/Bottom padding from parent">Pad L/T/R/B</th>
+                      <th className="px-2 py-1 text-right" title="Center offset within parent (+ = right of center)">CtrOff</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${nodeDetails.map(function(n, i) {
+                      var isContainer = n.isExpanded && n.children.length > 0;
+                      var rowClass = isContainer ? (isLight ? '!bg-amber-50' : '!bg-amber-900/20') : '';
+                      var padStr = n.parentPad ? n.parentPad.left + '/' + n.parentPad.top + '/' + n.parentPad.right + '/' + n.parentPad.bottom : '-';
+                      var centerOffClass = n.parentPad && Math.abs(n.parentPad.centerOffset) > 20 ? 'text-amber-500 font-bold' : '';
+                      return html`
+                        <tr key=${n.id} className=${(i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')) + ' ' + rowClass}>
+                          <td className="px-2 py-0.5 truncate max-w-[100px]" title=${n.id + (isContainer ? ' [EXPANDED]' : '') + (n.children.length > 0 ? ' children: ' + n.children.join(', ') : '')}>
+                            ${n.parentId ? '  ' : ''}${n.label}${isContainer ? ' ▼' : ''}
+                          </td>
+                          <td className="px-2 py-0.5 truncate max-w-[60px]" title=${n.parentId || 'root'}>${n.parentId ? nodeMap[n.parentId].label : '-'}</td>
+                          <td className="px-2 py-0.5 text-right">${n.absPosition.x}</td>
+                          <td className="px-2 py-0.5 text-right">${n.absPosition.y}</td>
+                          <td className="px-2 py-0.5 text-right">${n.size.w}×${n.size.h}</td>
+                          <td className="px-2 py-0.5 text-right text-[8px]">${padStr}</td>
+                          <td className=${'px-2 py-0.5 text-right ' + centerOffClass}>${n.parentPad ? n.parentPad.centerOffset : '-'}</td>
+                        </tr>
+                      `;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ` : null}
             ${showPanel && activeTab === 'edges' ? html`
               <div className="overflow-y-auto max-h-[50vh]">
                 <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-purple-50 text-purple-800' : 'bg-purple-900/30 text-purple-300')}>
-                  Edge validation: srcBottom → tgtTop | VertDist should be positive | ${edgeValidation.length} edges, ${edgeIssues.length} issues
+                  Edge validation: srcBottom → tgtTop | V.Dist should be ≥0 | Logical shows actual node connections | ${edgeValidation.length} edges, ${edgeIssues.length} issues
                 </div>
                 <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
                   <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
                     <tr>
                       <th className="px-2 py-1 text-left">Source</th>
                       <th className="px-2 py-1 text-left">Target</th>
+                      <th className="px-2 py-1 text-left" title="Logical connection (what the edge SHOULD connect to)">Logical</th>
                       <th className="px-2 py-1 text-right">SrcBot</th>
                       <th className="px-2 py-1 text-right">TgtTop</th>
                       <th className="px-2 py-1 text-right">V.Dist</th>
@@ -399,12 +581,17 @@
                   </thead>
                   <tbody>
                     ${edgeValidation.map(function(e, i) {
-                      var statusClass = e.status === 'OK' ? 'text-green-500' : e.status === 'WARN' ? 'text-amber-500' : 'text-red-500';
-                      var rowClass = e.status !== 'OK' ? (isLight ? '!bg-amber-50' : '!bg-amber-900/20') : '';
+                      var statusClass = e.status === 'OK' ? 'text-green-500' : e.status === 'WARN' ? 'text-amber-500' : e.status === 'INFO' ? 'text-blue-500' : 'text-red-500';
+                      var rowClass = e.status === 'WARN' ? (isLight ? '!bg-amber-50' : '!bg-amber-900/20') : e.status === 'INFO' ? (isLight ? '!bg-blue-50' : '!bg-blue-900/20') : '';
+                      var logicalStr = '';
+                      if (e.logicalSrcLabel || e.logicalTgtLabel) {
+                        logicalStr = (e.logicalSrcLabel || e.srcLabel) + '→' + (e.logicalTgtLabel || e.tgtLabel);
+                      }
                       return html`
                         <tr key=${e.id} className=${(i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')) + ' ' + rowClass}>
-                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${e.source}>${e.srcLabel || e.source}</td>
-                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${e.target}>${e.tgtLabel || e.target}</td>
+                          <td className=${'px-2 py-0.5 truncate max-w-[70px] ' + (e.srcIsContainer ? 'text-amber-600 font-bold' : '')} title=${e.source + (e.srcIsContainer ? ' [CONTAINER]' : '')}>${e.srcLabel || e.source}</td>
+                          <td className=${'px-2 py-0.5 truncate max-w-[70px] ' + (e.tgtIsContainer ? 'text-amber-600 font-bold' : '')} title=${e.target + (e.tgtIsContainer ? ' [CONTAINER]' : '')}>${e.tgtLabel || e.target}</td>
+                          <td className="px-2 py-0.5 truncate max-w-[90px] text-cyan-600" title=${logicalStr || 'same as rendered'}>${logicalStr || '-'}</td>
                           <td className="px-2 py-0.5 text-right">${e.srcBottom !== null ? e.srcBottom : '-'}</td>
                           <td className="px-2 py-0.5 text-right">${e.tgtTop !== null ? e.tgtTop : '-'}</td>
                           <td className=${'px-2 py-0.5 text-right ' + (e.vertDist !== null && e.vertDist < 0 ? 'text-red-500 font-bold' : '')}>${e.vertDist !== null ? e.vertDist : '-'}</td>
