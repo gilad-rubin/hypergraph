@@ -1102,8 +1102,12 @@
 
       // Validate all edges
       var edgeValidation = layoutedEdges.map(function(e) {
-        var srcNode = nodePositionMap[e.source];
-        var tgtNode = nodePositionMap[e.target];
+        // Use actual routing targets if available (for re-routed edges)
+        var actualSrcId = (e.data && e.data.actualSource) || e.source;
+        var actualTgtId = (e.data && e.data.actualTarget) || e.target;
+
+        var srcNode = nodePositionMap[actualSrcId];
+        var tgtNode = nodePositionMap[actualTgtId];
 
         if (!srcNode || !tgtNode) {
           return {

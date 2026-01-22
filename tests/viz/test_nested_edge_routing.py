@@ -160,6 +160,511 @@ class TestNestedEdgeRouting:
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeRoutingToInternalNodes:
+    """Tests that edges route to actual internal nodes, not container boundaries."""
+
+    def test_workflow_input_edge_visual_target(self):
+        """Test that workflow input edge VISUALLY connects to clean_text, not preprocess.
+
+        This tests the actual rendered edge path, not just validation data.
+        The edge from __inputs__ should visually end at clean_text's position.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        # Render to temp file
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                # Wait for layout
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                # Extract the SVG path of the edge and node positions
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find preprocess and clean_text positions
+                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+                    const cleanText = debug.nodes.find(n => n.id === 'clean_text');
+
+                    // Find the __inputs__ -> preprocess edge by looking for edge with __inputs__ in ID
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let inputEdgePath = null;
+                    let edgeId = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || group.id || '';
+                        // Edge IDs typically contain source-target pattern
+                        if (id.includes('__inputs__') || id.includes('inputs')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                inputEdgePath = path.getAttribute('d');
+                                edgeId = id;
+                                break;
+                            }
+                        }
+                    }
+
+                    // If not found by ID, find edge that starts near __inputs__ position
+                    if (!inputEdgePath) {
+                        const inputsNode = debug.nodes.find(n => n.id === '__inputs__');
+                        if (inputsNode) {
+                            const inputsBottom = inputsNode.y + inputsNode.height;
+                            for (const group of edgeGroups) {
+                                const path = group.querySelector('path');
+                                if (path) {
+                                    const d = path.getAttribute('d');
+                                    // Parse first Y coordinate from path
+                                    const match = d.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                                    if (match) {
+                                        const startY = parseFloat(match[1]);
+                                        // Check if edge starts near __inputs__ bottom
+                                        if (Math.abs(startY - inputsBottom) < 20) {
+                                            inputEdgePath = d;
+                                            edgeId = group.getAttribute('data-testid') || 'found-by-position';
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Parse the last point from the path (target Y coordinate)
+                    let pathEndY = null;
+                    if (inputEdgePath) {
+                        const coords = inputEdgePath.match(/[\\d.]+/g);
+                        if (coords && coords.length >= 2) {
+                            pathEndY = parseFloat(coords[coords.length - 1]);
+                        }
+                    }
+
+                    return {
+                        preprocessTop: preprocess ? preprocess.y : null,
+                        cleanTextTop: cleanText ? cleanText.y : null,
+                        pathEndY: pathEndY,
+                        path: inputEdgePath,
+                        edgeId: edgeId,
+                        allEdgeIds: Array.from(edgeGroups).map(g => g.getAttribute('data-testid') || g.id),
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        preprocess_top = result["preprocessTop"]
+        clean_text_top = result["cleanTextTop"]
+        path_end_y = result["pathEndY"]
+
+        assert clean_text_top is not None, "clean_text node not found"
+        assert path_end_y is not None, f"Could not parse edge path: {result['path']}"
+
+        # The edge should end near clean_text's top, not preprocess's top
+        tolerance = 10
+        connects_to_clean_text = abs(path_end_y - clean_text_top) <= tolerance
+        connects_to_preprocess = abs(path_end_y - preprocess_top) <= tolerance
+
+        assert connects_to_clean_text and not connects_to_preprocess, (
+            f"Edge VISUALLY connects to container, not internal node!\n"
+            f"Edge ID: {result.get('edgeId')}\n"
+            f"Edge path ends at Y={path_end_y}px\n"
+            f"clean_text top: {clean_text_top}px (expected)\n"
+            f"preprocess top: {preprocess_top}px (container)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}...\n"
+            f"All edge IDs: {result.get('allEdgeIds')}"
+        )
+
+    def test_input_edge_routes_to_internal_node(self):
+        """Test that __inputs__ edges connect to internal nodes, not containers.
+
+        When a nested graph is expanded, edges from __inputs__ should connect
+        to the actual consuming node (e.g., step1) not the container (e.g., middle).
+        """
+        from hypergraph.viz import extract_debug_data
+
+        outer = make_outer()
+        data = extract_debug_data(outer, depth=2)
+
+        # Find the edge from __inputs__ to step1 or middle
+        # The visual target should be step1, not middle
+        input_edge = None
+        for edge in data.edges:
+            if edge.source == "__inputs__":
+                input_edge = edge
+                break
+
+        assert input_edge is not None, "No edge from __inputs__ found"
+
+        # Get positions of middle (container) and step1 (internal node)
+        middle_node = None
+        step1_node = None
+        for node in data.nodes:
+            if node.get("id") == "middle":
+                middle_node = node
+            elif node.get("id") == "step1":
+                step1_node = node
+
+        assert step1_node is not None, "step1 node not found in expanded graph"
+
+        # The edge's target top should match step1's top, not middle's top
+        # Allow small tolerance (5px) for rendering differences
+        tolerance = 5
+        step1_top = step1_node.get("y", 0)
+        edge_tgt_top = input_edge.tgt_top
+
+        # This assertion should FAIL if edges connect to containers
+        assert abs(edge_tgt_top - step1_top) <= tolerance, (
+            f"Edge from __inputs__ connects to container boundary, not internal node.\n"
+            f"Edge target top: {edge_tgt_top}px\n"
+            f"step1 top: {step1_top}px (expected)\n"
+            f"middle top: {middle_node.get('y', 0) if middle_node else 'N/A'}px (container)\n"
+            f"The edge should visually connect to step1, not middle."
+        )
+
+    def test_output_edge_routes_from_internal_node(self):
+        """Test that output edges connect from internal nodes, not containers.
+
+        When a nested graph is expanded, edges from internal data nodes should
+        connect from the actual producer (e.g., validate's output), not the container.
+        """
+        from hypergraph.viz import extract_debug_data
+
+        outer = make_outer()
+        data = extract_debug_data(outer, depth=2)
+
+        # Find the edge to log_result
+        output_edge = None
+        for edge in data.edges:
+            if edge.target == "log_result":
+                output_edge = edge
+                break
+
+        assert output_edge is not None, "No edge to log_result found"
+
+        # Get positions of validate's data node and middle's data node
+        validate_data_node = None
+        for node in data.nodes:
+            if "validate" in node.get("id", "") and "data" in node.get("id", ""):
+                validate_data_node = node
+                break
+
+        # The edge should originate from validate's data node, which is inside middle
+        # If it originates from middle's boundary, the source bottom will match middle's bounds
+        middle_node = None
+        for node in data.nodes:
+            if node.get("id") == "middle":
+                middle_node = node
+                break
+
+        # If source bottom is close to middle's bottom, edge connects to container
+        # If source bottom is close to validate_data's bottom, edge connects to internal node
+        if middle_node and validate_data_node:
+            middle_bottom = middle_node.get("y", 0) + middle_node.get("height", 0)
+            validate_bottom = validate_data_node.get("y", 0) + validate_data_node.get("height", 0)
+            edge_src_bottom = output_edge.src_bottom
+
+            # This should FAIL if edge connects to container
+            tolerance = 5
+            connects_to_container = abs(edge_src_bottom - middle_bottom) <= tolerance
+            connects_to_internal = abs(edge_src_bottom - validate_bottom) <= tolerance
+
+            assert not connects_to_container or connects_to_internal, (
+                f"Edge to log_result connects from container boundary, not internal node.\n"
+                f"Edge source bottom: {edge_src_bottom}px\n"
+                f"validate data bottom: {validate_bottom}px (expected)\n"
+                f"middle bottom: {middle_bottom}px (container)\n"
+                f"The edge should visually connect from validate's output."
+            )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestOutputEdgeRouting:
+    """Tests that output edges route from actual internal nodes."""
+
+    def test_workflow_output_edge_visual_source(self):
+        """Test that preprocess -> analyze edge starts from normalize_text's output.
+
+        When a nested graph is expanded, edges FROM the container should
+        visually start from the actual producing node's output, not container boundary.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find preprocess and normalize_text (last node in preprocess)
+                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+                    const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
+                    const dataNormalizeNormalized = debug.nodes.find(n => n.id && n.id.includes('data_normalize'));
+
+                    // Find the preprocess -> analyze edge
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let outputEdgePath = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes('preprocess') && id.includes('analyze')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                outputEdgePath = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse the first Y coordinate from path (source Y)
+                    let pathStartY = null;
+                    if (outputEdgePath) {
+                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                        if (match) {
+                            pathStartY = parseFloat(match[1]);
+                        }
+                    }
+
+                    return {
+                        preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
+                        normalizeTextBottom: normalizeText ? normalizeText.y + normalizeText.height : null,
+                        pathStartY: pathStartY,
+                        path: outputEdgePath,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        preprocess_bottom = result["preprocessBottom"]
+        normalize_text_bottom = result["normalizeTextBottom"]
+        path_start_y = result["pathStartY"]
+
+        assert normalize_text_bottom is not None, "normalize_text node not found"
+        assert path_start_y is not None, f"Could not parse edge path: {result['path']}"
+
+        # The edge should start near normalize_text's bottom (or its data node), not preprocess's bottom
+        tolerance = 15
+        connects_from_internal = abs(path_start_y - normalize_text_bottom) <= tolerance
+        connects_from_container = abs(path_start_y - preprocess_bottom) <= tolerance
+
+        # This test will FAIL if edge starts from container boundary
+        assert connects_from_internal or not connects_from_container, (
+            f"Output edge starts from container boundary, not internal node!\n"
+            f"Edge path starts at Y={path_start_y}px\n"
+            f"normalize_text bottom: {normalize_text_bottom}px (expected)\n"
+            f"preprocess bottom: {preprocess_bottom}px (container)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestCollapsedGraphEdges:
+    """Tests that collapsed graphs have edges connecting properly without gaps."""
+
+    def test_outer_collapsed_no_edge_gap(self):
+        """Test that outer graph with collapsed middle has no visual gap.
+
+        When viewing outer at depth=0 (middle collapsed), the edge from
+        middle -> log_result should connect without a gap.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        # Render with depth=0 (middle collapsed)
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=0, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find middle container
+                    const middle = debug.nodes.find(n => n.id === 'middle');
+
+                    // Find the middle -> log_result edge
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let outputEdgePath = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes('middle') && id.includes('log_result')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                outputEdgePath = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse the first Y coordinate from path (source Y - where edge starts)
+                    let pathStartY = null;
+                    if (outputEdgePath) {
+                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                        if (match) {
+                            pathStartY = parseFloat(match[1]);
+                        }
+                    }
+
+                    return {
+                        middleBottom: middle ? middle.y + middle.height : null,
+                        pathStartY: pathStartY,
+                        path: outputEdgePath,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        middle_bottom = result["middleBottom"]
+        path_start_y = result["pathStartY"]
+
+        assert middle_bottom is not None, "middle node not found"
+        assert path_start_y is not None, f"Could not parse edge path: {result['path']}"
+
+        # Edge should start AT the container bottom (within small tolerance)
+        # A gap of more than 5px indicates the edge isn't connecting properly
+        tolerance = 5
+        gap = abs(path_start_y - middle_bottom)
+
+        assert gap <= tolerance, (
+            f"Collapsed graph has visual gap between container and edge!\n"
+            f"Edge starts at Y={path_start_y}px\n"
+            f"middle bottom: {middle_bottom}px\n"
+            f"Gap: {gap}px (should be <= {tolerance}px)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        )
+
+    def test_workflow_collapsed_no_edge_gap(self):
+        """Test that workflow with collapsed preprocess has no visual gap."""
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        # Render with depth=0 (preprocess collapsed)
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=0, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find preprocess container
+                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+
+                    // Find the preprocess -> analyze edge
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let outputEdgePath = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes('preprocess') && id.includes('analyze')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                outputEdgePath = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse the first Y coordinate from path (source Y - where edge starts)
+                    let pathStartY = null;
+                    if (outputEdgePath) {
+                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                        if (match) {
+                            pathStartY = parseFloat(match[1]);
+                        }
+                    }
+
+                    return {
+                        preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
+                        pathStartY: pathStartY,
+                        path: outputEdgePath,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        preprocess_bottom = result["preprocessBottom"]
+        path_start_y = result["pathStartY"]
+
+        assert preprocess_bottom is not None, "preprocess node not found"
+        assert path_start_y is not None, f"Could not parse edge path: {result['path']}"
+
+        # Edge should start AT the container bottom (within small tolerance)
+        tolerance = 5
+        gap = abs(path_start_y - preprocess_bottom)
+
+        assert gap <= tolerance, (
+            f"Collapsed graph has visual gap between container and edge!\n"
+            f"Edge starts at Y={path_start_y}px\n"
+            f"preprocess bottom: {preprocess_bottom}px\n"
+            f"Gap: {gap}px (should be <= {tolerance}px)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeValidationDetails:
     """Detailed tests for edge validation data."""
 

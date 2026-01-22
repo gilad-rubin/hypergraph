@@ -90,6 +90,10 @@ def render_graph(
     # Create edges from graph structure
     _create_graph_edges(edges, flat_graph, input_spec, expansion_state, output_to_producer)
 
+    # Sort nodes and edges by ID for deterministic ordering (prevents layout flickering)
+    nodes.sort(key=lambda n: n["id"])
+    edges.sort(key=lambda e: e["id"])
+
     return {
         "nodes": nodes,
         "edges": edges,

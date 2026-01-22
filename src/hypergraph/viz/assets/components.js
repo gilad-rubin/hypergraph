@@ -205,12 +205,23 @@
     if (data && data.points && data.points.length > 0) {
       // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
       var points = data.points.slice();
-      points[0] = { x: sourceX, y: sourceY };
-      points[points.length - 1] = { x: targetX, y: targetY };
+
+      // Only use React Flow's source/target positions if edge wasn't re-routed
+      // Re-routed edges have actualSource/actualTarget set and their points
+      // already contain the correct coordinates for the internal nodes
+      var isRerouted = data.actualSource || data.actualTarget;
+      if (!isRerouted) {
+        points[0] = { x: sourceX, y: sourceY };
+        points[points.length - 1] = { x: targetX, y: targetY };
+      }
+
+      // For re-routed edges, use points for position calculations
+      var startPt = points[0];
+      var endPt = points[points.length - 1];
 
       // Simplify "mostly vertical" edges
-      var dx = Math.abs(targetX - sourceX);
-      var dy = Math.abs(targetY - sourceY);
+      var dx = Math.abs(endPt.x - startPt.x);
+      var dy = Math.abs(endPt.y - startPt.y);
       var isNearlyVertical = dx < 30 && dy > dx * 2;
 
       // curveBasis: B-spline interpolation
@@ -241,16 +252,24 @@
       };
 
       if (isNearlyVertical) {
-        var midY = (sourceY + targetY) / 2;
-        edgePath = 'M ' + sourceX + ' ' + sourceY + ' C ' + sourceX + ' ' + midY + ' ' + targetX + ' ' + midY + ' ' + targetX + ' ' + targetY;
+        // Use actual points for nearly-vertical edges (including re-routed ones)
+        var midY = (startPt.y + endPt.y) / 2;
+        edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
       } else {
         edgePath = curveBasis(points);
       }
 
-      var midIdx = Math.floor(points.length / 2);
-      if (points.length > 1) {
-        labelX = (points[midIdx - 1].x + points[midIdx].x) / 2;
-        labelY = (points[midIdx - 1].y + points[midIdx].y) / 2;
+      // Position label at 35% along the path (closer to source) to keep it away from the arrow
+      var labelPos = 0.35;
+      var totalLength = points.length - 1;
+      var labelIdx = Math.floor(totalLength * labelPos);
+      var labelFrac = (totalLength * labelPos) - labelIdx;
+      if (points.length > 1 && labelIdx < points.length - 1) {
+        labelX = points[labelIdx].x + (points[labelIdx + 1].x - points[labelIdx].x) * labelFrac;
+        labelY = points[labelIdx].y + (points[labelIdx + 1].y - points[labelIdx].y) * labelFrac;
+      } else if (points.length > 1) {
+        labelX = (points[0].x + points[1].x) / 2;
+        labelY = (points[0].y + points[1].y) / 2;
       } else {
         labelX = points[0].x;
         labelY = points[0].y;
@@ -261,8 +280,9 @@
         targetX: targetX, targetY: targetY, targetPosition: targetPosition
       });
       edgePath = result[0];
-      labelX = result[1];
-      labelY = result[2];
+      // Position label at 35% along the path (closer to source) to keep it away from the arrow
+      labelX = sourceX + (targetX - sourceX) * 0.35;
+      labelY = sourceY + (targetY - sourceY) * 0.35;
     }
 
     var edgeLabel = label || (data && data.label);

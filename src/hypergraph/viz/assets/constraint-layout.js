@@ -544,11 +544,14 @@
     const rows = groupByRow(nodes, orientation);
 
     // Sort edges by angle for each node (standard algorithm)
+    // Tiebreaker: target node x position for deterministic ordering
     for (const node of nodes) {
       node.targets.sort((a, b) =>
         compare(
           angle(b.sourceNode, b.targetNode, orientation),
-          angle(a.sourceNode, a.targetNode, orientation)
+          angle(a.sourceNode, a.targetNode, orientation),
+          a.targetNode.x,
+          b.targetNode.x
         )
       );
     }
@@ -562,10 +565,13 @@
 
     // Sort edges by span length (ascending) - shorter edges processed first get inner positions
     // Longer edges get processed later and pushed to outer positions
+    // Tiebreaker: target x position (left-to-right) for deterministic ordering
     const sortedEdges = [...edges].sort((a, b) => {
       const spanA = a.targetNode.row - a.sourceNode.row;
       const spanB = b.targetNode.row - b.sourceNode.row;
-      return spanA - spanB;  // Shorter spans first (inner), longer spans later (outer)
+      if (spanA !== spanB) return spanA - spanB;
+      // Tiebreaker: sort by target x position for consistent left-to-right ordering
+      return a.targetNode.x - b.targetNode.x;
     });
 
     for (const edge of sortedEdges) {
@@ -679,7 +685,9 @@
       node.targets.sort((a, b) =>
         compare(
           angle(b.sourceNode, b.points[0] || b.targetNode, orientation),
-          angle(a.sourceNode, a.points[0] || a.targetNode, orientation)
+          angle(a.sourceNode, a.points[0] || a.targetNode, orientation),
+          a.targetNode.x,
+          b.targetNode.x
         )
       );
       node.sources.sort((a, b) =>
@@ -693,7 +701,9 @@
             b.points[b.points.length - 1] || b.sourceNode,
             b.targetNode,
             orientation
-          )
+          ),
+          a.sourceNode.x,
+          b.sourceNode.x
         )
       );
     }

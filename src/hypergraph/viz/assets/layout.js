@@ -692,6 +692,9 @@
         // Store absolute position for edge routing
         nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
 
+        // Store dimensions for edge re-routing (Step 4.5)
+        nodeDimensions.set(n.id, { width: w, height: h });
+
         if (debugMode) {
           console.log('[recursive layout] child', n.id, 'position:', { x: childX, y: childY + HEADER_HEIGHT }, 'parentNode:', n._original.parentNode);
         }
@@ -792,12 +795,19 @@
       var valueName = e.data && e.data.valueName;
       if (valueName && outputToProducer[valueName]) {
         var actualProducer = outputToProducer[valueName];
-        // The DATA node for the actual producer
+        // Try to find the DATA node for the actual producer
         var actualDataNodeId = 'data_' + actualProducer + '_' + valueName;
+
         if (nodePositions.has(actualDataNodeId) && nodeDimensions.has(actualDataNodeId)) {
+          // Use the actual data node position
           actualSrc = actualDataNodeId;
           actualSrcPos = nodePositions.get(actualDataNodeId);
           actualSrcDims = nodeDimensions.get(actualDataNodeId);
+        } else if (nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer)) {
+          // Fall back to the producer function node (edge starts from its bottom)
+          actualSrc = actualProducer;
+          actualSrcPos = nodePositions.get(actualProducer);
+          actualSrcDims = nodeDimensions.get(actualProducer);
         }
       }
 
@@ -822,7 +832,13 @@
 
       allPositionedEdges.push({
         ...e,
-        data: { ...e.data, points: points },
+        data: {
+          ...e.data,
+          points: points,
+          // Store actual routing targets for edge validation
+          actualSource: actualSrc,
+          actualTarget: actualTgt,
+        },
       });
     });
 
