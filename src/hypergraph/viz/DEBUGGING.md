@@ -2,6 +2,48 @@
 
 This guide documents all debugging tools and dataclasses for the hypergraph visualization system. Use these tools to diagnose edge routing, layout, and rendering issues.
 
+---
+
+## For AI Agents: Quick Debugging Checklist
+
+**When debugging edge/layout issues, use this workflow:**
+
+### 1. Pre-render validation (is the graph structure correct?)
+```python
+from hypergraph.viz.debug import VizDebugger
+debugger = VizDebugger(graph)
+issues = debugger.find_issues()
+if issues.has_issues:
+    print(issues)  # Shows orphan edges, missing parents, etc.
+```
+
+### 2. Post-render validation (are edges connecting correctly?)
+```python
+from hypergraph.viz.debug import extract_debug_data
+data = extract_debug_data(graph, depth=1)
+data.print_report()  # Shows expected vs actual for all edges
+```
+
+### 3. Detailed coordinate analysis (in Playwright tests)
+```python
+from tests.viz.conftest import extract_inner_bounds_and_edge_paths, wait_for_debug_ready
+
+# After page.goto(html_file)
+wait_for_debug_ready(page)
+data = extract_inner_bounds_and_edge_paths(page)
+
+# Check specific edge
+for edge in data['edgePaths']:
+    source = data['innerBounds'][edge['source']]
+    print(f"Edge starts at Y={edge['startY']}, source bottom={source['bottom']}")
+    print(f"Gap: {edge['startY'] - source['bottom']}px")
+```
+
+### Key Principle
+CSS `box-shadow` is purely visual and does NOT affect `getBoundingClientRect()`. If edges don't connect to nodes, the problem is a **dimension mismatch** in the layout calculation, not shadows.
+
+---
+
 ## Quick Reference
 
 | Tool | Purpose | When to Use |
