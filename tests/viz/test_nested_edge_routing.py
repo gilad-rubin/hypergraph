@@ -5,67 +5,13 @@ have correct positions (target below source, positive vertical distance).
 """
 
 import pytest
-from hypergraph import Graph, node
 
-try:
-    import playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
-
-
-# =============================================================================
-# Test Graph Definitions (from notebooks/test_viz_layout.ipynb)
-# =============================================================================
-
-# --- 1-level nesting: workflow ---
-@node(output_name="cleaned")
-def clean_text(text: str) -> str:
-    return text.strip()
-
-
-@node(output_name="normalized")
-def normalize_text(cleaned: str) -> str:
-    return cleaned.lower()
-
-
-@node(output_name="result")
-def analyze(normalized: str) -> dict:
-    return {"length": len(normalized)}
-
-
-def make_workflow():
-    """Create 1-level nested graph: preprocess -> analyze."""
-    preprocess = Graph(nodes=[clean_text, normalize_text], name="preprocess")
-    return Graph(nodes=[preprocess.as_node(), analyze])
-
-
-# --- 2-level nesting: outer ---
-@node(output_name="step1_out")
-def step1(x: int) -> int:
-    return x + 1
-
-
-@node(output_name="step2_out")
-def step2(step1_out: int) -> int:
-    return step1_out * 2
-
-
-@node(output_name="validated")
-def validate(step2_out: int) -> int:
-    return step2_out
-
-
-@node(output_name="logged")
-def log_result(validated: int) -> int:
-    return validated
-
-
-def make_outer():
-    """Create 2-level nested graph: middle -> log_result."""
-    inner = Graph(nodes=[step1, step2], name="inner")
-    middle = Graph(nodes=[inner.as_node(), validate], name="middle")
-    return Graph(nodes=[middle.as_node(), log_result])
+# Import shared fixtures and helpers from conftest
+from tests.viz.conftest import (
+    HAS_PLAYWRIGHT,
+    make_workflow,
+    make_outer,
+)
 
 
 # =============================================================================

@@ -14,135 +14,15 @@ Key test strategy:
 """
 
 import pytest
-from hypergraph import Graph, node
 
-try:
-    import playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
-
-
-# =============================================================================
-# Test Graph Definitions (standard workflow for edge testing)
-# =============================================================================
-
-@node(output_name="cleaned")
-def clean_text(text: str) -> str:
-    """First step: clean the input text."""
-    return text.strip()
-
-
-@node(output_name="normalized")
-def normalize_text(cleaned: str) -> str:
-    """Second step: normalize the cleaned text."""
-    return cleaned.lower()
-
-
-@node(output_name="result")
-def analyze(normalized: str) -> dict:
-    """Final step: analyze the normalized text."""
-    return {"length": len(normalized)}
-
-
-def make_workflow():
-    """Create 1-level nested graph: preprocess[clean_text, normalize_text] -> analyze."""
-    preprocess = Graph(nodes=[clean_text, normalize_text], name="preprocess")
-    return Graph(nodes=[preprocess.as_node(), analyze])
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def extract_edge_routing(page) -> dict[str, dict]:
-    """Extract edge routing data from the debug API.
-
-    Returns dict mapping edge ID to routing info:
-    {
-        'edge_id': {
-            'source': 'actual_source_node_id',
-            'target': 'actual_target_node_id',
-            'data': {...}  # includes actualSource, actualTarget if re-routed
-        }
-    }
-    """
-    page.wait_for_function(
-        "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
-        timeout=10000,
-    )
-
-    result = page.evaluate("""() => {
-        const debug = window.__hypergraphVizDebug;
-        const edges = {};
-
-        // Get edges from debug data
-        for (const edge of debug.edges || []) {
-            // Use actual routing targets if available (for re-routed edges)
-            const actualSource = (edge.data && edge.data.actualSource) || edge.source;
-            const actualTarget = (edge.data && edge.data.actualTarget) || edge.target;
-
-            edges[edge.id] = {
-                source: actualSource,
-                target: actualTarget,
-                originalSource: edge.source,
-                originalTarget: edge.target,
-                data: edge.data || {},
-            };
-        }
-
-        return {
-            edges: edges,
-            nodeIds: debug.nodes.map(n => n.id),
-            summary: debug.summary,
-        };
-    }""")
-
-    return result
-
-
-def render_and_extract(page, graph, depth: int, temp_path: str) -> dict:
-    """Render graph at given depth and extract edge routing."""
-    from hypergraph.viz.widget import visualize
-    import os
-
-    visualize(graph, depth=depth, output=temp_path, _debug_overlays=True)
-    page.goto(f"file://{temp_path}")
-    return extract_edge_routing(page)
-
-
-def click_to_expand_container(page, container_id: str) -> None:
-    """Click on a collapsed container node to expand it.
-
-    Waits for layout to settle after expansion.
-    """
-    # Wait for initial layout
-    page.wait_for_function(
-        "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
-        timeout=10000,
-    )
-    initial_version = page.evaluate("window.__hypergraphVizDebug.version")
-
-    # Find and click the container node
-    # React Flow nodes have data-id attribute or id in class
-    node_selector = f'[data-id="{container_id}"], .react-flow__node-custom[id*="{container_id}"]'
-
-    # Try multiple strategies to find the node
-    node_element = page.locator(node_selector).first
-    if node_element.count() == 0:
-        # Fallback: find by node label text
-        node_element = page.locator(f'.react-flow__node:has-text("{container_id}")').first
-
-    node_element.click()
-
-    # Wait for layout to update (version should increment)
-    page.wait_for_function(
-        f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {initial_version}",
-        timeout=10000,
-    )
-
-    # Additional wait for layout to fully settle
-    page.wait_for_timeout(500)
+# Import shared fixtures and helpers from conftest
+from tests.viz.conftest import (
+    HAS_PLAYWRIGHT,
+    make_workflow,
+    extract_edge_routing,
+    render_and_extract,
+    click_to_expand_container,
+)
 
 
 # =============================================================================

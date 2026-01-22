@@ -488,3 +488,226 @@ class TestEdgePositionPrecision:
                 assert gap == 0, (
                     f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
                 )
+
+
+# =============================================================================
+# Tests: Edge-to-Shadow Gap Detection
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeShadowGap:
+    """Tests that edges connect to VISIBLE node boundaries, not shadow boundaries.
+
+    The hypothesis is that existing tests pass because they compare edge positions
+    to wrapper bounds. If edges actually connect to wrapper bounds but we measure
+    against wrapper bounds, the test passes despite a visible gap.
+
+    This test measures the INNER element (the visible node) and compares edge
+    positions to that, which should reveal the shadow gap if it exists.
+    """
+
+    def test_workflow_depth1_edge_to_visible_bounds(self, page, temp_html_file):
+        """Edge endpoints should touch VISIBLE node boundaries (0px gap).
+
+        This test compares edge Y coordinates to INNER element bounds,
+        not wrapper bounds. If there's a shadow gap, this test will fail
+        showing the 6-14px gap.
+        """
+        from hypergraph.viz.widget import visualize
+
+        workflow = make_workflow()
+        visualize(workflow, depth=1, output=temp_html_file, _debug_overlays=True)
+
+        page.goto(f"file://{temp_html_file}")
+        page.wait_for_function(
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            timeout=10000,
+        )
+        page.wait_for_timeout(500)
+
+        # Extract data using our custom method
+        data = extract_inner_bounds_and_edge_paths(page)
+
+        # Analyze the results
+        issues = []
+        gap_details = []
+
+        for edge_path in data['edgePaths']:
+            source_id = edge_path['source']
+            target_id = edge_path['target']
+
+            if not source_id or not target_id:
+                continue
+
+            # Get inner bounds (screen coordinates)
+            source_inner = data['innerBounds'].get(source_id)
+            target_inner = data['innerBounds'].get(target_id)
+
+            # Get shadow offsets
+            source_shadow = data['shadowOffsets'].get(source_id, {})
+            target_shadow = data['shadowOffsets'].get(target_id, {})
+
+            if source_inner and target_inner:
+                # Edge coordinates are in layout space, need to convert to screen
+                transform = data['viewportTransform']
+
+                if transform and edge_path['startY'] is not None:
+                    edge_start_screen_y = convert_layout_to_screen(edge_path['startY'], transform)
+                    edge_end_screen_y = convert_layout_to_screen(edge_path['endY'], transform)
+
+                    # Compare edge Y to INNER element bounds
+                    start_gap = abs(edge_start_screen_y - source_inner['bottom'])
+                    end_gap = abs(edge_end_screen_y - target_inner['top'])
+
+                    gap_details.append({
+                        'edge': f"{source_id} -> {target_id}",
+                        'edge_start_y': edge_start_screen_y,
+                        'edge_end_y': edge_end_screen_y,
+                        'source_inner_bottom': source_inner['bottom'],
+                        'target_inner_top': target_inner['top'],
+                        'start_gap': start_gap,
+                        'end_gap': end_gap,
+                        'source_shadow_bottom_offset': source_shadow.get('bottomOffset', 0),
+                        'target_shadow_top_offset': target_shadow.get('topOffset', 0),
+                    })
+
+                    # Allow small visual gaps due to varying shadow sizes
+                    # shadow-lg (function nodes) = 14px, shadow-sm (data/input) = 6px
+                    tolerance = 5.0
+                    if start_gap > tolerance:
+                        issues.append(
+                            f"{source_id} -> {target_id}: "
+                            f"START gap of {start_gap:.1f}px "
+                            f"(edge_y={edge_start_screen_y:.1f}, inner_bottom={source_inner['bottom']:.1f})"
+                        )
+                    if end_gap > tolerance:
+                        issues.append(
+                            f"{source_id} -> {target_id}: "
+                            f"END gap of {end_gap:.1f}px "
+                            f"(edge_y={edge_end_screen_y:.1f}, inner_top={target_inner['top']:.1f})"
+                        )
+
+        detail_lines = [
+            f"  {d['edge']}: start_gap={d['start_gap']:.1f}px, end_gap={d['end_gap']:.1f}px"
+            for d in gap_details
+        ]
+
+        assert len(issues) == 0, (
+            f"Found {len(issues)} edge-to-visible-boundary gaps!\n\n"
+            f"Issues:\n" + "\n".join(f"  - {issue}" for issue in issues) + "\n\n"
+            f"Gap Details:\n" + "\n".join(detail_lines)
+        )
+
+    def test_outer_depth2_edge_to_visible_bounds(self, page, temp_html_file):
+        """Edge endpoints should touch VISIBLE node boundaries in nested graph.
+
+        Tests the 2-level nested graph at full expansion depth.
+        """
+        from hypergraph.viz.widget import visualize
+
+        outer = make_outer()
+        visualize(outer, depth=2, output=temp_html_file, _debug_overlays=True)
+
+        page.goto(f"file://{temp_html_file}")
+        page.wait_for_function(
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            timeout=10000,
+        )
+        page.wait_for_timeout(500)
+
+        data = extract_inner_bounds_and_edge_paths(page)
+
+        issues = []
+        gap_details = []
+
+        for edge_path in data['edgePaths']:
+            source_id = edge_path['source']
+            target_id = edge_path['target']
+
+            if not source_id or not target_id:
+                continue
+
+            source_inner = data['innerBounds'].get(source_id)
+            target_inner = data['innerBounds'].get(target_id)
+            source_shadow = data['shadowOffsets'].get(source_id, {})
+            target_shadow = data['shadowOffsets'].get(target_id, {})
+
+            if source_inner and target_inner:
+                transform = data['viewportTransform']
+
+                if transform and edge_path['startY'] is not None:
+                    edge_start_screen_y = convert_layout_to_screen(edge_path['startY'], transform)
+                    edge_end_screen_y = convert_layout_to_screen(edge_path['endY'], transform)
+
+                    start_gap = abs(edge_start_screen_y - source_inner['bottom'])
+                    end_gap = abs(edge_end_screen_y - target_inner['top'])
+
+                    gap_details.append({
+                        'edge': f"{source_id} -> {target_id}",
+                        'start_gap': start_gap,
+                        'end_gap': end_gap,
+                        'source_shadow_offset': source_shadow.get('bottomOffset', 0),
+                        'target_shadow_offset': target_shadow.get('topOffset', 0),
+                    })
+
+                    tolerance = 5.0
+                    if start_gap > tolerance:
+                        issues.append(
+                            f"{source_id} -> {target_id}: START gap of {start_gap:.1f}px"
+                        )
+                    if end_gap > tolerance:
+                        issues.append(
+                            f"{source_id} -> {target_id}: END gap of {end_gap:.1f}px"
+                        )
+
+        detail_lines = [
+            f"  {d['edge']}: start_gap={d['start_gap']:.1f}px, end_gap={d['end_gap']:.1f}px "
+            f"(shadow offsets: src={d['source_shadow_offset']:.1f}, tgt={d['target_shadow_offset']:.1f})"
+            for d in gap_details
+        ]
+
+        assert len(issues) == 0, (
+            f"Found {len(issues)} edge-to-visible-boundary gaps in outer depth=2!\n\n"
+            f"Issues:\n" + "\n".join(f"  - {issue}" for issue in issues) + "\n\n"
+            f"Gap Details:\n" + "\n".join(detail_lines)
+        )
+
+    def test_shadow_offset_detection(self, page, temp_html_file):
+        """Verify we can detect shadow offsets between wrapper and inner elements.
+
+        This is a diagnostic test to confirm the test methodology works.
+        If shadow offsets are non-zero, it confirms nodes have shadows that
+        extend beyond the visible element.
+        """
+        from hypergraph.viz.widget import visualize
+
+        workflow = make_workflow()
+        visualize(workflow, depth=1, output=temp_html_file, _debug_overlays=True)
+
+        page.goto(f"file://{temp_html_file}")
+        page.wait_for_function(
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            timeout=10000,
+        )
+        page.wait_for_timeout(500)
+
+        data = extract_inner_bounds_and_edge_paths(page)
+
+        # Report shadow offsets for all nodes
+        shadow_info = []
+        has_shadow = False
+
+        for node_id, offsets in data['shadowOffsets'].items():
+            top_offset = offsets.get('topOffset', 0)
+            bottom_offset = offsets.get('bottomOffset', 0)
+            shadow_info.append(
+                f"  {node_id}: top_offset={top_offset:.1f}px, bottom_offset={bottom_offset:.1f}px"
+            )
+            if abs(top_offset) > 0.5 or abs(bottom_offset) > 0.5:
+                has_shadow = True
+
+        # This test documents the shadow situation - it passes either way
+        # but the output helps understand the node structure
+        print("\n\nShadow Offset Analysis:")
+        print("\n".join(shadow_info))
+        print(f"\nHas significant shadow offsets: {has_shadow}")
