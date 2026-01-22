@@ -151,14 +151,23 @@ def _build_param_to_consumer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     use_deepest: bool = False,
-) -> dict[str, str]:
-    """Build map of param_name -> actual_consumer_node_id.
+) -> dict[str, list[str]]:
+    """Build map of param_name -> list of actual consumer node_ids.
 
     Args:
         use_deepest: If True, include all consumers (for JS interactive routing).
                      If False, only include visible consumers (for static edges).
+
+    Returns:
+        Dict mapping parameter names to list of consumer node IDs.
+        Multiple consumers are supported (e.g., route graphs where multiple
+        functions consume the same input parameter).
+
+        For nested graphs, when a container is expanded, we route to the internal
+        consumer (not the container). When multiple independent consumers exist
+        at the same level (like route targets), all get edges.
     """
-    param_to_consumer: dict[str, str] = {}
+    param_to_consumers: dict[str, list[str]] = {}
 
     for node_id, attrs in flat_graph.nodes(data=True):
         for param in attrs.get("inputs", ()):
@@ -166,15 +175,43 @@ def _build_param_to_consumer_map(
             if not use_deepest and not _is_node_visible(node_id, flat_graph, expansion_state):
                 continue
 
-            if param not in param_to_consumer:
-                param_to_consumer[param] = node_id
-            else:
-                # Prefer the deeper (more specific) consumer
-                existing = param_to_consumer[param]
-                if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
-                    param_to_consumer[param] = node_id
+            if param not in param_to_consumers:
+                param_to_consumers[param] = []
+            param_to_consumers[param].append(node_id)
 
-    return param_to_consumer
+    # For each parameter, filter out containers that have deeper visible consumers
+    # This ensures INPUT edges route to internal nodes, not containers
+    for param, consumers in param_to_consumers.items():
+        if len(consumers) <= 1:
+            continue
+
+        # Keep only consumers that don't have a deeper descendant in the list
+        filtered = []
+        for consumer in consumers:
+            has_deeper_descendant = False
+            for other in consumers:
+                if other == consumer:
+                    continue
+                # Check if 'other' is a descendant of 'consumer'
+                if _is_descendant_of(other, consumer, flat_graph):
+                    has_deeper_descendant = True
+                    break
+            if not has_deeper_descendant:
+                filtered.append(consumer)
+        param_to_consumers[param] = filtered
+
+    return param_to_consumers
+
+
+def _is_descendant_of(node_id: str, ancestor_id: str, flat_graph: nx.DiGraph) -> bool:
+    """Check if node_id is a descendant of ancestor_id."""
+    current = node_id
+    while current is not None:
+        parent = _get_parent(current, flat_graph)
+        if parent == ancestor_id:
+            return True
+        current = parent
+    return False
 
 
 def _build_output_to_producer_map(
@@ -263,7 +300,7 @@ def _create_input_nodes(
     bound_params: set[str],
     theme: str,
     show_types: bool,
-    param_to_consumer: dict[str, str],
+    param_to_consumers: dict[str, list[str]],
     expansion_state: dict[str, bool],
 ) -> dict[str, str]:
     """Create individual INPUT nodes for each external input parameter.
@@ -289,13 +326,13 @@ def _create_input_nodes(
                 if param_type is not None:
                     break
 
-        # Get actual target for edge routing
-        actual_target = param_to_consumer.get(param)
-        if actual_target is None:
+        # Get all targets for edge routing (multiple consumers supported)
+        actual_targets = param_to_consumers.get(param, [])
+        if not actual_targets:
             # Fall back to root-level consumer
             for node_id, attrs in flat_graph.nodes(data=True):
                 if param in attrs.get("inputs", ()):
-                    actual_target = _get_root_ancestor(node_id, flat_graph)
+                    actual_targets = [_get_root_ancestor(node_id, flat_graph)]
                     break
 
         nodes.append({
@@ -307,7 +344,7 @@ def _create_input_nodes(
                 "label": param,
                 "typeHint": _format_type(param_type),
                 "isBound": is_bound,
-                "actualTarget": actual_target,  # Explicit target for edge
+                "actualTargets": actual_targets,  # List of targets for edges
                 "theme": theme,
                 "showTypes": show_types,
             },
@@ -495,17 +532,17 @@ def _create_input_edges(
 ) -> None:
     """Create edges from INPUT nodes to their actual targets.
 
-    Each INPUT node connects directly to its actual consumer node.
-    The target is explicitly computed based on expansion state.
+    Each INPUT node connects to ALL its consumer nodes.
+    The targets are explicitly computed based on expansion state.
     """
     for node in nodes:
         if node.get("data", {}).get("nodeType") != "INPUT":
             continue
 
         input_node_id = node["id"]
-        actual_target = node["data"].get("actualTarget")
+        actual_targets = node["data"].get("actualTargets", [])
 
-        if actual_target:
+        for actual_target in actual_targets:
             edges.append({
                 "id": f"e_{input_node_id}_to_{actual_target}",
                 "source": input_node_id,
@@ -692,19 +729,19 @@ def _compute_edges_for_state(
     """
     edges: list[dict[str, Any]] = []
 
-    # Build param_to_consumer map for this expansion state
-    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
+    # Build param_to_consumers map for this expansion state
+    param_to_consumers = _build_param_to_consumer_map(flat_graph, expansion_state)
 
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
     external_inputs = set(required) | set(optional)
 
-    # 1. Add edges from INPUT nodes to their actual consumers
+    # 1. Add edges from INPUT nodes to ALL their actual consumers
     for param in external_inputs:
         input_node_id = f"input_{param}"
-        actual_target = param_to_consumer.get(param)
+        actual_targets = param_to_consumers.get(param, [])
 
-        if actual_target:
+        for actual_target in actual_targets:
             edges.append({
                 "id": f"e_{input_node_id}_to_{actual_target}",
                 "source": input_node_id,
@@ -732,7 +769,7 @@ def _compute_edges_for_state(
         if value_name:
             edge_id = f"e_{source}_{value_name}_{target}"
 
-        edges.append({
+        rf_edge = {
             "id": edge_id,
             "source": source,
             "target": target,
@@ -742,7 +779,19 @@ def _compute_edges_for_state(
                 "edgeType": edge_type,
                 "valueName": value_name,
             },
-        })
+        }
+
+        # Add label for IfElse branch edges (True/False)
+        if edge_type == "control":
+            source_attrs = flat_graph.nodes.get(source, {})
+            branch_data = source_attrs.get("branch_data", {})
+            if branch_data and "when_true" in branch_data:
+                if target == branch_data["when_true"]:
+                    rf_edge["data"]["label"] = "True"
+                elif target == branch_data["when_false"]:
+                    rf_edge["data"]["label"] = "False"
+
+        edges.append(rf_edge)
 
     return edges
 
