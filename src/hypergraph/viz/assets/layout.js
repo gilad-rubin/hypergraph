@@ -142,9 +142,10 @@
    * @param {Array} nodes - Nodes with visibility applied
    * @param {Array} edges - Edges
    * @param {Map} expansionState - Optional expansion state for recursive layout
+   * @param {Object} routingData - Optional routing data for edge re-routing
    * @returns {Object} { layoutedNodes, layoutedEdges, layoutError, graphHeight, graphWidth, layoutVersion, isLayouting }
    */
-  function useLayout(nodes, edges, expansionState) {
+  function useLayout(nodes, edges, expansionState, routingData) {
     var layoutedNodesState = useState([]);
     var layoutedNodes = layoutedNodesState[0];
     var setLayoutedNodes = layoutedNodesState[1];
@@ -190,7 +191,7 @@
 
         // If we have expansion state, use recursive layout
         if (expansionState && expansionState.size > 0) {
-          var result = performRecursiveLayout(visibleNodes, edges, expansionState, debugMode);
+          var result = performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData);
           setLayoutedNodes(result.nodes);
           setLayoutedEdges(result.edges);
           setLayoutVersion(function(v) { return v + 1; });
@@ -325,7 +326,7 @@
         setLayoutVersion(function(v) { return v + 1; });
         setIsLayouting(false);
       }
-    }, [nodes, edges, expansionState]);
+    }, [nodes, edges, expansionState, routingData]);
 
     return {
       layoutedNodes: layoutedNodes,
@@ -375,9 +376,10 @@
    * @param {Array} edges - All edges
    * @param {Map} expansionState - Which pipelines are expanded
    * @param {boolean} debugMode - Whether to log debug info
+   * @param {Object} routingData - Optional routing data for edge re-routing to actual internal nodes
    * @returns {Object} { nodes, edges, size }
    */
-  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode) {
+  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData) {
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
     var nodeDimensions = new Map();
@@ -737,6 +739,17 @@
       return e.source + '->' + e.target;
     }));
 
+    // Build lookup for INPUT_GROUP actualTargets
+    var inputGroupActualTargets = new Map();
+    visibleNodes.forEach(function(n) {
+      if (n.data && n.data.nodeType === 'INPUT_GROUP' && n.data.actualTargets) {
+        inputGroupActualTargets.set(n.id, n.data.actualTargets);
+      }
+    });
+
+    // Get output_to_producer from routing data
+    var outputToProducer = (routingData && routingData.output_to_producer) || {};
+
     edges.forEach(function(e) {
       var edgeKey = e.source + '->' + e.target;
       if (handledEdges.has(edgeKey)) return; // Already positioned
@@ -752,11 +765,47 @@
 
       if (!srcDims || !tgtDims) return;
 
-      // Compute edge points: source bottom center -> target top center
-      var srcCenterX = srcPos.x + srcDims.width / 2;
-      var srcBottomY = srcPos.y + srcDims.height;
-      var tgtCenterX = tgtPos.x + tgtDims.width / 2;
-      var tgtTopY = tgtPos.y;
+      // Step 4.5: Re-route edges to actual internal nodes when expanded
+      var actualSrc = e.source;
+      var actualTgt = e.target;
+      var actualSrcPos = srcPos;
+      var actualTgtPos = tgtPos;
+      var actualSrcDims = srcDims;
+      var actualTgtDims = tgtDims;
+
+      // For INPUT_GROUP edges, route to actual target if available
+      if (inputGroupActualTargets.has(e.source)) {
+        var actualTargets = inputGroupActualTargets.get(e.source);
+        // Find which actual target has a position (is visible)
+        for (var i = 0; i < actualTargets.length; i++) {
+          var at = actualTargets[i];
+          if (nodePositions.has(at) && nodeDimensions.has(at)) {
+            actualTgt = at;
+            actualTgtPos = nodePositions.get(at);
+            actualTgtDims = nodeDimensions.get(at);
+            break;
+          }
+        }
+      }
+
+      // For data edges, route from actual producer if available
+      var valueName = e.data && e.data.valueName;
+      if (valueName && outputToProducer[valueName]) {
+        var actualProducer = outputToProducer[valueName];
+        // The DATA node for the actual producer
+        var actualDataNodeId = 'data_' + actualProducer + '_' + valueName;
+        if (nodePositions.has(actualDataNodeId) && nodeDimensions.has(actualDataNodeId)) {
+          actualSrc = actualDataNodeId;
+          actualSrcPos = nodePositions.get(actualDataNodeId);
+          actualSrcDims = nodeDimensions.get(actualDataNodeId);
+        }
+      }
+
+      // Compute edge points using actual (re-routed) positions
+      var srcCenterX = actualSrcPos.x + actualSrcDims.width / 2;
+      var srcBottomY = actualSrcPos.y + actualSrcDims.height;
+      var tgtCenterX = actualTgtPos.x + actualTgtDims.width / 2;
+      var tgtTopY = actualTgtPos.y;
 
       // Simple 2-point edge for cross-boundary connections
       var points = [
@@ -765,7 +814,9 @@
       ];
 
       if (debugMode) {
+        var rerouted = (actualSrc !== e.source || actualTgt !== e.target);
         console.log('[recursive layout] cross-boundary edge', e.source, '->', e.target,
+          rerouted ? '(rerouted to ' + actualSrc + ' -> ' + actualTgt + ')' : '',
           'srcBottom:', srcBottomY, 'tgtTop:', tgtTopY);
       }
 

@@ -99,6 +99,9 @@ def render_graph(
             "separate_outputs": separate_outputs,
             "show_types": show_types,
             "debug_overlays": debug_overlays,
+            # Routing data for JS to re-route edges to actual internal nodes
+            "output_to_producer": output_to_producer,
+            "param_to_consumer": param_to_consumer,
         },
     }
 

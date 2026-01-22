@@ -585,7 +585,6 @@
                title=${data.label}>
             <${Icon} />
             ${truncateLabel(data.label)}
-            <span className="text-[9px] opacity-60 normal-case font-normal ml-1">Click to collapse</span>
           </button>
           <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" />
           <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" />

@@ -867,8 +867,16 @@
       return { nodes: nodesWithVisibility, edges: compressedEdges };
     }, [nodesWithVisibility, compressedEdges]);
 
+    // Get routing data from initialData meta for edge re-routing
+    var routingData = useMemo(function() {
+      return {
+        output_to_producer: (initialData.meta && initialData.meta.output_to_producer) || {},
+        param_to_consumer: (initialData.meta && initialData.meta.param_to_consumer) || {},
+      };
+    }, [initialData]);
+
     // Run layout
-    var layoutResult = useLayout(grouped.nodes, grouped.edges, expansionState);
+    var layoutResult = useLayout(grouped.nodes, grouped.edges, expansionState, routingData);
     var rawLayoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
