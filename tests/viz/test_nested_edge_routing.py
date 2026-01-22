@@ -985,3 +985,132 @@ class TestNestedGraphPadding:
                 f"Node {node.get('id')} has asymmetric vertical padding: "
                 f"top={top}, bottom={bottom}, diff={v_diff}"
             )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestNodeToParentDebugAPI:
+    """Tests that node_to_parent map is exposed via debug API for routing."""
+
+    def test_node_to_parent_exposed_in_debug_api(self):
+        """Test that node_to_parent is accessible via debug API routingData.
+
+        The node_to_parent map is critical for edge routing when containers
+        are collapsed - it allows JavaScript to find visible ancestors.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+                    return {
+                        hasRoutingData: !!debug.routingData,
+                        hasNodeToParent: !!(debug.routingData && debug.routingData.node_to_parent),
+                        nodeToParent: debug.routingData ? debug.routingData.node_to_parent : null,
+                        allKeys: debug.routingData ? Object.keys(debug.routingData) : [],
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        assert result["hasRoutingData"], "routingData not found in debug API"
+        assert result["hasNodeToParent"], (
+            f"node_to_parent not found in routingData. Available keys: {result['allKeys']}"
+        )
+
+        node_to_parent = result["nodeToParent"]
+        assert isinstance(node_to_parent, dict), f"node_to_parent should be dict, got {type(node_to_parent)}"
+
+        # Verify expected mappings for workflow graph
+        # workflow has: preprocess[clean_text, normalize_text] -> analyze
+        # So clean_text and normalize_text should have preprocess as parent
+        assert node_to_parent.get("clean_text") == "preprocess", (
+            f"clean_text should have parent 'preprocess', got: {node_to_parent.get('clean_text')}"
+        )
+        assert node_to_parent.get("normalize_text") == "preprocess", (
+            f"normalize_text should have parent 'preprocess', got: {node_to_parent.get('normalize_text')}"
+        )
+
+        # analyze and preprocess are at root level, so no parent
+        assert "analyze" not in node_to_parent or node_to_parent.get("analyze") is None
+        assert "preprocess" not in node_to_parent or node_to_parent.get("preprocess") is None
+
+    def test_node_to_parent_deeply_nested(self):
+        """Test node_to_parent for deeply nested graphs (2+ levels).
+
+        For outer graph: middle[inner[step1, step2], validate] -> log_result
+        - step1, step2 should have parent 'inner'
+        - inner, validate should have parent 'middle'
+        - middle, log_result should have no parent
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                node_to_parent = page.evaluate(
+                    "window.__hypergraphVizDebug.routingData.node_to_parent"
+                )
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        assert node_to_parent is not None, "node_to_parent not found"
+
+        # Level 1: step1, step2 inside inner
+        assert node_to_parent.get("step1") == "inner", (
+            f"step1 should have parent 'inner', got: {node_to_parent.get('step1')}"
+        )
+        assert node_to_parent.get("step2") == "inner", (
+            f"step2 should have parent 'inner', got: {node_to_parent.get('step2')}"
+        )
+
+        # Level 2: inner, validate inside middle
+        assert node_to_parent.get("inner") == "middle", (
+            f"inner should have parent 'middle', got: {node_to_parent.get('inner')}"
+        )
+        assert node_to_parent.get("validate") == "middle", (
+            f"validate should have parent 'middle', got: {node_to_parent.get('validate')}"
+        )
+
+        # Root level: no parent
+        assert "middle" not in node_to_parent or node_to_parent.get("middle") is None
+        assert "log_result" not in node_to_parent or node_to_parent.get("log_result") is None
