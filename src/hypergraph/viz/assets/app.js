@@ -1143,6 +1143,8 @@
           horizDist: horizDist,
           status: issues.length > 0 ? 'WARN' : 'OK',
           issue: issues.length > 0 ? issues.join('; ') : null,
+          // Include edge data for actualSource/actualTarget access
+          data: e.data,
         };
       });
 
@@ -1168,12 +1170,22 @@
       };
 
       // Build edge ID to source/target lookup from layouted edges
+      // Use actualSource/actualTarget if available (for edges routed to internal nodes)
       var edgeLookup = {};
       layoutedEdges.forEach(function(e) {
+        // For cross-boundary edges, use actual routing targets (the internal nodes
+        // the edge visually connects to, not the container nodes)
+        var source = (e.data && e.data.actualSource) || e.source;
+        var target = (e.data && e.data.actualTarget) || e.target;
+
+        // Strip expansion suffix from source/target (e.g., "preprocess_exp_preprocess" -> "preprocess")
+        source = source.replace(/_exp_.*$/, '');
+        target = target.replace(/_exp_.*$/, '');
+
         // Handle ID suffix from expansion key (e.g., "e_node_a_node_b_exp_")
         var baseId = e.id.replace(/_exp_.*$/, '');
-        edgeLookup[baseId] = { source: e.source, target: e.target };
-        edgeLookup[e.id] = { source: e.source, target: e.target };
+        edgeLookup[baseId] = { source: source, target: target };
+        edgeLookup[e.id] = { source: source, target: target };
       });
 
       // Extract edge path endpoints from rendered SVG for precise validation
@@ -1197,21 +1209,25 @@
           var testId = group.getAttribute('data-testid') || '';
           var edgeId = testId.replace('rf__edge-', '');
 
+          // Strip expansion suffix before lookup (suffix is added for React re-rendering)
+          var cleanEdgeId = edgeId.replace(/_exp_.*$/, '');
+
           // Look up source and target from our edge data
-          var edgeData = edgeLookup[edgeId];
+          var edgeData = edgeLookup[cleanEdgeId];
           var source = edgeData ? edgeData.source : null;
           var target = edgeData ? edgeData.target : null;
 
-          // Fallback: try parsing from ID if lookup fails
+          // Fallback: try parsing from ID if lookup still fails
           if (!source || !target) {
+
             // Try e_{source}_to_{target} format
-            var toMatch = edgeId.match(/^e_(.+)_to_(.+)$/);
+            var toMatch = cleanEdgeId.match(/^e_(.+)_to_(.+)$/);
             if (toMatch) {
               source = toMatch[1];
               target = toMatch[2];
             } else {
               // Try e_{source}_{target}_{value} format (underscore-separated)
-              var parts = edgeId.replace(/^e_/, '').split('_');
+              var parts = cleanEdgeId.replace(/^e_/, '').split('_');
               if (parts.length >= 2) {
                 // Last part might be value, second-to-last is target
                 // This is a heuristic - may not always be correct
@@ -1220,6 +1236,10 @@
               }
             }
           }
+
+          // Final cleanup: strip any remaining expansion suffixes
+          if (source) source = source.replace(/_exp_.*$/, '');
+          if (target) target = target.replace(/_exp_.*$/, '');
 
           edgePaths.push({
             id: edgeId,
@@ -1252,10 +1272,24 @@
         }),
         edges: edgeValidation,
         edgePaths: extractEdgePathEndpoints(),
+        // Raw layouted edges for debugging edge data (valueName, actualSource, etc.)
+        layoutedEdges: layoutedEdges.map(function(e) {
+          return {
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            data: e.data,
+          };
+        }),
         summary: {
           totalNodes: Object.keys(nodePositionMap).length,
           totalEdges: edgeValidation.length,
           edgeIssues: edgeValidation.filter(function(e) { return e.status !== 'OK'; }).length,
+        },
+        // Routing data for debugging edge re-routing
+        routingData: {
+          output_to_producer: (initialData.meta && initialData.meta.output_to_producer) || {},
+          param_to_consumer: (initialData.meta && initialData.meta.param_to_consumer) || {},
         },
       };
 

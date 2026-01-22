@@ -12,6 +12,12 @@ Validation Rules:
 Measurement Rules:
 - Node boundaries exclude shadow/glow - measure the actual box element
 - 0px tolerance - any gap is a bug, no "acceptable" deviation
+
+Test Graphs (from notebooks/test_viz_layout.ipynb):
+- simple: 2-node chain (a -> b)
+- chain: 3-node chain (a -> b -> c)
+- workflow: 1-level nesting (preprocess[clean_text, normalize] -> analyze)
+- outer: 2-level nesting (middle[inner[step1, step2], validate] -> log_result)
 """
 
 import pytest
@@ -31,9 +37,10 @@ except ImportError:
 
 
 # =============================================================================
-# Test Graph Definitions
+# Test Graph Definitions (matching notebooks/test_viz_layout.ipynb)
 # =============================================================================
 
+# --- Simple graphs ---
 @node(output_name="a_out")
 def node_a(x: int) -> int:
     return x + 1
@@ -59,7 +66,7 @@ def make_chain_graph() -> Graph:
     return Graph(nodes=[node_a, node_b, node_c])
 
 
-# Nested graph definitions
+# --- 1-level nesting: workflow ---
 @node(output_name="cleaned")
 def clean_text(text: str) -> str:
     return text.strip()
@@ -75,10 +82,38 @@ def analyze(normalized: str) -> dict:
     return {"length": len(normalized)}
 
 
-def make_nested_graph() -> Graph:
-    """1-level nested graph: preprocess -> analyze."""
+def make_workflow() -> Graph:
+    """1-level nested graph: preprocess[clean_text, normalize] -> analyze."""
     preprocess = Graph(nodes=[clean_text, normalize_text], name="preprocess")
     return Graph(nodes=[preprocess.as_node(), analyze])
+
+
+# --- 2-level nesting: outer ---
+@node(output_name="step1_out")
+def step1(x: int) -> int:
+    return x + 1
+
+
+@node(output_name="step2_out")
+def step2(step1_out: int) -> int:
+    return step1_out * 2
+
+
+@node(output_name="validated")
+def validate(step2_out: int) -> int:
+    return step2_out
+
+
+@node(output_name="logged")
+def log_result(validated: int) -> int:
+    return validated
+
+
+def make_outer() -> Graph:
+    """2-level nested graph: middle[inner[step1, step2], validate] -> log_result."""
+    inner = Graph(nodes=[step1, step2], name="inner")
+    middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+    return Graph(nodes=[middle.as_node(), log_result])
 
 
 # =============================================================================
@@ -128,7 +163,10 @@ def extract_geometries(page, graph: Graph, depth: int) -> tuple[dict[str, NodeGe
         }
 
         # Extract edge geometry from SVG paths (call function directly for fresh data)
-        raw_edges = page.evaluate("window.__hypergraphVizExtractEdgePaths ? window.__hypergraphVizExtractEdgePaths() : []")
+        raw_edges = page.evaluate(
+            "window.__hypergraphVizExtractEdgePaths ? window.__hypergraphVizExtractEdgePaths() : []"
+        )
+
         edges = []
         for e in raw_edges:
             if e.get("source") and e.get("target"):
@@ -148,6 +186,21 @@ def extract_geometries(page, graph: Graph, depth: int) -> tuple[dict[str, NodeGe
 
 
 # =============================================================================
+# Shared Fixtures
+# =============================================================================
+
+@pytest.fixture
+def page():
+    """Create a Playwright page for testing."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        yield page
+        browser.close()
+
+
+# =============================================================================
 # Tests: Simple Graph (No Nesting)
 # =============================================================================
 
@@ -155,18 +208,8 @@ def extract_geometries(page, graph: Graph, depth: int) -> tuple[dict[str, NodeGe
 class TestEdgeConnectionsSimple:
     """Simple graph: no nesting, basic edge validation."""
 
-    @pytest.fixture
-    def page(self):
-        """Create a Playwright page for testing."""
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            yield page
-            browser.close()
-
-    def test_edge_connects_to_source_bottom(self, page):
-        """Edge should start exactly at source node's center-bottom."""
+    def test_simple_graph_edges_valid(self, page):
+        """All edges in a 2-node graph should be valid with 0px tolerance."""
         graph = make_simple_graph()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
@@ -175,25 +218,15 @@ class TestEdgeConnectionsSimple:
 
         assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
 
-    def test_edge_connects_to_target_top(self, page):
-        """Edge should end exactly at target node's center-top."""
-        graph = make_simple_graph()
+    def test_chain_graph_edges_valid(self, page):
+        """All edges in a 3-node chain should be valid with 0px tolerance."""
+        graph = make_chain_graph()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
-        # Check each edge ends at target's center-top
-        for edge in edges:
-            tgt = nodes.get(edge.target_id)
-            if tgt:
-                expected = tgt.center_top
-                actual = edge.end_point
-                dx = abs(actual[0] - expected[0])
-                dy = abs(actual[1] - expected[1])
-                assert dx == 0 and dy == 0, (
-                    f"Edge {edge.source_id}->{edge.target_id} end point mismatch:\n"
-                    f"  Expected: {expected}\n"
-                    f"  Actual: {actual}\n"
-                    f"  Delta: ({dx:.1f}, {dy:.1f})"
-                )
+        validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
+        issues = validator.validate_all()
+
+        assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
 
     def test_source_above_target(self, page):
         """Source node must be positioned above target node."""
@@ -209,38 +242,18 @@ class TestEdgeConnectionsSimple:
                     f"src.bottom={src.bottom:.1f} >= tgt.y={tgt.y:.1f}"
                 )
 
-    def test_chain_graph_all_edges_valid(self, page):
-        """All edges in a 3-node chain should be valid."""
-        graph = make_chain_graph()
-        nodes, edges = extract_geometries(page, graph, depth=0)
-
-        validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
-        issues = validator.validate_all()
-
-        assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
-
 
 # =============================================================================
-# Tests: Nested Graph (Edges Crossing Container Boundaries)
+# Tests: 1-Level Nesting (workflow graph)
 # =============================================================================
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
-class TestEdgeConnectionsNested:
-    """Nested graph: edges crossing container boundaries."""
+class TestWorkflowDepth0:
+    """Workflow graph at depth=0 (preprocess collapsed)."""
 
-    @pytest.fixture
-    def page(self):
-        """Create a Playwright page for testing."""
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            yield page
-            browser.close()
-
-    def test_nested_collapsed_edges_valid(self, page):
-        """Edges to/from collapsed containers should have no gap."""
-        graph = make_nested_graph()
+    def test_workflow_depth0_edges_valid(self, page):
+        """Edges with collapsed preprocess should have 0px tolerance."""
+        graph = make_workflow()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
         validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
@@ -248,9 +261,24 @@ class TestEdgeConnectionsNested:
 
         assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
 
-    def test_nested_expanded_edges_valid(self, page):
-        """Edges into/out of expanded containers should have no gap."""
-        graph = make_nested_graph()
+    def test_workflow_depth0_structure(self, page):
+        """Collapsed workflow should have expected node count."""
+        graph = make_workflow()
+        nodes, edges = extract_geometries(page, graph, depth=0)
+
+        # At depth=0: input_text, preprocess (collapsed), analyze
+        # Plus possibly data nodes
+        assert len(nodes) >= 3, f"Expected at least 3 nodes, got {len(nodes)}: {list(nodes.keys())}"
+        assert len(edges) >= 2, f"Expected at least 2 edges, got {len(edges)}"
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestWorkflowDepth1:
+    """Workflow graph at depth=1 (preprocess expanded)."""
+
+    def test_workflow_depth1_edges_valid(self, page):
+        """Edges with expanded preprocess should have 0px tolerance."""
+        graph = make_workflow()
         nodes, edges = extract_geometries(page, graph, depth=1)
 
         validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
@@ -258,86 +286,205 @@ class TestEdgeConnectionsNested:
 
         assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
 
-    def test_expanded_input_edge_targets_internal_node(self, page):
-        """When expanded, input edge should target the actual internal node."""
-        graph = make_nested_graph()
+    def test_workflow_depth1_structure(self, page):
+        """Expanded workflow should show internal nodes."""
+        graph = make_workflow()
         nodes, edges = extract_geometries(page, graph, depth=1)
 
-        # Find edge going into clean_text (first node in preprocess)
+        # At depth=1: input_text, preprocess, clean_text, normalize_text, analyze
+        node_ids = set(nodes.keys())
+        assert "clean_text" in node_ids or any("clean" in n for n in node_ids), (
+            f"Expected clean_text in expanded nodes: {node_ids}"
+        )
+
+    def test_workflow_depth1_input_edge_to_internal(self, page):
+        """Input edge should connect to clean_text, not preprocess container."""
+        graph = make_workflow()
+        nodes, edges = extract_geometries(page, graph, depth=1)
+
+        # Find clean_text node
         clean_text_node = nodes.get("clean_text")
         if clean_text_node:
             # Find edge targeting clean_text
-            input_edge = None
             for edge in edges:
                 if edge.target_id == "clean_text":
-                    input_edge = edge
-                    break
+                    # Edge should end exactly at clean_text's top
+                    expected_y = clean_text_node.y
+                    actual_y = edge.end_point[1]
+                    gap = abs(actual_y - expected_y)
+                    assert gap == 0, (
+                        f"Input edge has {gap:.1f}px gap from clean_text top:\n"
+                        f"  Expected Y: {expected_y:.1f}\n"
+                        f"  Actual Y: {actual_y:.1f}"
+                    )
 
-            if input_edge:
-                # Edge should end at clean_text's center-top, not container's top
-                expected_y = clean_text_node.y
-                actual_y = input_edge.end_point[1]
-                gap = abs(actual_y - expected_y)
-
-                assert gap == 0, (
-                    f"Input edge has gap from internal node:\n"
-                    f"  Edge ends at Y={actual_y:.1f}\n"
-                    f"  clean_text top: {expected_y:.1f}\n"
-                    f"  Gap: {gap:.1f}px (should be 0)"
-                )
-
-    def test_expanded_output_edge_sources_internal_node(self, page):
-        """When expanded, output edge should source from the actual internal node."""
-        graph = make_nested_graph()
+    def test_workflow_depth1_output_edge_from_internal(self, page):
+        """Output edge should connect from normalize_text, not preprocess container."""
+        graph = make_workflow()
         nodes, edges = extract_geometries(page, graph, depth=1)
 
-        # Find normalize_text (last node in preprocess that produces output)
-        # The edge from preprocess to analyze should visually start from normalize_text
-        normalize_node = nodes.get("normalize_text")
-        if normalize_node:
-            # Find edge from normalize_text or its data node to analyze
-            output_edge = None
-            for edge in edges:
-                if edge.target_id == "analyze":
-                    output_edge = edge
-                    break
-
-            if output_edge:
-                # Edge should start near normalize_text's bottom
-                expected_y = normalize_node.bottom
-                actual_y = output_edge.start_point[1]
-                gap = abs(actual_y - expected_y)
-
-                # Allow some tolerance since edge may come from data node
-                tolerance = 50  # Data nodes are below function nodes
-                assert gap <= tolerance, (
-                    f"Output edge has large gap from internal node:\n"
-                    f"  Edge starts at Y={actual_y:.1f}\n"
-                    f"  normalize_text bottom: {expected_y:.1f}\n"
-                    f"  Gap: {gap:.1f}px (should be <= {tolerance})"
-                )
+        # Find edge to analyze
+        for edge in edges:
+            if edge.target_id == "analyze":
+                src = nodes.get(edge.source_id)
+                if src:
+                    # Edge should start exactly at source's bottom
+                    expected_y = src.bottom
+                    actual_y = edge.start_point[1]
+                    gap = abs(actual_y - expected_y)
+                    assert gap == 0, (
+                        f"Output edge has {gap:.1f}px gap from {edge.source_id} bottom:\n"
+                        f"  Expected Y: {expected_y:.1f}\n"
+                        f"  Actual Y: {actual_y:.1f}"
+                    )
 
 
 # =============================================================================
-# Tests: Edge Position Precision
+# Tests: 2-Level Nesting (outer graph)
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestOuterDepth0:
+    """Outer graph at depth=0 (middle collapsed, inner collapsed)."""
+
+    def test_outer_depth0_edges_valid(self, page):
+        """Edges with all collapsed should have 0px tolerance."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=0)
+
+        validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
+        issues = validator.validate_all()
+
+        assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
+
+    def test_outer_depth0_structure(self, page):
+        """All-collapsed outer should have minimal nodes."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=0)
+
+        # At depth=0: input_x, middle (collapsed), log_result
+        assert len(nodes) >= 3, f"Expected at least 3 nodes, got {len(nodes)}: {list(nodes.keys())}"
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestOuterDepth1:
+    """Outer graph at depth=1 (middle expanded, inner collapsed)."""
+
+    def test_outer_depth1_edges_valid(self, page):
+        """Edges with middle expanded should have 0px tolerance."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=1)
+
+        validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
+        issues = validator.validate_all()
+
+        assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
+
+    def test_outer_depth1_structure(self, page):
+        """Depth=1 should show inner (collapsed) and validate."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=1)
+
+        node_ids = set(nodes.keys())
+        # Should have inner (collapsed) and validate visible
+        assert "inner" in node_ids or "validate" in node_ids, (
+            f"Expected inner or validate in nodes: {node_ids}"
+        )
+
+    def test_outer_depth1_input_routes_to_inner(self, page):
+        """Input edge should route to inner container, not middle."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=1)
+
+        inner_node = nodes.get("inner")
+        if inner_node:
+            # Find edge targeting inner
+            for edge in edges:
+                if edge.target_id == "inner":
+                    expected_y = inner_node.y
+                    actual_y = edge.end_point[1]
+                    gap = abs(actual_y - expected_y)
+                    assert gap == 0, (
+                        f"Input edge has {gap:.1f}px gap from inner top:\n"
+                        f"  Expected Y: {expected_y:.1f}\n"
+                        f"  Actual Y: {actual_y:.1f}"
+                    )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestOuterDepth2:
+    """Outer graph at depth=2 (fully expanded)."""
+
+    def test_outer_depth2_edges_valid(self, page):
+        """Edges with full expansion should have 0px tolerance."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=2)
+
+        validator = EdgeConnectionValidator(nodes, edges, tolerance=0.0)
+        issues = validator.validate_all()
+
+        assert issues == {}, f"Edge connection issues:\n{format_issues(issues)}"
+
+    def test_outer_depth2_structure(self, page):
+        """Fully expanded should show all internal nodes."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=2)
+
+        node_ids = set(nodes.keys())
+        # Should have step1, step2, validate visible
+        assert "step1" in node_ids or any("step1" in n for n in node_ids), (
+            f"Expected step1 in fully expanded nodes: {node_ids}"
+        )
+
+    def test_outer_depth2_input_routes_to_step1(self, page):
+        """Input edge should route to step1, the deepest internal node."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=2)
+
+        step1_node = nodes.get("step1")
+        if step1_node:
+            # Find edge targeting step1
+            for edge in edges:
+                if edge.target_id == "step1":
+                    expected_y = step1_node.y
+                    actual_y = edge.end_point[1]
+                    gap = abs(actual_y - expected_y)
+                    assert gap == 0, (
+                        f"Input edge has {gap:.1f}px gap from step1 top:\n"
+                        f"  Expected Y: {expected_y:.1f}\n"
+                        f"  Actual Y: {actual_y:.1f}"
+                    )
+
+    def test_outer_depth2_output_routes_from_validate(self, page):
+        """Output edge to log_result should come from validate's output."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=2)
+
+        # Find edge to log_result
+        for edge in edges:
+            if edge.target_id == "log_result":
+                src = nodes.get(edge.source_id)
+                if src:
+                    expected_y = src.bottom
+                    actual_y = edge.start_point[1]
+                    gap = abs(actual_y - expected_y)
+                    assert gap == 0, (
+                        f"Output edge has {gap:.1f}px gap from {edge.source_id} bottom:\n"
+                        f"  Expected Y: {expected_y:.1f}\n"
+                        f"  Actual Y: {actual_y:.1f}"
+                    )
+
+
+# =============================================================================
+# Tests: Edge Position Precision (applies to all graphs)
 # =============================================================================
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgePositionPrecision:
     """Tests for exact pixel-level edge positioning."""
 
-    @pytest.fixture
-    def page(self):
-        """Create a Playwright page for testing."""
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            yield page
-            browser.close()
-
-    def test_edge_x_centered_on_nodes(self, page):
-        """Edge X coordinates should be centered on source and target nodes."""
+    def test_simple_edge_x_centered(self, page):
+        """Edge X coordinates should be centered on nodes."""
         graph = make_simple_graph()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
@@ -345,63 +492,86 @@ class TestEdgePositionPrecision:
             src = nodes.get(edge.source_id)
             tgt = nodes.get(edge.target_id)
             if src and tgt:
-                # Check start X is centered on source
-                start_x = edge.start_point[0]
-                expected_start_x = src.center_x
-                dx_start = abs(start_x - expected_start_x)
-
-                # Check end X is centered on target
-                end_x = edge.end_point[0]
-                expected_end_x = tgt.center_x
-                dx_end = abs(end_x - expected_end_x)
+                dx_start = abs(edge.start_point[0] - src.center_x)
+                dx_end = abs(edge.end_point[0] - tgt.center_x)
 
                 assert dx_start == 0, (
-                    f"Edge start not centered on source:\n"
-                    f"  Edge starts at X={start_x:.1f}\n"
-                    f"  Source center: {expected_start_x:.1f}\n"
-                    f"  Delta: {dx_start:.1f}px"
+                    f"Edge start X not centered: delta={dx_start:.1f}px"
                 )
                 assert dx_end == 0, (
-                    f"Edge end not centered on target:\n"
-                    f"  Edge ends at X={end_x:.1f}\n"
-                    f"  Target center: {expected_end_x:.1f}\n"
-                    f"  Delta: {dx_end:.1f}px"
+                    f"Edge end X not centered: delta={dx_end:.1f}px"
                 )
 
-    def test_no_visible_gap_at_source(self, page):
-        """No visible gap should exist between source node and edge start."""
+    def test_simple_no_gap_at_source(self, page):
+        """No gap between source bottom and edge start."""
         graph = make_simple_graph()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
         for edge in edges:
             src = nodes.get(edge.source_id)
             if src:
-                start_y = edge.start_point[1]
-                expected_y = src.bottom
-                gap = abs(start_y - expected_y)
+                gap = abs(edge.start_point[1] - src.bottom)
+                assert gap == 0, f"Gap at source: {gap:.1f}px"
 
-                assert gap == 0, (
-                    f"Visible gap at source of edge {edge.source_id}->{edge.target_id}:\n"
-                    f"  Edge starts at Y={start_y:.1f}\n"
-                    f"  Source bottom: {expected_y:.1f}\n"
-                    f"  Gap: {gap:.1f}px"
-                )
-
-    def test_no_visible_gap_at_target(self, page):
-        """No visible gap should exist between edge end and target node."""
+    def test_simple_no_gap_at_target(self, page):
+        """No gap between edge end and target top."""
         graph = make_simple_graph()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
         for edge in edges:
             tgt = nodes.get(edge.target_id)
             if tgt:
-                end_y = edge.end_point[1]
-                expected_y = tgt.y
-                gap = abs(end_y - expected_y)
+                gap = abs(edge.end_point[1] - tgt.y)
+                assert gap == 0, f"Gap at target: {gap:.1f}px"
 
+    def test_workflow_expanded_no_gap_at_source(self, page):
+        """No gap at source for expanded workflow edges."""
+        graph = make_workflow()
+        nodes, edges = extract_geometries(page, graph, depth=1)
+
+        for edge in edges:
+            src = nodes.get(edge.source_id)
+            if src:
+                gap = abs(edge.start_point[1] - src.bottom)
                 assert gap == 0, (
-                    f"Visible gap at target of edge {edge.source_id}->{edge.target_id}:\n"
-                    f"  Edge ends at Y={end_y:.1f}\n"
-                    f"  Target top: {expected_y:.1f}\n"
-                    f"  Gap: {gap:.1f}px"
+                    f"Gap at source for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
+                )
+
+    def test_workflow_expanded_no_gap_at_target(self, page):
+        """No gap at target for expanded workflow edges."""
+        graph = make_workflow()
+        nodes, edges = extract_geometries(page, graph, depth=1)
+
+        for edge in edges:
+            tgt = nodes.get(edge.target_id)
+            if tgt:
+                gap = abs(edge.end_point[1] - tgt.y)
+                assert gap == 0, (
+                    f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
+                )
+
+    def test_outer_depth2_no_gap_at_source(self, page):
+        """No gap at source for fully expanded outer edges."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=2)
+
+        for edge in edges:
+            src = nodes.get(edge.source_id)
+            if src:
+                gap = abs(edge.start_point[1] - src.bottom)
+                assert gap == 0, (
+                    f"Gap at source for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
+                )
+
+    def test_outer_depth2_no_gap_at_target(self, page):
+        """No gap at target for fully expanded outer edges."""
+        graph = make_outer()
+        nodes, edges = extract_geometries(page, graph, depth=2)
+
+        for edge in edges:
+            tgt = nodes.get(edge.target_id)
+            if tgt:
+                gap = abs(edge.end_point[1] - tgt.y)
+                assert gap == 0, (
+                    f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
                 )

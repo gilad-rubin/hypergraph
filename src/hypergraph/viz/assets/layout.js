@@ -854,6 +854,73 @@
       });
     });
 
+    // Step 5: Apply actualSource/actualTarget routing to internal edges from child layouts
+    // These edges were already positioned by child layouts, but may need re-routing
+    // when their source is an expanded container
+    allPositionedEdges = allPositionedEdges.map(function(e) {
+      // Skip if already has actualSource set (from cross-boundary handling)
+      if (e.data && e.data.actualSource && e.data.actualSource !== e.source) {
+        return e;
+      }
+
+      var valueName = e.data && e.data.valueName;
+      var actualProducer = (valueName && outputToProducer[valueName]) ? outputToProducer[valueName] : null;
+
+      // Check if we need to re-route the start
+      var needsStartReroute = actualProducer && actualProducer !== e.source &&
+        nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer);
+
+      // Check if we need to re-route the end (target node position might differ)
+      var needsEndReroute = nodePositions.has(e.target) && nodeDimensions.has(e.target);
+
+      if (!needsStartReroute && !needsEndReroute) {
+        return e;
+      }
+
+      var newPoints = (e.data.points || []).slice();
+      var actualSrc = e.source;
+      var actualTgt = e.target;
+
+      // Re-route edge start to actual producer
+      if (needsStartReroute) {
+        var producerPos = nodePositions.get(actualProducer);
+        var producerDims = nodeDimensions.get(actualProducer);
+        var newStartX = producerPos.x + producerDims.width / 2;
+        var newStartY = producerPos.y + producerDims.height;
+        if (newPoints.length > 0) {
+          newPoints[0] = { x: newStartX, y: newStartY };
+        }
+        actualSrc = actualProducer;
+      }
+
+      // Re-route edge end to target's center-top (always fix this for internal edges)
+      if (needsEndReroute) {
+        var targetPos = nodePositions.get(e.target);
+        var targetDims = nodeDimensions.get(e.target);
+        var newEndX = targetPos.x + targetDims.width / 2;
+        var newEndY = targetPos.y;
+        if (newPoints.length > 0) {
+          newPoints[newPoints.length - 1] = { x: newEndX, y: newEndY };
+        }
+        actualTgt = e.target;
+      }
+
+      if (debugMode) {
+        console.log('[recursive layout] Step 5: re-routed', e.source, '->', e.target,
+          'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
+      }
+
+      return {
+        ...e,
+        data: {
+          ...e.data,
+          points: newPoints,
+          actualSource: actualSrc,
+          actualTarget: actualTgt,
+        },
+      };
+    });
+
     return {
       nodes: allPositionedNodes,
       edges: allPositionedEdges,
