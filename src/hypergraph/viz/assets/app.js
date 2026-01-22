@@ -1167,6 +1167,72 @@
         version: layoutVersion,
       };
 
+      // Build edge ID to source/target lookup from layouted edges
+      var edgeLookup = {};
+      layoutedEdges.forEach(function(e) {
+        // Handle ID suffix from expansion key (e.g., "e_node_a_node_b_exp_")
+        var baseId = e.id.replace(/_exp_.*$/, '');
+        edgeLookup[baseId] = { source: e.source, target: e.target };
+        edgeLookup[e.id] = { source: e.source, target: e.target };
+      });
+
+      // Extract edge path endpoints from rendered SVG for precise validation
+      var extractEdgePathEndpoints = function() {
+        var edgePaths = [];
+        var edgeGroups = document.querySelectorAll('.react-flow__edge');
+        edgeGroups.forEach(function(group) {
+          var path = group.querySelector('path');
+          if (!path) return;
+
+          var d = path.getAttribute('d');
+          if (!d) return;
+
+          // Parse all numeric values from the path
+          var coords = d.match(/-?[\d.]+/g);
+          if (!coords || coords.length < 4) return;
+
+          var floatCoords = coords.map(parseFloat);
+
+          // Get edge ID from data-testid (format: rf__edge-{edgeId})
+          var testId = group.getAttribute('data-testid') || '';
+          var edgeId = testId.replace('rf__edge-', '');
+
+          // Look up source and target from our edge data
+          var edgeData = edgeLookup[edgeId];
+          var source = edgeData ? edgeData.source : null;
+          var target = edgeData ? edgeData.target : null;
+
+          // Fallback: try parsing from ID if lookup fails
+          if (!source || !target) {
+            // Try e_{source}_to_{target} format
+            var toMatch = edgeId.match(/^e_(.+)_to_(.+)$/);
+            if (toMatch) {
+              source = toMatch[1];
+              target = toMatch[2];
+            } else {
+              // Try e_{source}_{target}_{value} format (underscore-separated)
+              var parts = edgeId.replace(/^e_/, '').split('_');
+              if (parts.length >= 2) {
+                // Last part might be value, second-to-last is target
+                // This is a heuristic - may not always be correct
+                source = parts[0];
+                target = parts[1];
+              }
+            }
+          }
+
+          edgePaths.push({
+            id: edgeId,
+            source: source,
+            target: target,
+            pathStart: { x: floatCoords[0], y: floatCoords[1] },
+            pathEnd: { x: floatCoords[floatCoords.length - 2], y: floatCoords[floatCoords.length - 1] },
+            pathD: d,
+          });
+        });
+        return edgePaths;
+      };
+
       // Expose debug data for Python/Playwright extraction
       root.__hypergraphVizDebug = {
         version: layoutVersion,
@@ -1185,12 +1251,16 @@
           };
         }),
         edges: edgeValidation,
+        edgePaths: extractEdgePathEndpoints(),
         summary: {
           totalNodes: Object.keys(nodePositionMap).length,
           totalEdges: edgeValidation.length,
           edgeIssues: edgeValidation.filter(function(e) { return e.status !== 'OK'; }).length,
         },
       };
+
+      // Also expose function for on-demand extraction
+      root.__hypergraphVizExtractEdgePaths = extractEdgePathEndpoints;
     }, [layoutedNodes, layoutedEdges, layoutVersion]);
 
     // Iframe resize logic
