@@ -57,8 +57,12 @@ def render_graph(
 
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)
+    # For static edges: use visibility-based targets
     param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
     output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
+    # For JS meta data: use deepest targets (for interactive expand routing)
+    param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
+    output_to_producer_deepest = _build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
 
     # Create individual INPUT nodes for external inputs
     input_node_map = _create_input_nodes(
@@ -104,8 +108,9 @@ def render_graph(
             "show_types": show_types,
             "debug_overlays": debug_overlays,
             # Routing data for JS to re-route edges to actual internal nodes
-            "output_to_producer": output_to_producer,
-            "param_to_consumer": param_to_consumer,
+            # Use deepest targets so interactive expand can route correctly
+            "output_to_producer": output_to_producer_deepest,
+            "param_to_consumer": param_to_consumer_deepest,
         },
     }
 
@@ -123,26 +128,29 @@ def _build_expansion_state(flat_graph: nx.DiGraph, depth: int) -> dict[str, bool
 def _build_param_to_consumer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    use_deepest: bool = False,
 ) -> dict[str, str]:
     """Build map of param_name -> actual_consumer_node_id.
 
-    When a param is consumed by a node inside an expanded container,
-    returns the actual internal consumer, not the container.
+    Args:
+        use_deepest: If True, include all consumers (for JS interactive routing).
+                     If False, only include visible consumers (for static edges).
     """
     param_to_consumer: dict[str, str] = {}
 
     for node_id, attrs in flat_graph.nodes(data=True):
         for param in attrs.get("inputs", ()):
-            # Check if this consumer is visible (parent chain is expanded)
-            if _is_node_visible(node_id, flat_graph, expansion_state):
-                # Only store if we don't have one yet, or if this is a deeper node
-                if param not in param_to_consumer:
+            # Check visibility unless we want deepest
+            if not use_deepest and not _is_node_visible(node_id, flat_graph, expansion_state):
+                continue
+
+            if param not in param_to_consumer:
+                param_to_consumer[param] = node_id
+            else:
+                # Prefer the deeper (more specific) consumer
+                existing = param_to_consumer[param]
+                if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
                     param_to_consumer[param] = node_id
-                else:
-                    # Prefer the deeper (more specific) consumer
-                    existing = param_to_consumer[param]
-                    if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
-                        param_to_consumer[param] = node_id
 
     return param_to_consumer
 
@@ -150,26 +158,29 @@ def _build_param_to_consumer_map(
 def _build_output_to_producer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    use_deepest: bool = False,
 ) -> dict[str, str]:
     """Build map of output_value_name -> actual_producer_node_id.
 
-    When an output is produced by a node inside an expanded container,
-    returns the actual internal producer, not the container.
+    Args:
+        use_deepest: If True, include all producers (for JS interactive routing).
+                     If False, only include visible producers (for static edges).
     """
     output_to_producer: dict[str, str] = {}
 
     for node_id, attrs in flat_graph.nodes(data=True):
         for output in attrs.get("outputs", ()):
-            # Check if this producer is visible (parent chain is expanded)
-            if _is_node_visible(node_id, flat_graph, expansion_state):
-                # Only store if we don't have one yet, or if this is a deeper node
-                if output not in output_to_producer:
+            # Check visibility unless we want deepest
+            if not use_deepest and not _is_node_visible(node_id, flat_graph, expansion_state):
+                continue
+
+            if output not in output_to_producer:
+                output_to_producer[output] = node_id
+            else:
+                # Prefer the deeper (more specific) producer
+                existing = output_to_producer[output]
+                if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
                     output_to_producer[output] = node_id
-                else:
-                    # Prefer the deeper (more specific) producer
-                    existing = output_to_producer[output]
-                    if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
-                        output_to_producer[output] = node_id
 
     return output_to_producer
 

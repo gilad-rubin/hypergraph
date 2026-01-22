@@ -33,6 +33,10 @@
   var GRAPH_PADDING = 24;
   var HEADER_HEIGHT = 32;
 
+  // Shadow offset: CSS shadows extend beyond visible node boundaries
+  // This offset is subtracted from node height to get visible bottom
+  var SHADOW_OFFSET = 10;
+
   /**
    * Calculate dimensions for a node based on its type and content
    * @param {Object} n - Node object with data
@@ -762,6 +766,21 @@
       }
     });
 
+    // Build lookup for INPUT node -> actual target using param_to_consumer
+    // This enables re-routing when containers expand to show internal nodes
+    var inputNodeActualTargets = new Map();
+    var paramToConsumer = (routingData && routingData.param_to_consumer) || {};
+    visibleNodes.forEach(function(n) {
+      if (n.data && n.data.nodeType === 'INPUT') {
+        // The INPUT node's label is the parameter name
+        var paramName = n.data.label;
+        var actualConsumer = paramToConsumer[paramName];
+        if (actualConsumer) {
+          inputNodeActualTargets.set(n.id, actualConsumer);
+        }
+      }
+    });
+
     // Get output_to_producer from routing data
     var outputToProducer = (routingData && routingData.output_to_producer) || {};
 
@@ -769,41 +788,17 @@
       var edgeKey = e.source + '->' + e.target;
       if (handledEdges.has(edgeKey)) return; // Already positioned
 
-      var srcPos = nodePositions.get(e.source);
-      var tgtPos = nodePositions.get(e.target);
-
-      if (!srcPos || !tgtPos) return; // One or both endpoints not visible
-
-      // Get dimensions for proper anchor points
-      var srcDims = nodeDimensions.get(e.source);
-      var tgtDims = nodeDimensions.get(e.target);
-
-      if (!srcDims || !tgtDims) return;
-
       // Step 4.5: Re-route edges to actual internal nodes when expanded
+      // Try to find alternative sources/targets BEFORE checking positions
       var actualSrc = e.source;
       var actualTgt = e.target;
-      var actualSrcPos = srcPos;
-      var actualTgtPos = tgtPos;
-      var actualSrcDims = srcDims;
-      var actualTgtDims = tgtDims;
-
-      // For INPUT_GROUP edges, route to actual target if available
-      if (inputGroupActualTargets.has(e.source)) {
-        var actualTargets = inputGroupActualTargets.get(e.source);
-        // Find which actual target has a position (is visible)
-        for (var i = 0; i < actualTargets.length; i++) {
-          var at = actualTargets[i];
-          if (nodePositions.has(at) && nodeDimensions.has(at)) {
-            actualTgt = at;
-            actualTgtPos = nodePositions.get(at);
-            actualTgtDims = nodeDimensions.get(at);
-            break;
-          }
-        }
-      }
+      var actualSrcPos = null;
+      var actualTgtPos = null;
+      var actualSrcDims = null;
+      var actualTgtDims = null;
 
       // For data edges, route from actual producer if available
+      // Check this FIRST because the original source may be a DATA node that doesn't exist
       var valueName = e.data && e.data.valueName;
       if (valueName && outputToProducer[valueName]) {
         var actualProducer = outputToProducer[valueName];
@@ -823,9 +818,57 @@
         }
       }
 
+      // If we couldn't find alternative source, try original source
+      if (!actualSrcPos) {
+        actualSrcPos = nodePositions.get(e.source);
+        actualSrcDims = nodeDimensions.get(e.source);
+        actualSrc = e.source;
+      }
+
+      // For INPUT_GROUP edges, route to actual target if available
+      if (inputGroupActualTargets.has(e.source)) {
+        var actualTargets = inputGroupActualTargets.get(e.source);
+        // Find which actual target has a position (is visible)
+        for (var i = 0; i < actualTargets.length; i++) {
+          var at = actualTargets[i];
+          if (nodePositions.has(at) && nodeDimensions.has(at)) {
+            actualTgt = at;
+            actualTgtPos = nodePositions.get(at);
+            actualTgtDims = nodeDimensions.get(at);
+            break;
+          }
+        }
+      }
+
+      // For INPUT node edges, route to actual consumer if available and visible
+      // This handles the case when a container expands and the internal consumer becomes visible
+      // Always check this, even if actualTgtPos is already set from original target
+      if (inputNodeActualTargets.has(e.source)) {
+        var actualConsumer = inputNodeActualTargets.get(e.source);
+        // Only re-route if the actual consumer is visible (node is positioned)
+        if (nodePositions.has(actualConsumer) && nodeDimensions.has(actualConsumer)) {
+          actualTgt = actualConsumer;
+          actualTgtPos = nodePositions.get(actualConsumer);
+          actualTgtDims = nodeDimensions.get(actualConsumer);
+        }
+      }
+
+      // If we couldn't find alternative target, try original target
+      if (!actualTgtPos) {
+        actualTgtPos = nodePositions.get(e.target);
+        actualTgtDims = nodeDimensions.get(e.target);
+        actualTgt = e.target;
+      }
+
+      // Skip if we still can't find valid positions
+      if (!actualSrcPos || !actualTgtPos || !actualSrcDims || !actualTgtDims) {
+        return;
+      }
+
       // Compute edge points using actual (re-routed) positions
       var srcCenterX = actualSrcPos.x + actualSrcDims.width / 2;
-      var srcBottomY = actualSrcPos.y + actualSrcDims.height;
+      // Use visible bottom (subtract shadow offset so edge connects to visible node)
+      var srcBottomY = actualSrcPos.y + actualSrcDims.height - SHADOW_OFFSET;
       var tgtCenterX = actualTgtPos.x + actualTgtDims.width / 2;
       var tgtTopY = actualTgtPos.y;
 
@@ -854,26 +897,32 @@
       });
     });
 
-    // Step 5: Apply actualSource/actualTarget routing to internal edges from child layouts
-    // These edges were already positioned by child layouts, but may need re-routing
-    // when their source is an expanded container
+    // Step 5: Apply actualSource/actualTarget routing to ALL edges
+    // Including edges already positioned by child layouts that may need re-routing
+    // when containers expand/collapse
     allPositionedEdges = allPositionedEdges.map(function(e) {
-      // Skip if already has actualSource set (from cross-boundary handling)
-      if (e.data && e.data.actualSource && e.data.actualSource !== e.source) {
+      // Skip if already has actualTarget set from Step 4 cross-boundary handling
+      // (but actualTarget that matches original target is fine to re-process)
+      if (e.data && e.data.actualTarget && e.data.actualTarget !== e.target) {
         return e;
       }
 
       var valueName = e.data && e.data.valueName;
       var actualProducer = (valueName && outputToProducer[valueName]) ? outputToProducer[valueName] : null;
 
-      // Check if we need to re-route the start
+      // Check if we need to re-route the start (data edge producer)
       var needsStartReroute = actualProducer && actualProducer !== e.source &&
         nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer);
 
-      // Check if we need to re-route the end (target node position might differ)
-      var needsEndReroute = nodePositions.has(e.target) && nodeDimensions.has(e.target);
+      // Check if we need to re-route the target for INPUT edges
+      var actualConsumer = inputNodeActualTargets.get(e.source);
+      var needsTargetReroute = actualConsumer && actualConsumer !== e.target &&
+        nodePositions.has(actualConsumer) && nodeDimensions.has(actualConsumer);
 
-      if (!needsStartReroute && !needsEndReroute) {
+      // Check if we need to fix end position (target node position might differ)
+      var needsEndFix = nodePositions.has(e.target) && nodeDimensions.has(e.target);
+
+      if (!needsStartReroute && !needsTargetReroute && !needsEndFix) {
         return e;
       }
 
@@ -886,15 +935,26 @@
         var producerPos = nodePositions.get(actualProducer);
         var producerDims = nodeDimensions.get(actualProducer);
         var newStartX = producerPos.x + producerDims.width / 2;
-        var newStartY = producerPos.y + producerDims.height;
+        // Use visible bottom (subtract shadow offset)
+        var newStartY = producerPos.y + producerDims.height - SHADOW_OFFSET;
         if (newPoints.length > 0) {
           newPoints[0] = { x: newStartX, y: newStartY };
         }
         actualSrc = actualProducer;
       }
 
-      // Re-route edge end to target's center-top (always fix this for internal edges)
-      if (needsEndReroute) {
+      // Re-route edge target to actual consumer for INPUT edges
+      if (needsTargetReroute) {
+        var consumerPos = nodePositions.get(actualConsumer);
+        var consumerDims = nodeDimensions.get(actualConsumer);
+        var newEndX = consumerPos.x + consumerDims.width / 2;
+        var newEndY = consumerPos.y;
+        if (newPoints.length > 0) {
+          newPoints[newPoints.length - 1] = { x: newEndX, y: newEndY };
+        }
+        actualTgt = actualConsumer;
+      } else if (needsEndFix) {
+        // Re-route edge end to target's center-top (fix position for internal edges)
         var targetPos = nodePositions.get(e.target);
         var targetDims = nodeDimensions.get(e.target);
         var newEndX = targetPos.x + targetDims.width / 2;
