@@ -469,7 +469,8 @@
       });
 
       // Recalculate bounds after shifts
-      childResult.size = recalculateBounds(childResult.nodes, ConstraintLayout.defaultOptions.layout.padding);
+      // Use GRAPH_PADDING (not layout.padding) - this is the single source of padding
+      childResult.size = recalculateBounds(childResult.nodes, GRAPH_PADDING);
 
       childLayoutResults.set(graphNode.id, childResult);
 
@@ -478,9 +479,10 @@
       }
 
       // Update graph node size from children bounds
+      // Padding already included in childResult.size from recalculateBounds
       nodeDimensions.set(graphNode.id, {
-        width: childResult.size.width + GRAPH_PADDING * 2,
-        height: childResult.size.height + GRAPH_PADDING * 2 + HEADER_HEIGHT,
+        width: childResult.size.width,
+        height: childResult.size.height + HEADER_HEIGHT,
       });
     });
 
@@ -668,11 +670,6 @@
       var parentPos = nodePositions.get(graphNode.id);
       if (!parentPos) return;
 
-      // Get the layout's internal padding (used by ConstraintLayout.graph)
-      // The constraint layout already offsets nodes by size.min, so returned positions
-      // are already normalized. We just need to convert from center to top-left.
-      var layoutPadding = ConstraintLayout.defaultOptions.layout.padding || 50;
-
       // For absolute positioning (edge routing), offset from parent's top-left
       var absOffsetX = parentPos.x + GRAPH_PADDING;
       var absOffsetY = parentPos.y + GRAPH_PADDING + HEADER_HEIGHT;
@@ -681,11 +678,10 @@
         var w = n.width;
         var h = n.height;
         // Convert from center to top-left
-        // The constraint layout positions are already offset with internal padding (50px default)
-        // We want positions relative to parent's content area (which has GRAPH_PADDING)
-        // So we adjust: subtract layout padding, add our GRAPH_PADDING
-        var childX = n.x - w / 2 - layoutPadding + GRAPH_PADDING;
-        var childY = n.y - h / 2 - layoutPadding + GRAPH_PADDING;
+        // Since we now use GRAPH_PADDING in recalculateBounds, positions are already
+        // relative to bounds with GRAPH_PADDING. Just convert center to top-left.
+        var childX = n.x - w / 2;
+        var childY = n.y - h / 2;
 
         // Store absolute position for edge routing
         nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
@@ -713,13 +709,13 @@
       });
 
       // Position child edges with offset
-      // Edge points are in the same coordinate space as nodes (already include layout padding)
+      // Edge points are in the same coordinate space as nodes
       // Transform them to absolute coordinates for edge rendering
       childResult.edges.forEach(function(e) {
         var offsetPoints = (e.points || []).map(function(pt) {
           return {
-            x: pt.x - layoutPadding + absOffsetX,
-            y: pt.y - layoutPadding + absOffsetY
+            x: pt.x + absOffsetX,
+            y: pt.y + absOffsetY
           };
         });
 
