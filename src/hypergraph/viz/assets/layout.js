@@ -30,7 +30,7 @@
   var MAX_NODE_WIDTH = 280;
 
   // Constants for nested graph layout
-  var GRAPH_PADDING = 40;
+  var GRAPH_PADDING = 24;
   var HEADER_HEIGHT = 32;
 
   /**
@@ -616,6 +616,9 @@
       }
     });
 
+    // Recalculate root bounds with GRAPH_PADDING for consistent padding
+    rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
+
     // Step 3: Compose final positions
     var nodePositions = new Map();
     var allPositionedNodes = [];
@@ -631,14 +634,15 @@
       console.log('[recursive layout] rootResult.nodes (output):', JSON.stringify(rootResult.nodes.map(function(n) {
         return { id: n.id, x: n.x, y: n.y, w: n.width, h: n.height };
       })));
+      console.log('[recursive layout] rootResult.size:', rootResult.size);
     }
 
-    // Position root nodes
+    // Position root nodes - subtract size.min to normalize to bounds origin
     rootResult.nodes.forEach(function(n) {
       var w = n.width;
       var h = n.height;
-      var x = n.x - w / 2;
-      var y = n.y - h / 2;
+      var x = n.x - w / 2 - rootResult.size.min.x;
+      var y = n.y - h / 2 - rootResult.size.min.y;
       nodePositions.set(n.id, { x: x, y: y });
 
       allPositionedNodes.push({

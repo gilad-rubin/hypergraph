@@ -197,6 +197,32 @@ class TestEdgeValidationDetails:
 class TestNestedGraphPadding:
     """Tests for symmetric padding in nested graphs."""
 
+    def test_root_level_top_padding(self):
+        """Test that the topmost node has adequate padding from viewport top.
+
+        The first row of nodes should have at least 30px padding from y=0.
+        """
+        from hypergraph.viz import extract_debug_data
+
+        workflow = make_workflow()
+        data = extract_debug_data(workflow, depth=1)
+
+        # Find the topmost node
+        min_y = float('inf')
+        top_node = None
+        for n in data.nodes:
+            y = n.get('y', float('inf'))
+            if y < min_y:
+                min_y = y
+                top_node = n
+
+        # Top padding should be at least 20px (we use 24px GRAPH_PADDING)
+        min_padding = 20
+        assert min_y >= min_padding, (
+            f"Topmost node '{top_node.get('id')}' has insufficient top padding: "
+            f"y={min_y}px, expected >= {min_padding}px"
+        )
+
     def test_nested_graph_symmetric_padding(self):
         """Test that nested graph containers have symmetric padding.
 
