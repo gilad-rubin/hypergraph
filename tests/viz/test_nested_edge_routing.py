@@ -142,7 +142,7 @@ class TestNestedEdgeRouting:
         workflow = make_workflow()
         data = extract_debug_data(workflow, depth=1)
 
-        # Should have nodes: __inputs__, preprocess (PIPELINE), clean_text, normalize_text, analyze
+        # Should have nodes: input_text, preprocess (PIPELINE), clean_text, normalize_text, analyze
         # Plus DATA nodes for outputs
         assert data.summary["totalNodes"] >= 3, f"Expected at least 3 nodes, got {data.summary['totalNodes']}"
         assert data.summary["totalEdges"] >= 2, f"Expected at least 2 edges, got {data.summary['totalEdges']}"
@@ -167,7 +167,7 @@ class TestEdgeRoutingToInternalNodes:
         """Test that workflow input edge VISUALLY connects to clean_text, not preprocess.
 
         This tests the actual rendered edge path, not just validation data.
-        The edge from __inputs__ should visually end at clean_text's position.
+        The edge from input_text should visually end at clean_text's position.
         """
         from playwright.sync_api import sync_playwright
         from hypergraph.viz.widget import visualize
@@ -201,14 +201,14 @@ class TestEdgeRoutingToInternalNodes:
                     const preprocess = debug.nodes.find(n => n.id === 'preprocess');
                     const cleanText = debug.nodes.find(n => n.id === 'clean_text');
 
-                    // Find the __inputs__ -> preprocess edge by looking for edge with __inputs__ in ID
+                    // Find the input_text -> clean_text edge (individual input node, not __inputs__)
                     const edgeGroups = document.querySelectorAll('.react-flow__edge');
                     let inputEdgePath = null;
                     let edgeId = null;
                     for (const group of edgeGroups) {
                         const id = group.getAttribute('data-testid') || group.id || '';
-                        // Edge IDs typically contain source-target pattern
-                        if (id.includes('__inputs__') || id.includes('inputs')) {
+                        // Edge IDs contain source-target pattern: input_text -> clean_text
+                        if (id.includes('input_text')) {
                             const path = group.querySelector('path');
                             if (path) {
                                 inputEdgePath = path.getAttribute('d');
@@ -218,11 +218,11 @@ class TestEdgeRoutingToInternalNodes:
                         }
                     }
 
-                    // If not found by ID, find edge that starts near __inputs__ position
+                    // If not found by ID, find edge that starts near input_text position
                     if (!inputEdgePath) {
-                        const inputsNode = debug.nodes.find(n => n.id === '__inputs__');
-                        if (inputsNode) {
-                            const inputsBottom = inputsNode.y + inputsNode.height;
+                        const inputNode = debug.nodes.find(n => n.id === 'input_text');
+                        if (inputNode) {
+                            const inputBottom = inputNode.y + inputNode.height;
                             for (const group of edgeGroups) {
                                 const path = group.querySelector('path');
                                 if (path) {
@@ -231,8 +231,8 @@ class TestEdgeRoutingToInternalNodes:
                                     const match = d.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
                                     if (match) {
                                         const startY = parseFloat(match[1]);
-                                        // Check if edge starts near __inputs__ bottom
-                                        if (Math.abs(startY - inputsBottom) < 20) {
+                                        // Check if edge starts near input_text bottom
+                                        if (Math.abs(startY - inputBottom) < 20) {
                                             inputEdgePath = d;
                                             edgeId = group.getAttribute('data-testid') || 'found-by-position';
                                             break;
@@ -271,7 +271,7 @@ class TestEdgeRoutingToInternalNodes:
         path_end_y = result["pathEndY"]
 
         assert clean_text_top is not None, "clean_text node not found"
-        assert path_end_y is not None, f"Could not parse edge path: {result['path']}"
+        assert path_end_y is not None, f"Could not parse edge path: {result['path']}\nAll edges: {result.get('allEdgeIds')}"
 
         # The edge should end near clean_text's top, not preprocess's top
         tolerance = 10
@@ -289,9 +289,9 @@ class TestEdgeRoutingToInternalNodes:
         )
 
     def test_input_edge_routes_to_internal_node(self):
-        """Test that __inputs__ edges connect to internal nodes, not containers.
+        """Test that input_x edges connect to internal nodes, not containers.
 
-        When a nested graph is expanded, edges from __inputs__ should connect
+        When a nested graph is expanded, edges from input_x should connect
         to the actual consuming node (e.g., step1) not the container (e.g., middle).
         """
         from hypergraph.viz import extract_debug_data
@@ -299,15 +299,15 @@ class TestEdgeRoutingToInternalNodes:
         outer = make_outer()
         data = extract_debug_data(outer, depth=2)
 
-        # Find the edge from __inputs__ to step1 or middle
+        # Find the edge from input_x to step1 or middle
         # The visual target should be step1, not middle
         input_edge = None
         for edge in data.edges:
-            if edge.source == "__inputs__":
+            if edge.source == "input_x":
                 input_edge = edge
                 break
 
-        assert input_edge is not None, "No edge from __inputs__ found"
+        assert input_edge is not None, f"No edge from input_x found. Available edges: {[(e.source, e.target) for e in data.edges]}"
 
         # Get positions of middle (container) and step1 (internal node)
         middle_node = None
@@ -484,6 +484,282 @@ class TestOutputEdgeRouting:
             f"Edge path starts at Y={path_start_y}px\n"
             f"normalize_text bottom: {normalize_text_bottom}px (expected)\n"
             f"preprocess bottom: {preprocess_bottom}px (container)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestDoubleNestedEdgeRouting:
+    """Tests for edge routing in doubly-nested graphs (depth=1 with 2-level nesting)."""
+
+    def test_outer_depth1_input_routes_to_inner(self):
+        """Test outer at depth=1: input edge should route to inner container, not middle.
+
+        The outer graph has middle->inner->step1. At depth=1, middle is expanded
+        showing inner (collapsed). The input edge from input_x should visually
+        connect to inner (the collapsed container with step1), not middle boundary.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find middle container and inner container (step1 is inside inner)
+                    const middle = debug.nodes.find(n => n.id === 'middle');
+                    const inner = debug.nodes.find(n => n.id === 'inner');
+
+                    // Find the input_x edge (individual input node, not __inputs__)
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let inputEdgePath = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes('input_x')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                inputEdgePath = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse end Y from path
+                    let pathEndY = null;
+                    if (inputEdgePath) {
+                        const coords = inputEdgePath.match(/[\\d.]+/g);
+                        if (coords && coords.length >= 2) {
+                            pathEndY = parseFloat(coords[coords.length - 1]);
+                        }
+                    }
+
+                    return {
+                        middleTop: middle ? middle.y : null,
+                        innerTop: inner ? inner.y : null,
+                        pathEndY: pathEndY,
+                        path: inputEdgePath,
+                        allEdgeIds: Array.from(edgeGroups).map(g => g.getAttribute('data-testid') || g.id),
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        middle_top = result["middleTop"]
+        inner_top = result["innerTop"]
+        path_end_y = result["pathEndY"]
+
+        assert inner_top is not None, "inner node not found at depth=1"
+        assert path_end_y is not None, f"Could not parse edge path: {result['path']}\nAll edges: {result.get('allEdgeIds')}"
+
+        # The edge should end at inner's top (which contains step1), not middle's top
+        tolerance = 10
+        connects_to_inner = abs(path_end_y - inner_top) <= tolerance
+        connects_to_middle = abs(path_end_y - middle_top) <= tolerance
+
+        assert connects_to_inner and not connects_to_middle, (
+            f"Double-nested input edge connects to outer container, not inner!\n"
+            f"Edge ends at Y={path_end_y}px\n"
+            f"inner top: {inner_top}px (expected - contains step1)\n"
+            f"middle top: {middle_top}px (outer container)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        )
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeVisualGaps:
+    """Tests that edges connect to nodes without visible gaps."""
+
+    def test_workflow_expanded_output_edge_no_gap(self):
+        """Test that preprocess->analyze edge has no gap at source.
+
+        When preprocess is expanded, the edge from preprocess to analyze
+        should start from normalize_text's bottom without a visible gap.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find normalize_text (the actual producer) and preprocess container
+                    const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
+                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+                    const analyze = debug.nodes.find(n => n.id === 'analyze');
+
+                    // Find the preprocess -> analyze edge (NOT the inputs edge)
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let outputEdgePath = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes('preprocess') && id.includes('analyze')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                outputEdgePath = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse start Y from path
+                    let pathStartY = null;
+                    if (outputEdgePath) {
+                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                        if (match) pathStartY = parseFloat(match[1]);
+                    }
+
+                    return {
+                        normalizeTextBottom: normalizeText ? normalizeText.y + normalizeText.height : null,
+                        preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
+                        analyzeTop: analyze ? analyze.y : null,
+                        pathStartY: pathStartY,
+                        path: outputEdgePath,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        normalize_bottom = result["normalizeTextBottom"]
+        path_start_y = result["pathStartY"]
+
+        assert normalize_bottom is not None, "normalize_text not found"
+        assert path_start_y is not None, f"Could not parse edge path: {result['path']}"
+
+        # Edge should start within 5px of the source node's bottom (no visible gap)
+        gap = abs(path_start_y - normalize_bottom)
+        max_gap = 5
+
+        assert gap <= max_gap, (
+            f"Output edge has visible gap from source node!\n"
+            f"Edge starts at Y={path_start_y}px\n"
+            f"normalize_text bottom: {normalize_bottom}px\n"
+            f"Gap: {gap}px (should be <= {max_gap}px)\n"
+            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        )
+
+    def test_outer_collapsed_output_edge_no_gap(self):
+        """Test that middle->log_result edge has no gap when collapsed.
+
+        When outer is viewed at depth=0, the edge from collapsed middle
+        to log_result should start from middle's bottom without a gap.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=0, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find middle and log_result
+                    const middle = debug.nodes.find(n => n.id === 'middle');
+                    const logResult = debug.nodes.find(n => n.id === 'log_result');
+
+                    // Find the middle -> log_result edge
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let outputEdgePath = null;
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes('middle') && id.includes('log_result')) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                outputEdgePath = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+
+                    // Parse start Y from path
+                    let pathStartY = null;
+                    if (outputEdgePath) {
+                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                        if (match) pathStartY = parseFloat(match[1]);
+                    }
+
+                    return {
+                        middleBottom: middle ? middle.y + middle.height : null,
+                        logResultTop: logResult ? logResult.y : null,
+                        pathStartY: pathStartY,
+                        path: outputEdgePath,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        middle_bottom = result["middleBottom"]
+        path_start_y = result["pathStartY"]
+
+        assert middle_bottom is not None, "middle node not found"
+        assert path_start_y is not None, f"Could not parse edge path: {result['path']}"
+
+        # Edge should start within 5px of the source node's bottom
+        gap = abs(path_start_y - middle_bottom)
+        max_gap = 5
+
+        assert gap <= max_gap, (
+            f"Collapsed output edge has visible gap from source!\n"
+            f"Edge starts at Y={path_start_y}px\n"
+            f"middle bottom: {middle_bottom}px\n"
+            f"Gap: {gap}px (should be <= {max_gap}px)\n"
             f"Path: {result['path'][:100] if result['path'] else 'None'}..."
         )
 

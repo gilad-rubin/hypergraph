@@ -499,11 +499,23 @@
       }));
     }
 
-    // Build map of child -> parent for edge lifting
-    var childToParent = new Map();
+    // Build map of child -> root-level ancestor for edge lifting
+    // This ensures edges from/to deeply nested nodes are lifted all the way up
+    // (e.g., step1 inside inner inside middle -> lifts to middle)
+    var childToRootAncestor = new Map();
+    var nodeByIdForLifting = new Map(visibleNodes.map(function(n) { return [n.id, n]; }));
+
     visibleNodes.forEach(function(n) {
-      if (n.parentNode && rootNodeIds.has(n.parentNode)) {
-        childToParent.set(n.id, n.parentNode);
+      if (rootNodeIds.has(n.id)) return; // Already root-level
+
+      // Walk up to find root-level ancestor
+      var current = n;
+      while (current && current.parentNode) {
+        if (rootNodeIds.has(current.parentNode)) {
+          childToRootAncestor.set(n.id, current.parentNode);
+          break;
+        }
+        current = nodeByIdForLifting.get(current.parentNode);
       }
     });
 
@@ -517,13 +529,13 @@
       var source = e.source;
       var target = e.target;
 
-      // Lift source if it's a child of a root-level nested graph
-      if (childToParent.has(source)) {
-        source = childToParent.get(source);
+      // Lift source if it's inside a nested graph (any depth)
+      if (childToRootAncestor.has(source)) {
+        source = childToRootAncestor.get(source);
       }
-      // Lift target if it's a child of a root-level nested graph
-      if (childToParent.has(target)) {
-        target = childToParent.get(target);
+      // Lift target if it's inside a nested graph (any depth)
+      if (childToRootAncestor.has(target)) {
+        target = childToRootAncestor.get(target);
       }
 
       // Only include if both endpoints are now root-level and it's not a self-loop

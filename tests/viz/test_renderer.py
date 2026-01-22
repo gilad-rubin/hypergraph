@@ -35,10 +35,10 @@ class TestRenderGraph:
         assert "edges" in result
         assert "meta" in result
 
-        # Now always creates: INPUT_GROUP, FUNCTION, DATA nodes
+        # Now always creates: INPUT, FUNCTION, DATA nodes (individual inputs, not grouped)
         node_types = {n["data"]["nodeType"] for n in result["nodes"]}
         assert "FUNCTION" in node_types
-        assert "INPUT_GROUP" in node_types  # For external input 'x'
+        assert "INPUT" in node_types  # For external input 'x' (individual, not grouped)
         assert "DATA" in node_types  # For output 'doubled'
 
         fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
@@ -94,7 +94,7 @@ class TestRenderGraph:
         graph = Graph(nodes=[double_fn, use_doubled])
         result = render_graph(graph.to_flat_graph())
 
-        # Edges now flow: INPUT_GROUP → func, func → DATA, DATA → func
+        # Edges now flow: INPUT → func, func → DATA, DATA → func
         # Check that the data flow edges exist
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
         assert len(data_edges) == 1

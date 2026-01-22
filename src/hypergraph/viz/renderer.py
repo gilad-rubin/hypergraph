@@ -60,8 +60,8 @@ def render_graph(
     param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
     output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
 
-    # Create INPUT_GROUP nodes for external inputs
-    _create_input_groups(
+    # Create individual INPUT nodes for external inputs
+    input_node_map = _create_input_nodes(
         nodes, flat_graph, input_spec, bound_params, theme, show_types,
         param_to_consumer, expansion_state
     )
@@ -84,8 +84,8 @@ def render_graph(
     # Create DATA nodes for outputs
     _create_data_nodes(nodes, edges, flat_graph, theme, show_types)
 
-    # Create edges from INPUT_GROUP nodes
-    _create_input_edges(nodes, edges, flat_graph, expansion_state, param_to_consumer)
+    # Create edges from INPUT nodes to their actual targets
+    _create_input_edges(nodes, edges, input_node_map)
 
     # Create edges from graph structure
     _create_graph_edges(edges, flat_graph, input_spec, expansion_state, output_to_producer)
@@ -223,7 +223,7 @@ def _is_node_expanded(
     return depth > nesting_level
 
 
-def _create_input_groups(
+def _create_input_nodes(
     nodes: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     input_spec: dict,
@@ -232,75 +232,59 @@ def _create_input_groups(
     show_types: bool,
     param_to_consumer: dict[str, str],
     expansion_state: dict[str, bool],
-) -> None:
-    """Create INPUT_GROUP nodes for external inputs."""
+) -> dict[str, str]:
+    """Create individual INPUT nodes for each external input parameter.
+
+    Returns:
+        Dict mapping param_name -> input_node_id for edge creation.
+    """
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
     external_inputs = list(required) + list(optional)
 
-    if not external_inputs:
-        return
+    input_node_map: dict[str, str] = {}
 
-    # Build param -> (targets, actual_targets, type, is_bound) mapping
-    # targets = root-level containers (for grouping)
-    # actual_targets = actual consuming nodes when expanded
-    param_info: dict[str, tuple[frozenset[str], frozenset[str], type | None, bool]] = {}
     for param in external_inputs:
-        root_targets = set()
-        actual_targets = set()
-        param_type = None
+        input_node_id = f"input_{param}"
         is_bound = param in bound_params
 
+        # Find the type for this parameter
+        param_type = None
         for node_id, attrs in flat_graph.nodes(data=True):
             if param in attrs.get("inputs", ()):
-                if param_type is None:
-                    param_type = attrs.get("input_types", {}).get(param)
+                param_type = attrs.get("input_types", {}).get(param)
+                if param_type is not None:
+                    break
 
-                # Root target is the top-level ancestor
-                root_target = _get_root_ancestor(node_id, flat_graph)
-                root_targets.add(root_target)
-
-                # Actual target is the deepest visible consumer
-                if param in param_to_consumer:
-                    actual_targets.add(param_to_consumer[param])
-                else:
-                    actual_targets.add(root_target)
-
-        param_info[param] = (frozenset(root_targets), frozenset(actual_targets), param_type, is_bound)
-
-    # Group params by (root_targets, is_bound) for visual grouping
-    groups: dict[tuple[frozenset[str], bool], list[tuple[str, frozenset[str], type | None]]] = {}
-    for param, (root_targets, actual_targets, param_type, is_bound) in param_info.items():
-        key = (root_targets, is_bound)
-        groups.setdefault(key, []).append((param, actual_targets, param_type))
-
-    # Create INPUT_GROUP node for each group
-    for idx, ((root_targets, is_bound), params) in enumerate(groups.items()):
-        group_id = f"__inputs_{idx}__" if len(groups) > 1 else "__inputs__"
-
-        # Merge actual targets from all params in this group
-        all_actual_targets: set[str] = set()
-        for _, actual_targets, _ in params:
-            all_actual_targets.update(actual_targets)
+        # Get actual target for edge routing
+        actual_target = param_to_consumer.get(param)
+        if actual_target is None:
+            # Fall back to root-level consumer
+            for node_id, attrs in flat_graph.nodes(data=True):
+                if param in attrs.get("inputs", ()):
+                    actual_target = _get_root_ancestor(node_id, flat_graph)
+                    break
 
         nodes.append({
-            "id": group_id,
+            "id": input_node_id,
             "type": "custom",
             "position": {"x": 0, "y": 0},
             "data": {
-                "nodeType": "INPUT_GROUP",
-                "label": "Inputs" if not is_bound else "Bound",
-                "params": [p[0] for p in params],
-                "paramTypes": [_format_type(p[2]) for p in params],
+                "nodeType": "INPUT",
+                "label": param,
+                "typeHint": _format_type(param_type),
                 "isBound": is_bound,
-                "targets": list(root_targets),  # For collapsed view
-                "actualTargets": list(all_actual_targets),  # For expanded view
+                "actualTarget": actual_target,  # Explicit target for edge
                 "theme": theme,
                 "showTypes": show_types,
             },
             "sourcePosition": "bottom",
             "targetPosition": "top",
         })
+
+        input_node_map[param] = input_node_id
+
+    return input_node_map
 
 
 def _get_root_ancestor(node_id: str, flat_graph: nx.DiGraph) -> str:
@@ -474,35 +458,28 @@ def _create_data_nodes(
 def _create_input_edges(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
-    flat_graph: nx.DiGraph,
-    expansion_state: dict[str, bool],
-    param_to_consumer: dict[str, str],
+    input_node_map: dict[str, str],
 ) -> None:
-    """Create edges from INPUT_GROUP nodes to their targets.
+    """Create edges from INPUT nodes to their actual targets.
 
-    INPUT_GROUP nodes are at root level (parent=None), so targets must be
-    lifted to root level for the layout to work. Edges connect to the
-    root-level container of the actual consumer.
+    Each INPUT node connects directly to its actual consumer node.
+    The target is explicitly computed based on expansion state.
     """
     for node in nodes:
-        if node.get("data", {}).get("nodeType") != "INPUT_GROUP":
+        if node.get("data", {}).get("nodeType") != "INPUT":
             continue
 
-        group_id = node["id"]
-        params = node["data"].get("params", [])
+        input_node_id = node["id"]
+        actual_target = node["data"].get("actualTarget")
 
-        # Use targets (root-level containers) for layout compatibility
-        # actualTargets tracks the real consumers for data annotation
-        targets = node["data"].get("targets", [])
-
-        for target in targets:
+        if actual_target:
             edges.append({
-                "id": f"e_{group_id}_to_{target}",
-                "source": group_id,
-                "target": target,
+                "id": f"e_{input_node_id}_to_{actual_target}",
+                "source": input_node_id,
+                "target": actual_target,
                 "animated": False,
                 "style": {"stroke": "#64748b", "strokeWidth": 2},
-                "data": {"edgeType": "input", "params": params},
+                "data": {"edgeType": "input"},
             })
 
 

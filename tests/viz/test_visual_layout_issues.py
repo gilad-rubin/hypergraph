@@ -1,0 +1,522 @@
+"""Tests for visual layout issues.
+
+These tests verify:
+1. Input nodes are positioned ABOVE their target nodes (edges flow downward)
+2. No visible gaps between edges and nodes
+3. Edges connect to actual nodes, not container boundaries
+"""
+
+import pytest
+from hypergraph import Graph, node
+
+try:
+    import playwright
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    HAS_PLAYWRIGHT = False
+
+
+# =============================================================================
+# Test Graph Definitions
+# =============================================================================
+
+@node(output_name="step1_out")
+def step1(x: int) -> int:
+    return x + 1
+
+
+@node(output_name="step2_out")
+def step2(step1_out: int) -> int:
+    return step1_out * 2
+
+
+@node(output_name="validated")
+def validate(step2_out: int) -> int:
+    return step2_out
+
+
+@node(output_name="logged")
+def log_result(validated: int) -> int:
+    return validated
+
+
+def make_outer():
+    """Create 2-level nested graph: outer > middle > inner."""
+    inner = Graph(nodes=[step1, step2], name="inner")
+    middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+    return Graph(nodes=[middle.as_node(), log_result])
+
+
+@node(output_name="cleaned")
+def clean_text(text: str) -> str:
+    return text.strip()
+
+
+@node(output_name="normalized")
+def normalize_text(cleaned: str) -> str:
+    return cleaned.lower()
+
+
+@node(output_name="result")
+def analyze(normalized: str) -> dict:
+    return {"length": len(normalized)}
+
+
+def make_workflow():
+    """Create 1-level nested graph: preprocess -> analyze."""
+    preprocess = Graph(nodes=[clean_text, normalize_text], name="preprocess")
+    return Graph(nodes=[preprocess.as_node(), analyze])
+
+
+# =============================================================================
+# Test: Input nodes should be ABOVE their targets (edges flow downward)
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestInputNodePosition:
+    """Tests that input nodes are positioned above their target nodes."""
+
+    def test_outer_depth2_input_above_step1(self):
+        """Input x should be positioned ABOVE step1, not below.
+
+        The edge from input_x to step1 should flow DOWNWARD.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find input node and step1 node
+                    const inputNode = debug.nodes.find(n =>
+                        n.id.includes('input') || n.id === '__inputs__'
+                    );
+                    const step1Node = debug.nodes.find(n => n.id === 'step1');
+
+                    if (!inputNode || !step1Node) {
+                        return {
+                            error: 'Nodes not found',
+                            inputNode: inputNode ? inputNode.id : null,
+                            step1Node: step1Node ? step1Node.id : null,
+                            allNodes: debug.nodes.map(n => n.id)
+                        };
+                    }
+
+                    // Input should be ABOVE step1 (smaller Y)
+                    const inputBottom = inputNode.y + inputNode.height;
+                    const step1Top = step1Node.y;
+
+                    return {
+                        inputId: inputNode.id,
+                        inputY: inputNode.y,
+                        inputBottom: inputBottom,
+                        step1Y: step1Node.y,
+                        step1Top: step1Top,
+                        inputAboveStep1: inputBottom < step1Top,
+                        verticalDistance: step1Top - inputBottom,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert result["inputAboveStep1"], (
+            f"Input node should be ABOVE step1 (edges flow downward)!\n"
+            f"Input '{result['inputId']}' bottom: {result['inputBottom']}px\n"
+            f"step1 top: {result['step1Top']}px\n"
+            f"Vertical distance: {result['verticalDistance']}px\n"
+            f"Expected: input.bottom < step1.top (positive distance)\n"
+            f"Actual: Input is BELOW step1 (edge flows upward)"
+        )
+
+    def test_workflow_depth1_input_above_clean_text(self):
+        """Input text should be positioned ABOVE clean_text."""
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    const inputNode = debug.nodes.find(n =>
+                        n.id.includes('input') || n.id === '__inputs__'
+                    );
+                    const cleanTextNode = debug.nodes.find(n => n.id === 'clean_text');
+
+                    if (!inputNode || !cleanTextNode) {
+                        return {
+                            error: 'Nodes not found',
+                            allNodes: debug.nodes.map(n => n.id)
+                        };
+                    }
+
+                    const inputBottom = inputNode.y + inputNode.height;
+                    const cleanTextTop = cleanTextNode.y;
+
+                    return {
+                        inputId: inputNode.id,
+                        inputBottom: inputBottom,
+                        cleanTextTop: cleanTextTop,
+                        inputAboveCleanText: inputBottom < cleanTextTop,
+                        verticalDistance: cleanTextTop - inputBottom,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert result["inputAboveCleanText"], (
+            f"Input should be ABOVE clean_text!\n"
+            f"Input bottom: {result['inputBottom']}px\n"
+            f"clean_text top: {result['cleanTextTop']}px\n"
+            f"Vertical distance: {result['verticalDistance']}px"
+        )
+
+
+# =============================================================================
+# Test: No visible gaps between edges and nodes
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeGaps:
+    """Tests that edges connect to nodes without visible gaps."""
+
+    def test_outer_depth2_input_edge_no_gap(self):
+        """Edge from input to step1 should have no gap at start or end."""
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find the input edge
+                    const inputEdge = debug.edges.find(e =>
+                        e.source.includes('input') || e.source === '__inputs__'
+                    );
+
+                    if (!inputEdge) {
+                        return { error: 'Input edge not found', edges: debug.edges };
+                    }
+
+                    // Find source and target nodes
+                    const srcNode = debug.nodes.find(n => n.id === inputEdge.source);
+                    const tgtNode = debug.nodes.find(n => n.id === inputEdge.target);
+
+                    if (!srcNode || !tgtNode) {
+                        return {
+                            error: 'Source or target not found',
+                            source: inputEdge.source,
+                            target: inputEdge.target,
+                            nodes: debug.nodes.map(n => n.id)
+                        };
+                    }
+
+                    // Find the SVG path for this edge
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let pathStartY = null;
+                    let pathEndY = null;
+                    let pathD = null;
+
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes(inputEdge.source)) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                pathD = path.getAttribute('d');
+                                // Parse start Y (M x y)
+                                const startMatch = pathD.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                                if (startMatch) pathStartY = parseFloat(startMatch[1]);
+                                // Parse end Y (last two numbers)
+                                const coords = pathD.match(/[\\d.]+/g);
+                                if (coords && coords.length >= 2) {
+                                    pathEndY = parseFloat(coords[coords.length - 1]);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    const srcBottom = srcNode.y + srcNode.height;
+                    const tgtTop = tgtNode.y;
+
+                    return {
+                        srcId: srcNode.id,
+                        tgtId: tgtNode.id,
+                        srcBottom: srcBottom,
+                        tgtTop: tgtTop,
+                        pathStartY: pathStartY,
+                        pathEndY: pathEndY,
+                        startGap: pathStartY ? Math.abs(pathStartY - srcBottom) : null,
+                        endGap: pathEndY ? Math.abs(pathEndY - tgtTop) : null,
+                        pathD: pathD ? pathD.substring(0, 100) : null,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        max_gap = 10  # pixels
+
+        if result["startGap"] is not None:
+            assert result["startGap"] <= max_gap, (
+                f"Edge has gap at START!\n"
+                f"Source '{result['srcId']}' bottom: {result['srcBottom']}px\n"
+                f"Path starts at Y: {result['pathStartY']}px\n"
+                f"Gap: {result['startGap']}px (max allowed: {max_gap}px)"
+            )
+
+        if result["endGap"] is not None:
+            assert result["endGap"] <= max_gap, (
+                f"Edge has gap at END!\n"
+                f"Target '{result['tgtId']}' top: {result['tgtTop']}px\n"
+                f"Path ends at Y: {result['pathEndY']}px\n"
+                f"Gap: {result['endGap']}px (max allowed: {max_gap}px)"
+            )
+
+
+# =============================================================================
+# Test: Edges connect to actual nodes, not container boundaries
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeConnectsToActualNode:
+    """Tests that edges connect to actual internal nodes, not container boundaries."""
+
+    def test_outer_depth2_edge_to_step1_not_inner(self):
+        """Edge should connect to step1's position, not inner container's boundary."""
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        outer = make_outer()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find nodes
+                    const innerNode = debug.nodes.find(n => n.id === 'inner');
+                    const step1Node = debug.nodes.find(n => n.id === 'step1');
+
+                    if (!step1Node) {
+                        return {
+                            error: 'step1 not found',
+                            nodes: debug.nodes.map(n => n.id)
+                        };
+                    }
+
+                    // Find the input edge
+                    const inputEdge = debug.edges.find(e =>
+                        e.source.includes('input') || e.source === '__inputs__'
+                    );
+
+                    if (!inputEdge) {
+                        return { error: 'Input edge not found' };
+                    }
+
+                    // Find the SVG path end Y
+                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                    let pathEndY = null;
+                    let pathEndX = null;
+
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes(inputEdge.source)) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                const pathD = path.getAttribute('d');
+                                const coords = pathD.match(/[\\d.]+/g);
+                                if (coords && coords.length >= 2) {
+                                    pathEndX = parseFloat(coords[coords.length - 2]);
+                                    pathEndY = parseFloat(coords[coords.length - 1]);
+                                }
+                                break;
+                            }
+                        }
+                    }
+
+                    // Calculate distances to inner container vs step1
+                    const step1CenterX = step1Node.x + step1Node.width / 2;
+                    const step1Top = step1Node.y;
+
+                    const innerTop = innerNode ? innerNode.y : null;
+                    const innerCenterX = innerNode ? innerNode.x + innerNode.width / 2 : null;
+
+                    return {
+                        pathEndX: pathEndX,
+                        pathEndY: pathEndY,
+                        step1Top: step1Top,
+                        step1CenterX: step1CenterX,
+                        innerTop: innerTop,
+                        innerCenterX: innerCenterX,
+                        distToStep1Y: pathEndY ? Math.abs(pathEndY - step1Top) : null,
+                        distToInnerY: innerTop && pathEndY ? Math.abs(pathEndY - innerTop) : null,
+                        distToStep1X: pathEndX ? Math.abs(pathEndX - step1CenterX) : null,
+                        distToInnerX: innerCenterX && pathEndX ? Math.abs(pathEndX - innerCenterX) : null,
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        # Edge should end closer to step1 than to inner container
+        tolerance = 20  # pixels
+
+        dist_to_step1 = result["distToStep1Y"]
+        dist_to_inner = result["distToInnerY"]
+
+        if dist_to_step1 is not None and dist_to_inner is not None:
+            assert dist_to_step1 < dist_to_inner or dist_to_step1 <= tolerance, (
+                f"Edge connects to container boundary, not actual node!\n"
+                f"Path ends at Y: {result['pathEndY']}px\n"
+                f"step1 top: {result['step1Top']}px (distance: {dist_to_step1}px)\n"
+                f"inner top: {result['innerTop']}px (distance: {dist_to_inner}px)\n"
+                f"Edge should end closer to step1 than to inner container"
+            )
+
+
+# =============================================================================
+# Test: Comprehensive edge validation
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeValidation:
+    """Comprehensive tests for edge validation at all depths."""
+
+    def test_outer_depth2_all_edges_flow_downward(self):
+        """All edges should flow downward (source.bottom < target.top)."""
+        from hypergraph.viz import extract_debug_data
+
+        outer = make_outer()
+        data = extract_debug_data(outer, depth=2)
+
+        # Check all edges have positive vertical distance
+        issues = []
+        for edge in data.edges:
+            if edge.vert_dist is not None and edge.vert_dist < 0:
+                issues.append(
+                    f"{edge.source} -> {edge.target}: "
+                    f"flows upward ({edge.vert_dist}px)"
+                )
+
+        assert len(issues) == 0, (
+            f"Edges flow upward instead of downward:\n" +
+            "\n".join(f"  - {issue}" for issue in issues)
+        )
+
+    def test_outer_depth2_no_edge_issues(self):
+        """Should have zero edge issues at depth=2."""
+        from hypergraph.viz import extract_debug_data
+
+        outer = make_outer()
+        data = extract_debug_data(outer, depth=2)
+
+        assert data.summary["edgeIssues"] == 0, (
+            f"Expected 0 edge issues, found {data.summary['edgeIssues']}:\n" +
+            "\n".join(
+                f"  - {e.source} -> {e.target}: {e.issue}"
+                for e in data.edge_issues
+            )
+        )
+
+    def test_workflow_depth1_no_edge_issues(self):
+        """Should have zero edge issues at depth=1."""
+        from hypergraph.viz import extract_debug_data
+
+        workflow = make_workflow()
+        data = extract_debug_data(workflow, depth=1)
+
+        assert data.summary["edgeIssues"] == 0, (
+            f"Expected 0 edge issues, found {data.summary['edgeIssues']}:\n" +
+            "\n".join(
+                f"  - {e.source} -> {e.target}: {e.issue}"
+                for e in data.edge_issues
+            )
+        )
