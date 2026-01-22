@@ -1086,15 +1086,19 @@
       };
 
       // Build node position map for edge validation
+      // Uses VISIBLE bounds (subtracting shadow offset from height)
+      // Shadow offset: CSS shadows extend beyond visible node boundaries
+      var SHADOW_OFFSET = 10;
       var nodePositionMap = {};
       layoutedNodes.forEach(function(n) {
         if (n.hidden) return;
         var absPos = getAbsolutePosition(n);
+        var rawHeight = n.style && n.style.height || 68;
         nodePositionMap[n.id] = {
           x: absPos.x,
           y: absPos.y,
           width: n.style && n.style.width || 200,
-          height: n.style && n.style.height || 68,
+          height: rawHeight - SHADOW_OFFSET,  // Visible height excludes shadow
           nodeType: n.data && n.data.nodeType,
           label: (n.data && n.data.label) || n.id,
         };

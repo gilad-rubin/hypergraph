@@ -39,6 +39,11 @@
   const nodeTop = (node) => node.y - node.height * 0.5;
   const nodeBottom = (node) => node.y + node.height * 0.5;
 
+  // Shadow offset: CSS shadows extend beyond visible node boundaries
+  // Use visible bounds for edge stem calculations
+  const SHADOW_OFFSET = 10;
+  const nodeVisibleBottom = (node) => nodeBottom(node) - SHADOW_OFFSET;
+
   const groupByRow = (nodes, orientation) => {
     const rows = {};
     const primaryCoord = orientation === 'vertical' ? 'y' : 'x';
@@ -731,14 +736,15 @@
 
       if (orientation === 'vertical') {
         // Simplified to 2 points to reduce vertical segment
+        // Use visible bottom (excluding shadow) for edge start point
         sourceStem = [
           {
             x: source.x,
-            y: nodeBottom(source),
+            y: nodeVisibleBottom(source),
           },
           {
             x: source.x,
-            y: nodeBottom(source) + 4,  // Minimal vertical offset
+            y: nodeVisibleBottom(source) + 4,  // Minimal vertical offset
           },
         ];
         targetStem = [
