@@ -671,17 +671,17 @@
       if (!parentPos) return;
 
       // For absolute positioning (edge routing), offset from parent's top-left
-      var absOffsetX = parentPos.x + GRAPH_PADDING;
-      var absOffsetY = parentPos.y + GRAPH_PADDING + HEADER_HEIGHT;
+      // Note: size.min already includes GRAPH_PADDING, so we don't add it separately
+      var absOffsetX = parentPos.x;
+      var absOffsetY = parentPos.y + HEADER_HEIGHT;
 
       childResult.nodes.forEach(function(n) {
         var w = n.width;
         var h = n.height;
-        // Convert from center to top-left
-        // Since we now use GRAPH_PADDING in recalculateBounds, positions are already
-        // relative to bounds with GRAPH_PADDING. Just convert center to top-left.
-        var childX = n.x - w / 2;
-        var childY = n.y - h / 2;
+        // Convert from center to top-left, relative to the padded bounds
+        // Subtracting size.min.x/y normalizes positions to start from the bounds origin
+        var childX = n.x - w / 2 - childResult.size.min.x;
+        var childY = n.y - h / 2 - childResult.size.min.y;
 
         // Store absolute position for edge routing
         nodePositions.set(n.id, { x: absOffsetX + childX, y: absOffsetY + childY });
@@ -714,8 +714,8 @@
       childResult.edges.forEach(function(e) {
         var offsetPoints = (e.points || []).map(function(pt) {
           return {
-            x: pt.x + absOffsetX,
-            y: pt.y + absOffsetY
+            x: pt.x - childResult.size.min.x + absOffsetX,
+            y: pt.y - childResult.size.min.y + absOffsetY
           };
         });
 
