@@ -787,6 +787,18 @@
     // Get node_to_parent for re-routing edges when containers collapse
     var nodeToParent = (routingData && routingData.node_to_parent) || {};
 
+    // Helper to find the first visible ancestor for a node
+    function findVisibleAncestor(nodeId) {
+      var current = nodeId;
+      while (current) {
+        if (nodePositions.has(current) && nodeDimensions.has(current)) {
+          return current;
+        }
+        current = nodeToParent[current];
+      }
+      return null;
+    }
+
     edges.forEach(function(e) {
       var edgeKey = e.source + '->' + e.target;
       if (handledEdges.has(edgeKey)) return; // Already positioned
