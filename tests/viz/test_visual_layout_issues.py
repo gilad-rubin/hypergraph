@@ -342,6 +342,142 @@ class TestEdgeGaps:
             )
 
 
+    def test_workflow_depth1_all_edges_no_gap(self):
+        """All edges in workflow should have no visible gaps.
+
+        This tests the screenshot issue where:
+        - 7px gap below 'text' input node
+        - 19px gap above 'analyze' node
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        import tempfile
+        import os
+
+        workflow = make_workflow()
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+                    const gaps = [];
+
+                    // Check each edge for gaps
+                    for (const edge of debug.edges) {
+                        // Use actualSource/actualTarget when available (re-routed edges)
+                        const actualSrcId = (edge.data && edge.data.actualSource) || edge.source;
+                        const actualTgtId = (edge.data && edge.data.actualTarget) || edge.target;
+
+                        const srcNode = debug.nodes.find(n => n.id === actualSrcId);
+                        const tgtNode = debug.nodes.find(n => n.id === actualTgtId);
+
+                        if (!srcNode || !tgtNode) continue;
+
+                        // Find the SVG path for this edge
+                        const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                        let pathStartY = null;
+                        let pathEndY = null;
+                        let pathD = null;
+
+                        for (const group of edgeGroups) {
+                            const id = group.getAttribute('data-testid') || '';
+                            // Edge IDs typically contain source or source-target pattern
+                            if (id.includes(edge.source) && id.includes(edge.target)) {
+                                const path = group.querySelector('path');
+                                if (path) {
+                                    pathD = path.getAttribute('d');
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Try alternate search if not found
+                        if (!pathD) {
+                            for (const group of edgeGroups) {
+                                const id = group.getAttribute('data-testid') || '';
+                                if (id.includes(edge.source)) {
+                                    const path = group.querySelector('path');
+                                    if (path) {
+                                        pathD = path.getAttribute('d');
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (pathD) {
+                            // Parse start Y (M x y)
+                            const startMatch = pathD.match(/M\\s*([\\d.]+)\\s+([\\d.]+)/);
+                            if (startMatch) {
+                                pathStartY = parseFloat(startMatch[2]);
+                            }
+                            // Parse end Y (last two numbers)
+                            const coords = pathD.match(/[\\d.]+/g);
+                            if (coords && coords.length >= 2) {
+                                pathEndY = parseFloat(coords[coords.length - 1]);
+                            }
+                        }
+
+                        const srcBottom = srcNode.y + srcNode.height;
+                        const tgtTop = tgtNode.y;
+
+                        const startGap = pathStartY !== null ? Math.abs(pathStartY - srcBottom) : null;
+                        const endGap = pathEndY !== null ? Math.abs(pathEndY - tgtTop) : null;
+
+                        gaps.push({
+                            edge: edge.source + ' -> ' + edge.target,
+                            actualEdge: actualSrcId + ' -> ' + actualTgtId,
+                            srcBottom: srcBottom,
+                            tgtTop: tgtTop,
+                            pathStartY: pathStartY,
+                            pathEndY: pathEndY,
+                            startGap: startGap,
+                            endGap: endGap,
+                            pathD: pathD ? pathD.substring(0, 80) : null,
+                        });
+                    }
+
+                    return { gaps: gaps };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        max_gap = 5  # pixels - strict threshold for visible gaps
+        issues = []
+
+        for gap_info in result["gaps"]:
+            if gap_info["startGap"] is not None and gap_info["startGap"] > max_gap:
+                issues.append(
+                    f"{gap_info['edge']}: START gap of {gap_info['startGap']:.1f}px "
+                    f"(src.bottom={gap_info['srcBottom']:.1f}, path.start={gap_info['pathStartY']:.1f})"
+                )
+            if gap_info["endGap"] is not None and gap_info["endGap"] > max_gap:
+                issues.append(
+                    f"{gap_info['edge']}: END gap of {gap_info['endGap']:.1f}px "
+                    f"(tgt.top={gap_info['tgtTop']:.1f}, path.end={gap_info['pathEndY']:.1f})"
+                )
+
+        assert len(issues) == 0, (
+            f"Found {len(issues)} edge gaps (max allowed: {max_gap}px):\n" +
+            "\n".join(f"  - {issue}" for issue in issues)
+        )
+
+
 # =============================================================================
 # Test: Edges connect to actual nodes, not container boundaries
 # =============================================================================

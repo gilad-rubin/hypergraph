@@ -204,18 +204,11 @@
 
     if (data && data.points && data.points.length > 0) {
       // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
+      // Use constraint layout points directly - they already have correct coordinates
+      // from either the constraint solver (internal edges) or Step 4 (cross-boundary)
       var points = data.points.slice();
 
-      // Only use React Flow's source/target positions if edge wasn't re-routed
-      // Re-routed edges have actualSource/actualTarget set and their points
-      // already contain the correct coordinates for the internal nodes
-      var isRerouted = data.actualSource || data.actualTarget;
-      if (!isRerouted) {
-        points[0] = { x: sourceX, y: sourceY };
-        points[points.length - 1] = { x: targetX, y: targetY };
-      }
-
-      // For re-routed edges, use points for position calculations
+      // Use our points directly for position calculations
       var startPt = points[0];
       var endPt = points[points.length - 1];
 
