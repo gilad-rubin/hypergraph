@@ -392,6 +392,52 @@ def click_to_expand_container(page, container_id: str) -> None:
     page.wait_for_timeout(500)
 
 
+def click_to_collapse_container(page, container_id: str) -> None:
+    """Click on an expanded container node to collapse it.
+
+    For expanded containers, there's a button at the top with the container label.
+    Clicking this button triggers the collapse. The button is rendered as:
+    <button className="...absolute -top-3 left-4...">
+        <Icon /> {label}
+    </button>
+
+    Waits for layout to settle after collapse.
+    """
+    wait_for_debug_ready(page)
+    initial_version = page.evaluate("window.__hypergraphVizDebug.version")
+
+    # Find the node container
+    node_selector = f'[data-id="{container_id}"]'
+    node_element = page.locator(node_selector).first
+
+    if node_element.count() == 0:
+        # Fallback: find by node label text
+        node_element = page.locator(f'.react-flow__node:has-text("{container_id}")').first
+
+    # For expanded containers, find the collapse button inside the node
+    # The button has the container label text and is styled with "absolute -top-3"
+    collapse_button = node_element.locator('button').first
+    if collapse_button.count() > 0:
+        collapse_button.click()
+    else:
+        # Fallback: try clicking the title text directly
+        title_element = node_element.locator(f'text={container_id}').first
+        if title_element.count() > 0:
+            title_element.click()
+        else:
+            # Last resort: click the node itself
+            node_element.click()
+
+    # Wait for layout to update (version should increment)
+    page.wait_for_function(
+        f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {initial_version}",
+        timeout=10000,
+    )
+
+    # Additional wait for layout to fully settle
+    page.wait_for_timeout(500)
+
+
 def render_and_extract(page, graph: Graph, depth: int, temp_path: str) -> dict:
     """Render graph at given depth and extract edge routing."""
     from hypergraph.viz.widget import visualize
