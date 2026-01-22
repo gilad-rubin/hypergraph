@@ -63,6 +63,23 @@
   var nodeTypes = { custom: CustomNode, pipelineGroup: CustomNode };
   var edgeTypes = { custom: CustomEdge };
 
+  // Node type to wrapper offset mapping (matches constraint-layout.js and layout.js)
+  // Used to compute visible bounds from wrapper bounds
+  var NODE_TYPE_OFFSETS = {
+    'PIPELINE': 26,    // Expanded containers (p-6 padding + border)
+    'GRAPH': 26,       // Collapsed containers (same styling)
+    'FUNCTION': 14,    // Function nodes (shadow-lg)
+    'DATA': 6,         // Data nodes (shadow-sm)
+    'INPUT': 6,        // Input nodes (shadow-sm)
+    'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
+    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+  };
+  var DEFAULT_OFFSET = 10;
+
+  function getNodeTypeOffset(nodeType) {
+    return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+  }
+
   // === DEBUG OVERLAY COMPONENT ===
   var DebugOverlay = function(props) {
     var nodes = props.nodes;
@@ -1256,20 +1273,28 @@
       };
 
       // Expose debug data for Python/Playwright extraction
+      // Reports VISIBLE bounds (excluding wrapper/shadow offset)
       root.__hypergraphVizDebug = {
         version: layoutVersion,
         timestamp: Date.now(),
         nodes: Object.keys(nodePositionMap).map(function(id) {
           var n = nodePositionMap[id];
+          // Default to FUNCTION when nodeType is undefined (matches constraint-layout.js)
+          var offset = getNodeTypeOffset(n.nodeType || 'FUNCTION');
+          var visibleHeight = n.height - offset;
           return {
             id: id,
             label: n.label,
             x: n.x,
             y: n.y,
             width: n.width,
-            height: n.height,
-            bottom: n.y + n.height,
+            height: visibleHeight,  // Visible height (excludes wrapper offset)
+            bottom: n.y + visibleHeight,  // Visible bottom
             nodeType: n.nodeType,
+            // Also expose raw wrapper bounds for debugging
+            wrapperHeight: n.height,
+            wrapperBottom: n.y + n.height,
+            offset: offset,
           };
         }),
         edges: edgeValidation,

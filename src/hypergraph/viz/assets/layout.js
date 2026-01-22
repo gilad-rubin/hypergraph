@@ -33,9 +33,6 @@
   var GRAPH_PADDING = 24;
   var HEADER_HEIGHT = 32;
 
-  // Shadow offset: CSS shadows extend beyond visible node boundaries
-  // This offset is subtracted from node height to get visible bottom
-  var SHADOW_OFFSET = 10;
 
   /**
    * Calculate dimensions for a node based on its type and content
@@ -225,6 +222,7 @@
             height: dims.height,
             x: 0,
             y: 0,
+            data: n.data,  // Pass data so constraint-layout can access nodeType for edge routing
             _original: n,
           };
         });
@@ -383,15 +381,33 @@
    * @param {Object} routingData - Optional routing data for edge re-routing to actual internal nodes
    * @returns {Object} { nodes, edges, size }
    */
+  // Node type to wrapper offset mapping (matches constraint-layout.js)
+  var NODE_TYPE_OFFSETS = {
+    'PIPELINE': 26,    // Expanded containers (p-6 padding + border)
+    'GRAPH': 26,       // Collapsed containers (same styling)
+    'FUNCTION': 14,    // Function nodes (shadow-lg)
+    'DATA': 6,         // Data nodes (shadow-sm)
+    'INPUT': 6,        // Input nodes (shadow-sm)
+    'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
+    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+  };
+  var DEFAULT_OFFSET = 10;
+
+  function getNodeTypeOffset(nodeType) {
+    return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+  }
+
   function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData) {
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
     var nodeDimensions = new Map();
+    var nodeTypes = new Map();  // Track node types for offset calculation
     var childLayoutResults = new Map();
 
-    // Calculate base dimensions for all nodes
+    // Calculate base dimensions and track types for all nodes
     visibleNodes.forEach(function(n) {
       nodeDimensions.set(n.id, calculateDimensions(n));
+      nodeTypes.set(n.id, n.data?.nodeType || 'FUNCTION');
     });
 
     // Step 1: Layout children bottom-up (deepest expanded graphs first)
@@ -413,6 +429,7 @@
           height: dims.height,
           x: 0,
           y: 0,
+          data: n.data,  // Pass data so constraint-layout can access nodeType for edge routing
           _original: n,
         };
       });
@@ -565,6 +582,7 @@
         height: dims.height,
         x: 0,
         y: 0,
+        data: n.data,  // Pass data so constraint-layout can access nodeType for edge routing
         _original: n,
       };
     });
@@ -882,8 +900,9 @@
 
       // Compute edge points using actual (re-routed) positions
       var srcCenterX = actualSrcPos.x + actualSrcDims.width / 2;
-      // Use visible bottom (subtract shadow offset so edge connects to visible node)
-      var srcBottomY = actualSrcPos.y + actualSrcDims.height - SHADOW_OFFSET;
+      // Connect to visible node bottom (accounting for wrapper offset)
+      var srcNodeType = nodeTypes.get(actualSrc) || 'FUNCTION';
+      var srcBottomY = actualSrcPos.y + actualSrcDims.height - getNodeTypeOffset(srcNodeType);
       var tgtCenterX = actualTgtPos.x + actualTgtDims.width / 2;
       var tgtTopY = actualTgtPos.y;
 
@@ -950,8 +969,9 @@
         var producerPos = nodePositions.get(actualProducer);
         var producerDims = nodeDimensions.get(actualProducer);
         var newStartX = producerPos.x + producerDims.width / 2;
-        // Use visible bottom (subtract shadow offset)
-        var newStartY = producerPos.y + producerDims.height - SHADOW_OFFSET;
+        // Connect to visible node bottom (accounting for wrapper offset)
+        var producerNodeType = nodeTypes.get(actualProducer) || 'FUNCTION';
+        var newStartY = producerPos.y + producerDims.height - getNodeTypeOffset(producerNodeType);
         if (newPoints.length > 0) {
           newPoints[0] = { x: newStartX, y: newStartY };
         }

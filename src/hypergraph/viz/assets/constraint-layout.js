@@ -39,10 +39,26 @@
   const nodeTop = (node) => node.y - node.height * 0.5;
   const nodeBottom = (node) => node.y + node.height * 0.5;
 
-  // Shadow offset: CSS shadows extend beyond visible node boundaries
-  // Use visible bounds for edge stem calculations
-  const SHADOW_OFFSET = 10;
-  const nodeVisibleBottom = (node) => nodeBottom(node) - SHADOW_OFFSET;
+  // Node type to wrapper offset mapping
+  // Different node types have different gaps between wrapper and visible content
+  // Measured empirically: wrapper.bottom - innerElement.bottom for each type
+  const NODE_TYPE_OFFSETS = {
+    'PIPELINE': 26,    // Expanded containers (p-6 padding + border)
+    'GRAPH': 26,       // Collapsed containers (same styling)
+    'FUNCTION': 14,    // Function nodes (shadow-lg)
+    'DATA': 6,         // Data nodes (shadow-sm)
+    'INPUT': 6,        // Input nodes (shadow-sm)
+    'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
+    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+  };
+  const DEFAULT_OFFSET = 10;
+
+  // Get visible bottom of node (accounts for wrapper/content offset)
+  const nodeVisibleBottom = (node) => {
+    const nodeType = node.data?.nodeType || 'FUNCTION';
+    const offset = NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+    return nodeBottom(node) - offset;
+  };
 
   const groupByRow = (nodes, orientation) => {
     const rows = {};
