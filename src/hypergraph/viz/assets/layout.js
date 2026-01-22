@@ -657,7 +657,11 @@
     // handled in Step 4 after all node positions are computed.
 
     // Position children within their parents
-    layoutOrder.forEach(function(graphNode) {
+    // Process in REVERSE order (shallowest first) because we need parent positions
+    // to be available before positioning children. layoutOrder is deepest-first
+    // for size calculation, but we need shallowest-first for position composition.
+    var reverseLayoutOrder = layoutOrder.slice().reverse();
+    reverseLayoutOrder.forEach(function(graphNode) {
       var childResult = childLayoutResults.get(graphNode.id);
       if (!childResult) return;
 

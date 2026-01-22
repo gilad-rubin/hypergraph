@@ -55,8 +55,16 @@ def render_graph(
         for output in attrs.get("outputs", ()):
             output_to_source[output] = node_id
 
+    # Build maps for routing edges to actual internal nodes when expanded
+    expansion_state = _build_expansion_state(flat_graph, depth)
+    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
+    output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
+
     # Create INPUT_GROUP nodes for external inputs
-    _create_input_groups(nodes, flat_graph, input_spec, bound_params, theme, show_types)
+    _create_input_groups(
+        nodes, flat_graph, input_spec, bound_params, theme, show_types,
+        param_to_consumer, expansion_state
+    )
 
     # Process each node
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -65,7 +73,7 @@ def render_graph(
 
         # Map node_type for React Flow (GRAPH -> PIPELINE for backwards compat)
         rf_node_type = "PIPELINE" if node_type == "GRAPH" else node_type
-        is_expanded = _is_node_expanded(node_id, parent_id, depth, flat_graph)
+        is_expanded = expansion_state.get(node_id, False)
 
         rf_node = _create_rf_node(
             node_id, attrs, rf_node_type, is_expanded, parent_id,
@@ -77,10 +85,10 @@ def render_graph(
     _create_data_nodes(nodes, edges, flat_graph, theme, show_types)
 
     # Create edges from INPUT_GROUP nodes
-    _create_input_edges(nodes, edges)
+    _create_input_edges(nodes, edges, flat_graph, expansion_state, param_to_consumer)
 
     # Create edges from graph structure
-    _create_graph_edges(edges, flat_graph, input_spec)
+    _create_graph_edges(edges, flat_graph, input_spec, expansion_state, output_to_producer)
 
     return {
         "nodes": nodes,
@@ -93,6 +101,98 @@ def render_graph(
             "debug_overlays": debug_overlays,
         },
     }
+
+
+def _build_expansion_state(flat_graph: nx.DiGraph, depth: int) -> dict[str, bool]:
+    """Build map of node_id -> is_expanded for all GRAPH nodes."""
+    expansion_state = {}
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if attrs.get("node_type") == "GRAPH":
+            parent_id = attrs.get("parent")
+            expansion_state[node_id] = _is_node_expanded(node_id, parent_id, depth, flat_graph)
+    return expansion_state
+
+
+def _build_param_to_consumer_map(
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> dict[str, str]:
+    """Build map of param_name -> actual_consumer_node_id.
+
+    When a param is consumed by a node inside an expanded container,
+    returns the actual internal consumer, not the container.
+    """
+    param_to_consumer: dict[str, str] = {}
+
+    for node_id, attrs in flat_graph.nodes(data=True):
+        for param in attrs.get("inputs", ()):
+            # Check if this consumer is visible (parent chain is expanded)
+            if _is_node_visible(node_id, flat_graph, expansion_state):
+                # Only store if we don't have one yet, or if this is a deeper node
+                if param not in param_to_consumer:
+                    param_to_consumer[param] = node_id
+                else:
+                    # Prefer the deeper (more specific) consumer
+                    existing = param_to_consumer[param]
+                    if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
+                        param_to_consumer[param] = node_id
+
+    return param_to_consumer
+
+
+def _build_output_to_producer_map(
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> dict[str, str]:
+    """Build map of output_value_name -> actual_producer_node_id.
+
+    When an output is produced by a node inside an expanded container,
+    returns the actual internal producer, not the container.
+    """
+    output_to_producer: dict[str, str] = {}
+
+    for node_id, attrs in flat_graph.nodes(data=True):
+        for output in attrs.get("outputs", ()):
+            # Check if this producer is visible (parent chain is expanded)
+            if _is_node_visible(node_id, flat_graph, expansion_state):
+                # Only store if we don't have one yet, or if this is a deeper node
+                if output not in output_to_producer:
+                    output_to_producer[output] = node_id
+                else:
+                    # Prefer the deeper (more specific) producer
+                    existing = output_to_producer[output]
+                    if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
+                        output_to_producer[output] = node_id
+
+    return output_to_producer
+
+
+def _is_node_visible(node_id: str, flat_graph: nx.DiGraph, expansion_state: dict[str, bool]) -> bool:
+    """Check if a node is visible (all ancestors are expanded)."""
+    attrs = flat_graph.nodes[node_id]
+    parent_id = attrs.get("parent")
+
+    while parent_id is not None:
+        if not expansion_state.get(parent_id, False):
+            return False
+        parent_attrs = flat_graph.nodes[parent_id]
+        parent_id = parent_attrs.get("parent")
+
+    return True
+
+
+def _get_nesting_depth(node_id: str, flat_graph: nx.DiGraph) -> int:
+    """Get the nesting depth of a node (0 = root level)."""
+    depth = 0
+    attrs = flat_graph.nodes[node_id]
+    parent_id = attrs.get("parent")
+
+    while parent_id is not None:
+        depth += 1
+        parent_attrs = flat_graph.nodes[parent_id]
+        parent_id = parent_attrs.get("parent")
+
+    return depth
 
 
 def _is_node_expanded(
@@ -123,6 +223,8 @@ def _create_input_groups(
     bound_params: set[str],
     theme: str,
     show_types: bool,
+    param_to_consumer: dict[str, str],
+    expansion_state: dict[str, bool],
 ) -> None:
     """Create INPUT_GROUP nodes for external inputs."""
     required = input_spec.get("required", ())
@@ -132,33 +234,48 @@ def _create_input_groups(
     if not external_inputs:
         return
 
-    # Build param -> (targets, type, is_bound) mapping
-    # Only consider root-level nodes (parent=None)
-    param_info: dict[str, tuple[frozenset[str], type | None, bool]] = {}
+    # Build param -> (targets, actual_targets, type, is_bound) mapping
+    # targets = root-level containers (for grouping)
+    # actual_targets = actual consuming nodes when expanded
+    param_info: dict[str, tuple[frozenset[str], frozenset[str], type | None, bool]] = {}
     for param in external_inputs:
-        targets = set()
+        root_targets = set()
+        actual_targets = set()
         param_type = None
         is_bound = param in bound_params
 
         for node_id, attrs in flat_graph.nodes(data=True):
-            if attrs.get("parent") is not None:
-                continue  # Skip nested nodes
             if param in attrs.get("inputs", ()):
-                targets.add(node_id)
                 if param_type is None:
                     param_type = attrs.get("input_types", {}).get(param)
 
-        param_info[param] = (frozenset(targets), param_type, is_bound)
+                # Root target is the top-level ancestor
+                root_target = _get_root_ancestor(node_id, flat_graph)
+                root_targets.add(root_target)
 
-    # Group params by (targets, is_bound)
-    groups: dict[tuple[frozenset[str], bool], list[tuple[str, type | None]]] = {}
-    for param, (targets, param_type, is_bound) in param_info.items():
-        key = (targets, is_bound)
-        groups.setdefault(key, []).append((param, param_type))
+                # Actual target is the deepest visible consumer
+                if param in param_to_consumer:
+                    actual_targets.add(param_to_consumer[param])
+                else:
+                    actual_targets.add(root_target)
+
+        param_info[param] = (frozenset(root_targets), frozenset(actual_targets), param_type, is_bound)
+
+    # Group params by (root_targets, is_bound) for visual grouping
+    groups: dict[tuple[frozenset[str], bool], list[tuple[str, frozenset[str], type | None]]] = {}
+    for param, (root_targets, actual_targets, param_type, is_bound) in param_info.items():
+        key = (root_targets, is_bound)
+        groups.setdefault(key, []).append((param, actual_targets, param_type))
 
     # Create INPUT_GROUP node for each group
-    for idx, ((targets, is_bound), params) in enumerate(groups.items()):
+    for idx, ((root_targets, is_bound), params) in enumerate(groups.items()):
         group_id = f"__inputs_{idx}__" if len(groups) > 1 else "__inputs__"
+
+        # Merge actual targets from all params in this group
+        all_actual_targets: set[str] = set()
+        for _, actual_targets, _ in params:
+            all_actual_targets.update(actual_targets)
+
         nodes.append({
             "id": group_id,
             "type": "custom",
@@ -167,15 +284,65 @@ def _create_input_groups(
                 "nodeType": "INPUT_GROUP",
                 "label": "Inputs" if not is_bound else "Bound",
                 "params": [p[0] for p in params],
-                "paramTypes": [_format_type(p[1]) for p in params],
+                "paramTypes": [_format_type(p[2]) for p in params],
                 "isBound": is_bound,
-                "targets": list(targets),
+                "targets": list(root_targets),  # For collapsed view
+                "actualTargets": list(all_actual_targets),  # For expanded view
                 "theme": theme,
                 "showTypes": show_types,
             },
             "sourcePosition": "bottom",
             "targetPosition": "top",
         })
+
+
+def _get_root_ancestor(node_id: str, flat_graph: nx.DiGraph) -> str:
+    """Get the root-level ancestor of a node (or itself if root-level)."""
+    attrs = flat_graph.nodes[node_id]
+    parent_id = attrs.get("parent")
+
+    if parent_id is None:
+        return node_id
+
+    # Walk up to find root
+    while True:
+        parent_attrs = flat_graph.nodes[parent_id]
+        grandparent = parent_attrs.get("parent")
+        if grandparent is None:
+            return parent_id
+        parent_id = grandparent
+
+
+def _get_parent(node_id: str, flat_graph: nx.DiGraph) -> str | None:
+    """Get the parent of a node."""
+    if node_id not in flat_graph.nodes:
+        return None
+    return flat_graph.nodes[node_id].get("parent")
+
+
+def _lift_to_sibling_level(
+    node_id: str,
+    target_parent: str | None,
+    flat_graph: nx.DiGraph,
+) -> str:
+    """Lift a node to be a sibling of target_parent's children.
+
+    If node_id is deeper nested than target_parent's level, returns the
+    ancestor that shares target_parent as its parent.
+    If node_id is already at the right level, returns node_id.
+    """
+    current = node_id
+    current_parent = _get_parent(current, flat_graph)
+
+    # Walk up until we find an ancestor whose parent is target_parent
+    while current_parent != target_parent:
+        if current_parent is None:
+            # Reached root level, can't lift further
+            return current
+        current = current_parent
+        current_parent = _get_parent(current, flat_graph)
+
+    return current
 
 
 def _create_rf_node(
@@ -300,15 +467,26 @@ def _create_data_nodes(
 def _create_input_edges(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+    param_to_consumer: dict[str, str],
 ) -> None:
-    """Create edges from INPUT_GROUP nodes to their targets."""
+    """Create edges from INPUT_GROUP nodes to their targets.
+
+    INPUT_GROUP nodes are at root level (parent=None), so targets must be
+    lifted to root level for the layout to work. Edges connect to the
+    root-level container of the actual consumer.
+    """
     for node in nodes:
         if node.get("data", {}).get("nodeType") != "INPUT_GROUP":
             continue
 
         group_id = node["id"]
-        targets = node["data"].get("targets", [])
         params = node["data"].get("params", [])
+
+        # Use targets (root-level containers) for layout compatibility
+        # actualTargets tracks the real consumers for data annotation
+        targets = node["data"].get("targets", [])
 
         for target in targets:
             edges.append({
@@ -321,28 +499,71 @@ def _create_input_edges(
             })
 
 
+def _find_common_ancestor(
+    node_a: str,
+    node_b: str,
+    flat_graph: nx.DiGraph,
+) -> str | None:
+    """Find the lowest common ancestor of two nodes.
+
+    Returns None if the common ancestor is the implicit root (both at top level).
+    """
+    # Get all ancestors of node_a (including itself)
+    ancestors_a = set()
+    current = node_a
+    while current is not None:
+        ancestors_a.add(current)
+        current = _get_parent(current, flat_graph)
+
+    # Walk up from node_b until we find a common ancestor
+    current = node_b
+    while current is not None:
+        if current in ancestors_a:
+            # Found common ancestor, but return its parent (the level where both are siblings)
+            return _get_parent(current, flat_graph)
+        parent = _get_parent(current, flat_graph)
+        if parent in ancestors_a:
+            return parent
+        current = parent
+
+    # Both are at root level
+    return None
+
+
 def _create_graph_edges(
     edges: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     input_spec: dict,
+    expansion_state: dict[str, bool],
+    output_to_producer: dict[str, str],
 ) -> None:
-    """Create edges from graph structure, routing through DATA nodes."""
+    """Create edges from graph structure, routing through DATA nodes.
+
+    Edges are routed between nodes at the same nesting level for layout
+    compatibility. If source and target have different parents, both are
+    lifted to share a common parent level.
+    """
     for source, target, edge_data in flat_graph.edges(data=True):
         edge_type = edge_data.get("edge_type", "data")
         value_name = edge_data.get("value_name", "")
 
-        # Data edges go from DATA node to target
+        # Use the original source and target from the flat graph
+        # These are already at appropriate container levels
+        actual_source_node = source
+        actual_target = target
+
+        # For data edges, route through the DATA node of the source
         if edge_type == "data" and value_name:
-            edge_id = f"e_data_{source}_{value_name}_to_{target}"
-            actual_source = f"data_{source}_{value_name}"
+            edge_id = f"e_data_{actual_source_node}_{value_name}_to_{actual_target}"
+            actual_source = f"data_{actual_source_node}_{value_name}"
         else:
-            edge_id = f"e_{source}_{target}_{value_name}"
-            actual_source = source
+            edge_id = f"e_{actual_source_node}_{actual_target}_{value_name}"
+            actual_source = actual_source_node
 
         rf_edge: dict[str, Any] = {
             "id": edge_id,
             "source": actual_source,
-            "target": target,
+            "target": actual_target,
             "animated": False,
             "style": {"stroke": "#64748b", "strokeWidth": 2},
             "data": {
