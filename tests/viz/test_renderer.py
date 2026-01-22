@@ -198,3 +198,58 @@ class TestNodeType:
         inner = Graph(nodes=[double], name="inner")
         gn = inner.as_node()
         assert gn.node_type == "GRAPH"
+
+
+class TestNodeToParentMap:
+    """Tests for node_to_parent map in render output."""
+
+    def test_render_graph_includes_node_to_parent_map(self):
+        """Test that render_graph includes node_to_parent map in meta for nested graphs."""
+        # Create a nested graph: inner contains double, outer contains inner and add
+        inner = Graph(nodes=[double], name="inner")
+        outer = Graph(nodes=[inner.as_node(), add])
+
+        result = render_graph(outer.to_flat_graph())
+
+        # Assert node_to_parent exists in meta
+        assert "node_to_parent" in result["meta"]
+        node_to_parent = result["meta"]["node_to_parent"]
+
+        # The 'double' node should have 'inner' as its parent
+        assert "double" in node_to_parent
+        assert node_to_parent["double"] == "inner"
+
+        # The 'inner' node should NOT be in the map (it's at root level, no parent)
+        assert "inner" not in node_to_parent
+
+        # The 'add' node should NOT be in the map (it's at root level, no parent)
+        assert "add" not in node_to_parent
+
+    def test_node_to_parent_map_deeply_nested(self):
+        """Test node_to_parent map with multiple nesting levels."""
+        # Create deeply nested: level1 contains level2 contains triple
+        level2 = Graph(nodes=[triple], name="level2")
+        level1 = Graph(nodes=[level2.as_node()], name="level1")
+        outer = Graph(nodes=[level1.as_node()])
+
+        result = render_graph(outer.to_flat_graph())
+        node_to_parent = result["meta"]["node_to_parent"]
+
+        # triple's parent is level2
+        assert node_to_parent.get("triple") == "level2"
+
+        # level2's parent is level1
+        assert node_to_parent.get("level2") == "level1"
+
+        # level1 has no parent (root level)
+        assert "level1" not in node_to_parent
+
+    def test_node_to_parent_map_empty_for_flat_graph(self):
+        """Test node_to_parent map is empty when graph has no nesting."""
+        graph = Graph(nodes=[double, add])
+        result = render_graph(graph.to_flat_graph())
+
+        node_to_parent = result["meta"]["node_to_parent"]
+
+        # Flat graph has no parent relationships
+        assert node_to_parent == {}
