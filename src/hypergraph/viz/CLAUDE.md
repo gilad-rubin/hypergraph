@@ -224,44 +224,115 @@ Reverted to original logic. Double-wiggle persists for some left-to-right edges.
 ### Key Insight
 The problem is architectural: the routing algorithm detects blocking based on `naturalX` (midpoint), but the actual path depends on corridor choice. When corridor direction differs from the detection path, edges can cross undetected nodes.
 
-## Shadow Gap Issue
+## Node Type Offsets (Wrapper-to-Visible Gap)
 
 ### The Problem
-CSS shadows (`shadow-lg`, `shadow-sm`) extend 6-14px beyond the visible node boundaries. Edges were connecting to the React Flow wrapper bounds instead of the visible element bounds, creating a visual gap between the edge endpoint and the node's visible edge.
+Different node types have different gaps between the React Flow wrapper element and the visible content inside. This is caused by:
+- CSS shadows (`shadow-lg`, `shadow-sm`) extending beyond visible bounds
+- Container padding and borders
+- CSS transforms
 
-### Measurements
-- **Function nodes** (`shadow-lg`): 14px shadow extension
-- **Data/Input nodes** (`shadow-sm`): 6px shadow extension
-- **Compromise offset**: 10px (balances the two shadow sizes)
+Edges were connecting to wrapper bounds instead of visible content bounds, creating visual gaps.
 
-### Root Cause
-The edge routing used `nodeBottom(node)` which returned `node.y + node.height * 0.5`. This corresponded to the wrapper element's bottom edge, not the visible rounded rectangle inside the shadow.
+### Node Type Offset Values (Empirically Measured)
 
-### The Fix
-Added a `SHADOW_OFFSET = 10` constant and a `nodeVisibleBottom()` helper function:
+| Node Type | Offset (px) | Reason |
+|-----------|-------------|--------|
+| PIPELINE | 26 | Container padding (p-6) + border |
+| GRAPH | 26 | Collapsed containers (same styling) |
+| FUNCTION | 14 | shadow-lg effect |
+| DATA | 6 | shadow-sm effect |
+| INPUT | 6 | shadow-sm effect |
+| INPUT_GROUP | 6 | shadow-sm effect |
+| BRANCH | 10 | drop-shadow filter |
+| default | 10 | Fallback for unknown types |
+
+### The Fix: Node-Type-Aware Offsets
+
+Replaced the fixed `SHADOW_OFFSET = 10` compromise with a `NODE_TYPE_OFFSETS` map:
 
 ```javascript
-// constraint-layout.js
-const SHADOW_OFFSET = 10;
+// constraint-layout.js, layout.js, app.js
+const NODE_TYPE_OFFSETS = {
+  'PIPELINE': 26,
+  'GRAPH': 26,
+  'FUNCTION': 14,
+  'DATA': 6,
+  'INPUT': 6,
+  'INPUT_GROUP': 6,
+  'BRANCH': 10,
+};
+const DEFAULT_OFFSET = 10;
+
+function getNodeTypeOffset(nodeType) {
+  return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+}
 
 function nodeVisibleBottom(node) {
-  return nodeBottom(node) - SHADOW_OFFSET;
+  const nodeType = node.data?.nodeType || 'FUNCTION';
+  const offset = getNodeTypeOffset(nodeType);
+  return nodeBottom(node) - offset;
 }
 ```
 
-This helper is used throughout the routing logic to calculate edge endpoints that connect to the visible node boundary rather than the wrapper boundary.
+### Critical Implementation Details
 
-**Files modified**:
-- `assets/constraint-layout.js`: Added `nodeVisibleBottom()` helper and used it in edge routing
-- `assets/layout.js`: Added `SHADOW_OFFSET` constant for edge re-routing after interactive expand
-- `assets/app.js`: Debug overlay reports visible bounds (excludes shadows)
+**1. Pass `node.data` to layout nodes**
+
+Layout nodes MUST include `data: n.data` so constraint-layout.js can access `nodeType`:
+
+```javascript
+// layout.js - when creating layout nodes
+var layoutNodes = flatVisibleNodes.map(function(n) {
+  return {
+    id: n.id,
+    width: dims.width,
+    height: dims.height,
+    x: 0,
+    y: 0,
+    data: n.data,  // CRITICAL: needed for nodeType access
+    _original: n,
+  };
+});
+```
+
+Without this, `node.data?.nodeType` returns undefined and all nodes default to FUNCTION offset.
+
+**2. Multiple code paths need consistent offset handling**
+
+The offset must be applied in ALL places that calculate edge Y coordinates:
+
+| Location | Code Path | What to Fix |
+|----------|-----------|-------------|
+| constraint-layout.js | `nodeVisibleBottom()` | Initial edge routing |
+| layout.js Step 4 | `srcBottomY` calculation | Cross-boundary edges |
+| layout.js Step 5 | `newStartY` calculation | Edge re-routing to producers |
+
+**3. Debug API reports visible bounds**
+
+The `__hypergraphVizDebug` API reports visible dimensions (height - offset), not wrapper dimensions:
+
+```javascript
+// app.js
+var offset = getNodeTypeOffset(n.nodeType || 'FUNCTION');
+var visibleHeight = n.height - offset;
+return {
+  height: visibleHeight,  // NOT wrapper height
+  bottom: n.y + visibleHeight,
+  // Also expose wrapper bounds for debugging
+  wrapperHeight: n.height,
+  wrapperBottom: n.y + n.height,
+  offset: offset,
+};
+```
+
+### Files Modified
+- `assets/constraint-layout.js`: NODE_TYPE_OFFSETS map, nodeVisibleBottom()
+- `assets/layout.js`: NODE_TYPE_OFFSETS, getNodeTypeOffset(), pass data to layout nodes, fix Step 4 & Step 5
+- `assets/app.js`: NODE_TYPE_OFFSETS, debug API reports visible bounds
 
 ### Test Tolerance
-Tests use a 5.0px tolerance because the compromise offset (10px) results in +/-4px variance:
-- Function nodes: 14px shadow - 10px offset = 4px remaining gap
-- Data nodes: 6px shadow - 10px offset = -4px (slight overlap)
-
-The 5.0px tolerance accounts for this variance while still catching regressions.
+Tests now use **0px tolerance** because each node type uses its exact offset. All 28 edge connection tests pass.
 
 ## Interactive Expand Edge Routing Issue
 
