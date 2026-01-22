@@ -150,18 +150,23 @@ The graph's vertical centering requires a post-layout DOM measurement because:
 **Algorithm** (in `fitWithFixedPadding`):
 1. Set initial viewport position (centered in true viewport center)
 2. Wait for DOM update (double `requestAnimationFrame`)
-3. Find **topmost** and **bottommost** edges across ALL visible nodes
+3. Find **bounds of ALL visible nodes**:
    - Query all `.react-flow__node` elements
    - Get inner visible content (`.group.rounded-lg` or first child) - excludes shadows
-   - Track min top and max bottom using `getBoundingClientRect()`
+   - Track leftmost, rightmost, topmost, and bottommost edges using `getBoundingClientRect()`
 4. **Calculate ALL corrections at once** (avoid sequential adjustments that fight each other):
    - Vertical centering: `diffY = topMargin - bottomMargin`, shift by `diffY/2`
-   - Horizontal centering: `diffX = topRowCenter - viewportCenter`, shift by `diffX`
-   - Right margin constraint: After centering, would rightmost node be within `PADDING_RIGHT` (100px) of buttons? If so, calculate additional left shift needed.
+   - **Horizontal centering (center of mass)**: Use ALL nodes, not just top row
+     - `contentCenterX = (leftmostNode + rightmostNode) / 2`
+     - `diffX = contentCenterX - viewportCenterX`
+   - **Left margin constraint**: After centering, would leftmost node be within `PADDING_LEFT` of viewport edge? If so, shift right.
+   - **Right margin constraint**: After centering, would rightmost node be within `PADDING_RIGHT` (100px) of buttons? If so, shift left.
 5. **Apply ALL corrections in ONE setViewport call**
 6. Verify correction with measurement (for debug display only)
 
 **Key principle**: Calculate the final position first, then apply once. Never do: center → measure → adjust → measure again. This avoids the loop where centering and margin constraints fight each other.
+
+**Why "center of mass"?** The previous approach only considered "top row" nodes for horizontal centering (`topRowCenterX`). This failed when INPUT nodes extended further left than the top row (e.g., `complex_rag` graph), causing left-side clipping. Using ALL nodes ensures the full graph is centered, regardless of which nodes are in the top row.
 
 ```javascript
 // Key: measure INNER node content, not React Flow wrapper

@@ -762,7 +762,10 @@ def _precompute_all_edges(
     expandable_nodes = _get_expandable_nodes(flat_graph)
 
     if not expandable_nodes:
-        return {}, []
+        # Still compute edges for the single valid state (no expansion)
+        # This ensures route nodes and other graphs without containers get proper edges
+        edges = _compute_edges_for_state(flat_graph, {}, input_spec, show_types, theme)
+        return {"": edges}, []  # key="" matches expansionStateToKey() result for empty state
 
     edges_by_state: dict[str, list[dict[str, Any]]] = {}
     valid_states = _enumerate_valid_expansion_states(flat_graph, expandable_nodes)

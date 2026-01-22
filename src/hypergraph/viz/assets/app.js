@@ -1034,16 +1034,18 @@
 
           var topmostEdge = Math.min.apply(null, nodeBounds.map(function(r) { return r.top; }));
           var bottommostEdge = Math.max.apply(null, nodeBounds.map(function(r) { return r.bottom; }));
-          var topRowNodes = nodeBounds.filter(function(r) { return r.top <= topmostEdge + 5; });
-          var topRowLeft = Math.min.apply(null, topRowNodes.map(function(r) { return r.left; }));
-          var topRowRight = Math.max.apply(null, topRowNodes.map(function(r) { return r.right; }));
-          var topRowCenterX = (topRowLeft + topRowRight) / 2;
+
+          // Use ALL visible nodes for horizontal center ("center of mass" approach)
+          // This ensures INPUT nodes that extend further left are accounted for
+          var leftmostNode = Math.min.apply(null, nodeBounds.map(function(r) { return r.left; }));
+          var rightmostNode = Math.max.apply(null, nodeBounds.map(function(r) { return r.right; }));
+          var contentCenterX = (leftmostNode + rightmostNode) / 2;
           var viewportCenterX = vpRect.left + vpRect.width / 2;
 
           var topMarginBefore = Math.round(topmostEdge - vpRect.top);
           var bottomMarginBefore = Math.round(vpRect.bottom - bottommostEdge);
           var diffY = topMarginBefore - bottomMarginBefore;
-          var diffX = Math.round(topRowCenterX - viewportCenterX);
+          var diffX = Math.round(contentCenterX - viewportCenterX);
 
           var currentVp = getViewport();
           var needsYCorrection = Math.abs(diffY) > 2;
@@ -1052,16 +1054,23 @@
           var finalY = needsYCorrection ? currentVp.y - diffY / 2 : currentVp.y;
           var finalX = needsXCorrection ? currentVp.x - diffX : currentVp.x;
 
-          // Check right margin constraint
-          var rightmostNode = Math.max.apply(null, nodeBounds.map(function(r) { return r.right; }));
+          // Check left margin constraint first (ensures left content isn't clipped)
           var xShift = finalX - currentVp.x;
+          var newLeftmost = leftmostNode + xShift;
+          var leftMarginAfterCenter = newLeftmost - vpRect.left;
+
+          if (leftMarginAfterCenter < PADDING_LEFT) {
+            // Content would be clipped on left, shift right to preserve minimum margin
+            finalX += (PADDING_LEFT - leftMarginAfterCenter);
+            xShift = finalX - currentVp.x;  // Recalculate xShift after adjustment
+          }
+
+          // Check right margin constraint (ensures buttons aren't overlapped)
           var newRightmost = rightmostNode + xShift;
           var rightMarginAfterCenter = vpRect.right - newRightmost;
 
-          var rightMarginAdjustment = 0;
           if (rightMarginAfterCenter < PADDING_RIGHT) {
-            rightMarginAdjustment = PADDING_RIGHT - rightMarginAfterCenter;
-            finalX -= rightMarginAdjustment;
+            finalX -= (PADDING_RIGHT - rightMarginAfterCenter);
           }
 
           var needsAnyCorrection = finalX !== currentVp.x || finalY !== currentVp.y;
