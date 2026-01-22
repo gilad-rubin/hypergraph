@@ -18,7 +18,7 @@ from hypergraph import Graph, node
 # =============================================================================
 
 try:
-    import playwright
+    import playwright  # noqa: F401
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
@@ -218,13 +218,33 @@ def extract_edge_routing(page) -> dict:
 
 
 def extract_inner_bounds_and_edge_paths(page) -> dict:
-    """Extract INNER element bounds and edge path Y coordinates.
+    """Extract INNER element bounds and edge path coordinates from rendered visualization.
+
+    MEASUREMENT SOURCES:
+    1. wrapperBounds: getBoundingClientRect() on .react-flow__node elements
+       - React Flow's wrapper that includes padding, handles, and layout spacing
+       - ~10px larger than calculated dimensions due to React Flow chrome
+
+    2. innerBounds: getBoundingClientRect() on .group.rounded-lg elements
+       - The actual visible node element (background, border, content)
+       - 6-14px smaller than wrapper due to wrapper containing handle elements
+       - NOTE: CSS shadow-lg does NOT affect these bounds (proven by width matching)
+
+    3. shadowOffsets: difference between wrapper and inner bounds
+       - Measures how much wrapper extends beyond inner element
+       - This offset is from handle elements, NOT from CSS shadows
+       - Shadow is purely visual and doesn't affect getBoundingClientRect()
+
+    4. edgePaths: coordinates extracted from SVG <path> elements
+       - Start coordinates from 'M x y' (move-to command) in path 'd' attribute
+       - End coordinates from last coordinate pair in path 'd' attribute
+       - Coordinates are in layout space (transformed by viewport zoom/pan)
 
     Returns dict with:
-    - innerBounds: {nodeId: {top, bottom, centerX}} for inner elements
-    - wrapperBounds: {nodeId: {top, bottom}} for wrapper elements (for comparison)
-    - shadowOffsets: {nodeId: {topOffset, bottomOffset}} difference between wrapper and inner
-    - edgePaths: [{source, target, startY, endY}] from SVG paths
+    - innerBounds: {nodeId: {top, bottom, left, right, centerX}} for inner elements
+    - wrapperBounds: {nodeId: {top, bottom, left, right, centerX}} for wrapper elements
+    - shadowOffsets: {nodeId: {topOffset, bottomOffset}} wrapper-to-inner difference
+    - edgePaths: [{source, target, startX, startY, endX, endY, pathD}] from SVG paths
     - viewportTransform: {x, y, zoom} for coordinate conversion
 
     This is useful for testing edge-to-shadow gap detection - comparing edges

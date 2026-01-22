@@ -52,14 +52,21 @@ class TestDimensionMismatch:
         wait_for_debug_ready(page)
 
         # Extract calculated dimensions from debug API
+        # These come from the dimension calculation logic in the React component
         debug_nodes = extract_debug_nodes(page)
 
         # Extract rendered bounds (wrapper and inner)
+        # - wrapperBounds: from .react-flow__node element (React Flow's wrapper)
+        # - innerBounds: from .group.rounded-lg element (actual visible node)
         bounds_data = extract_inner_bounds_and_edge_paths(page)
 
         # Log all measurements for inspection
         print("\n=== Dimension Measurements ===")
-        print(f"Number of nodes in debug API: {len(debug_nodes)}")
+        print("Data Sources:")
+        print("  1. Calculated: dimensions from debug API (pre-render calculation)")
+        print("  2. Wrapper: getBoundingClientRect on .react-flow__node (React Flow wrapper)")
+        print("  3. Inner: getBoundingClientRect on .group.rounded-lg (visible node element)")
+        print(f"\nNumber of nodes in debug API: {len(debug_nodes)}")
         print(f"Number of wrapper bounds: {len(bounds_data['wrapperBounds'])}")
         print(f"Number of inner bounds: {len(bounds_data['innerBounds'])}")
 
@@ -78,17 +85,43 @@ class TestDimensionMismatch:
             inner_height = inner.get('bottom', 0) - inner.get('top', 0) if inner else 'N/A'
 
             print(f"\nNode: {node_id}")
-            print(f"  Calculated: {calc_width}x{calc_height}")
-            print(f"  Wrapper:    {wrapper_width}x{wrapper_height}")
-            print(f"  Inner:      {inner_width}x{inner_height}")
+            print(f"  Calculated: {calc_width}x{calc_height} (from debug API / pre-render calculation)")
+            print(f"  Wrapper:    {wrapper_width}x{wrapper_height} (from .react-flow__node getBoundingClientRect)")
+            print(f"  Inner:      {inner_width}x{inner_height} (from .group.rounded-lg getBoundingClientRect)")
+
+            # ROOT CAUSE #1: Calculated vs Wrapper dimension mismatch (~10px difference)
+            # React Flow's wrapper (.react-flow__node) adds padding and handle elements
+            # that extend beyond the calculated dimensions. This is expected behavior.
+            if isinstance(calc_width, (int, float)) and isinstance(wrapper_width, (int, float)):
+                calc_vs_wrapper_diff = abs(wrapper_width - calc_width)
+                if calc_vs_wrapper_diff > 1:
+                    print(f"  -> Calculated vs Wrapper: {calc_vs_wrapper_diff:.1f}px diff (React Flow padding/handles)")
+
+            # ROOT CAUSE #2: Wrapper vs Inner dimension mismatch (6-14px difference)
+            # CSS shadow-lg extends the visual appearance but getBoundingClientRect
+            # measures the element's layout box, NOT the shadow. The difference comes from
+            # wrapper containing additional elements (handles) that extend beyond inner node.
             if shadow:
-                print(f"  Shadow offset: top={shadow.get('topOffset', 0)}, bottom={shadow.get('bottomOffset', 0)}")
+                top_offset = shadow.get('topOffset', 0)
+                bottom_offset = shadow.get('bottomOffset', 0)
+                print(f"  Shadow offset: top={top_offset:.1f}px, bottom={bottom_offset:.1f}px")
+                if abs(top_offset) > 1 or abs(bottom_offset) > 1:
+                    print("  -> Wrapper vs Inner: offset from wrapper containing handles, NOT shadow")
 
         print("\n=== Edge Paths ===")
+        print("Edge coordinates extracted from SVG path 'd' attribute")
+        print("Start coordinates: from 'M x y' (move to start point)")
+        print("End coordinates: from last coordinate pair in path")
         for edge in bounds_data['edgePaths']:
-            print(f"  {edge.get('source')} -> {edge.get('target')}: "
-                  f"start=({edge.get('startX')}, {edge.get('startY')}), "
-                  f"end=({edge.get('endX')}, {edge.get('endY')})")
+            source = edge.get('source', 'unknown')
+            target = edge.get('target', 'unknown')
+            start_x = edge.get('startX')
+            start_y = edge.get('startY')
+            end_x = edge.get('endX')
+            end_y = edge.get('endY')
+            print(f"  {source} -> {target}:")
+            print(f"    Start point: ({start_x}, {start_y}) [from SVG 'M' command]")
+            print(f"    End point:   ({end_x}, {end_y}) [from SVG path end]")
 
         # Basic sanity checks
         assert len(debug_nodes) >= 2, "Expected at least 2 nodes in simple graph"
@@ -167,11 +200,11 @@ class TestDimensionMismatch:
             tolerance = 0.5
             if width_diff > tolerance:
                 all_widths_match = False
-                print(f"  FAIL: Width differs - shadow may be affecting bounds!")
+                print("  FAIL: Width differs - shadow may be affecting bounds!")
             else:
-                print(f"  OK: Shadow confirmed NOT affecting bounds (width matches)")
+                print("  OK: Shadow confirmed NOT affecting bounds (width matches)")
                 if height_diff > tolerance:
-                    print(f"      (height differs due to handle elements, not shadow)")
+                    print("      (height differs due to handle elements, not shadow)")
 
         # Assert all nodes have matching widths - this proves shadow doesn't affect bounds
         # Height differences are expected due to wrapper containing handle elements
