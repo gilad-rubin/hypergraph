@@ -1,0 +1,95 @@
+"""Tests for dimension mismatch investigation.
+
+This module helps diagnose and verify node dimension calculations.
+The goal is to ensure that:
+1. Calculated dimensions match rendered dimensions
+2. Box shadows do NOT affect getBoundingClientRect
+3. Edge endpoints align with visible node boundaries
+
+These tests are primarily diagnostic - they measure and log dimension data
+to help identify where mismatches occur in the layout pipeline.
+"""
+
+import pytest
+
+# Import shared fixtures and helpers from conftest
+from tests.viz.conftest import (
+    HAS_PLAYWRIGHT,
+    make_simple_graph,
+    wait_for_debug_ready,
+    extract_debug_nodes,
+    extract_inner_bounds_and_edge_paths,
+)
+
+
+# =============================================================================
+# Tests: Dimension Mismatch Investigation
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestDimensionMismatch:
+    """Diagnostic tests for investigating dimension mismatches."""
+
+    def test_measure_all_dimensions(self, page, temp_html_file):
+        """Render a 2-node graph and measure all dimension sources.
+
+        This test renders a simple graph and extracts dimensions from:
+        1. Calculated dimensions (from debug API)
+        2. Wrapper element bounds (getBoundingClientRect on .react-flow__node)
+        3. Inner element bounds (getBoundingClientRect on .group.rounded-lg)
+
+        The test logs all measurements for manual inspection and verifies
+        that the graph renders successfully.
+        """
+        from hypergraph.viz.widget import visualize
+
+        # Create and render simple 2-node graph
+        graph = make_simple_graph()
+        visualize(graph, depth=0, output=temp_html_file, _debug_overlays=True)
+        page.goto(f"file://{temp_html_file}")
+
+        # Wait for layout to complete
+        wait_for_debug_ready(page)
+
+        # Extract calculated dimensions from debug API
+        debug_nodes = extract_debug_nodes(page)
+
+        # Extract rendered bounds (wrapper and inner)
+        bounds_data = extract_inner_bounds_and_edge_paths(page)
+
+        # Log all measurements for inspection
+        print("\n=== Dimension Measurements ===")
+        print(f"Number of nodes in debug API: {len(debug_nodes)}")
+        print(f"Number of wrapper bounds: {len(bounds_data['wrapperBounds'])}")
+        print(f"Number of inner bounds: {len(bounds_data['innerBounds'])}")
+
+        for node in debug_nodes:
+            node_id = node['id']
+            calc_width = node.get('width', 'N/A')
+            calc_height = node.get('height', 'N/A')
+
+            wrapper = bounds_data['wrapperBounds'].get(node_id, {})
+            inner = bounds_data['innerBounds'].get(node_id, {})
+            shadow = bounds_data['shadowOffsets'].get(node_id, {})
+
+            wrapper_width = wrapper.get('right', 0) - wrapper.get('left', 0) if wrapper else 'N/A'
+            wrapper_height = wrapper.get('bottom', 0) - wrapper.get('top', 0) if wrapper else 'N/A'
+            inner_width = inner.get('right', 0) - inner.get('left', 0) if inner else 'N/A'
+            inner_height = inner.get('bottom', 0) - inner.get('top', 0) if inner else 'N/A'
+
+            print(f"\nNode: {node_id}")
+            print(f"  Calculated: {calc_width}x{calc_height}")
+            print(f"  Wrapper:    {wrapper_width}x{wrapper_height}")
+            print(f"  Inner:      {inner_width}x{inner_height}")
+            if shadow:
+                print(f"  Shadow offset: top={shadow.get('topOffset', 0)}, bottom={shadow.get('bottomOffset', 0)}")
+
+        print("\n=== Edge Paths ===")
+        for edge in bounds_data['edgePaths']:
+            print(f"  {edge.get('source')} -> {edge.get('target')}: "
+                  f"start=({edge.get('startX')}, {edge.get('startY')}), "
+                  f"end=({edge.get('endX')}, {edge.get('endY')})")
+
+        # Basic sanity checks
+        assert len(debug_nodes) >= 2, "Expected at least 2 nodes in simple graph"
+        assert len(bounds_data['edgePaths']) >= 1, "Expected at least 1 edge"
