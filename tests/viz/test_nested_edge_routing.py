@@ -191,3 +191,44 @@ class TestEdgeValidationDetails:
 
         captured = capsys.readouterr()
         assert "Edge Validation Report" in captured.out
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestNestedGraphPadding:
+    """Tests for symmetric padding in nested graphs."""
+
+    def test_nested_graph_symmetric_padding(self):
+        """Test that nested graph containers have symmetric padding.
+
+        Nodes inside expanded containers should have approximately equal
+        padding on left/right and top/bottom.
+        """
+        from hypergraph.viz import extract_debug_data
+
+        outer = make_outer()
+        data = extract_debug_data(outer, depth=2)
+
+        # Find nodes that have parent padding info (children of expanded containers)
+        for node in data.nodes:
+            parent_pad = node.get("parentPad")
+            if parent_pad is None:
+                continue
+
+            left = parent_pad.get("left", 0)
+            right = parent_pad.get("right", 0)
+            top = parent_pad.get("top", 0)
+            bottom = parent_pad.get("bottom", 0)
+
+            # Allow 10px tolerance for rounding differences
+            tolerance = 10
+            h_diff = abs(left - right)
+            v_diff = abs(top - bottom)
+
+            assert h_diff <= tolerance, (
+                f"Node {node.get('id')} has asymmetric horizontal padding: "
+                f"left={left}, right={right}, diff={h_diff}"
+            )
+            assert v_diff <= tolerance, (
+                f"Node {node.get('id')} has asymmetric vertical padding: "
+                f"top={top}, bottom={bottom}, diff={v_diff}"
+            )
