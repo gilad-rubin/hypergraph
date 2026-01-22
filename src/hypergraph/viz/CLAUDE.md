@@ -224,6 +224,142 @@ Reverted to original logic. Double-wiggle persists for some left-to-right edges.
 ### Key Insight
 The problem is architectural: the routing algorithm detects blocking based on `naturalX` (midpoint), but the actual path depends on corridor choice. When corridor direction differs from the detection path, edges can cross undetected nodes.
 
+## Shadow Gap Issue
+
+### The Problem
+CSS shadows (`shadow-lg`, `shadow-sm`) extend 6-14px beyond the visible node boundaries. Edges were connecting to the React Flow wrapper bounds instead of the visible element bounds, creating a visual gap between the edge endpoint and the node's visible edge.
+
+### Measurements
+- **Function nodes** (`shadow-lg`): 14px shadow extension
+- **Data/Input nodes** (`shadow-sm`): 6px shadow extension
+- **Compromise offset**: 10px (balances the two shadow sizes)
+
+### Root Cause
+The edge routing used `nodeBottom(node)` which returned `node.y + node.height * 0.5`. This corresponded to the wrapper element's bottom edge, not the visible rounded rectangle inside the shadow.
+
+### The Fix
+Added a `SHADOW_OFFSET = 10` constant and a `nodeVisibleBottom()` helper function:
+
+```javascript
+// constraint-layout.js
+const SHADOW_OFFSET = 10;
+
+function nodeVisibleBottom(node) {
+  return nodeBottom(node) - SHADOW_OFFSET;
+}
+```
+
+This helper is used throughout the routing logic to calculate edge endpoints that connect to the visible node boundary rather than the wrapper boundary.
+
+**Files modified**:
+- `assets/constraint-layout.js`: Added `nodeVisibleBottom()` helper and used it in edge routing
+- `assets/layout.js`: Added `SHADOW_OFFSET` constant for edge re-routing after interactive expand
+- `assets/app.js`: Debug overlay reports visible bounds (excludes shadows)
+
+### Test Tolerance
+Tests use a 5.0px tolerance because the compromise offset (10px) results in +/-4px variance:
+- Function nodes: 14px shadow - 10px offset = 4px remaining gap
+- Data nodes: 6px shadow - 10px offset = -4px (slight overlap)
+
+The 5.0px tolerance accounts for this variance while still catching regressions.
+
+## Interactive Expand Edge Routing Issue
+
+### The Problem
+When graphs are rendered at `depth=0` with collapsed containers, edges correctly point to the collapsed container nodes. However, when users expand a container interactively, the edges remained routed to the container instead of re-routing to the internal nodes that became visible.
+
+**Example**:
+```
+render → embed_function_collapsed [collapsed container]
+       ↓
+user expands container interactively
+       ↓
+render → embed_function_collapsed [now expanded, shows internal nodes]
+       ↓
+BUG: edge still points to container, should point to actual internal producer
+```
+
+### Root Cause
+The `param_to_consumer` and `output_to_producer` maps only contained **visible nodes** at render time. When the graph was rendered with collapsed containers, these maps pointed to the container nodes, not the internal nodes inside them.
+
+After interactive expansion, the JavaScript layout code had no knowledge of the internal node mappings, so it couldn't re-route edges to the newly visible nodes.
+
+### The Fix
+Added a `use_deepest=True` parameter to the mapping functions that build `param_to_consumer` and `output_to_producer`. These "deepest" mappings include ALL nodes (even collapsed ones), allowing JavaScript to re-route edges when containers expand.
+
+**Python side** (`renderer.py`):
+```python
+# Build maps that include ALL nodes, even collapsed ones
+param_to_consumer_deepest = graph.build_param_to_consumer_map(use_deepest=True)
+output_to_producer_deepest = graph.build_output_to_producer_map(use_deepest=True)
+
+# Pass to JavaScript
+data['param_to_consumer_deepest'] = param_to_consumer_deepest
+data['output_to_producer_deepest'] = output_to_producer_deepest
+```
+
+**JavaScript side** (`layout.js` Step 5 - re-routing after expand):
+```javascript
+// When container expands, re-route edges to internal nodes
+if (window.__hypergraph_param_to_consumer_deepest) {
+  const deepConsumer = window.__hypergraph_param_to_consumer_deepest[param];
+  if (deepConsumer && deepConsumer !== edge.target) {
+    edge.target = deepConsumer;  // Re-route to actual consumer
+  }
+}
+```
+
+**Files modified**:
+- `src/hypergraph/renderer.py`: Added `use_deepest` parameter and passed deepest maps to JavaScript
+- `assets/layout.js`: Step 5 re-routing logic uses deepest maps to update edge targets
+
+### Testing
+The fix is validated by `tests/viz/test_nested_edge_routing.py`, which:
+1. Renders a graph at `depth=0` (collapsed containers)
+2. Uses Playwright to expand a container interactively
+3. Verifies edges re-route to internal nodes (not containers)
+
+## Debugging with Dev-Browser
+
+The shadow gap and edge routing bugs were validated using Playwright-based browser automation tests.
+
+### Key Techniques
+
+**1. Extract INNER element bounds** (not wrapper bounds):
+```python
+# JavaScript executed in browser
+inner_node_selector = f'#{node_id} .group.rounded-lg'
+inner_rect = await page.locator(inner_node_selector).bounding_box()
+# This excludes the CSS shadow from the bounds
+```
+
+**2. Compare edge Y coordinates to visible boundaries**:
+```python
+edge_bottom_y = edge_path_bbox['y'] + edge_path_bbox['height']
+node_visible_bottom = inner_rect['y'] + inner_rect['height']
+gap = edge_bottom_y - node_visible_bottom
+
+# Gap should be ≤ 5.0px (accounting for shadow offset variance)
+assert gap <= 5.0, f"Edge gap too large: {gap}px"
+```
+
+**3. Validate edge re-routing after interactive expand**:
+```python
+# Before expand: edge points to container
+assert edge['target'] == 'embed_function_collapsed'
+
+# Click expand button
+await page.click(f'#{container_id} button[title*="Expand"]')
+
+# After expand: edge should re-route to internal node
+edge_after = await get_edge_data(page, edge_id)
+assert edge_after['target'] == 'embed_sentences_internal'
+```
+
+### Test Files
+- `tests/viz/test_edge_connections.py` (`TestEdgeShadowGap`): Validates edges connect to visible bounds (not wrapper bounds)
+- `tests/viz/test_nested_edge_routing.py`: Validates edge re-routing on interactive expand
+
 ## File Locations
 
 - **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 530)
