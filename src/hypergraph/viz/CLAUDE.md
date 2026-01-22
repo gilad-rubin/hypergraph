@@ -390,6 +390,102 @@ The fix is validated by `tests/viz/test_nested_edge_routing.py`, which:
 2. Uses Playwright to expand a container interactively
 3. Verifies edges re-route to internal nodes (not containers)
 
+## Pre-computed Edges for All Expansion States (Improved Approach)
+
+### The Problem
+The dynamic edge re-routing approach (using `use_deepest` maps) worked for **expansion** but had issues with **collapse**. When a user collapsed a container, edges sometimes remained pointing to internal nodes that were now hidden, causing layout issues like nodes appearing on the wrong side with no visible edges.
+
+### The Solution: Pre-compute All Edge Configurations in Python
+
+Instead of trying to dynamically re-route edges in JavaScript, we now **pre-compute edges for ALL valid expansion state combinations** in Python. JavaScript simply selects the correct pre-computed edge set based on current expansion state.
+
+This ensures **1:1 consistency** between:
+- Rendering with `depth=0` (collapsed from the start)
+- Rendering with `depth=1` then interactively collapsing
+
+Both use the **exact same edge computation logic** in Python.
+
+### Architecture
+
+```
+Python (render time):
+┌─────────────────────────────────────────────────────────┐
+│  For each valid expansion state combination:            │
+│    - preprocess:0                → edges_collapsed      │
+│    - preprocess:1                → edges_expanded       │
+│                                                         │
+│  Output: meta.edgesByState = {                          │
+│    "preprocess:0": [...edges...],                       │
+│    "preprocess:1": [...edges...],                       │
+│  }                                                      │
+└─────────────────────────────────────────────────────────┘
+                          ↓
+JavaScript (runtime):
+┌─────────────────────────────────────────────────────────┐
+│  User clicks collapse on preprocess                     │
+│    → expansionState = { preprocess: false }             │
+│    → key = "preprocess:0"                               │
+│    → edges = meta.edgesByState[key]  // Simple lookup!  │
+│    → render with pre-computed edges                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Smart State Pruning
+
+The enumeration only generates **valid** states. Invalid states (e.g., inner container expanded while outer is collapsed) are pruned automatically, reducing the number of edge sets from 2^n to a smaller set of reachable states.
+
+### Key Functions
+
+**Python side** (`renderer.py`):
+```python
+def _enumerate_valid_expansion_states(flat_graph, expandable_nodes):
+    """Enumerate all valid expansion state combinations.
+    A state is valid if expanded children only appear when parent is expanded."""
+    ...
+
+def _compute_edges_for_state(flat_graph, expansion_state, ...):
+    """Compute edges for a specific expansion state.
+    Uses the same visibility logic as the initial render."""
+    ...
+
+def _precompute_all_edges(flat_graph, ...):
+    """Pre-compute edges for ALL valid expansion states."""
+    edges_by_state = {}
+    for state in _enumerate_valid_expansion_states(...):
+        key = _expansion_state_to_key(state)
+        edges_by_state[key] = _compute_edges_for_state(flat_graph, state, ...)
+    return edges_by_state
+```
+
+**JavaScript side** (`app.js`):
+```javascript
+// Read pre-computed edges from Python
+var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
+
+// Convert expansion state Map to canonical key format
+var expansionStateToKey = function(expState) {
+  return expandableNodes.map(function(nodeId) {
+    return nodeId + ':' + (expState.get(nodeId) ? '1' : '0');
+  }).join(',');
+};
+
+// Select edges based on current expansion state
+var selectedEdges = useMemo(function() {
+  var key = expansionStateToKey(expansionState);
+  return edgesByState[key] || stateResult.edges;  // Fallback for backwards compat
+}, [expansionState, stateResult.edges]);
+```
+
+### Files Modified
+- `renderer.py`: Added `_enumerate_valid_expansion_states()`, `_compute_edges_for_state()`, `_precompute_all_edges()`. Updated `render_graph()` to include `edgesByState` and `expandableNodes` in meta.
+- `app.js`: Added `expansionStateToKey()` helper. Added `selectedEdges` memo that looks up pre-computed edges.
+
+### Test Coverage
+All 166 viz tests pass, including:
+- `test_workflow_depth1_no_edge_issues`
+- `test_interactive_collapse_edge_targets_match_static`
+- `test_output_edge_routes_from_container_after_collapse`
+
 ## Debugging with Dev-Browser
 
 The shadow gap and edge routing bugs were validated using Playwright-based browser automation tests.
@@ -440,4 +536,6 @@ assert edge_after['target'] == 'embed_sentences_internal'
 - **Edge styling**: `html_generator.py` (edgeOptions ~line 2058)
 - **Centering logic**: `html_generator.py` (fitWithFixedPadding ~line 1764)
 - **Node dimensions**: `html_generator.py` (calculateDimensions ~line 1154)
+- **Pre-computed edges**: `renderer.py` (`_precompute_all_edges()`, `_compute_edges_for_state()`)
+- **Edge selection (JS)**: `assets/app.js` (`selectedEdges` memo, `expansionStateToKey()`)
 - **Debugging tools**: `DEBUGGING.md` (comprehensive guide to all debug dataclasses and helpers)

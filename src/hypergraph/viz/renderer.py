@@ -6,6 +6,7 @@ node/edge format expected by the visualization.
 
 from __future__ import annotations
 
+from itertools import product
 from typing import Any
 
 import networkx as nx
@@ -100,6 +101,12 @@ def render_graph(
     nodes.sort(key=lambda n: n["id"])
     edges.sort(key=lambda e: e["id"])
 
+    # Pre-compute edges for ALL valid expansion state combinations
+    # JavaScript can select the correct edge set based on current expansion state
+    edges_by_state, expandable_nodes = _precompute_all_edges(
+        flat_graph, input_spec, show_types, theme
+    )
+
     return {
         "nodes": nodes,
         "edges": edges,
@@ -114,6 +121,9 @@ def render_graph(
             "output_to_producer": output_to_producer_deepest,
             "param_to_consumer": param_to_consumer_deepest,
             "node_to_parent": node_to_parent,
+            # Pre-computed edges for all expansion states (collapse/expand consistency)
+            "edgesByState": edges_by_state,
+            "expandableNodes": expandable_nodes,
         },
     }
 
@@ -590,3 +600,176 @@ def _create_graph_edges(
                     rf_edge["data"]["label"] = "False"
 
         edges.append(rf_edge)
+
+
+# =============================================================================
+# Pre-computed Edges for All Expansion States
+# =============================================================================
+
+
+def _get_expandable_nodes(flat_graph: nx.DiGraph) -> list[str]:
+    """Get list of node IDs that can be expanded/collapsed (GRAPH nodes)."""
+    return sorted([
+        node_id
+        for node_id, attrs in flat_graph.nodes(data=True)
+        if attrs.get("node_type") == "GRAPH"
+    ])
+
+
+def _expansion_state_to_key(expansion_state: dict[str, bool]) -> str:
+    """Convert expansion state dict to a canonical string key.
+
+    Format: "node1:0,node2:1" (sorted alphabetically, 0=collapsed, 1=expanded)
+    """
+    sorted_items = sorted(expansion_state.items())
+    return ",".join(f"{node_id}:{int(expanded)}" for node_id, expanded in sorted_items)
+
+
+def _enumerate_valid_expansion_states(
+    flat_graph: nx.DiGraph,
+    expandable_nodes: list[str],
+) -> list[dict[str, bool]]:
+    """Enumerate all valid expansion state combinations.
+
+    A state is valid if expanded children only appear when their parent is also expanded.
+    This prunes unreachable states (e.g., inner expanded when outer collapsed).
+
+    Returns:
+        List of expansion state dicts, each mapping node_id -> is_expanded
+    """
+    if not expandable_nodes:
+        return [{}]
+
+    # Build parent-child relationships among expandable nodes
+    node_to_parent: dict[str, str] = {}
+    for node_id in expandable_nodes:
+        parent_id = flat_graph.nodes[node_id].get("parent")
+        if parent_id in expandable_nodes:
+            node_to_parent[node_id] = parent_id
+
+    valid_states = []
+
+    # Generate all 2^n combinations
+    for bits in product([False, True], repeat=len(expandable_nodes)):
+        state = dict(zip(expandable_nodes, bits))
+
+        # Check validity: if a node is expanded, all its expandable ancestors must be expanded
+        is_valid = True
+        for node_id, is_expanded in state.items():
+            if is_expanded:
+                # Check ancestor chain
+                parent = node_to_parent.get(node_id)
+                while parent is not None:
+                    if not state.get(parent, False):
+                        is_valid = False
+                        break
+                    parent = node_to_parent.get(parent)
+                if not is_valid:
+                    break
+
+        if is_valid:
+            valid_states.append(state)
+
+    return valid_states
+
+
+def _compute_edges_for_state(
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+    input_spec: dict[str, Any],
+    show_types: bool,
+    theme: str,
+) -> list[dict[str, Any]]:
+    """Compute edges for a specific expansion state.
+
+    This is the core edge routing logic - determines which nodes edges connect to
+    based on which containers are expanded/collapsed.
+
+    NOTE: This produces edges in the "separateOutputs=false" format, which means:
+    - No edges TO DATA nodes (those are filtered out in JS)
+    - Edges FROM DATA nodes are remapped to the source function node
+    This matches what applyState() produces, so JS can use these edges directly.
+    """
+    edges: list[dict[str, Any]] = []
+
+    # Build param_to_consumer map for this expansion state
+    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
+
+    required = input_spec.get("required", ())
+    optional = input_spec.get("optional", ())
+    external_inputs = set(required) | set(optional)
+
+    # 1. Add edges from INPUT nodes to their actual consumers
+    for param in external_inputs:
+        input_node_id = f"input_{param}"
+        actual_target = param_to_consumer.get(param)
+
+        if actual_target:
+            edges.append({
+                "id": f"e_{input_node_id}_to_{actual_target}",
+                "source": input_node_id,
+                "target": actual_target,
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {"edgeType": "input"},
+            })
+
+    # 2. Add edges between function nodes (from graph structure)
+    # NOTE: We skip DATA node edges entirely since separateOutputs=false
+    # Instead, edges go directly from source function to target function
+    for source, target, edge_data in flat_graph.edges(data=True):
+        # Skip if either node is not visible in this expansion state
+        if not _is_node_visible(source, flat_graph, expansion_state):
+            continue
+        if not _is_node_visible(target, flat_graph, expansion_state):
+            continue
+
+        edge_type = edge_data.get("edge_type", "data")
+        value_name = edge_data.get("value_name", "")
+
+        # Direct edge from source to target (no DATA node intermediate)
+        edge_id = f"e_{source}_{target}"
+        if value_name:
+            edge_id = f"e_{source}_{value_name}_{target}"
+
+        edges.append({
+            "id": edge_id,
+            "source": source,
+            "target": target,
+            "animated": False,
+            "style": {"stroke": "#64748b", "strokeWidth": 2},
+            "data": {
+                "edgeType": edge_type,
+                "valueName": value_name,
+            },
+        })
+
+    return edges
+
+
+def _precompute_all_edges(
+    flat_graph: nx.DiGraph,
+    input_spec: dict[str, Any],
+    show_types: bool,
+    theme: str,
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    """Pre-compute edges for all valid expansion state combinations.
+
+    Returns:
+        Tuple of (edges_by_state dict, expandable_nodes list)
+        edges_by_state maps expansion key -> list of edges
+    """
+    expandable_nodes = _get_expandable_nodes(flat_graph)
+
+    if not expandable_nodes:
+        return {}, []
+
+    edges_by_state: dict[str, list[dict[str, Any]]] = {}
+    valid_states = _enumerate_valid_expansion_states(flat_graph, expandable_nodes)
+
+    for state in valid_states:
+        key = _expansion_state_to_key(state)
+        edges = _compute_edges_for_state(flat_graph, state, input_spec, show_types, theme)
+        edges_by_state[key] = edges
+
+    return edges_by_state, expandable_nodes

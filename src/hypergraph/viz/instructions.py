@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from itertools import product
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -151,6 +152,13 @@ class VizInstructions:
     nodes: list[VizNode] = field(default_factory=list)
     edges: list[VizEdge] = field(default_factory=list)
 
+    # Pre-computed edges for all expansion state combinations
+    # Key format: "node1:0,node2:1" (sorted by node id, 0=collapsed, 1=expanded)
+    edges_by_state: dict[str, list[VizEdge]] = field(default_factory=dict)
+
+    # List of node IDs that can be expanded/collapsed (CONTAINER nodes)
+    expandable_nodes: list[str] = field(default_factory=list)
+
     # Metadata for debugging/testing
     depth: int = 0
     theme: str = "dark"
@@ -163,6 +171,12 @@ class VizInstructions:
         sorted_nodes = sorted(self.nodes, key=lambda n: n.id)
         sorted_edges = sorted(self.edges, key=lambda e: e.id or "")
 
+        # Convert edges_by_state to dict format
+        edges_by_state_dict = {
+            key: [e.to_dict() for e in sorted(edges, key=lambda e: e.id or "")]
+            for key, edges in self.edges_by_state.items()
+        }
+
         return {
             "nodes": [n.to_dict() for n in sorted_nodes],
             "edges": [e.to_dict() for e in sorted_edges],
@@ -171,6 +185,8 @@ class VizInstructions:
                 "theme": self.theme,
                 "showTypes": self.show_types,
                 "debugOverlays": self.debug_overlays,
+                "edgesByState": edges_by_state_dict,
+                "expandableNodes": sorted(self.expandable_nodes),
             },
         }
 
@@ -199,6 +215,154 @@ class VizInstructions:
 
 
 # =============================================================================
+# Expansion State Helpers
+# =============================================================================
+
+
+def _get_expandable_nodes(flat_graph: "nx.DiGraph") -> list[str]:
+    """Get list of node IDs that can be expanded/collapsed (GRAPH nodes)."""
+    return [
+        node_id
+        for node_id, attrs in flat_graph.nodes(data=True)
+        if attrs.get("node_type") == "GRAPH"
+    ]
+
+
+def _expansion_state_to_key(expansion_state: dict[str, bool]) -> str:
+    """Convert expansion state dict to a canonical string key.
+
+    Format: "node1:0,node2:1" (sorted alphabetically, 0=collapsed, 1=expanded)
+    """
+    sorted_items = sorted(expansion_state.items())
+    return ",".join(f"{node_id}:{int(expanded)}" for node_id, expanded in sorted_items)
+
+
+def _enumerate_valid_expansion_states(
+    flat_graph: "nx.DiGraph",
+    expandable_nodes: list[str],
+) -> list[dict[str, bool]]:
+    """Enumerate all valid expansion state combinations.
+
+    A state is valid if expanded children only appear when their parent is also expanded.
+    This prunes unreachable states (e.g., inner expanded when outer collapsed).
+
+    Returns:
+        List of expansion state dicts, each mapping node_id -> is_expanded
+    """
+    if not expandable_nodes:
+        return [{}]
+
+    # Build parent-child relationships among expandable nodes
+    node_to_parent = {}
+    for node_id in expandable_nodes:
+        parent_id = flat_graph.nodes[node_id].get("parent")
+        if parent_id in expandable_nodes:
+            node_to_parent[node_id] = parent_id
+
+    valid_states = []
+
+    # Generate all 2^n combinations
+    for bits in product([False, True], repeat=len(expandable_nodes)):
+        state = dict(zip(expandable_nodes, bits))
+
+        # Check validity: if a node is expanded, all its expandable ancestors must also be expanded
+        is_valid = True
+        for node_id, is_expanded in state.items():
+            if is_expanded:
+                # Check ancestor chain
+                parent = node_to_parent.get(node_id)
+                while parent is not None:
+                    if not state.get(parent, False):
+                        is_valid = False
+                        break
+                    parent = node_to_parent.get(parent)
+                if not is_valid:
+                    break
+
+        if is_valid:
+            valid_states.append(state)
+
+    return valid_states
+
+
+def _compute_edges_for_state(
+    flat_graph: "nx.DiGraph",
+    expansion_state: dict[str, bool],
+) -> list[VizEdge]:
+    """Compute edges for a specific expansion state.
+
+    This is the core edge routing logic - determines which nodes edges connect to
+    based on which containers are expanded/collapsed.
+    """
+    edges = []
+
+    # Build param_to_consumer map for this expansion state
+    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
+
+    # Build output_to_producer map for this expansion state
+    output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
+
+    input_spec = flat_graph.graph.get("input_spec", {})
+    required = input_spec.get("required", ())
+    optional = input_spec.get("optional", ())
+    external_inputs = set(required) | set(optional)
+
+    # 1. Add edges from INPUT nodes to their actual consumers
+    for param in external_inputs:
+        input_node_id = f"input_{param}"
+        actual_target = param_to_consumer.get(param)
+
+        if actual_target:
+            edges.append(VizEdge(source=input_node_id, target=actual_target))
+
+    # 2. Add edges between function nodes (from graph structure)
+    for source, target, edge_data in flat_graph.edges(data=True):
+        # Skip if either node is not visible in this expansion state
+        if not _is_node_visible(source, flat_graph, expansion_state):
+            continue
+        if not _is_node_visible(target, flat_graph, expansion_state):
+            continue
+
+        value_name = edge_data.get("value_name", "")
+
+        # Create edge directly between visible nodes
+        edge_id = f"e_{source}_to_{target}"
+        if value_name:
+            edge_id = f"e_{source}_{value_name}_to_{target}"
+
+        edges.append(VizEdge(source=source, target=target, id=edge_id))
+
+    return edges
+
+
+def _build_output_to_producer_map(
+    flat_graph: "nx.DiGraph",
+    expansion_state: dict[str, bool],
+) -> dict[str, str]:
+    """Build map of output_value_name -> actual_producer_node_id.
+
+    When an output is produced by a node inside an expanded container,
+    returns the actual internal producer, not the container.
+    """
+    output_to_producer: dict[str, str] = {}
+
+    for node_id, attrs in flat_graph.nodes(data=True):
+        for output in attrs.get("outputs", ()):
+            # Check if this producer is visible (parent chain is expanded)
+            if _is_node_visible(node_id, flat_graph, expansion_state):
+                # Only store if we don't have one yet, or if this is a deeper node
+                if output not in output_to_producer:
+                    output_to_producer[output] = node_id
+                else:
+                    # Prefer the deeper (more specific) producer
+                    existing = output_to_producer[output]
+                    if _get_nesting_depth(node_id, flat_graph) > _get_nesting_depth(existing, flat_graph):
+                        output_to_producer[output] = node_id
+
+    return output_to_producer
+
+
+# =============================================================================
 # Builder: Convert NetworkX graph to VizInstructions
 # =============================================================================
 
@@ -214,6 +378,9 @@ def build_instructions(
     This is the main entry point for generating explicit visualization instructions.
     All edge routing decisions are made here - JavaScript just renders.
 
+    Pre-computes edges for ALL valid expansion state combinations, so JavaScript
+    can simply select the right edge set when expansion state changes.
+
     Args:
         flat_graph: NetworkX DiGraph from Graph.to_flat_graph()
         depth: How many levels of nested graphs to expand (0 = collapsed)
@@ -221,7 +388,7 @@ def build_instructions(
         show_types: Whether to show type annotations
 
     Returns:
-        VizInstructions with explicit nodes and edges
+        VizInstructions with explicit nodes, edges, and pre-computed edges_by_state
     """
     instructions = VizInstructions(depth=depth, theme=theme, show_types=show_types)
 
@@ -229,20 +396,31 @@ def build_instructions(
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
 
-    # Build expansion state for all GRAPH nodes
-    expansion_state = _build_expansion_state(flat_graph, depth)
+    # Build initial expansion state based on depth
+    initial_expansion_state = _build_expansion_state(flat_graph, depth)
 
     # Build maps for routing edges to actual visible nodes
-    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
+    param_to_consumer = _build_param_to_consumer_map(flat_graph, initial_expansion_state)
 
     # Create INPUT nodes for external inputs
     _add_input_nodes(instructions, flat_graph, input_spec, bound_params, param_to_consumer, theme, show_types)
 
-    # Create FUNCTION and CONTAINER nodes
-    _add_graph_nodes(instructions, flat_graph, expansion_state, bound_params, theme, show_types)
+    # Create FUNCTION and CONTAINER nodes (include ALL nodes - JS handles visibility)
+    _add_all_graph_nodes(instructions, flat_graph, initial_expansion_state, bound_params, theme, show_types)
 
-    # Create edges between nodes (explicit routing based on expansion state)
-    _add_edges(instructions, flat_graph, expansion_state, param_to_consumer)
+    # Create edges for initial state
+    _add_edges(instructions, flat_graph, initial_expansion_state, param_to_consumer)
+
+    # Pre-compute edges for ALL valid expansion state combinations
+    expandable_nodes = _get_expandable_nodes(flat_graph)
+    instructions.expandable_nodes = expandable_nodes
+
+    if expandable_nodes:
+        valid_states = _enumerate_valid_expansion_states(flat_graph, expandable_nodes)
+        for state in valid_states:
+            key = _expansion_state_to_key(state)
+            edges = _compute_edges_for_state(flat_graph, state)
+            instructions.edges_by_state[key] = edges
 
     return instructions
 
@@ -391,7 +569,7 @@ def _add_graph_nodes(
     theme: str,
     show_types: bool,
 ) -> None:
-    """Add FUNCTION and CONTAINER nodes from the graph."""
+    """Add FUNCTION and CONTAINER nodes from the graph (only visible nodes)."""
     for node_id, attrs in flat_graph.nodes(data=True):
         parent_id = attrs.get("parent")
         node_type = attrs.get("node_type", "FUNCTION")
@@ -402,6 +580,48 @@ def _add_graph_nodes(
 
         if node_type == "GRAPH":
             is_expanded = expansion_state.get(node_id, False)
+            instructions.add_node(VizNode(
+                id=node_id,
+                type=NodeType.CONTAINER,
+                label=attrs.get("label", node_id),
+                parent_id=parent_id,
+                is_expanded=is_expanded,
+                outputs=list(attrs.get("outputs", ())),
+                theme=theme,
+                show_types=show_types,
+            ))
+        else:
+            # FUNCTION node
+            instructions.add_node(VizNode(
+                id=node_id,
+                type=NodeType.FUNCTION,
+                label=attrs.get("label", node_id),
+                parent_id=parent_id,
+                outputs=list(attrs.get("outputs", ())),
+                theme=theme,
+                show_types=show_types,
+            ))
+
+
+def _add_all_graph_nodes(
+    instructions: VizInstructions,
+    flat_graph: "nx.DiGraph",
+    initial_expansion_state: dict[str, bool],
+    bound_params: set[str],
+    theme: str,
+    show_types: bool,
+) -> None:
+    """Add ALL FUNCTION and CONTAINER nodes from the graph.
+
+    Unlike _add_graph_nodes, this includes all nodes regardless of visibility.
+    JavaScript handles visibility based on current expansion state.
+    """
+    for node_id, attrs in flat_graph.nodes(data=True):
+        parent_id = attrs.get("parent")
+        node_type = attrs.get("node_type", "FUNCTION")
+
+        if node_type == "GRAPH":
+            is_expanded = initial_expansion_state.get(node_id, False)
             instructions.add_node(VizNode(
                 id=node_id,
                 type=NodeType.CONTAINER,

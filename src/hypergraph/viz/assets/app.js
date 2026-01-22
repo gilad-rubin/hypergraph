@@ -683,6 +683,22 @@
     var expansionState = expansionStateState[0];
     var setExpansionState = expansionStateState[1];
 
+    // Pre-computed edges for all expansion states (from Python)
+    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
+    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
+
+    // Helper: convert expansionState Map to canonical key format
+    var expansionStateToKey = function(expState) {
+      if (expandableNodes.length === 0) return '';
+      var parts = [];
+      expandableNodes.forEach(function(nodeId) {
+        var isExpanded = expState.get(nodeId) || false;
+        parts.push(nodeId + ':' + (isExpanded ? '1' : '0'));
+      });
+      // expandableNodes is already sorted (from Python), so parts will be sorted
+      return parts.join(',');
+    };
+
     // React Flow state
     var nodesState = useNodesState([]);
     var rfNodes = nodesState[0];
@@ -790,8 +806,8 @@
     // Update React Flow state
     useEffect(function() {
       setNodes(nodesWithVisibility);
-      setEdges(stateResult.edges);
-    }, [nodesWithVisibility, stateResult.edges, setNodes, setEdges]);
+      setEdges(selectedEdges);
+    }, [nodesWithVisibility, selectedEdges, setNodes, setEdges]);
 
     // Theme detection listener
     useEffect(function() {
@@ -874,15 +890,31 @@
       }
     }, [manualTheme, resolvedDetected.theme]);
 
-    // Edges don't need compression for flat graphs
-    var compressedEdges = useMemo(function() {
+    // Select edges from pre-computed edge sets based on current expansion state
+    // This ensures collapse/expand produces EXACTLY the same edges as depth=0/1 render
+    var selectedEdges = useMemo(function() {
+      var key = expansionStateToKey(expansionState);
+      var precomputed = edgesByState[key];
+
+      if (precomputed && precomputed.length > 0) {
+        // Use pre-computed edges - guaranteed to match Python's calculation
+        if (root.__hypergraph_debug_viz) {
+          console.log('[App] Using pre-computed edges for key:', key, '- count:', precomputed.length);
+        }
+        return precomputed;
+      }
+
+      // Fallback to state-derived edges (for backwards compatibility)
+      if (root.__hypergraph_debug_viz) {
+        console.log('[App] No pre-computed edges for key:', key, '- using stateResult.edges');
+      }
       return stateResult.edges;
-    }, [stateResult.edges]);
+    }, [expansionState, stateResult.edges]);
 
     // Grouped nodes/edges
     var grouped = useMemo(function() {
-      return { nodes: nodesWithVisibility, edges: compressedEdges };
-    }, [nodesWithVisibility, compressedEdges]);
+      return { nodes: nodesWithVisibility, edges: selectedEdges };
+    }, [nodesWithVisibility, selectedEdges]);
 
     // Get routing data from initialData meta for edge re-routing
     var routingData = useMemo(function() {
