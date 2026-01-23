@@ -750,8 +750,7 @@
 
     // Expansion toggle handler
     var onToggleExpand = useCallback(function(nodeId) {
-      // Hide content IMMEDIATELY before state change to prevent jitter
-      setIsCentering(true);
+      // Signal that layout is changing (for tests to wait on)
       root.__hypergraphVizReady = false;
 
       setExpansionState(function(prev) {
@@ -964,12 +963,10 @@
     var PADDING_RIGHT = 100;
 
     // Custom fit function with fixed pixel padding
-    // Uses isCentering state to hide content during viewport adjustment (prevents jitter)
     var fitWithFixedPadding = useCallback(function() {
       if (rawLayoutedNodes.length === 0) return;
 
-      // Hide content during centering to prevent jitter
-      setIsCentering(true);
+      // Signal that we're centering (for tests to wait on)
       root.__hypergraphVizReady = false;
 
       // Calculate bounds from nodes
@@ -1043,8 +1040,6 @@
           var nodeWrappers = document.querySelectorAll('.react-flow__node');
 
           if (!vpEl || nodeWrappers.length === 0) {
-            // No DOM elements yet, reveal content anyway
-            setIsCentering(false);
             root.__hypergraphVizReady = true;
             return;
           }
@@ -1057,7 +1052,6 @@
           });
 
           if (nodeBounds.length === 0) {
-            setIsCentering(false);
             root.__hypergraphVizReady = true;
             return;
           }
@@ -1108,16 +1102,14 @@
             setViewport({ x: finalX, y: finalY, zoom: currentVp.zoom }, { duration: 0 });
           }
 
-          // Reveal content after final viewport is set
+          // Signal that graph is fully ready (for tests to wait on)
           // Use one more RAF to ensure the viewport change has been painted
           requestAnimationFrame(function() {
-            setIsCentering(false);
-            // Signal that graph is fully ready (for tests to wait on)
             root.__hypergraphVizReady = true;
           });
         });
       });
-    }, [rawLayoutedNodes, layoutedEdges, setViewport, getViewport, setIsCentering]);
+    }, [rawLayoutedNodes, layoutedEdges, setViewport, getViewport]);
 
     // Force edge recalculation after expansion changes
     var prevExpansionRef = useRef(null);
@@ -1437,7 +1429,6 @@
           // Not initial load - still signal ready for tests, but don't re-center
           requestAnimationFrame(function() {
             requestAnimationFrame(function() {
-              setIsCentering(false);
               root.__hypergraphVizReady = true;
             });
           });
