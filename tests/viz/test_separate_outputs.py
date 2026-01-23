@@ -329,3 +329,102 @@ class TestSeparateOutputsEdgeKeys:
         # Should have "sep:0" and "sep:1" as the only keys (no expansion part)
         assert "sep:0" in keys, f"'sep:0' not found. Keys: {keys}"
         assert "sep:1" in keys, f"'sep:1' not found. Keys: {keys}"
+
+
+class TestSeparateOutputsLayout:
+    """Test that layout positions sources above targets in separate outputs mode."""
+
+    def test_simple_graph_sources_above_targets(self):
+        """In a simple graph with separate outputs, sources should be above targets."""
+        from hypergraph.viz import extract_debug_data
+
+        simple = Graph(nodes=[clean_text, normalize, analyze])
+        data = extract_debug_data(simple, depth=0, separate_outputs=True)
+
+        # All edges should have positive vertical distance (source above target)
+        for edge in data.edges:
+            if edge.vert_dist is not None:
+                assert edge.vert_dist >= 0, (
+                    f"Edge {edge.source} -> {edge.target} has target above source!\n"
+                    f"srcBottom={edge.src_bottom}, tgtTop={edge.tgt_top}, vDist={edge.vert_dist}"
+                )
+
+    def test_nested_graph_sources_above_targets(self):
+        """In a nested graph with separate outputs, sources should be above targets."""
+        from hypergraph.viz import extract_debug_data
+
+        preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
+        workflow = Graph(nodes=[preprocess.as_node(), analyze])
+
+        # Test at depth=1 (expanded)
+        data = extract_debug_data(workflow, depth=1, separate_outputs=True)
+
+        for edge in data.edges:
+            if edge.vert_dist is not None:
+                assert edge.vert_dist >= 0, (
+                    f"Edge {edge.source} -> {edge.target} has target above source!\n"
+                    f"srcBottom={edge.src_bottom}, tgtTop={edge.tgt_top}, vDist={edge.vert_dist}"
+                )
+
+    def test_deeply_nested_sources_above_targets(self):
+        """In deeply nested graph with separate outputs, sources should be above targets."""
+        from hypergraph.viz import extract_debug_data
+
+        # Level 1: Simple transform
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+
+        # Level 2: Wrap inner + add validation
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+
+        # Level 3: Wrap middle + add logging
+        @node(output_name="logged")
+        def log_result(validated: int) -> int:
+            return validated
+
+        outer = Graph(nodes=[middle.as_node(), log_result])
+
+        # Test at depth=2 (all expanded)
+        data = extract_debug_data(outer, depth=2, separate_outputs=True)
+
+        # Collect any edges where target is above source
+        issues = [
+            edge for edge in data.edges
+            if edge.vert_dist is not None and edge.vert_dist < 0
+        ]
+
+        assert len(issues) == 0, (
+            f"Found {len(issues)} edges with target above source:\n"
+            + "\n".join(
+                f"  {e.source} -> {e.target}: vDist={e.vert_dist}"
+                for e in issues
+            )
+        )
+
+    def test_no_edge_issues_in_separate_outputs_mode(self):
+        """No edge issues should exist in separate outputs mode."""
+        from hypergraph.viz import extract_debug_data
+
+        preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
+        workflow = Graph(nodes=[preprocess.as_node(), analyze])
+
+        data = extract_debug_data(workflow, depth=1, separate_outputs=True)
+
+        assert data.summary["edgeIssues"] == 0, (
+            f"Found {data.summary['edgeIssues']} edge issues:\n"
+            + "\n".join(
+                f"  {e.source} -> {e.target}: {e.issue}"
+                for e in data.edge_issues
+            )
+        )

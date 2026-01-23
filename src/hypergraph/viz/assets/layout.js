@@ -416,8 +416,61 @@
       if (children.length === 0) return;
 
       var childIds = new Set(children.map(function(c) { return c.id; }));
-      var internalEdges = edges.filter(function(e) {
-        return childIds.has(e.source) && childIds.has(e.target);
+
+      // Build map from deeply nested nodes to their direct child ancestor
+      // This enables lifting edges from grandchildren to children for layout
+      var deepToChild = new Map();
+      var nodeByIdLocal = new Map(visibleNodes.map(function(n) { return [n.id, n]; }));
+
+      visibleNodes.forEach(function(n) {
+        if (childIds.has(n.id)) return; // Already a direct child
+
+        // Walk up parent chain to find if this node is under one of our children
+        var current = n;
+        var visited = [];
+        while (current && current.parentNode) {
+          visited.push(current.id);
+          if (childIds.has(current.parentNode)) {
+            // Found a direct child ancestor
+            visited.forEach(function(nodeId) {
+              deepToChild.set(nodeId, current.parentNode);
+            });
+            break;
+          }
+          current = nodeByIdLocal.get(current.parentNode);
+        }
+      });
+
+      // Collect edges with lifting for deeply nested nodes
+      var internalEdgeSet = new Set();
+      var internalEdges = [];
+
+      edges.forEach(function(e) {
+        var source = e.source;
+        var target = e.target;
+
+        // Lift source if it's deeply nested under one of our children
+        if (deepToChild.has(source)) {
+          source = deepToChild.get(source);
+        }
+        // Lift target if it's deeply nested under one of our children
+        if (deepToChild.has(target)) {
+          target = deepToChild.get(target);
+        }
+
+        // Include if both endpoints are now direct children and not a self-loop
+        if (childIds.has(source) && childIds.has(target) && source !== target) {
+          var edgeKey = source + '->' + target;
+          if (!internalEdgeSet.has(edgeKey)) {
+            internalEdgeSet.add(edgeKey);
+            internalEdges.push({
+              id: edgeKey,
+              source: source,
+              target: target,
+              _original: e,
+            });
+          }
+        }
       });
 
       // Prepare children for layout
@@ -434,8 +487,9 @@
         };
       });
 
+      // For lifted edges, _original points to the real edge; for non-lifted, e is the real edge
       var childLayoutEdges = internalEdges.map(function(e) {
-        return { id: e.id, source: e.source, target: e.target, _original: e };
+        return { id: e.id, source: e.source, target: e.target, _original: e._original || e };
       });
 
       // Detect separate outputs mode

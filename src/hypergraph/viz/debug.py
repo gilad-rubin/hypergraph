@@ -611,6 +611,7 @@ async def _extract_debug_data_async(
     *,
     depth: int = 1,
     theme: str = "auto",
+    separate_outputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -625,7 +626,14 @@ async def _extract_debug_data_async(
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
         temp_path = f.name
 
-    visualize(graph, depth=depth, theme=theme, output=temp_path, _debug_overlays=True)
+    visualize(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        output=temp_path,
+        _debug_overlays=True,
+    )
 
     try:
         async with async_playwright() as p:
@@ -653,6 +661,7 @@ def _extract_debug_data_sync(
     *,
     depth: int = 1,
     theme: str = "auto",
+    separate_outputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -667,7 +676,14 @@ def _extract_debug_data_sync(
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
         temp_path = f.name
 
-    visualize(graph, depth=depth, theme=theme, output=temp_path, _debug_overlays=True)
+    visualize(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        output=temp_path,
+        _debug_overlays=True,
+    )
 
     try:
         with sync_playwright() as p:
@@ -732,6 +748,7 @@ def extract_debug_data(
     *,
     depth: int = 1,
     theme: str = "auto",
+    separate_outputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -746,6 +763,7 @@ def extract_debug_data(
         graph: Graph to visualize and debug
         depth: How many levels of nested graphs to expand (default: 1)
         theme: "dark", "light", or "auto" (default: "auto")
+        separate_outputs: Show outputs as separate DATA nodes (default: False)
         headless: Run browser in headless mode (default: True)
         timeout: Max time to wait for layout in ms (default: 5000)
 
@@ -787,6 +805,7 @@ def extract_debug_data(
                     graph,
                     depth=depth,
                     theme=theme,
+                    separate_outputs=separate_outputs,
                     headless=headless,
                     timeout=timeout,
                 )
@@ -798,6 +817,7 @@ def extract_debug_data(
             graph,
             depth=depth,
             theme=theme,
+            separate_outputs=separate_outputs,
             headless=headless,
             timeout=timeout,
         )

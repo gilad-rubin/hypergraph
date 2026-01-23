@@ -643,6 +643,47 @@ var needsStartReroute = !sourceIsDataNode && actualProducer && ...;
 
 **Why**: Pre-computed edges for `separateOutputs=true` already have correct DATA node sources. Step 5 re-routing is only needed for merged output mode edges that need dynamic producer resolution.
 
+### Child Layout Edge Lifting
+
+**The Problem**: In deeply nested graphs, edges crossing container boundaries weren't being considered for layout ordering. For example, with:
+```
+middle[inner[step1, step2], validate]
+```
+The edge `data_step2_step2_out -> validate` has:
+- Source inside `inner` (grandchild of `middle`)
+- Target is a direct child of `middle`
+
+When laying out `middle`'s children, this edge was excluded because the source wasn't a direct child.
+
+**The Fix**: Lift edges for child layouts the same way as root layout. Build a map from deeply nested nodes to their direct child ancestor:
+
+```javascript
+// Build map: deeply nested node -> direct child ancestor
+var deepToChild = new Map();
+visibleNodes.forEach(function(n) {
+  // Walk up parent chain to find direct child ancestor
+  while (current && current.parentNode) {
+    if (childIds.has(current.parentNode)) {
+      deepToChild.set(n.id, current.parentNode);
+      break;
+    }
+    ...
+  }
+});
+
+// Lift edge sources/targets to direct children
+edges.forEach(function(e) {
+  var source = deepToChild.has(e.source) ? deepToChild.get(e.source) : e.source;
+  var target = deepToChild.has(e.target) ? deepToChild.get(e.target) : e.target;
+  // Include if both are now direct children
+  if (childIds.has(source) && childIds.has(target) && source !== target) {
+    internalEdges.push({ source, target, _original: e._original || e });
+  }
+});
+```
+
+**Critical**: `_original` must point to the REAL edge, not the lifted edge. When creating `childLayoutEdges`, use `e._original || e` to preserve the original edge reference.
+
 ## Debugging with Dev-Browser
 
 The shadow gap and edge routing bugs were validated using Playwright-based browser automation tests.
