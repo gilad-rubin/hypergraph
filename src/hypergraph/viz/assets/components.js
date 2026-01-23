@@ -158,7 +158,7 @@
     var borderClass = isLight ? "border-slate-100" : "border-slate-800/50";
 
     return html`
-        <div className=${'px-2 py-2 border-t transition-all duration-300 overflow-hidden ' + bgClass + ' ' + borderClass}>
+        <div className=${'px-2 py-2 border-t transition-colors duration-300 overflow-hidden ' + bgClass + ' ' + borderClass}>
             <div className="flex flex-col items-center gap-1.5">
                 ${outputs.map(function(out) {
                     return html`
@@ -531,9 +531,8 @@
                onMouseLeave=${function() { setIsHovered(false); }}
                onTransitionEnd=${function(e) { if (e.target === e.currentTarget) updateNodeInternals(id); }}>
 
-            <div className="transition-all duration-200 ease-out"
-                 style=${{ filter: 'drop-shadow(0 10px 8px rgb(0 0 0 / 0.04)) drop-shadow(0 4px 3px rgb(0 0 0 / 0.1))' }}>
-                <div className="transition-all duration-200 ease-out border"
+            <div style=${{ filter: 'drop-shadow(0 10px 8px rgb(0 0 0 / 0.04)) drop-shadow(0 4px 3px rgb(0 0 0 / 0.1))' }}>
+                <div className="transition-colors transition-shadow duration-200 ease-out border"
                      style=${{
                         width: '95px',
                         height: '95px',
