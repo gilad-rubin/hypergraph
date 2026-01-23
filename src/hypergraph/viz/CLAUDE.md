@@ -521,6 +521,107 @@ All 172 viz tests pass, including:
 - `test_precomputed_edges_include_output_edges_when_separate`
 - `test_edge_state_keys_include_sep_flag`
 
+## Nested Containers and Separate Outputs
+
+### The Problem
+
+When a container (Graph/Pipeline) is **expanded** with `separateOutputs=true`, two issues occur:
+
+1. **Duplicate DATA nodes**: Both container DATA nodes (`data_preprocess_normalized`) and internal DATA nodes (`data_normalize_normalized`) are visible
+2. **Wrong edge routing**: Edges go through container DATA nodes instead of internal producer DATA nodes
+
+**Example**: Given `preprocess` container with internal function `normalize`:
+```
+Before fix (wrong):
+  preprocess → data_preprocess_normalized → analyze
+  normalize → data_normalize_normalized (disconnected!)
+
+After fix (correct):
+  normalize → data_normalize_normalized → analyze
+  (container DATA nodes hidden)
+```
+
+### Root Cause
+
+1. **Container identification**: The flat_graph uses `node_type == "GRAPH"` to identify containers, NOT a `children` attribute
+2. **Edge generation**: `_add_separate_output_edges()` was creating edges for ALL visible nodes, including expanded containers
+3. **Node visibility**: JavaScript `applyState()` showed ALL DATA nodes when `separateOutputs=true`
+
+### The Fix
+
+**Python side** (`renderer.py` - `_add_separate_output_edges()`):
+
+```python
+# 1. Skip container→DATA edges when container is expanded
+is_container = attrs.get("node_type") == "GRAPH"
+is_expanded = expansion_state.get(node_id, False)
+if is_container and is_expanded:
+    continue  # Don't create edges to container's DATA nodes
+
+# 2. Reroute DATA→consumer edges through internal producers
+if is_source_container and is_source_expanded:
+    # Use output_to_producer mapping to find actual internal producer
+    actual_producer = output_to_producer.get(value_name, source)
+    data_node_id = f"data_{actual_producer}_{value_name}"
+```
+
+**JavaScript side** (`state_utils.js` - `applyState()`):
+
+```javascript
+// Filter out container DATA nodes when their container is expanded
+if (separateOutputs) {
+  var pipelineIds = new Set(baseNodes
+    .filter(function(n) { return n.data && n.data.nodeType === 'PIPELINE'; })
+    .map(function(n) { return n.id; }));
+
+  var nodes = baseNodes.filter(function(n) {
+    if (n.data && n.data.sourceId && pipelineIds.has(n.data.sourceId)) {
+      var isContainerExpanded = expMap.get(n.data.sourceId) || false;
+      if (isContainerExpanded) return false;  // Hide container DATA node
+    }
+    return true;
+  });
+}
+```
+
+### Key Insight: node_type vs children
+
+The flat_graph does NOT have a `children` attribute on container nodes. Instead:
+- Containers have `node_type == "GRAPH"` in the flat_graph
+- Children have `parent` attribute pointing to their container
+- In RF nodes, containers have `nodeType == "PIPELINE"` (mapped from GRAPH)
+
+```python
+# WRONG - children attr doesn't exist
+is_container = bool(attrs.get("children"))  # Always False!
+
+# CORRECT - check node_type
+is_container = attrs.get("node_type") == "GRAPH"
+```
+
+### Layout Spacing for Separate Outputs
+
+Separate outputs mode uses increased vertical spacing for clarity:
+
+```javascript
+// layout.js - layoutOptions for separateOutputs mode
+var layoutOptions = isSeparateOutputs
+  ? {
+      ...ConstraintLayout.defaultOptions,
+      layout: {
+        ...ConstraintLayout.defaultOptions.layout,
+        spaceY: 160,       // Increased from 100
+        layerSpaceY: 140,  // Increased from 90
+      }
+    }
+  : ConstraintLayout.defaultOptions;
+```
+
+### Files Modified
+- `renderer.py`: `_add_separate_output_edges()` checks `node_type == "GRAPH"` and routes through internal DATA nodes
+- `state_utils.js`: `applyState()` filters out container DATA nodes when expanded
+- `layout.js`: Increased `spaceY` to 160, `layerSpaceY` to 140 for separate outputs mode
+
 ## Debugging with Dev-Browser
 
 The shadow gap and edge routing bugs were validated using Playwright-based browser automation tests.
