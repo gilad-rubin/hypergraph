@@ -280,6 +280,7 @@
     layerSpaceY,
     iterations,
     orientation,
+    denseRowScale = 0,  // 0 = uniform spacing
   }) => {
     let coordPrimary = 'x';
     let coordSecondary = 'y';
@@ -328,7 +329,10 @@
       1
     );
 
-    expandDenseRows(edges, rows, coordSecondary, spaceY, orientation);
+    // Only expand dense rows if scale > 0 (0 = uniform spacing)
+    if (denseRowScale > 0) {
+      expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, denseRowScale);
+    }
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
@@ -843,6 +847,7 @@
       spreadX: 2.2,
       padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
+      denseRowScale: 0,   // 0 = uniform spacing; >0 adds space for dense edge rows
     },
     routing: {
       spaceX: 45,       // Increased from 26 for more edge-to-node clearance

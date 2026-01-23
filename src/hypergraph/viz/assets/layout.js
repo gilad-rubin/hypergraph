@@ -237,29 +237,13 @@
           };
         });
 
-        // Detect if we're in separate outputs mode
-        var isSeparateOutputs = layoutNodes.some(function(n) {
-          return n._original && n._original.data && n._original.data.separateOutputs;
-        });
-
-        var layoutOptions = isSeparateOutputs
-          ? {
-              ...ConstraintLayout.defaultOptions,
-              layout: {
-                ...ConstraintLayout.defaultOptions.layout,
-                spaceY: 160,       // Increased from 100 for more vertical distance
-                layerSpaceY: 140,  // Increased from 90 for more layer separation
-              }
-            }
-          : ConstraintLayout.defaultOptions;
-
-        // Run constraint layout
+        // Run constraint layout with consistent spacing for all modes
         var result = ConstraintLayout.graph(
           layoutNodes,
           layoutEdges,
           null,
           'vertical',
-          layoutOptions
+          ConstraintLayout.defaultOptions
         );
 
         if (debugMode) console.log('[useLayout] layout result:', result);
@@ -492,29 +476,13 @@
         return { id: e.id, source: e.source, target: e.target, _original: e._original || e };
       });
 
-      // Detect separate outputs mode
-      var isSeparateOutputs = children.some(function(n) {
-        return n.data && n.data.separateOutputs;
-      });
-
-      var layoutOptions = isSeparateOutputs
-        ? {
-            ...ConstraintLayout.defaultOptions,
-            layout: {
-              ...ConstraintLayout.defaultOptions.layout,
-              spaceY: 160,       // Increased for more vertical distance
-              layerSpaceY: 140,  // Increased for more layer separation
-            }
-          }
-        : ConstraintLayout.defaultOptions;
-
-      // Run layout for children
+      // Run layout for children with consistent spacing
       var childResult = ConstraintLayout.graph(
         childLayoutNodes,
         childLayoutEdges,
         null,
         'vertical',
-        layoutOptions
+        ConstraintLayout.defaultOptions
       );
 
       // Post-layout correction for tall nodes within nested graph
@@ -644,28 +612,13 @@
     // rootEdges already has the lifted structure we need
     var rootLayoutEdges = rootEdges;
 
-    // Detect separate outputs mode for root
-    var isSeparateOutputs = rootNodes.some(function(n) {
-      return n.data && n.data.separateOutputs;
-    });
-
-    var layoutOptions = isSeparateOutputs
-      ? {
-          ...ConstraintLayout.defaultOptions,
-          layout: {
-            ...ConstraintLayout.defaultOptions.layout,
-            spaceY: 160,       // Increased for more vertical distance
-            layerSpaceY: 140,  // Increased for more layer separation
-          }
-        }
-      : ConstraintLayout.defaultOptions;
-
+    // Run root layout with consistent spacing
     var rootResult = ConstraintLayout.graph(
       rootLayoutNodes,
       rootLayoutEdges,
       null,
       'vertical',
-      layoutOptions
+      ConstraintLayout.defaultOptions
     );
 
     if (debugMode) {
