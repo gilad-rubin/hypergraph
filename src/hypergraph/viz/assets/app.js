@@ -1425,10 +1425,23 @@
       return function() { root.removeEventListener('resize', handleResize); };
     }, [fitWithFixedPadding]);
 
-    // Re-fit when layout changes
+    // Fit view only on INITIAL load, not on every layout change
+    // This prevents the "hop" during expand/collapse - user can manually fit if needed
+    var hasInitialFitRef = useRef(false);
     useEffect(function() {
       if (layoutedNodes.length > 0) {
-        requestAnimationFrame(function() { fitWithFixedPadding(); });
+        if (!hasInitialFitRef.current) {
+          hasInitialFitRef.current = true;
+          requestAnimationFrame(function() { fitWithFixedPadding(); });
+        } else {
+          // Not initial load - still signal ready for tests, but don't re-center
+          requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+              setIsCentering(false);
+              root.__hypergraphVizReady = true;
+            });
+          });
+        }
       }
     }, [layoutedNodes, fitWithFixedPadding]);
 
