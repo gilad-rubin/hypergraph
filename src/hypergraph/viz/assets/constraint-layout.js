@@ -336,13 +336,21 @@
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => ({
-      base: rowConstraint,
-      property: layoutConfig.coordSecondary,
-      a: edge.targetNode,
-      b: edge.sourceNode,
-      separation: layoutConfig.spaceY,
-    }));
+    edges.map((edge) => {
+      // Use edge-to-edge separation for uniform visual gaps
+      // center-to-center distance = visual_gap + (source_height + target_height) / 2
+      const sourceHeight = edge.sourceNode.height || 0;
+      const targetHeight = edge.targetNode.height || 0;
+      const edgeToEdgeSeparation = layoutConfig.spaceY + (sourceHeight + targetHeight) / 2;
+
+      return {
+        base: rowConstraint,
+        property: layoutConfig.coordSecondary,
+        a: edge.targetNode,
+        b: edge.sourceNode,
+        separation: edgeToEdgeSeparation,
+      };
+    });
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
@@ -842,8 +850,8 @@
   const defaultOptions = {
     layout: {
       spaceX: 14,
-      spaceY: 140,      // Vertical spacing between nodes
-      layerSpaceY: 120, // Vertical spacing between layers
+      spaceY: 70,       // Visual gap between node edges (edge-to-edge, not center-to-center)
+      layerSpaceY: 70,  // Visual gap between layers
       spreadX: 2.2,
       padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
