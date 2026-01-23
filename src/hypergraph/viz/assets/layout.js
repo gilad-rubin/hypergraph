@@ -247,8 +247,8 @@
               ...ConstraintLayout.defaultOptions,
               layout: {
                 ...ConstraintLayout.defaultOptions.layout,
-                spaceY: 100,
-                layerSpaceY: 90,
+                spaceY: 160,       // Increased from 100 for more vertical distance
+                layerSpaceY: 140,  // Increased from 90 for more layer separation
               }
             }
           : ConstraintLayout.defaultOptions;
@@ -448,8 +448,8 @@
             ...ConstraintLayout.defaultOptions,
             layout: {
               ...ConstraintLayout.defaultOptions.layout,
-              spaceY: 100,
-              layerSpaceY: 90,
+              spaceY: 160,       // Increased for more vertical distance
+              layerSpaceY: 140,  // Increased for more layer separation
             }
           }
         : ConstraintLayout.defaultOptions;
@@ -600,8 +600,8 @@
           ...ConstraintLayout.defaultOptions,
           layout: {
             ...ConstraintLayout.defaultOptions.layout,
-            spaceY: 100,
-            layerSpaceY: 90,
+            spaceY: 160,       // Increased for more vertical distance
+            layerSpaceY: 140,  // Increased for more layer separation
           }
         }
       : ConstraintLayout.defaultOptions;

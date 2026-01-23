@@ -824,10 +824,24 @@ def _add_separate_output_edges(
     Edges route through DATA nodes:
     - Function → DATA node (for each output)
     - DATA node → consumer functions
+
+    When a container is EXPANDED:
+    - Skip container→DATA edges (container DATA nodes are hidden)
+    - Reroute container DATA→consumer edges through internal producer DATA nodes
     """
+    # Build output_to_producer mapping to find deepest (internal) producers
+    output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+
     # 1. Add edges from function nodes to their DATA nodes
     for node_id, attrs in flat_graph.nodes(data=True):
         if not _is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+
+        # Skip containers (GRAPH nodes) that are expanded - their DATA nodes are hidden
+        # (internal function DATA nodes are shown instead)
+        is_container = attrs.get("node_type") == "GRAPH"
+        is_expanded = expansion_state.get(node_id, False)
+        if is_container and is_expanded:
             continue
 
         for output_name in attrs.get("outputs", ()):
@@ -854,7 +868,18 @@ def _add_separate_output_edges(
 
         # For data edges, route through the DATA node
         if edge_type == "data" and value_name:
-            data_node_id = f"data_{source}_{value_name}"
+            # Check if source is an expanded container (GRAPH node)
+            source_attrs = flat_graph.nodes.get(source, {})
+            is_source_container = source_attrs.get("node_type") == "GRAPH"
+            is_source_expanded = expansion_state.get(source, False)
+
+            if is_source_container and is_source_expanded:
+                # Reroute through internal producer's DATA node
+                actual_producer = output_to_producer.get(value_name, source)
+                data_node_id = f"data_{actual_producer}_{value_name}"
+            else:
+                data_node_id = f"data_{source}_{value_name}"
+
             edge_id = f"e_{data_node_id}_to_{target}"
 
             edges.append({

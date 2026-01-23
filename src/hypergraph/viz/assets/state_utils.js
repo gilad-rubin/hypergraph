@@ -60,18 +60,34 @@
     };
 
     if (separateOutputs) {
+      // Identify PIPELINE nodes (containers)
+      var pipelineIds = new Set(baseNodes
+        .filter(function(n) { return n.data && n.data.nodeType === 'PIPELINE'; })
+        .map(function(n) { return n.id; }));
+
       // Show DATA nodes and INPUT_GROUP, clear embedded outputs from function nodes
-      var nodes = baseNodes.map(function(n) {
-        var transformed = applyMeta(n);
-        return {
-          ...transformed,
-          data: {
-            ...transformed.data,
-            separateOutputs: true,
-            outputs: [],  // Clear embedded outputs when showing separate DATA nodes
-          },
-        };
-      });
+      // BUT hide container DATA nodes when their container is expanded
+      var nodes = baseNodes
+        .filter(function(n) {
+          // Hide container DATA nodes when their container is expanded
+          if (n.data && n.data.sourceId && pipelineIds.has(n.data.sourceId)) {
+            // This is a container's DATA node - hide if container is expanded
+            var isContainerExpanded = expMap.get(n.data.sourceId) || false;
+            if (isContainerExpanded) return false;  // Hide
+          }
+          return true;  // Keep
+        })
+        .map(function(n) {
+          var transformed = applyMeta(n);
+          return {
+            ...transformed,
+            data: {
+              ...transformed.data,
+              separateOutputs: true,
+              outputs: [],  // Clear embedded outputs when showing separate DATA nodes
+            },
+          };
+        });
       return { nodes: nodes, edges: baseEdges };
     } else {
       // Hide DATA nodes (but keep INPUT_GROUP visible), embed outputs in function nodes, remap edges
