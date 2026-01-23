@@ -47,7 +47,7 @@ class TestInputNodePosition:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -120,7 +120,7 @@ class TestInputNodePosition:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -194,7 +194,7 @@ class TestEdgeGaps:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -315,7 +315,7 @@ class TestEdgeGaps:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -454,7 +454,7 @@ class TestEdgeConnectsToActualNode:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 

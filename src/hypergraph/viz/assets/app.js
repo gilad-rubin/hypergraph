@@ -683,6 +683,11 @@
     var expansionState = expansionStateState[0];
     var setExpansionState = expansionStateState[1];
 
+    // Track when we're in the middle of centering (to hide content during viewport adjustment)
+    var isCenteringState = useState(false);
+    var isCentering = isCenteringState[0];
+    var setIsCentering = isCenteringState[1];
+
     // Pre-computed edges for all expansion states (from Python)
     var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
@@ -948,8 +953,13 @@
     var PADDING_RIGHT = 100;
 
     // Custom fit function with fixed pixel padding
+    // Uses isCentering state to hide content during viewport adjustment (prevents jitter)
     var fitWithFixedPadding = useCallback(function() {
       if (rawLayoutedNodes.length === 0) return;
+
+      // Hide content during centering to prevent jitter
+      setIsCentering(true);
+      root.__hypergraphVizReady = false;
 
       // Calculate bounds from nodes
       var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -1021,7 +1031,12 @@
           vpEl = vpEl && vpEl.parentElement;
           var nodeWrappers = document.querySelectorAll('.react-flow__node');
 
-          if (!vpEl || nodeWrappers.length === 0) return;
+          if (!vpEl || nodeWrappers.length === 0) {
+            // No DOM elements yet, reveal content anyway
+            setIsCentering(false);
+            root.__hypergraphVizReady = true;
+            return;
+          }
 
           var vpRect = vpEl.getBoundingClientRect();
           var nodeBounds = [];
@@ -1030,7 +1045,11 @@
             if (innerNode) nodeBounds.push(innerNode.getBoundingClientRect());
           });
 
-          if (nodeBounds.length === 0) return;
+          if (nodeBounds.length === 0) {
+            setIsCentering(false);
+            root.__hypergraphVizReady = true;
+            return;
+          }
 
           var topmostEdge = Math.min.apply(null, nodeBounds.map(function(r) { return r.top; }));
           var bottommostEdge = Math.max.apply(null, nodeBounds.map(function(r) { return r.bottom; }));
@@ -1077,9 +1096,17 @@
           if (needsAnyCorrection) {
             setViewport({ x: finalX, y: finalY, zoom: currentVp.zoom }, { duration: 0 });
           }
+
+          // Reveal content after final viewport is set
+          // Use one more RAF to ensure the viewport change has been painted
+          requestAnimationFrame(function() {
+            setIsCentering(false);
+            // Signal that graph is fully ready (for tests to wait on)
+            root.__hypergraphVizReady = true;
+          });
         });
       });
-    }, [rawLayoutedNodes, layoutedEdges, setViewport, getViewport]);
+    }, [rawLayoutedNodes, layoutedEdges, setViewport, getViewport, setIsCentering]);
 
     // Force edge recalculation after expansion changes
     var prevExpansionRef = useRef(null);
@@ -1457,7 +1484,7 @@
           panOnDrag=${true}
           zoomOnPinch=${true}
           preventScrolling=${false}
-          style=${{ width: '100%', height: '100%' }}
+          style=${{ width: '100%', height: '100%', opacity: isCentering ? 0 : 1 }}
         >
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls}

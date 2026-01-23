@@ -135,7 +135,7 @@ class TestEdgeRoutingToInternalNodes:
 
                 # Wait for layout
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -365,7 +365,7 @@ class TestOutputEdgeRouting:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -463,7 +463,7 @@ class TestDoubleNestedEdgeRouting:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -559,7 +559,7 @@ class TestEdgeVisualGaps:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -647,7 +647,7 @@ class TestEdgeVisualGaps:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -739,7 +739,7 @@ class TestCollapsedGraphEdges:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -823,7 +823,7 @@ class TestCollapsedGraphEdges:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -1015,7 +1015,7 @@ class TestNodeToParentDebugAPI:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 
@@ -1081,7 +1081,7 @@ class TestNodeToParentDebugAPI:
                 page.goto(f"file://{temp_path}")
 
                 page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
                     timeout=10000,
                 )
 

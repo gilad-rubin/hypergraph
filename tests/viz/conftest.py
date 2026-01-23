@@ -158,9 +158,14 @@ def temp_html_file():
 # =============================================================================
 
 def wait_for_debug_ready(page, timeout: int = 10000) -> None:
-    """Wait for the hypergraph debug API to be ready."""
+    """Wait for the hypergraph debug API and centering to be ready.
+
+    Waits for both:
+    1. __hypergraphVizDebug.version > 0 (layout complete)
+    2. __hypergraphVizReady == true (centering complete, graph visible)
+    """
     page.wait_for_function(
-        "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+        "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
         timeout=timeout,
     )
 
@@ -402,14 +407,11 @@ def click_to_expand_container(page, container_id: str) -> None:
 
     node_element.click()
 
-    # Wait for layout to update (version should increment)
+    # Wait for layout to update (version should increment) AND centering to complete
     page.wait_for_function(
-        f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {initial_version}",
+        f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {initial_version} && window.__hypergraphVizReady === true",
         timeout=10000,
     )
-
-    # Additional wait for layout to fully settle
-    page.wait_for_timeout(500)
 
 
 def click_to_collapse_container(page, container_id: str) -> None:
@@ -448,14 +450,11 @@ def click_to_collapse_container(page, container_id: str) -> None:
             # Last resort: click the node itself
             node_element.click()
 
-    # Wait for layout to update (version should increment)
+    # Wait for layout to update (version should increment) AND centering to complete
     page.wait_for_function(
-        f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {initial_version}",
+        f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {initial_version} && window.__hypergraphVizReady === true",
         timeout=10000,
     )
-
-    # Additional wait for layout to fully settle
-    page.wait_for_timeout(500)
 
 
 def render_and_extract(page, graph: Graph, depth: int, temp_path: str) -> dict:

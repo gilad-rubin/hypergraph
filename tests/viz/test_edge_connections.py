@@ -70,7 +70,7 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
 
         # Wait for layout to complete
         page.wait_for_function(
-            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
             timeout=10000,
         )
 
@@ -520,7 +520,7 @@ class TestEdgeShadowGap:
 
         page.goto(f"file://{temp_html_file}")
         page.wait_for_function(
-            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
             timeout=10000,
         )
         page.wait_for_timeout(500)
@@ -611,7 +611,7 @@ class TestEdgeShadowGap:
 
         page.goto(f"file://{temp_html_file}")
         page.wait_for_function(
-            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
             timeout=10000,
         )
         page.wait_for_timeout(500)
@@ -690,7 +690,7 @@ class TestEdgeShadowGap:
 
         page.goto(f"file://{temp_html_file}")
         page.wait_for_function(
-            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+            "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
             timeout=10000,
         )
         page.wait_for_timeout(500)
