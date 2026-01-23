@@ -333,6 +333,53 @@
     if (denseRowScale > 0) {
       expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, denseRowScale);
     }
+
+    // Fix overlapping nodes that the constraint solver missed
+    // (nodes not connected by edges can end up overlapping)
+    fixOverlappingNodes(nodes, spaceY, orientation);
+  };
+
+  /**
+   * Detect and fix nodes that overlap both horizontally and vertically.
+   * This handles cases where unconnected nodes end up in the same space.
+   */
+  const fixOverlappingNodes = (nodes, minGap, orientation) => {
+    const coordPrimary = orientation === 'vertical' ? 'x' : 'y';
+    const coordSecondary = orientation === 'vertical' ? 'y' : 'x';
+    const sizePrimary = orientation === 'vertical' ? 'width' : 'height';
+    const sizeSecondary = orientation === 'vertical' ? 'height' : 'width';
+
+    // Sort nodes by secondary coordinate (Y for vertical layout)
+    const sortedNodes = [...nodes].sort((a, b) => a[coordSecondary] - b[coordSecondary]);
+
+    // Check each pair of nodes for overlap
+    for (let i = 0; i < sortedNodes.length; i++) {
+      const nodeA = sortedNodes[i];
+      const aLeft = nodeA[coordPrimary] - nodeA[sizePrimary] / 2;
+      const aRight = nodeA[coordPrimary] + nodeA[sizePrimary] / 2;
+      const aTop = nodeA[coordSecondary] - nodeA[sizeSecondary] / 2;
+      const aBottom = nodeA[coordSecondary] + nodeA[sizeSecondary] / 2;
+
+      for (let j = i + 1; j < sortedNodes.length; j++) {
+        const nodeB = sortedNodes[j];
+        const bLeft = nodeB[coordPrimary] - nodeB[sizePrimary] / 2;
+        const bRight = nodeB[coordPrimary] + nodeB[sizePrimary] / 2;
+        const bTop = nodeB[coordSecondary] - nodeB[sizeSecondary] / 2;
+        const bBottom = nodeB[coordSecondary] + nodeB[sizeSecondary] / 2;
+
+        // Check horizontal overlap
+        const hOverlap = !(bRight < aLeft || bLeft > aRight);
+        // Check vertical overlap
+        const vOverlap = !(bBottom < aTop || bTop > aBottom);
+
+        if (hOverlap && vOverlap) {
+          // Nodes overlap - shift nodeB down (it's lower in sort order)
+          const overlapAmount = aBottom - bTop;
+          const shift = overlapAmount + minGap;
+          nodeB[coordSecondary] += shift;
+        }
+      }
+    }
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
@@ -850,12 +897,12 @@
   const defaultOptions = {
     layout: {
       spaceX: 14,
-      spaceY: 70,       // Visual gap between node edges (edge-to-edge, not center-to-center)
-      layerSpaceY: 70,  // Visual gap between layers
+      spaceY: 100,      // Visual gap between node edges (edge-to-edge, not center-to-center)
+      layerSpaceY: 100, // Visual gap between layers
       spreadX: 2.2,
       padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
-      denseRowScale: 0,   // 0 = uniform spacing; >0 adds space for dense edge rows
+      denseRowScale: 1.0, // Adds space for dense edge rows to prevent overlap
     },
     routing: {
       spaceX: 45,       // Increased from 26 for more edge-to-node clearance
