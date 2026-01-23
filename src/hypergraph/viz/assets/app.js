@@ -743,6 +743,10 @@
 
     // Expansion toggle handler
     var onToggleExpand = useCallback(function(nodeId) {
+      // Hide content IMMEDIATELY before state change to prevent jitter
+      setIsCentering(true);
+      root.__hypergraphVizReady = false;
+
       setExpansionState(function(prev) {
         var newMap = new Map(prev);
         var isCurrentlyExpanded = newMap.get(nodeId) || false;
