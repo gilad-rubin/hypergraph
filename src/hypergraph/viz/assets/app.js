@@ -1474,7 +1474,6 @@
         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 pointer-events-none mix-blend-overlay"></div>
 
         <${ReactFlow}
-          key=${'rf_' + expansionKey}
           nodes=${layoutedNodes}
           edges=${styledEdges}
           nodeTypes=${nodeTypes}
@@ -1495,13 +1494,7 @@
           panOnDrag=${true}
           zoomOnPinch=${true}
           preventScrolling=${false}
-          style=${{
-            width: '100%',
-            height: '100%',
-            opacity: isCentering ? 0 : 1,
-            // Instant hide, smooth reveal
-            transition: isCentering ? 'none' : 'opacity 150ms ease-out'
-          }}
+          style=${{ width: '100%', height: '100%' }}
         >
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls}
