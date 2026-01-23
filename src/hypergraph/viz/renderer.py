@@ -13,12 +13,44 @@ import networkx as nx
 
 
 def _format_type(t: type | None) -> str | None:
-    """Format a type annotation for display."""
+    """Format a type annotation for display.
+
+    Converts type objects to clean string representations:
+    - list[float] → "list[float]"
+    - Dict[str, int] → "Dict[str, int]"
+    - mymodule.MyClass → "MyClass"
+    """
     if t is None:
         return None
-    if hasattr(t, "__name__"):
-        return t.__name__
-    return str(t).replace("typing.", "")
+
+    # Always use str() to preserve generic parameters (list[float], Dict[str, int], etc.)
+    # Then clean up common prefixes
+    type_str = str(t)
+    type_str = type_str.replace("typing.", "")
+    type_str = type_str.replace("<class '", "").replace("'>", "")
+
+    # Simplify fully-qualified names: foo.bar.ClassName → ClassName
+    return _simplify_type_string(type_str)
+
+
+def _simplify_type_string(type_str: str) -> str:
+    """Simplify type strings by extracting only the final part of dotted names.
+
+    Examples:
+        "list[mymodule.Document]" → "list[Document]"
+        "Dict[str, foo.bar.Baz]" → "Dict[str, Baz]"
+    """
+    import re
+
+    # Pattern to match dotted names (e.g., a.b.c.ClassName)
+    pattern = r"([a-zA-Z_][a-zA-Z0-9_]*\.)+([a-zA-Z_][a-zA-Z0-9_]*)"
+
+    def replace_with_final(match: re.Match) -> str:
+        full_match = match.group(0)
+        parts = full_match.split(".")
+        return parts[-1]
+
+    return re.sub(pattern, replace_with_final, type_str)
 
 
 def render_graph(
