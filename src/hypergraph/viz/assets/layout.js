@@ -945,7 +945,10 @@
       var actualProducer = (valueName && outputToProducer[valueName]) ? outputToProducer[valueName] : null;
 
       // Check if we need to re-route the start (data edge producer)
-      var needsStartReroute = actualProducer && actualProducer !== e.source &&
+      // BUT: Skip re-routing if source is already a DATA node (starts with "data_")
+      // Pre-computed edges for separateOutputs=true already have correct DATA node sources
+      var sourceIsDataNode = e.source && e.source.startsWith('data_');
+      var needsStartReroute = !sourceIsDataNode && actualProducer && actualProducer !== e.source &&
         nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer);
 
       // Check if we need to re-route the target for INPUT edges

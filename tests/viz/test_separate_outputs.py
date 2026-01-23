@@ -115,6 +115,182 @@ class TestSeparateOutputsNodeVisibility:
         assert "result" in data_labels
 
 
+class TestDeeplyNestedSeparateOutputs:
+    """Test separate outputs mode with deeply nested graphs."""
+
+    def test_deeply_nested_edges_route_through_data_nodes(self):
+        """Edges should route through DATA nodes, not direct function→function."""
+        # Level 1: Simple transform
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+
+        # Level 2: Wrap inner + add validation
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+
+        # Level 3: Wrap middle + add logging
+        @node(output_name="logged")
+        def log_result(validated: int) -> int:
+            return validated
+
+        outer = Graph(nodes=[middle.as_node(), log_result])
+
+        # Render with all containers expanded and separate outputs
+        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True)
+
+        # Get the sep:1 edges for fully expanded state
+        edges_by_state = result["meta"].get("edgesByState", {})
+
+        # Find the key with all containers expanded (middle:1, inner:1) and sep:1
+        expanded_sep1_keys = [k for k in edges_by_state.keys()
+                             if "sep:1" in k and "middle:1" in k and "inner:1" in k]
+
+        assert len(expanded_sep1_keys) > 0, (
+            f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
+        )
+
+        edges = edges_by_state[expanded_sep1_keys[0]]
+
+        # Find edge to validate - should come from DATA node, not function
+        edges_to_validate = [e for e in edges if e["target"] == "validate"]
+
+        assert len(edges_to_validate) > 0, (
+            f"No edges to 'validate' found!\n"
+            f"All edges: {[(e['source'], e['target']) for e in edges]}"
+        )
+
+        # The source should be a DATA node (data_step2_step2_out), not a function (step2)
+        for edge in edges_to_validate:
+            source = edge["source"]
+            assert source.startswith("data_"), (
+                f"Edge to 'validate' should come from DATA node, not function!\n"
+                f"Got source: {source}\n"
+                f"Expected: data_step2_step2_out or similar DATA node"
+            )
+
+    def test_deeply_nested_collapsed_then_expanded_edges(self):
+        """Test edges when rendered at depth=0 then containers expanded interactively."""
+        # Level 1: Simple transform
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+
+        # Level 2: Wrap inner + add validation
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+
+        # Level 3: Wrap middle + add logging
+        @node(output_name="logged")
+        def log_result(validated: int) -> int:
+            return validated
+
+        outer = Graph(nodes=[middle.as_node(), log_result])
+
+        # Render at depth=0 (collapsed) with separate outputs
+        # This is how the user sees it initially
+        result = render_graph(outer.to_flat_graph(), depth=0, separate_outputs=True)
+
+        edges_by_state = result["meta"].get("edgesByState", {})
+
+        # Check the key for when middle AND inner are both expanded (user expands interactively)
+        # Key format: "inner:1,middle:1|sep:1"
+        expanded_sep1_keys = [k for k in edges_by_state.keys()
+                             if "sep:1" in k and "middle:1" in k and "inner:1" in k]
+
+        assert len(expanded_sep1_keys) > 0, (
+            f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
+        )
+
+        edges = edges_by_state[expanded_sep1_keys[0]]
+
+        # Find edge to validate - should come from DATA node
+        edges_to_validate = [e for e in edges if e["target"] == "validate"]
+
+        assert len(edges_to_validate) > 0, (
+            f"No edges to 'validate' found!\n"
+            f"All edges: {[(e['source'], e['target']) for e in edges]}"
+        )
+
+        for edge in edges_to_validate:
+            source = edge["source"]
+            assert source.startswith("data_"), (
+                f"Edge to 'validate' should come from DATA node!\n"
+                f"Got source: {source}\n"
+                f"Expected: data_step2_step2_out"
+            )
+
+    def test_deeply_nested_no_function_to_function_data_edges(self):
+        """In separate outputs mode, data edges should never go direct function→function."""
+        # Level 1
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+
+        # Level 2
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+
+        # Level 3
+        @node(output_name="logged")
+        def log_result(validated: int) -> int:
+            return validated
+
+        outer = Graph(nodes=[middle.as_node(), log_result])
+
+        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True)
+        edges_by_state = result["meta"].get("edgesByState", {})
+
+        # Check all sep:1 keys
+        sep1_keys = [k for k in edges_by_state.keys() if "sep:1" in k]
+
+        # Get function node IDs (not DATA, not INPUT)
+        function_ids = {n["id"] for n in result["nodes"]
+                       if n["data"].get("nodeType") in ("FUNCTION", "PIPELINE")}
+
+        for key in sep1_keys:
+            edges = edges_by_state[key]
+            for edge in edges:
+                edge_type = edge.get("data", {}).get("edgeType", "")
+                # Data edges should not go direct function→function
+                if edge_type == "data":
+                    is_source_function = edge["source"] in function_ids
+                    is_target_function = edge["target"] in function_ids
+                    assert not (is_source_function and is_target_function), (
+                        f"Data edge goes direct function→function in sep:1 mode!\n"
+                        f"Key: {key}\n"
+                        f"Edge: {edge['source']} → {edge['target']}\n"
+                        f"Data edges should route through DATA nodes"
+                    )
+
+
 class TestSeparateOutputsEdgeKeys:
     """Test that edge state keys properly encode separateOutputs flag."""
 

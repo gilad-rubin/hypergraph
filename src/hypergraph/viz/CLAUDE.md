@@ -622,6 +622,27 @@ var layoutOptions = isSeparateOutputs
 - `state_utils.js`: `applyState()` filters out container DATA nodes when expanded
 - `layout.js`: Increased `spaceY` to 160, `layerSpaceY` to 140 for separate outputs mode
 
+### Step 5 Re-routing and DATA Nodes
+
+**The Problem**: Step 5 in `layout.js` re-routes edges based on `outputToProducer` mapping. This was designed for merged output mode (function→function edges), but it incorrectly "corrected" DATA node edges back to functions in separate outputs mode.
+
+**Example**:
+```
+Pre-computed edge: data_step2_step2_out -> validate (CORRECT)
+Step 5 lookup: outputToProducer["step2_out"] = "step2" (function)
+Step 5 re-routing: step2 -> validate (WRONG - remapped to function!)
+```
+
+**The Fix**: Skip Step 5 re-routing for edges whose source is already a DATA node (IDs starting with `data_`):
+
+```javascript
+// layout.js Step 5
+var sourceIsDataNode = e.source && e.source.startsWith('data_');
+var needsStartReroute = !sourceIsDataNode && actualProducer && ...;
+```
+
+**Why**: Pre-computed edges for `separateOutputs=true` already have correct DATA node sources. Step 5 re-routing is only needed for merged output mode edges that need dynamic producer resolution.
+
 ## Debugging with Dev-Browser
 
 The shadow gap and edge routing bugs were validated using Playwright-based browser automation tests.
