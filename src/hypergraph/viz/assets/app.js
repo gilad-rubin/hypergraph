@@ -1451,11 +1451,19 @@
 
       return layoutedEdges.map(function(e) {
         var isDataLink = e.data && e.data.isDataLink;
+        var isControlEdge = e.data && e.data.edgeType === 'control';
+        var edgeStyle = {
+          ...edgeOptions.style,
+          strokeWidth: isDataLink ? 1.5 : 2,
+        };
+        if (isControlEdge) {
+          edgeStyle.strokeDasharray = '6 4';
+        }
         return {
           ...e,
           id: expansionKey ? (e.id + '_exp_' + expansionKey.replace(/,/g, '_')) : e.id,
           ...edgeOptions,
-          style: { ...edgeOptions.style, strokeWidth: isDataLink ? 1.5 : 2 },
+          style: edgeStyle,
           markerEnd: edgeOptions.markerEnd,
           data: { ...e.data, debugMode: debugOverlays }
         };
