@@ -716,16 +716,20 @@ def _compute_edges_for_state(
     input_spec: dict[str, Any],
     show_types: bool,
     theme: str,
+    separate_outputs: bool = False,
 ) -> list[dict[str, Any]]:
     """Compute edges for a specific expansion state.
 
     This is the core edge routing logic - determines which nodes edges connect to
     based on which containers are expanded/collapsed.
 
-    NOTE: This produces edges in the "separateOutputs=false" format, which means:
-    - No edges TO DATA nodes (those are filtered out in JS)
-    - Edges FROM DATA nodes are remapped to the source function node
-    This matches what applyState() produces, so JS can use these edges directly.
+    Args:
+        separate_outputs: If False (default), produces edges in "merged" format:
+            - No edges TO DATA nodes
+            - Edges go directly from source function to target function
+            If True, produces edges that route through DATA nodes:
+            - Edges from function TO DATA node (function → DATA)
+            - Edges from DATA node TO consumers (DATA → consumer)
     """
     edges: list[dict[str, Any]] = []
 
@@ -751,9 +755,25 @@ def _compute_edges_for_state(
                 "data": {"edgeType": "input"},
             })
 
-    # 2. Add edges between function nodes (from graph structure)
-    # NOTE: We skip DATA node edges entirely since separateOutputs=false
-    # Instead, edges go directly from source function to target function
+    # 2. Add edges between function nodes (based on separate_outputs mode)
+    if separate_outputs:
+        _add_separate_output_edges(edges, flat_graph, expansion_state)
+    else:
+        _add_merged_output_edges(edges, flat_graph, expansion_state)
+
+    return edges
+
+
+def _add_merged_output_edges(
+    edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> None:
+    """Add edges in merged output mode (separateOutputs=false).
+
+    Edges go directly from source function to target function,
+    skipping DATA nodes entirely.
+    """
     for source, target, edge_data in flat_graph.edges(data=True):
         # Skip if either node is not visible in this expansion state
         if not _is_node_visible(source, flat_graph, expansion_state):
@@ -793,7 +813,90 @@ def _compute_edges_for_state(
 
         edges.append(rf_edge)
 
-    return edges
+
+def _add_separate_output_edges(
+    edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> None:
+    """Add edges in separate output mode (separateOutputs=true).
+
+    Edges route through DATA nodes:
+    - Function → DATA node (for each output)
+    - DATA node → consumer functions
+    """
+    # 1. Add edges from function nodes to their DATA nodes
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if not _is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+
+        for output_name in attrs.get("outputs", ()):
+            data_node_id = f"data_{node_id}_{output_name}"
+            edges.append({
+                "id": f"e_{node_id}_to_{data_node_id}",
+                "source": node_id,
+                "target": data_node_id,
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {"edgeType": "output"},
+            })
+
+    # 2. Add edges from DATA nodes to consumer functions
+    for source, target, edge_data in flat_graph.edges(data=True):
+        # Skip if either node is not visible in this expansion state
+        if not _is_node_visible(source, flat_graph, expansion_state):
+            continue
+        if not _is_node_visible(target, flat_graph, expansion_state):
+            continue
+
+        edge_type = edge_data.get("edge_type", "data")
+        value_name = edge_data.get("value_name", "")
+
+        # For data edges, route through the DATA node
+        if edge_type == "data" and value_name:
+            data_node_id = f"data_{source}_{value_name}"
+            edge_id = f"e_{data_node_id}_to_{target}"
+
+            edges.append({
+                "id": edge_id,
+                "source": data_node_id,
+                "target": target,
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {
+                    "edgeType": "data",
+                    "valueName": value_name,
+                },
+            })
+        else:
+            # Control edges go direct (not through DATA nodes)
+            edge_id = f"e_{source}_{target}"
+            if value_name:
+                edge_id = f"e_{source}_{value_name}_{target}"
+
+            rf_edge = {
+                "id": edge_id,
+                "source": source,
+                "target": target,
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {
+                    "edgeType": edge_type,
+                    "valueName": value_name,
+                },
+            }
+
+            # Add label for IfElse branch edges (True/False)
+            if edge_type == "control":
+                source_attrs = flat_graph.nodes.get(source, {})
+                branch_data = source_attrs.get("branch_data", {})
+                if branch_data and "when_true" in branch_data:
+                    if target == branch_data["when_true"]:
+                        rf_edge["data"]["label"] = "True"
+                    elif target == branch_data["when_false"]:
+                        rf_edge["data"]["label"] = "False"
+
+            edges.append(rf_edge)
 
 
 def _precompute_all_edges(
@@ -804,24 +907,46 @@ def _precompute_all_edges(
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     """Pre-compute edges for all valid expansion state combinations.
 
+    Generates TWO edge sets per expansion state:
+    - One with key ending in "|sep:0" for merged outputs mode
+    - One with key ending in "|sep:1" for separate outputs mode
+
+    For graphs without expandable containers, keys are just "sep:0" or "sep:1".
+
     Returns:
         Tuple of (edges_by_state dict, expandable_nodes list)
-        edges_by_state maps expansion key -> list of edges
+        edges_by_state maps "expansion_key|sep:X" -> list of edges
     """
     expandable_nodes = _get_expandable_nodes(flat_graph)
 
     if not expandable_nodes:
-        # Still compute edges for the single valid state (no expansion)
-        # This ensures route nodes and other graphs without containers get proper edges
-        edges = _compute_edges_for_state(flat_graph, {}, input_spec, show_types, theme)
-        return {"": edges}, []  # key="" matches expansionStateToKey() result for empty state
+        # No expandable nodes - generate edges for both sep:0 and sep:1
+        edges_merged = _compute_edges_for_state(
+            flat_graph, {}, input_spec, show_types, theme, separate_outputs=False
+        )
+        edges_separate = _compute_edges_for_state(
+            flat_graph, {}, input_spec, show_types, theme, separate_outputs=True
+        )
+        return {"sep:0": edges_merged, "sep:1": edges_separate}, []
 
     edges_by_state: dict[str, list[dict[str, Any]]] = {}
     valid_states = _enumerate_valid_expansion_states(flat_graph, expandable_nodes)
 
     for state in valid_states:
-        key = _expansion_state_to_key(state)
-        edges = _compute_edges_for_state(flat_graph, state, input_spec, show_types, theme)
-        edges_by_state[key] = edges
+        exp_key = _expansion_state_to_key(state)
+
+        # Generate edges for merged outputs mode (sep:0)
+        key_merged = f"{exp_key}|sep:0"
+        edges_merged = _compute_edges_for_state(
+            flat_graph, state, input_spec, show_types, theme, separate_outputs=False
+        )
+        edges_by_state[key_merged] = edges_merged
+
+        # Generate edges for separate outputs mode (sep:1)
+        key_separate = f"{exp_key}|sep:1"
+        edges_separate = _compute_edges_for_state(
+            flat_graph, state, input_spec, show_types, theme, separate_outputs=True
+        )
+        edges_by_state[key_separate] = edges_separate
 
     return edges_by_state, expandable_nodes

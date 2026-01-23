@@ -693,15 +693,22 @@
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
 
     // Helper: convert expansionState Map to canonical key format
-    var expansionStateToKey = function(expState) {
-      if (expandableNodes.length === 0) return '';
+    // Key format: "nodeId:0|sep:X" or "sep:X" (when no expandable nodes)
+    var expansionStateToKey = function(expState, separateOutputsFlag) {
+      var sepKey = 'sep:' + (separateOutputsFlag ? '1' : '0');
+
+      if (expandableNodes.length === 0) {
+        return sepKey;
+      }
+
       var parts = [];
       expandableNodes.forEach(function(nodeId) {
         var isExpanded = expState.get(nodeId) || false;
         parts.push(nodeId + ':' + (isExpanded ? '1' : '0'));
       });
       // expandableNodes is already sorted (from Python), so parts will be sorted
-      return parts.join(',');
+      var expKey = parts.join(',');
+      return expKey + '|' + sepKey;
     };
 
     // React Flow state
@@ -902,7 +909,7 @@
     // Select edges from pre-computed edge sets based on current expansion state
     // This ensures collapse/expand produces EXACTLY the same edges as depth=0/1 render
     var selectedEdges = useMemo(function() {
-      var key = expansionStateToKey(expansionState);
+      var key = expansionStateToKey(expansionState, separateOutputs);
       var precomputed = edgesByState[key];
 
       if (precomputed && precomputed.length > 0) {
@@ -913,12 +920,12 @@
         return precomputed;
       }
 
-      // Fallback to state-derived edges (for backwards compatibility)
+      // Fallback to state-derived edges (for backwards compatibility with old renders)
       if (root.__hypergraph_debug_viz) {
         console.log('[App] No pre-computed edges for key:', key, '- using stateResult.edges');
       }
       return stateResult.edges;
-    }, [expansionState, stateResult.edges]);
+    }, [expansionState, separateOutputs, stateResult.edges]);
 
     // Grouped nodes/edges
     var grouped = useMemo(function() {
@@ -1488,7 +1495,13 @@
           panOnDrag=${true}
           zoomOnPinch=${true}
           preventScrolling=${false}
-          style=${{ width: '100%', height: '100%', opacity: isCentering ? 0 : 1 }}
+          style=${{
+            width: '100%',
+            height: '100%',
+            opacity: isCentering ? 0 : 1,
+            // Instant hide, smooth reveal
+            transition: isCentering ? 'none' : 'opacity 150ms ease-out'
+          }}
         >
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls}

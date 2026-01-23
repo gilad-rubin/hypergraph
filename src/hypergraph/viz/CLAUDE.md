@@ -412,28 +412,47 @@ Both use the **exact same edge computation logic** in Python.
 
 ### Architecture
 
+The key format includes both expansion state AND separateOutputs mode:
+- `"nodeId:0|sep:0"` - collapsed containers, merged outputs
+- `"nodeId:1|sep:1"` - expanded containers, separate outputs
+- `"sep:0"` or `"sep:1"` - for graphs without expandable containers
+
 ```
 Python (render time):
 ┌─────────────────────────────────────────────────────────┐
-│  For each valid expansion state combination:            │
-│    - preprocess:0                → edges_collapsed      │
-│    - preprocess:1                → edges_expanded       │
+│  For each valid expansion state × separateOutputs:      │
+│    - preprocess:0|sep:0    → edges (collapsed, merged)  │
+│    - preprocess:0|sep:1    → edges (collapsed, separate)│
+│    - preprocess:1|sep:0    → edges (expanded, merged)   │
+│    - preprocess:1|sep:1    → edges (expanded, separate) │
 │                                                         │
 │  Output: meta.edgesByState = {                          │
-│    "preprocess:0": [...edges...],                       │
-│    "preprocess:1": [...edges...],                       │
+│    "preprocess:0|sep:0": [...edges...],                 │
+│    "preprocess:0|sep:1": [...edges...],                 │
+│    ...                                                  │
 │  }                                                      │
 └─────────────────────────────────────────────────────────┘
                           ↓
 JavaScript (runtime):
 ┌─────────────────────────────────────────────────────────┐
-│  User clicks collapse on preprocess                     │
+│  User toggles separateOutputs button                    │
 │    → expansionState = { preprocess: false }             │
-│    → key = "preprocess:0"                               │
+│    → separateOutputs = true                             │
+│    → key = "preprocess:0|sep:1"                         │
 │    → edges = meta.edgesByState[key]  // Simple lookup!  │
-│    → render with pre-computed edges                     │
+│    → render with pre-computed edges (with DATA nodes)   │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### Separate Outputs Mode
+
+When `separateOutputs=true`:
+- Edges go: Function → DATA node → Consumer
+- DATA nodes are visible and connect to their producer functions
+
+When `separateOutputs=false` (merged mode):
+- Edges go: Function → Function (direct)
+- DATA nodes are hidden, outputs embedded in function nodes
 
 ### Smart State Pruning
 
@@ -448,17 +467,22 @@ def _enumerate_valid_expansion_states(flat_graph, expandable_nodes):
     A state is valid if expanded children only appear when parent is expanded."""
     ...
 
-def _compute_edges_for_state(flat_graph, expansion_state, ...):
+def _compute_edges_for_state(flat_graph, expansion_state, ..., separate_outputs=False):
     """Compute edges for a specific expansion state.
-    Uses the same visibility logic as the initial render."""
+
+    When separate_outputs=False: edges go direct function→function
+    When separate_outputs=True: edges route through DATA nodes
+    """
     ...
 
 def _precompute_all_edges(flat_graph, ...):
-    """Pre-compute edges for ALL valid expansion states."""
+    """Pre-compute edges for ALL valid expansion states × separateOutputs."""
     edges_by_state = {}
     for state in _enumerate_valid_expansion_states(...):
-        key = _expansion_state_to_key(state)
-        edges_by_state[key] = _compute_edges_for_state(flat_graph, state, ...)
+        exp_key = _expansion_state_to_key(state)
+        # Generate both sep:0 and sep:1 variants
+        edges_by_state[f"{exp_key}|sep:0"] = _compute_edges_for_state(..., separate_outputs=False)
+        edges_by_state[f"{exp_key}|sep:1"] = _compute_edges_for_state(..., separate_outputs=True)
     return edges_by_state
 ```
 
@@ -467,29 +491,35 @@ def _precompute_all_edges(flat_graph, ...):
 // Read pre-computed edges from Python
 var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
 
-// Convert expansion state Map to canonical key format
-var expansionStateToKey = function(expState) {
-  return expandableNodes.map(function(nodeId) {
+// Convert expansion state Map + separateOutputs to canonical key format
+var expansionStateToKey = function(expState, separateOutputsFlag) {
+  var sepKey = 'sep:' + (separateOutputsFlag ? '1' : '0');
+  if (expandableNodes.length === 0) return sepKey;
+
+  var expKey = expandableNodes.map(function(nodeId) {
     return nodeId + ':' + (expState.get(nodeId) ? '1' : '0');
   }).join(',');
+  return expKey + '|' + sepKey;
 };
 
-// Select edges based on current expansion state
+// Select edges based on current expansion state AND separateOutputs
 var selectedEdges = useMemo(function() {
-  var key = expansionStateToKey(expansionState);
+  var key = expansionStateToKey(expansionState, separateOutputs);
   return edgesByState[key] || stateResult.edges;  // Fallback for backwards compat
-}, [expansionState, stateResult.edges]);
+}, [expansionState, separateOutputs, stateResult.edges]);
 ```
 
 ### Files Modified
-- `renderer.py`: Added `_enumerate_valid_expansion_states()`, `_compute_edges_for_state()`, `_precompute_all_edges()`. Updated `render_graph()` to include `edgesByState` and `expandableNodes` in meta.
-- `app.js`: Added `expansionStateToKey()` helper. Added `selectedEdges` memo that looks up pre-computed edges.
+- `renderer.py`: Added `_enumerate_valid_expansion_states()`, `_compute_edges_for_state()` (with `separate_outputs` param), `_add_merged_output_edges()`, `_add_separate_output_edges()`, `_precompute_all_edges()`. Updated to generate both sep:0 and sep:1 variants.
+- `app.js`: Updated `expansionStateToKey()` to include separateOutputs flag. Updated `selectedEdges` memo to depend on separateOutputs.
 
 ### Test Coverage
-All 166 viz tests pass, including:
+All 172 viz tests pass, including:
 - `test_workflow_depth1_no_edge_issues`
 - `test_interactive_collapse_edge_targets_match_static`
 - `test_output_edge_routes_from_container_after_collapse`
+- `test_precomputed_edges_include_output_edges_when_separate`
+- `test_edge_state_keys_include_sep_flag`
 
 ## Debugging with Dev-Browser
 
