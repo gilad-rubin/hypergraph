@@ -1125,6 +1125,59 @@
       };
     });
 
+    // Validation: Check that all edge sources/targets exist and positions match
+    if (debugMode) {
+      allPositionedEdges.forEach(function(e) {
+        var points = e.data && e.data.points;
+        if (!points || points.length < 2) {
+          console.error('[EDGE VALIDATION] Edge missing points:', e.id, e.source, '->', e.target);
+          return;
+        }
+
+        var actualSrc = (e.data && e.data.actualSource) || e.source;
+        var actualTgt = (e.data && e.data.actualTarget) || e.target;
+
+        // Check source exists
+        var srcPos = nodePositions.get(actualSrc);
+        var srcDims = nodeDimensions.get(actualSrc);
+        if (!srcPos || !srcDims) {
+          console.error('[EDGE VALIDATION] Source node not found:', actualSrc,
+            'for edge', e.id, '| original source:', e.source);
+        } else {
+          // Check edge start Y is near source bottom
+          var srcType = nodeTypes.get(actualSrc) || 'FUNCTION';
+          var expectedSrcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcType);
+          var actualStartY = points[0].y;
+          var srcYDiff = Math.abs(actualStartY - expectedSrcBottomY);
+          if (srcYDiff > 20) {
+            console.error('[EDGE VALIDATION] Edge start Y mismatch:', e.id,
+              '| edge starts at y=' + actualStartY,
+              '| but source', actualSrc, 'bottom is y=' + expectedSrcBottomY,
+              '| diff=' + srcYDiff + 'px');
+          }
+        }
+
+        // Check target exists
+        var tgtPos = nodePositions.get(actualTgt);
+        var tgtDims = nodeDimensions.get(actualTgt);
+        if (!tgtPos || !tgtDims) {
+          console.error('[EDGE VALIDATION] Target node not found:', actualTgt,
+            'for edge', e.id, '| original target:', e.target);
+        } else {
+          // Check edge end Y is near target top
+          var expectedTgtTopY = tgtPos.y;
+          var actualEndY = points[points.length - 1].y;
+          var tgtYDiff = Math.abs(actualEndY - expectedTgtTopY);
+          if (tgtYDiff > 20) {
+            console.error('[EDGE VALIDATION] Edge end Y mismatch:', e.id,
+              '| edge ends at y=' + actualEndY,
+              '| but target', actualTgt, 'top is y=' + expectedTgtTopY,
+              '| diff=' + tgtYDiff + 'px');
+          }
+        }
+      });
+    }
+
     return {
       nodes: allPositionedNodes,
       edges: allPositionedEdges,
