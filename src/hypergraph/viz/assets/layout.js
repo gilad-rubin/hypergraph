@@ -412,16 +412,39 @@
 
     // Build a set of INPUT/INPUT_GROUP node IDs that are "owned" by expanded containers
     // These should be laid out INSIDE their ownerContainer, not at root level
-    var inputNodesInContainers = new Map();  // inputNodeId -> ownerContainer
+    //
+    // We use deepestOwnerContainer (the absolute deepest container containing all consumers)
+    // and walk UP to find the deepest EXPANDED ancestor. This handles nested containers:
+    // - If inner container expanded: INPUT inside inner
+    // - If inner collapsed but outer expanded: INPUT inside outer
+    // - If both collapsed: INPUT at root
+    var inputNodesInContainers = new Map();  // inputNodeId -> targetContainer
+
+    // Build parent map for walking up
+    var parentMap = new Map();
+    visibleNodes.forEach(function(n) {
+      if (n.parentNode) parentMap.set(n.id, n.parentNode);
+    });
+
     visibleNodes.forEach(function(n) {
       var nodeType = n.data && n.data.nodeType;
       var isInput = nodeType === 'INPUT' || nodeType === 'INPUT_GROUP';
-      if (isInput && n.data.ownerContainer) {
-        var ownerId = n.data.ownerContainer;
-        // Only include if owner container is expanded
-        if (expansionState.get(ownerId)) {
-          inputNodesInContainers.set(n.id, ownerId);
+      if (!isInput) return;
+
+      // Use deepestOwnerContainer if available, fall back to ownerContainer
+      var deepestOwner = n.data.deepestOwnerContainer || n.data.ownerContainer;
+      if (!deepestOwner) return;
+
+      // Walk up from deepestOwner to find the deepest EXPANDED container
+      var current = deepestOwner;
+      while (current) {
+        if (expansionState.get(current)) {
+          // Found an expanded container - use it
+          inputNodesInContainers.set(n.id, current);
+          break;
         }
+        // Walk up to parent container
+        current = parentMap.get(current);
       }
     });
 

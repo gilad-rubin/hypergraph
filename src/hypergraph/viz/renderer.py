@@ -549,6 +549,30 @@ def _compute_input_scope(
     return None
 
 
+def _compute_deepest_input_scope(
+    param: str,
+    flat_graph: nx.DiGraph,
+) -> str | None:
+    """Find the deepest common container of all consumers (ignoring expansion state).
+
+    This is used for JavaScript to walk up at runtime when expansion state changes.
+
+    Args:
+        param: Parameter name
+        flat_graph: The flattened graph
+
+    Returns:
+        The deepest container containing all consumers, or None if at root level.
+    """
+    consumers = _get_deepest_consumers(param, flat_graph)
+
+    if not consumers:
+        return None
+
+    ancestor_chains = [_get_ancestor_chain(c, flat_graph) for c in consumers]
+    return _find_deepest_common_container(ancestor_chains)
+
+
 def _is_output_externally_consumed(
     output_param: str,
     source_node: str,
@@ -688,6 +712,7 @@ def _create_input_nodes(
             param_type = _get_param_type(param, flat_graph)
             actual_targets = _get_param_targets(param, flat_graph, param_to_consumers)
             owner_container = _compute_input_scope(param, flat_graph, expansion_state)
+            deepest_owner = _compute_deepest_input_scope(param, flat_graph)
 
             input_node: dict[str, Any] = {
                 "id": input_node_id,
@@ -702,6 +727,7 @@ def _create_input_nodes(
                     "theme": theme,
                     "showTypes": show_types,
                     "ownerContainer": owner_container,
+                    "deepestOwnerContainer": deepest_owner,
                 },
                 "sourcePosition": "bottom",
                 "targetPosition": "top",
@@ -717,6 +743,7 @@ def _create_input_nodes(
             # Compute owner container - use the first param (all have same consumers)
             # All params in the group share the same consumers, so they share the same owner
             owner_container = _compute_input_scope(params[0], flat_graph, expansion_state)
+            deepest_owner = _compute_deepest_input_scope(params[0], flat_graph)
 
             group_node: dict[str, Any] = {
                 "id": group_id,
@@ -729,6 +756,7 @@ def _create_input_nodes(
                     "isBound": is_bound,
                     "actualTargets": actual_targets,
                     "ownerContainer": owner_container,
+                    "deepestOwnerContainer": deepest_owner,
                     "theme": theme,
                     "showTypes": show_types,
                 },
