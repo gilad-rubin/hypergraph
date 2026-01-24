@@ -319,6 +319,73 @@ def _find_container_exit_points(
     return exit_points
 
 
+def _find_internal_producer_for_output(
+    container_id: str,
+    output_name: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> str | None:
+    """Find the internal node that produces the data that becomes `output_name`.
+
+    This handles the `with_outputs` rename case: when a container exposes
+    `retrieval_eval_results` but internally `compute_recall` produces
+    `retrieval_eval_result`, we need to find `compute_recall`.
+
+    Strategy: Find the internal node that:
+    1. Is a direct child of the container (or deeper, via recursion)
+    2. Produces an output that is NOT consumed by any other node inside the container
+       (i.e., it's a "terminal" output that flows outside)
+    3. That terminal output becomes `output_name` after container-level renaming
+
+    For simplicity, we look for internal nodes whose outputs match any "tail" of
+    `output_name` (e.g., "retrieval_eval_result" ends with most of "retrieval_eval_results").
+    """
+    # Get all outputs produced by internal nodes (direct children)
+    internal_producers: dict[str, str] = {}  # output_name -> producer_id
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if attrs.get("parent") != container_id:
+            continue
+        for output in attrs.get("outputs", ()):
+            internal_producers[output] = node_id
+
+    # Find all outputs consumed internally
+    internal_consumed: set[str] = set()
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if attrs.get("parent") != container_id:
+            continue
+        for inp in attrs.get("inputs", ()):
+            if inp in internal_producers:
+                internal_consumed.add(inp)
+
+    # Terminal outputs are those NOT consumed internally
+    terminal_outputs = {
+        out: prod
+        for out, prod in internal_producers.items()
+        if out not in internal_consumed
+    }
+
+    # Try exact match first (output_name exists internally)
+    if output_name in terminal_outputs:
+        producer = terminal_outputs[output_name]
+        if _is_node_visible(producer, flat_graph, expansion_state):
+            return producer
+
+    # Try fuzzy match for renamed outputs (e.g., retrieval_eval_result -> retrieval_eval_results)
+    # Check if any terminal output is a prefix/suffix match
+    for internal_out, producer in terminal_outputs.items():
+        # Check if one is substring of the other (handles singular/plural, etc.)
+        if internal_out in output_name or output_name in internal_out:
+            if _is_node_visible(producer, flat_graph, expansion_state):
+                return producer
+
+    # Fall back to any visible terminal producer
+    for internal_out, producer in terminal_outputs.items():
+        if _is_node_visible(producer, flat_graph, expansion_state):
+            return producer
+
+    return None
+
+
 def _build_output_to_producer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -1262,16 +1329,19 @@ def _add_merged_output_edges(
             if value_name:
                 # Data edge: find the actual internal producer of this value
                 internal_producer = output_to_producer.get(value_name)
-                if internal_producer and _is_descendant_of(internal_producer, source, flat_graph):
+                if internal_producer and internal_producer != source and _is_descendant_of(internal_producer, source, flat_graph):
+                    # Found internal producer that's a descendant of the container
                     actual_source = internal_producer
                 else:
-                    # No exact match - this happens when with_outputs renames parameters
-                    # Fall back to exit points (nodes that produce outputs)
-                    exit_points = _find_container_exit_points(
-                        source, flat_graph, expansion_state
+                    # No direct match - this happens when with_outputs renames parameters
+                    # (e.g., container exposes "retrieval_eval_results" but internal
+                    # node produces "retrieval_eval_result")
+                    # Use smart lookup to find the internal producer
+                    internal_source = _find_internal_producer_for_output(
+                        source, value_name, flat_graph, expansion_state
                     )
-                    if exit_points:
-                        actual_source = exit_points[0]
+                    if internal_source:
+                        actual_source = internal_source
 
         # Determine actual target - re-route if target is expanded container
         actual_target = target
@@ -1407,7 +1477,27 @@ def _add_separate_output_edges(
             if is_source_container and is_source_expanded:
                 # Reroute through internal producer's DATA node
                 actual_producer = output_to_producer.get(value_name, source)
-                data_node_id = f"data_{actual_producer}_{value_name}"
+                # Handle with_outputs renaming: if actual_producer is the container itself,
+                # find the internal node that produces the terminal output
+                if actual_producer == source:
+                    internal_producer = _find_internal_producer_for_output(
+                        source, value_name, flat_graph, expansion_state
+                    )
+                    if internal_producer:
+                        actual_producer = internal_producer
+                        # Find the internal output name (may differ due to renaming)
+                        internal_outputs = flat_graph.nodes[actual_producer].get("outputs", ())
+                        # Use fuzzy match to find internal output name
+                        internal_value = value_name
+                        for out in internal_outputs:
+                            if out in value_name or value_name in out:
+                                internal_value = out
+                                break
+                        data_node_id = f"data_{actual_producer}_{internal_value}"
+                    else:
+                        data_node_id = f"data_{source}_{value_name}"
+                else:
+                    data_node_id = f"data_{actual_producer}_{value_name}"
             else:
                 data_node_id = f"data_{source}_{value_name}"
 
