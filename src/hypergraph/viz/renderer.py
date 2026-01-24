@@ -93,6 +93,8 @@ def render_graph(
     # For static edges: use visibility-based targets
     param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
     output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
+    input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
+    graph_output_visibility = _build_graph_output_visibility(flat_graph)
     # For JS meta data: use deepest targets (for interactive expand routing)
     param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
     output_to_producer_deepest = _build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
@@ -102,7 +104,7 @@ def render_graph(
     # Create individual INPUT nodes for external inputs
     input_node_map = _create_input_nodes(
         nodes, flat_graph, input_spec, bound_params, theme, show_types,
-        param_to_consumer, expansion_state
+        param_to_consumer, expansion_state, input_groups
     )
 
     # Process each node
@@ -118,10 +120,17 @@ def render_graph(
             node_id, attrs, rf_node_type, is_expanded, parent_id,
             bound_params, theme, show_types, separate_outputs
         )
+        if node_type == "GRAPH" and not separate_outputs:
+            allowed_outputs = graph_output_visibility.get(node_id)
+            if allowed_outputs is not None and "outputs" in rf_node["data"]:
+                rf_node["data"]["outputs"] = [
+                    out for out in rf_node["data"]["outputs"]
+                    if out["name"] in allowed_outputs
+                ]
         nodes.append(rf_node)
 
     # Create DATA nodes for outputs
-    _create_data_nodes(nodes, edges, flat_graph, theme, show_types)
+    _create_data_nodes(nodes, edges, flat_graph, theme, show_types, graph_output_visibility)
 
     # Create edges from INPUT nodes to their actual targets
     _create_input_edges(nodes, edges, input_node_map)
@@ -129,7 +138,7 @@ def render_graph(
     # Pre-compute edges for ALL valid expansion state combinations
     # JavaScript can select the correct edge set based on current expansion state
     edges_by_state, expandable_nodes = _precompute_all_edges(
-        flat_graph, input_spec, show_types, theme
+        flat_graph, input_spec, show_types, theme, input_groups, graph_output_visibility
     )
 
     # Use pre-computed edges for the initial state instead of legacy _create_graph_edges()
@@ -667,26 +676,41 @@ def _is_output_externally_consumed(
         True if output has consumers outside its container, False if internal-only
     """
     source_parent = _get_parent(source_node, flat_graph)
+    source_attrs = flat_graph.nodes.get(source_node, {})
 
     # If source is at root level, output is always externally visible
-    if source_parent is None:
+    # for non-container nodes (final outputs should remain visible).
+    if source_parent is None and source_attrs.get("node_type") != "GRAPH":
         return True
+
+    # For containers, compare against the container's subtree.
+    # For functions, compare against the parent container's subtree.
+    source_container = source_node if source_attrs.get("node_type") == "GRAPH" else source_parent
 
     # Find all consumers of this output
     for node_id, attrs in flat_graph.nodes(data=True):
         if output_param in attrs.get("inputs", ()):
-            consumer_parent = _get_parent(node_id, flat_graph)
-
-            # If consumer is at root level, it's external
-            if consumer_parent is None:
+            # Any consumer outside the container's subtree is external
+            if not _is_descendant_of(node_id, source_container, flat_graph):
                 return True
 
-            # If consumer is in a different container, it's external
-            if consumer_parent != source_parent:
-                return True
-
-    # All consumers are in the same container as source
+    # All consumers are inside the same container subtree as source
     return False
+
+
+def _build_graph_output_visibility(flat_graph: nx.DiGraph) -> dict[str, set[str]]:
+    """Build mapping of GRAPH node -> externally consumed outputs."""
+    visibility: dict[str, set[str]] = {}
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if attrs.get("node_type") != "GRAPH":
+            continue
+        visible_outputs = {
+            output_name
+            for output_name in attrs.get("outputs", ())
+            if _is_output_externally_consumed(output_name, node_id, flat_graph)
+        }
+        visibility[node_id] = visible_outputs
+    return visibility
 
 
 def _group_inputs_by_consumers_and_bound(
@@ -711,6 +735,30 @@ def _group_inputs_by_consumers_and_bound(
         key = (consumers, is_bound)
         groups.setdefault(key, []).append(param)
     return groups
+
+
+def _build_input_groups(
+    input_spec: dict[str, Any],
+    param_to_consumers: dict[str, list[str]],
+    bound_params: set[str],
+) -> list[dict[str, Any]]:
+    """Build stable input groups for rendering and edge routing."""
+    required = input_spec.get("required", ())
+    optional = input_spec.get("optional", ())
+    external_inputs = set(required) | set(optional)
+
+    groups = _group_inputs_by_consumers_and_bound(external_inputs, param_to_consumers, bound_params)
+
+    group_specs: list[dict[str, Any]] = []
+    for (_, is_bound), params in groups.items():
+        group_specs.append({
+            "params": sorted(params),
+            "is_bound": is_bound,
+        })
+
+    # Deterministic ordering based on group id
+    group_specs.sort(key=lambda g: "_".join(g["params"]))
+    return group_specs
 
 
 def _get_param_type(param: str, flat_graph: nx.DiGraph) -> type | None:
@@ -738,6 +786,22 @@ def _get_param_targets(
     return actual_targets
 
 
+def _get_group_targets(
+    params: list[str],
+    flat_graph: nx.DiGraph,
+    param_to_consumers: dict[str, list[str]],
+) -> list[str]:
+    """Get unique target nodes for a group of parameters."""
+    targets: list[str] = []
+    seen: set[str] = set()
+    for param in params:
+        for target in _get_param_targets(param, flat_graph, param_to_consumers):
+            if target not in seen:
+                seen.add(target)
+                targets.append(target)
+    return targets
+
+
 def _create_input_nodes(
     nodes: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
@@ -747,6 +811,7 @@ def _create_input_nodes(
     show_types: bool,
     param_to_consumers: dict[str, list[str]],
     expansion_state: dict[str, bool],
+    input_groups: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     """Create INPUT nodes for external input parameters, grouping where possible.
 
@@ -765,26 +830,22 @@ def _create_input_nodes(
     Returns:
         Dict mapping param_name -> input_node_id for edge creation.
     """
-    required = input_spec.get("required", ())
-    optional = input_spec.get("optional", ())
-    external_inputs = set(required) | set(optional)
-
     input_node_map: dict[str, str] = {}
 
-    # Group params by (frozenset of consumer_ids, is_bound)
-    groups = _group_inputs_by_consumers_and_bound(external_inputs, param_to_consumers, bound_params)
+    if input_groups is None:
+        input_groups = _build_input_groups(input_spec, param_to_consumers, bound_params)
 
     # Create nodes for each group
-    for (consumers, is_bound), params in groups.items():
+    for group in input_groups:
+        params = group["params"]
+        is_bound = group["is_bound"]
         # Sort params for deterministic ordering
-        params = sorted(params)
-
         if len(params) == 1:
             # Single param: create individual INPUT node (existing logic)
             param = params[0]
             input_node_id = f"input_{param}"
             param_type = _get_param_type(param, flat_graph)
-            actual_targets = _get_param_targets(param, flat_graph, param_to_consumers)
+            actual_targets = _get_group_targets([param], flat_graph, param_to_consumers)
             owner_container = _compute_input_scope(param, flat_graph, expansion_state)
             deepest_owner = _compute_deepest_input_scope(param, flat_graph)
 
@@ -812,7 +873,7 @@ def _create_input_nodes(
             # Multiple params: create INPUT_GROUP node
             group_id = f"input_group_{'_'.join(params)}"
             param_types = [_format_type(_get_param_type(p, flat_graph)) for p in params]
-            actual_targets = list(consumers)
+            actual_targets = _get_group_targets(params, flat_graph, param_to_consumers)
 
             # Compute owner container - use the first param (all have same consumers)
             # All params in the group share the same consumers, so they share the same owner
@@ -972,6 +1033,7 @@ def _create_data_nodes(
     flat_graph: nx.DiGraph,
     theme: str,
     show_types: bool,
+    graph_output_visibility: dict[str, set[str]] | None = None,
 ) -> None:
     """Create DATA nodes for all outputs.
 
@@ -982,8 +1044,13 @@ def _create_data_nodes(
     for node_id, attrs in flat_graph.nodes(data=True):
         output_types = attrs.get("output_types", {})
         parent_id = attrs.get("parent")
+        allowed_outputs = None
+        if graph_output_visibility is not None and attrs.get("node_type") == "GRAPH":
+            allowed_outputs = graph_output_visibility.get(node_id, set())
 
         for output_name in attrs.get("outputs", ()):
+            if allowed_outputs is not None and output_name not in allowed_outputs:
+                continue
             data_node_id = f"data_{node_id}_{output_name}"
 
             # Check if this output is consumed externally
@@ -1225,6 +1292,8 @@ def _compute_edges_for_state(
     show_types: bool,
     theme: str,
     separate_outputs: bool = False,
+    input_groups: list[dict[str, Any]] | None = None,
+    graph_output_visibility: dict[str, set[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Compute edges for a specific expansion state.
 
@@ -1244,18 +1313,16 @@ def _compute_edges_for_state(
     # Build param_to_consumers map for this expansion state
     param_to_consumers = _build_param_to_consumer_map(flat_graph, expansion_state)
 
-    required = input_spec.get("required", ())
-    optional = input_spec.get("optional", ())
-    external_inputs = set(required) | set(optional)
     bound_params = set(input_spec.get("bound", {}).keys())
-
-    # Group inputs by (consumers, is_bound)
-    groups = _group_inputs_by_consumers_and_bound(external_inputs, param_to_consumers, bound_params)
+    if input_groups is None:
+        input_groups = _build_input_groups(input_spec, param_to_consumers, bound_params)
 
     # 1. Add edges from INPUT/INPUT_GROUP nodes to their consumers
-    for (consumers, is_bound), params in groups.items():
-        params = sorted(params)
-        actual_targets = list(consumers)
+    for group in input_groups:
+        params = group["params"]
+        actual_targets = _get_group_targets(params, flat_graph, param_to_consumers)
+        if not actual_targets:
+            continue
 
         if len(params) == 1:
             # Single param: use individual INPUT node
@@ -1285,7 +1352,7 @@ def _compute_edges_for_state(
 
     # 2. Add edges between function nodes (based on separate_outputs mode)
     if separate_outputs:
-        _add_separate_output_edges(edges, flat_graph, expansion_state)
+        _add_separate_output_edges(edges, flat_graph, expansion_state, graph_output_visibility)
     else:
         _add_merged_output_edges(edges, flat_graph, expansion_state)
 
@@ -1419,6 +1486,7 @@ def _add_separate_output_edges(
     edges: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    graph_output_visibility: dict[str, set[str]] | None = None,
 ) -> None:
     """Add edges in separate output mode (separateOutputs=true).
 
@@ -1445,7 +1513,13 @@ def _add_separate_output_edges(
         if is_container and is_expanded:
             continue
 
+        allowed_outputs = None
+        if graph_output_visibility is not None and is_container:
+            allowed_outputs = graph_output_visibility.get(node_id, set())
+
         for output_name in attrs.get("outputs", ()):
+            if allowed_outputs is not None and output_name not in allowed_outputs:
+                continue
             data_node_id = f"data_{node_id}_{output_name}"
             edges.append({
                 "id": f"e_{node_id}_to_{data_node_id}",
@@ -1473,6 +1547,10 @@ def _add_separate_output_edges(
             source_attrs = flat_graph.nodes.get(source, {})
             is_source_container = source_attrs.get("node_type") == "GRAPH"
             is_source_expanded = expansion_state.get(source, False)
+            if graph_output_visibility is not None and is_source_container:
+                allowed_outputs = graph_output_visibility.get(source, set())
+                if value_name not in allowed_outputs:
+                    continue
 
             if is_source_container and is_source_expanded:
                 # Reroute through internal producer's DATA node
@@ -1565,6 +1643,8 @@ def _precompute_all_edges(
     input_spec: dict[str, Any],
     show_types: bool,
     theme: str,
+    input_groups: list[dict[str, Any]] | None = None,
+    graph_output_visibility: dict[str, set[str]] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     """Pre-compute edges for all valid expansion state combinations.
 
@@ -1583,10 +1663,24 @@ def _precompute_all_edges(
     if not expandable_nodes:
         # No expandable nodes - generate edges for both sep:0 and sep:1
         edges_merged = _compute_edges_for_state(
-            flat_graph, {}, input_spec, show_types, theme, separate_outputs=False
+            flat_graph,
+            {},
+            input_spec,
+            show_types,
+            theme,
+            separate_outputs=False,
+            input_groups=input_groups,
+            graph_output_visibility=graph_output_visibility,
         )
         edges_separate = _compute_edges_for_state(
-            flat_graph, {}, input_spec, show_types, theme, separate_outputs=True
+            flat_graph,
+            {},
+            input_spec,
+            show_types,
+            theme,
+            separate_outputs=True,
+            input_groups=input_groups,
+            graph_output_visibility=graph_output_visibility,
         )
         return {"sep:0": edges_merged, "sep:1": edges_separate}, []
 
@@ -1599,14 +1693,28 @@ def _precompute_all_edges(
         # Generate edges for merged outputs mode (sep:0)
         key_merged = f"{exp_key}|sep:0"
         edges_merged = _compute_edges_for_state(
-            flat_graph, state, input_spec, show_types, theme, separate_outputs=False
+            flat_graph,
+            state,
+            input_spec,
+            show_types,
+            theme,
+            separate_outputs=False,
+            input_groups=input_groups,
+            graph_output_visibility=graph_output_visibility,
         )
         edges_by_state[key_merged] = edges_merged
 
         # Generate edges for separate outputs mode (sep:1)
         key_separate = f"{exp_key}|sep:1"
         edges_separate = _compute_edges_for_state(
-            flat_graph, state, input_spec, show_types, theme, separate_outputs=True
+            flat_graph,
+            state,
+            input_spec,
+            show_types,
+            theme,
+            separate_outputs=True,
+            input_groups=input_groups,
+            graph_output_visibility=graph_output_visibility,
         )
         edges_by_state[key_separate] = edges_separate
 

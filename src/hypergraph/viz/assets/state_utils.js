@@ -60,8 +60,7 @@
     };
 
     // Helper: check if internal-only DATA node should be hidden
-    // Note: INPUT nodes are NOT filtered here - they stay visible at root level
-    // and are positioned inside containers via layout, not parent-child relationships
+    // Note: INPUT visibility is handled later in applyVisibility.
     var shouldFilterInternalData = function(n) {
       if (!n.data || n.data.nodeType !== 'DATA') return false;
       if (!n.data.internalOnly) return false;
@@ -107,7 +106,7 @@
       return { nodes: nodes, edges: baseEdges };
     } else {
       // Hide DATA nodes (but keep INPUT_GROUP visible), embed outputs in function nodes, remap edges
-      // Note: INPUT nodes are NOT filtered - they stay visible at root level
+      // Note: INPUT visibility is handled later in applyVisibility.
       var nodes = baseNodes
         .filter(function(n) { return !dataNodeIds.has(n.id); })  // Remove DATA nodes only
         .map(function(n) {
@@ -151,9 +150,9 @@
    * Additional scope-aware visibility rules:
    * - DATA nodes with internalOnly: hidden when their parent container is collapsed
    *
-   * Note: INPUT/INPUT_GROUP nodes with ownerContainer are NOT hidden when collapsed.
-   * Instead, they appear at root level and route to the container. When the container
-   * is expanded, layout.js dynamically sets their parentNode to position them inside.
+   * Note: INPUT/INPUT_GROUP nodes with ownerContainer are hidden when their
+   * deepest owner container is collapsed. When expanded, layout.js dynamically
+   * sets their parentNode to position them inside.
    *
    * @param {Array} nodes - Nodes with state applied
    * @param {Map|Object} expansionState - Which pipeline nodes are expanded
@@ -191,8 +190,23 @@
       return !expMap.get(parent);
     };
 
+    var shouldHideOwnedInput = function(n) {
+      if (!n.data) return false;
+      var nodeType = n.data.nodeType;
+      if (nodeType !== 'INPUT' && nodeType !== 'INPUT_GROUP') return false;
+      var owner = n.data.deepestOwnerContainer || n.data.ownerContainer;
+      if (!owner) return false;
+      if (expMap.get(owner) !== true) return true;
+      var current = parentMap.get(owner);
+      while (current) {
+        if (expMap.get(current) === false) return true;
+        current = parentMap.get(current);
+      }
+      return false;
+    };
+
     return nodes.map(function(n) {
-      var hidden = isHiddenByAncestor(n.id) || shouldHideInternalData(n);
+      var hidden = isHiddenByAncestor(n.id) || shouldHideInternalData(n) || shouldHideOwnedInput(n);
       return { ...n, hidden: hidden };
     });
   }
