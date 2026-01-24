@@ -336,21 +336,13 @@
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => {
-      // Use edge-to-edge spacing: spaceY is the visual gap between node edges
-      // Add half of each node's height to get center-to-center separation
-      const sourceHeight = edge.sourceNode.height || 0;
-      const targetHeight = edge.targetNode.height || 0;
-      const separation = layoutConfig.spaceY + (sourceHeight + targetHeight) / 2;
-
-      return {
-        base: rowConstraint,
-        property: layoutConfig.coordSecondary,
-        a: edge.targetNode,
-        b: edge.sourceNode,
-        separation,
-      };
-    });
+    edges.map((edge) => ({
+      base: rowConstraint,
+      property: layoutConfig.coordSecondary,
+      a: edge.targetNode,
+      b: edge.sourceNode,
+      separation: layoutConfig.spaceY,
+    }));
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
