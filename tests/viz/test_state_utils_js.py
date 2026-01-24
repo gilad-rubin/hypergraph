@@ -15,7 +15,7 @@ def test_apply_visibility_hides_internal_data(page):
     """Internal-only DATA nodes should hide when parent container is collapsed."""
     js = STATE_UTILS_PATH.read_text(encoding="utf-8")
     page.set_content(f"<html><head><script>{js}</script></head><body></body></html>")
-    page.wait_for_function("window.HypergraphVizState && window.HypergraphVizState.applyVisibility")
+    assert page.evaluate("Boolean(window.HypergraphVizState && window.HypergraphVizState.applyVisibility)")
 
     hidden = page.evaluate(
         """() => {
@@ -35,7 +35,7 @@ def test_apply_visibility_hides_owned_inputs_when_collapsed(page):
     """Owned INPUT nodes should hide when their container is collapsed."""
     js = STATE_UTILS_PATH.read_text(encoding="utf-8")
     page.set_content(f"<html><head><script>{js}</script></head><body></body></html>")
-    page.wait_for_function("window.HypergraphVizState && window.HypergraphVizState.applyVisibility")
+    assert page.evaluate("Boolean(window.HypergraphVizState && window.HypergraphVizState.applyVisibility)")
 
     hidden = page.evaluate(
         """() => {
@@ -58,7 +58,7 @@ def test_apply_visibility_keeps_owned_inputs_when_expanded(page):
     """Owned INPUT nodes should remain visible when their container is expanded."""
     js = STATE_UTILS_PATH.read_text(encoding="utf-8")
     page.set_content(f"<html><head><script>{js}</script></head><body></body></html>")
-    page.wait_for_function("window.HypergraphVizState && window.HypergraphVizState.applyVisibility")
+    assert page.evaluate("Boolean(window.HypergraphVizState && window.HypergraphVizState.applyVisibility)")
 
     hidden = page.evaluate(
         """() => {
