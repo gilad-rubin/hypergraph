@@ -37,8 +37,6 @@
   var NODE_LABEL_MAX_CHARS = 25;
 
   // Keep RF handle anchors aligned with layout edge points.
-  var HANDLE_SIZE_PX = 8;
-  var HANDLE_CENTER_PX = HANDLE_SIZE_PX / 2;
   var NODE_TYPE_BOTTOM_OFFSETS = {
     PIPELINE: 26,
     GRAPH: 26,
@@ -52,11 +50,13 @@
 
   var getSourceHandleStyle = function(nodeType) {
     var offset = NODE_TYPE_BOTTOM_OFFSETS[nodeType] || DEFAULT_BOTTOM_OFFSET;
-    return { bottom: (offset - HANDLE_CENTER_PX) + 'px' };
+    // React Flow anchors bottom handles at the handle's bottom edge.
+    return { bottom: offset + 'px' };
   };
 
   var getTargetHandleStyle = function() {
-    return { top: (-HANDLE_CENTER_PX) + 'px' };
+    // React Flow anchors top handles at the handle's top edge.
+    return { top: '0px' };
   };
 
   // Helper to truncate type hints consistently
@@ -466,7 +466,7 @@
       var hasTypeHint = showTypes && data.typeHint;
       var displayTypeHint = truncateTypeHint(data.typeHint);
       return html`
-          <div className=${'px-3 py-1.5 w-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
+          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
               (showAsOutput ? ' ring-2 ring-emerald-500/30' : '') +
               (isLight
                   ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
@@ -491,7 +491,7 @@
       var typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
       var displayType = truncateTypeHint(typeHint);
       return html`
-          <div className=${'px-3 py-1.5 w-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
+          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
               (isBound ? ' border-dashed' : '') +
               (isLight
                   ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
@@ -515,7 +515,7 @@
       var typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
 
       return html`
-          <div className=${'px-3 py-2 w-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' +
+          <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' +
               (isBound ? ' border-dashed' : '') +
               (isLight
                   ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
@@ -637,7 +637,7 @@
     var showTypes = data.showTypes;
 
     return html`
-      <div className=${'group relative w-full rounded-lg border shadow-lg backdrop-blur-sm transition-colors transition-shadow duration-200 cursor-pointer node-function-' + theme + ' overflow-hidden' +
+      <div className=${'group relative w-full h-full rounded-lg border shadow-lg backdrop-blur-sm transition-colors transition-shadow duration-200 cursor-pointer node-function-' + theme + ' overflow-hidden' +
            (isLight
              ? ' bg-white/90 border-' + colors.border + '-300 shadow-slate-200 hover:border-' + colors.border + '-400 hover:shadow-' + colors.border + '-200 hover:shadow-lg'
              : ' bg-slate-950/90 border-' + colors.border + '-500/40 shadow-black/50 hover:border-' + colors.border + '-500/70 hover:shadow-' + colors.border + '-500/20 hover:shadow-lg')
