@@ -48,7 +48,7 @@
   };
   var DEFAULT_BOTTOM_OFFSET = 10;
 
-  var HANDLE_ALIGN_NUDGE_PX = 1;
+  var HANDLE_ALIGN_NUDGE_PX = 0;
 
   var getSourceHandleStyle = function(nodeType) {
     var offset = NODE_TYPE_BOTTOM_OFFSETS[nodeType] || DEFAULT_BOTTOM_OFFSET;
@@ -395,6 +395,9 @@
     var nodeType = data.nodeType || 'FUNCTION';
     var sourceHandleStyle = getSourceHandleStyle(nodeType);
     var targetHandleStyle = getTargetHandleStyle();
+    var nodeBottomOffset = NODE_TYPE_BOTTOM_OFFSETS[nodeType] || DEFAULT_BOTTOM_OFFSET;
+    var wrapVisualNode = nodeType !== 'BRANCH' && !(nodeType === 'PIPELINE' && isExpanded);
+    var outerWrapperStyle = wrapVisualNode ? { paddingBottom: nodeBottomOffset + 'px' } : null;
 
     // Debug wrapper
     var DebugWrapper = function(wrapperProps) {
@@ -468,17 +471,19 @@
       var hasTypeHint = showTypes && data.typeHint;
       var displayTypeHint = truncateTypeHint(data.typeHint);
       return html`
-          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
-              (showAsOutput ? ' ring-2 ring-emerald-500/30' : '') +
-              (isLight
-                  ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
-                  : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')
-          }>
-               <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icon} /></span>
-               <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
-               ${hasTypeHint ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${data.typeHint}>: ${displayTypeHint}</span>` : null}
-               <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
-               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
+          <div className="w-full h-full relative" style=${outerWrapperStyle}>
+              <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
+                  (showAsOutput ? ' ring-2 ring-emerald-500/30' : '') +
+                  (isLight
+                      ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
+                      : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')
+              }>
+                   <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icon} /></span>
+                   <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
+                   ${hasTypeHint ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${data.typeHint}>: ${displayTypeHint}</span>` : null}
+              </div>
+              <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
+              <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
       `;
     }
@@ -493,15 +498,17 @@
       var typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
       var displayType = truncateTypeHint(typeHint);
       return html`
-          <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
-              (isBound ? ' border-dashed' : '') +
-              (isLight
-                  ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
-                  : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')
-          }>
-              <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icons.Data} /></span>
-              <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
-              ${hasType ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${typeHint}>: ${displayType}</span>` : null}
+          <div className="w-full h-full relative" style=${outerWrapperStyle}>
+              <div className=${'px-3 py-1.5 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg overflow-hidden' +
+                  (isBound ? ' border-dashed' : '') +
+                  (isLight
+                      ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
+                      : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')
+              }>
+                  <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icons.Data} /></span>
+                  <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
+                  ${hasType ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${typeHint}>: ${displayType}</span>` : null}
+              </div>
               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
       `;
@@ -517,21 +524,23 @@
       var typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
 
       return html`
-          <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' +
-              (isBound ? ' border-dashed' : '') +
-              (isLight
-                  ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
-                  : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')
-          }>
-              ${params.map(function(p, i) {
-                  return html`
-                      <div className="flex items-center gap-2 whitespace-nowrap">
-                          <span className=${isLight ? 'text-slate-400' : 'text-slate-500'}><${Icons.Data} className="w-3 h-3" /></span>
-                          <div className="text-xs font-mono leading-tight">${p}</div>
-                          ${showTypes && paramTypes[i] ? html`<span className=${'text-[10px] font-mono ' + typeClass} title=${paramTypes[i]}>: ${truncateTypeHint(paramTypes[i])}</span>` : null}
-                      </div>
-                  `;
-              })}
+          <div className="w-full h-full relative" style=${outerWrapperStyle}>
+              <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' +
+                  (isBound ? ' border-dashed' : '') +
+                  (isLight
+                      ? ' bg-white border-slate-200 text-slate-700 shadow-slate-200 hover:border-slate-300'
+                      : ' bg-slate-900 border-slate-700 text-slate-300 shadow-black/50 hover:border-slate-600')
+              }>
+                  ${params.map(function(p, i) {
+                      return html`
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                              <span className=${isLight ? 'text-slate-400' : 'text-slate-500'}><${Icons.Data} className="w-3 h-3" /></span>
+                              <div className="text-xs font-mono leading-tight">${p}</div>
+                              ${showTypes && paramTypes[i] ? html`<span className=${'text-[10px] font-mono ' + typeClass} title=${paramTypes[i]}>: ${truncateTypeHint(paramTypes[i])}</span>` : null}
+                          </div>
+                      `;
+                  })}
+              </div>
               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
       `;
@@ -639,38 +648,39 @@
     var showTypes = data.showTypes;
 
     return html`
-      <div className=${'group relative w-full h-full rounded-lg border shadow-lg backdrop-blur-sm transition-colors transition-shadow duration-200 cursor-pointer node-function-' + theme + ' overflow-hidden' +
-           (isLight
-             ? ' bg-white/90 border-' + colors.border + '-300 shadow-slate-200 hover:border-' + colors.border + '-400 hover:shadow-' + colors.border + '-200 hover:shadow-lg'
-             : ' bg-slate-950/90 border-' + colors.border + '-500/40 shadow-black/50 hover:border-' + colors.border + '-500/70 hover:shadow-' + colors.border + '-500/20 hover:shadow-lg')
-           }
-           onClick=${data.nodeType === 'PIPELINE' ? function(e) { e.stopPropagation(); if(data.onToggleExpand) data.onToggleExpand(); } : undefined}>
+      <div className="w-full h-full relative" style=${outerWrapperStyle}>
+        <div className=${'group relative w-full h-full rounded-lg border shadow-lg backdrop-blur-sm transition-colors transition-shadow duration-200 cursor-pointer node-function-' + theme + ' overflow-hidden' +
+             (isLight
+               ? ' bg-white/90 border-' + colors.border + '-300 shadow-slate-200 hover:border-' + colors.border + '-400 hover:shadow-' + colors.border + '-200 hover:shadow-lg'
+               : ' bg-slate-950/90 border-' + colors.border + '-500/40 shadow-black/50 hover:border-' + colors.border + '-500/70 hover:shadow-' + colors.border + '-500/20 hover:shadow-lg')
+             }
+             onClick=${data.nodeType === 'PIPELINE' ? function(e) { e.stopPropagation(); if(data.onToggleExpand) data.onToggleExpand(); } : undefined}>
 
-        <div className=${'px-3 py-2.5 flex flex-col items-center justify-center' +
-             (showCombined ? (isLight ? ' border-b border-slate-100' : ' border-b border-slate-800/50') : '')}>
-          <div className=${'text-sm font-semibold truncate max-w-full text-center' +
-               (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>${truncateLabel(data.label)}</div>
+          <div className=${'px-3 py-2.5 flex flex-col items-center justify-center' +
+               (showCombined ? (isLight ? ' border-b border-slate-100' : ' border-b border-slate-800/50') : '')}>
+            <div className=${'text-sm font-semibold truncate max-w-full text-center' +
+                 (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>${truncateLabel(data.label)}</div>
 
-          ${boundInputs > 0 ? html`
-              <div className=${'absolute top-2 right-2 w-2 h-2 rounded-full ring-2 ring-offset-1' +
-                  (isLight
-                      ? ' bg-indigo-400 ring-indigo-100 ring-offset-white'
-                      : ' bg-indigo-500 ring-indigo-500/30 ring-offset-slate-950')}
-                   title="${boundInputs} bound inputs">
-            </div>
+            ${boundInputs > 0 ? html`
+                <div className=${'absolute top-2 right-2 w-2 h-2 rounded-full ring-2 ring-offset-1' +
+                    (isLight
+                        ? ' bg-indigo-400 ring-indigo-100 ring-offset-white'
+                        : ' bg-indigo-500 ring-indigo-500/30 ring-offset-slate-950')}
+                     title="${boundInputs} bound inputs">
+              </div>
+            ` : null}
+          </div>
+
+          ${showCombined ? html`<${OutputsSection} outputs=${outputs} showTypes=${showTypes} isLight=${isLight} />` : null}
+
+          ${data.nodeType === 'PIPELINE' ? html`
+             <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+               Click to expand
+             </div>
           ` : null}
         </div>
-
-        ${showCombined ? html`<${OutputsSection} outputs=${outputs} showTypes=${showTypes} isLight=${isLight} />` : null}
-
         <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
         <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
-
-        ${data.nodeType === 'PIPELINE' ? html`
-           <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-             Click to expand
-           </div>
-        ` : null}
       </div>
     `;
   };
