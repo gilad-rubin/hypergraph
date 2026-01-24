@@ -334,9 +334,73 @@
       expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, denseRowScale);
     }
 
+    // Pull leaf source nodes (like INPUT nodes) closer to their targets
+    // The constraint solver only ensures they're ABOVE their targets,
+    // not that they're CLOSE to them
+    pullLeafNodesToTargets(nodes, edges, spaceY, orientation);
+
     // Fix overlapping nodes that the constraint solver missed
     // (nodes not connected by edges can end up overlapping)
     fixOverlappingNodes(nodes, spaceY, orientation);
+  };
+
+  /**
+   * Pull leaf source nodes down to be just above their targets.
+   * Leaf nodes (no incoming edges) can float too high because the constraint
+   * solver only ensures minimum separation, not proximity.
+   */
+  const pullLeafNodesToTargets = (nodes, edges, minGap, orientation) => {
+    const coordSecondary = orientation === 'vertical' ? 'y' : 'x';
+    const sizeSecondary = orientation === 'vertical' ? 'height' : 'width';
+
+    // Find leaf source nodes (nodes with outgoing edges but no incoming edges)
+    const hasIncoming = new Set();
+    const hasOutgoing = new Set();
+    for (const edge of edges) {
+      if (edge.sourceNode) hasOutgoing.add(edge.sourceNode.id);
+      if (edge.targetNode) hasIncoming.add(edge.targetNode.id);
+    }
+
+    const leafNodes = nodes.filter(n => hasOutgoing.has(n.id) && !hasIncoming.has(n.id));
+
+    // Build a map for quick lookup
+    const nodeById = {};
+    for (const node of nodes) {
+      nodeById[node.id] = node;
+    }
+
+    for (const leaf of leafNodes) {
+      // Find the target with the smallest Y (highest position in vertical layout)
+      // that this leaf connects to
+      let minTargetY = Infinity;
+      let targetNode = null;
+
+      for (const edge of edges) {
+        if (edge.sourceNode && edge.sourceNode.id === leaf.id && edge.targetNode) {
+          const targetY = edge.targetNode[coordSecondary];
+          if (targetY < minTargetY) {
+            minTargetY = targetY;
+            targetNode = edge.targetNode;
+          }
+        }
+      }
+
+      if (!targetNode) continue;
+
+      // Calculate ideal position: leaf bottom should be minGap above target top
+      // In center coordinates:
+      // leafCenter + leafHeight/2 + minGap = targetCenter - targetHeight/2
+      // leafCenter = targetCenter - targetHeight/2 - minGap - leafHeight/2
+      const targetHeight = targetNode[sizeSecondary];
+      const leafHeight = leaf[sizeSecondary];
+      const idealLeafCenter = minTargetY - targetHeight / 2 - minGap - leafHeight / 2;
+
+      // Only move down (increase Y), never up
+      const currentCenter = leaf[coordSecondary];
+      if (idealLeafCenter > currentCenter) {
+        leaf[coordSecondary] = idealLeafCenter;
+      }
+    }
   };
 
   /**
