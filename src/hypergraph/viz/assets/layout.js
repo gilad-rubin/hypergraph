@@ -896,6 +896,12 @@
     // Get node_to_parent for re-routing edges when containers collapse
     var nodeToParent = (routingData && routingData.node_to_parent) || {};
 
+    if (debugMode) {
+      console.log('[Step 4 SETUP] routingData:', !!routingData,
+        'node_to_parent keys:', Object.keys(nodeToParent),
+        'compute_recall parent:', nodeToParent['compute_recall']);
+    }
+
     // Helper to find the first visible ancestor for a node
     function findVisibleAncestor(nodeId) {
       var current = nodeId;
@@ -926,19 +932,46 @@
       var valueName = e.data && e.data.valueName;
       if (valueName && outputToProducer[valueName]) {
         var actualProducer = outputToProducer[valueName];
-        // Try to find the DATA node for the actual producer
-        var actualDataNodeId = 'data_' + actualProducer + '_' + valueName;
 
-        if (nodePositions.has(actualDataNodeId) && nodeDimensions.has(actualDataNodeId)) {
-          // Use the actual data node position
-          actualSrc = actualDataNodeId;
-          actualSrcPos = nodePositions.get(actualDataNodeId);
-          actualSrcDims = nodeDimensions.get(actualDataNodeId);
-        } else if (nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer)) {
-          // Fall back to the producer function node (edge starts from its bottom)
-          actualSrc = actualProducer;
-          actualSrcPos = nodePositions.get(actualProducer);
-          actualSrcDims = nodeDimensions.get(actualProducer);
+        // Check if actualProducer is an ANCESTOR of e.source
+        // This happens with with_outputs renaming: output_to_producer maps the external name
+        // to the container, but Python already set source to the correct internal producer.
+        // We should only re-route FROM containers TO internal nodes, not the reverse.
+        var actualProducerIsAncestor = false;
+        if (nodeToParent) {
+          var current = e.source;
+          while (current && nodeToParent[current]) {
+            if (nodeToParent[current] === actualProducer) {
+              actualProducerIsAncestor = true;
+              break;
+            }
+            current = nodeToParent[current];
+          }
+        }
+
+        if (debugMode) {
+          console.log('[Step 4 DEBUG] Edge:', e.source, '->', e.target,
+            'valueName:', valueName, 'actualProducer:', actualProducer,
+            'actualProducerIsAncestor:', actualProducerIsAncestor,
+            'nodeToParent[e.source]:', nodeToParent[e.source]);
+        }
+
+        // Only use actualProducer if it's not an ancestor of the current source
+        if (!actualProducerIsAncestor) {
+          // Try to find the DATA node for the actual producer
+          var actualDataNodeId = 'data_' + actualProducer + '_' + valueName;
+
+          if (nodePositions.has(actualDataNodeId) && nodeDimensions.has(actualDataNodeId)) {
+            // Use the actual data node position
+            actualSrc = actualDataNodeId;
+            actualSrcPos = nodePositions.get(actualDataNodeId);
+            actualSrcDims = nodeDimensions.get(actualDataNodeId);
+          } else if (nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer)) {
+            // Fall back to the producer function node (edge starts from its bottom)
+            actualSrc = actualProducer;
+            actualSrcPos = nodePositions.get(actualProducer);
+            actualSrcDims = nodeDimensions.get(actualProducer);
+          }
         }
       }
 
@@ -1039,7 +1072,25 @@
       // BUT: Skip re-routing if source is already a DATA node (starts with "data_")
       // Pre-computed edges for separateOutputs=true already have correct DATA node sources
       var sourceIsDataNode = e.source && e.source.startsWith('data_');
-      var needsStartReroute = !sourceIsDataNode && actualProducer && actualProducer !== e.source &&
+
+      // Also skip re-routing if actualProducer is a PARENT/CONTAINER of e.source
+      // This happens with with_outputs renaming: output_to_producer maps the external name
+      // to the container, but Python already set source to the correct internal producer.
+      // We should only re-route FROM containers TO internal nodes, not the reverse.
+      var actualProducerIsAncestor = false;
+      if (actualProducer && nodeToParent) {
+        var current = e.source;
+        while (current && nodeToParent[current]) {
+          if (nodeToParent[current] === actualProducer) {
+            actualProducerIsAncestor = true;
+            break;
+          }
+          current = nodeToParent[current];
+        }
+      }
+
+      var needsStartReroute = !sourceIsDataNode && !actualProducerIsAncestor &&
+        actualProducer && actualProducer !== e.source &&
         nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer);
 
       // Check if we need to re-route the target for INPUT edges

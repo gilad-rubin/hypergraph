@@ -318,7 +318,7 @@
               }}
               className="px-1.5 py-0.5 rounded bg-slate-900/95 border border-slate-600 text-[8px] text-slate-300 font-mono whitespace-nowrap"
             >
-              S:(${Math.round(sourceX)},${Math.round(sourceY)}) T:(${Math.round(targetX)},${Math.round(targetY)})
+              RF:(${Math.round(sourceX)},${Math.round(sourceY)}) Pts:(${Math.round(startPt.x)},${Math.round(startPt.y)})
             </div>
           <//>
         ` : null}
