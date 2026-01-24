@@ -336,13 +336,28 @@
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => ({
-      base: rowConstraint,
-      property: layoutConfig.coordSecondary,
-      a: edge.targetNode,
-      b: edge.sourceNode,
-      separation: layoutConfig.spaceY,
-    }));
+    edges.map((edge) => {
+      const sourceHeight = edge.sourceNode.height || 0;
+      const targetHeight = edge.targetNode.height || 0;
+
+      // Calculate what visual gap would be with default center-to-center separation
+      const defaultVisualGap = layoutConfig.spaceY - (sourceHeight + targetHeight) / 2;
+
+      // Only increase separation if visual gap would be too small
+      // This preserves original behavior for typical nodes, only fixes edge cases
+      const MIN_VISUAL_GAP = 60;
+      const separation = defaultVisualGap < MIN_VISUAL_GAP
+        ? MIN_VISUAL_GAP + (sourceHeight + targetHeight) / 2
+        : layoutConfig.spaceY;
+
+      return {
+        base: rowConstraint,
+        property: layoutConfig.coordSecondary,
+        a: edge.targetNode,
+        b: edge.sourceNode,
+        separation,
+      };
+    });
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];

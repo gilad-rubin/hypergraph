@@ -237,13 +237,13 @@
           };
         });
 
-        // Run constraint layout with consistent spacing for all modes
+        // Run constraint layout with appropriate spacing
         var result = ConstraintLayout.graph(
           layoutNodes,
           layoutEdges,
           null,
           'vertical',
-          ConstraintLayout.defaultOptions
+          getLayoutOptions(layoutNodes)
         );
 
         if (debugMode) console.log('[useLayout] layout result:', result);
@@ -381,6 +381,22 @@
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
   }
 
+  // Get layout options based on whether DATA nodes are present (separate_outputs mode)
+  function getLayoutOptions(layoutNodes) {
+    var hasDATANodes = layoutNodes.some(function(n) {
+      return n.data && n.data.nodeType === 'DATA';
+    });
+    return hasDATANodes
+      ? {
+          ...ConstraintLayout.defaultOptions,
+          layout: {
+            ...ConstraintLayout.defaultOptions.layout,
+            spaceY: 94,  // Target ~60px visual gap for small nodes
+          },
+        }
+      : ConstraintLayout.defaultOptions;
+  }
+
   function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData) {
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
@@ -476,13 +492,13 @@
         return { id: e.id, source: e.source, target: e.target, _original: e._original || e };
       });
 
-      // Run layout for children with consistent spacing
+      // Run layout for children with appropriate spacing
       var childResult = ConstraintLayout.graph(
         childLayoutNodes,
         childLayoutEdges,
         null,
         'vertical',
-        ConstraintLayout.defaultOptions
+        getLayoutOptions(childLayoutNodes)
       );
 
       // Post-layout correction for tall nodes within nested graph
@@ -612,13 +628,13 @@
     // rootEdges already has the lifted structure we need
     var rootLayoutEdges = rootEdges;
 
-    // Run root layout with consistent spacing
+    // Run root layout with appropriate spacing
     var rootResult = ConstraintLayout.graph(
       rootLayoutNodes,
       rootLayoutEdges,
       null,
       'vertical',
-      ConstraintLayout.defaultOptions
+      getLayoutOptions(rootLayoutNodes)
     );
 
     if (debugMode) {
