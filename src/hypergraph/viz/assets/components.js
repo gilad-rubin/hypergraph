@@ -48,15 +48,17 @@
   };
   var DEFAULT_BOTTOM_OFFSET = 10;
 
+  var HANDLE_ALIGN_NUDGE_PX = 1;
+
   var getSourceHandleStyle = function(nodeType) {
     var offset = NODE_TYPE_BOTTOM_OFFSETS[nodeType] || DEFAULT_BOTTOM_OFFSET;
     // React Flow anchors bottom handles at the handle's bottom edge.
-    return { bottom: offset + 'px' };
+    return { bottom: (offset - HANDLE_ALIGN_NUDGE_PX) + 'px' };
   };
 
   var getTargetHandleStyle = function() {
     // React Flow anchors top handles at the handle's top edge.
-    return { top: '0px' };
+    return { top: HANDLE_ALIGN_NUDGE_PX + 'px' };
   };
 
   // Helper to truncate type hints consistently
