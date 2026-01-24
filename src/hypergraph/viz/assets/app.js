@@ -76,7 +76,10 @@
   };
   var DEFAULT_OFFSET = 10;
 
-  function getNodeTypeOffset(nodeType) {
+  function getNodeTypeOffset(nodeType, isExpanded) {
+    if (nodeType === 'PIPELINE' && !isExpanded) {
+      nodeType = 'FUNCTION';
+    }
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
   }
 
@@ -1187,6 +1190,7 @@
           width: n.style && n.style.width || 200,
           height: rawHeight,
           nodeType: n.data && n.data.nodeType,
+          isExpanded: n.data && n.data.isExpanded,
           label: (n.data && n.data.label) || n.id,
         };
       });
@@ -1352,7 +1356,7 @@
         nodes: Object.keys(nodePositionMap).map(function(id) {
           var n = nodePositionMap[id];
           // Default to FUNCTION when nodeType is undefined (matches constraint-layout.js)
-          var offset = getNodeTypeOffset(n.nodeType || 'FUNCTION');
+          var offset = getNodeTypeOffset(n.nodeType || 'FUNCTION', n.isExpanded);
           var visibleHeight = n.height - offset;
           return {
             id: id,

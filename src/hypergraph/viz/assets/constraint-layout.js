@@ -55,7 +55,10 @@
 
   // Get visible bottom of node (accounts for wrapper/content offset)
   const nodeVisibleBottom = (node) => {
-    const nodeType = node.data?.nodeType || 'FUNCTION';
+    let nodeType = node.data?.nodeType || 'FUNCTION';
+    if (nodeType === 'PIPELINE' && !node.data?.isExpanded) {
+      nodeType = 'FUNCTION';
+    }
     const offset = NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
     return nodeBottom(node) - offset;
   };

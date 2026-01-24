@@ -83,7 +83,7 @@
         });
       }
       width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
-      height = 52;
+      height = 56;
       if (n.data && !n.data.separateOutputs && outputs.length > 0) {
         height = 48 + 42 + ((outputs.length - 1) * 28);
       }
@@ -407,7 +407,11 @@
     // Calculate base dimensions and track types for all nodes
     visibleNodes.forEach(function(n) {
       nodeDimensions.set(n.id, calculateDimensions(n));
-      nodeTypes.set(n.id, n.data?.nodeType || 'FUNCTION');
+      var nodeType = n.data?.nodeType || 'FUNCTION';
+      if (nodeType === 'PIPELINE' && !n.data?.isExpanded) {
+        nodeType = 'FUNCTION';
+      }
+      nodeTypes.set(n.id, nodeType);
     });
 
     // Build a set of INPUT/INPUT_GROUP node IDs that are "owned" by expanded containers

@@ -393,9 +393,10 @@
     var updateNodeInternals = useUpdateNodeInternals();
     var showDebug = data.debugMode || root.__hypergraph_debug_overlays;
     var nodeType = data.nodeType || 'FUNCTION';
-    var sourceHandleStyle = getSourceHandleStyle(nodeType);
+    var visualNodeType = (nodeType === 'PIPELINE' && !isExpanded) ? 'FUNCTION' : nodeType;
+    var sourceHandleStyle = getSourceHandleStyle(visualNodeType);
     var targetHandleStyle = getTargetHandleStyle();
-    var nodeBottomOffset = NODE_TYPE_BOTTOM_OFFSETS[nodeType] || DEFAULT_BOTTOM_OFFSET;
+    var nodeBottomOffset = NODE_TYPE_BOTTOM_OFFSETS[visualNodeType] || DEFAULT_BOTTOM_OFFSET;
     var wrapVisualNode = nodeType !== 'BRANCH' && !(nodeType === 'PIPELINE' && isExpanded);
     var outerWrapperStyle = wrapVisualNode ? { paddingBottom: nodeBottomOffset + 'px' } : null;
 

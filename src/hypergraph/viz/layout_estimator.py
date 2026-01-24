@@ -40,7 +40,7 @@ class LayoutEstimator:
 
     # Node heights
     DATA_NODE_HEIGHT = 36
-    FUNCTION_NODE_HEIGHT = 52
+    FUNCTION_NODE_HEIGHT = 56
     OUTPUT_ROW_HEIGHT = 24  # Height per output in function node
 
     # INPUT_GROUP sizing
