@@ -79,7 +79,107 @@ const naturalX = source.x + (target.x - source.x) * 0.5;
 - B-spline overshoots trying to smoothly connect offset stems
 - Solution: Keep stems centered, add intermediate waypoints for fanning
 
+## Node Layout Constraints
+
+The layout uses a constraint-based solver (kiwi.js/Cassowary) with several constraint types:
+
+### Constraint Types
+
+| Constraint | Purpose | Created By |
+|------------|---------|------------|
+| **rowConstraint** | Vertical separation between connected nodes | `createRowConstraints()` |
+| **layerConstraint** | Vertical ordering for layer groups | `createLayerConstraints()` |
+| **parallelConstraint** | Align sources horizontally with targets | `createParallelConstraints()` |
+| **crossingConstraint** | Minimize edge crossings | `createCrossingConstraints()` |
+| **separationConstraint** | Horizontal spacing within same row | `createSeparationConstraints()` |
+| **sharedTargetConstraint** | Horizontal spacing between sources sharing a target | `createSharedTargetConstraints()` |
+
+### Layout Flow
+
+```
+1. createRowConstraints     → vertical edge separation
+2. createLayerConstraints   → layer ordering (if layers exist)
+3. solveStrict              → apply row + layer constraints
+4. groupByRow               → group nodes by Y position
+5. createCrossingConstraints → edge crossing minimization
+6. createParallelConstraints → align sources with targets
+7. solveLoose (iterations)  → apply crossing + parallel
+8. createSeparationConstraints → same-row horizontal spacing
+9. createSharedTargetConstraints → multi-source horizontal spacing
+10. solveStrict             → apply separation + shared-target + parallel
+```
+
+### MIN_VISUAL_GAP Enforcement
+
+The `createRowConstraints` function ensures minimum visual gaps between nodes:
+
+```javascript
+const createRowConstraints = (edges, layoutConfig) =>
+  edges.map((edge) => {
+    const sourceHeight = edge.sourceNode.height || 0;
+    const targetHeight = edge.targetNode.height || 0;
+
+    // Calculate what visual gap would be with default center-to-center
+    const defaultVisualGap = layoutConfig.spaceY - (sourceHeight + targetHeight) / 2;
+
+    // Only increase separation if gap would be too small
+    const MIN_VISUAL_GAP = 60;
+    const separation = defaultVisualGap < MIN_VISUAL_GAP
+      ? MIN_VISUAL_GAP + (sourceHeight + targetHeight) / 2
+      : layoutConfig.spaceY;
+    // ...
+  });
+```
+
+**Why**: The default `spaceY` (140px) is center-to-center spacing. For tall nodes (BRANCH ~130px, PIPELINE varies), the visual gap could be tiny or negative. MIN_VISUAL_GAP ensures at least 60px edge-to-edge.
+
+### Shared Target Constraints (Overlap Prevention)
+
+When multiple INPUT nodes feed the same target, `parallelConstraints` pull them all toward the same X position, causing vertical overlap. The `createSharedTargetConstraints` function prevents this:
+
+```javascript
+const createSharedTargetConstraints = (edges, layoutConfig) => {
+  // Group edges by target node
+  const sourcesByTarget = {};
+  for (const edge of edges) {
+    const targetId = edge.targetNode.id;
+    if (!sourcesByTarget[targetId]) sourcesByTarget[targetId] = [];
+    if (!sourcesByTarget[targetId].includes(edge.sourceNode)) {
+      sourcesByTarget[targetId].push(edge.sourceNode);
+    }
+  }
+
+  // For each target with multiple sources, add separation constraints
+  for (const targetId in sourcesByTarget) {
+    const sources = sourcesByTarget[targetId];
+    if (sources.length < 2) continue;
+
+    sources.sort((a, b) => a[coordPrimary] - b[coordPrimary]);
+
+    for (let i = 0; i < sources.length - 1; i++) {
+      const separation = nodeA.width * 0.5 + spaceX * 0.5 + nodeB.width * 0.5;
+      constraints.push({
+        base: separationConstraint,
+        property: coordPrimary,
+        a: sources[i],
+        b: sources[i + 1],
+        separation,
+      });
+    }
+  }
+  return constraints;
+};
+```
+
+**Why it works**: The solver balances parallel constraints (centering) with separation constraints (spacing). Sources end up horizontally spread while staying centered around the target.
+
+**Test**: `test_multiple_inputs_same_target_horizontal_spread` validates this behavior.
+
 ## Common Issues and Fixes
+
+### "INPUT nodes overlapping vertically"
+- **Cause**: Multiple sources to same target get pulled to same X by parallelConstraints
+- **Fix**: `createSharedTargetConstraints()` adds horizontal separation between sources sharing a target
 
 ### "Narrow funnel then sudden widening"
 - **Cause**: Small `sourceOffsetX` in corridor routing kept edges bundled
@@ -727,9 +827,10 @@ assert edge_after['target'] == 'embed_sentences_internal'
 
 ## File Locations
 
-- **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 530)
-- **Routing config**: `assets/constraint-layout.js` (layoutConfig ~line 820)
-- **Bounds calculation**: `assets/constraint-layout.js` (bounds function ~line 848)
+- **Layout constraints**: `assets/constraint-layout.js` (createRowConstraints, createSharedTargetConstraints ~line 338-557)
+- **Edge routing logic**: `assets/constraint-layout.js` (routing function ~line 630)
+- **Routing config**: `assets/constraint-layout.js` (layoutConfig ~line 920)
+- **Bounds calculation**: `assets/constraint-layout.js` (bounds function ~line 960)
 - **Edge rendering**: `html_generator.py` (CustomEdge component ~line 652)
 - **Edge styling**: `html_generator.py` (edgeOptions ~line 2058)
 - **Centering logic**: `html_generator.py` (fitWithFixedPadding ~line 1764)
