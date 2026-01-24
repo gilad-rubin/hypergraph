@@ -410,9 +410,30 @@
       nodeTypes.set(n.id, n.data?.nodeType || 'FUNCTION');
     });
 
+    // Build a set of INPUT node IDs that are "owned" by expanded containers
+    // These should be laid out INSIDE their ownerContainer, not at root level
+    var inputNodesInContainers = new Map();  // inputNodeId -> ownerContainer
+    visibleNodes.forEach(function(n) {
+      if (n.data && n.data.nodeType === 'INPUT' && n.data.ownerContainer) {
+        var ownerId = n.data.ownerContainer;
+        // Only include if owner container is expanded
+        if (expansionState.get(ownerId)) {
+          inputNodesInContainers.set(n.id, ownerId);
+        }
+      }
+    });
+
     // Step 1: Layout children bottom-up (deepest expanded graphs first)
     layoutOrder.forEach(function(graphNode) {
       var children = nodeGroups.get(graphNode.id) || [];
+
+      // Also include INPUT nodes that have ownerContainer === this container
+      visibleNodes.forEach(function(n) {
+        if (inputNodesInContainers.get(n.id) === graphNode.id) {
+          children.push(n);
+        }
+      });
+
       if (children.length === 0) return;
 
       var childIds = new Set(children.map(function(c) { return c.id; }));
@@ -548,7 +569,10 @@
     });
 
     // Step 2: Layout root level nodes
-    var rootNodes = nodeGroups.get(null) || [];
+    // Exclude INPUT nodes that are inside expanded containers (they're laid out with their container)
+    var rootNodes = (nodeGroups.get(null) || []).filter(function(n) {
+      return !inputNodesInContainers.has(n.id);
+    });
     var rootNodeIds = new Set(rootNodes.map(function(n) { return n.id; }));
 
     if (debugMode) {
@@ -566,6 +590,17 @@
 
     visibleNodes.forEach(function(n) {
       if (rootNodeIds.has(n.id)) return; // Already root-level
+
+      // For INPUT nodes with ownerContainer, map them to their owner
+      // (they don't have parentNode but should be treated as container children)
+      if (inputNodesInContainers.has(n.id)) {
+        var ownerId = inputNodesInContainers.get(n.id);
+        // The owner container should be a root-level node
+        if (rootNodeIds.has(ownerId)) {
+          childToRootAncestor.set(n.id, ownerId);
+        }
+        return;
+      }
 
       // Walk up to find root-level ancestor
       var current = n;
@@ -756,8 +791,16 @@
           console.log('[recursive layout] child', n.id, 'position:', { x: childX, y: childY + HEADER_HEIGHT }, 'parentNode:', n._original.parentNode);
         }
 
+        // For INPUT nodes with ownerContainer, we need to set parentNode so React Flow
+        // positions them relative to the container (they don't have parentNode by default)
+        var nodeWithParent = { ...n._original };
+        if (inputNodesInContainers.has(n.id)) {
+          nodeWithParent.parentNode = inputNodesInContainers.get(n.id);
+          nodeWithParent.extent = 'parent';  // Constrain to parent bounds
+        }
+
         allPositionedNodes.push({
-          ...n._original,
+          ...nodeWithParent,
           // React Flow child positions are relative to parent's top-left corner
           // childX/childY already include GRAPH_PADDING adjustment
           position: {
@@ -766,7 +809,7 @@
           },
           width: w,
           height: h,
-          style: { ...n._original.style, width: w, height: h },
+          style: { ...nodeWithParent.style, width: w, height: h },
           handles: [
             { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
             { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },

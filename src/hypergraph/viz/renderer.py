@@ -325,6 +325,186 @@ def _is_node_expanded(
     return depth > nesting_level
 
 
+# =============================================================================
+# Scope Analysis for INPUT/OUTPUT Visibility
+# =============================================================================
+
+
+def _get_deepest_consumers(param: str, flat_graph: nx.DiGraph) -> list[str]:
+    """Get the deepest (non-container) consumers of a parameter.
+
+    When a container (GRAPH node) and its internal nodes both list a parameter
+    as an input, we return only the internal nodes - they are the "actual"
+    consumers. This filters out containers that merely pass through inputs.
+
+    Args:
+        param: Parameter name to find consumers for
+        flat_graph: The flattened graph
+
+    Returns:
+        List of node IDs that actually consume this parameter
+    """
+    all_consumers = []
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if param in attrs.get("inputs", ()):
+            all_consumers.append(node_id)
+
+    if len(all_consumers) <= 1:
+        return all_consumers
+
+    # Filter out containers that have deeper consumers
+    # A container is "superseded" if any of its descendants also consume this param
+    filtered = []
+    for consumer in all_consumers:
+        is_superseded = False
+        for other in all_consumers:
+            if other == consumer:
+                continue
+            # Check if 'other' is inside 'consumer' (consumer is an ancestor of other)
+            if _is_descendant_of(other, consumer, flat_graph):
+                is_superseded = True
+                break
+        if not is_superseded:
+            filtered.append(consumer)
+
+    return filtered
+
+
+def _get_ancestor_chain(node_id: str, flat_graph: nx.DiGraph) -> list[str]:
+    """Get the chain of container ancestors for a node, from immediate to root.
+
+    Args:
+        node_id: The node to get ancestors for
+        flat_graph: The flattened graph
+
+    Returns:
+        List of container IDs from immediate parent to root.
+        Empty list if node is at root level.
+    """
+    ancestors = []
+    current = node_id
+    while current is not None:
+        parent = _get_parent(current, flat_graph)
+        if parent is not None:
+            ancestors.append(parent)
+        current = parent
+    return ancestors
+
+
+def _find_deepest_common_container(ancestor_chains: list[list[str]]) -> str | None:
+    """Find the deepest common container across all ancestor chains.
+
+    Args:
+        ancestor_chains: List of ancestor chains (each from immediate to root)
+
+    Returns:
+        The deepest container that appears in ALL chains, or None if no common
+        container (i.e., some nodes are at root level or in different subtrees).
+    """
+    if not ancestor_chains:
+        return None
+
+    # If any chain is empty, at least one consumer is at root level
+    if any(not chain for chain in ancestor_chains):
+        return None
+
+    # Find the deepest common ancestor
+    # Start with the first chain's containers (from deepest to root)
+    first_chain = ancestor_chains[0]
+
+    for container in first_chain:
+        # Check if this container is in all other chains
+        if all(container in chain for chain in ancestor_chains[1:]):
+            return container
+
+    return None
+
+
+def _compute_input_scope(
+    param: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> str | None:
+    """Determine which container (if any) should own this INPUT node.
+
+    An INPUT should be placed inside a container if:
+    1. ALL its actual (non-container) consumers are inside that container
+    2. The container is expanded (so the INPUT would be visible)
+
+    Args:
+        param: Parameter name
+        flat_graph: The flattened graph
+        expansion_state: Map of container_id -> is_expanded
+
+    Returns:
+        None - INPUT should be at root (consumers at root or in multiple containers)
+        container_id - INPUT should be inside this container
+    """
+    # Get actual consumers (filtering out containers that pass through inputs)
+    consumers = _get_deepest_consumers(param, flat_graph)
+
+    if not consumers:
+        return None
+
+    # Get ancestor chains for all consumers
+    ancestor_chains = [_get_ancestor_chain(c, flat_graph) for c in consumers]
+
+    # Find the deepest common container
+    owner_container = _find_deepest_common_container(ancestor_chains)
+
+    if owner_container is None:
+        return None
+
+    # Only assign ownership if the container is expanded
+    # (if collapsed, the INPUT should stay at root to be visible)
+    if not expansion_state.get(owner_container, False):
+        return None
+
+    return owner_container
+
+
+def _is_output_externally_consumed(
+    output_param: str,
+    source_node: str,
+    flat_graph: nx.DiGraph,
+) -> bool:
+    """Check if an output is consumed by any node outside its source's container.
+
+    An output is "externally consumed" if:
+    1. Its source is at root level (always externally visible)
+    2. Any consumer is at root level or in a different container
+
+    Args:
+        output_param: The output parameter name
+        source_node: The node that produces this output
+        flat_graph: The flattened graph
+
+    Returns:
+        True if output has consumers outside its container, False if internal-only
+    """
+    source_parent = _get_parent(source_node, flat_graph)
+
+    # If source is at root level, output is always externally visible
+    if source_parent is None:
+        return True
+
+    # Find all consumers of this output
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if output_param in attrs.get("inputs", ()):
+            consumer_parent = _get_parent(node_id, flat_graph)
+
+            # If consumer is at root level, it's external
+            if consumer_parent is None:
+                return True
+
+            # If consumer is in a different container, it's external
+            if consumer_parent != source_parent:
+                return True
+
+    # All consumers are in the same container as source
+    return False
+
+
 def _create_input_nodes(
     nodes: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
@@ -336,6 +516,11 @@ def _create_input_nodes(
     expansion_state: dict[str, bool],
 ) -> dict[str, str]:
     """Create individual INPUT nodes for each external input parameter.
+
+    INPUT nodes are placed based on scope analysis:
+    - If ALL consumers are inside a single expanded container, the INPUT is
+      placed inside that container (with parentNode set)
+    - Otherwise, the INPUT stays at root level
 
     Returns:
         Dict mapping param_name -> input_node_id for edge creation.
@@ -367,7 +552,13 @@ def _create_input_nodes(
                     actual_targets = [_get_root_ancestor(node_id, flat_graph)]
                     break
 
-        nodes.append({
+        # Compute scope: which container (if any) should own this INPUT
+        # Note: ownerContainer is used for layout positioning hints and edge routing,
+        # NOT for parent-child visibility. INPUTs always stay at root level but
+        # can be positioned inside expanded containers by the layout algorithm.
+        owner_container = _compute_input_scope(param, flat_graph, expansion_state)
+
+        input_node: dict[str, Any] = {
             "id": input_node_id,
             "type": "custom",
             "position": {"x": 0, "y": 0},
@@ -379,11 +570,17 @@ def _create_input_nodes(
                 "actualTargets": actual_targets,  # List of targets for edges
                 "theme": theme,
                 "showTypes": show_types,
+                "ownerContainer": owner_container,  # For layout positioning hints
             },
             "sourcePosition": "bottom",
             "targetPosition": "top",
-        })
+        }
 
+        # Note: We do NOT set parentNode on INPUT nodes. They stay at root level
+        # and are positioned via layout. This ensures they remain visible when
+        # their owner container is collapsed (edge routes to container instead).
+
+        nodes.append(input_node)
         input_node_map[param] = input_node_id
 
     return input_node_map
@@ -516,13 +713,22 @@ def _create_data_nodes(
     theme: str,
     show_types: bool,
 ) -> None:
-    """Create DATA nodes for all outputs."""
+    """Create DATA nodes for all outputs.
+
+    DATA nodes are marked with `internalOnly: true` if their output is not
+    consumed by any nodes outside their container. This allows JavaScript
+    to hide them when the container is collapsed.
+    """
     for node_id, attrs in flat_graph.nodes(data=True):
         output_types = attrs.get("output_types", {})
         parent_id = attrs.get("parent")
 
         for output_name in attrs.get("outputs", ()):
             data_node_id = f"data_{node_id}_{output_name}"
+
+            # Check if this output is consumed externally
+            is_external = _is_output_externally_consumed(output_name, node_id, flat_graph)
+
             data_node = {
                 "id": data_node_id,
                 "type": "custom",
@@ -534,6 +740,7 @@ def _create_data_nodes(
                     "sourceId": node_id,
                     "theme": theme,
                     "showTypes": show_types,
+                    "internalOnly": not is_external,  # True if no external consumers
                 },
                 "sourcePosition": "bottom",
                 "targetPosition": "top",
@@ -805,26 +1012,52 @@ def _add_merged_output_edges(
 
     Edges go directly from source function to target function,
     skipping DATA nodes entirely.
+
+    When a target is an expanded container, we re-route to the actual
+    internal consumer node instead of the container boundary.
     """
+    # Build param_to_consumer map to find actual internal consumers
+    param_to_consumers = _build_param_to_consumer_map(flat_graph, expansion_state)
+
     for source, target, edge_data in flat_graph.edges(data=True):
-        # Skip if either node is not visible in this expansion state
+        # Skip if source is not visible in this expansion state
         if not _is_node_visible(source, flat_graph, expansion_state):
-            continue
-        if not _is_node_visible(target, flat_graph, expansion_state):
             continue
 
         edge_type = edge_data.get("edge_type", "data")
         value_name = edge_data.get("value_name", "")
 
-        # Direct edge from source to target (no DATA node intermediate)
-        edge_id = f"e_{source}_{target}"
+        # Determine actual target - re-route if target is expanded container
+        actual_target = target
+        target_attrs = flat_graph.nodes.get(target, {})
+        is_target_container = target_attrs.get("node_type") == "GRAPH"
+        is_target_expanded = expansion_state.get(target, False)
+
+        if is_target_container and is_target_expanded and value_name:
+            # Find the actual internal consumer of this value
+            consumers = param_to_consumers.get(value_name, [])
+            # Filter to consumers that are inside this target container
+            internal_consumers = [
+                c for c in consumers
+                if _is_descendant_of(c, target, flat_graph) or c == target
+            ]
+            if internal_consumers:
+                # Use the first internal consumer (there should typically be one)
+                actual_target = internal_consumers[0]
+
+        # Skip if actual target is not visible
+        if not _is_node_visible(actual_target, flat_graph, expansion_state):
+            continue
+
+        # Direct edge from source to actual target
+        edge_id = f"e_{source}_{actual_target}"
         if value_name:
-            edge_id = f"e_{source}_{value_name}_{target}"
+            edge_id = f"e_{source}_{value_name}_{actual_target}"
 
         rf_edge = {
             "id": edge_id,
             "source": source,
-            "target": target,
+            "target": actual_target,
             "animated": False,
             "style": {"stroke": "#64748b", "strokeWidth": 2},
             "data": {

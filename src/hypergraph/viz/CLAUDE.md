@@ -825,6 +825,95 @@ assert edge_after['target'] == 'embed_sentences_internal'
 - `tests/viz/test_edge_connections.py` (`TestEdgeShadowGap`): Validates edges connect to visible bounds (not wrapper bounds)
 - `tests/viz/test_nested_edge_routing.py`: Validates edge re-routing on interactive expand
 
+## Scope-Aware Visibility for Nested Graphs
+
+### The Problem
+
+When visualizing nested graphs, INPUT and DATA nodes need context-aware positioning:
+
+1. **INPUT nodes**: If ALL consumers are inside a nested container, the INPUT should appear inside that container when expanded
+2. **DATA nodes**: If ALL consumers are inside the same container as the producer, the DATA node is "internal-only" and should be hidden when collapsed
+3. **Edge routing**: Edges should route to actual internal nodes (not containers) when containers are expanded
+
+### Solution Architecture
+
+**Python side** (`renderer.py`):
+
+1. **Scope analysis** - Determine where each INPUT/DATA node belongs:
+   ```python
+   def _compute_input_scope(param, flat_graph, expansion_state) -> str | None:
+       """Returns ownerContainer if all consumers are inside one container, else None."""
+       consumers = _get_deepest_consumers(param, flat_graph)
+       ancestor_chains = [_get_ancestor_chain(c, flat_graph) for c in consumers]
+       return _find_deepest_common_container(ancestor_chains)
+   ```
+
+2. **Metadata flags**:
+   - `ownerContainer` on INPUT nodes - which container owns this input (if any)
+   - `internalOnly` on DATA nodes - whether all consumers are internal
+
+**JavaScript side** (`layout.js`):
+
+1. **Include INPUTs in container layout**:
+   ```javascript
+   // Build map of INPUT nodes owned by expanded containers
+   var inputNodesInContainers = new Map();
+   visibleNodes.forEach(function(n) {
+     if (n.data?.nodeType === 'INPUT' && n.data?.ownerContainer) {
+       if (expansionState.get(n.data.ownerContainer)) {
+         inputNodesInContainers.set(n.id, n.data.ownerContainer);
+       }
+     }
+   });
+
+   // Include in container's child layout
+   visibleNodes.forEach(function(n) {
+     if (inputNodesInContainers.get(n.id) === graphNode.id) {
+       children.push(n);
+     }
+   });
+   ```
+
+2. **Set `parentNode` dynamically** - When positioning, set `parentNode` so React Flow uses relative coordinates:
+   ```javascript
+   if (inputNodesInContainers.has(n.id)) {
+     nodeWithParent.parentNode = inputNodesInContainers.get(n.id);
+     nodeWithParent.extent = 'parent';
+   }
+   ```
+
+3. **Exclude from root layout** - Filter out owned INPUTs from root-level nodes
+
+**JavaScript side** (`state_utils.js`):
+
+- Hide `internalOnly` DATA nodes when their parent container is collapsed
+
+### Key Design Decision: No Static `parentNode` on INPUTs
+
+INPUTs don't get `parentNode` set in Python (renderer.py). Instead:
+- `ownerContainer` is set as metadata
+- `parentNode` is set dynamically in JavaScript layout based on expansion state
+
+**Why?** Setting `parentNode` statically would hide INPUTs when container is collapsed (React Flow hides children of collapsed groups). We want INPUTs to:
+- Be visible at root level when container is collapsed
+- Be positioned inside container when expanded
+
+### Test Coverage
+
+`tests/viz/test_scope_aware_visibility.py`:
+- Edge routing to internal nodes vs containers
+- INPUT `ownerContainer` metadata correctness
+- DATA `internalOnly` flag correctness
+- Visual positioning of INPUTs inside container bounds
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `renderer.py` | Scope analysis helpers, `ownerContainer`/`internalOnly` flags |
+| `layout.js` | Include owned INPUTs in container layout, dynamic `parentNode` |
+| `state_utils.js` | Hide `internalOnly` DATA nodes when collapsed |
+
 ## File Locations
 
 - **Layout constraints**: `assets/constraint-layout.js` (createRowConstraints, createSharedTargetConstraints ~line 338-557)
@@ -837,4 +926,7 @@ assert edge_after['target'] == 'embed_sentences_internal'
 - **Node dimensions**: `html_generator.py` (calculateDimensions ~line 1154)
 - **Pre-computed edges**: `renderer.py` (`_precompute_all_edges()`, `_compute_edges_for_state()`)
 - **Edge selection (JS)**: `assets/app.js` (`selectedEdges` memo, `expansionStateToKey()`)
+- **Scope analysis**: `renderer.py` (`_compute_input_scope()`, `_is_output_externally_consumed()`)
+- **INPUT container layout**: `assets/layout.js` (`inputNodesInContainers` map in `performRecursiveLayout()`)
+- **Scope-aware visibility tests**: `tests/viz/test_scope_aware_visibility.py`
 - **Debugging tools**: `DEBUGGING.md` (comprehensive guide to all debug dataclasses and helpers)

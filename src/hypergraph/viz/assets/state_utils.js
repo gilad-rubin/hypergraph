@@ -59,6 +59,17 @@
       };
     };
 
+    // Helper: check if internal-only DATA node should be hidden
+    // Note: INPUT nodes are NOT filtered here - they stay visible at root level
+    // and are positioned inside containers via layout, not parent-child relationships
+    var shouldFilterInternalData = function(n) {
+      if (!n.data || n.data.nodeType !== 'DATA') return false;
+      if (!n.data.internalOnly) return false;
+      var parent = n.parentNode;
+      if (!parent) return false;
+      return !expMap.get(parent);
+    };
+
     if (separateOutputs) {
       // Identify PIPELINE nodes (containers)
       var pipelineIds = new Set(baseNodes
@@ -66,9 +77,14 @@
         .map(function(n) { return n.id; }));
 
       // Show DATA nodes and INPUT_GROUP, clear embedded outputs from function nodes
-      // BUT hide container DATA nodes when their container is expanded
+      // BUT hide:
+      // - Container DATA nodes when their container is expanded
+      // - Internal-only DATA nodes when their parent is collapsed
       var nodes = baseNodes
         .filter(function(n) {
+          // Hide internal-only DATA nodes when parent is collapsed
+          if (shouldFilterInternalData(n)) return false;
+
           // Hide container DATA nodes when their container is expanded
           if (n.data && n.data.sourceId && pipelineIds.has(n.data.sourceId)) {
             // This is a container's DATA node - hide if container is expanded
@@ -91,8 +107,9 @@
       return { nodes: nodes, edges: baseEdges };
     } else {
       // Hide DATA nodes (but keep INPUT_GROUP visible), embed outputs in function nodes, remap edges
+      // Note: INPUT nodes are NOT filtered - they stay visible at root level
       var nodes = baseNodes
-        .filter(function(n) { return !dataNodeIds.has(n.id); })  // Remove DATA nodes only, keep INPUT_GROUP
+        .filter(function(n) { return !dataNodeIds.has(n.id); })  // Remove DATA nodes only
         .map(function(n) {
           var transformed = applyMeta(n);
           return {
@@ -130,6 +147,14 @@
   /**
    * Apply visibility based on expansion state
    * Nodes inside collapsed pipelines are hidden
+   *
+   * Additional scope-aware visibility rules:
+   * - DATA nodes with internalOnly: hidden when their parent container is collapsed
+   *
+   * Note: INPUT nodes are NOT hidden based on ownerContainer - they stay visible
+   * at root level and the layout positions them appropriately. The ownerContainer
+   * is used for edge routing and layout hints, not visibility.
+   *
    * @param {Array} nodes - Nodes with state applied
    * @param {Map|Object} expansionState - Which pipeline nodes are expanded
    * @returns {Array} Nodes with hidden flag set appropriately
@@ -144,7 +169,8 @@
       if (n.parentNode) parentMap.set(n.id, n.parentNode);
     });
 
-    var isHidden = function(nodeId) {
+    // Check if node is hidden due to collapsed ancestor
+    var isHiddenByAncestor = function(nodeId) {
       var curr = nodeId;
       while (curr) {
         var parent = parentMap.get(curr);
@@ -155,8 +181,19 @@
       return false;
     };
 
+    // Check if DATA node should be hidden due to being internal-only
+    var shouldHideInternalData = function(n) {
+      if (!n.data || n.data.nodeType !== 'DATA') return false;
+      if (!n.data.internalOnly) return false;
+      // Internal-only DATA nodes are hidden when their parent is collapsed
+      var parent = n.parentNode;
+      if (!parent) return false;
+      return !expMap.get(parent);
+    };
+
     return nodes.map(function(n) {
-      return { ...n, hidden: isHidden(n.id) };
+      var hidden = isHiddenByAncestor(n.id) || shouldHideInternalData(n);
+      return { ...n, hidden: hidden };
     });
   }
 
