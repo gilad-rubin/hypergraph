@@ -291,6 +291,34 @@ def _find_container_entry_points(
     return entry_points
 
 
+def _find_container_exit_points(
+    container_id: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> list[str]:
+    """Find exit point nodes inside a container for data edge routing.
+
+    Exit points are nodes inside the container that:
+    1. Are direct children of the container (not nested deeper)
+    2. Produce outputs (have non-empty outputs attribute)
+    3. Are visible in the current expansion state
+
+    These are the nodes that would "send" data flow to outside.
+    For containers with a single child (like mapped graphs), this is that child.
+    """
+    # Find direct children of the container that produce outputs
+    exit_points = []
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if attrs.get("parent") != container_id:
+            continue
+        if not attrs.get("outputs", ()):
+            continue
+        if _is_node_visible(node_id, flat_graph, expansion_state):
+            exit_points.append(node_id)
+
+    return exit_points
+
+
 def _build_output_to_producer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -1172,6 +1200,9 @@ def _add_merged_output_edges(
     # Build param_to_consumer map to find actual internal consumers
     param_to_consumers = _build_param_to_consumer_map(flat_graph, expansion_state)
 
+    # Build output_to_producer map to find actual internal producers
+    output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+
     for source, target, edge_data in flat_graph.edges(data=True):
         # Skip if source is not visible in this expansion state
         if not _is_node_visible(source, flat_graph, expansion_state):
@@ -1179,6 +1210,27 @@ def _add_merged_output_edges(
 
         edge_type = edge_data.get("edge_type", "data")
         value_name = edge_data.get("value_name", "")
+
+        # Determine actual source - re-route if source is expanded container
+        actual_source = source
+        source_attrs = flat_graph.nodes.get(source, {})
+        is_source_container = source_attrs.get("node_type") == "GRAPH"
+        is_source_expanded = expansion_state.get(source, False)
+
+        if is_source_container and is_source_expanded:
+            if value_name:
+                # Data edge: find the actual internal producer of this value
+                internal_producer = output_to_producer.get(value_name)
+                if internal_producer and _is_descendant_of(internal_producer, source, flat_graph):
+                    actual_source = internal_producer
+                else:
+                    # No exact match - this happens when with_outputs renames parameters
+                    # Fall back to exit points (nodes that produce outputs)
+                    exit_points = _find_container_exit_points(
+                        source, flat_graph, expansion_state
+                    )
+                    if exit_points:
+                        actual_source = exit_points[0]
 
         # Determine actual target - re-route if target is expanded container
         actual_target = target
@@ -1190,14 +1242,23 @@ def _add_merged_output_edges(
             if value_name:
                 # Data edge: find the actual internal consumer of this value
                 consumers = param_to_consumers.get(value_name, [])
-                # Filter to consumers that are inside this target container
+                # Filter to consumers that are INSIDE this target container (descendants only)
+                # Exclude the container itself - we want the actual internal consumer
                 internal_consumers = [
                     c for c in consumers
-                    if _is_descendant_of(c, target, flat_graph) or c == target
+                    if c != target and _is_descendant_of(c, target, flat_graph)
                 ]
                 if internal_consumers:
                     # Use the first internal consumer (there should typically be one)
                     actual_target = internal_consumers[0]
+                else:
+                    # No exact match - this happens when with_inputs renames parameters
+                    # Fall back to entry points (nodes with no internal predecessors)
+                    entry_points = _find_container_entry_points(
+                        target, flat_graph, expansion_state
+                    )
+                    if entry_points:
+                        actual_target = entry_points[0]
             elif edge_type == "control":
                 # Control edge: route to entry point(s) of the container
                 # Entry points are direct children with no internal predecessors
@@ -1207,18 +1268,20 @@ def _add_merged_output_edges(
                 if entry_points:
                     actual_target = entry_points[0]
 
-        # Skip if actual target is not visible
+        # Skip if actual source or target is not visible
+        if not _is_node_visible(actual_source, flat_graph, expansion_state):
+            continue
         if not _is_node_visible(actual_target, flat_graph, expansion_state):
             continue
 
-        # Direct edge from source to actual target
-        edge_id = f"e_{source}_{actual_target}"
+        # Direct edge from actual source to actual target
+        edge_id = f"e_{actual_source}_{actual_target}"
         if value_name:
-            edge_id = f"e_{source}_{value_name}_{actual_target}"
+            edge_id = f"e_{actual_source}_{value_name}_{actual_target}"
 
         rf_edge = {
             "id": edge_id,
-            "source": source,
+            "source": actual_source,
             "target": actual_target,
             "animated": False,
             "style": {"stroke": "#64748b", "strokeWidth": 2},
@@ -1230,8 +1293,8 @@ def _add_merged_output_edges(
 
         # Add label for IfElse branch edges (True/False)
         if edge_type == "control":
-            source_attrs = flat_graph.nodes.get(source, {})
-            branch_data = source_attrs.get("branch_data", {})
+            original_source_attrs = flat_graph.nodes.get(source, {})
+            branch_data = original_source_attrs.get("branch_data", {})
             if branch_data and "when_true" in branch_data:
                 if target == branch_data["when_true"]:
                     rf_edge["data"]["label"] = "True"

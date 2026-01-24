@@ -524,3 +524,203 @@ class TestControlEdgeRouting:
             f"\nWhen inner_graph is expanded, control edges should route to\n"
             f"the entry point node inside, not the container boundary."
         )
+
+
+# =============================================================================
+# Test Graph: Batch Evaluation with Nested Mapped Graph
+# =============================================================================
+# Models the retrieval_recall_batch structure:
+# build_pairs → batch_eval (nested, mapped) → compute_metrics
+
+
+@node(output_name="eval_pairs")
+def build_pairs(queries: list[str]) -> list[dict]:
+    """Build evaluation pairs from queries."""
+    return [{"query": q} for q in queries]
+
+
+@node(output_name="eval_result")
+def run_single_eval(eval_pair: dict) -> dict:
+    """Run a single evaluation (inside nested graph)."""
+    return {"result": eval_pair["query"]}
+
+
+@node(output_name="metrics")
+def compute_metrics(eval_results: list[dict]) -> dict:
+    """Aggregate evaluation results into metrics."""
+    return {"count": len(eval_results)}
+
+
+def make_batch_eval_graph() -> Graph:
+    """Create a batch evaluation graph with nested mapped subgraph.
+
+    Structure:
+        build_pairs → batch_eval (nested, mapped over eval_pairs) → compute_metrics
+
+    This models the retrieval_recall_batch_config pattern where:
+    - build_pairs outputs eval_pairs
+    - batch_eval consumes eval_pairs (mapped), outputs eval_results
+    - compute_metrics consumes eval_results
+    """
+    batch_eval = Graph(nodes=[run_single_eval], name="batch_eval")
+    mapped_eval = (
+        batch_eval.as_node()
+        .with_inputs(eval_pair="eval_pairs")
+        .with_outputs(eval_result="eval_results")
+        .map_over("eval_pairs")
+    )
+
+    return Graph(
+        nodes=[build_pairs, mapped_eval, compute_metrics],
+        name="batch_evaluation",
+    )
+
+
+# =============================================================================
+# Test: Edge Routing INTO Expanded Nested Graph
+# =============================================================================
+
+class TestEdgeRoutingIntoExpandedContainer:
+    """Test that data edges route INTO internal consumers when container is expanded.
+
+    Bug: When batch_eval is expanded, the edge from eval_pairs still goes to
+    the container boundary instead of routing to the internal consumer (run_single_eval).
+    """
+
+    def test_edge_routes_to_internal_consumer_when_expanded(self):
+        """Edge from build_pairs should go to run_single_eval when expanded.
+
+        When batch_eval is expanded, the edge carrying eval_pairs should route
+        to the actual internal consumer (run_single_eval), not the container.
+        """
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_batch_eval_graph()
+        flat_graph = graph.to_flat_graph()
+        result = render_graph(flat_graph, depth=1)
+
+        # Get pre-computed edges for expanded state
+        edges_by_state = result["meta"]["edgesByState"]
+        expanded_key = "batch_eval:1|sep:0"  # expanded, merged outputs
+
+        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
+        edges = edges_by_state[expanded_key]
+
+        # Find the edge from build_pairs
+        bp_edges = [e for e in edges if e["source"] == "build_pairs"]
+
+        assert len(bp_edges) == 1, f"Expected 1 edge from build_pairs, got {len(bp_edges)}: {bp_edges}"
+
+        # THE KEY ASSERTION: Target should be run_single_eval, NOT batch_eval
+        target = bp_edges[0]["target"]
+        assert target == "run_single_eval", (
+            f"EDGE ROUTING BUG!\n"
+            f"Expected: build_pairs -> run_single_eval\n"
+            f"Actual: build_pairs -> {target}\n"
+            f"\nWhen batch_eval is expanded, the edge carrying eval_pairs should\n"
+            f"route to the actual internal consumer (run_single_eval), not the container."
+        )
+
+    def test_edge_routes_to_container_when_collapsed(self):
+        """Edge from build_pairs should go to batch_eval when collapsed."""
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_batch_eval_graph()
+        flat_graph = graph.to_flat_graph()
+        result = render_graph(flat_graph, depth=0)
+
+        # Get pre-computed edges for collapsed state
+        edges_by_state = result["meta"]["edgesByState"]
+        collapsed_key = "batch_eval:0|sep:0"
+
+        assert collapsed_key in edges_by_state, f"Key {collapsed_key} not found"
+        edges = edges_by_state[collapsed_key]
+
+        # Find the edge from build_pairs
+        bp_edges = [e for e in edges if e["source"] == "build_pairs"]
+
+        assert len(bp_edges) == 1, f"Expected 1 edge from build_pairs, got {len(bp_edges)}"
+
+        # When collapsed, target should be the container
+        target = bp_edges[0]["target"]
+        assert target == "batch_eval", (
+            f"Expected: build_pairs -> batch_eval (collapsed)\n"
+            f"Actual: build_pairs -> {target}"
+        )
+
+
+# =============================================================================
+# Test: Edge Routing OUT OF Expanded Nested Graph
+# =============================================================================
+
+class TestEdgeRoutingFromExpandedContainer:
+    """Test that data edges route FROM internal producers when container is expanded.
+
+    Bug: When batch_eval is expanded, compute_metrics appears to receive an edge
+    from nowhere because the source is shown as the container, not the internal producer.
+    """
+
+    def test_edge_from_internal_producer_when_expanded(self):
+        """Edge to compute_metrics should come from run_single_eval when expanded.
+
+        When batch_eval is expanded, the edge carrying eval_results should show
+        it comes from the actual internal producer (run_single_eval).
+        """
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_batch_eval_graph()
+        flat_graph = graph.to_flat_graph()
+        result = render_graph(flat_graph, depth=1)
+
+        # Get pre-computed edges for expanded state
+        edges_by_state = result["meta"]["edgesByState"]
+        expanded_key = "batch_eval:1|sep:0"  # expanded, merged outputs
+
+        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
+        edges = edges_by_state[expanded_key]
+
+        # Find the edge to compute_metrics
+        cm_edges = [e for e in edges if e["target"] == "compute_metrics"]
+
+        assert len(cm_edges) == 1, (
+            f"Expected 1 edge to compute_metrics, got {len(cm_edges)}.\n"
+            f"All edges: {[(e['source'], e['target']) for e in edges]}\n"
+            f"\nBUG: Edge may be missing or malformed when container is expanded."
+        )
+
+        # THE KEY ASSERTION: Source should be run_single_eval, NOT batch_eval
+        source = cm_edges[0]["source"]
+        assert source == "run_single_eval", (
+            f"EDGE ROUTING BUG!\n"
+            f"Expected: run_single_eval -> compute_metrics\n"
+            f"Actual: {source} -> compute_metrics\n"
+            f"\nWhen batch_eval is expanded, the edge carrying eval_results should\n"
+            f"show it comes from the actual internal producer (run_single_eval)."
+        )
+
+    def test_edge_from_container_when_collapsed(self):
+        """Edge to compute_metrics should come from batch_eval when collapsed."""
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_batch_eval_graph()
+        flat_graph = graph.to_flat_graph()
+        result = render_graph(flat_graph, depth=0)
+
+        # Get pre-computed edges for collapsed state
+        edges_by_state = result["meta"]["edgesByState"]
+        collapsed_key = "batch_eval:0|sep:0"
+
+        assert collapsed_key in edges_by_state, f"Key {collapsed_key} not found"
+        edges = edges_by_state[collapsed_key]
+
+        # Find the edge to compute_metrics
+        cm_edges = [e for e in edges if e["target"] == "compute_metrics"]
+
+        assert len(cm_edges) == 1, f"Expected 1 edge to compute_metrics, got {len(cm_edges)}"
+
+        # When collapsed, source should be the container
+        source = cm_edges[0]["source"]
+        assert source == "batch_eval", (
+            f"Expected: batch_eval -> compute_metrics (collapsed)\n"
+            f"Actual: {source} -> compute_metrics"
+        )

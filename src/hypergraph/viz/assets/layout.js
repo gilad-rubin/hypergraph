@@ -1022,10 +1022,14 @@
       var needsTargetReroute = actualConsumer && actualConsumer !== e.target &&
         nodePositions.has(actualConsumer) && nodeDimensions.has(actualConsumer);
 
+      // Check if we need to fix start position (source node position might differ from edge points)
+      // This handles edges where source is correct but points were calculated using container bounds
+      var needsStartFix = !needsStartReroute && nodePositions.has(e.source) && nodeDimensions.has(e.source);
+
       // Check if we need to fix end position (target node position might differ)
       var needsEndFix = nodePositions.has(e.target) && nodeDimensions.has(e.target);
 
-      if (!needsStartReroute && !needsTargetReroute && !needsEndFix) {
+      if (!needsStartReroute && !needsStartFix && !needsTargetReroute && !needsEndFix) {
         return e;
       }
 
@@ -1045,6 +1049,17 @@
           newPoints[0] = { x: newStartX, y: newStartY };
         }
         actualSrc = actualProducer;
+      } else if (needsStartFix) {
+        // Fix edge start to source's center-bottom (for edges with correct source but wrong points)
+        // This happens when edge points were calculated using container bounds, not source node bounds
+        var sourcePos = nodePositions.get(e.source);
+        var sourceDims = nodeDimensions.get(e.source);
+        var newStartX = sourcePos.x + sourceDims.width / 2;
+        var sourceNodeType = nodeTypes.get(e.source) || 'FUNCTION';
+        var newStartY = sourcePos.y + sourceDims.height - getNodeTypeOffset(sourceNodeType);
+        if (newPoints.length > 0) {
+          newPoints[0] = { x: newStartX, y: newStartY };
+        }
       }
 
       // Re-route edge target to actual consumer for INPUT edges

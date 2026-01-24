@@ -377,12 +377,13 @@ class TestOutputEdgeRouting:
                     const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
                     const dataNormalizeNormalized = debug.nodes.find(n => n.id && n.id.includes('data_normalize'));
 
-                    // Find the preprocess -> analyze edge
+                    // Find the normalize_text -> analyze edge
+                    // When preprocess is expanded, edges route from internal producer
                     const edgeGroups = document.querySelectorAll('.react-flow__edge');
                     let outputEdgePath = null;
                     for (const group of edgeGroups) {
                         const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('preprocess') && id.includes('analyze')) {
+                        if (id.includes('normalize_text') && id.includes('analyze')) {
                             const path = group.querySelector('path');
                             if (path) {
                                 outputEdgePath = path.getAttribute('d');
@@ -571,12 +572,14 @@ class TestEdgeVisualGaps:
                     const preprocess = debug.nodes.find(n => n.id === 'preprocess');
                     const analyze = debug.nodes.find(n => n.id === 'analyze');
 
-                    // Find the preprocess -> analyze edge (NOT the inputs edge)
+                    // Find the normalize_text -> analyze edge (the internal producer to external consumer)
+                    // When preprocess is expanded, edges route from internal producer (normalize_text)
                     const edgeGroups = document.querySelectorAll('.react-flow__edge');
                     let outputEdgePath = null;
                     for (const group of edgeGroups) {
                         const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('preprocess') && id.includes('analyze')) {
+                        // Edge should be from normalize_text (internal producer) to analyze
+                        if (id.includes('normalize_text') && id.includes('analyze')) {
                             const path = group.querySelector('path');
                             if (path) {
                                 outputEdgePath = path.getAttribute('d');
