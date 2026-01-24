@@ -333,196 +333,16 @@
     if (denseRowScale > 0) {
       expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, denseRowScale);
     }
-
-    // Pull leaf source nodes (like INPUT nodes) closer to their targets
-    // The constraint solver only ensures they're ABOVE their targets,
-    // not that they're CLOSE to them
-    // Also spreads leaf nodes horizontally when multiple target the same row
-    pullLeafNodesToTargets(nodes, edges, spaceY, spaceX, orientation);
-
-    // Fix overlapping nodes that the constraint solver missed
-    // (nodes not connected by edges can end up overlapping)
-    fixOverlappingNodes(nodes, edges, spaceY, spaceX, orientation);
-  };
-
-  /**
-   * Pull leaf source nodes down to be just above their targets.
-   * Leaf nodes (no incoming edges) can float too high because the constraint
-   * solver only ensures minimum separation, not proximity.
-   *
-   * Also spreads leaf nodes horizontally when multiple leaves target the same row.
-   * This prevents INPUT nodes from stacking vertically.
-   */
-  const pullLeafNodesToTargets = (nodes, edges, minGapY, minGapX, orientation) => {
-    const coordPrimary = orientation === 'vertical' ? 'x' : 'y';
-    const coordSecondary = orientation === 'vertical' ? 'y' : 'x';
-    const sizePrimary = orientation === 'vertical' ? 'width' : 'height';
-    const sizeSecondary = orientation === 'vertical' ? 'height' : 'width';
-
-    // Find leaf source nodes (nodes with outgoing edges but no incoming edges)
-    const hasIncoming = new Set();
-    const hasOutgoing = new Set();
-    for (const edge of edges) {
-      if (edge.sourceNode) hasOutgoing.add(edge.sourceNode.id);
-      if (edge.targetNode) hasIncoming.add(edge.targetNode.id);
-    }
-
-    const leafNodes = nodes.filter(n => hasOutgoing.has(n.id) && !hasIncoming.has(n.id));
-
-    // Group leaves by their target row (Y position of target)
-    // This lets us spread leaves that end up at the same level
-    const leavesByTargetY = new Map();
-
-    for (const leaf of leafNodes) {
-      // Find the target with the smallest Y (highest position in vertical layout)
-      let minTargetY = Infinity;
-      let targetNode = null;
-
-      for (const edge of edges) {
-        if (edge.sourceNode && edge.sourceNode.id === leaf.id && edge.targetNode) {
-          const targetY = edge.targetNode[coordSecondary];
-          if (targetY < minTargetY) {
-            minTargetY = targetY;
-            targetNode = edge.targetNode;
-          }
-        }
-      }
-
-      if (!targetNode) continue;
-
-      // Calculate ideal Y position: leaf bottom should be minGapY above target top
-      const targetHeight = targetNode[sizeSecondary];
-      const leafHeight = leaf[sizeSecondary];
-      const idealLeafY = minTargetY - targetHeight / 2 - minGapY - leafHeight / 2;
-
-      // Only move down (increase Y), never up
-      const currentY = leaf[coordSecondary];
-      if (idealLeafY > currentY) {
-        leaf[coordSecondary] = idealLeafY;
-      }
-
-      // Group by the final Y position (rounded to avoid floating point issues)
-      const finalY = leaf[coordSecondary];
-      const yKey = Math.round(finalY);
-      if (!leavesByTargetY.has(yKey)) {
-        leavesByTargetY.set(yKey, []);
-      }
-      leavesByTargetY.get(yKey).push({ leaf, targetNode });
-    }
-
-    // Spread leaves horizontally within each target row
-    for (const [yKey, leavesInRow] of leavesByTargetY) {
-      if (leavesInRow.length <= 1) continue;
-
-      // Sort by current X position for deterministic ordering
-      leavesInRow.sort((a, b) => a.leaf[coordPrimary] - b.leaf[coordPrimary]);
-
-      // Calculate total width needed
-      let totalWidth = 0;
-      for (const { leaf } of leavesInRow) {
-        totalWidth += leaf[sizePrimary];
-      }
-      totalWidth += (leavesInRow.length - 1) * minGapX;
-
-      // Find the center X of the target nodes (average if multiple targets)
-      const targetXs = [...new Set(leavesInRow.map(l => l.targetNode[coordPrimary]))];
-      const targetCenterX = targetXs.reduce((a, b) => a + b, 0) / targetXs.length;
-
-      // Position leaves centered around the target's X
-      let currentX = targetCenterX - totalWidth / 2;
-      for (const { leaf } of leavesInRow) {
-        const leafWidth = leaf[sizePrimary];
-        leaf[coordPrimary] = currentX + leafWidth / 2;
-        currentX += leafWidth + minGapX;
-      }
-    }
-  };
-
-  /**
-   * Detect and fix nodes that overlap both horizontally and vertically.
-   * This handles cases where unconnected nodes end up in the same space.
-   *
-   * For leaf source nodes (INPUT nodes with no incoming edges), we shift
-   * horizontally to keep them side-by-side at the same depth level.
-   * For other nodes, we shift vertically.
-   */
-  const fixOverlappingNodes = (nodes, edges, minGapY, minGapX, orientation) => {
-    const coordPrimary = orientation === 'vertical' ? 'x' : 'y';
-    const coordSecondary = orientation === 'vertical' ? 'y' : 'x';
-    const sizePrimary = orientation === 'vertical' ? 'width' : 'height';
-    const sizeSecondary = orientation === 'vertical' ? 'height' : 'width';
-
-    // Build sets of nodes with incoming/outgoing edges to identify leaf nodes
-    const hasIncoming = new Set();
-    const hasOutgoing = new Set();
-    for (const edge of edges) {
-      if (edge.sourceNode) hasOutgoing.add(edge.sourceNode.id);
-      if (edge.targetNode) hasIncoming.add(edge.targetNode.id);
-    }
-
-    // Leaf source nodes: have outgoing edges but no incoming edges (like INPUT nodes)
-    const isLeafSource = (node) => hasOutgoing.has(node.id) && !hasIncoming.has(node.id);
-
-    // Sort nodes by secondary coordinate (Y for vertical layout)
-    const sortedNodes = [...nodes].sort((a, b) => a[coordSecondary] - b[coordSecondary]);
-
-    // Check each pair of nodes for overlap
-    for (let i = 0; i < sortedNodes.length; i++) {
-      const nodeA = sortedNodes[i];
-      const aLeft = nodeA[coordPrimary] - nodeA[sizePrimary] / 2;
-      const aRight = nodeA[coordPrimary] + nodeA[sizePrimary] / 2;
-      const aTop = nodeA[coordSecondary] - nodeA[sizeSecondary] / 2;
-      const aBottom = nodeA[coordSecondary] + nodeA[sizeSecondary] / 2;
-
-      for (let j = i + 1; j < sortedNodes.length; j++) {
-        const nodeB = sortedNodes[j];
-        const bLeft = nodeB[coordPrimary] - nodeB[sizePrimary] / 2;
-        const bRight = nodeB[coordPrimary] + nodeB[sizePrimary] / 2;
-        const bTop = nodeB[coordSecondary] - nodeB[sizeSecondary] / 2;
-        const bBottom = nodeB[coordSecondary] + nodeB[sizeSecondary] / 2;
-
-        // Check horizontal overlap
-        const hOverlap = !(bRight < aLeft || bLeft > aRight);
-        // Check vertical overlap
-        const vOverlap = !(bBottom < aTop || bTop > aBottom);
-
-        if (hOverlap && vOverlap) {
-          // Both nodes overlap - determine how to shift nodeB
-          const bothAreLeafSources = isLeafSource(nodeA) && isLeafSource(nodeB);
-
-          if (bothAreLeafSources) {
-            // For leaf source nodes at the same level, shift horizontally (side-by-side)
-            // This keeps INPUT nodes spread horizontally instead of stacking vertically
-            const hOverlapAmount = Math.min(aRight, bRight) - Math.max(aLeft, bLeft);
-            const hShift = hOverlapAmount + minGapX;
-            nodeB[coordPrimary] += hShift;
-          } else {
-            // For other nodes, shift vertically (standard behavior)
-            const vOverlapAmount = aBottom - bTop;
-            const vShift = vOverlapAmount + minGapY;
-            nodeB[coordSecondary] += vShift;
-          }
-        }
-      }
-    }
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => {
-      // Use edge-to-edge separation for uniform visual gaps
-      // center-to-center distance = visual_gap + (source_height + target_height) / 2
-      const sourceHeight = edge.sourceNode.height || 0;
-      const targetHeight = edge.targetNode.height || 0;
-      const edgeToEdgeSeparation = layoutConfig.spaceY + (sourceHeight + targetHeight) / 2;
-
-      return {
-        base: rowConstraint,
-        property: layoutConfig.coordSecondary,
-        a: edge.targetNode,
-        b: edge.sourceNode,
-        separation: edgeToEdgeSeparation,
-      };
-    });
+    edges.map((edge) => ({
+      base: rowConstraint,
+      property: layoutConfig.coordSecondary,
+      a: edge.targetNode,
+      b: edge.sourceNode,
+      separation: layoutConfig.spaceY,
+    }));
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
@@ -1022,12 +842,12 @@
   const defaultOptions = {
     layout: {
       spaceX: 14,
-      spaceY: 100,      // Visual gap between node edges (edge-to-edge, not center-to-center)
-      layerSpaceY: 100, // Visual gap between layers
+      spaceY: 140,      // Vertical spacing between nodes
+      layerSpaceY: 120, // Vertical spacing between layers
       spreadX: 2.2,
       padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
-      denseRowScale: 1.0, // Adds space for dense edge rows to prevent overlap
+      denseRowScale: 0,   // 0 = uniform spacing; >0 adds space for dense edge rows
     },
     routing: {
       spaceX: 45,       // Increased from 26 for more edge-to-node clearance
