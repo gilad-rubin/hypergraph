@@ -724,3 +724,156 @@ class TestEdgeRoutingFromExpandedContainer:
             f"Expected: batch_eval -> compute_metrics (collapsed)\n"
             f"Actual: {source} -> compute_metrics"
         )
+
+
+# =============================================================================
+# Test Graph: Input Groups inside Collapsed Containers
+# =============================================================================
+
+@node(output_name="alpha_out")
+def alpha_step(alpha: int) -> int:
+    return alpha
+
+
+@node(output_name="beta_out")
+def beta_step(beta: int) -> int:
+    return beta
+
+
+def make_input_group_container_graph() -> Graph:
+    """Graph where two inputs live only inside a nested container."""
+    inner = Graph(nodes=[alpha_step, beta_step], name="inner")
+    return Graph(nodes=[inner.as_node()], name="outer")
+
+
+# =============================================================================
+# Test: INPUT/INPUT_GROUP visibility when container is collapsed
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestInputVisibilityWhenCollapsed:
+    """Inputs owned by a collapsed container should be hidden."""
+
+    def test_internal_input_hidden_when_collapsed(self):
+        """Inputs scoped to a collapsed container should not be visible."""
+        from hypergraph.viz import extract_debug_data
+
+        graph = make_generation_graph()
+        data = extract_debug_data(graph, depth=0)
+
+        node_ids = {n["id"] for n in data.nodes}
+
+        # system_instructions is only consumed inside prompt_building
+        assert "input_system_instructions" not in node_ids, (
+            "input_system_instructions should be hidden when prompt_building is collapsed."
+        )
+        # query has external consumers; it should remain visible at root
+        assert "input_query" in node_ids, "input_query should stay visible at root."
+
+    def test_input_group_hidden_when_collapsed(self):
+        """INPUT_GROUP owned by a collapsed container should not be visible."""
+        from hypergraph.viz import extract_debug_data
+
+        graph = make_input_group_container_graph()
+        data = extract_debug_data(graph, depth=0)
+
+        node_ids = {n["id"] for n in data.nodes}
+        assert "input_group_alpha_beta" not in node_ids, (
+            "input_group_alpha_beta should be hidden when inner is collapsed."
+        )
+
+
+# =============================================================================
+# Test: Stable INPUT_GROUP edges across expansion states
+# =============================================================================
+
+class TestInputGroupEdgesAcrossExpansion:
+    """INPUT_GROUP edge sources should match visible group IDs when expanded."""
+
+    def test_input_group_edges_exist_when_expanded(self):
+        """Expanded edge set should reference the existing INPUT_GROUP node."""
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_input_group_container_graph()
+        flat_graph = graph.to_flat_graph()
+        result = render_graph(flat_graph, depth=0)
+
+        group_node = next(
+            n for n in result["nodes"]
+            if n["data"]["nodeType"] == "INPUT_GROUP"
+        )
+
+        edges_by_state = result["meta"]["edgesByState"]
+        expandable = result["meta"]["expandableNodes"]
+        expanded_key = ",".join(f"{node_id}:1" for node_id in expandable) + "|sep:0"
+
+        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
+        edges = edges_by_state[expanded_key]
+
+        group_edges = [e for e in edges if e["source"] == group_node["id"]]
+
+        assert group_edges, (
+            f"Expected edges from INPUT_GROUP {group_node['id']} in expanded state.\n"
+            f"Edges: {[(e['source'], e['target']) for e in edges]}"
+        )
+
+
+# =============================================================================
+# Test Graph: Container output visibility
+# =============================================================================
+
+@node(output_name="internal_only")
+def produce_internal(seed: int) -> int:
+    return seed + 1
+
+
+@node(output_name="external")
+def produce_external(internal_only: int) -> int:
+    return internal_only * 2
+
+
+@node(output_name="used")
+def consume_external(external: int) -> int:
+    return external
+
+
+def make_container_output_graph() -> Graph:
+    """Nested container exposing one external and one internal-only output."""
+    inner = Graph(nodes=[produce_internal, produce_external], name="inner")
+    return Graph(nodes=[inner.as_node(), consume_external], name="outer")
+
+
+# =============================================================================
+# Test: Container outputs only shown when externally consumed
+# =============================================================================
+
+class TestContainerOutputVisibility:
+    """Container outputs without external consumers should be hidden."""
+
+    def test_internal_container_output_hidden_in_merged_mode(self):
+        """Merged outputs should omit internal-only container outputs."""
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_container_output_graph()
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
+
+        container_node = next(n for n in result["nodes"] if n["id"] == "inner")
+        output_names = {o["name"] for o in container_node["data"].get("outputs", [])}
+
+        assert "external" in output_names
+        assert "internal_only" not in output_names
+
+    def test_internal_container_output_hidden_in_separate_mode(self):
+        """Separate outputs should omit DATA nodes for internal-only container outputs."""
+        from hypergraph.viz.renderer import render_graph
+
+        graph = make_container_output_graph()
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+
+        data_node_ids = {
+            n["id"] for n in result["nodes"]
+            if n["data"]["nodeType"] == "DATA"
+        }
+
+        assert "data_inner_external" in data_node_ids
+        assert "data_inner_internal_only" not in data_node_ids
