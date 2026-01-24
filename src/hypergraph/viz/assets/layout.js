@@ -410,11 +410,13 @@
       nodeTypes.set(n.id, n.data?.nodeType || 'FUNCTION');
     });
 
-    // Build a set of INPUT node IDs that are "owned" by expanded containers
+    // Build a set of INPUT/INPUT_GROUP node IDs that are "owned" by expanded containers
     // These should be laid out INSIDE their ownerContainer, not at root level
     var inputNodesInContainers = new Map();  // inputNodeId -> ownerContainer
     visibleNodes.forEach(function(n) {
-      if (n.data && n.data.nodeType === 'INPUT' && n.data.ownerContainer) {
+      var nodeType = n.data && n.data.nodeType;
+      var isInput = nodeType === 'INPUT' || nodeType === 'INPUT_GROUP';
+      if (isInput && n.data.ownerContainer) {
         var ownerId = n.data.ownerContainer;
         // Only include if owner container is expanded
         if (expansionState.get(ownerId)) {

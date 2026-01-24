@@ -151,9 +151,9 @@
    * Additional scope-aware visibility rules:
    * - DATA nodes with internalOnly: hidden when their parent container is collapsed
    *
-   * Note: INPUT nodes are NOT hidden based on ownerContainer - they stay visible
-   * at root level and the layout positions them appropriately. The ownerContainer
-   * is used for edge routing and layout hints, not visibility.
+   * Note: INPUT/INPUT_GROUP nodes with ownerContainer are NOT hidden when collapsed.
+   * Instead, they appear at root level and route to the container. When the container
+   * is expanded, layout.js dynamically sets their parentNode to position them inside.
    *
    * @param {Array} nodes - Nodes with state applied
    * @param {Map|Object} expansionState - Which pipeline nodes are expanded
