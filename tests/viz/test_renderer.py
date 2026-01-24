@@ -94,17 +94,17 @@ class TestRenderGraph:
         graph = Graph(nodes=[double_fn, use_doubled])
         result = render_graph(graph.to_flat_graph())
 
-        # Edges now flow: INPUT → func, func → DATA, DATA → func
-        # Check that the data flow edges exist
+        # Default mode (separate_outputs=False) uses merged output format:
+        # Data edges go directly from producer function to consumer function
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
         assert len(data_edges) == 1
-        # Data edge goes from DATA node to consumer
-        assert data_edges[0]["source"] == "data_double_fn_doubled"
+        # Data edge goes from producer function to consumer function (not via DATA node)
+        assert data_edges[0]["source"] == "double_fn"
         assert data_edges[0]["target"] == "use_doubled"
 
-        # Check output edges (function → DATA node)
+        # In merged mode, no output edges (function → DATA) are created
         output_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "output"]
-        assert len(output_edges) == 2  # One for each function's output
+        assert len(output_edges) == 0  # No output edges in merged mode
 
     def test_render_with_bound_inputs(self):
         """Test that bound inputs are marked correctly."""

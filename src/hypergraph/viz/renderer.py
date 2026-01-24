@@ -126,18 +126,25 @@ def render_graph(
     # Create edges from INPUT nodes to their actual targets
     _create_input_edges(nodes, edges, input_node_map)
 
-    # Create edges from graph structure
-    _create_graph_edges(edges, flat_graph, input_spec, expansion_state, output_to_producer)
-
-    # Sort nodes and edges by ID for deterministic ordering (prevents layout flickering)
-    nodes.sort(key=lambda n: n["id"])
-    edges.sort(key=lambda e: e["id"])
-
     # Pre-compute edges for ALL valid expansion state combinations
     # JavaScript can select the correct edge set based on current expansion state
     edges_by_state, expandable_nodes = _precompute_all_edges(
         flat_graph, input_spec, show_types, theme
     )
+
+    # Use pre-computed edges for the initial state instead of legacy _create_graph_edges()
+    # This ensures initial render matches what JS would select from edgesByState
+    initial_state_key = _expansion_state_to_key(expansion_state)
+    sep_key = "sep:1" if separate_outputs else "sep:0"
+    full_initial_key = f"{initial_state_key}|{sep_key}" if initial_state_key else sep_key
+    initial_edges = edges_by_state.get(full_initial_key, [])
+
+    # Merge pre-computed graph edges with INPUT edges (created above)
+    edges.extend(initial_edges)
+
+    # Sort nodes and edges by ID for deterministic ordering (prevents layout flickering)
+    nodes.sort(key=lambda n: n["id"])
+    edges.sort(key=lambda e: e["id"])
 
     return {
         "nodes": nodes,
@@ -1006,15 +1013,8 @@ def _create_data_nodes(
 
             nodes.append(data_node)
 
-            # Edge from function to DATA node
-            edges.append({
-                "id": f"e_{node_id}_to_{data_node_id}",
-                "source": node_id,
-                "target": data_node_id,
-                "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
-                "data": {"edgeType": "output"},
-            })
+            # NOTE: Output edges (function → DATA) are now handled by pre-computed
+            # edges in _add_separate_output_edges() when separate_outputs=True
 
 
 def _create_input_edges(
