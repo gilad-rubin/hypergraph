@@ -9,12 +9,47 @@ from importlib.resources import files
 from typing import Any, Dict, Optional
 
 
+def _validate_graph_data(graph_data: Dict[str, Any]) -> None:
+    """Lightweight validation of the renderer payload."""
+    if not isinstance(graph_data, dict):
+        raise ValueError("graph_data must be a dict")
+
+    required_keys = ("nodes", "edges", "meta")
+    missing = [key for key in required_keys if key not in graph_data]
+    if missing:
+        raise ValueError(f"graph_data missing keys: {missing}")
+
+    nodes = graph_data.get("nodes", [])
+    edges = graph_data.get("edges", [])
+
+    if not isinstance(nodes, list):
+        raise ValueError("graph_data['nodes'] must be a list")
+    if not isinstance(edges, list):
+        raise ValueError("graph_data['edges'] must be a list")
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ValueError("node entries must be dicts")
+        if "id" not in node:
+            raise ValueError("node missing 'id'")
+        if "data" not in node:
+            raise ValueError(f"node {node.get('id')} missing 'data'")
+
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise ValueError("edge entries must be dicts")
+        for key in ("id", "source", "target"):
+            if key not in edge:
+                raise ValueError(f"edge missing '{key}'")
+
+
 def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     """Generate an HTML document for React Flow rendering.
 
     All JS/CSS assets are bundled within the package (hypergraph.viz.assets).
     No external CDN dependencies are required - works fully offline.
     """
+    _validate_graph_data(graph_data)
     graph_json = json.dumps(graph_data)
 
     def _read_asset(name: str, kind: str) -> Optional[str]:
