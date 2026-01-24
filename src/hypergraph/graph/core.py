@@ -184,17 +184,30 @@ class Graph:
         return G
 
     def _are_all_mutex(
-        self, node_names: list[str], mutex_groups: list[set[str]]
+        self, node_names: list[str], mutex_groups: list[list[set[str]]]
     ) -> bool:
-        """Check if all given nodes are mutually exclusive."""
+        """Check if all given nodes are mutually exclusive.
+
+        Two nodes are mutex if they're in different branches of the same gate.
+        All given nodes are mutex if each is in a different branch of the same gate.
+        """
         if len(node_names) < 2:
             return True
 
-        # All nodes must be in the same mutex group
-        node_set = set(node_names)
-        for group in mutex_groups:
-            if node_set <= group:  # All nodes are in this group
+        # Check each mutex group (each represents a gate with multiple branches)
+        for branches in mutex_groups:
+            # Check if all nodes are in different branches of this gate
+            nodes_by_branch = []
+            for branch in branches:
+                branch_nodes = [n for n in node_names if n in branch]
+                if branch_nodes:
+                    nodes_by_branch.append(branch_nodes)
+
+            # If we found each node in a different branch, they're all mutex
+            if len(nodes_by_branch) == len(node_names):
+                # Each node is in a different branch
                 return True
+
         return False
 
     def _compute_exclusive_reachability(
@@ -229,7 +242,7 @@ class Graph:
 
     def _expand_mutex_groups(
         self, G: nx.DiGraph, nodes: list[HyperNode]
-    ) -> list[set[str]]:
+    ) -> list[list[set[str]]]:
         """Expand mutex groups to include downstream exclusive nodes.
 
         For each gate with mutually exclusive targets (RouteNode with multi_target=False
@@ -244,12 +257,14 @@ class Graph:
             nodes: List of all nodes in the graph
 
         Returns:
-            List of mutex groups, where each group contains node names that are
-            mutually exclusive with each other.
+            List of mutex group sets, where each element is a list of branch sets.
+            Nodes are mutex only if they're in DIFFERENT branch sets of the same gate.
+            Example: [[{A, B}, {C, D}]] means A and B are not mutex with each other,
+            but A is mutex with C and D (being in different branches of the gate).
         """
         from hypergraph.nodes.gate import RouteNode, IfElseNode, END
 
-        expanded_groups: list[set[str]] = []
+        expanded_groups: list[list[set[str]]] = []
 
         for node in nodes:
             # Only process gates with mutex targets
@@ -267,9 +282,8 @@ class Graph:
             # Compute exclusively reachable nodes for each target
             exclusive_sets = self._compute_exclusive_reachability(G, targets)
 
-            # Create expanded mutex group from union of all exclusive sets
-            # Nodes from different exclusive sets are mutex with each other
-            expanded_groups.append(set().union(*exclusive_sets.values()))
+            # Store branch sets separately - nodes are mutex only if in DIFFERENT branches
+            expanded_groups.append(list(exclusive_sets.values()))
 
         return expanded_groups
 

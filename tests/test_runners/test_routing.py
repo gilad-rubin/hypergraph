@@ -770,3 +770,35 @@ class TestMutexBranchOutputs:
         # so it's not exclusively in path_a's mutex group
         with pytest.raises(GraphConfigError, match="Multiple nodes produce"):
             Graph([decide, path_a, path_b, merge, another_result])
+
+    def test_same_branch_duplicate_output_rejected(self):
+        """Two nodes in the same branch cannot share output names."""
+
+        @node(output_name="a")
+        def start(x: int) -> int:
+            return x
+
+        @route(targets=["path_a", "path_b"])
+        def decide(a: int) -> str:
+            return "path_a" if a > 0 else "path_b"
+
+        @node(output_name="intermediate")
+        def path_a(a: int) -> int:
+            return a * 2
+
+        @node(output_name="result")  # First node producing 'result' in path_a
+        def path_a_end1(intermediate: int) -> str:
+            return "end1"
+
+        @node(output_name="result")  # Second node producing 'result' - SAME branch!
+        def path_a_end2(intermediate: int) -> str:
+            return "end2"
+
+        @node(output_name="other")
+        def path_b(a: int) -> int:
+            return a * 3
+
+        # Should FAIL because path_a_end1 and path_a_end2 are in the SAME branch
+        # Both execute when path_a is chosen, so duplicate output is a real conflict
+        with pytest.raises(GraphConfigError, match="Multiple nodes produce"):
+            Graph([start, decide, path_a, path_a_end1, path_a_end2, path_b])
