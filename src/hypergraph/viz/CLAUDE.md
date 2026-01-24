@@ -898,6 +898,33 @@ INPUTs don't get `parentNode` set in Python (renderer.py). Instead:
 - Be visible at root level when container is collapsed
 - Be positioned inside container when expanded
 
+### Control Edge Routing (Route/IfElse Nodes)
+
+Control edges from BRANCH nodes (route/ifelse) need special handling because they don't have a `value_name` to match against `param_to_consumers`.
+
+**The Problem:**
+```python
+# This condition only triggers for data edges (with value_name)
+if is_target_container and is_target_expanded and value_name:
+    # Re-route to internal consumer
+```
+
+Control edges have `edge_type="control"` but no `value_name`, so they were never re-routed.
+
+**The Fix:**
+```python
+if is_target_container and is_target_expanded:
+    if value_name:
+        # Data edge: find internal consumer via param_to_consumers
+    elif edge_type == "control":
+        # Control edge: route to entry point(s) of the container
+        entry_points = _find_container_entry_points(target, flat_graph, expansion_state)
+        if entry_points:
+            actual_target = entry_points[0]
+```
+
+**Entry Points:** Nodes inside the container that have no data predecessors from within the container (they're at the "top" of the internal graph).
+
 ### Test Coverage
 
 `tests/viz/test_scope_aware_visibility.py`:
@@ -905,6 +932,7 @@ INPUTs don't get `parentNode` set in Python (renderer.py). Instead:
 - INPUT `ownerContainer` metadata correctness
 - DATA `internalOnly` flag correctness
 - Visual positioning of INPUTs inside container bounds
+- Control edge routing (route/ifelse → container entry points)
 
 ### Files Modified
 

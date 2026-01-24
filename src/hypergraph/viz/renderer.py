@@ -246,6 +246,51 @@ def _is_descendant_of(node_id: str, ancestor_id: str, flat_graph: nx.DiGraph) ->
     return False
 
 
+def _find_container_entry_points(
+    container_id: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> list[str]:
+    """Find entry point nodes inside a container for control edge routing.
+
+    Entry points are nodes inside the container that:
+    1. Are direct children of the container (not nested deeper)
+    2. Have no data predecessors from within the container
+    3. Are visible in the current expansion state
+
+    These are the nodes that would "receive" control flow from outside.
+    """
+    # Find direct children of the container
+    direct_children = [
+        node_id
+        for node_id, attrs in flat_graph.nodes(data=True)
+        if attrs.get("parent") == container_id
+    ]
+
+    # Find internal producers (nodes inside container that produce outputs)
+    internal_outputs = set()
+    for node_id in direct_children:
+        attrs = flat_graph.nodes.get(node_id, {})
+        for output in attrs.get("outputs", ()):
+            internal_outputs.add(output)
+
+    # Entry points are children that don't consume internal outputs
+    entry_points = []
+    for node_id in direct_children:
+        attrs = flat_graph.nodes.get(node_id, {})
+        inputs = set(attrs.get("inputs", ()))
+
+        # Check if this node consumes any internal outputs
+        consumes_internal = bool(inputs & internal_outputs)
+
+        # Include if doesn't consume internal outputs and is visible
+        if not consumes_internal:
+            if _is_node_visible(node_id, flat_graph, expansion_state):
+                entry_points.append(node_id)
+
+    return entry_points
+
+
 def _build_output_to_producer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -1033,17 +1078,26 @@ def _add_merged_output_edges(
         is_target_container = target_attrs.get("node_type") == "GRAPH"
         is_target_expanded = expansion_state.get(target, False)
 
-        if is_target_container and is_target_expanded and value_name:
-            # Find the actual internal consumer of this value
-            consumers = param_to_consumers.get(value_name, [])
-            # Filter to consumers that are inside this target container
-            internal_consumers = [
-                c for c in consumers
-                if _is_descendant_of(c, target, flat_graph) or c == target
-            ]
-            if internal_consumers:
-                # Use the first internal consumer (there should typically be one)
-                actual_target = internal_consumers[0]
+        if is_target_container and is_target_expanded:
+            if value_name:
+                # Data edge: find the actual internal consumer of this value
+                consumers = param_to_consumers.get(value_name, [])
+                # Filter to consumers that are inside this target container
+                internal_consumers = [
+                    c for c in consumers
+                    if _is_descendant_of(c, target, flat_graph) or c == target
+                ]
+                if internal_consumers:
+                    # Use the first internal consumer (there should typically be one)
+                    actual_target = internal_consumers[0]
+            elif edge_type == "control":
+                # Control edge: route to entry point(s) of the container
+                # Entry points are direct children with no internal predecessors
+                entry_points = _find_container_entry_points(
+                    target, flat_graph, expansion_state
+                )
+                if entry_points:
+                    actual_target = entry_points[0]
 
         # Skip if actual target is not visible
         if not _is_node_visible(actual_target, flat_graph, expansion_state):
@@ -1160,14 +1214,29 @@ def _add_separate_output_edges(
             })
         else:
             # Control edges go direct (not through DATA nodes)
-            edge_id = f"e_{source}_{target}"
+            # But we still need to re-route if target is an expanded container
+            actual_target = target
+            if edge_type == "control":
+                target_attrs = flat_graph.nodes.get(target, {})
+                is_target_container = target_attrs.get("node_type") == "GRAPH"
+                is_target_expanded = expansion_state.get(target, False)
+
+                if is_target_container and is_target_expanded:
+                    # Route to entry point(s) of the container
+                    entry_points = _find_container_entry_points(
+                        target, flat_graph, expansion_state
+                    )
+                    if entry_points:
+                        actual_target = entry_points[0]
+
+            edge_id = f"e_{source}_{actual_target}"
             if value_name:
-                edge_id = f"e_{source}_{value_name}_{target}"
+                edge_id = f"e_{source}_{value_name}_{actual_target}"
 
             rf_edge = {
                 "id": edge_id,
                 "source": source,
-                "target": target,
+                "target": actual_target,
                 "animated": False,
                 "style": {"stroke": "#64748b", "strokeWidth": 2},
                 "data": {

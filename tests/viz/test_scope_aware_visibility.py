@@ -435,3 +435,92 @@ class TestInternalOnlyDataNodes:
             f"Expected: internalOnly=False (chat_messages has external consumer)\n"
             f"Actual: internalOnly={internal_only}"
         )
+
+
+# =============================================================================
+# Test: Control Edge Routing (Route/IfElse Nodes)
+# =============================================================================
+
+class TestControlEdgeRouting:
+    """Test that control edges from route/ifelse nodes route correctly."""
+
+    def test_control_edge_routes_to_container_when_collapsed(self):
+        """Control edge should go to container when collapsed.
+
+        When a route targets a container that is collapsed,
+        the edge should go to the container boundary.
+        """
+        from hypergraph import Graph, node, route, END
+        from hypergraph.viz.renderer import render_graph
+
+        @node(output_name='result')
+        def inner_step(x: int) -> int:
+            return x * 2
+
+        @route(targets=['inner_graph', END])
+        def decide(x: int) -> str:
+            return 'inner_graph' if x > 0 else END
+
+        inner = Graph(nodes=[inner_step], name='inner_graph')
+        outer = Graph(nodes=[decide, inner.as_node()], name='outer')
+        flat_graph = outer.to_flat_graph()
+
+        result = render_graph(flat_graph, depth=0)
+        edges_by_state = result["meta"]["edgesByState"]
+        collapsed_key = "inner_graph:0|sep:0"
+
+        assert collapsed_key in edges_by_state
+        edges = edges_by_state[collapsed_key]
+
+        # Find the control edge from decide
+        control_edges = [e for e in edges if e["source"] == "decide"]
+        assert len(control_edges) == 1
+
+        # When collapsed, target should be the container
+        target = control_edges[0]["target"]
+        assert target == "inner_graph", (
+            f"Expected: decide -> inner_graph (collapsed container)\n"
+            f"Actual: decide -> {target}"
+        )
+
+    def test_control_edge_routes_to_internal_node_when_expanded(self):
+        """Control edge should go to internal node when container is expanded.
+
+        When a route targets a container that is expanded,
+        the edge should go to the entry point node inside the container.
+        """
+        from hypergraph import Graph, node, route, END
+        from hypergraph.viz.renderer import render_graph
+
+        @node(output_name='result')
+        def inner_step(x: int) -> int:
+            return x * 2
+
+        @route(targets=['inner_graph', END])
+        def decide(x: int) -> str:
+            return 'inner_graph' if x > 0 else END
+
+        inner = Graph(nodes=[inner_step], name='inner_graph')
+        outer = Graph(nodes=[decide, inner.as_node()], name='outer')
+        flat_graph = outer.to_flat_graph()
+
+        result = render_graph(flat_graph, depth=1)
+        edges_by_state = result["meta"]["edgesByState"]
+        expanded_key = "inner_graph:1|sep:0"
+
+        assert expanded_key in edges_by_state
+        edges = edges_by_state[expanded_key]
+
+        # Find the control edge from decide
+        control_edges = [e for e in edges if e["source"] == "decide"]
+        assert len(control_edges) == 1
+
+        # When expanded, target should be the internal entry point
+        target = control_edges[0]["target"]
+        assert target == "inner_step", (
+            f"CONTROL EDGE ROUTING BUG!\n"
+            f"Expected: decide -> inner_step (entry point inside container)\n"
+            f"Actual: decide -> {target}\n"
+            f"\nWhen inner_graph is expanded, control edges should route to\n"
+            f"the entry point node inside, not the container boundary."
+        )
