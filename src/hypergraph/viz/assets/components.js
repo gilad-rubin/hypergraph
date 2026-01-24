@@ -36,6 +36,29 @@
   var TYPE_HINT_MAX_CHARS = 25;
   var NODE_LABEL_MAX_CHARS = 25;
 
+  // Keep RF handle anchors aligned with layout edge points.
+  var HANDLE_SIZE_PX = 8;
+  var HANDLE_CENTER_PX = HANDLE_SIZE_PX / 2;
+  var NODE_TYPE_BOTTOM_OFFSETS = {
+    PIPELINE: 26,
+    GRAPH: 26,
+    FUNCTION: 14,
+    DATA: 6,
+    INPUT: 6,
+    INPUT_GROUP: 6,
+    BRANCH: 10,
+  };
+  var DEFAULT_BOTTOM_OFFSET = 10;
+
+  var getSourceHandleStyle = function(nodeType) {
+    var offset = NODE_TYPE_BOTTOM_OFFSETS[nodeType] || DEFAULT_BOTTOM_OFFSET;
+    return { bottom: (offset - HANDLE_CENTER_PX) + 'px' };
+  };
+
+  var getTargetHandleStyle = function() {
+    return { top: (-HANDLE_CENTER_PX) + 'px' };
+  };
+
   // Helper to truncate type hints consistently
   var truncateTypeHint = function(type) {
     return type && type.length > TYPE_HINT_MAX_CHARS
@@ -367,6 +390,9 @@
     var theme = data.theme || 'dark';
     var updateNodeInternals = useUpdateNodeInternals();
     var showDebug = data.debugMode || root.__hypergraph_debug_overlays;
+    var nodeType = data.nodeType || 'FUNCTION';
+    var sourceHandleStyle = getSourceHandleStyle(nodeType);
+    var targetHandleStyle = getTargetHandleStyle();
 
     // Debug wrapper
     var DebugWrapper = function(wrapperProps) {
@@ -449,8 +475,8 @@
                <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icon} /></span>
                <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
                ${hasTypeHint ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${data.typeHint}>: ${displayTypeHint}</span>` : null}
-               <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${{ top: '-2px' }} />
-               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${{ bottom: '-2px' }} />
+               <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
+               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
       `;
     }
@@ -474,7 +500,7 @@
               <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icons.Data} /></span>
               <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
               ${hasType ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${typeHint}>: ${displayType}</span>` : null}
-              <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${{ bottom: '-2px' }} />
+              <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
       `;
     }
@@ -504,7 +530,7 @@
                       </div>
                   `;
               })}
-              <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${{ bottom: '-2px' }} />
+              <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
       `;
     }
@@ -521,7 +547,6 @@
       var diamondHoverBorderColor = isLight ? '#06b6d4' : 'rgba(34,211,238,0.8)';
       var glowColor = 'rgba(6,182,212,0.4)';
       var labelColor = isLight ? '#0e7490' : '#a5f3fc';
-      var diamondTipOffset = '3px';
 
       return html`
         <${DebugWrapper}>
@@ -564,8 +589,8 @@
                     }} title=${data.label}>${data.label}</span>
             </div>
 
-            <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${{ top: diamondTipOffset }} />
-            <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${{ bottom: diamondTipOffset }} id="branch-source" />
+            <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
+            <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} id="branch-source" />
           </div>
         <//>
       `;
@@ -598,8 +623,8 @@
             <${Icon} />
             ${truncateLabel(data.label)}
           </button>
-          <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" />
-          <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" />
+          <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
+          <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
         </div>
       `;
     }
@@ -636,8 +661,8 @@
 
         ${showCombined ? html`<${OutputsSection} outputs=${outputs} showTypes=${showTypes} isLight=${isLight} />` : null}
 
-        <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" />
-        <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" />
+        <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
+        <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
 
         ${data.nodeType === 'PIPELINE' ? html`
            <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
