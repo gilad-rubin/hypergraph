@@ -20,6 +20,7 @@
 - Follow SOLID principles.
 - Use simple, readable functions rather than deeply nested ones.
 - Split large functions into focused helpers when needed.
+- Visualization measurements live in `src/hypergraph/viz/assets/constants.js`; update that file instead of duplicating constants.
 
 ## Testing
 

@@ -199,6 +199,11 @@ rag_for_search = rag.as_node().with_inputs(query="search_query")
 rag_for_chat = rag.as_node().with_inputs(query="user_message")
 ```
 
+## Visualization Development
+
+- Shared measurement constants live in `src/hypergraph/viz/assets/constants.js` and are loaded before layout/render assets.
+- JS visibility logic is exercised via Playwright tests in `tests/viz/test_state_utils_js.py`.
+
 ### 7. Think Singular, Scale with Map
 
 Write logic for one item. Scale to many with map.
