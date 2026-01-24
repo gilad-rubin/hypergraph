@@ -613,13 +613,19 @@ class TestEdgeValidation:
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInputNodeHorizontalSpread:
-    """Tests that multiple INPUT nodes feeding the same target are spread horizontally."""
+    """Tests that multiple INPUT nodes feeding the same target are spread horizontally.
 
-    def test_multiple_inputs_same_target_horizontal_spread(self):
-        """When two INPUT nodes feed the same target, they should be side-by-side.
+    Note: When inputs share the same target AND bound status, they are now grouped into
+    INPUT_GROUP nodes. This test verifies that:
+    1. When inputs CAN be grouped (same target, same bound status), they become INPUT_GROUP
+    2. When inputs CANNOT be grouped (different targets or bound status), they spread horizontally
+    """
 
-        This tests the bug where system_prompt and max_tokens in complex_rag
-        were stacking vertically instead of being positioned horizontally.
+    def test_multiple_inputs_same_target_are_grouped(self):
+        """When two unbound inputs feed the same target, they should be grouped.
+
+        This validates the INPUT_GROUP feature - inputs with identical consumers
+        and bound status are consolidated into a single group node.
         """
         from playwright.sync_api import sync_playwright
         from hypergraph.viz.widget import visualize
@@ -652,44 +658,103 @@ class TestInputNodeHorizontalSpread:
                 result = page.evaluate("""() => {
                     const debug = window.__hypergraphVizDebug;
 
-                    // Find INPUT nodes - they have nodeType 'INPUT' or are input group nodes
+                    // Find INPUT_GROUP nodes
+                    const groupNodes = debug.nodes.filter(n =>
+                        n.nodeType === 'INPUT_GROUP'
+                    );
+
+                    // Find individual INPUT nodes
                     const inputNodes = debug.nodes.filter(n =>
-                        n.nodeType === 'INPUT' ||
-                        n.nodeType === 'INPUT_GROUP' ||
-                        n.id.includes('__inputs__')
+                        n.nodeType === 'INPUT'
                     );
 
-                    // Also look for leaf nodes that have no incoming edges (INPUT behavior)
-                    const nodeIds = new Set(debug.nodes.map(n => n.id));
-                    const hasIncoming = new Set();
-                    const hasOutgoing = new Set();
+                    return {
+                        groupNodes: groupNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
+                        inputNodes: inputNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
+                        allNodes: debug.nodes.map(n => ({ id: n.id, nodeType: n.nodeType }))
+                    };
+                }""")
 
-                    for (const edge of debug.edges) {
-                        if (nodeIds.has(edge.target)) hasIncoming.add(edge.target);
-                        if (nodeIds.has(edge.source)) hasOutgoing.add(edge.source);
-                    }
+                browser.close()
+        finally:
+            os.unlink(temp_path)
 
-                    // Leaf nodes: have outgoing edges, no incoming edges
-                    const leafNodes = debug.nodes.filter(n =>
-                        hasOutgoing.has(n.id) && !hasIncoming.has(n.id)
+        # With INPUT_GROUP feature, both inputs should be grouped into one node
+        assert len(result["groupNodes"]) == 1, (
+            f"Expected 1 INPUT_GROUP node (grouping max_tokens and system_prompt), found {len(result['groupNodes'])}:\n"
+            f"Group nodes: {result['groupNodes']}\n"
+            f"Input nodes: {result['inputNodes']}\n"
+            f"All nodes: {result['allNodes']}"
+        )
+
+        # The group ID should contain both param names
+        group_id = result["groupNodes"][0]["id"]
+        assert "max_tokens" in group_id and "system_prompt" in group_id, (
+            f"INPUT_GROUP should contain both parameter names, got: {group_id}"
+        )
+
+    def test_different_targets_no_grouping_horizontal_spread(self):
+        """When inputs have different targets, they should NOT be grouped and spread horizontally.
+
+        This tests that the horizontal spread logic still works for inputs that cannot
+        be grouped (different consumers).
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        from hypergraph import Graph, node
+        import tempfile
+        import os
+
+        # Create a graph with two inputs feeding different functions
+        @node(output_name="step1_out")
+        def step1(input_a: str) -> str:
+            return input_a
+
+        @node(output_name="step2_out")
+        def step2(input_b: str, step1_out: str) -> str:
+            return f"{input_b} {step1_out}"
+
+        graph = Graph(nodes=[step1, step2])
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(graph, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find individual INPUT nodes (not grouped since different targets)
+                    const inputNodes = debug.nodes.filter(n =>
+                        n.nodeType === 'INPUT'
                     );
 
-                    // Get the X coordinates of all leaf nodes
-                    const leafXCoords = leafNodes.map(n => ({
+                    // Get the X coordinates of INPUT nodes
+                    const inputXCoords = inputNodes.map(n => ({
                         id: n.id,
                         x: n.x,
                         y: n.y,
                         centerX: n.x + n.width / 2
                     }));
 
-                    // If there are multiple leaf nodes, check if they have different X coordinates
+                    // Check if they have different X coordinates (horizontal spread)
                     let hasHorizontalSpread = false;
                     let minXDiff = Infinity;
 
-                    if (leafXCoords.length >= 2) {
-                        for (let i = 0; i < leafXCoords.length; i++) {
-                            for (let j = i + 1; j < leafXCoords.length; j++) {
-                                const xDiff = Math.abs(leafXCoords[i].x - leafXCoords[j].x);
+                    if (inputXCoords.length >= 2) {
+                        for (let i = 0; i < inputXCoords.length; i++) {
+                            for (let j = i + 1; j < inputXCoords.length; j++) {
+                                const xDiff = Math.abs(inputXCoords[i].x - inputXCoords[j].x);
                                 if (xDiff > 10) {
                                     hasHorizontalSpread = true;
                                 }
@@ -699,8 +764,7 @@ class TestInputNodeHorizontalSpread:
                     }
 
                     return {
-                        inputNodes: inputNodes.map(n => ({ id: n.id, x: n.x, y: n.y })),
-                        leafNodes: leafXCoords,
+                        inputNodes: inputXCoords,
                         hasHorizontalSpread: hasHorizontalSpread,
                         minXDiff: minXDiff,
                         allNodes: debug.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, nodeType: n.nodeType }))
@@ -711,17 +775,17 @@ class TestInputNodeHorizontalSpread:
         finally:
             os.unlink(temp_path)
 
-        # We expect at least 2 leaf nodes (the two input parameters)
-        assert len(result["leafNodes"]) >= 2, (
-            f"Expected at least 2 leaf nodes (input parameters), found {len(result['leafNodes'])}:\n"
-            f"Leaf nodes: {result['leafNodes']}\n"
+        # Should have 2 separate INPUT nodes (different targets = no grouping)
+        assert len(result["inputNodes"]) == 2, (
+            f"Expected 2 INPUT nodes (different targets, no grouping), found {len(result['inputNodes'])}:\n"
+            f"Input nodes: {result['inputNodes']}\n"
             f"All nodes: {result['allNodes']}"
         )
 
         # Check that they have different X coordinates (horizontal spread)
         assert result["hasHorizontalSpread"], (
             f"INPUT nodes should be spread horizontally (side-by-side), not stacked vertically!\n"
-            f"Leaf nodes: {result['leafNodes']}\n"
+            f"Input nodes: {result['inputNodes']}\n"
             f"Minimum X difference: {result['minXDiff']}px (should be > 10px for horizontal spread)\n"
             f"The fixOverlappingNodes function should shift leaf nodes horizontally, not vertically."
         )

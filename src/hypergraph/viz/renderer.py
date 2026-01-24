@@ -550,6 +550,55 @@ def _is_output_externally_consumed(
     return False
 
 
+def _group_inputs_by_consumers_and_bound(
+    external_inputs: set[str],
+    param_to_consumers: dict[str, list[str]],
+    bound_params: set[str],
+) -> dict[tuple[frozenset[str], bool], list[str]]:
+    """Group input parameters by their consumers and bound status.
+
+    Args:
+        external_inputs: Set of external input parameter names
+        param_to_consumers: Map of param -> list of consumer node IDs
+        bound_params: Set of bound parameter names
+
+    Returns:
+        Dict mapping (frozenset of consumers, is_bound) -> list of params
+    """
+    groups: dict[tuple[frozenset[str], bool], list[str]] = {}
+    for param in external_inputs:
+        consumers = frozenset(param_to_consumers.get(param, []))
+        is_bound = param in bound_params
+        key = (consumers, is_bound)
+        groups.setdefault(key, []).append(param)
+    return groups
+
+
+def _get_param_type(param: str, flat_graph: nx.DiGraph) -> type | None:
+    """Find the type annotation for a parameter from the graph."""
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if param in attrs.get("inputs", ()):
+            param_type = attrs.get("input_types", {}).get(param)
+            if param_type is not None:
+                return param_type
+    return None
+
+
+def _get_param_targets(
+    param: str,
+    flat_graph: nx.DiGraph,
+    param_to_consumers: dict[str, list[str]],
+) -> list[str]:
+    """Get the actual target nodes for a parameter."""
+    actual_targets = param_to_consumers.get(param, [])
+    if not actual_targets:
+        # Fall back to root-level consumer
+        for node_id, attrs in flat_graph.nodes(data=True):
+            if param in attrs.get("inputs", ()):
+                return [_get_root_ancestor(node_id, flat_graph)]
+    return actual_targets
+
+
 def _create_input_nodes(
     nodes: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
@@ -560,7 +609,14 @@ def _create_input_nodes(
     param_to_consumers: dict[str, list[str]],
     expansion_state: dict[str, bool],
 ) -> dict[str, str]:
-    """Create individual INPUT nodes for each external input parameter.
+    """Create INPUT nodes for external input parameters, grouping where possible.
+
+    INPUT nodes are grouped when they have:
+    1. Exact same set of consumer nodes (destinations)
+    2. Same bound status (both bound or both unbound)
+
+    For single-param groups: creates individual INPUT node
+    For multi-param groups: creates INPUT_GROUP node
 
     INPUT nodes are placed based on scope analysis:
     - If ALL consumers are inside a single expanded container, the INPUT is
@@ -572,61 +628,77 @@ def _create_input_nodes(
     """
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
-    external_inputs = list(required) + list(optional)
+    external_inputs = set(required) | set(optional)
 
     input_node_map: dict[str, str] = {}
 
-    for param in external_inputs:
-        input_node_id = f"input_{param}"
-        is_bound = param in bound_params
+    # Group params by (frozenset of consumer_ids, is_bound)
+    groups = _group_inputs_by_consumers_and_bound(external_inputs, param_to_consumers, bound_params)
 
-        # Find the type for this parameter
-        param_type = None
-        for node_id, attrs in flat_graph.nodes(data=True):
-            if param in attrs.get("inputs", ()):
-                param_type = attrs.get("input_types", {}).get(param)
-                if param_type is not None:
-                    break
+    # Create nodes for each group
+    for (consumers, is_bound), params in groups.items():
+        # Sort params for deterministic ordering
+        params = sorted(params)
 
-        # Get all targets for edge routing (multiple consumers supported)
-        actual_targets = param_to_consumers.get(param, [])
-        if not actual_targets:
-            # Fall back to root-level consumer
-            for node_id, attrs in flat_graph.nodes(data=True):
-                if param in attrs.get("inputs", ()):
-                    actual_targets = [_get_root_ancestor(node_id, flat_graph)]
-                    break
+        if len(params) == 1:
+            # Single param: create individual INPUT node (existing logic)
+            param = params[0]
+            input_node_id = f"input_{param}"
+            param_type = _get_param_type(param, flat_graph)
+            actual_targets = _get_param_targets(param, flat_graph, param_to_consumers)
+            owner_container = _compute_input_scope(param, flat_graph, expansion_state)
 
-        # Compute scope: which container (if any) should own this INPUT
-        # Note: ownerContainer is used for layout positioning hints and edge routing,
-        # NOT for parent-child visibility. INPUTs always stay at root level but
-        # can be positioned inside expanded containers by the layout algorithm.
-        owner_container = _compute_input_scope(param, flat_graph, expansion_state)
+            input_node: dict[str, Any] = {
+                "id": input_node_id,
+                "type": "custom",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "nodeType": "INPUT",
+                    "label": param,
+                    "typeHint": _format_type(param_type),
+                    "isBound": is_bound,
+                    "actualTargets": actual_targets,
+                    "theme": theme,
+                    "showTypes": show_types,
+                    "ownerContainer": owner_container,
+                },
+                "sourcePosition": "bottom",
+                "targetPosition": "top",
+            }
+            nodes.append(input_node)
+            input_node_map[param] = input_node_id
+        else:
+            # Multiple params: create INPUT_GROUP node
+            group_id = f"input_group_{'_'.join(params)}"
+            param_types = [_format_type(_get_param_type(p, flat_graph)) for p in params]
+            actual_targets = list(consumers)
 
-        input_node: dict[str, Any] = {
-            "id": input_node_id,
-            "type": "custom",
-            "position": {"x": 0, "y": 0},
-            "data": {
-                "nodeType": "INPUT",
-                "label": param,
-                "typeHint": _format_type(param_type),
-                "isBound": is_bound,
-                "actualTargets": actual_targets,  # List of targets for edges
-                "theme": theme,
-                "showTypes": show_types,
-                "ownerContainer": owner_container,  # For layout positioning hints
-            },
-            "sourcePosition": "bottom",
-            "targetPosition": "top",
-        }
+            # Compute owner container - use the first param (all have same consumers)
+            # All params in the group share the same consumers, so they share the same owner
+            owner_container = _compute_input_scope(params[0], flat_graph, expansion_state)
 
-        # Note: We do NOT set parentNode on INPUT nodes. They stay at root level
-        # and are positioned via layout. This ensures they remain visible when
-        # their owner container is collapsed (edge routes to container instead).
+            group_node: dict[str, Any] = {
+                "id": group_id,
+                "type": "custom",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "nodeType": "INPUT_GROUP",
+                    "params": params,
+                    "paramTypes": param_types,
+                    "isBound": is_bound,
+                    "actualTargets": actual_targets,
+                    "ownerContainer": owner_container,
+                    "theme": theme,
+                    "showTypes": show_types,
+                },
+                "sourcePosition": "bottom",
+                "targetPosition": "top",
+            }
+            nodes.append(group_node)
 
-        nodes.append(input_node)
-        input_node_map[param] = input_node_id
+            # Map each param to the group node ID for edge routing
+            for param in params:
+                input_node_map[param] = group_id
 
     return input_node_map
 
@@ -814,27 +886,43 @@ def _create_input_edges(
     edges: list[dict[str, Any]],
     input_node_map: dict[str, str],
 ) -> None:
-    """Create edges from INPUT nodes to their actual targets.
+    """Create edges from INPUT and INPUT_GROUP nodes to their actual targets.
 
     Each INPUT node connects to ALL its consumer nodes.
+    Each INPUT_GROUP node creates one edge per consumer (not per param).
     The targets are explicitly computed based on expansion state.
     """
     for node in nodes:
-        if node.get("data", {}).get("nodeType") != "INPUT":
-            continue
+        node_type = node.get("data", {}).get("nodeType")
 
-        input_node_id = node["id"]
-        actual_targets = node["data"].get("actualTargets", [])
+        if node_type == "INPUT":
+            input_node_id = node["id"]
+            actual_targets = node["data"].get("actualTargets", [])
 
-        for actual_target in actual_targets:
-            edges.append({
-                "id": f"e_{input_node_id}_to_{actual_target}",
-                "source": input_node_id,
-                "target": actual_target,
-                "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
-                "data": {"edgeType": "input"},
-            })
+            for actual_target in actual_targets:
+                edges.append({
+                    "id": f"e_{input_node_id}_to_{actual_target}",
+                    "source": input_node_id,
+                    "target": actual_target,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {"edgeType": "input"},
+                })
+
+        elif node_type == "INPUT_GROUP":
+            group_id = node["id"]
+            actual_targets = node["data"].get("actualTargets", [])
+
+            # Create one edge per consumer (not per param)
+            for actual_target in actual_targets:
+                edges.append({
+                    "id": f"e_{group_id}_{actual_target}",
+                    "source": group_id,
+                    "target": actual_target,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {"edgeType": "input"},
+                })
 
 
 def _find_common_ancestor(
@@ -1023,21 +1111,41 @@ def _compute_edges_for_state(
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
     external_inputs = set(required) | set(optional)
+    bound_params = set(input_spec.get("bound", {}).keys())
 
-    # 1. Add edges from INPUT nodes to ALL their actual consumers
-    for param in external_inputs:
-        input_node_id = f"input_{param}"
-        actual_targets = param_to_consumers.get(param, [])
+    # Group inputs by (consumers, is_bound)
+    groups = _group_inputs_by_consumers_and_bound(external_inputs, param_to_consumers, bound_params)
 
-        for actual_target in actual_targets:
-            edges.append({
-                "id": f"e_{input_node_id}_to_{actual_target}",
-                "source": input_node_id,
-                "target": actual_target,
-                "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
-                "data": {"edgeType": "input"},
-            })
+    # 1. Add edges from INPUT/INPUT_GROUP nodes to their consumers
+    for (consumers, is_bound), params in groups.items():
+        params = sorted(params)
+        actual_targets = list(consumers)
+
+        if len(params) == 1:
+            # Single param: use individual INPUT node
+            param = params[0]
+            input_node_id = f"input_{param}"
+            for actual_target in actual_targets:
+                edges.append({
+                    "id": f"e_{input_node_id}_to_{actual_target}",
+                    "source": input_node_id,
+                    "target": actual_target,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {"edgeType": "input"},
+                })
+        else:
+            # Multiple params: use INPUT_GROUP node
+            group_id = f"input_group_{'_'.join(params)}"
+            for actual_target in actual_targets:
+                edges.append({
+                    "id": f"e_{group_id}_{actual_target}",
+                    "source": group_id,
+                    "target": actual_target,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {"edgeType": "input"},
+                })
 
     # 2. Add edges between function nodes (based on separate_outputs mode)
     if separate_outputs:
