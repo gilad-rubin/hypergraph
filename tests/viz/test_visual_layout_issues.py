@@ -789,3 +789,109 @@ class TestInputNodeHorizontalSpread:
             f"Minimum X difference: {result['minXDiff']}px (should be > 10px for horizontal spread)\n"
             f"The fixOverlappingNodes function should shift leaf nodes horizontally, not vertically."
         )
+
+    def test_bound_unbound_same_target_separate_groups(self):
+        """When some inputs are bound and others unbound (same target), they should be in separate groups.
+
+        This validates that the INPUT_GROUP feature respects bound status:
+        - Bound inputs (with values) get their own group
+        - Unbound inputs (requiring user input) get their own group
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        from hypergraph import Graph, node
+        import tempfile
+        import os
+
+        # Create a graph with 4 inputs: 2 bound, 2 unbound - all to same target
+        @node(output_name="response")
+        def generate(
+            system_prompt: str,
+            max_tokens: int,
+            temperature: float,
+            model: str,
+        ) -> str:
+            return f"{system_prompt} {max_tokens} {temperature} {model}"
+
+        graph = Graph(nodes=[generate])
+        # Bind 2 of the 4 inputs
+        bound_graph = graph.bind(temperature=0.7, model="gpt-4")
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(bound_graph, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find INPUT_GROUP nodes
+                    const groupNodes = debug.nodes.filter(n =>
+                        n.nodeType === 'INPUT_GROUP'
+                    );
+
+                    // Find individual INPUT nodes (should be none if all are grouped)
+                    const inputNodes = debug.nodes.filter(n =>
+                        n.nodeType === 'INPUT'
+                    );
+
+                    // Get details about each group
+                    const groupDetails = groupNodes.map(n => ({
+                        id: n.id,
+                        nodeType: n.nodeType,
+                        // Check if the group contains bound inputs (dashed outline class)
+                        // Group ID format: input_group_param1_param2_...
+                        params: n.id.replace('input_group_', '').split('_'),
+                    }));
+
+                    return {
+                        groupNodes: groupDetails,
+                        inputNodes: inputNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
+                        allNodes: debug.nodes.map(n => ({ id: n.id, nodeType: n.nodeType }))
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        # With 2 bound and 2 unbound inputs to the same target, we expect 2 groups
+        assert len(result["groupNodes"]) == 2, (
+            f"Expected 2 INPUT_GROUP nodes (one for bound, one for unbound inputs), found {len(result['groupNodes'])}:\n"
+            f"Group nodes: {result['groupNodes']}\n"
+            f"Input nodes: {result['inputNodes']}\n"
+            f"All nodes: {result['allNodes']}"
+        )
+
+        # Verify no ungrouped INPUT nodes remain
+        assert len(result["inputNodes"]) == 0, (
+            f"Expected all inputs to be grouped, but found {len(result['inputNodes'])} ungrouped:\n"
+            f"Input nodes: {result['inputNodes']}"
+        )
+
+        # Check that one group has bound params (model, temperature) and one has unbound (max_tokens, system_prompt)
+        group_ids = [g["id"] for g in result["groupNodes"]]
+        bound_params = {"model", "temperature"}
+        unbound_params = {"max_tokens", "system_prompt"}
+
+        # Each group should contain either all bound or all unbound params
+        # Check by looking for param names in the group ID string
+        for group_id in group_ids:
+            has_bound = any(p in group_id for p in bound_params)
+            has_unbound = any(p in group_id for p in unbound_params)
+            # A group should have EITHER bound OR unbound params, not both
+            assert has_bound != has_unbound, (
+                f"Group {group_id} mixes bound and unbound params!\n"
+                f"has_bound: {has_bound}, has_unbound: {has_unbound}\n"
+                f"Expected groups to separate bound ({bound_params}) from unbound ({unbound_params})"
+            )
