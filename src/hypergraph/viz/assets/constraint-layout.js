@@ -337,7 +337,8 @@
     // Pull leaf source nodes (like INPUT nodes) closer to their targets
     // The constraint solver only ensures they're ABOVE their targets,
     // not that they're CLOSE to them
-    pullLeafNodesToTargets(nodes, edges, spaceY, orientation);
+    // Also spreads leaf nodes horizontally when multiple target the same row
+    pullLeafNodesToTargets(nodes, edges, spaceY, spaceX, orientation);
 
     // Fix overlapping nodes that the constraint solver missed
     // (nodes not connected by edges can end up overlapping)
@@ -348,9 +349,14 @@
    * Pull leaf source nodes down to be just above their targets.
    * Leaf nodes (no incoming edges) can float too high because the constraint
    * solver only ensures minimum separation, not proximity.
+   *
+   * Also spreads leaf nodes horizontally when multiple leaves target the same row.
+   * This prevents INPUT nodes from stacking vertically.
    */
-  const pullLeafNodesToTargets = (nodes, edges, minGap, orientation) => {
+  const pullLeafNodesToTargets = (nodes, edges, minGapY, minGapX, orientation) => {
+    const coordPrimary = orientation === 'vertical' ? 'x' : 'y';
     const coordSecondary = orientation === 'vertical' ? 'y' : 'x';
+    const sizePrimary = orientation === 'vertical' ? 'width' : 'height';
     const sizeSecondary = orientation === 'vertical' ? 'height' : 'width';
 
     // Find leaf source nodes (nodes with outgoing edges but no incoming edges)
@@ -363,15 +369,12 @@
 
     const leafNodes = nodes.filter(n => hasOutgoing.has(n.id) && !hasIncoming.has(n.id));
 
-    // Build a map for quick lookup
-    const nodeById = {};
-    for (const node of nodes) {
-      nodeById[node.id] = node;
-    }
+    // Group leaves by their target row (Y position of target)
+    // This lets us spread leaves that end up at the same level
+    const leavesByTargetY = new Map();
 
     for (const leaf of leafNodes) {
       // Find the target with the smallest Y (highest position in vertical layout)
-      // that this leaf connects to
       let minTargetY = Infinity;
       let targetNode = null;
 
@@ -387,18 +390,50 @@
 
       if (!targetNode) continue;
 
-      // Calculate ideal position: leaf bottom should be minGap above target top
-      // In center coordinates:
-      // leafCenter + leafHeight/2 + minGap = targetCenter - targetHeight/2
-      // leafCenter = targetCenter - targetHeight/2 - minGap - leafHeight/2
+      // Calculate ideal Y position: leaf bottom should be minGapY above target top
       const targetHeight = targetNode[sizeSecondary];
       const leafHeight = leaf[sizeSecondary];
-      const idealLeafCenter = minTargetY - targetHeight / 2 - minGap - leafHeight / 2;
+      const idealLeafY = minTargetY - targetHeight / 2 - minGapY - leafHeight / 2;
 
       // Only move down (increase Y), never up
-      const currentCenter = leaf[coordSecondary];
-      if (idealLeafCenter > currentCenter) {
-        leaf[coordSecondary] = idealLeafCenter;
+      const currentY = leaf[coordSecondary];
+      if (idealLeafY > currentY) {
+        leaf[coordSecondary] = idealLeafY;
+      }
+
+      // Group by the final Y position (rounded to avoid floating point issues)
+      const finalY = leaf[coordSecondary];
+      const yKey = Math.round(finalY);
+      if (!leavesByTargetY.has(yKey)) {
+        leavesByTargetY.set(yKey, []);
+      }
+      leavesByTargetY.get(yKey).push({ leaf, targetNode });
+    }
+
+    // Spread leaves horizontally within each target row
+    for (const [yKey, leavesInRow] of leavesByTargetY) {
+      if (leavesInRow.length <= 1) continue;
+
+      // Sort by current X position for deterministic ordering
+      leavesInRow.sort((a, b) => a.leaf[coordPrimary] - b.leaf[coordPrimary]);
+
+      // Calculate total width needed
+      let totalWidth = 0;
+      for (const { leaf } of leavesInRow) {
+        totalWidth += leaf[sizePrimary];
+      }
+      totalWidth += (leavesInRow.length - 1) * minGapX;
+
+      // Find the center X of the target nodes (average if multiple targets)
+      const targetXs = [...new Set(leavesInRow.map(l => l.targetNode[coordPrimary]))];
+      const targetCenterX = targetXs.reduce((a, b) => a + b, 0) / targetXs.length;
+
+      // Position leaves centered around the target's X
+      let currentX = targetCenterX - totalWidth / 2;
+      for (const { leaf } of leavesInRow) {
+        const leafWidth = leaf[sizePrimary];
+        leaf[coordPrimary] = currentX + leafWidth / 2;
+        currentX += leafWidth + minGapX;
       }
     }
   };
