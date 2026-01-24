@@ -22,16 +22,17 @@
   var useEffect = React.useEffect;
 
   // === LAYOUT CONSTANTS ===
-  var TYPE_HINT_MAX_CHARS = 25;
-  var NODE_LABEL_MAX_CHARS = 25;
-  var CHAR_WIDTH_PX = 7;
-  var NODE_BASE_PADDING = 52;
-  var FUNCTION_NODE_BASE_PADDING = 48;
-  var MAX_NODE_WIDTH = 280;
+  var VizConstants = root.HypergraphVizConstants || {};
+  var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
+  var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
+  var CHAR_WIDTH_PX = VizConstants.CHAR_WIDTH_PX || 7;
+  var NODE_BASE_PADDING = VizConstants.NODE_BASE_PADDING || 52;
+  var FUNCTION_NODE_BASE_PADDING = VizConstants.FUNCTION_NODE_BASE_PADDING || 48;
+  var MAX_NODE_WIDTH = VizConstants.MAX_NODE_WIDTH || 280;
 
   // Constants for nested graph layout
-  var GRAPH_PADDING = 24;
-  var HEADER_HEIGHT = 32;
+  var GRAPH_PADDING = VizConstants.GRAPH_PADDING || 24;
+  var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
 
 
   /**
@@ -366,16 +367,16 @@
    * @returns {Object} { nodes, edges, size }
    */
   // Node type to wrapper offset mapping (matches constraint-layout.js)
-  var NODE_TYPE_OFFSETS = {
-    'PIPELINE': 26,    // Expanded containers (p-6 padding + border)
-    'GRAPH': 26,       // Collapsed containers (same styling)
-    'FUNCTION': 14,    // Function nodes (shadow-lg)
-    'DATA': 6,         // Data nodes (shadow-sm)
-    'INPUT': 6,        // Input nodes (shadow-sm)
-    'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
-    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+  var NODE_TYPE_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
+    'PIPELINE': 26,
+    'GRAPH': 26,
+    'FUNCTION': 14,
+    'DATA': 6,
+    'INPUT': 6,
+    'INPUT_GROUP': 6,
+    'BRANCH': 10,
   };
-  var DEFAULT_OFFSET = 10;
+  var DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
 
   function getNodeTypeOffset(nodeType) {
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;

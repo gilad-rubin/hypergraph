@@ -65,16 +65,17 @@
 
   // Node type to wrapper offset mapping (matches constraint-layout.js and layout.js)
   // Used to compute visible bounds from wrapper bounds
-  var NODE_TYPE_OFFSETS = {
-    'PIPELINE': 26,    // Expanded containers (p-6 padding + border)
-    'GRAPH': 26,       // Collapsed containers (same styling)
-    'FUNCTION': 14,    // Function nodes (shadow-lg)
-    'DATA': 6,         // Data nodes (shadow-sm)
-    'INPUT': 6,        // Input nodes (shadow-sm)
-    'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
-    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+  var VizConstants = root.HypergraphVizConstants || {};
+  var NODE_TYPE_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
+    'PIPELINE': 26,
+    'GRAPH': 26,
+    'FUNCTION': 14,
+    'DATA': 6,
+    'INPUT': 6,
+    'INPUT_GROUP': 6,
+    'BRANCH': 10,
   };
-  var DEFAULT_OFFSET = 10;
+  var DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
 
   function getNodeTypeOffset(nodeType, isExpanded) {
     if (nodeType === 'PIPELINE' && !isExpanded) {

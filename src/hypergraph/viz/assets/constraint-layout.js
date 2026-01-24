@@ -42,16 +42,17 @@
   // Node type to wrapper offset mapping
   // Different node types have different gaps between wrapper and visible content
   // Measured empirically: wrapper.bottom - innerElement.bottom for each type
-  const NODE_TYPE_OFFSETS = {
-    'PIPELINE': 26,    // Expanded containers (p-6 padding + border)
-    'GRAPH': 26,       // Collapsed containers (same styling)
-    'FUNCTION': 14,    // Function nodes (shadow-lg)
-    'DATA': 6,         // Data nodes (shadow-sm)
-    'INPUT': 6,        // Input nodes (shadow-sm)
-    'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
-    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+  const VizConstants = window.HypergraphVizConstants || {};
+  const NODE_TYPE_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
+    'PIPELINE': 26,
+    'GRAPH': 26,
+    'FUNCTION': 14,
+    'DATA': 6,
+    'INPUT': 6,
+    'INPUT_GROUP': 6,
+    'BRANCH': 10,
   };
-  const DEFAULT_OFFSET = 10;
+  const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
 
   // Get visible bottom of node (accounts for wrapper/content offset)
   const nodeVisibleBottom = (node) => {

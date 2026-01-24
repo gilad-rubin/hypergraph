@@ -33,11 +33,12 @@
   var html = htm.bind(React.createElement);
 
   // === LAYOUT CONSTANTS ===
-  var TYPE_HINT_MAX_CHARS = 25;
-  var NODE_LABEL_MAX_CHARS = 25;
+  var VizConstants = root.HypergraphVizConstants || {};
+  var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
+  var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
 
   // Keep RF handle anchors aligned with layout edge points.
-  var NODE_TYPE_BOTTOM_OFFSETS = {
+  var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
     PIPELINE: 26,
     GRAPH: 26,
     FUNCTION: 14,
@@ -46,7 +47,7 @@
     INPUT_GROUP: 6,
     BRANCH: 10,
   };
-  var DEFAULT_BOTTOM_OFFSET = 10;
+  var DEFAULT_BOTTOM_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
 
   var HANDLE_ALIGN_NUDGE_PX = 0;
 
