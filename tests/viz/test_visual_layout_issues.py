@@ -4,6 +4,7 @@ These tests verify:
 1. Input nodes are positioned ABOVE their target nodes (edges flow downward)
 2. No visible gaps between edges and nodes
 3. Edges connect to actual nodes, not container boundaries
+4. Multiple INPUT nodes feeding the same target are side-by-side (horizontal spread)
 """
 
 import pytest
@@ -603,4 +604,124 @@ class TestEdgeValidation:
                 f"  - {e.source} -> {e.target}: {e.issue}"
                 for e in data.edge_issues
             )
+        )
+
+
+# =============================================================================
+# Test: Multiple INPUT nodes feeding the same target should be side-by-side
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestInputNodeHorizontalSpread:
+    """Tests that multiple INPUT nodes feeding the same target are spread horizontally."""
+
+    def test_multiple_inputs_same_target_horizontal_spread(self):
+        """When two INPUT nodes feed the same target, they should be side-by-side.
+
+        This tests the bug where system_prompt and max_tokens in complex_rag
+        were stacking vertically instead of being positioned horizontally.
+        """
+        from playwright.sync_api import sync_playwright
+        from hypergraph.viz.widget import visualize
+        from hypergraph import Graph, node
+        import tempfile
+        import os
+
+        # Create a graph with two inputs feeding the same function
+        @node(output_name="response")
+        def generate(system_prompt: str, max_tokens: int) -> str:
+            return f"{system_prompt} {max_tokens}"
+
+        graph = Graph(nodes=[generate])
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            temp_path = f.name
+        visualize(graph, depth=1, output=temp_path, _debug_overlays=True)
+
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f"file://{temp_path}")
+
+                page.wait_for_function(
+                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
+                    timeout=10000,
+                )
+
+                result = page.evaluate("""() => {
+                    const debug = window.__hypergraphVizDebug;
+
+                    // Find INPUT nodes - they have nodeType 'INPUT' or are input group nodes
+                    const inputNodes = debug.nodes.filter(n =>
+                        n.nodeType === 'INPUT' ||
+                        n.nodeType === 'INPUT_GROUP' ||
+                        n.id.includes('__inputs__')
+                    );
+
+                    // Also look for leaf nodes that have no incoming edges (INPUT behavior)
+                    const nodeIds = new Set(debug.nodes.map(n => n.id));
+                    const hasIncoming = new Set();
+                    const hasOutgoing = new Set();
+
+                    for (const edge of debug.edges) {
+                        if (nodeIds.has(edge.target)) hasIncoming.add(edge.target);
+                        if (nodeIds.has(edge.source)) hasOutgoing.add(edge.source);
+                    }
+
+                    // Leaf nodes: have outgoing edges, no incoming edges
+                    const leafNodes = debug.nodes.filter(n =>
+                        hasOutgoing.has(n.id) && !hasIncoming.has(n.id)
+                    );
+
+                    // Get the X coordinates of all leaf nodes
+                    const leafXCoords = leafNodes.map(n => ({
+                        id: n.id,
+                        x: n.x,
+                        y: n.y,
+                        centerX: n.x + n.width / 2
+                    }));
+
+                    // If there are multiple leaf nodes, check if they have different X coordinates
+                    let hasHorizontalSpread = false;
+                    let minXDiff = Infinity;
+
+                    if (leafXCoords.length >= 2) {
+                        for (let i = 0; i < leafXCoords.length; i++) {
+                            for (let j = i + 1; j < leafXCoords.length; j++) {
+                                const xDiff = Math.abs(leafXCoords[i].x - leafXCoords[j].x);
+                                if (xDiff > 10) {
+                                    hasHorizontalSpread = true;
+                                }
+                                if (xDiff < minXDiff) minXDiff = xDiff;
+                            }
+                        }
+                    }
+
+                    return {
+                        inputNodes: inputNodes.map(n => ({ id: n.id, x: n.x, y: n.y })),
+                        leafNodes: leafXCoords,
+                        hasHorizontalSpread: hasHorizontalSpread,
+                        minXDiff: minXDiff,
+                        allNodes: debug.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, nodeType: n.nodeType }))
+                    };
+                }""")
+
+                browser.close()
+        finally:
+            os.unlink(temp_path)
+
+        # We expect at least 2 leaf nodes (the two input parameters)
+        assert len(result["leafNodes"]) >= 2, (
+            f"Expected at least 2 leaf nodes (input parameters), found {len(result['leafNodes'])}:\n"
+            f"Leaf nodes: {result['leafNodes']}\n"
+            f"All nodes: {result['allNodes']}"
+        )
+
+        # Check that they have different X coordinates (horizontal spread)
+        assert result["hasHorizontalSpread"], (
+            f"INPUT nodes should be spread horizontally (side-by-side), not stacked vertically!\n"
+            f"Leaf nodes: {result['leafNodes']}\n"
+            f"Minimum X difference: {result['minXDiff']}px (should be > 10px for horizontal spread)\n"
+            f"The fixOverlappingNodes function should shift leaf nodes horizontally, not vertically."
         )

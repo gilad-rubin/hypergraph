@@ -341,7 +341,7 @@
 
     // Fix overlapping nodes that the constraint solver missed
     // (nodes not connected by edges can end up overlapping)
-    fixOverlappingNodes(nodes, spaceY, orientation);
+    fixOverlappingNodes(nodes, edges, spaceY, spaceX, orientation);
   };
 
   /**
@@ -406,12 +406,27 @@
   /**
    * Detect and fix nodes that overlap both horizontally and vertically.
    * This handles cases where unconnected nodes end up in the same space.
+   *
+   * For leaf source nodes (INPUT nodes with no incoming edges), we shift
+   * horizontally to keep them side-by-side at the same depth level.
+   * For other nodes, we shift vertically.
    */
-  const fixOverlappingNodes = (nodes, minGap, orientation) => {
+  const fixOverlappingNodes = (nodes, edges, minGapY, minGapX, orientation) => {
     const coordPrimary = orientation === 'vertical' ? 'x' : 'y';
     const coordSecondary = orientation === 'vertical' ? 'y' : 'x';
     const sizePrimary = orientation === 'vertical' ? 'width' : 'height';
     const sizeSecondary = orientation === 'vertical' ? 'height' : 'width';
+
+    // Build sets of nodes with incoming/outgoing edges to identify leaf nodes
+    const hasIncoming = new Set();
+    const hasOutgoing = new Set();
+    for (const edge of edges) {
+      if (edge.sourceNode) hasOutgoing.add(edge.sourceNode.id);
+      if (edge.targetNode) hasIncoming.add(edge.targetNode.id);
+    }
+
+    // Leaf source nodes: have outgoing edges but no incoming edges (like INPUT nodes)
+    const isLeafSource = (node) => hasOutgoing.has(node.id) && !hasIncoming.has(node.id);
 
     // Sort nodes by secondary coordinate (Y for vertical layout)
     const sortedNodes = [...nodes].sort((a, b) => a[coordSecondary] - b[coordSecondary]);
@@ -437,10 +452,21 @@
         const vOverlap = !(bBottom < aTop || bTop > aBottom);
 
         if (hOverlap && vOverlap) {
-          // Nodes overlap - shift nodeB down (it's lower in sort order)
-          const overlapAmount = aBottom - bTop;
-          const shift = overlapAmount + minGap;
-          nodeB[coordSecondary] += shift;
+          // Both nodes overlap - determine how to shift nodeB
+          const bothAreLeafSources = isLeafSource(nodeA) && isLeafSource(nodeB);
+
+          if (bothAreLeafSources) {
+            // For leaf source nodes at the same level, shift horizontally (side-by-side)
+            // This keeps INPUT nodes spread horizontally instead of stacking vertically
+            const hOverlapAmount = Math.min(aRight, bRight) - Math.max(aLeft, bLeft);
+            const hShift = hOverlapAmount + minGapX;
+            nodeB[coordPrimary] += hShift;
+          } else {
+            // For other nodes, shift vertically (standard behavior)
+            const vOverlapAmount = aBottom - bTop;
+            const vShift = vOverlapAmount + minGapY;
+            nodeB[coordSecondary] += vShift;
+          }
         }
       }
     }
