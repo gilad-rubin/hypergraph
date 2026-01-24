@@ -500,9 +500,16 @@ def _compute_input_scope(
 ) -> str | None:
     """Determine which container (if any) should own this INPUT node.
 
-    An INPUT should be placed inside a container if:
-    1. ALL its actual (non-container) consumers are inside that container
-    2. The container is expanded (so the INPUT would be visible)
+    An INPUT should be placed inside a container if ALL its actual consumers
+    are inside that container.
+
+    The function finds the deepest common container of all consumers, then
+    walks UP the ancestor chain to find the deepest container that is EXPANDED.
+    This handles nested containers correctly:
+    - If `retrieval` (inner) is expanded: INPUT goes inside `retrieval`
+    - If `retrieval` is collapsed but `batch_recall` (outer) is expanded:
+      INPUT goes inside `batch_recall`
+    - If both are collapsed: INPUT goes at root
 
     Args:
         param: Parameter name
@@ -523,17 +530,23 @@ def _compute_input_scope(
     ancestor_chains = [_get_ancestor_chain(c, flat_graph) for c in consumers]
 
     # Find the deepest common container
-    owner_container = _find_deepest_common_container(ancestor_chains)
+    deepest_owner = _find_deepest_common_container(ancestor_chains)
 
-    if owner_container is None:
+    if deepest_owner is None:
         return None
 
-    # Only assign ownership if the container is expanded
-    # (if collapsed, the INPUT should stay at root to be visible)
-    if not expansion_state.get(owner_container, False):
-        return None
+    # Walk up from the deepest owner to find the deepest EXPANDED container
+    # The ancestor chain goes from deepest to root, so we check from start
+    owner_chain = _get_ancestor_chain(deepest_owner, flat_graph)
+    # Prepend the deepest owner itself (it might be expanded)
+    candidates = [deepest_owner] + list(owner_chain)
 
-    return owner_container
+    for container in candidates:
+        if expansion_state.get(container, False):
+            return container
+
+    # No container in the chain is expanded, INPUT stays at root
+    return None
 
 
 def _is_output_externally_consumed(
