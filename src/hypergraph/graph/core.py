@@ -142,95 +142,186 @@ class Graph:
             result[node.name] = node
         return result
 
-    def _build_graph(self, nodes: list[HyperNode]) -> nx.DiGraph:
-        """Build NetworkX DiGraph from nodes with edge inference."""
-        G = nx.DiGraph()
-        output_to_source = self._create_output_source_mapping(nodes)
-        self._add_nodes_to_graph(G, nodes)
-        self._add_data_edges(G, nodes, output_to_source)
-        self._add_control_edges(G, nodes)
-        return G
+    def _collect_output_sources(self, nodes: list[HyperNode]) -> dict[str, list[str]]:
+        """Collect all nodes that produce each output name.
 
-    def _create_output_source_mapping(
-        self, nodes: list[HyperNode]
-    ) -> dict[str, str]:
-        """Map each output name to its source node name.
-
-        Multiple nodes can produce the same output if they are in mutex paths
-        controlled by a gate with multi_target=False.
+        Returns a mapping from output name to list of node names that produce it.
+        Used for detecting duplicate outputs before validating mutex exclusivity.
         """
-        from hypergraph.nodes.gate import GateNode, RouteNode
-
-        # First pass: find which nodes are mutex via gate control
-        mutex_groups = self._find_mutex_output_groups(nodes)
-
-        result: dict[str, str] = {}
-        output_sources: dict[str, list[str]] = {}  # output -> [node_names]
-
+        output_sources: dict[str, list[str]] = {}
         for node in nodes:
             for output in node.outputs:
                 output_sources.setdefault(output, []).append(node.name)
+        return output_sources
 
-        for output, sources in output_sources.items():
-            if len(sources) == 1:
-                result[output] = sources[0]
-            elif self._are_all_mutex(sources, mutex_groups):
-                # All sources are mutually exclusive - pick first for edge building
-                result[output] = sources[0]
-            else:
-                raise GraphConfigError(
-                    f"Multiple nodes produce '{output}'\n\n"
-                    f"  -> {sources[0]} creates '{output}'\n"
-                    f"  -> {sources[1]} creates '{output}'\n\n"
-                    f"How to fix: Rename one output to avoid conflict"
-                )
-        return result
+    def _build_graph(self, nodes: list[HyperNode]) -> nx.DiGraph:
+        """Build NetworkX DiGraph from nodes with edge inference.
 
-    def _find_mutex_output_groups(
-        self, nodes: list[HyperNode]
-    ) -> list[set[str]]:
-        """Find groups of nodes that are mutually exclusive via gate control.
+        Process:
+        1. Add nodes to graph
+        2. Collect all output sources (allowing duplicates temporarily)
+        3. Build edges using first source for each output
+        4. Add control edges
+        5. Validate output conflicts with full graph structure (using reachability)
 
-        Nodes in the same group are mutex if they are targets of a gate
-        with multi_target=False (RouteNode) or always-exclusive (IfElseNode).
+        This ordering allows mutex branch detection using graph reachability analysis.
         """
-        from hypergraph.nodes.gate import RouteNode, IfElseNode, END
+        G = nx.DiGraph()
+        self._add_nodes_to_graph(G, nodes)
 
-        mutex_groups: list[set[str]] = []
+        # Collect all output sources (allowing duplicates temporarily)
+        output_to_sources = self._collect_output_sources(nodes)
 
-        for node in nodes:
-            # RouteNode with multi_target=False: targets are mutually exclusive
-            if isinstance(node, RouteNode) and not node.multi_target:
-                targets = {
-                    t for t in node.targets
-                    if t is not END and isinstance(t, str)
-                }
-                if len(targets) >= 2:
-                    mutex_groups.append(targets)
-            # IfElseNode: targets are always mutually exclusive (binary gate)
-            elif isinstance(node, IfElseNode):
-                targets = {
-                    t for t in node.targets
-                    if t is not END and isinstance(t, str)
-                }
-                if len(targets) >= 2:
-                    mutex_groups.append(targets)
+        # Use first source for each output when building edges
+        output_to_source = {k: v[0] for k, v in output_to_sources.items()}
+        self._add_data_edges(G, nodes, output_to_source)
+        self._add_control_edges(G, nodes)
 
-        return mutex_groups
+        # Validate output conflicts with full graph structure
+        # This allows mutex branch detection using reachability analysis
+        self._validate_output_conflicts(G, nodes, output_to_sources)
+
+        return G
 
     def _are_all_mutex(
-        self, node_names: list[str], mutex_groups: list[set[str]]
+        self, node_names: list[str], mutex_groups: list[list[set[str]]]
     ) -> bool:
-        """Check if all given nodes are mutually exclusive."""
+        """Check if all given nodes are mutually exclusive.
+
+        Two nodes are mutex if they're in different branches of the same gate.
+        All given nodes are mutex if each is in a different branch of the same gate.
+        """
         if len(node_names) < 2:
             return True
 
-        # All nodes must be in the same mutex group
-        node_set = set(node_names)
-        for group in mutex_groups:
-            if node_set <= group:  # All nodes are in this group
+        # Check each mutex group (each represents a gate with multiple branches)
+        for branches in mutex_groups:
+            # Check if all nodes are in different branches of this gate
+            nodes_by_branch = []
+            for branch in branches:
+                branch_nodes = [n for n in node_names if n in branch]
+                if branch_nodes:
+                    nodes_by_branch.append(branch_nodes)
+
+            # If we found each node in a different branch, they're all mutex
+            if len(nodes_by_branch) == len(node_names):
+                # Each node is in a different branch
                 return True
+
         return False
+
+    def _compute_exclusive_reachability(
+        self, G: nx.DiGraph, targets: list[str]
+    ) -> dict[str, set[str]]:
+        """For each target, find nodes reachable ONLY through that target.
+
+        This is used to expand mutex groups to include downstream nodes.
+        A node is "exclusively reachable" from target T if:
+        - It is reachable from T (via graph edges)
+        - It is NOT reachable from any other target
+
+        Args:
+            G: The NetworkX directed graph
+            targets: List of gate target node names
+
+        Returns:
+            Mapping from target name to set of exclusively reachable node names
+        """
+        # Get all reachable nodes from each target (including the target itself)
+        reachable: dict[str, set[str]] = {
+            t: set(nx.descendants(G, t)) | {t} for t in targets
+        }
+
+        # For each target, exclude nodes reachable from other targets
+        exclusive: dict[str, set[str]] = {}
+        for t in targets:
+            others = set().union(*(reachable[o] for o in targets if o != t))
+            exclusive[t] = reachable[t] - others
+
+        return exclusive
+
+    def _expand_mutex_groups(
+        self, G: nx.DiGraph, nodes: list[HyperNode]
+    ) -> list[list[set[str]]]:
+        """Expand mutex groups to include downstream exclusive nodes.
+
+        For each gate with mutually exclusive targets (RouteNode with multi_target=False
+        or IfElseNode), this expands the mutex relationship to include all nodes
+        that are exclusively reachable through each target.
+
+        Two nodes are considered mutex if they are in different exclusive branches
+        of the same gate - meaning they can never both execute in the same run.
+
+        Args:
+            G: The NetworkX directed graph (with edges already added)
+            nodes: List of all nodes in the graph
+
+        Returns:
+            List of mutex group sets, where each element is a list of branch sets.
+            Nodes are mutex only if they're in DIFFERENT branch sets of the same gate.
+            Example: [[{A, B}, {C, D}]] means A and B are not mutex with each other,
+            but A is mutex with C and D (being in different branches of the gate).
+        """
+        from hypergraph.nodes.gate import RouteNode, IfElseNode, END
+
+        expanded_groups: list[list[set[str]]] = []
+
+        for node in nodes:
+            # Only process gates with mutex targets
+            if isinstance(node, RouteNode):
+                if node.multi_target:
+                    continue  # multi_target means branches can run together
+            elif not isinstance(node, IfElseNode):
+                continue  # Not a gate node
+
+            # Get real targets (filter out END sentinel)
+            targets = [t for t in node.targets if t is not END and isinstance(t, str)]
+            if len(targets) < 2:
+                continue  # Need at least 2 targets for mutex relationship
+
+            # Compute exclusively reachable nodes for each target
+            exclusive_sets = self._compute_exclusive_reachability(G, targets)
+
+            # Store branch sets separately - nodes are mutex only if in DIFFERENT branches
+            expanded_groups.append(list(exclusive_sets.values()))
+
+        return expanded_groups
+
+    def _validate_output_conflicts(
+        self, G: nx.DiGraph, nodes: list[HyperNode], output_to_sources: dict[str, list[str]]
+    ) -> None:
+        """Validate that duplicate outputs are in mutually exclusive branches.
+
+        This is called after the graph structure is built (edges added) so we can
+        use graph reachability to determine if nodes producing the same output
+        are in mutex branches.
+
+        Args:
+            G: The NetworkX directed graph (with edges)
+            nodes: List of all nodes in the graph
+            output_to_sources: Mapping from output name to list of nodes producing it
+
+        Raises:
+            GraphConfigError: If multiple nodes produce the same output and they
+                are not in mutually exclusive branches.
+        """
+        # Get expanded mutex groups (includes downstream nodes)
+        expanded_groups = self._expand_mutex_groups(G, nodes)
+
+        for output, sources in output_to_sources.items():
+            if len(sources) <= 1:
+                continue  # No conflict possible
+
+            if self._are_all_mutex(sources, expanded_groups):
+                continue  # All sources are mutually exclusive - OK
+
+            # Not all sources are mutex - this is an error
+            raise GraphConfigError(
+                f"Multiple nodes produce '{output}'\n\n"
+                f"  -> {sources[0]} creates '{output}'\n"
+                f"  -> {sources[1]} creates '{output}'\n\n"
+                f"How to fix: Rename one output to avoid conflict"
+            )
 
     def _add_nodes_to_graph(self, G: nx.DiGraph, nodes: list[HyperNode]) -> None:
         """Add all nodes with their attributes to the graph."""
@@ -375,7 +466,7 @@ class Graph:
     def _validate(self) -> None:
         """Run all build-time validations."""
         # Note: Duplicate node names caught in _build_nodes_dict()
-        # Note: Duplicate outputs caught in _create_output_source_mapping()
+        # Note: Duplicate outputs caught in _validate_output_conflicts()
         validate_graph(self._nodes, self._nx_graph, self.name, self._strict_types)
 
     def as_node(self, *, name: str | None = None) -> "GraphNode":
