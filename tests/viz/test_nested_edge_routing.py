@@ -125,7 +125,7 @@ class TestEdgeRoutingToInternalNodes:
         # Render to temp file
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -356,7 +356,7 @@ class TestOutputEdgeRouting:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -455,7 +455,7 @@ class TestDoubleNestedEdgeRouting:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -551,7 +551,7 @@ class TestEdgeVisualGaps:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -641,7 +641,7 @@ class TestEdgeVisualGaps:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=0, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=0, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -733,7 +733,7 @@ class TestCollapsedGraphEdges:
         # Render with depth=0 (middle collapsed)
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=0, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=0, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -817,7 +817,7 @@ class TestCollapsedGraphEdges:
         # Render with depth=0 (preprocess collapsed)
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=0, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=0, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -1009,7 +1009,7 @@ class TestNodeToParentDebugAPI:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -1075,7 +1075,7 @@ class TestNodeToParentDebugAPI:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:

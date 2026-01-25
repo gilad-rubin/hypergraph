@@ -63,7 +63,7 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
     # Render to temp file
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
         temp_path = f.name
-    visualize(graph, depth=depth, output=temp_path, _debug_overlays=True)
+    visualize(graph, depth=depth, filepath=temp_path, _debug_overlays=True)
 
     try:
         page.goto(f"file://{temp_path}")
@@ -516,7 +516,7 @@ class TestEdgeShadowGap:
         from hypergraph.viz.widget import visualize
 
         workflow = make_workflow()
-        visualize(workflow, depth=1, output=temp_html_file, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_html_file, _debug_overlays=True)
 
         page.goto(f"file://{temp_html_file}")
         page.wait_for_function(
@@ -607,7 +607,7 @@ class TestEdgeShadowGap:
         from hypergraph.viz.widget import visualize
 
         outer = make_outer()
-        visualize(outer, depth=2, output=temp_html_file, _debug_overlays=True)
+        visualize(outer, depth=2, filepath=temp_html_file, _debug_overlays=True)
 
         page.goto(f"file://{temp_html_file}")
         page.wait_for_function(
@@ -686,7 +686,7 @@ class TestEdgeShadowGap:
         from hypergraph.viz.widget import visualize
 
         workflow = make_workflow()
-        visualize(workflow, depth=1, output=temp_html_file, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_html_file, _debug_overlays=True)
 
         page.goto(f"file://{temp_html_file}")
         page.wait_for_function(

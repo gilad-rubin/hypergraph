@@ -39,7 +39,7 @@ class TestInputNodePosition:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -112,7 +112,7 @@ class TestInputNodePosition:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -186,7 +186,7 @@ class TestEdgeGaps:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -307,7 +307,7 @@ class TestEdgeGaps:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(workflow, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -446,7 +446,7 @@ class TestEdgeConnectsToActualNode:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(outer, depth=2, output=temp_path, _debug_overlays=True)
+        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -642,7 +642,7 @@ class TestInputNodeHorizontalSpread:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(graph, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(graph, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -718,7 +718,7 @@ class TestInputNodeHorizontalSpread:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(graph, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(graph, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:
@@ -819,7 +819,7 @@ class TestInputNodeHorizontalSpread:
 
         with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
             temp_path = f.name
-        visualize(bound_graph, depth=1, output=temp_path, _debug_overlays=True)
+        visualize(bound_graph, depth=1, filepath=temp_path, _debug_overlays=True)
 
         try:
             with sync_playwright() as p:

@@ -324,7 +324,7 @@ from tests.viz.conftest import (
 
 # In a Playwright test
 def test_edge_shadow_gap(page, temp_html_file):
-    visualize(graph, output=temp_html_file, _debug_overlays=True)
+    visualize(graph, filepath=temp_html_file, _debug_overlays=True)
     page.goto(f"file://{temp_html_file}")
     wait_for_debug_ready(page)
 
@@ -398,7 +398,7 @@ class TestEdgeRouting:
         from hypergraph.viz.widget import visualize
 
         graph = make_outer()
-        visualize(graph, depth=0, output=temp_html_file, _debug_overlays=True)
+        visualize(graph, depth=0, filepath=temp_html_file, _debug_overlays=True)
         page.goto(f"file://{temp_html_file}")
 
         # Before expand: edges point to collapsed container

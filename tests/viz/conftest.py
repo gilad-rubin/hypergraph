@@ -143,7 +143,7 @@ def temp_html_file():
 
     Usage:
         def test_something(self, temp_html_file):
-            visualize(graph, output=temp_html_file)
+            visualize(graph, filepath=temp_html_file)
             page.goto(f"file://{temp_html_file}")
     """
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
@@ -461,6 +461,6 @@ def render_and_extract(page, graph: Graph, depth: int, temp_path: str) -> dict:
     """Render graph at given depth and extract edge routing."""
     from hypergraph.viz.widget import visualize
 
-    visualize(graph, depth=depth, output=temp_path, _debug_overlays=True)
+    visualize(graph, depth=depth, filepath=temp_path, _debug_overlays=True)
     page.goto(f"file://{temp_path}")
     return extract_edge_routing(page)

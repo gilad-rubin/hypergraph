@@ -492,13 +492,11 @@ class Graph:
     def visualize(
         self,
         *,
-        width: int = 800,
-        height: int = 600,
         depth: int = 1,
         theme: str = "auto",
         show_types: bool = False,
         separate_outputs: bool = False,
-        output: str | None = None,
+        filepath: str | None = None,
     ) -> Any:
         """Create an interactive visualization of this graph.
 
@@ -506,13 +504,11 @@ class Graph:
         notebook. Works offline with all assets bundled.
 
         Args:
-            width: Widget width in pixels (default: 800)
-            height: Widget height in pixels (default: 600)
             depth: How many levels of nested graphs to expand (default: 1)
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
-            output: Path to save HTML file (default: None, display in notebook)
+            filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
             ScrollablePipelineWidget if output is None, otherwise None (saves to file)
@@ -521,19 +517,17 @@ class Graph:
             >>> graph = Graph(nodes=[double, add_one])
             >>> graph.visualize()  # Displays interactive graph
             >>> graph.visualize(theme="light", show_types=True)
-            >>> graph.visualize(output="graph.html")  # Save to HTML file
+            >>> graph.visualize(filepath="graph.html")  # Save to HTML file
         """
         from hypergraph.viz import visualize as viz_func
 
         return viz_func(
             self,
-            width=width,
-            height=height,
             depth=depth,
             theme=theme,
             show_types=show_types,
             separate_outputs=separate_outputs,
-            output=output,
+            filepath=filepath,
         )
 
     def to_flat_graph(self) -> nx.DiGraph:

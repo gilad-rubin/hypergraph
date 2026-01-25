@@ -423,12 +423,10 @@ class VizDebugger:
     def visualize(
         self,
         *,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
         depth: int = 1,
         theme: str = "auto",
         show_types: bool = False,
-        output: Optional[str] = None,
+        filepath: Optional[str] = None,
     ) -> Any:
         """Visualize the graph with debug overlays enabled.
 
@@ -436,12 +434,10 @@ class VizDebugger:
         with debug overlays (BOUNDS/WIDTHS/TEXTS tabs, edge debug points).
 
         Args:
-            width: Widget width in pixels (default: auto-calculated)
-            height: Widget height in pixels (default: auto-calculated)
             depth: How many levels of nested graphs to expand (default: 1)
             theme: "dark", "light", or "auto" (default: "auto")
             show_types: Whether to show type annotations (default: False)
-            output: Path to save HTML file (default: None, display in notebook)
+            filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
             ScrollablePipelineWidget if output is None, otherwise None
@@ -480,12 +476,10 @@ class VizDebugger:
 
         return viz_func(
             self.graph,
-            width=width,
-            height=height,
             depth=depth,
             theme=theme,
             show_types=show_types,
-            output=output,
+            filepath=filepath,
             _debug_overlays=True,
         )
 
@@ -631,7 +625,7 @@ async def _extract_debug_data_async(
         depth=depth,
         theme=theme,
         separate_outputs=separate_outputs,
-        output=temp_path,
+        filepath=temp_path,
         _debug_overlays=True,
     )
 
@@ -681,7 +675,7 @@ def _extract_debug_data_sync(
         depth=depth,
         theme=theme,
         separate_outputs=separate_outputs,
-        output=temp_path,
+        filepath=temp_path,
         _debug_overlays=True,
     )
 

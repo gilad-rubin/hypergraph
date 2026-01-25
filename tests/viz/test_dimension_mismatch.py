@@ -119,7 +119,7 @@ class TestDimensionMismatch:
 
         # Create and render simple 2-node graph
         graph = make_simple_graph()
-        visualize(graph, depth=0, output=temp_html_file, _debug_overlays=True)
+        visualize(graph, depth=0, filepath=temp_html_file, _debug_overlays=True)
         page.goto(f"file://{temp_html_file}")
 
         # Wait for layout to complete
@@ -245,7 +245,7 @@ class TestDimensionMismatch:
 
         # Create and render simple 2-node graph
         graph = make_simple_graph()
-        visualize(graph, depth=0, output=temp_html_file, _debug_overlays=True)
+        visualize(graph, depth=0, filepath=temp_html_file, _debug_overlays=True)
         page.goto(f"file://{temp_html_file}")
 
         # Wait for layout to complete

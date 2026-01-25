@@ -66,26 +66,22 @@ class ScrollablePipelineWidget:
 def visualize(
     graph: Graph,
     *,
-    width: int | None = None,
-    height: int | None = None,
     depth: int = 1,
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    output: str | None = None,
+    filepath: str | None = None,
     _debug_overlays: bool = False,
 ) -> ScrollablePipelineWidget | None:
     """Create a visualization widget for a graph.
 
     Args:
         graph: The hypergraph Graph to visualize
-        width: Widget width in pixels (default: auto-calculated from graph)
-        height: Widget height in pixels (default: auto-calculated from graph)
         depth: How many levels of nested graphs to expand (default: 1)
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
-        output: Path to save HTML file (default: None, display in notebook)
+        filepath: Path to save HTML file (default: None, display in notebook)
         _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 
     Returns:
@@ -98,7 +94,7 @@ def visualize(
         ...     return x * 2
         >>> graph = Graph(nodes=[double])
         >>> widget = visualize(graph)  # Display in notebook
-        >>> visualize(graph, output="graph.html")  # Save to HTML file
+        >>> visualize(graph, filepath="graph.html")  # Save to HTML file
     """
     # Estimate dimensions if not provided
     est_width, est_height = estimate_layout(
@@ -109,8 +105,8 @@ def visualize(
     )
 
     # Use estimated dimensions, applying minimums
-    final_width = width if width is not None else max(400, est_width)
-    final_height = height if height is not None else max(200, est_height)
+    final_width = max(400, est_width)
+    final_height = max(200, est_height)
 
     # Create flattened graph and render to React Flow format
     flat_graph = graph.to_flat_graph()
@@ -127,11 +123,11 @@ def visualize(
     html_content = generate_widget_html(graph_data)
 
     # If output path specified, save to HTML file
-    if output is not None:
+    if filepath is not None:
         # Ensure .html extension
-        if not output.endswith(".html"):
-            output = output + ".html"
-        with open(output, "w") as f:
+        if not filepath.endswith(".html"):
+            filepath = filepath + ".html"
+        with open(filepath, "w") as f:
             f.write(html_content)
         return None
 
