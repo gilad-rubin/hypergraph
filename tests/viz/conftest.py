@@ -7,11 +7,16 @@ This module provides:
 4. Common extraction helpers for debugging and validation
 """
 
-import pytest
-import tempfile
+import hashlib
 import os
+import shutil
+import tempfile
+
+import pytest
 
 from hypergraph import Graph, node
+from hypergraph.viz.html_generator import generate_widget_html
+from hypergraph.viz.renderer import render_graph
 
 # =============================================================================
 # Playwright Detection
@@ -109,6 +114,79 @@ def make_outer() -> Graph:
     inner = Graph(nodes=[step1, step2], name="inner")
     middle = Graph(nodes=[inner.as_node(), validate], name="middle")
     return Graph(nodes=[middle.as_node(), log_result])
+
+
+# =============================================================================
+# Render Cache
+# =============================================================================
+
+_VIZ_HTML_CACHE_DIR = tempfile.TemporaryDirectory(prefix="hypergraph-viz-cache-")
+
+
+def _viz_cache_key(
+    graph: Graph,
+    depth: int,
+    theme: str,
+    show_types: bool,
+    separate_outputs: bool,
+    debug_overlays: bool,
+) -> tuple:
+    """Build a stable cache key for HTML rendering within a test run."""
+    input_spec = graph.inputs
+    bound_items = tuple(
+        sorted((key, repr(value)) for key, value in input_spec.bound.items())
+    )
+    return (
+        graph.definition_hash,
+        graph.name,
+        input_spec.required,
+        input_spec.optional,
+        input_spec.seeds,
+        bound_items,
+        depth,
+        theme,
+        show_types,
+        separate_outputs,
+        debug_overlays,
+    )
+
+
+def _cached_html_path(
+    graph: Graph,
+    *,
+    depth: int,
+    theme: str = "auto",
+    show_types: bool = False,
+    separate_outputs: bool = False,
+    debug_overlays: bool = False,
+) -> str:
+    """Render HTML once per cache key and return the cached file path."""
+    cache_key = _viz_cache_key(
+        graph,
+        depth,
+        theme,
+        show_types,
+        separate_outputs,
+        debug_overlays,
+    )
+    digest = hashlib.sha256(repr(cache_key).encode("utf-8")).hexdigest()
+    cache_path = os.path.join(_VIZ_HTML_CACHE_DIR.name, f"{digest}.html")
+
+    if not os.path.exists(cache_path):
+        flat_graph = graph.to_flat_graph()
+        graph_data = render_graph(
+            flat_graph,
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            debug_overlays=debug_overlays,
+        )
+        html_content = generate_widget_html(graph_data)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+
+    return cache_path
 
 
 # =============================================================================
@@ -466,17 +544,15 @@ def click_to_collapse_container(page, container_id: str) -> None:
 
 def render_and_extract(page, graph: Graph, depth: int, temp_path: str) -> dict:
     """Render graph at given depth and extract edge routing."""
-    from hypergraph.viz.widget import visualize
-
-    visualize(graph, depth=depth, filepath=temp_path)
+    cache_path = _cached_html_path(graph, depth=depth)
+    shutil.copyfile(cache_path, temp_path)
     page.goto(f"file://{temp_path}")
     return extract_edge_routing(page)
 
 
 def render_to_page(page, graph: Graph, depth: int, temp_path: str) -> None:
     """Render graph to a temp HTML file and navigate the page to it."""
-    from hypergraph.viz.widget import visualize
-
-    visualize(graph, depth=depth, filepath=temp_path)
+    cache_path = _cached_html_path(graph, depth=depth)
+    shutil.copyfile(cache_path, temp_path)
     page.goto(f"file://{temp_path}")
     wait_for_debug_ready(page)

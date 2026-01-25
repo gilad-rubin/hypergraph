@@ -136,6 +136,8 @@ markers = [
 ]
 # Run tests in parallel, exclude full_matrix by default
 addopts = "-n auto --dist worksteal -m 'not full_matrix'"
+# Persist pytest cache between runs for faster reruns
+cache_dir = ".pytest_cache"
 # Ignore old tests that may be broken or deprecated
 norecursedirs = [
     "old",
