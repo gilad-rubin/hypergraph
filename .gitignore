@@ -38,3 +38,4 @@ deprecated/*
 
 # Visualization outputs
 outputs/
+*.pyc
