@@ -115,24 +115,31 @@ def make_outer() -> Graph:
 # Playwright Fixtures
 # =============================================================================
 
-@pytest.fixture
-def page():
-    """Create a Playwright page for testing.
-
-    Usage:
-        def test_something(self, page):
-            page.goto("file:///path/to/file.html")
-            ...
-    """
+@pytest.fixture(scope="session")
+def _playwright_instance():
+    """Shared Playwright instance for the test session."""
     if not HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
 
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        yield page
-        browser.close()
+        yield p
+
+
+@pytest.fixture(scope="session")
+def _browser(_playwright_instance):
+    """Shared browser instance for the test session."""
+    browser = _playwright_instance.chromium.launch(headless=True)
+    yield browser
+    browser.close()
+
+
+@pytest.fixture
+def page(_browser):
+    """Create a Playwright page for testing."""
+    page = _browser.new_page()
+    yield page
+    page.close()
 
 
 @pytest.fixture
@@ -461,6 +468,15 @@ def render_and_extract(page, graph: Graph, depth: int, temp_path: str) -> dict:
     """Render graph at given depth and extract edge routing."""
     from hypergraph.viz.widget import visualize
 
-    visualize(graph, depth=depth, filepath=temp_path, _debug_overlays=True)
+    visualize(graph, depth=depth, filepath=temp_path)
     page.goto(f"file://{temp_path}")
     return extract_edge_routing(page)
+
+
+def render_to_page(page, graph: Graph, depth: int, temp_path: str) -> None:
+    """Render graph to a temp HTML file and navigate the page to it."""
+    from hypergraph.viz.widget import visualize
+
+    visualize(graph, depth=depth, filepath=temp_path)
+    page.goto(f"file://{temp_path}")
+    wait_for_debug_ready(page)

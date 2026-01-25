@@ -45,7 +45,7 @@ from tests.viz.conftest import (
 class TestInteractiveExpandEdgeRouting:
     """Tests that interactive expand produces same edge routing as static depth."""
 
-    def test_interactive_expand_edge_targets_match_static(self):
+    def test_interactive_expand_edge_targets_match_static(self, page, temp_html_file):
         """After click-to-expand, edge targets should match static depth=1 targets.
 
         This test compares:
@@ -56,39 +56,23 @@ class TestInteractiveExpandEdgeRouting:
         The bug: Interactive expand keeps edges targeting 'preprocess' container
         instead of routing them to 'clean_text' (the actual consumer inside).
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
+        # === STATIC DEPTH=1: The expected/correct behavior ===
+        static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        static_targets = {
+            eid: info['target']
+            for eid, info in static_data['edges'].items()
+        }
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # === STATIC DEPTH=1: The expected/correct behavior ===
-                static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_path)
-                static_targets = {
-                    eid: info['target']
-                    for eid, info in static_data['edges'].items()
-                }
-
-                # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
-                render_and_extract(page, workflow, depth=0, temp_path=temp_path)
-                click_to_expand_container(page, "preprocess")
-                interactive_data = extract_edge_routing(page)
-                interactive_targets = {
-                    eid: info['target']
-                    for eid, info in interactive_data['edges'].items()
-                }
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        click_to_expand_container(page, "preprocess")
+        interactive_data = extract_edge_routing(page)
+        interactive_targets = {
+            eid: info['target']
+            for eid, info in interactive_data['edges'].items()
+        }
 
         # Compare edge targets - find input edge that should route to clean_text
         # At depth=1, input edge targets clean_text (internal node)
@@ -121,45 +105,28 @@ class TestInteractiveExpandEdgeRouting:
             f"routing to the actual consumer nodes inside."
         )
 
-    def test_interactive_expand_edge_sources_match_static(self):
+    def test_interactive_expand_edge_sources_match_static(self, page, temp_html_file):
         """After click-to-expand, edge sources should match static depth=1 sources.
 
         The bug: Interactive expand keeps edges sourcing from 'preprocess' container
         instead of routing them from 'normalize_text' (the actual producer inside).
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        # === STATIC DEPTH=1: The expected/correct behavior ===
+        static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        static_sources = {
+            eid: info['source']
+            for eid, info in static_data['edges'].items()
+        }
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # === STATIC DEPTH=1: The expected/correct behavior ===
-                static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_path)
-                static_sources = {
-                    eid: info['source']
-                    for eid, info in static_data['edges'].items()
-                }
-
-                # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
-                render_and_extract(page, workflow, depth=0, temp_path=temp_path)
-                click_to_expand_container(page, "preprocess")
-                interactive_data = extract_edge_routing(page)
-                interactive_sources = {
-                    eid: info['source']
-                    for eid, info in interactive_data['edges'].items()
-                }
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        click_to_expand_container(page, "preprocess")
+        interactive_data = extract_edge_routing(page)
+        interactive_sources = {
+            eid: info['source']
+            for eid, info in interactive_data['edges'].items()
+        }
 
         # Find edges that exit the preprocess subgraph
         static_internal_sources = [
@@ -190,7 +157,7 @@ class TestInteractiveExpandEdgeRouting:
             f"routing from the actual producer nodes inside."
         )
 
-    def test_input_edge_routes_to_clean_text_after_expand(self):
+    def test_input_edge_routes_to_clean_text_after_expand(self, page, temp_html_file):
         """Specifically test that input_text edge targets clean_text after expand.
 
         This is the most direct test of the bug:
@@ -200,28 +167,11 @@ class TestInteractiveExpandEdgeRouting:
 
         The edge should be re-routed to the actual consumer inside the container.
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
-
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # Render at depth=0, click to expand
-                render_and_extract(page, workflow, depth=0, temp_path=temp_path)
-                click_to_expand_container(page, "preprocess")
-                data = extract_edge_routing(page)
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # Render at depth=0, click to expand
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        click_to_expand_container(page, "preprocess")
+        data = extract_edge_routing(page)
 
         # Find the input edge (from input_text or similar)
         input_edge = None
@@ -245,7 +195,7 @@ class TestInteractiveExpandEdgeRouting:
             f"Instead, the edge stays connected to the container boundary."
         )
 
-    def test_output_edge_routes_from_normalize_text_after_expand(self):
+    def test_output_edge_routes_from_normalize_text_after_expand(self, page, temp_html_file):
         """Specifically test that output edge sources from normalize_text after expand.
 
         This is the output-side version of the bug:
@@ -253,28 +203,11 @@ class TestInteractiveExpandEdgeRouting:
         - After expand: normalize_text -> analyze (from internal) - EXPECTED
         - Bug: preprocess -> analyze (from container) - ACTUAL BUG
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
-
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # Render at depth=0, click to expand
-                render_and_extract(page, workflow, depth=0, temp_path=temp_path)
-                click_to_expand_container(page, "preprocess")
-                data = extract_edge_routing(page)
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # Render at depth=0, click to expand
+        render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        click_to_expand_container(page, "preprocess")
+        data = extract_edge_routing(page)
 
         # Find the edge to analyze (the output edge from preprocess area)
         output_edge = None
@@ -320,7 +253,7 @@ class TestInteractiveCollapseEdgeRouting:
     parent container.
     """
 
-    def test_interactive_collapse_edge_targets_match_static(self):
+    def test_interactive_collapse_edge_targets_match_static(self, page, temp_html_file):
         """After click-to-collapse, edge targets should match static depth=0 targets.
 
         This test compares:
@@ -331,39 +264,22 @@ class TestInteractiveCollapseEdgeRouting:
         The bug: Interactive collapse keeps edges targeting 'clean_text' (now hidden)
         instead of routing them to 'preprocess' (the visible container).
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        # === STATIC DEPTH=0: The expected/correct behavior (collapsed) ===
+        static_data = render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
+        static_targets = {
+            eid: info['target']
+            for eid, info in static_data['edges'].items()
+        }
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # === STATIC DEPTH=0: The expected/correct behavior (collapsed) ===
-                static_data = render_and_extract(page, workflow, depth=0, temp_path=temp_path)
-                static_targets = {
-                    eid: info['target']
-                    for eid, info in static_data['edges'].items()
-                }
-
-                # === INTERACTIVE COLLAPSE: Render at depth=1 (expanded), click to collapse ===
-                render_and_extract(page, workflow, depth=1, temp_path=temp_path)
-                click_to_collapse_container(page, "preprocess")
-                interactive_data = extract_edge_routing(page)
-                interactive_targets = {
-                    eid: info['target']
-                    for eid, info in interactive_data['edges'].items()
-                }
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # === INTERACTIVE COLLAPSE: Render at depth=1 (expanded), click to collapse ===
+        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        click_to_collapse_container(page, "preprocess")
+        interactive_data = extract_edge_routing(page)
+        interactive_targets = {
+            eid: info['target']
+            for eid, info in interactive_data['edges'].items()
+        }
 
         # After collapse, targets should match the static depth=0 view
         assert interactive_targets == static_targets, (
@@ -381,7 +297,7 @@ class TestInteractiveCollapseEdgeRouting:
             f"Unexpected targets: {sorted(bad_targets)}"
         )
 
-    def test_input_edge_routes_to_container_after_collapse(self):
+    def test_input_edge_routes_to_container_after_collapse(self, page, temp_html_file):
         """Specifically test that input_text edge targets preprocess after collapse.
 
         This is the most direct test of the collapse bug:
@@ -391,28 +307,11 @@ class TestInteractiveCollapseEdgeRouting:
 
         The edge should be re-routed to the container when internal node is hidden.
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
-
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # Render at depth=1 (expanded), click to collapse
-                render_and_extract(page, workflow, depth=1, temp_path=temp_path)
-                click_to_collapse_container(page, "preprocess")
-                data = extract_edge_routing(page)
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # Render at depth=1 (expanded), click to collapse
+        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        click_to_collapse_container(page, "preprocess")
+        data = extract_edge_routing(page)
 
         # Inputs that are only used inside a collapsed container are hidden.
         input_edges = [
@@ -425,7 +324,7 @@ class TestInteractiveCollapseEdgeRouting:
             f"Edges: {data['edges']}"
         )
 
-    def test_output_edge_routes_from_container_after_collapse(self):
+    def test_output_edge_routes_from_container_after_collapse(self, page, temp_html_file):
         """Specifically test that output edge sources from preprocess after collapse.
 
         This is the output-side version of the collapse bug:
@@ -433,28 +332,11 @@ class TestInteractiveCollapseEdgeRouting:
         - After collapse: preprocess -> analyze (from container) - EXPECTED
         - Bug: Edge disappears or stays sourcing from normalize_text - ACTUAL BUG
         """
-        from playwright.sync_api import sync_playwright
-        import tempfile
-        import os
-
         workflow = make_workflow()
-
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # Render at depth=1 (expanded), click to collapse
-                render_and_extract(page, workflow, depth=1, temp_path=temp_path)
-                click_to_collapse_container(page, "preprocess")
-                data = extract_edge_routing(page)
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        # Render at depth=1 (expanded), click to collapse
+        render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
+        click_to_collapse_container(page, "preprocess")
+        data = extract_edge_routing(page)
 
         # Find the edge to analyze (the output edge from preprocess area)
         output_edge = None

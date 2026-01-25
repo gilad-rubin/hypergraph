@@ -11,6 +11,7 @@ from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
     make_workflow,
     make_outer,
+    render_to_page,
 )
 
 
@@ -109,108 +110,83 @@ class TestNestedEdgeRouting:
 class TestEdgeRoutingToInternalNodes:
     """Tests that edges route to actual internal nodes, not container boundaries."""
 
-    def test_workflow_input_edge_visual_target(self):
+    def test_workflow_input_edge_visual_target(self, page, temp_html_file):
         """Test that workflow input edge VISUALLY connects to clean_text, not preprocess.
 
         This tests the actual rendered edge path, not just validation data.
         The edge from input_text should visually end at clean_text's position.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
 
-        # Render to temp file
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
+        # Extract the SVG path of the edge and node positions
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find preprocess and clean_text positions
+            const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+            const cleanText = debug.nodes.find(n => n.id === 'clean_text');
 
-                # Wait for layout
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                # Extract the SVG path of the edge and node positions
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find preprocess and clean_text positions
-                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
-                    const cleanText = debug.nodes.find(n => n.id === 'clean_text');
-
-                    // Find the input_text -> clean_text edge (individual input node, not __inputs__)
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let inputEdgePath = null;
-                    let edgeId = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || group.id || '';
-                        // Edge IDs contain source-target pattern: input_text -> clean_text
-                        if (id.includes('input_text')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                inputEdgePath = path.getAttribute('d');
-                                edgeId = id;
-                                break;
-                            }
-                        }
+            // Find the input_text -> clean_text edge (individual input node, not __inputs__)
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let inputEdgePath = null;
+            let edgeId = null;
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || group.id || '';
+                // Edge IDs contain source-target pattern: input_text -> clean_text
+                if (id.includes('input_text')) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        inputEdgePath = path.getAttribute('d');
+                        edgeId = id;
+                        break;
                     }
+                }
+            }
 
-                    // If not found by ID, find edge that starts near input_text position
-                    if (!inputEdgePath) {
-                        const inputNode = debug.nodes.find(n => n.id === 'input_text');
-                        if (inputNode) {
-                            const inputBottom = inputNode.y + inputNode.height;
-                            for (const group of edgeGroups) {
-                                const path = group.querySelector('path');
-                                if (path) {
-                                    const d = path.getAttribute('d');
-                                    // Parse first Y coordinate from path
-                                    const match = d.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                                    if (match) {
-                                        const startY = parseFloat(match[1]);
-                                        // Check if edge starts near input_text bottom
-                                        if (Math.abs(startY - inputBottom) < 20) {
-                                            inputEdgePath = d;
-                                            edgeId = group.getAttribute('data-testid') || 'found-by-position';
-                                            break;
-                                        }
-                                    }
+            // If not found by ID, find edge that starts near input_text position
+            if (!inputEdgePath) {
+                const inputNode = debug.nodes.find(n => n.id === 'input_text');
+                if (inputNode) {
+                    const inputBottom = inputNode.y + inputNode.height;
+                    for (const group of edgeGroups) {
+                        const path = group.querySelector('path');
+                        if (path) {
+                            const d = path.getAttribute('d');
+                            // Parse first Y coordinate from path
+                            const match = d.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                            if (match) {
+                                const startY = parseFloat(match[1]);
+                                // Check if edge starts near input_text bottom
+                                if (Math.abs(startY - inputBottom) < 20) {
+                                    inputEdgePath = d;
+                                    edgeId = group.getAttribute('data-testid') || 'found-by-position';
+                                    break;
                                 }
                             }
                         }
                     }
+                }
+            }
 
-                    // Parse the last point from the path (target Y coordinate)
-                    let pathEndY = null;
-                    if (inputEdgePath) {
-                        const coords = inputEdgePath.match(/[\\d.]+/g);
-                        if (coords && coords.length >= 2) {
-                            pathEndY = parseFloat(coords[coords.length - 1]);
-                        }
-                    }
+            // Parse the last point from the path (target Y coordinate)
+            let pathEndY = null;
+            if (inputEdgePath) {
+                const coords = inputEdgePath.match(/[\\d.]+/g);
+                if (coords && coords.length >= 2) {
+                    pathEndY = parseFloat(coords[coords.length - 1]);
+                }
+            }
 
-                    return {
-                        preprocessTop: preprocess ? preprocess.y : null,
-                        cleanTextTop: cleanText ? cleanText.y : null,
-                        pathEndY: pathEndY,
-                        path: inputEdgePath,
-                        edgeId: edgeId,
-                        allEdgeIds: Array.from(edgeGroups).map(g => g.getAttribute('data-testid') || g.id),
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                preprocessTop: preprocess ? preprocess.y : null,
+                cleanTextTop: cleanText ? cleanText.y : null,
+                pathEndY: pathEndY,
+                path: inputEdgePath,
+                edgeId: edgeId,
+                allEdgeIds: Array.from(edgeGroups).map(g => g.getAttribute('data-testid') || g.id),
+            };
+        }""")
 
         preprocess_top = result["preprocessTop"]
         clean_text_top = result["cleanTextTop"]
@@ -341,77 +317,54 @@ class TestEdgeRoutingToInternalNodes:
 class TestOutputEdgeRouting:
     """Tests that output edges route from actual internal nodes."""
 
-    def test_workflow_output_edge_visual_source(self):
+    def test_workflow_output_edge_visual_source(self, page, temp_html_file):
         """Test that preprocess -> analyze edge starts from normalize_text's output.
 
         When a nested graph is expanded, edges FROM the container should
         visually start from the actual producing node's output, not container boundary.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find preprocess and normalize_text (last node in preprocess)
+            const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+            const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
+            const dataNormalizeNormalized = debug.nodes.find(n => n.id && n.id.includes('data_normalize'));
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find preprocess and normalize_text (last node in preprocess)
-                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
-                    const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
-                    const dataNormalizeNormalized = debug.nodes.find(n => n.id && n.id.includes('data_normalize'));
-
-                    // Find the normalize_text -> analyze edge
-                    // When preprocess is expanded, edges route from internal producer
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let outputEdgePath = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('normalize_text') && id.includes('analyze')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                outputEdgePath = path.getAttribute('d');
-                                break;
-                            }
-                        }
+            // Find the normalize_text -> analyze edge
+            // When preprocess is expanded, edges route from internal producer
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let outputEdgePath = null;
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                if (id.includes('normalize_text') && id.includes('analyze')) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        outputEdgePath = path.getAttribute('d');
+                        break;
                     }
+                }
+            }
 
-                    // Parse the first Y coordinate from path (source Y)
-                    let pathStartY = null;
-                    if (outputEdgePath) {
-                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                        if (match) {
-                            pathStartY = parseFloat(match[1]);
-                        }
-                    }
+            // Parse the first Y coordinate from path (source Y)
+            let pathStartY = null;
+            if (outputEdgePath) {
+                const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                if (match) {
+                    pathStartY = parseFloat(match[1]);
+                }
+            }
 
-                    return {
-                        preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
-                        normalizeTextBottom: normalizeText ? normalizeText.y + normalizeText.height : null,
-                        pathStartY: pathStartY,
-                        path: outputEdgePath,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
+                normalizeTextBottom: normalizeText ? normalizeText.y + normalizeText.height : null,
+                pathStartY: pathStartY,
+                path: outputEdgePath,
+            };
+        }""")
 
         preprocess_bottom = result["preprocessBottom"]
         normalize_text_bottom = result["normalizeTextBottom"]
@@ -439,48 +392,25 @@ class TestOutputEdgeRouting:
 class TestDoubleNestedEdgeRouting:
     """Tests for edge routing in doubly-nested graphs (depth=1 with 2-level nesting)."""
 
-    def test_outer_depth1_input_routes_to_inner(self):
+    def test_outer_depth1_input_routes_to_inner(self, page, temp_html_file):
         """Test outer at depth=1: internal-only inputs are hidden when inner is collapsed."""
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
+        render_to_page(page, outer, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find middle container and inner container (step1 is inside inner)
+            const middle = debug.nodes.find(n => n.id === 'middle');
+            const inner = debug.nodes.find(n => n.id === 'inner');
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find middle container and inner container (step1 is inside inner)
-                    const middle = debug.nodes.find(n => n.id === 'middle');
-                    const inner = debug.nodes.find(n => n.id === 'inner');
-
-                    return {
-                        middleTop: middle ? middle.y : null,
-                        innerTop: inner ? inner.y : null,
-                        edgeIds: Array.from(document.querySelectorAll('.react-flow__edge'))
-                            .map(g => g.getAttribute('data-testid') || g.id),
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                middleTop: middle ? middle.y : null,
+                innerTop: inner ? inner.y : null,
+                edgeIds: Array.from(document.querySelectorAll('.react-flow__edge'))
+                    .map(g => g.getAttribute('data-testid') || g.id),
+            };
+        }""")
 
         inner_top = result["innerTop"]
 
@@ -496,77 +426,54 @@ class TestDoubleNestedEdgeRouting:
 class TestEdgeVisualGaps:
     """Tests that edges connect to nodes without visible gaps."""
 
-    def test_workflow_expanded_output_edge_no_gap(self):
+    def test_workflow_expanded_output_edge_no_gap(self, page, temp_html_file):
         """Test that preprocess->analyze edge has no gap at source.
 
         When preprocess is expanded, the edge from preprocess to analyze
         should start from normalize_text's bottom without a visible gap.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find normalize_text (the actual producer) and preprocess container
+            const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
+            const preprocess = debug.nodes.find(n => n.id === 'preprocess');
+            const analyze = debug.nodes.find(n => n.id === 'analyze');
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find normalize_text (the actual producer) and preprocess container
-                    const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
-                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
-                    const analyze = debug.nodes.find(n => n.id === 'analyze');
-
-                    // Find the normalize_text -> analyze edge (the internal producer to external consumer)
-                    // When preprocess is expanded, edges route from internal producer (normalize_text)
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let outputEdgePath = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        // Edge should be from normalize_text (internal producer) to analyze
-                        if (id.includes('normalize_text') && id.includes('analyze')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                outputEdgePath = path.getAttribute('d');
-                                break;
-                            }
-                        }
+            // Find the normalize_text -> analyze edge (the internal producer to external consumer)
+            // When preprocess is expanded, edges route from internal producer (normalize_text)
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let outputEdgePath = null;
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                // Edge should be from normalize_text (internal producer) to analyze
+                if (id.includes('normalize_text') && id.includes('analyze')) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        outputEdgePath = path.getAttribute('d');
+                        break;
                     }
+                }
+            }
 
-                    // Parse start Y from path
-                    let pathStartY = null;
-                    if (outputEdgePath) {
-                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                        if (match) pathStartY = parseFloat(match[1]);
-                    }
+            // Parse start Y from path
+            let pathStartY = null;
+            if (outputEdgePath) {
+                const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                if (match) pathStartY = parseFloat(match[1]);
+            }
 
-                    return {
-                        normalizeTextBottom: normalizeText ? normalizeText.y + normalizeText.height : null,
-                        preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
-                        analyzeTop: analyze ? analyze.y : null,
-                        pathStartY: pathStartY,
-                        path: outputEdgePath,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                normalizeTextBottom: normalizeText ? normalizeText.y + normalizeText.height : null,
+                preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
+                analyzeTop: analyze ? analyze.y : null,
+                pathStartY: pathStartY,
+                path: outputEdgePath,
+            };
+        }""")
 
         normalize_bottom = result["normalizeTextBottom"]
         path_start_y = result["pathStartY"]
@@ -586,73 +493,50 @@ class TestEdgeVisualGaps:
             f"Path: {result['path'][:100] if result['path'] else 'None'}..."
         )
 
-    def test_outer_collapsed_output_edge_no_gap(self):
+    def test_outer_collapsed_output_edge_no_gap(self, page, temp_html_file):
         """Test that middle->log_result edge has no gap when collapsed.
 
         When outer is viewed at depth=0, the edge from collapsed middle
         to log_result should start from middle's bottom without a gap.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
+        render_to_page(page, outer, depth=0, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=0, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find middle and log_result
+            const middle = debug.nodes.find(n => n.id === 'middle');
+            const logResult = debug.nodes.find(n => n.id === 'log_result');
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find middle and log_result
-                    const middle = debug.nodes.find(n => n.id === 'middle');
-                    const logResult = debug.nodes.find(n => n.id === 'log_result');
-
-                    // Find the middle -> log_result edge
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let outputEdgePath = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('middle') && id.includes('log_result')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                outputEdgePath = path.getAttribute('d');
-                                break;
-                            }
-                        }
+            // Find the middle -> log_result edge
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let outputEdgePath = null;
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                if (id.includes('middle') && id.includes('log_result')) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        outputEdgePath = path.getAttribute('d');
+                        break;
                     }
+                }
+            }
 
-                    // Parse start Y from path
-                    let pathStartY = null;
-                    if (outputEdgePath) {
-                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                        if (match) pathStartY = parseFloat(match[1]);
-                    }
+            // Parse start Y from path
+            let pathStartY = null;
+            if (outputEdgePath) {
+                const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                if (match) pathStartY = parseFloat(match[1]);
+            }
 
-                    return {
-                        middleBottom: middle ? middle.y + middle.height : null,
-                        logResultTop: logResult ? logResult.y : null,
-                        pathStartY: pathStartY,
-                        path: outputEdgePath,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                middleBottom: middle ? middle.y + middle.height : null,
+                logResultTop: logResult ? logResult.y : null,
+                pathStartY: pathStartY,
+                path: outputEdgePath,
+            };
+        }""")
 
         middle_bottom = result["middleBottom"]
         path_start_y = result["pathStartY"]
@@ -677,74 +561,51 @@ class TestEdgeVisualGaps:
 class TestCollapsedGraphEdges:
     """Tests that collapsed graphs have edges connecting properly without gaps."""
 
-    def test_outer_collapsed_no_edge_gap(self):
+    def test_outer_collapsed_no_edge_gap(self, page, temp_html_file):
         """Test that outer graph with collapsed middle has no visual gap.
 
         When viewing outer at depth=0 (middle collapsed), the edge from
         middle -> log_result should connect without a gap.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
 
-        # Render with depth=0 (middle collapsed)
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=0, filepath=temp_path, _debug_overlays=True)
+        render_to_page(page, outer, depth=0, temp_path=temp_html_file)
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            // Find middle container
+            const middle = debug.nodes.find(n => n.id === 'middle');
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find middle container
-                    const middle = debug.nodes.find(n => n.id === 'middle');
-
-                    // Find the middle -> log_result edge
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let outputEdgePath = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('middle') && id.includes('log_result')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                outputEdgePath = path.getAttribute('d');
-                                break;
-                            }
-                        }
+            // Find the middle -> log_result edge
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let outputEdgePath = null;
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                if (id.includes('middle') && id.includes('log_result')) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        outputEdgePath = path.getAttribute('d');
+                        break;
                     }
+                }
+            }
 
-                    // Parse the first Y coordinate from path (source Y - where edge starts)
-                    let pathStartY = null;
-                    if (outputEdgePath) {
-                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                        if (match) {
-                            pathStartY = parseFloat(match[1]);
-                        }
-                    }
+            // Parse the first Y coordinate from path (source Y - where edge starts)
+            let pathStartY = null;
+            if (outputEdgePath) {
+                const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                if (match) {
+                    pathStartY = parseFloat(match[1]);
+                }
+            }
 
-                    return {
-                        middleBottom: middle ? middle.y + middle.height : null,
-                        pathStartY: pathStartY,
-                        path: outputEdgePath,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                middleBottom: middle ? middle.y + middle.height : null,
+                pathStartY: pathStartY,
+                path: outputEdgePath,
+            };
+        }""")
 
         middle_bottom = result["middleBottom"]
         path_start_y = result["pathStartY"]
@@ -765,70 +626,47 @@ class TestCollapsedGraphEdges:
             f"Path: {result['path'][:100] if result['path'] else 'None'}..."
         )
 
-    def test_workflow_collapsed_no_edge_gap(self):
+    def test_workflow_collapsed_no_edge_gap(self, page, temp_html_file):
         """Test that workflow with collapsed preprocess has no visual gap."""
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
 
-        # Render with depth=0 (preprocess collapsed)
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=0, filepath=temp_path, _debug_overlays=True)
+        render_to_page(page, workflow, depth=0, temp_path=temp_html_file)
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            // Find preprocess container
+            const preprocess = debug.nodes.find(n => n.id === 'preprocess');
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find preprocess container
-                    const preprocess = debug.nodes.find(n => n.id === 'preprocess');
-
-                    // Find the preprocess -> analyze edge
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let outputEdgePath = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('preprocess') && id.includes('analyze')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                outputEdgePath = path.getAttribute('d');
-                                break;
-                            }
-                        }
+            // Find the preprocess -> analyze edge
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let outputEdgePath = null;
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                if (id.includes('preprocess') && id.includes('analyze')) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        outputEdgePath = path.getAttribute('d');
+                        break;
                     }
+                }
+            }
 
-                    // Parse the first Y coordinate from path (source Y - where edge starts)
-                    let pathStartY = null;
-                    if (outputEdgePath) {
-                        const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                        if (match) {
-                            pathStartY = parseFloat(match[1]);
-                        }
-                    }
+            // Parse the first Y coordinate from path (source Y - where edge starts)
+            let pathStartY = null;
+            if (outputEdgePath) {
+                const match = outputEdgePath.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                if (match) {
+                    pathStartY = parseFloat(match[1]);
+                }
+            }
 
-                    return {
-                        preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
-                        pathStartY: pathStartY,
-                        path: outputEdgePath,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                preprocessBottom: preprocess ? preprocess.y + preprocess.height : null,
+                pathStartY: pathStartY,
+                path: outputEdgePath,
+            };
+        }""")
 
         preprocess_bottom = result["preprocessBottom"]
         path_start_y = result["pathStartY"]
@@ -954,47 +792,24 @@ class TestNestedGraphPadding:
 class TestNodeToParentDebugAPI:
     """Tests that node_to_parent map is exposed via debug API for routing."""
 
-    def test_node_to_parent_exposed_in_debug_api(self):
+    def test_node_to_parent_exposed_in_debug_api(self, page, temp_html_file):
         """Test that node_to_parent is accessible via debug API routingData.
 
         The node_to_parent map is critical for edge routing when containers
         are collapsed - it allows JavaScript to find visible ancestors.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
-
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-                    return {
-                        hasRoutingData: !!debug.routingData,
-                        hasNodeToParent: !!(debug.routingData && debug.routingData.node_to_parent),
-                        nodeToParent: debug.routingData ? debug.routingData.node_to_parent : null,
-                        allKeys: debug.routingData ? Object.keys(debug.routingData) : [],
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            return {
+                hasRoutingData: !!debug.routingData,
+                hasNodeToParent: !!(debug.routingData && debug.routingData.node_to_parent),
+                nodeToParent: debug.routingData ? debug.routingData.node_to_parent : null,
+                allKeys: debug.routingData ? Object.keys(debug.routingData) : [],
+            };
+        }""")
 
         assert result["hasRoutingData"], "routingData not found in debug API"
         assert result["hasNodeToParent"], (
@@ -1018,7 +833,7 @@ class TestNodeToParentDebugAPI:
         assert "analyze" not in node_to_parent or node_to_parent.get("analyze") is None
         assert "preprocess" not in node_to_parent or node_to_parent.get("preprocess") is None
 
-    def test_node_to_parent_deeply_nested(self):
+    def test_node_to_parent_deeply_nested(self, page, temp_html_file):
         """Test node_to_parent for deeply nested graphs (2+ levels).
 
         For outer graph: middle[inner[step1, step2], validate] -> log_result
@@ -1026,35 +841,12 @@ class TestNodeToParentDebugAPI:
         - inner, validate should have parent 'middle'
         - middle, log_result should have no parent
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
-
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
-
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
-
-                node_to_parent = page.evaluate(
-                    "window.__hypergraphVizDebug.routingData.node_to_parent"
-                )
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+        node_to_parent = page.evaluate(
+            "window.__hypergraphVizDebug.routingData.node_to_parent"
+        )
 
         assert node_to_parent is not None, "node_to_parent not found"
 

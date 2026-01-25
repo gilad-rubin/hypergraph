@@ -14,6 +14,7 @@ from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
     make_workflow,
     make_outer,
+    render_to_page,
 )
 
 
@@ -25,69 +26,46 @@ from tests.viz.conftest import (
 class TestInputNodePosition:
     """Tests that input nodes are positioned above their target nodes."""
 
-    def test_outer_depth2_input_above_step1(self):
+    def test_outer_depth2_input_above_step1(self, page, temp_html_file):
         """Input x should be positioned ABOVE step1, not below.
 
         The edge from input_x to step1 should flow DOWNWARD.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find input node and step1 node
+            const inputNode = debug.nodes.find(n =>
+                n.id.includes('input') || n.id === '__inputs__'
+            );
+            const step1Node = debug.nodes.find(n => n.id === 'step1');
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            if (!inputNode || !step1Node) {
+                return {
+                    error: 'Nodes not found',
+                    inputNode: inputNode ? inputNode.id : null,
+                    step1Node: step1Node ? step1Node.id : null,
+                    allNodes: debug.nodes.map(n => n.id)
+                };
+            }
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
+            // Input should be ABOVE step1 (smaller Y)
+            const inputBottom = inputNode.y + inputNode.height;
+            const step1Top = step1Node.y;
 
-                    // Find input node and step1 node
-                    const inputNode = debug.nodes.find(n =>
-                        n.id.includes('input') || n.id === '__inputs__'
-                    );
-                    const step1Node = debug.nodes.find(n => n.id === 'step1');
-
-                    if (!inputNode || !step1Node) {
-                        return {
-                            error: 'Nodes not found',
-                            inputNode: inputNode ? inputNode.id : null,
-                            step1Node: step1Node ? step1Node.id : null,
-                            allNodes: debug.nodes.map(n => n.id)
-                        };
-                    }
-
-                    // Input should be ABOVE step1 (smaller Y)
-                    const inputBottom = inputNode.y + inputNode.height;
-                    const step1Top = step1Node.y;
-
-                    return {
-                        inputId: inputNode.id,
-                        inputY: inputNode.y,
-                        inputBottom: inputBottom,
-                        step1Y: step1Node.y,
-                        step1Top: step1Top,
-                        inputAboveStep1: inputBottom < step1Top,
-                        verticalDistance: step1Top - inputBottom,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                inputId: inputNode.id,
+                inputY: inputNode.y,
+                inputBottom: inputBottom,
+                step1Y: step1Node.y,
+                step1Top: step1Top,
+                inputAboveStep1: inputBottom < step1Top,
+                verticalDistance: step1Top - inputBottom,
+            };
+        }""")
 
         if "error" in result:
             pytest.fail(f"Setup error: {result}")
@@ -101,60 +79,37 @@ class TestInputNodePosition:
             f"Actual: Input is BELOW step1 (edge flows upward)"
         )
 
-    def test_workflow_depth1_input_above_clean_text(self):
+    def test_workflow_depth1_input_above_clean_text(self, page, temp_html_file):
         """Input text should be positioned ABOVE clean_text."""
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            const inputNode = debug.nodes.find(n =>
+                n.id.includes('input') || n.id === '__inputs__'
+            );
+            const cleanTextNode = debug.nodes.find(n => n.id === 'clean_text');
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            if (!inputNode || !cleanTextNode) {
+                return {
+                    error: 'Nodes not found',
+                    allNodes: debug.nodes.map(n => n.id)
+                };
+            }
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
+            const inputBottom = inputNode.y + inputNode.height;
+            const cleanTextTop = cleanTextNode.y;
 
-                    const inputNode = debug.nodes.find(n =>
-                        n.id.includes('input') || n.id === '__inputs__'
-                    );
-                    const cleanTextNode = debug.nodes.find(n => n.id === 'clean_text');
-
-                    if (!inputNode || !cleanTextNode) {
-                        return {
-                            error: 'Nodes not found',
-                            allNodes: debug.nodes.map(n => n.id)
-                        };
-                    }
-
-                    const inputBottom = inputNode.y + inputNode.height;
-                    const cleanTextTop = cleanTextNode.y;
-
-                    return {
-                        inputId: inputNode.id,
-                        inputBottom: inputBottom,
-                        cleanTextTop: cleanTextTop,
-                        inputAboveCleanText: inputBottom < cleanTextTop,
-                        verticalDistance: cleanTextTop - inputBottom,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                inputId: inputNode.id,
+                inputBottom: inputBottom,
+                cleanTextTop: cleanTextTop,
+                inputAboveCleanText: inputBottom < cleanTextTop,
+                verticalDistance: cleanTextTop - inputBottom,
+            };
+        }""")
 
         if "error" in result:
             pytest.fail(f"Setup error: {result}")
@@ -175,99 +130,76 @@ class TestInputNodePosition:
 class TestEdgeGaps:
     """Tests that edges connect to nodes without visible gaps."""
 
-    def test_outer_depth2_input_edge_no_gap(self):
+    def test_outer_depth2_input_edge_no_gap(self, page, temp_html_file):
         """Edge from input to step1 should have no gap at start or end."""
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find the input edge
+            const inputEdge = debug.edges.find(e =>
+                e.source.includes('input') || e.source === '__inputs__'
+            );
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            if (!inputEdge) {
+                return { error: 'Input edge not found', edges: debug.edges };
+            }
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
+            // Find source and target nodes
+            const srcNode = debug.nodes.find(n => n.id === inputEdge.source);
+            const tgtNode = debug.nodes.find(n => n.id === inputEdge.target);
 
-                    // Find the input edge
-                    const inputEdge = debug.edges.find(e =>
-                        e.source.includes('input') || e.source === '__inputs__'
-                    );
+            if (!srcNode || !tgtNode) {
+                return {
+                    error: 'Source or target not found',
+                    source: inputEdge.source,
+                    target: inputEdge.target,
+                    nodes: debug.nodes.map(n => n.id)
+                };
+            }
 
-                    if (!inputEdge) {
-                        return { error: 'Input edge not found', edges: debug.edges };
-                    }
+            // Find the SVG path for this edge
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let pathStartY = null;
+            let pathEndY = null;
+            let pathD = null;
 
-                    // Find source and target nodes
-                    const srcNode = debug.nodes.find(n => n.id === inputEdge.source);
-                    const tgtNode = debug.nodes.find(n => n.id === inputEdge.target);
-
-                    if (!srcNode || !tgtNode) {
-                        return {
-                            error: 'Source or target not found',
-                            source: inputEdge.source,
-                            target: inputEdge.target,
-                            nodes: debug.nodes.map(n => n.id)
-                        };
-                    }
-
-                    // Find the SVG path for this edge
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let pathStartY = null;
-                    let pathEndY = null;
-                    let pathD = null;
-
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes(inputEdge.source)) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                pathD = path.getAttribute('d');
-                                // Parse start Y (M x y)
-                                const startMatch = pathD.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
-                                if (startMatch) pathStartY = parseFloat(startMatch[1]);
-                                // Parse end Y (last two numbers)
-                                const coords = pathD.match(/[\\d.]+/g);
-                                if (coords && coords.length >= 2) {
-                                    pathEndY = parseFloat(coords[coords.length - 1]);
-                                }
-                                break;
-                            }
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                if (id.includes(inputEdge.source)) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        pathD = path.getAttribute('d');
+                        // Parse start Y (M x y)
+                        const startMatch = pathD.match(/M\\s*[\\d.]+\\s+([\\d.]+)/);
+                        if (startMatch) pathStartY = parseFloat(startMatch[1]);
+                        // Parse end Y (last two numbers)
+                        const coords = pathD.match(/[\\d.]+/g);
+                        if (coords && coords.length >= 2) {
+                            pathEndY = parseFloat(coords[coords.length - 1]);
                         }
+                        break;
                     }
+                }
+            }
 
-                    const srcBottom = srcNode.y + srcNode.height;
-                    const tgtTop = tgtNode.y;
+            const srcBottom = srcNode.y + srcNode.height;
+            const tgtTop = tgtNode.y;
 
-                    return {
-                        srcId: srcNode.id,
-                        tgtId: tgtNode.id,
-                        srcBottom: srcBottom,
-                        tgtTop: tgtTop,
-                        pathStartY: pathStartY,
-                        pathEndY: pathEndY,
-                        startGap: pathStartY ? Math.abs(pathStartY - srcBottom) : null,
-                        endGap: pathEndY ? Math.abs(pathEndY - tgtTop) : null,
-                        pathD: pathD ? pathD.substring(0, 100) : null,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                srcId: srcNode.id,
+                tgtId: tgtNode.id,
+                srcBottom: srcBottom,
+                tgtTop: tgtTop,
+                pathStartY: pathStartY,
+                pathEndY: pathEndY,
+                startGap: pathStartY ? Math.abs(pathStartY - srcBottom) : null,
+                endGap: pathEndY ? Math.abs(pathEndY - tgtTop) : null,
+                pathD: pathD ? pathD.substring(0, 100) : null,
+            };
+        }""")
 
         if "error" in result:
             pytest.fail(f"Setup error: {result}")
@@ -291,120 +223,97 @@ class TestEdgeGaps:
             )
 
 
-    def test_workflow_depth1_all_edges_no_gap(self):
+    def test_workflow_depth1_all_edges_no_gap(self, page, temp_html_file):
         """All edges in workflow should have no visible gaps.
 
         This tests the screenshot issue where:
         - 7px gap below 'text' input node
         - 19px gap above 'analyze' node
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         workflow = make_workflow()
+        render_to_page(page, workflow, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(workflow, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const gaps = [];
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Check each edge for gaps
+            for (const edge of debug.edges) {
+                // Use actualSource/actualTarget when available (re-routed edges)
+                const actualSrcId = (edge.data && edge.data.actualSource) || edge.source;
+                const actualTgtId = (edge.data && edge.data.actualTarget) || edge.target;
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+                const srcNode = debug.nodes.find(n => n.id === actualSrcId);
+                const tgtNode = debug.nodes.find(n => n.id === actualTgtId);
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-                    const gaps = [];
+                if (!srcNode || !tgtNode) continue;
 
-                    // Check each edge for gaps
-                    for (const edge of debug.edges) {
-                        // Use actualSource/actualTarget when available (re-routed edges)
-                        const actualSrcId = (edge.data && edge.data.actualSource) || edge.source;
-                        const actualTgtId = (edge.data && edge.data.actualTarget) || edge.target;
+                // Find the SVG path for this edge
+                const edgeGroups = document.querySelectorAll('.react-flow__edge');
+                let pathStartY = null;
+                let pathEndY = null;
+                let pathD = null;
 
-                        const srcNode = debug.nodes.find(n => n.id === actualSrcId);
-                        const tgtNode = debug.nodes.find(n => n.id === actualTgtId);
-
-                        if (!srcNode || !tgtNode) continue;
-
-                        // Find the SVG path for this edge
-                        const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                        let pathStartY = null;
-                        let pathEndY = null;
-                        let pathD = null;
-
-                        for (const group of edgeGroups) {
-                            const id = group.getAttribute('data-testid') || '';
-                            // Edge IDs typically contain source or source-target pattern
-                            if (id.includes(edge.source) && id.includes(edge.target)) {
-                                const path = group.querySelector('path');
-                                if (path) {
-                                    pathD = path.getAttribute('d');
-                                    break;
-                                }
-                            }
+                for (const group of edgeGroups) {
+                    const id = group.getAttribute('data-testid') || '';
+                    // Edge IDs typically contain source or source-target pattern
+                    if (id.includes(edge.source) && id.includes(edge.target)) {
+                        const path = group.querySelector('path');
+                        if (path) {
+                            pathD = path.getAttribute('d');
+                            break;
                         }
-
-                        // Try alternate search if not found
-                        if (!pathD) {
-                            for (const group of edgeGroups) {
-                                const id = group.getAttribute('data-testid') || '';
-                                if (id.includes(edge.source)) {
-                                    const path = group.querySelector('path');
-                                    if (path) {
-                                        pathD = path.getAttribute('d');
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (pathD) {
-                            // Parse start Y (M x y)
-                            const startMatch = pathD.match(/M\\s*([\\d.]+)\\s+([\\d.]+)/);
-                            if (startMatch) {
-                                pathStartY = parseFloat(startMatch[2]);
-                            }
-                            // Parse end Y (last two numbers)
-                            const coords = pathD.match(/[\\d.]+/g);
-                            if (coords && coords.length >= 2) {
-                                pathEndY = parseFloat(coords[coords.length - 1]);
-                            }
-                        }
-
-                        const srcBottom = srcNode.y + srcNode.height;
-                        const tgtTop = tgtNode.y;
-
-                        const startGap = pathStartY !== null ? Math.abs(pathStartY - srcBottom) : null;
-                        const endGap = pathEndY !== null ? Math.abs(pathEndY - tgtTop) : null;
-
-                        gaps.push({
-                            edge: edge.source + ' -> ' + edge.target,
-                            actualEdge: actualSrcId + ' -> ' + actualTgtId,
-                            srcBottom: srcBottom,
-                            tgtTop: tgtTop,
-                            pathStartY: pathStartY,
-                            pathEndY: pathEndY,
-                            startGap: startGap,
-                            endGap: endGap,
-                            pathD: pathD ? pathD.substring(0, 80) : null,
-                        });
                     }
+                }
 
-                    return { gaps: gaps };
-                }""")
+                // Try alternate search if not found
+                if (!pathD) {
+                    for (const group of edgeGroups) {
+                        const id = group.getAttribute('data-testid') || '';
+                        if (id.includes(edge.source)) {
+                            const path = group.querySelector('path');
+                            if (path) {
+                                pathD = path.getAttribute('d');
+                                break;
+                            }
+                        }
+                    }
+                }
 
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+                if (pathD) {
+                    // Parse start Y (M x y)
+                    const startMatch = pathD.match(/M\\s*([\\d.]+)\\s+([\\d.]+)/);
+                    if (startMatch) {
+                        pathStartY = parseFloat(startMatch[2]);
+                    }
+                    // Parse end Y (last two numbers)
+                    const coords = pathD.match(/[\\d.]+/g);
+                    if (coords && coords.length >= 2) {
+                        pathEndY = parseFloat(coords[coords.length - 1]);
+                    }
+                }
+
+                const srcBottom = srcNode.y + srcNode.height;
+                const tgtTop = tgtNode.y;
+
+                const startGap = pathStartY !== null ? Math.abs(pathStartY - srcBottom) : null;
+                const endGap = pathEndY !== null ? Math.abs(pathEndY - tgtTop) : null;
+
+                gaps.push({
+                    edge: edge.source + ' -> ' + edge.target,
+                    actualEdge: actualSrcId + ' -> ' + actualTgtId,
+                    srcBottom: srcBottom,
+                    tgtTop: tgtTop,
+                    pathStartY: pathStartY,
+                    pathEndY: pathEndY,
+                    startGap: startGap,
+                    endGap: endGap,
+                    pathD: pathD ? pathD.substring(0, 80) : null,
+                });
+            }
+
+            return { gaps: gaps };
+        }""")
 
         max_gap = 5  # pixels - strict threshold for visible gaps
         issues = []
@@ -435,98 +344,75 @@ class TestEdgeGaps:
 class TestEdgeConnectsToActualNode:
     """Tests that edges connect to actual internal nodes, not container boundaries."""
 
-    def test_outer_depth2_edge_to_step1_not_inner(self):
+    def test_outer_depth2_edge_to_step1_not_inner(self, page, temp_html_file):
         """Edge should connect to step1's position, not inner container's boundary."""
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
-        import tempfile
-        import os
-
         outer = make_outer()
+        render_to_page(page, outer, depth=2, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(outer, depth=2, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find nodes
+            const innerNode = debug.nodes.find(n => n.id === 'inner');
+            const step1Node = debug.nodes.find(n => n.id === 'step1');
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            if (!step1Node) {
+                return {
+                    error: 'step1 not found',
+                    nodes: debug.nodes.map(n => n.id)
+                };
+            }
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
+            // Find the input edge
+            const inputEdge = debug.edges.find(e =>
+                e.source.includes('input') || e.source === '__inputs__'
+            );
 
-                    // Find nodes
-                    const innerNode = debug.nodes.find(n => n.id === 'inner');
-                    const step1Node = debug.nodes.find(n => n.id === 'step1');
+            if (!inputEdge) {
+                return { error: 'Input edge not found' };
+            }
 
-                    if (!step1Node) {
-                        return {
-                            error: 'step1 not found',
-                            nodes: debug.nodes.map(n => n.id)
-                        };
-                    }
+            // Find the SVG path end Y
+            const edgeGroups = document.querySelectorAll('.react-flow__edge');
+            let pathEndY = null;
+            let pathEndX = null;
 
-                    // Find the input edge
-                    const inputEdge = debug.edges.find(e =>
-                        e.source.includes('input') || e.source === '__inputs__'
-                    );
-
-                    if (!inputEdge) {
-                        return { error: 'Input edge not found' };
-                    }
-
-                    // Find the SVG path end Y
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let pathEndY = null;
-                    let pathEndX = null;
-
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes(inputEdge.source)) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                const pathD = path.getAttribute('d');
-                                const coords = pathD.match(/[\\d.]+/g);
-                                if (coords && coords.length >= 2) {
-                                    pathEndX = parseFloat(coords[coords.length - 2]);
-                                    pathEndY = parseFloat(coords[coords.length - 1]);
-                                }
-                                break;
-                            }
+            for (const group of edgeGroups) {
+                const id = group.getAttribute('data-testid') || '';
+                if (id.includes(inputEdge.source)) {
+                    const path = group.querySelector('path');
+                    if (path) {
+                        const pathD = path.getAttribute('d');
+                        const coords = pathD.match(/[\\d.]+/g);
+                        if (coords && coords.length >= 2) {
+                            pathEndX = parseFloat(coords[coords.length - 2]);
+                            pathEndY = parseFloat(coords[coords.length - 1]);
                         }
+                        break;
                     }
+                }
+            }
 
-                    // Calculate distances to inner container vs step1
-                    const step1CenterX = step1Node.x + step1Node.width / 2;
-                    const step1Top = step1Node.y;
+            // Calculate distances to inner container vs step1
+            const step1CenterX = step1Node.x + step1Node.width / 2;
+            const step1Top = step1Node.y;
 
-                    const innerTop = innerNode ? innerNode.y : null;
-                    const innerCenterX = innerNode ? innerNode.x + innerNode.width / 2 : null;
+            const innerTop = innerNode ? innerNode.y : null;
+            const innerCenterX = innerNode ? innerNode.x + innerNode.width / 2 : null;
 
-                    return {
-                        pathEndX: pathEndX,
-                        pathEndY: pathEndY,
-                        step1Top: step1Top,
-                        step1CenterX: step1CenterX,
-                        innerTop: innerTop,
-                        innerCenterX: innerCenterX,
-                        distToStep1Y: pathEndY ? Math.abs(pathEndY - step1Top) : null,
-                        distToInnerY: innerTop && pathEndY ? Math.abs(pathEndY - innerTop) : null,
-                        distToStep1X: pathEndX ? Math.abs(pathEndX - step1CenterX) : null,
-                        distToInnerX: innerCenterX && pathEndX ? Math.abs(pathEndX - innerCenterX) : null,
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                pathEndX: pathEndX,
+                pathEndY: pathEndY,
+                step1Top: step1Top,
+                step1CenterX: step1CenterX,
+                innerTop: innerTop,
+                innerCenterX: innerCenterX,
+                distToStep1Y: pathEndY ? Math.abs(pathEndY - step1Top) : null,
+                distToInnerY: innerTop && pathEndY ? Math.abs(pathEndY - innerTop) : null,
+                distToStep1X: pathEndX ? Math.abs(pathEndX - step1CenterX) : null,
+                distToInnerX: innerCenterX && pathEndX ? Math.abs(pathEndX - innerCenterX) : null,
+            };
+        }""")
 
         if "error" in result:
             pytest.fail(f"Setup error: {result}")
@@ -621,17 +507,13 @@ class TestInputNodeHorizontalSpread:
     2. When inputs CANNOT be grouped (different targets or bound status), they spread horizontally
     """
 
-    def test_multiple_inputs_same_target_are_grouped(self):
+    def test_multiple_inputs_same_target_are_grouped(self, page, temp_html_file):
         """When two unbound inputs feed the same target, they should be grouped.
 
         This validates the INPUT_GROUP feature - inputs with identical consumers
         and bound status are consolidated into a single group node.
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
         from hypergraph import Graph, node
-        import tempfile
-        import os
 
         # Create a graph with two inputs feeding the same function
         @node(output_name="response")
@@ -639,45 +521,27 @@ class TestInputNodeHorizontalSpread:
             return f"{system_prompt} {max_tokens}"
 
         graph = Graph(nodes=[generate])
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(graph, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find INPUT_GROUP nodes
+            const groupNodes = debug.nodes.filter(n =>
+                n.nodeType === 'INPUT_GROUP'
+            );
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            // Find individual INPUT nodes
+            const inputNodes = debug.nodes.filter(n =>
+                n.nodeType === 'INPUT'
+            );
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
-
-                    // Find INPUT_GROUP nodes
-                    const groupNodes = debug.nodes.filter(n =>
-                        n.nodeType === 'INPUT_GROUP'
-                    );
-
-                    // Find individual INPUT nodes
-                    const inputNodes = debug.nodes.filter(n =>
-                        n.nodeType === 'INPUT'
-                    );
-
-                    return {
-                        groupNodes: groupNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
-                        inputNodes: inputNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
-                        allNodes: debug.nodes.map(n => ({ id: n.id, nodeType: n.nodeType }))
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                groupNodes: groupNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
+                inputNodes: inputNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
+                allNodes: debug.nodes.map(n => ({ id: n.id, nodeType: n.nodeType }))
+            };
+        }""")
 
         # With INPUT_GROUP feature, both inputs should be grouped into one node
         assert len(result["groupNodes"]) == 1, (
@@ -693,17 +557,13 @@ class TestInputNodeHorizontalSpread:
             f"INPUT_GROUP should contain both parameter names, got: {group_id}"
         )
 
-    def test_different_targets_no_grouping_horizontal_spread(self):
+    def test_different_targets_no_grouping_horizontal_spread(self, page, temp_html_file):
         """When inputs have different targets, they should NOT be grouped and spread horizontally.
 
         This tests that the horizontal spread logic still works for inputs that cannot
         be grouped (different consumers).
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
         from hypergraph import Graph, node
-        import tempfile
-        import os
 
         # Create a graph with two inputs feeding different functions
         @node(output_name="step1_out")
@@ -715,65 +575,47 @@ class TestInputNodeHorizontalSpread:
             return f"{input_b} {step1_out}"
 
         graph = Graph(nodes=[step1, step2])
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(graph, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find individual INPUT nodes (not grouped since different targets)
+            const inputNodes = debug.nodes.filter(n =>
+                n.nodeType === 'INPUT'
+            );
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            // Get the X coordinates of INPUT nodes
+            const inputXCoords = inputNodes.map(n => ({
+                id: n.id,
+                x: n.x,
+                y: n.y,
+                centerX: n.x + n.width / 2
+            }));
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
+            // Check if they have different X coordinates (horizontal spread)
+            let hasHorizontalSpread = false;
+            let minXDiff = Infinity;
 
-                    // Find individual INPUT nodes (not grouped since different targets)
-                    const inputNodes = debug.nodes.filter(n =>
-                        n.nodeType === 'INPUT'
-                    );
-
-                    // Get the X coordinates of INPUT nodes
-                    const inputXCoords = inputNodes.map(n => ({
-                        id: n.id,
-                        x: n.x,
-                        y: n.y,
-                        centerX: n.x + n.width / 2
-                    }));
-
-                    // Check if they have different X coordinates (horizontal spread)
-                    let hasHorizontalSpread = false;
-                    let minXDiff = Infinity;
-
-                    if (inputXCoords.length >= 2) {
-                        for (let i = 0; i < inputXCoords.length; i++) {
-                            for (let j = i + 1; j < inputXCoords.length; j++) {
-                                const xDiff = Math.abs(inputXCoords[i].x - inputXCoords[j].x);
-                                if (xDiff > 10) {
-                                    hasHorizontalSpread = true;
-                                }
-                                if (xDiff < minXDiff) minXDiff = xDiff;
-                            }
+            if (inputXCoords.length >= 2) {
+                for (let i = 0; i < inputXCoords.length; i++) {
+                    for (let j = i + 1; j < inputXCoords.length; j++) {
+                        const xDiff = Math.abs(inputXCoords[i].x - inputXCoords[j].x);
+                        if (xDiff > 10) {
+                            hasHorizontalSpread = true;
                         }
+                        if (xDiff < minXDiff) minXDiff = xDiff;
                     }
+                }
+            }
 
-                    return {
-                        inputNodes: inputXCoords,
-                        hasHorizontalSpread: hasHorizontalSpread,
-                        minXDiff: minXDiff,
-                        allNodes: debug.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, nodeType: n.nodeType }))
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                inputNodes: inputXCoords,
+                hasHorizontalSpread: hasHorizontalSpread,
+                minXDiff: minXDiff,
+                allNodes: debug.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, nodeType: n.nodeType }))
+            };
+        }""")
 
         # Should have 2 separate INPUT nodes (different targets = no grouping)
         assert len(result["inputNodes"]) == 2, (
@@ -790,18 +632,14 @@ class TestInputNodeHorizontalSpread:
             f"The fixOverlappingNodes function should shift leaf nodes horizontally, not vertically."
         )
 
-    def test_bound_unbound_same_target_separate_groups(self):
+    def test_bound_unbound_same_target_separate_groups(self, page, temp_html_file):
         """When some inputs are bound and others unbound (same target), they should be in separate groups.
 
         This validates that the INPUT_GROUP feature respects bound status:
         - Bound inputs (with values) get their own group
         - Unbound inputs (requiring user input) get their own group
         """
-        from playwright.sync_api import sync_playwright
-        from hypergraph.viz.widget import visualize
         from hypergraph import Graph, node
-        import tempfile
-        import os
 
         # Create a graph with 4 inputs: 2 bound, 2 unbound - all to same target
         @node(output_name="response")
@@ -816,54 +654,36 @@ class TestInputNodeHorizontalSpread:
         graph = Graph(nodes=[generate])
         # Bind 2 of the 4 inputs
         bound_graph = graph.bind(temperature=0.7, model="gpt-4")
+        render_to_page(page, bound_graph, depth=1, temp_path=temp_html_file)
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            temp_path = f.name
-        visualize(bound_graph, depth=1, filepath=temp_path, _debug_overlays=True)
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto(f"file://{temp_path}")
+            // Find INPUT_GROUP nodes
+            const groupNodes = debug.nodes.filter(n =>
+                n.nodeType === 'INPUT_GROUP'
+            );
 
-                page.wait_for_function(
-                    "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
-                    timeout=10000,
-                )
+            // Find individual INPUT nodes (should be none if all are grouped)
+            const inputNodes = debug.nodes.filter(n =>
+                n.nodeType === 'INPUT'
+            );
 
-                result = page.evaluate("""() => {
-                    const debug = window.__hypergraphVizDebug;
+            // Get details about each group
+            const groupDetails = groupNodes.map(n => ({
+                id: n.id,
+                nodeType: n.nodeType,
+                // Check if the group contains bound inputs (dashed outline class)
+                // Group ID format: input_group_param1_param2_...
+                params: n.id.replace('input_group_', '').split('_'),
+            }));
 
-                    // Find INPUT_GROUP nodes
-                    const groupNodes = debug.nodes.filter(n =>
-                        n.nodeType === 'INPUT_GROUP'
-                    );
-
-                    // Find individual INPUT nodes (should be none if all are grouped)
-                    const inputNodes = debug.nodes.filter(n =>
-                        n.nodeType === 'INPUT'
-                    );
-
-                    // Get details about each group
-                    const groupDetails = groupNodes.map(n => ({
-                        id: n.id,
-                        nodeType: n.nodeType,
-                        // Check if the group contains bound inputs (dashed outline class)
-                        // Group ID format: input_group_param1_param2_...
-                        params: n.id.replace('input_group_', '').split('_'),
-                    }));
-
-                    return {
-                        groupNodes: groupDetails,
-                        inputNodes: inputNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
-                        allNodes: debug.nodes.map(n => ({ id: n.id, nodeType: n.nodeType }))
-                    };
-                }""")
-
-                browser.close()
-        finally:
-            os.unlink(temp_path)
+            return {
+                groupNodes: groupDetails,
+                inputNodes: inputNodes.map(n => ({ id: n.id, nodeType: n.nodeType })),
+                allNodes: debug.nodes.map(n => ({ id: n.id, nodeType: n.nodeType }))
+            };
+        }""")
 
         # With 2 bound and 2 unbound inputs to the same target, we expect 2 groups
         assert len(result["groupNodes"]) == 2, (
