@@ -23,6 +23,8 @@ docs/plans/*
 thoughts/*
 specs/deprecated/*
 .claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # Documentation manager cache
 .doc-manager/cache/*
