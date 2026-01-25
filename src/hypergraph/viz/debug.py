@@ -555,7 +555,7 @@ class RenderedDebugData:
         total_edges = self.summary.get('totalEdges', 0)
         issue_count = self.summary.get('edgeIssues', 0)
 
-        print(f"=== Edge Validation Report ===")
+        print("=== Edge Validation Report ===")
         print(f"Nodes: {total_nodes} | Edges: {total_edges} | Issues: {issue_count}")
         print()
 

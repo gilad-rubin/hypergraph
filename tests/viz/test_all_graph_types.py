@@ -355,7 +355,6 @@ class TestEdgeTracing:
 
         # preprocess -> analyze (cross boundary)
         info = debugger.trace_node("analyze")
-        incoming_sources = {e["from"] for e in info.incoming_edges}
 
         # The edge comes from preprocess or normalize_text depending on flattening
         assert len(info.incoming_edges) >= 1, "analyze should have incoming edges"

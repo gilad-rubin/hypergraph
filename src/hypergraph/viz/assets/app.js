@@ -822,12 +822,6 @@
       return nextNodes;
     }, [nodesWithCallbacks, expansionState]);
 
-    // Update React Flow state
-    useEffect(function() {
-      setNodes(nodesWithVisibility);
-      setEdges(selectedEdges);
-    }, [nodesWithVisibility, selectedEdges, setNodes, setEdges]);
-
     // Theme detection listener
     useEffect(function() {
       var applyThemeDetection = function() {
@@ -929,6 +923,12 @@
       }
       return stateResult.edges;
     }, [expansionState, separateOutputs, stateResult.edges]);
+
+    // Update React Flow state
+    useEffect(function() {
+      setNodes(nodesWithVisibility);
+      setEdges(selectedEdges);
+    }, [nodesWithVisibility, selectedEdges, setNodes, setEdges]);
 
     // Grouped nodes/edges
     var grouped = useMemo(function() {

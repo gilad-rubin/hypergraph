@@ -23,7 +23,7 @@ from hypergraph.viz.renderer import render_graph
 # =============================================================================
 
 try:
-    import playwright  # noqa: F401
+    import playwright
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False

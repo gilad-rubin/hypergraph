@@ -299,9 +299,6 @@ def _compute_edges_for_state(
     # Build param_to_consumer map for this expansion state
     param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
 
-    # Build output_to_producer map for this expansion state
-    output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
-
     input_spec = flat_graph.graph.get("input_spec", {})
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())

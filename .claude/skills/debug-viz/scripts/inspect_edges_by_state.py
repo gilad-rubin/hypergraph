@@ -9,12 +9,35 @@ import sys
 from pathlib import Path
 
 
+import re
+
+# Safe identifier pattern for Python module/variable names
+_SAFE_IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$')
+
+
+def _validate_identifier(value: str, name: str) -> None:
+    """Validate that a string is a safe Python identifier."""
+    if not _SAFE_IDENTIFIER.match(value):
+        raise ValueError(
+            f"{name} must be a valid Python identifier, got: {value!r}"
+        )
+    # Additional safety: reject any suspicious characters
+    if any(c in value for c in (';', '(', ')', ' ', '\n', '\t', '#', '=')):
+        raise ValueError(
+            f"{name} contains invalid characters: {value!r}"
+        )
+
+
 def render_edges_by_state(
     graph_module: str,
     graph_var: str,
     depth: int,
     separate_outputs: bool,
 ) -> dict:
+    # Validate inputs to prevent code injection
+    _validate_identifier(graph_module, "graph_module")
+    _validate_identifier(graph_var, "graph_var")
+
     code = f'''
 import sys
 import json

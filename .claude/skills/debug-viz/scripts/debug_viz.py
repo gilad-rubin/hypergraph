@@ -59,7 +59,9 @@ result = render_graph(
 
 # Generate HTML
 import tempfile
-html_path = tempfile.mktemp(suffix=".html")
+tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
+html_path = tmp.name
+tmp.close()
 visualize(
     bound,
     depth={depth},
@@ -152,11 +154,25 @@ print("DEBUG_INFO:" + json.dumps(debug_info, indent=2))
     html_path = None
     debug_info = {}
 
-    for line in result.stdout.split("\n"):
+    lines = result.stdout.split("\n")
+    debug_info_lines = []
+    collecting_debug_info = False
+
+    for line in lines:
         if line.startswith("HTML_PATH:"):
             html_path = line.split(":", 1)[1]
+            collecting_debug_info = False
         elif line.startswith("DEBUG_INFO:"):
-            debug_info = json.loads(line.split(":", 1)[1])
+            # Start collecting JSON (may span multiple lines)
+            debug_info_lines = [line.split(":", 1)[1]]
+            collecting_debug_info = True
+        elif collecting_debug_info:
+            debug_info_lines.append(line)
+
+    if debug_info_lines:
+        json_str = "\n".join(debug_info_lines).strip()
+        if json_str:
+            debug_info = json.loads(json_str)
 
     return html_path, debug_info
 

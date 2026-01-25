@@ -92,7 +92,6 @@ def render_graph(
     expansion_state = _build_expansion_state(flat_graph, depth)
     # For static edges: use visibility-based targets
     param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
-    output_to_producer = _build_output_to_producer_map(flat_graph, expansion_state)
     input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
     graph_output_visibility = _build_graph_output_visibility(flat_graph)
     # For JS meta data: use deepest targets (for interactive expand routing)
@@ -141,7 +140,7 @@ def render_graph(
         flat_graph, input_spec, show_types, theme, input_groups, graph_output_visibility
     )
 
-    # Use pre-computed edges for the initial state instead of legacy _create_graph_edges()
+    # Use pre-computed edges for the initial state
     # This ensures initial render matches what JS would select from edgesByState
     initial_state_key = _expansion_state_to_key(expansion_state)
     sep_key = "sep:1" if separate_outputs else "sep:0"
@@ -1157,61 +1156,6 @@ def _find_common_ancestor(
 
     # Both are at root level
     return None
-
-
-def _create_graph_edges(
-    edges: list[dict[str, Any]],
-    flat_graph: nx.DiGraph,
-    input_spec: dict,
-    expansion_state: dict[str, bool],
-    output_to_producer: dict[str, str],
-) -> None:
-    """Create edges from graph structure, routing through DATA nodes.
-
-    Edges are routed between nodes at the same nesting level for layout
-    compatibility. If source and target have different parents, both are
-    lifted to share a common parent level.
-    """
-    for source, target, edge_data in flat_graph.edges(data=True):
-        edge_type = edge_data.get("edge_type", "data")
-        value_name = edge_data.get("value_name", "")
-
-        # Use the original source and target from the flat graph
-        # These are already at appropriate container levels
-        actual_source_node = source
-        actual_target = target
-
-        # For data edges, route through the DATA node of the source
-        if edge_type == "data" and value_name:
-            edge_id = f"e_data_{actual_source_node}_{value_name}_to_{actual_target}"
-            actual_source = f"data_{actual_source_node}_{value_name}"
-        else:
-            edge_id = f"e_{actual_source_node}_{actual_target}_{value_name}"
-            actual_source = actual_source_node
-
-        rf_edge: dict[str, Any] = {
-            "id": edge_id,
-            "source": actual_source,
-            "target": actual_target,
-            "animated": False,
-            "style": {"stroke": "#64748b", "strokeWidth": 2},
-            "data": {
-                "edgeType": edge_type,
-                "valueName": value_name,
-            },
-        }
-
-        # Add label for IfElse branch edges
-        if edge_type == "control":
-            source_attrs = flat_graph.nodes.get(source, {})
-            branch_data = source_attrs.get("branch_data", {})
-            if branch_data and "when_true" in branch_data:
-                if target == branch_data["when_true"]:
-                    rf_edge["data"]["label"] = "True"
-                elif target == branch_data["when_false"]:
-                    rf_edge["data"]["label"] = "False"
-
-        edges.append(rf_edge)
 
 
 # =============================================================================

@@ -74,7 +74,7 @@
     } catch (e) {}
 
     try {
-      var parentDoc = window.parent && window.parent.document;
+      parentDoc = window.parent && window.parent.document;
       if (parentDoc) {
         var rootStyle = getComputedStyle(parentDoc.documentElement);
         var bodyStyle = getComputedStyle(parentDoc.body);
@@ -116,7 +116,7 @@
 
     // JupyterLab detection (check before VS Code)
     try {
-      var parentDoc = window.parent && window.parent.document;
+      parentDoc = window.parent && window.parent.document;
       if (parentDoc) {
         // JupyterLab uses data-jp-theme-light attribute ("true" or "false")
         var jpThemeLight = parentDoc.body.dataset.jpThemeLight;
@@ -141,7 +141,7 @@
 
     // VS Code detection
     try {
-      var parentDoc = window.parent && window.parent.document;
+      parentDoc = window.parent && window.parent.document;
       if (parentDoc) {
         var themeKind = parentDoc.body.getAttribute('data-vscode-theme-kind');
         if (themeKind) {
@@ -159,7 +159,7 @@
 
     // Marimo detection
     try {
-      var parentDoc = window.parent && window.parent.document;
+      parentDoc = window.parent && window.parent.document;
       if (parentDoc && !autoTheme) {
         // Marimo uses data-theme or data-mode attributes
         var dataTheme = parentDoc.body.dataset.theme || parentDoc.documentElement.dataset.theme;
@@ -172,7 +172,7 @@
           source = 'marimo data-theme/mode';
         }
         // Marimo body classes
-        var bodyClass = parentDoc.body.className || '';
+        bodyClass = parentDoc.body.className || '';
         if (!autoTheme && (bodyClass.includes('dark-mode') || bodyClass.includes('dark'))) {
           autoTheme = 'dark';
           source = 'marimo dark-mode class';
