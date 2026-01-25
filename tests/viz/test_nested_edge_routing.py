@@ -440,12 +440,7 @@ class TestDoubleNestedEdgeRouting:
     """Tests for edge routing in doubly-nested graphs (depth=1 with 2-level nesting)."""
 
     def test_outer_depth1_input_routes_to_inner(self):
-        """Test outer at depth=1: input edge should route to inner container, not middle.
-
-        The outer graph has middle->inner->step1. At depth=1, middle is expanded
-        showing inner (collapsed). The input edge from input_x should visually
-        connect to inner (the collapsed container with step1), not middle boundary.
-        """
+        """Test outer at depth=1: internal-only inputs are hidden when inner is collapsed."""
         from playwright.sync_api import sync_playwright
         from hypergraph.viz.widget import visualize
         import tempfile
@@ -475,35 +470,11 @@ class TestDoubleNestedEdgeRouting:
                     const middle = debug.nodes.find(n => n.id === 'middle');
                     const inner = debug.nodes.find(n => n.id === 'inner');
 
-                    // Find the input_x edge (individual input node, not __inputs__)
-                    const edgeGroups = document.querySelectorAll('.react-flow__edge');
-                    let inputEdgePath = null;
-                    for (const group of edgeGroups) {
-                        const id = group.getAttribute('data-testid') || '';
-                        if (id.includes('input_x')) {
-                            const path = group.querySelector('path');
-                            if (path) {
-                                inputEdgePath = path.getAttribute('d');
-                                break;
-                            }
-                        }
-                    }
-
-                    // Parse end Y from path
-                    let pathEndY = null;
-                    if (inputEdgePath) {
-                        const coords = inputEdgePath.match(/[\\d.]+/g);
-                        if (coords && coords.length >= 2) {
-                            pathEndY = parseFloat(coords[coords.length - 1]);
-                        }
-                    }
-
                     return {
                         middleTop: middle ? middle.y : null,
                         innerTop: inner ? inner.y : null,
-                        pathEndY: pathEndY,
-                        path: inputEdgePath,
-                        allEdgeIds: Array.from(edgeGroups).map(g => g.getAttribute('data-testid') || g.id),
+                        edgeIds: Array.from(document.querySelectorAll('.react-flow__edge'))
+                            .map(g => g.getAttribute('data-testid') || g.id),
                     };
                 }""")
 
@@ -511,24 +482,13 @@ class TestDoubleNestedEdgeRouting:
         finally:
             os.unlink(temp_path)
 
-        middle_top = result["middleTop"]
         inner_top = result["innerTop"]
-        path_end_y = result["pathEndY"]
 
         assert inner_top is not None, "inner node not found at depth=1"
-        assert path_end_y is not None, f"Could not parse edge path: {result['path']}\nAll edges: {result.get('allEdgeIds')}"
-
-        # The edge should end at inner's top (which contains step1), not middle's top
-        tolerance = 10
-        connects_to_inner = abs(path_end_y - inner_top) <= tolerance
-        connects_to_middle = abs(path_end_y - middle_top) <= tolerance
-
-        assert connects_to_inner and not connects_to_middle, (
-            f"Double-nested input edge connects to outer container, not inner!\n"
-            f"Edge ends at Y={path_end_y}px\n"
-            f"inner top: {inner_top}px (expected - contains step1)\n"
-            f"middle top: {middle_top}px (outer container)\n"
-            f"Path: {result['path'][:100] if result['path'] else 'None'}..."
+        input_edges = [edge_id for edge_id in result.get("edgeIds", []) if "input_x" in edge_id]
+        assert not input_edges, (
+            "Internal-only inputs should be hidden when their owner container is collapsed.\n"
+            f"Found input edges: {input_edges}"
         )
 
 

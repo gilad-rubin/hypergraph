@@ -179,10 +179,13 @@ class TestWorkflowDepth0:
         graph = make_workflow()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
-        # At depth=0: input_text, preprocess (collapsed), analyze
-        # Plus possibly data nodes
-        assert len(nodes) >= 3, f"Expected at least 3 nodes, got {len(nodes)}: {list(nodes.keys())}"
-        assert len(edges) >= 2, f"Expected at least 2 edges, got {len(edges)}"
+        # At depth=0: preprocess (collapsed), analyze
+        # Internal-only inputs are hidden when the container is collapsed.
+        assert len(nodes) >= 2, f"Expected at least 2 nodes, got {len(nodes)}: {list(nodes.keys())}"
+        assert not any(node_id.startswith("input_") for node_id in nodes), (
+            f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
+        )
+        assert len(edges) >= 1, f"Expected at least 1 edge, got {len(edges)}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -275,8 +278,12 @@ class TestOuterDepth0:
         graph = make_outer()
         nodes, edges = extract_geometries(page, graph, depth=0)
 
-        # At depth=0: input_x, middle (collapsed), log_result
-        assert len(nodes) >= 3, f"Expected at least 3 nodes, got {len(nodes)}: {list(nodes.keys())}"
+        # At depth=0: middle (collapsed), log_result
+        # Internal-only inputs are hidden when the container is collapsed.
+        assert len(nodes) >= 2, f"Expected at least 2 nodes, got {len(nodes)}: {list(nodes.keys())}"
+        assert not any(node_id.startswith("input_") for node_id in nodes), (
+            f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
+        )
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -305,23 +312,15 @@ class TestOuterDepth1:
         )
 
     def test_outer_depth1_input_routes_to_inner(self, page):
-        """Input edge should route to inner container, not middle."""
+        """Internal-only inputs are hidden when inner is collapsed."""
         graph = make_outer()
         nodes, edges = extract_geometries(page, graph, depth=1)
 
-        inner_node = nodes.get("inner")
-        if inner_node:
-            # Find edge targeting inner
-            for edge in edges:
-                if edge.target_id == "inner":
-                    expected_y = inner_node.y
-                    actual_y = edge.end_point[1]
-                    gap = abs(actual_y - expected_y)
-                    assert gap == 0, (
-                        f"Input edge has {gap:.1f}px gap from inner top:\n"
-                        f"  Expected Y: {expected_y:.1f}\n"
-                        f"  Actual Y: {actual_y:.1f}"
-                    )
+        input_edges = [edge for edge in edges if edge.source_id.startswith("input_")]
+        assert not input_edges, (
+            "Internal-only inputs should be hidden when inner is collapsed.\n"
+            f"Edges: {[e.id for e in input_edges]}"
+        )
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
