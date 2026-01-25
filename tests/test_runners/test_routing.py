@@ -631,3 +631,174 @@ class TestControlEdges:
         # Check that there's only one edge (the data edge from start)
         edges_to_end = list(graph._nx_graph.in_edges("end_node", data=True))
         assert len(edges_to_end) >= 1  # At least the data edge from start
+
+
+# =============================================================================
+# Mutex Branch Outputs Tests
+# =============================================================================
+
+
+class TestMutexBranchOutputs:
+    """Tests for same output names in mutex branches."""
+
+    def test_ifelse_downstream_same_output_allowed(self):
+        """Downstream nodes in different ifelse branches can share output names."""
+        from hypergraph.nodes.gate import ifelse
+
+        @ifelse(when_true="skip", when_false="process_start")
+        def check(x: int) -> bool:
+            return x == 0
+
+        @node(output_name="result")
+        def skip(x: int) -> str:
+            return "skipped"
+
+        @node(output_name="intermediate")
+        def process_start(x: int) -> int:
+            return x * 2
+
+        @node(output_name="result")  # Same as skip!
+        def process_end(intermediate: int) -> str:
+            return f"processed: {intermediate}"
+
+        # This should NOT raise - branches are mutually exclusive
+        graph = Graph([check, skip, process_start, process_end])
+
+        # Test true branch (x == 0)
+        result = SyncRunner().run(graph, {"x": 0})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "skipped"
+
+        # Test false branch (x != 0)
+        result = SyncRunner().run(graph, {"x": 5})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "processed: 10"
+
+    def test_route_downstream_same_output_allowed(self):
+        """Downstream nodes in different route branches can share output names."""
+
+        @node(output_name="a")
+        def start(x: int) -> int:
+            return x
+
+        @route(targets=["path_a_start", "path_b_start"])
+        def decide(a: int) -> str:
+            return "path_a_start" if a > 0 else "path_b_start"
+
+        @node(output_name="intermediate_a")
+        def path_a_start(a: int) -> int:
+            return a * 2
+
+        @node(output_name="result")  # Same output name
+        def path_a_end(intermediate_a: int) -> str:
+            return f"path_a: {intermediate_a}"
+
+        @node(output_name="intermediate_b")
+        def path_b_start(a: int) -> int:
+            return a * -1
+
+        @node(output_name="result")  # Same output name!
+        def path_b_end(intermediate_b: int) -> str:
+            return f"path_b: {intermediate_b}"
+
+        # Should NOT raise
+        graph = Graph([start, decide, path_a_start, path_a_end, path_b_start, path_b_end])
+
+        # Test path A
+        result = SyncRunner().run(graph, {"x": 5})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "path_a: 10"
+
+        # Test path B
+        result = SyncRunner().run(graph, {"x": -3})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "path_b: 3"
+
+    def test_multi_target_downstream_same_output_rejected(self):
+        """multi_target=True with downstream same outputs should fail."""
+
+        @route(targets=["path_a", "path_b"], multi_target=True)
+        def decide(x: int) -> list:
+            return ["path_a", "path_b"]
+
+        @node(output_name="intermediate_a")
+        def path_a(x: int) -> int:
+            return x * 2
+
+        @node(output_name="result")
+        def end_a(intermediate_a: int) -> str:
+            return "a"
+
+        @node(output_name="intermediate_b")
+        def path_b(x: int) -> int:
+            return x * 3
+
+        @node(output_name="result")  # Same as end_a - should fail!
+        def end_b(intermediate_b: int) -> str:
+            return "b"
+
+        # Should raise because multi_target=True means both can run
+        with pytest.raises(GraphConfigError, match="Multiple nodes produce"):
+            Graph([decide, path_a, end_a, path_b, end_b])
+
+    def test_diamond_merge_node_cannot_share_output(self):
+        """A node reachable from both branches cannot share output with branch-exclusive nodes."""
+
+        @route(targets=["path_a", "path_b"])
+        def decide(x: int) -> str:
+            return "path_a" if x > 0 else "path_b"
+
+        @node(output_name="from_a")
+        def path_a(x: int) -> int:
+            return x * 2
+
+        @node(output_name="from_b")
+        def path_b(x: int) -> int:
+            return x * 3
+
+        # merge is reachable from BOTH branches
+        @node(output_name="result")
+        def merge(from_a: int, from_b: int) -> int:
+            return from_a + from_b
+
+        # another_result is also on path_a branch
+        @node(output_name="result")  # Same as merge - but merge is shared!
+        def another_result(from_a: int) -> int:
+            return from_a
+
+        # This should fail because merge is reachable from both branches
+        # so it's not exclusively in path_a's mutex group
+        with pytest.raises(GraphConfigError, match="Multiple nodes produce"):
+            Graph([decide, path_a, path_b, merge, another_result])
+
+    def test_same_branch_duplicate_output_rejected(self):
+        """Two nodes in the same branch cannot share output names."""
+
+        @node(output_name="a")
+        def start(x: int) -> int:
+            return x
+
+        @route(targets=["path_a", "path_b"])
+        def decide(a: int) -> str:
+            return "path_a" if a > 0 else "path_b"
+
+        @node(output_name="intermediate")
+        def path_a(a: int) -> int:
+            return a * 2
+
+        @node(output_name="result")  # First node producing 'result' in path_a
+        def path_a_end1(intermediate: int) -> str:
+            return "end1"
+
+        @node(output_name="result")  # Second node producing 'result' - SAME branch!
+        def path_a_end2(intermediate: int) -> str:
+            return "end2"
+
+        @node(output_name="other")
+        def path_b(a: int) -> int:
+            return a * 3
+
+        # Should FAIL because path_a_end1 and path_a_end2 are in the SAME branch
+        # Both execute when path_a is chosen, so duplicate output is a real conflict
+        with pytest.raises(GraphConfigError, match="Multiple nodes produce"):
+            Graph([start, decide, path_a, path_a_end1, path_a_end2, path_b])
