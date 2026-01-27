@@ -7,10 +7,10 @@
 </p>
 
 <div align="center">
-  <a href="docs/getting-started.md"><strong>Docs</strong></a> ·
+  <a href="docs/02-core-concepts/getting-started.md"><strong>Docs</strong></a> ·
   <a href="https://github.com/gilad-rubin/hypergraph/issues/new"><strong>Report Bug</strong></a> ·
   <a href="https://github.com/gilad-rubin/hypergraph/issues/new"><strong>Feature Request</strong></a> ·
-  <a href="docs/comparison.md"><strong>Comparison</strong></a>
+  <a href="docs/01-introduction/comparison.md"><strong>Comparison</strong></a>
 </div>
 
 <br>
@@ -279,15 +279,15 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Core concepts and first steps
-- [Routing Guide](docs/guides/routing.md) - Conditional routing, agentic loops, and real-world patterns
-- [Philosophy](docs/philosophy.md) - Why hypergraph exists
-- [API Reference: Nodes](docs/api/nodes.md) - FunctionNode, GraphNode, and HyperNode
-- [API Reference: Runners](docs/api/runners.md) - SyncRunner, AsyncRunner, and execution model
-- [API Reference: Graph](docs/api/graph.md) - Graph construction and validation
-- [API Reference: Gates](docs/api/gates.md) - RouteNode, @route decorator, and END sentinel
+- [Getting Started](docs/02-core-concepts/getting-started.md) - Core concepts and first steps
+- [Routing Guide](docs/03-patterns/02-routing.md) - Conditional routing, agentic loops, and real-world patterns
+- [Philosophy](docs/07-design/philosophy.md) - Why hypergraph exists
+- [API Reference: Nodes](docs/06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
+- [API Reference: Runners](docs/06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [API Reference: Graph](docs/06-api-reference/graph.md) - Graph construction and validation
+- [API Reference: Gates](docs/06-api-reference/gates.md) - RouteNode, @route decorator, and END sentinel
 
-For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/comparison.md).
+For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/01-introduction/comparison.md).
 
 ## License
 
