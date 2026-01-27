@@ -419,3 +419,76 @@ class TestGateNodeBase:
 
         assert hasattr(decide, "descriptions")
         assert decide.descriptions["a"] == "Option A"
+
+
+# =============================================================================
+# GateNode Type Annotation Tests
+# =============================================================================
+
+
+class TestGateNodeTypeAnnotations:
+    """Tests for get_input_type on gate nodes."""
+
+    def test_route_get_input_type_returns_annotation(self):
+        """RouteNode.get_input_type returns the type annotation."""
+
+        @route(targets=["a", "b"])
+        def gate(x: int) -> str:
+            return "a"
+
+        assert gate.get_input_type("x") is int
+
+    def test_route_get_input_type_returns_none_when_untyped(self):
+        """RouteNode.get_input_type returns None for untyped parameters."""
+
+        @route(targets=["a", "b"])
+        def gate(x) -> str:
+            return "a"
+
+        assert gate.get_input_type("x") is None
+
+    def test_ifelse_get_input_type_returns_annotation(self):
+        """IfElseNode.get_input_type returns the type annotation."""
+        from hypergraph.nodes.gate import ifelse
+
+        @ifelse(when_true="yes", when_false="no")
+        def gate(decision: bool) -> bool:
+            return decision
+
+        assert gate.get_input_type("decision") is bool
+
+    def test_route_get_input_type_handles_renamed_inputs(self):
+        """RouteNode.get_input_type works with renamed inputs."""
+
+        @route(targets=["a", "b"], rename_inputs={"x": "value"})
+        def gate(x: int) -> str:
+            return "a"
+
+        assert gate.get_input_type("value") is int
+        assert gate.get_input_type("x") is None  # Original name no longer valid
+
+    def test_route_with_strict_types_succeeds(self):
+        """Route nodes work correctly with strict_types=True."""
+        from dataclasses import dataclass
+
+        from hypergraph import END, Graph, node, route
+
+        @dataclass(frozen=True)
+        class ReviewDecision:
+            status: str
+
+        @node(output_name="decision")
+        def make_decision() -> ReviewDecision:
+            return ReviewDecision(status="accept")
+
+        @route(targets=["done", END])
+        def gate(decision: ReviewDecision) -> str | type[END]:
+            return "done" if decision.status == "accept" else END
+
+        @node(output_name="done")
+        def done(decision: ReviewDecision) -> str:
+            return "ok"
+
+        # This should NOT raise GraphConfigError
+        graph = Graph([make_decision, gate, done], strict_types=True)
+        assert graph.strict_types is True
