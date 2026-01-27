@@ -1,0 +1,7 @@
+Summary of user prompts
+- Generate an LMs.txt file for Hypergraph by reading docs and code, explaining main workflows with examples and the project philosophy for LMs.
+- Update the "Where to look" section to point to the online GitHub repo.
+- Add example links from the GitBook docs at https://gilad-rubin.gitbook.io/hypergraph.
+- Add a version header referencing the current commit.
+- Rename the file to LLMs.txt.
+- Save this prompt summary to LLMs.txt.prompt for reproducibility.
