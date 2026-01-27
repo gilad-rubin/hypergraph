@@ -1,0 +1,213 @@
+Hypergraph LLMs.txt
+Version: 6633680de969750d1f86c109ca0bd8939118db1b
+
+Purpose
+Hypergraph is a Python workflow orchestration framework for DAG pipelines, routing/branches, cycles (agentic loops), and hierarchical composition. It favors pure functions, automatic wiring by name, and build-time validation over state-object plumbing.
+
+Philosophy (from docs/07-design/philosophy.md)
+- Pure functions: nodes are just functions with named inputs/outputs, testable without the framework.
+- Automatic wiring: edges are inferred by matching output names to input parameter names.
+- Unified execution: the same model handles DAGs, routing, loops, and nested graphs.
+- Build-time validation: Graph() validates missing inputs, invalid routes, and optionally type mismatches.
+- Composition over configuration: build small graphs and nest them; avoid global state objects.
+
+Core concepts and APIs
+- node decorator: wrap a function, declare outputs with output_name.
+  - Use @node(output_name="x") for single output.
+  - Use @node(output_name=("a", "b")) for multiple outputs (returns tuple).
+  - Omit output_name for side-effect-only nodes.
+- Graph: Graph(nodes, name=None, strict_types=False)
+  - Edges are inferred automatically by matching names.
+  - name is required if you want to nest it as a node (graph.as_node()).
+  - strict_types=True checks type compatibility at build time.
+- Runners
+  - SyncRunner: sequential, sync-only.
+  - AsyncRunner: supports async nodes, concurrency (max_concurrency), and streaming.
+- Gates (routing)
+  - @ifelse for boolean routing with when_true/when_false targets.
+  - @route for multi-way routing; return a target name or END.
+  - END is a sentinel to terminate a path.
+
+Main workflows (with examples)
+
+1) Build a simple pipeline (DAG)
+- Define nodes with output_name.
+- Build Graph([...]) with no explicit edges.
+- Run with SyncRunner.
+
+Example:
+```python
+from hypergraph import Graph, node, SyncRunner
+
+@node(output_name="embedding")
+def embed(text: str) -> list[float]:
+    return model.embed(text)
+
+@node(output_name="docs")
+def retrieve(embedding: list[float]) -> list[str]:
+    return db.search(embedding)
+
+@node(output_name="answer")
+def generate(docs: list[str], query: str) -> str:
+    return llm.generate(docs, query)
+
+graph = Graph([embed, retrieve, generate])
+runner = SyncRunner()
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
+print(result["answer"])
+```
+
+2) Branch and route execution
+- Use @ifelse for boolean decisions.
+- Use @route when the decision returns a target name.
+- Return END to stop a path early.
+
+Example:
+```python
+from hypergraph import Graph, node, ifelse, route, END
+
+@node(output_name="is_cached")
+def check_cache(query: str) -> bool:
+    return query in cache
+
+@ifelse(when_true="use_cache", when_false="full_retrieval")
+def cache_gate(is_cached: bool) -> bool:
+    return is_cached
+
+@node(output_name="response")
+def use_cache(query: str) -> str:
+    return cache[query]
+
+@node(output_name="response")
+def full_retrieval(query: str) -> str:
+    return expensive_rag(query)
+
+graph = Graph([check_cache, cache_gate, use_cache, full_retrieval])
+```
+
+3) Cycles (agentic loops)
+- Use @route with a target list including END.
+- Set max_iterations in run() to cap loops.
+
+Example:
+```python
+from hypergraph import Graph, node, route, END, SyncRunner
+
+@node(output_name="messages")
+def accumulate(messages: list, response: str) -> list:
+    return messages + [{"role": "assistant", "content": response}]
+
+@route(targets=["retrieve", END])
+def should_continue(messages: list) -> str:
+    return END if len(messages) > 10 else "retrieve"
+
+graph = Graph([retrieve, generate, accumulate, should_continue])
+runner = SyncRunner()
+result = runner.run(graph, {"query": "hello", "messages": []}, max_iterations=50)
+```
+
+4) Hierarchical composition (graphs as nodes)
+- Give inner graphs a name.
+- Use graph.as_node() in a larger graph.
+
+Example:
+```python
+from hypergraph import Graph
+
+rag = Graph([embed, retrieve, generate], name="rag")
+workflow = Graph([
+    validate_input,
+    rag.as_node(),
+    format_output,
+])
+```
+
+5) Adapt and reuse nodes/graphs
+- Rename inputs/outputs/nodes with with_inputs/with_outputs/with_name.
+- Reuse the same function in different contexts.
+
+Example:
+```python
+query_embed = embed.with_inputs(text="query").with_outputs(embedding="query_vec")
+doc_embed = embed.with_inputs(text="document").with_outputs(embedding="doc_vec")
+
+rag_for_search = rag.as_node().with_inputs(query="search_query")
+rag_for_chat = rag.as_node().with_inputs(query="user_message")
+```
+
+6) Batch processing
+- Use runner.map() with map_over for batch execution.
+- map_mode="zip" (default) or "product".
+
+Example:
+```python
+from hypergraph import SyncRunner
+
+runner = SyncRunner()
+results = runner.map(graph, {"text": ["a", "b", "c"]}, map_over="text")
+```
+
+7) Async and streaming
+- Use AsyncRunner for async nodes or concurrency.
+- Async generator nodes can yield tokens; accumulate into a final result.
+
+Example:
+```python
+from hypergraph import Graph, node, AsyncRunner
+
+@node(output_name="response")
+async def stream_response(messages: list) -> str:
+    chunks = []
+    async for token in llm.stream(messages):
+        print(token, end="", flush=True)
+        chunks.append(token)
+    return "".join(chunks)
+
+graph = Graph([stream_response])
+runner = AsyncRunner()
+result = await runner.run(graph, {"messages": [{"role": "user", "content": "Hi"}]})
+```
+
+8) Testing without the framework
+- Nodes expose the raw function via .func.
+
+Example:
+```python
+def test_embed() -> None:
+    result = embed.func("hello")
+    assert isinstance(result, list)
+```
+
+Examples from the GitBook docs
+- RAG Pipeline: https://gilad-rubin.gitbook.io/hypergraph/real-world/rag-pipeline
+- Multi-Turn RAG: https://gilad-rubin.gitbook.io/hypergraph/real-world/multi-turn-rag
+- Evaluation Harness: https://gilad-rubin.gitbook.io/hypergraph/real-world/evaluation-harness
+- Data Pipeline: https://gilad-rubin.gitbook.io/hypergraph/real-world/data-pipeline
+- Prompt Optimization: https://gilad-rubin.gitbook.io/hypergraph/real-world/prompt-optimization
+- Routing patterns: https://gilad-rubin.gitbook.io/hypergraph/patterns/routing
+- Agentic loops: https://gilad-rubin.gitbook.io/hypergraph/patterns/agentic-loops
+- Hierarchical composition: https://gilad-rubin.gitbook.io/hypergraph/patterns/hierarchical-composition
+- Streaming: https://gilad-rubin.gitbook.io/hypergraph/patterns/streaming
+
+Key behaviors and constraints
+- Outputs are identified by names, not by position in a state object.
+- Each output name can be produced by only one node in a graph.
+- Graph validation happens at construction; missing inputs or type mismatches fail fast.
+- Graphs are immutable; bind() and with_*() methods return new instances.
+- AsyncRunner can execute sync nodes; SyncRunner cannot execute async nodes.
+
+Where to look online
+- GitHub repo: https://github.com/gilad-rubin/hypergraph
+- Docs entrypoint: https://github.com/gilad-rubin/hypergraph/tree/main/docs
+- Core concepts: https://github.com/gilad-rubin/hypergraph/blob/main/docs/02-core-concepts/getting-started.md
+- Patterns: https://github.com/gilad-rubin/hypergraph/tree/main/docs/03-patterns
+- How-to guides: https://github.com/gilad-rubin/hypergraph/tree/main/docs/05-how-to
+- API reference: https://github.com/gilad-rubin/hypergraph/tree/main/docs/06-api-reference
+- Design philosophy: https://github.com/gilad-rubin/hypergraph/blob/main/docs/07-design/philosophy.md
+- GitBook docs: https://gilad-rubin.gitbook.io/hypergraph
+
+When in doubt
+- Prefer clear, pure functions with explicit inputs and output_name.
+- Let Hypergraph infer edges; avoid manual wiring.
+- Use Graph(..., strict_types=True) when you want extra type safety.
+- Use AsyncRunner for IO-bound or streaming nodes and set max_concurrency.
