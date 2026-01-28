@@ -966,31 +966,6 @@ def _get_parent(node_id: str, flat_graph: nx.DiGraph) -> str | None:
     return flat_graph.nodes[node_id].get("parent")
 
 
-def _lift_to_sibling_level(
-    node_id: str,
-    target_parent: str | None,
-    flat_graph: nx.DiGraph,
-) -> str:
-    """Lift a node to be a sibling of target_parent's children.
-
-    If node_id is deeper nested than target_parent's level, returns the
-    ancestor that shares target_parent as its parent.
-    If node_id is already at the right level, returns node_id.
-    """
-    current = node_id
-    current_parent = _get_parent(current, flat_graph)
-
-    # Walk up until we find an ancestor whose parent is target_parent
-    while current_parent != target_parent:
-        if current_parent is None:
-            # Reached root level, can't lift further
-            return current
-        current = current_parent
-        current_parent = _get_parent(current, flat_graph)
-
-    return current
-
-
 def _create_rf_node(
     node_id: str,
     attrs: dict[str, Any],
@@ -1117,37 +1092,6 @@ def _create_data_nodes(
 
             # NOTE: Output edges (function → DATA) are now handled by pre-computed
             # edges in _add_separate_output_edges() when separate_outputs=True
-
-
-def _find_common_ancestor(
-    node_a: str,
-    node_b: str,
-    flat_graph: nx.DiGraph,
-) -> str | None:
-    """Find the lowest common ancestor of two nodes.
-
-    Returns None if the common ancestor is the implicit root (both at top level).
-    """
-    # Get all ancestors of node_a (including itself)
-    ancestors_a = set()
-    current = node_a
-    while current is not None:
-        ancestors_a.add(current)
-        current = _get_parent(current, flat_graph)
-
-    # Walk up from node_b until we find a common ancestor
-    current = node_b
-    while current is not None:
-        if current in ancestors_a:
-            # Found common ancestor, but return its parent (the level where both are siblings)
-            return _get_parent(current, flat_graph)
-        parent = _get_parent(current, flat_graph)
-        if parent in ancestors_a:
-            return parent
-        current = parent
-
-    # Both are at root level
-    return None
 
 
 # =============================================================================

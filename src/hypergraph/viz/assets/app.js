@@ -689,8 +689,9 @@
     var isCentering = isCenteringState[0];
     var setIsCentering = isCenteringState[1];
 
-    // Pre-computed edges for all expansion states (from Python)
+    // Pre-computed nodes/edges for all expansion states (from Python)
     var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
+    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
 
     // Helper: convert expansionState Map to canonical key format
@@ -790,7 +791,6 @@
     }, []);
 
     // Select precomputed nodes for current expansion state
-    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var selectedNodes = useMemo(function() {
       var key = expansionStateToKey(expansionState, separateOutputs);
       var precomputed = nodesByState[key];
