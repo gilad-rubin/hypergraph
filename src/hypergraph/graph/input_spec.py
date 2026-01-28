@@ -128,8 +128,13 @@ def _get_cycle_params(
     nx_graph: nx.DiGraph,
     edge_produced: set[str],
 ) -> set[str]:
-    """Get parameter names that are part of cycles."""
-    cycles = list(nx.simple_cycles(nx_graph))
+    """Get parameter names that are part of data cycles.
+
+    Only considers data edges — control edges from route/gate nodes
+    don't create data dependencies and shouldn't force seed inputs.
+    """
+    data_graph = _data_only_subgraph(nx_graph)
+    cycles = list(nx.simple_cycles(data_graph))
     if not cycles:
         return set()
 
@@ -159,3 +164,15 @@ def _params_flowing_in_cycle(
 def _sources_of(output: str, nodes: dict[str, "HyperNode"]) -> list[str]:
     """Get all nodes that produce the given output."""
     return [node.name for node in nodes.values() if output in node.outputs]
+
+
+def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
+    """Return subgraph containing only data edges (no control edges)."""
+    data_edges = [
+        (u, v) for u, v, data in nx_graph.edges(data=True)
+        if data.get("edge_type") == "data"
+    ]
+    subgraph = nx.DiGraph()
+    subgraph.add_nodes_from(nx_graph.nodes())
+    subgraph.add_edges_from(data_edges)
+    return subgraph
