@@ -284,6 +284,7 @@
     layerSpaceY,
     iterations,
     orientation,
+    layoutProfile = 'modern',
     denseRowScale = 0,  // 0 = uniform spacing
   }) => {
     let coordPrimary = 'x';
@@ -308,6 +309,7 @@
       coordPrimary,
       coordSecondary,
       extraVerticalGap: 0,
+      layoutProfile,
     };
 
     const rowConstraints = createRowConstraints(edges, layoutConfig);
@@ -326,7 +328,9 @@
     }
 
     const separationConstraints = createSeparationConstraints(rows, layoutConfig);
-    const sharedTargetConstraints = createSharedTargetConstraints(edges, layoutConfig);
+    const sharedTargetConstraints = layoutProfile === 'classic'
+      ? []
+      : createSharedTargetConstraints(edges, layoutConfig);
 
     solveStrict(
       [...separationConstraints, ...sharedTargetConstraints, ...parallelConstraints],
@@ -334,14 +338,26 @@
       1
     );
 
-    // Only expand dense rows if scale > 0 (0 = uniform spacing)
-    if (denseRowScale > 0) {
+    if (layoutProfile === 'classic') {
+      expandDenseRows(edges, rows, coordSecondary, spaceY, orientation);
+    } else if (denseRowScale > 0) {
+      // Only expand dense rows if scale > 0 (0 = uniform spacing)
       expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, denseRowScale);
     }
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
     edges.map((edge) => {
+      if (layoutConfig.layoutProfile === 'classic') {
+        return {
+          base: rowConstraint,
+          property: layoutConfig.coordSecondary,
+          a: edge.targetNode,
+          b: edge.sourceNode,
+          separation: layoutConfig.spaceY,
+        };
+      }
+
       const sourceHeight = edge.sourceNode.height || 0;
       const targetHeight = edge.targetNode.height || 0;
 

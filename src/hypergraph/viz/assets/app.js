@@ -954,7 +954,8 @@
     }, [initialData]);
 
     // Run layout
-    var layoutResult = useLayout(grouped.nodes, grouped.edges, expansionState, routingData);
+    var layoutProfile = (initialData.meta && initialData.meta.layout_profile) || 'modern';
+    var layoutResult = useLayout(grouped.nodes, grouped.edges, expansionState, routingData, layoutProfile);
     var rawLayoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;

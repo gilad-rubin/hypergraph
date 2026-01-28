@@ -29,6 +29,9 @@
     FUNCTION_NODE_BASE_PADDING: 48,
     MAX_NODE_WIDTH: 280,
 
+    // Layout profiles
+    CLASSIC_SPACE_X: 14,
+
     // Nested graph layout
     GRAPH_PADDING: 24,
     HEADER_HEIGHT: 32,

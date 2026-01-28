@@ -60,6 +60,7 @@ def render_graph(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
+    layout_profile: str | None = None,
     debug_overlays: bool = False,
 ) -> dict[str, Any]:
     """Convert a flattened NetworkX graph to React Flow JSON format.
@@ -70,6 +71,7 @@ def render_graph(
         theme: "dark", "light", or "auto" (detect from environment)
         show_types: Whether to show type annotations
         separate_outputs: Whether to render outputs as separate DATA nodes
+        layout_profile: Optional layout profile override (e.g. "classic")
         debug_overlays: Whether to enable debug overlays (internal use)
 
     Returns:
@@ -78,12 +80,22 @@ def render_graph(
     # Get input_spec from graph attributes
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
+    profile = layout_profile or "modern"
+    input_consumer_mode = "primary" if profile == "classic" else "all"
 
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)
     # For static edges: use visibility-based targets
-    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
-    input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
+    param_to_consumer = _build_param_to_consumer_map(
+        flat_graph,
+        expansion_state,
+        mode=input_consumer_mode,
+    )
+    input_groups = (
+        _build_classic_input_groups(input_spec, bound_params)
+        if profile == "classic"
+        else _build_input_groups(input_spec, param_to_consumer, bound_params)
+    )
     graph_output_visibility = _build_graph_output_visibility(flat_graph)
     # For JS meta data: use deepest targets (for interactive expand routing)
     param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
@@ -94,7 +106,13 @@ def render_graph(
     # Pre-compute edges for ALL valid expansion state combinations
     # JavaScript can select the correct edge set based on current expansion state
     edges_by_state, expandable_nodes = _precompute_all_edges(
-        flat_graph, input_spec, show_types, theme, input_groups, graph_output_visibility
+        flat_graph,
+        input_spec,
+        show_types,
+        theme,
+        input_groups,
+        graph_output_visibility,
+        input_consumer_mode=input_consumer_mode,
     )
 
     # Pre-compute nodes for ALL valid expansion state combinations
@@ -104,6 +122,8 @@ def render_graph(
         show_types,
         theme,
         graph_output_visibility=graph_output_visibility,
+        input_groups=input_groups,
+        input_consumer_mode=input_consumer_mode,
     )
 
     # Use pre-computed edges for the initial state
@@ -127,6 +147,7 @@ def render_graph(
             "separate_outputs": separate_outputs,
             "show_types": show_types,
             "debug_overlays": debug_overlays,
+            "layout_profile": profile,
             # Routing data for JS to re-route edges to actual internal nodes
             # Use deepest targets so interactive expand can route correctly
             "output_to_producer": output_to_producer_deepest,
@@ -164,6 +185,7 @@ def _build_param_to_consumer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     use_deepest: bool = False,
+    mode: str = "all",
 ) -> dict[str, list[str]]:
     """Build map of param_name -> list of actual consumer node_ids.
 
@@ -181,6 +203,9 @@ def _build_param_to_consumer_map(
         at the same level (like route targets), all get edges.
     """
     param_to_consumers: dict[str, list[str]] = {}
+
+    if use_deepest:
+        mode = "all"
 
     for node_id, attrs in flat_graph.nodes(data=True):
         for param in attrs.get("inputs", ()):
@@ -212,6 +237,16 @@ def _build_param_to_consumer_map(
             if not has_deeper_descendant:
                 filtered.append(consumer)
         param_to_consumers[param] = filtered
+
+    if mode == "primary":
+        for param, consumers in param_to_consumers.items():
+            if not consumers:
+                continue
+            selected = max(
+                consumers,
+                key=lambda node_id: (_get_nesting_depth(node_id, flat_graph), node_id),
+            )
+            param_to_consumers[param] = [selected]
 
     return param_to_consumers
 
@@ -807,6 +842,20 @@ def _build_input_groups(
     return group_specs
 
 
+def _build_classic_input_groups(
+    input_spec: dict[str, Any],
+    bound_params: set[str],
+) -> list[dict[str, Any]]:
+    """Build single-parameter input groups (classic layout behavior)."""
+    required = input_spec.get("required", ())
+    optional = input_spec.get("optional", ())
+    params = sorted(set(required) | set(optional))
+    return [
+        {"params": [param], "is_bound": param in bound_params}
+        for param in params
+    ]
+
+
 def _get_param_type(param: str, flat_graph: nx.DiGraph) -> type | None:
     """Find the type annotation for a parameter from the graph."""
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -1174,6 +1223,7 @@ def _compute_edges_for_state(
     separate_outputs: bool = False,
     input_groups: list[dict[str, Any]] | None = None,
     graph_output_visibility: dict[str, set[str]] | None = None,
+    input_consumer_mode: str = "all",
 ) -> list[dict[str, Any]]:
     """Compute edges for a specific expansion state.
 
@@ -1191,7 +1241,11 @@ def _compute_edges_for_state(
     edges: list[dict[str, Any]] = []
 
     # Build param_to_consumers map for this expansion state
-    param_to_consumers = _build_param_to_consumer_map(flat_graph, expansion_state)
+    param_to_consumers = _build_param_to_consumer_map(
+        flat_graph,
+        expansion_state,
+        mode=input_consumer_mode,
+    )
 
     bound_params = set(input_spec.get("bound", {}).keys())
     if input_groups is None:
@@ -1246,14 +1300,21 @@ def _compute_nodes_for_state(
     show_types: bool,
     theme: str,
     separate_outputs: bool = False,
+    input_groups: list[dict[str, Any]] | None = None,
+    input_consumer_mode: str = "all",
     graph_output_visibility: dict[str, set[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Compute nodes for a specific expansion state."""
     nodes: list[dict[str, Any]] = []
 
     bound_params = set(input_spec.get("bound", {}).keys())
-    param_to_consumer = _build_param_to_consumer_map(flat_graph, expansion_state)
-    input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
+    param_to_consumer = _build_param_to_consumer_map(
+        flat_graph,
+        expansion_state,
+        mode=input_consumer_mode,
+    )
+    if input_groups is None:
+        input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
 
     _create_input_nodes(
         nodes,
@@ -1597,6 +1658,7 @@ def _precompute_all_edges(
     theme: str,
     input_groups: list[dict[str, Any]] | None = None,
     graph_output_visibility: dict[str, set[str]] | None = None,
+    input_consumer_mode: str = "all",
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     """Pre-compute edges for all valid expansion state combinations.
 
@@ -1623,6 +1685,7 @@ def _precompute_all_edges(
             separate_outputs=False,
             input_groups=input_groups,
             graph_output_visibility=graph_output_visibility,
+            input_consumer_mode=input_consumer_mode,
         )
         edges_separate = _compute_edges_for_state(
             flat_graph,
@@ -1633,6 +1696,7 @@ def _precompute_all_edges(
             separate_outputs=True,
             input_groups=input_groups,
             graph_output_visibility=graph_output_visibility,
+            input_consumer_mode=input_consumer_mode,
         )
         return {"sep:0": edges_merged, "sep:1": edges_separate}, []
 
@@ -1653,6 +1717,7 @@ def _precompute_all_edges(
             separate_outputs=False,
             input_groups=input_groups,
             graph_output_visibility=graph_output_visibility,
+            input_consumer_mode=input_consumer_mode,
         )
         edges_by_state[key_merged] = edges_merged
 
@@ -1667,6 +1732,7 @@ def _precompute_all_edges(
             separate_outputs=True,
             input_groups=input_groups,
             graph_output_visibility=graph_output_visibility,
+            input_consumer_mode=input_consumer_mode,
         )
         edges_by_state[key_separate] = edges_separate
 
@@ -1679,6 +1745,8 @@ def _precompute_all_nodes(
     show_types: bool,
     theme: str,
     graph_output_visibility: dict[str, set[str]] | None = None,
+    input_groups: list[dict[str, Any]] | None = None,
+    input_consumer_mode: str = "all",
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     """Pre-compute nodes for all valid expansion state combinations."""
     expandable_nodes = _get_expandable_nodes(flat_graph)
@@ -1692,6 +1760,8 @@ def _precompute_all_nodes(
             theme,
             separate_outputs=False,
             graph_output_visibility=graph_output_visibility,
+            input_groups=input_groups,
+            input_consumer_mode=input_consumer_mode,
         )
         nodes_separate = _compute_nodes_for_state(
             flat_graph,
@@ -1701,6 +1771,8 @@ def _precompute_all_nodes(
             theme,
             separate_outputs=True,
             graph_output_visibility=graph_output_visibility,
+            input_groups=input_groups,
+            input_consumer_mode=input_consumer_mode,
         )
         return {"sep:0": nodes_merged, "sep:1": nodes_separate}, []
 
@@ -1719,6 +1791,8 @@ def _precompute_all_nodes(
             theme,
             separate_outputs=False,
             graph_output_visibility=graph_output_visibility,
+            input_groups=input_groups,
+            input_consumer_mode=input_consumer_mode,
         )
 
         key_separate = f"{exp_key}|sep:1"
@@ -1730,6 +1804,8 @@ def _precompute_all_nodes(
             theme,
             separate_outputs=True,
             graph_output_visibility=graph_output_visibility,
+            input_groups=input_groups,
+            input_consumer_mode=input_consumer_mode,
         )
 
     return nodes_by_state, expandable_nodes

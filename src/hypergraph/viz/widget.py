@@ -70,6 +70,7 @@ def visualize(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
+    layout_profile: str | None = None,
     filepath: str | None = None,
     _debug_overlays: bool = False,
 ) -> ScrollablePipelineWidget | None:
@@ -81,6 +82,7 @@ def visualize(
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
+        layout_profile: Optional layout profile override (e.g. "classic")
         filepath: Path to save HTML file (default: None, display in notebook)
         _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 
@@ -116,6 +118,7 @@ def visualize(
         theme=theme,
         show_types=show_types,
         separate_outputs=separate_outputs,
+        layout_profile=layout_profile,
         debug_overlays=_debug_overlays,
     )
 

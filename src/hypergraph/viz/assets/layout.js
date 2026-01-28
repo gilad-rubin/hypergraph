@@ -29,6 +29,7 @@
   var NODE_BASE_PADDING = VizConstants.NODE_BASE_PADDING || 52;
   var FUNCTION_NODE_BASE_PADDING = VizConstants.FUNCTION_NODE_BASE_PADDING || 48;
   var MAX_NODE_WIDTH = VizConstants.MAX_NODE_WIDTH || 280;
+  var CLASSIC_SPACE_X = VizConstants.CLASSIC_SPACE_X || 14;
 
   // Constants for nested graph layout
   var GRAPH_PADDING = VizConstants.GRAPH_PADDING || 24;
@@ -147,7 +148,7 @@
    * @param {Object} routingData - Optional routing data for edge re-routing
    * @returns {Object} { layoutedNodes, layoutedEdges, layoutError, graphHeight, graphWidth, layoutVersion, isLayouting }
    */
-  function useLayout(nodes, edges, expansionState, routingData) {
+  function useLayout(nodes, edges, expansionState, routingData, layoutProfile) {
     var layoutedNodesState = useState([]);
     var layoutedNodes = layoutedNodesState[0];
     var setLayoutedNodes = layoutedNodesState[1];
@@ -193,7 +194,7 @@
 
         // If we have expansion state, use recursive layout
         if (expansionState && expansionState.size > 0) {
-          var result = performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData);
+          var result = performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData, layoutProfile);
           setLayoutedNodes(result.nodes);
           setLayoutedEdges(result.edges);
           setLayoutVersion(function(v) { return v + 1; });
@@ -244,7 +245,7 @@
           layoutEdges,
           null,
           'vertical',
-          getLayoutOptions(layoutNodes)
+          getLayoutOptions(layoutNodes, layoutProfile)
         );
 
         if (debugMode) console.log('[useLayout] layout result:', result);
@@ -383,11 +384,11 @@
   }
 
   // Get layout options based on whether DATA nodes are present (separate_outputs mode)
-  function getLayoutOptions(layoutNodes) {
+  function getLayoutOptions(layoutNodes, layoutProfile) {
     var hasDATANodes = layoutNodes.some(function(n) {
       return n.data && n.data.nodeType === 'DATA';
     });
-    return hasDATANodes
+    var baseOptions = hasDATANodes
       ? {
           ...ConstraintLayout.defaultOptions,
           layout: {
@@ -396,6 +397,25 @@
           },
         }
       : ConstraintLayout.defaultOptions;
+
+    if (layoutProfile === 'classic') {
+      return {
+        ...baseOptions,
+        layout: {
+          ...baseOptions.layout,
+          spaceX: CLASSIC_SPACE_X,
+          layoutProfile: 'classic',
+        },
+      };
+    }
+
+    return {
+      ...baseOptions,
+      layout: {
+        ...baseOptions.layout,
+        layoutProfile: 'modern',
+      },
+    };
   }
 
   function buildNodeDimensionsAndTypes(visibleNodes) {
@@ -545,7 +565,7 @@
     });
   }
 
-  function layoutChildrenPhase(visibleNodes, edges, layoutOrder, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode) {
+  function layoutChildrenPhase(visibleNodes, edges, layoutOrder, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode, layoutProfile) {
     var childLayoutResults = new Map();
     var CHILD_EDGE_GAP = 30;
 
@@ -574,7 +594,7 @@
         childLayoutEdges,
         null,
         'vertical',
-        getLayoutOptions(childLayoutNodes)
+        getLayoutOptions(childLayoutNodes, layoutProfile)
       );
 
       applyVerticalGapFix(childResult.nodes, childLayoutEdges, CHILD_EDGE_GAP, debugMode, graphNode.id);
@@ -655,7 +675,7 @@
     return rootEdges;
   }
 
-  function layoutRootPhase(visibleNodes, edges, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode) {
+  function layoutRootPhase(visibleNodes, edges, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode, layoutProfile) {
     var rootNodes = (nodeGroups.get(null) || []).filter(function(n) {
       return !inputNodesInContainers.has(n.id);
     });
@@ -677,7 +697,7 @@
       rootLayoutEdges,
       null,
       'vertical',
-      getLayoutOptions(rootLayoutNodes)
+      getLayoutOptions(rootLayoutNodes, layoutProfile)
     );
 
     if (debugMode) {
@@ -1111,7 +1131,7 @@
     });
   }
 
-  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData) {
+  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData, layoutProfile) {
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
     var dimensionResult = buildNodeDimensionsAndTypes(visibleNodes);
@@ -1128,7 +1148,8 @@
       nodeGroups,
       inputNodesInContainers,
       nodeDimensions,
-      debugMode
+      debugMode,
+      layoutProfile
     );
     var childLayoutResults = childPhase.childLayoutResults;
 
@@ -1138,7 +1159,8 @@
       nodeGroups,
       inputNodesInContainers,
       nodeDimensions,
-      debugMode
+      debugMode,
+      layoutProfile
     );
 
     var composition = composePositionsPhase(
