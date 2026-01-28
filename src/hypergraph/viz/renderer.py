@@ -445,6 +445,23 @@ def _is_node_visible(node_id: str, flat_graph: nx.DiGraph, expansion_state: dict
     return True
 
 
+def _is_data_node_visible(
+    source_id: str,
+    output_name: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> bool:
+    """Check if a DATA node should be visible for the current expansion state."""
+    if not _is_node_visible(source_id, flat_graph, expansion_state):
+        return False
+
+    source_attrs = flat_graph.nodes.get(source_id, {})
+    if source_attrs.get("node_type") == "GRAPH" and expansion_state.get(source_id, False):
+        return False
+
+    return True
+
+
 def _get_nesting_depth(node_id: str, flat_graph: nx.DiGraph) -> int:
     """Get the nesting depth of a node (0 = root level)."""
     depth = 0
@@ -1464,6 +1481,8 @@ def _add_separate_output_edges(
         for output_name in attrs.get("outputs", ()):
             if allowed_outputs is not None and output_name not in allowed_outputs:
                 continue
+            if not _is_data_node_visible(node_id, output_name, flat_graph, expansion_state):
+                continue
             data_node_id = f"data_{node_id}_{output_name}"
             edges.append({
                 "id": f"e_{node_id}_to_{data_node_id}",
@@ -1499,6 +1518,7 @@ def _add_separate_output_edges(
             if is_source_container and is_source_expanded:
                 # Reroute through internal producer's DATA node
                 actual_producer = output_to_producer.get(value_name, source)
+                data_value = value_name
                 # Handle with_outputs renaming: if actual_producer is the container itself,
                 # find the internal node that produces the terminal output
                 if actual_producer == source:
@@ -1515,12 +1535,14 @@ def _add_separate_output_edges(
                             if out in value_name or value_name in out:
                                 internal_value = out
                                 break
-                        data_node_id = f"data_{actual_producer}_{internal_value}"
-                    else:
-                        data_node_id = f"data_{source}_{value_name}"
-                else:
-                    data_node_id = f"data_{actual_producer}_{value_name}"
+                        data_value = internal_value
+                data_source = actual_producer
+                if not _is_data_node_visible(data_source, data_value, flat_graph, expansion_state):
+                    continue
+                data_node_id = f"data_{data_source}_{data_value}"
             else:
+                if not _is_data_node_visible(source, value_name, flat_graph, expansion_state):
+                    continue
                 data_node_id = f"data_{source}_{value_name}"
 
             edge_id = f"e_{data_node_id}_to_{target}"

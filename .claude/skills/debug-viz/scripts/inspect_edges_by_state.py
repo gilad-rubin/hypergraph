@@ -3,29 +3,40 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
-import subprocess
+import keyword
 import sys
 from pathlib import Path
 
 
-import re
-
-# Safe identifier pattern for Python module/variable names
-_SAFE_IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$')
-
-
 def _validate_identifier(value: str, name: str) -> None:
-    """Validate that a string is a safe Python identifier."""
-    if not _SAFE_IDENTIFIER.match(value):
-        raise ValueError(
-            f"{name} must be a valid Python identifier, got: {value!r}"
-        )
-    # Additional safety: reject any suspicious characters
-    if any(c in value for c in (';', '(', ')', ' ', '\n', '\t', '#', '=')):
-        raise ValueError(
-            f"{name} contains invalid characters: {value!r}"
-        )
+    """Validate that a string is a safe Python identifier (allows dotted paths)."""
+    parts = value.split(".")
+    for part in parts:
+        if not part.isidentifier():
+            raise ValueError(f"Invalid {name}: '{value}' - '{part}' is not a valid identifier")
+        if keyword.iskeyword(part):
+            raise ValueError(f"Invalid {name}: '{value}' - '{part}' is a Python keyword")
+
+
+def _ensure_src_on_path() -> None:
+    root = Path(__file__).resolve().parents[4]
+    src_path = root / "src"
+    if src_path.is_dir() and str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+
+
+def _load_graph_object(graph_module: str, graph_var: str):
+    _validate_identifier(graph_module, "graph_module")
+    _validate_identifier(graph_var, "graph_var")
+    _ensure_src_on_path()
+
+    module = importlib.import_module(graph_module)
+    obj = module
+    for part in graph_var.split("."):
+        obj = getattr(obj, part)
+    return obj
 
 
 def render_edges_by_state(
@@ -34,52 +45,30 @@ def render_edges_by_state(
     depth: int,
     separate_outputs: bool,
 ) -> dict:
-    # Validate inputs to prevent code injection
-    _validate_identifier(graph_module, "graph_module")
-    _validate_identifier(graph_var, "graph_var")
+    from hypergraph.viz.renderer import render_graph
 
-    code = f'''
-import sys
-import json
-sys.path.insert(0, "src")
+    graph_obj = _load_graph_object(graph_module, graph_var)
 
-from {graph_module} import {graph_var}
-from hypergraph.viz.renderer import render_graph
+    if hasattr(graph_obj, "graph"):
+        graph = graph_obj.graph
+    elif hasattr(graph_obj, "to_flat_graph"):
+        graph = graph_obj
+    else:
+        graph = graph_obj
 
-if hasattr({graph_var}, 'graph'):
-    graph = {graph_var}.graph
-elif hasattr({graph_var}, 'to_flat_graph'):
-    graph = {graph_var}
-else:
-    graph = {graph_var}
+    if hasattr(graph, "bind"):
+        bound = graph.bind()
+    else:
+        bound = graph
 
-if hasattr(graph, 'bind'):
-    bound = graph.bind()
-else:
-    bound = graph
-
-flat_graph = bound.to_flat_graph()
-result = render_graph(
-    flat_graph,
-    depth={depth},
-    separate_outputs={separate_outputs},
-)
-
-print(json.dumps(result.get("meta", {{}}), indent=2))
-'''
-
-    result = subprocess.run(
-        ["uv", "run", "python", "-c", code],
-        capture_output=True,
-        text=True,
-        cwd=str(Path.cwd()),
+    flat_graph = bound.to_flat_graph()
+    result = render_graph(
+        flat_graph,
+        depth=depth,
+        separate_outputs=separate_outputs,
     )
 
-    if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        sys.exit(1)
-
-    return json.loads(result.stdout)
+    return result.get("meta", {})
 
 
 def expansion_state_key(expandable_nodes: list[str], expanded: bool, separate_outputs: bool) -> str:

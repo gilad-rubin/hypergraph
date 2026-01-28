@@ -1,10 +1,41 @@
 #!/usr/bin/env python3
 """Generate debug HTML for hypergraph visualization and extract debug info."""
 import argparse
+import importlib
 import json
-import subprocess
+import keyword
 import sys
+import tempfile
 from pathlib import Path
+
+
+def _validate_identifier(name: str, param_name: str) -> None:
+    """Validate string is a safe Python identifier (allows dotted module paths)."""
+    parts = name.split(".")
+    for part in parts:
+        if not part.isidentifier():
+            raise ValueError(f"Invalid {param_name}: '{name}' - '{part}' is not a valid identifier")
+        if keyword.iskeyword(part):
+            raise ValueError(f"Invalid {param_name}: '{name}' - '{part}' is a Python keyword")
+
+
+def _ensure_src_on_path() -> None:
+    root = Path(__file__).resolve().parents[4]
+    src_path = root / "src"
+    if src_path.is_dir() and str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+
+
+def _load_graph_object(graph_module: str, graph_var: str):
+    _validate_identifier(graph_module, "graph_module")
+    _validate_identifier(graph_var, "graph_var")
+    _ensure_src_on_path()
+
+    module = importlib.import_module(graph_module)
+    obj = module
+    for part in graph_var.split("."):
+        obj = getattr(obj, part)
+    return obj
 
 
 def generate_debug_html(
@@ -23,156 +54,100 @@ def generate_debug_html(
     Returns:
         Tuple of (html_path, debug_info_dict)
     """
-    # Import and render
-    code = f'''
-import sys
-import json
-sys.path.insert(0, "src")
+    from hypergraph.viz.renderer import render_graph
+    from hypergraph.viz.widget import visualize
 
-from {graph_module} import {graph_var}
-from hypergraph.viz.widget import visualize
-from hypergraph.viz.renderer import render_graph
+    graph_obj = _load_graph_object(graph_module, graph_var)
 
-# Get the graph
-if hasattr({graph_var}, 'graph'):
-    graph = {graph_var}.graph
-elif hasattr({graph_var}, 'to_flat_graph'):
-    graph = {graph_var}
-else:
-    graph = {graph_var}
+    if hasattr(graph_obj, "graph"):
+        graph = graph_obj.graph
+    elif hasattr(graph_obj, "to_flat_graph"):
+        graph = graph_obj
+    else:
+        graph = graph_obj
 
-# Bind if needed
-if hasattr(graph, 'bind'):
-    bound = graph.bind()
-else:
-    bound = graph
+    if hasattr(graph, "bind"):
+        bound = graph.bind()
+    else:
+        bound = graph
 
-flat_graph = bound.to_flat_graph()
+    flat_graph = bound.to_flat_graph()
 
-# Render with debug overlays
-result = render_graph(
-    flat_graph,
-    depth={depth},
-    separate_outputs={separate_outputs},
-    debug_overlays=True,
-)
-
-# Generate HTML
-import tempfile
-tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-html_path = tmp.name
-tmp.close()
-visualize(
-    bound,
-    depth={depth},
-    separate_outputs={separate_outputs},
-    filepath=html_path,
-    _debug_overlays=True,
-)
-
-# Extract key debug info
-debug_info = {{
-    "expansion_state": {{}},
-    "edges_to_check": [],
-    "input_groups": [],
-    "node_parents": {{}},
-    "expandable_nodes": result.get("meta", {{}}).get("expandableNodes", []),
-    "edges_by_state_keys": sorted(result.get("meta", {{}}).get("edgesByState", {{}}).keys()),
-    "separate_outputs": {separate_outputs},
-    "node_ids": [n.get("id") for n in result.get("nodes", [])],
-}}
-
-# Expansion state (from node data)
-for n in result["nodes"]:
-    if n.get("data", {{}}).get("nodeType") == "PIPELINE":
-        debug_info["expansion_state"][n["id"]] = n.get("data", {{}}).get("isExpanded", False)
-
-# Edges (especially ones that might be wrong)
-for e in result["edges"]:
-    debug_info["edges_to_check"].append({{
-        "id": e["id"],
-        "source": e["source"],
-        "target": e["target"],
-        "valueName": e.get("data", {{}}).get("valueName", ""),
-    }})
-
-# Input groups
-for n in result["nodes"]:
-    nt = n.get("data", {{}}).get("nodeType", "")
-    if nt in ("INPUT", "INPUT_GROUP"):
-        debug_info["input_groups"].append({{
-            "id": n["id"],
-            "nodeType": nt,
-            "ownerContainer": n.get("data", {{}}).get("ownerContainer"),
-            "deepestOwnerContainer": n.get("data", {{}}).get("deepestOwnerContainer"),
-            "parentNode": n.get("parentNode"),
-        }})
-
-# Node parents
-for n in result["nodes"]:
-    if n.get("parentNode"):
-        debug_info["node_parents"][n["id"]] = n["parentNode"]
-
-# Output to producer mapping
-debug_info["output_to_producer"] = result.get("meta", {{}}).get("output_to_producer", {{}})
-
-# Param to consumer mapping (deepest)
-debug_info["param_to_consumer"] = result.get("meta", {{}}).get("param_to_consumer", {{}})
-
-# Initial state key (matches app.js expansionStateToKey)
-def _state_key(expandable_nodes, expansion_state, separate_outputs):
-    sep_key = "sep:1" if separate_outputs else "sep:0"
-    if not expandable_nodes:
-        return sep_key
-    parts = []
-    for node_id in expandable_nodes:
-        bit = "1" if expansion_state.get(node_id, False) else "0"
-        parts.append(str(node_id) + ":" + bit)
-    return ",".join(parts) + "|" + sep_key
-
-debug_info["initial_state_key"] = _state_key(
-    debug_info["expandable_nodes"],
-    debug_info["expansion_state"],
-    {separate_outputs},
-)
-
-print("HTML_PATH:" + html_path)
-print("DEBUG_INFO:" + json.dumps(debug_info, indent=2))
-'''
-
-    result = subprocess.run(
-        ["uv", "run", "python", "-c", code],
-        capture_output=True,
-        text=True,
-        cwd=str(Path.cwd())
+    result = render_graph(
+        flat_graph,
+        depth=depth,
+        separate_outputs=separate_outputs,
+        debug_overlays=True,
     )
 
-    if result.returncode != 0:
-        print(f"Error: {result.stderr}", file=sys.stderr)
-        sys.exit(1)
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
+    html_path = tmp.name
+    tmp.close()
 
-    html_path = None
-    debug_info = {}
+    visualize(
+        bound,
+        depth=depth,
+        separate_outputs=separate_outputs,
+        filepath=html_path,
+        _debug_overlays=True,
+    )
 
-    lines = result.stdout.split("\n")
-    debug_info_lines = []
-    collecting_debug_info = False
+    debug_info = {
+        "expansion_state": {},
+        "edges_to_check": [],
+        "input_groups": [],
+        "node_parents": {},
+        "expandable_nodes": result.get("meta", {}).get("expandableNodes", []),
+        "edges_by_state_keys": sorted(result.get("meta", {}).get("edgesByState", {}).keys()),
+        "separate_outputs": separate_outputs,
+        "node_ids": [n.get("id") for n in result.get("nodes", [])],
+    }
 
-    for line in lines:
-        if line.startswith("HTML_PATH:"):
-            html_path = line.split(":", 1)[1]
-            collecting_debug_info = False
-        elif line.startswith("DEBUG_INFO:"):
-            # Start collecting JSON (may span multiple lines)
-            debug_info_lines = [line.split(":", 1)[1]]
-            collecting_debug_info = True
-        elif collecting_debug_info:
-            debug_info_lines.append(line)
+    for n in result["nodes"]:
+        if n.get("data", {}).get("nodeType") == "PIPELINE":
+            debug_info["expansion_state"][n["id"]] = n.get("data", {}).get("isExpanded", False)
 
-    if debug_info_lines:
-        json_str = "\n".join(debug_info_lines).strip()
-        if json_str:
-            debug_info = json.loads(json_str)
+    for e in result["edges"]:
+        debug_info["edges_to_check"].append({
+            "id": e["id"],
+            "source": e["source"],
+            "target": e["target"],
+            "valueName": e.get("data", {}).get("valueName", ""),
+        })
+
+    for n in result["nodes"]:
+        nt = n.get("data", {}).get("nodeType", "")
+        if nt in ("INPUT", "INPUT_GROUP"):
+            debug_info["input_groups"].append({
+                "id": n["id"],
+                "nodeType": nt,
+                "ownerContainer": n.get("data", {}).get("ownerContainer"),
+                "deepestOwnerContainer": n.get("data", {}).get("deepestOwnerContainer"),
+                "parentNode": n.get("parentNode"),
+            })
+
+    for n in result["nodes"]:
+        if n.get("parentNode"):
+            debug_info["node_parents"][n["id"]] = n["parentNode"]
+
+    debug_info["output_to_producer"] = result.get("meta", {}).get("output_to_producer", {})
+    debug_info["param_to_consumer"] = result.get("meta", {}).get("param_to_consumer", {})
+
+    def _state_key(expandable_nodes, expansion_state, separate_outputs):
+        sep_key = "sep:1" if separate_outputs else "sep:0"
+        if not expandable_nodes:
+            return sep_key
+        parts = []
+        for node_id in expandable_nodes:
+            bit = "1" if expansion_state.get(node_id, False) else "0"
+            parts.append(str(node_id) + ":" + bit)
+        return ",".join(parts) + "|" + sep_key
+
+    debug_info["initial_state_key"] = _state_key(
+        debug_info["expandable_nodes"],
+        debug_info["expansion_state"],
+        separate_outputs,
+    )
 
     return html_path, debug_info
 
