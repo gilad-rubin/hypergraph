@@ -172,7 +172,7 @@
           source = 'marimo data-theme/mode';
         }
         // Marimo body classes
-        bodyClass = parentDoc.body.className || '';
+        var bodyClass = parentDoc.body.className || '';
         if (!autoTheme && (bodyClass.includes('dark-mode') || bodyClass.includes('dark'))) {
           autoTheme = 'dark';
           source = 'marimo dark-mode class';
