@@ -79,12 +79,6 @@ def render_graph(
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
 
-    # Build output_to_source mapping from node attributes
-    output_to_source: dict[str, str] = {}
-    for node_id, attrs in flat_graph.nodes(data=True):
-        for output in attrs.get("outputs", ()):
-            output_to_source[output] = node_id
-
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)
     # For static edges: use visibility-based targets

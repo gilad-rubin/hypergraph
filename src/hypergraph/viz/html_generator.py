@@ -9,6 +9,14 @@ from importlib.resources import files
 from typing import Any, Dict, Optional
 
 
+def _escape_json_for_html(json_str: str) -> str:
+    """Escape JSON for safe embedding in HTML script tags.
+
+    Prevents XSS by escaping </ sequences that could break out of script tags.
+    """
+    return json_str.replace("</", "<\\/")
+
+
 def _validate_graph_data(graph_data: Dict[str, Any]) -> None:
     """Lightweight validation of the renderer payload."""
     if not isinstance(graph_data, dict):
@@ -50,7 +58,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     No external CDN dependencies are required - works fully offline.
     """
     _validate_graph_data(graph_data)
-    graph_json = json.dumps(graph_data)
+    graph_json = _escape_json_for_html(json.dumps(graph_data))
 
     def _read_asset(name: str, kind: str) -> Optional[str]:
         """Read an asset file from the bundled package resources.
@@ -82,7 +90,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     custom_css = _read_asset("custom.css", "css") or ""
 
     # Load our visualization modules
-    state_utils_js = _read_asset("state_utils.js", "js")
     theme_utils_js = _read_asset("theme_utils.js", "js")
     layout_js = _read_asset("layout.js", "js")
     components_js = _read_asset("components.js", "js")
@@ -94,7 +101,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         constraint_layout_js, rf_js, rf_css, tailwind_css
     ]
     required_app_assets = [
-        state_utils_js, theme_utils_js, layout_js, components_js, app_js
+        theme_utils_js, layout_js, components_js, app_js
     ]
 
     if not all(required_library_assets):
@@ -115,8 +122,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     if not all(required_app_assets):
         missing = []
         asset_names = [
-            "state_utils.js", "theme_utils.js", "layout.js",
-            "components.js", "app.js"
+            "theme_utils.js", "layout.js", "components.js", "app.js"
         ]
         for asset, name in zip(required_app_assets, asset_names):
             if not asset:
@@ -170,7 +176,6 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     {constraint_layout_js}
     {rf_js}
     <!-- Hypergraph visualization modules -->
-    {state_utils_js}
     {theme_utils_js}
     {layout_js}
     {components_js}
@@ -204,7 +209,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
       // Check all required modules are loaded
       var requiredModules = [
         'React', 'ReactDOM', 'ReactFlow', 'htm', 'ConstraintLayout',
-        'HypergraphVizState', 'HypergraphVizTheme', 'HypergraphVizLayout',
+        'HypergraphVizTheme', 'HypergraphVizLayout',
         'HypergraphVizComponents', 'HypergraphVizApp'
       ];
       var missing = requiredModules.filter(function(m) {{ return !window[m]; }});

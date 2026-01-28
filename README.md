@@ -75,6 +75,14 @@ print(result["answer"])
 
 <!-- TODO: simple-dag.svg - 3-node RAG pipeline: embed → retrieve → generate -->
 
+## Visualization (High-Level)
+
+Hypergraph visualization is Python-driven:
+
+1. `Graph.to_flat_graph()` builds the canonical hierarchical graph.
+2. `render_graph()` precomputes `nodesByState` and `edgesByState` for all valid expansion states.
+3. The HTML bundle embeds those precomputed states and JavaScript performs layout only.
+
 ## Progressive Examples
 
 ### 1. Simple Pipeline (DAG)
