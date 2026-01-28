@@ -342,7 +342,7 @@ def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> No
             continue  # Mutex - no validation needed
 
         # Check for duplicate outputs among targets
-        output_producers: dict[str, list[str]] = {}
+        output_producers: dict[str, list[str]] = defaultdict(list)
         for target_name in node.targets:
             if target_name is END:
                 continue
@@ -350,7 +350,7 @@ def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> No
             if target is None:
                 continue
             for output in target.outputs:
-                output_producers.setdefault(output, []).append(target_name)
+                output_producers[output].append(target_name)
 
         for output, producers in output_producers.items():
             if len(producers) > 1:
