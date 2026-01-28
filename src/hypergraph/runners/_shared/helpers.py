@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from typing import TYPE_CHECKING, Any, Iterator
 
 from hypergraph.nodes.base import HyperNode
@@ -10,6 +11,24 @@ from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+
+
+def _safe_deepcopy(value: Any) -> Any:
+    """Deep-copy a value, falling back gracefully for non-copyable objects.
+
+    Some objects (locks, file handles, C extensions) cannot be deep-copied.
+    For these, we return the original value and emit a warning.
+    """
+    try:
+        return copy.deepcopy(value)
+    except (TypeError, copy.Error) as e:
+        warnings.warn(
+            f"Cannot deep-copy default value of type {type(value).__name__}: {e}. "
+            f"Using original value. Mutating this default may affect future runs.",
+            UserWarning,
+            stacklevel=4,  # Point to the function using the default
+        )
+        return value
 
 
 def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
@@ -227,7 +246,8 @@ def _resolve_input(
 
     # 4. Function default (deep-copy to prevent cross-run mutation)
     if node.has_default_for(param):
-        return copy.deepcopy(node.get_default_for(param))
+        default = node.get_default_for(param)
+        return _safe_deepcopy(default)
 
     # This shouldn't happen if validation passed
     raise KeyError(f"No value for input '{param}'")

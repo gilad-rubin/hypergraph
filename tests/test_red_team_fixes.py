@@ -18,7 +18,7 @@ class TestMutableDefaults:
         """A mutable list default must not leak between runs."""
 
         @node(output_name="result")
-        def append_to_list(item: str, container: list = []) -> list:
+        def append_to_list(item: str, container: list = []) -> list:  # noqa: B006
             container.append(item)
             return container
 
@@ -35,7 +35,7 @@ class TestMutableDefaults:
         """A mutable dict default must not leak between runs."""
 
         @node(output_name="result")
-        def update_dict(key: str, val: int, d: dict = {}) -> dict:
+        def update_dict(key: str, val: int, d: dict = {}) -> dict:  # noqa: B006
             d[key] = val
             return d
 
@@ -47,6 +47,30 @@ class TestMutableDefaults:
 
         assert res1["result"] == {"a": 1}
         assert res2["result"] == {"b": 2}, "Dict default leaked"
+
+    def test_non_copyable_default_warns_but_continues(self):
+        """Non-copyable defaults should warn but not crash."""
+        import threading
+        import warnings
+
+        lock = threading.Lock()
+
+        @node(output_name="result")
+        def use_lock(x: int, sync: threading.Lock = lock) -> int:
+            # Just verifies the lock is usable
+            with sync:
+                return x * 2
+
+        graph = Graph(nodes=[use_lock])
+        runner = SyncRunner()
+
+        # Should emit warning but still run successfully
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = runner.run(graph, {"x": 5})
+            assert result["result"] == 10
+            # Should have warned about non-copyable default
+            assert any("Cannot deep-copy" in str(warning.message) for warning in w)
 
 
 # === Fix #2: Cycle termination off-by-one ===
@@ -129,6 +153,78 @@ class TestIntermediateInjection:
 
         result = runner.run(graph, {"start": "hello"})
         assert result["end"] == "hello_mid_end"
+
+    def test_multi_output_partial_injection_still_requires_upstream_inputs(self):
+        """Partial injection of multi-output node must still require its inputs.
+
+        If a node produces (left, right) and user only provides "left" but NOT "x",
+        validation should STILL require "x" because "right" is needed downstream.
+        The bug: current code marks split as bypassed if ANY output is provided.
+        """
+        from hypergraph.exceptions import MissingInputError
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph(nodes=[split, use_left, use_right])
+        runner = SyncRunner()
+
+        # Provide only "left" - but "right" is still needed from split!
+        # Should raise MissingInputError for "x"
+        with pytest.raises(MissingInputError, match="x"):
+            runner.run(graph, {"left": 100})
+
+    def test_multi_output_full_injection_skips_node(self):
+        """Full injection of ALL outputs from a node properly bypasses it."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph(nodes=[split, use_left, use_right])
+        runner = SyncRunner()
+
+        # Provide BOTH outputs — split is fully bypassed, no need for "x"
+        result = runner.run(graph, {"left": 100, "right": 200})
+        assert result["double_left"] == 200
+        assert result["double_right"] == 400
+
+    def test_multi_output_unused_output_can_be_skipped(self):
+        """If a multi-output node has an unused output, partial injection works."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        # NOTE: "right" is not consumed by anyone
+
+        graph = Graph(nodes=[split, use_left])
+        runner = SyncRunner()
+
+        # Provide only "left" - and "right" is unused, so split can be bypassed
+        result = runner.run(graph, {"left": 100})
+        assert result["double_left"] == 200
 
 
 # === Fix #6: Rename collision silently allowed ===

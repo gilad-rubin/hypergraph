@@ -193,30 +193,44 @@ def validate_map_compatible(graph: "Graph") -> None:
 
 
 def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
-    """Find inputs that belong to nodes bypassed by intermediate value injection.
+    """Find inputs that belong to nodes fully bypassed by intermediate injection.
 
-    When a user provides a value that is normally produced by a node,
-    that node doesn't need to run — so its exclusive inputs shouldn't
-    be required.
+    A node is bypassed ONLY if ALL of its outputs that are consumed downstream
+    are provided by the user. If any consumed output is missing, the node must
+    still run to produce it.
+
+    When a node is bypassed, its exclusive inputs (not needed by other nodes)
+    can be removed from the required set.
     """
-    import networkx as nx
+    # Build output -> producer nodes mapping (handle mutex branches)
+    output_to_nodes: dict[str, list[str]] = {}
+    for node in graph._nodes.values():
+        for output in node.outputs:
+            output_to_nodes.setdefault(output, []).append(node.name)
 
-    # Find which nodes are bypassed (their outputs are provided)
-    output_to_node = {
-        output: node.name
-        for node in graph._nodes.values()
-        for output in node.outputs
-    }
-    bypassed_nodes = {
-        output_to_node[v] for v in provided
-        if v in output_to_node
-    }
+    # Find which outputs are consumed by downstream nodes
+    consumed_outputs: set[str] = set()
+    for node in graph._nodes.values():
+        consumed_outputs.update(node.inputs)
+
+    # A node is bypassed only if ALL its consumed outputs are provided
+    bypassed_nodes: set[str] = set()
+    for node in graph._nodes.values():
+        node_consumed_outputs = set(node.outputs) & consumed_outputs
+        if node_consumed_outputs and node_consumed_outputs <= provided:
+            # All consumed outputs are provided — node is bypassed
+            bypassed_nodes.add(node.name)
 
     if not bypassed_nodes:
         return set()
 
+    # Also mark nodes as bypassed if ALL their outputs (consumed or not) are provided
+    # This handles the case where user provides all outputs even if some aren't consumed
+    for node in graph._nodes.values():
+        if set(node.outputs) <= provided:
+            bypassed_nodes.add(node.name)
+
     # Collect inputs exclusively needed by bypassed nodes
-    # (not needed by any non-bypassed node)
     bypassed_inputs: set[str] = set()
     for node_name in bypassed_nodes:
         node = graph._nodes[node_name]
