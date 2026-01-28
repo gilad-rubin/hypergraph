@@ -143,11 +143,11 @@ class TestRenderGraph:
         ]
         node_ids = {n["id"] for n in fn_and_pipeline_nodes}
         assert "inner" in node_ids  # The pipeline node
-        assert "double" in node_ids  # Inner node (expanded)
+        assert "inner/double" in node_ids  # Inner node (expanded, hierarchical ID)
         assert "add" in node_ids  # Outer node
 
         # Inner nodes should have parentNode set
-        double_node = next(n for n in result["nodes"] if n["id"] == "double")
+        double_node = next(n for n in result["nodes"] if n["id"] == "inner/double")
         assert double_node["parentNode"] == "inner"
 
         # Pipeline node should be expanded
@@ -172,14 +172,14 @@ class TestRenderGraph:
         assert "inner" in node_ids
         assert "add" in node_ids
         # double is now always included (visibility controlled by JS)
-        assert "double" in node_ids
+        assert "inner/double" in node_ids  # Hierarchical ID
 
         # Inner graph should be marked as collapsed
         inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
         assert inner_node["data"]["isExpanded"] is False
 
         # Child node should have parentNode reference
-        double_node = next(n for n in result["nodes"] if n["id"] == "double")
+        double_node = next(n for n in result["nodes"] if n["id"] == "inner/double")
         assert double_node.get("parentNode") == "inner"
 
 
@@ -215,9 +215,9 @@ class TestNodeToParentMap:
         assert "node_to_parent" in result["meta"]
         node_to_parent = result["meta"]["node_to_parent"]
 
-        # The 'double' node should have 'inner' as its parent
-        assert "double" in node_to_parent
-        assert node_to_parent["double"] == "inner"
+        # The 'inner/double' node should have 'inner' as its parent (hierarchical ID)
+        assert "inner/double" in node_to_parent
+        assert node_to_parent["inner/double"] == "inner"
 
         # The 'inner' node should NOT be in the map (it's at root level, no parent)
         assert "inner" not in node_to_parent
@@ -235,11 +235,11 @@ class TestNodeToParentMap:
         result = render_graph(outer.to_flat_graph())
         node_to_parent = result["meta"]["node_to_parent"]
 
-        # triple's parent is level2
-        assert node_to_parent.get("triple") == "level2"
+        # triple's parent is level2 (hierarchical IDs: level1/level2/triple)
+        assert node_to_parent.get("level1/level2/triple") == "level1/level2"
 
-        # level2's parent is level1
-        assert node_to_parent.get("level2") == "level1"
+        # level2's parent is level1 (hierarchical ID: level1/level2)
+        assert node_to_parent.get("level1/level2") == "level1"
 
         # level1 has no parent (root level)
         assert "level1" not in node_to_parent

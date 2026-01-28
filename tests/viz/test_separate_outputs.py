@@ -161,21 +161,21 @@ class TestDeeplyNestedSeparateOutputs:
 
         edges = edges_by_state[expanded_sep1_keys[0]]
 
-        # Find edge to validate - should come from DATA node, not function
-        edges_to_validate = [e for e in edges if e["target"] == "validate"]
+        # Find edge to middle/validate - should come from DATA node, not function (hierarchical IDs)
+        edges_to_validate = [e for e in edges if e["target"] == "middle/validate"]
 
         assert len(edges_to_validate) > 0, (
-            f"No edges to 'validate' found!\n"
+            f"No edges to 'middle/validate' found!\n"
             f"All edges: {[(e['source'], e['target']) for e in edges]}"
         )
 
-        # The source should be a DATA node (data_step2_step2_out), not a function (step2)
+        # The source should be a DATA node, not a function
         for edge in edges_to_validate:
             source = edge["source"]
             assert source.startswith("data_"), (
-                f"Edge to 'validate' should come from DATA node, not function!\n"
+                f"Edge to 'middle/validate' should come from DATA node, not function!\n"
                 f"Got source: {source}\n"
-                f"Expected: data_step2_step2_out or similar DATA node"
+                f"Expected: data_middle/inner/step2_step2_out or similar DATA node"
             )
 
     def test_deeply_nested_collapsed_then_expanded_edges(self):
@@ -222,20 +222,20 @@ class TestDeeplyNestedSeparateOutputs:
 
         edges = edges_by_state[expanded_sep1_keys[0]]
 
-        # Find edge to validate - should come from DATA node
-        edges_to_validate = [e for e in edges if e["target"] == "validate"]
+        # Find edge to middle/validate - should come from DATA node (hierarchical IDs)
+        edges_to_validate = [e for e in edges if e["target"] == "middle/validate"]
 
         assert len(edges_to_validate) > 0, (
-            f"No edges to 'validate' found!\n"
+            f"No edges to 'middle/validate' found!\n"
             f"All edges: {[(e['source'], e['target']) for e in edges]}"
         )
 
         for edge in edges_to_validate:
             source = edge["source"]
             assert source.startswith("data_"), (
-                f"Edge to 'validate' should come from DATA node!\n"
+                f"Edge to 'middle/validate' should come from DATA node!\n"
                 f"Got source: {source}\n"
-                f"Expected: data_step2_step2_out"
+                f"Expected: data_middle/inner/step2_step2_out"
             )
 
     def test_deeply_nested_no_function_to_function_data_edges(self):

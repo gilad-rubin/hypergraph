@@ -261,9 +261,9 @@ class TestNodeConnectivity:
         """Nested graph internal edges are connected."""
         debugger = VizDebugger(workflow_graph)
 
-        # Inside preprocess: clean_text -> normalize_text
-        edge = debugger.trace_edge("clean_text", "normalize_text")
-        assert edge.edge_found is True, "clean_text -> normalize_text should exist"
+        # Inside preprocess: clean_text -> normalize_text (hierarchical IDs)
+        edge = debugger.trace_edge("preprocess/clean_text", "preprocess/normalize_text")
+        assert edge.edge_found is True, "preprocess/clean_text -> preprocess/normalize_text should exist"
 
 
 # =============================================================================
@@ -279,14 +279,14 @@ class TestNestedGraphStructure:
         debugger = VizDebugger(workflow_graph)
         G = debugger.flat_graph
 
-        # clean_text and normalize_text should have parent="preprocess"
-        clean_attrs = G.nodes.get("clean_text", {})
-        normalize_attrs = G.nodes.get("normalize_text", {})
+        # clean_text and normalize_text should have parent="preprocess" (hierarchical IDs)
+        clean_attrs = G.nodes.get("preprocess/clean_text", {})
+        normalize_attrs = G.nodes.get("preprocess/normalize_text", {})
 
         assert clean_attrs.get("parent") == "preprocess", \
-            "clean_text should have parent=preprocess"
+            "preprocess/clean_text should have parent=preprocess"
         assert normalize_attrs.get("parent") == "preprocess", \
-            "normalize_text should have parent=preprocess"
+            "preprocess/normalize_text should have parent=preprocess"
 
     def test_workflow_graph_node_type(self, workflow_graph):
         """Preprocess node should be type GRAPH."""
@@ -302,21 +302,22 @@ class TestNestedGraphStructure:
         info = debugger.trace_node("preprocess")
 
         assert "children" in info.details
-        assert "clean_text" in info.details["children"]
-        assert "normalize_text" in info.details["children"]
+        # Children now have hierarchical IDs
+        assert "preprocess/clean_text" in info.details["children"]
+        assert "preprocess/normalize_text" in info.details["children"]
 
     def test_outer_graph_nesting_depth(self, outer_graph):
         """2-level nested graph has correct parent chain."""
         debugger = VizDebugger(outer_graph)
         G = debugger.flat_graph
 
-        # step1 and step2 -> parent=inner
-        step1_attrs = G.nodes.get("step1", {})
-        assert step1_attrs.get("parent") == "inner", "step1 should have parent=inner"
+        # step1 and step2 -> parent=middle/inner (hierarchical IDs)
+        step1_attrs = G.nodes.get("middle/inner/step1", {})
+        assert step1_attrs.get("parent") == "middle/inner", "middle/inner/step1 should have parent=middle/inner"
 
-        # inner -> parent=middle
-        inner_attrs = G.nodes.get("inner", {})
-        assert inner_attrs.get("parent") == "middle", "inner should have parent=middle"
+        # inner -> parent=middle (hierarchical ID: middle/inner)
+        inner_attrs = G.nodes.get("middle/inner", {})
+        assert inner_attrs.get("parent") == "middle", "middle/inner should have parent=middle"
 
         # middle -> parent=None (top-level)
         middle_attrs = G.nodes.get("middle", {})

@@ -114,8 +114,8 @@ def test_rag_style_query_edges_route_to_internal_nodes_when_expanded() -> None:
     }
 
     assert "rag_validate_query" in query_targets
-    assert "rag_embed_query" in query_targets
-    assert "rag_build_prompt" in query_targets
+    assert "retrieval/rag_embed_query" in query_targets
+    assert "generation/prompt_building/rag_build_prompt" in query_targets
 
 
 def test_rag_style_retrieval_output_routes_from_internal_producer() -> None:
@@ -127,7 +127,7 @@ def test_rag_style_retrieval_output_routes_from_internal_producer() -> None:
         edge["source"] for edge in edges if edge["target"] == "rag_select_document"
     }
 
-    assert sources == {"rag_limit_docs"}
+    assert sources == {"retrieval/rag_limit_docs"}
 
 
 def test_rag_style_control_edge_routes_to_entry_point_when_expanded() -> None:
@@ -143,7 +143,7 @@ def test_rag_style_control_edge_routes_to_entry_point_when_expanded() -> None:
     ]
 
     assert control_edges, "Expected a True control edge from rag_route_query"
-    assert control_edges[0]["target"] == "rag_embed_query"
+    assert control_edges[0]["target"] == "retrieval/rag_embed_query"
 
 
 # =============================================================================
@@ -216,7 +216,8 @@ def test_batch_recommendations_outputs_route_from_internal_nodes() -> None:
         edge["source"] for edge in edges if edge["target"] == "rec_build_batch_prompt"
     }
 
-    assert sources == {"rec_build_recommendation"}
+    # With hierarchical IDs, nodes inside map_recommendations get that prefix
+    assert sources == {"map_recommendations/rec_build_recommendation"}
 
 
 # =============================================================================
@@ -287,8 +288,9 @@ def test_batch_recall_input_edges_route_from_external_builder() -> None:
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)
 
+    # With hierarchical IDs, batch_extract_query is inside batch_recall
     sources = {
-        edge["source"] for edge in edges if edge["target"] == "batch_extract_query"
+        edge["source"] for edge in edges if edge["target"] == "batch_recall/batch_extract_query"
     }
 
     assert sources == {"batch_build_pairs"}
@@ -299,9 +301,10 @@ def test_batch_recall_routes_through_nested_retrieval_when_expanded() -> None:
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)
 
+    # With hierarchical IDs, nodes are inside batch_recall and batch_recall/retrieval
     assert any(
-        edge["source"] == "batch_extract_query"
-        and edge["target"] == "batch_embed_query"
+        edge["source"] == "batch_recall/batch_extract_query"
+        and edge["target"] == "batch_recall/retrieval/batch_embed_query"
         for edge in edges
     ), "Expected query edge to route into nested retrieval when expanded"
 
@@ -309,4 +312,4 @@ def test_batch_recall_routes_through_nested_retrieval_when_expanded() -> None:
         edge["source"] for edge in edges if edge["target"] == "batch_aggregate_scores"
     }
 
-    assert sources == {"batch_score_recall"}
+    assert sources == {"batch_recall/batch_score_recall"}

@@ -78,14 +78,14 @@ class TestInteractiveExpandEdgeRouting:
         # At depth=1, input edge targets clean_text (internal node)
         # The bug: After interactive expand, input edge still targets preprocess (container)
 
-        # Find edges that enter the preprocess subgraph
+        # Find edges that enter the preprocess subgraph (hierarchical IDs)
         static_internal_targets = [
             target for target in static_targets.values()
-            if target in ('clean_text', 'normalize_text')
+            if target in ('preprocess/clean_text', 'preprocess/normalize_text')
         ]
         interactive_internal_targets = [
             target for target in interactive_targets.values()
-            if target in ('clean_text', 'normalize_text')
+            if target in ('preprocess/clean_text', 'preprocess/normalize_text')
         ]
 
         assert len(static_internal_targets) > 0, (
@@ -128,16 +128,16 @@ class TestInteractiveExpandEdgeRouting:
             for eid, info in interactive_data['edges'].items()
         }
 
-        # Find edges that exit the preprocess subgraph
+        # Find edges that exit the preprocess subgraph (hierarchical IDs)
         static_internal_sources = [
             source for source in static_sources.values()
-            if source in ('clean_text', 'normalize_text')
-            or 'data_' in source  # data nodes like data_normalize_text_normalized
+            if source in ('preprocess/clean_text', 'preprocess/normalize_text')
+            or 'data_preprocess/' in source  # data nodes like data_preprocess/normalize_text_normalized
         ]
         interactive_internal_sources = [
             source for source in interactive_sources.values()
-            if source in ('clean_text', 'normalize_text')
-            or 'data_' in source
+            if source in ('preprocess/clean_text', 'preprocess/normalize_text')
+            or 'data_preprocess/' in source
         ]
 
         assert len(static_internal_sources) > 0, (
@@ -184,14 +184,14 @@ class TestInteractiveExpandEdgeRouting:
             f"No input edge found. Edges: {data['edges']}"
         )
 
-        # After expand, the input edge should target clean_text, NOT preprocess
+        # After expand, the input edge should target preprocess/clean_text, NOT preprocess
         target = input_edge['target']
-        assert target == 'clean_text', (
+        assert target == 'preprocess/clean_text', (
             "INTERACTIVE EXPAND BUG: Input edge still targets container!\n"
-            f"\nExpected target: 'clean_text' (the actual consumer)\n"
+            f"\nExpected target: 'preprocess/clean_text' (the actual consumer)\n"
             f"Actual target: '{target}'\n"
             f"\nAfter expanding preprocess, the input edge should route to\n"
-            f"clean_text which is the actual node that consumes the 'text' parameter.\n"
+            f"preprocess/clean_text which is the actual node that consumes the 'text' parameter.\n"
             f"Instead, the edge stays connected to the container boundary."
         )
 

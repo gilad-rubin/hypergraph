@@ -108,10 +108,10 @@ class TestCrossBoundaryEdge:
 
         assert edge_to_metrics is not None, "Should have edge to compute_retrieval_metrics"
 
-        # The source should be compute_recall (the internal producer)
+        # The source should be batch_recall/compute_recall (hierarchical ID)
         # NOT batch_recall (the container) and NOT extract_retrieval_query (wrong node)
-        assert edge_to_metrics["source"] == "compute_recall", (
-            f"Edge source should be 'compute_recall' but got '{edge_to_metrics['source']}'"
+        assert edge_to_metrics["source"] == "batch_recall/compute_recall", (
+            f"Edge source should be 'batch_recall/compute_recall' but got '{edge_to_metrics['source']}'"
         )
 
     def test_edge_source_node_exists_in_rendered_nodes(self):
@@ -160,8 +160,8 @@ class TestCrossBoundaryEdge:
                 break
 
         assert edge_to_metrics is not None, "Should have edge to compute_retrieval_metrics in depth=1 state"
-        assert edge_to_metrics["source"] == "compute_recall", (
-            f"Pre-computed edge source should be 'compute_recall' but got '{edge_to_metrics['source']}'"
+        assert edge_to_metrics["source"] == "batch_recall/compute_recall", (
+            f"Pre-computed edge source should be 'batch_recall/compute_recall' but got '{edge_to_metrics['source']}'"
         )
 
 

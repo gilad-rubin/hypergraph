@@ -37,11 +37,11 @@ class TestInputNodePosition:
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
 
-            // Find input node and step1 node
+            // Find input node and step1 node (hierarchical ID)
             const inputNode = debug.nodes.find(n =>
                 n.id.includes('input') || n.id === '__inputs__'
             );
-            const step1Node = debug.nodes.find(n => n.id === 'step1');
+            const step1Node = debug.nodes.find(n => n.id === 'middle/inner/step1');
 
             if (!inputNode || !step1Node) {
                 return {
@@ -90,7 +90,7 @@ class TestInputNodePosition:
             const inputNode = debug.nodes.find(n =>
                 n.id.includes('input') || n.id === '__inputs__'
             );
-            const cleanTextNode = debug.nodes.find(n => n.id === 'clean_text');
+            const cleanTextNode = debug.nodes.find(n => n.id === 'preprocess/clean_text');
 
             if (!inputNode || !cleanTextNode) {
                 return {
@@ -352,9 +352,9 @@ class TestEdgeConnectsToActualNode:
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
 
-            // Find nodes
-            const innerNode = debug.nodes.find(n => n.id === 'inner');
-            const step1Node = debug.nodes.find(n => n.id === 'step1');
+            // Find nodes (hierarchical IDs)
+            const innerNode = debug.nodes.find(n => n.id === 'middle/inner');
+            const step1Node = debug.nodes.find(n => n.id === 'middle/inner/step1');
 
             if (!step1Node) {
                 return {

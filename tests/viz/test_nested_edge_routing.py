@@ -125,7 +125,7 @@ class TestEdgeRoutingToInternalNodes:
 
             // Find preprocess and clean_text positions
             const preprocess = debug.nodes.find(n => n.id === 'preprocess');
-            const cleanText = debug.nodes.find(n => n.id === 'clean_text');
+            const cleanText = debug.nodes.find(n => n.id === 'preprocess/clean_text');
 
             // Find the input_text -> clean_text edge (individual input node, not __inputs__)
             const edgeGroups = document.querySelectorAll('.react-flow__edge');
@@ -237,10 +237,10 @@ class TestEdgeRoutingToInternalNodes:
         for node in data.nodes:
             if node.get("id") == "middle":
                 middle_node = node
-            elif node.get("id") == "step1":
+            elif node.get("id") == "middle/inner/step1":  # Hierarchical ID
                 step1_node = node
 
-        assert step1_node is not None, "step1 node not found in expanded graph"
+        assert step1_node is not None, "middle/inner/step1 node not found in expanded graph"
 
         # The edge's target top should match step1's top, not middle's top
         # Allow small tolerance (5px) for rendering differences
@@ -331,8 +331,8 @@ class TestOutputEdgeRouting:
 
             // Find preprocess and normalize_text (last node in preprocess)
             const preprocess = debug.nodes.find(n => n.id === 'preprocess');
-            const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
-            const dataNormalizeNormalized = debug.nodes.find(n => n.id && n.id.includes('data_normalize'));
+            const normalizeText = debug.nodes.find(n => n.id === 'preprocess/normalize_text');
+            const dataNormalizeNormalized = debug.nodes.find(n => n.id && n.id.includes('data_preprocess/normalize'));
 
             // Find the normalize_text -> analyze edge
             // When preprocess is expanded, edges route from internal producer
@@ -402,7 +402,7 @@ class TestDoubleNestedEdgeRouting:
 
             // Find middle container and inner container (step1 is inside inner)
             const middle = debug.nodes.find(n => n.id === 'middle');
-            const inner = debug.nodes.find(n => n.id === 'inner');
+            const inner = debug.nodes.find(n => n.id === 'middle/inner');
 
             return {
                 middleTop: middle ? middle.y : null,
@@ -439,7 +439,8 @@ class TestEdgeVisualGaps:
             const debug = window.__hypergraphVizDebug;
 
             // Find normalize_text (the actual producer) and preprocess container
-            const normalizeText = debug.nodes.find(n => n.id === 'normalize_text');
+            // With hierarchical IDs: preprocess/normalize_text
+            const normalizeText = debug.nodes.find(n => n.id === 'preprocess/normalize_text');
             const preprocess = debug.nodes.find(n => n.id === 'preprocess');
             const analyze = debug.nodes.find(n => n.id === 'analyze');
 
@@ -821,12 +822,12 @@ class TestNodeToParentDebugAPI:
 
         # Verify expected mappings for workflow graph
         # workflow has: preprocess[clean_text, normalize_text] -> analyze
-        # So clean_text and normalize_text should have preprocess as parent
-        assert node_to_parent.get("clean_text") == "preprocess", (
-            f"clean_text should have parent 'preprocess', got: {node_to_parent.get('clean_text')}"
+        # With hierarchical IDs: preprocess/clean_text and preprocess/normalize_text
+        assert node_to_parent.get("preprocess/clean_text") == "preprocess", (
+            f"preprocess/clean_text should have parent 'preprocess', got: {node_to_parent.get('preprocess/clean_text')}"
         )
-        assert node_to_parent.get("normalize_text") == "preprocess", (
-            f"normalize_text should have parent 'preprocess', got: {node_to_parent.get('normalize_text')}"
+        assert node_to_parent.get("preprocess/normalize_text") == "preprocess", (
+            f"preprocess/normalize_text should have parent 'preprocess', got: {node_to_parent.get('preprocess/normalize_text')}"
         )
 
         # analyze and preprocess are at root level, so no parent
@@ -850,20 +851,21 @@ class TestNodeToParentDebugAPI:
 
         assert node_to_parent is not None, "node_to_parent not found"
 
-        # Level 1: step1, step2 inside inner
-        assert node_to_parent.get("step1") == "inner", (
-            f"step1 should have parent 'inner', got: {node_to_parent.get('step1')}"
+        # With hierarchical IDs:
+        # Level 1: middle/inner/step1, middle/inner/step2 inside middle/inner
+        assert node_to_parent.get("middle/inner/step1") == "middle/inner", (
+            f"middle/inner/step1 should have parent 'middle/inner', got: {node_to_parent.get('middle/inner/step1')}"
         )
-        assert node_to_parent.get("step2") == "inner", (
-            f"step2 should have parent 'inner', got: {node_to_parent.get('step2')}"
+        assert node_to_parent.get("middle/inner/step2") == "middle/inner", (
+            f"middle/inner/step2 should have parent 'middle/inner', got: {node_to_parent.get('middle/inner/step2')}"
         )
 
-        # Level 2: inner, validate inside middle
-        assert node_to_parent.get("inner") == "middle", (
-            f"inner should have parent 'middle', got: {node_to_parent.get('inner')}"
+        # Level 2: middle/inner, middle/validate inside middle
+        assert node_to_parent.get("middle/inner") == "middle", (
+            f"middle/inner should have parent 'middle', got: {node_to_parent.get('middle/inner')}"
         )
-        assert node_to_parent.get("validate") == "middle", (
-            f"validate should have parent 'middle', got: {node_to_parent.get('validate')}"
+        assert node_to_parent.get("middle/validate") == "middle", (
+            f"middle/validate should have parent 'middle', got: {node_to_parent.get('middle/validate')}"
         )
 
         # Root level: no parent

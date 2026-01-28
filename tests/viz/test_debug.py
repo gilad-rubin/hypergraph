@@ -140,7 +140,8 @@ class TestTraceNode:
         outer = Graph(nodes=[inner.as_node(), add_one])
         debugger = VizDebugger(outer)
 
-        info = debugger.trace_node("double")
+        # Use hierarchical ID to trace nested node
+        info = debugger.trace_node("inner/double")
 
         assert info.status == "FOUND"
         assert info.parent == "inner"
@@ -155,7 +156,8 @@ class TestTraceNode:
 
         assert info.node_type == "GRAPH"
         assert "children" in info.details
-        assert "double" in info.details["children"]
+        # Children now have hierarchical IDs
+        assert "inner/double" in info.details["children"]
 
 
 class TestTraceEdge:

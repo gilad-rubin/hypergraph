@@ -307,8 +307,9 @@ class TestOuterDepth1:
 
         node_ids = set(nodes.keys())
         # Should have inner (collapsed) and validate visible
-        assert "inner" in node_ids or "validate" in node_ids, (
-            f"Expected inner or validate in nodes: {node_ids}"
+        # Hierarchical IDs: middle/inner and middle/validate
+        assert "middle/inner" in node_ids or "middle/validate" in node_ids, (
+            f"Expected middle/inner or middle/validate in nodes: {node_ids}"
         )
 
     def test_outer_depth1_input_routes_to_inner(self, page):

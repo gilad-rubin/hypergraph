@@ -99,14 +99,14 @@ class TestEdgeRoutingToInternalNodes:
 
         assert len(fdp_edges) == 1, f"Expected 1 edge from filter_document_pages, got {len(fdp_edges)}"
 
-        # THE KEY ASSERTION: Target should be build_context, NOT prompt_building
+        # THE KEY ASSERTION: Target should be prompt_building/build_context, NOT prompt_building
         target = fdp_edges[0]["target"]
-        assert target == "build_context", (
+        assert target == "prompt_building/build_context", (
             f"EDGE ROUTING BUG!\n"
-            f"Expected: filter_document_pages -> build_context\n"
+            f"Expected: filter_document_pages -> prompt_building/build_context\n"
             f"Actual: filter_document_pages -> {target}\n"
             f"\nWhen prompt_building is expanded, edges should route to\n"
-            f"the actual internal consumer (build_context), not the container."
+            f"the actual internal consumer (prompt_building/build_context), not the container."
         )
 
     def test_collapsed_routes_to_container(self):
@@ -392,14 +392,14 @@ class TestInternalOnlyDataNodes:
         flat_graph = graph.to_flat_graph()
         result = render_graph(flat_graph, depth=1)
 
-        # Find the context_text DATA node (from build_context)
+        # Find the context_text DATA node (from prompt_building/build_context)
         data_node = None
         for node in result["nodes"]:
-            if node["id"] == "data_build_context_context_text":
+            if node["id"] == "data_prompt_building/build_context_context_text":
                 data_node = node
                 break
 
-        assert data_node is not None, "data_build_context_context_text node not found"
+        assert data_node is not None, "data_prompt_building/build_context_context_text node not found"
 
         internal_only = data_node["data"].get("internalOnly")
         assert internal_only is True, (
@@ -421,14 +421,14 @@ class TestInternalOnlyDataNodes:
         flat_graph = graph.to_flat_graph()
         result = render_graph(flat_graph, depth=1)
 
-        # Find the chat_messages DATA node (from build_prompt)
+        # Find the chat_messages DATA node (from prompt_building/build_prompt)
         data_node = None
         for node in result["nodes"]:
-            if node["id"] == "data_build_prompt_chat_messages":
+            if node["id"] == "data_prompt_building/build_prompt_chat_messages":
                 data_node = node
                 break
 
-        assert data_node is not None, "data_build_prompt_chat_messages node not found"
+        assert data_node is not None, "data_prompt_building/build_prompt_chat_messages node not found"
 
         internal_only = data_node["data"].get("internalOnly")
         assert internal_only is False, (
@@ -515,11 +515,11 @@ class TestControlEdgeRouting:
         control_edges = [e for e in edges if e["source"] == "decide"]
         assert len(control_edges) == 1
 
-        # When expanded, target should be the internal entry point
+        # When expanded, target should be the internal entry point (hierarchical ID)
         target = control_edges[0]["target"]
-        assert target == "inner_step", (
+        assert target == "inner_graph/inner_step", (
             f"CONTROL EDGE ROUTING BUG!\n"
-            f"Expected: decide -> inner_step (entry point inside container)\n"
+            f"Expected: decide -> inner_graph/inner_step (entry point inside container)\n"
             f"Actual: decide -> {target}\n"
             f"\nWhen inner_graph is expanded, control edges should route to\n"
             f"the entry point node inside, not the container boundary."
@@ -611,14 +611,14 @@ class TestEdgeRoutingIntoExpandedContainer:
 
         assert len(bp_edges) == 1, f"Expected 1 edge from build_pairs, got {len(bp_edges)}: {bp_edges}"
 
-        # THE KEY ASSERTION: Target should be run_single_eval, NOT batch_eval
+        # THE KEY ASSERTION: Target should be batch_eval/run_single_eval, NOT batch_eval
         target = bp_edges[0]["target"]
-        assert target == "run_single_eval", (
+        assert target == "batch_eval/run_single_eval", (
             f"EDGE ROUTING BUG!\n"
-            f"Expected: build_pairs -> run_single_eval\n"
+            f"Expected: build_pairs -> batch_eval/run_single_eval\n"
             f"Actual: build_pairs -> {target}\n"
             f"\nWhen batch_eval is expanded, the edge carrying eval_pairs should\n"
-            f"route to the actual internal consumer (run_single_eval), not the container."
+            f"route to the actual internal consumer (batch_eval/run_single_eval), not the container."
         )
 
     def test_edge_routes_to_container_when_collapsed(self):
@@ -688,14 +688,14 @@ class TestEdgeRoutingFromExpandedContainer:
             f"\nBUG: Edge may be missing or malformed when container is expanded."
         )
 
-        # THE KEY ASSERTION: Source should be run_single_eval, NOT batch_eval
+        # THE KEY ASSERTION: Source should be batch_eval/run_single_eval, NOT batch_eval
         source = cm_edges[0]["source"]
-        assert source == "run_single_eval", (
+        assert source == "batch_eval/run_single_eval", (
             f"EDGE ROUTING BUG!\n"
-            f"Expected: run_single_eval -> compute_metrics\n"
+            f"Expected: batch_eval/run_single_eval -> compute_metrics\n"
             f"Actual: {source} -> compute_metrics\n"
             f"\nWhen batch_eval is expanded, the edge carrying eval_results should\n"
-            f"show it comes from the actual internal producer (run_single_eval)."
+            f"show it comes from the actual internal producer (batch_eval/run_single_eval)."
         )
 
     def test_edge_from_container_when_collapsed(self):
