@@ -6,14 +6,13 @@ This document captures the current visualization architecture, key invariants, a
 
 **Python pipeline**
 1. `Graph` → `to_flat_graph()`
-2. `renderer.py` → React Flow nodes/edges + `meta` (includes `edgesByState`)
+2. `renderer.py` → React Flow nodes/edges + `meta` (includes `nodesByState`, `edgesByState`)
 3. `html_generator.py` → HTML + JS assets + debug overlays
 
 **JavaScript pipeline**
-1. `app.js` builds expansion state + `edgesByState` key
-2. `state_utils.js` applies expansion/separate-outputs visibility
-3. `layout.js` runs layout phases and routes edges
-4. `constraint-layout.js` solves constraints and routes edge paths
+1. `app.js` builds expansion state + selects `nodesByState`/`edgesByState`
+2. `layout.js` runs layout phases and routes edges
+3. `constraint-layout.js` solves constraints and routes edge paths
 
 ## Node Types and Mapping
 
@@ -23,16 +22,16 @@ This document captures the current visualization architecture, key invariants, a
 
 **Invariant**: Container detection must use `node_type == "GRAPH"` in Python and `nodeType == "PIPELINE"` in JS.
 
-## Expansion State + edgesByState
+## Expansion State + Precomputed State
 
-Edges are **precomputed** for all valid expansion states (and both `separate_outputs` modes).
+Nodes and edges are **precomputed** for all valid expansion states (and both `separate_outputs` modes).
 
 Key format:
 - `"nodeId:0|sep:0"` (collapsed, merged outputs)
 - `"nodeId:1|sep:1"` (expanded, separate outputs)
 - `"sep:0"` / `"sep:1"` (no expandable nodes)
 
-Selection happens in `app.js` via `expansionStateToKey()` and a simple lookup in `meta.edgesByState`.
+Selection happens in `app.js` via `expansionStateToKey()` and lookups in `meta.nodesByState` / `meta.edgesByState`.
 
 **Why**: Ensures expand/collapse produces identical edges whether the graph is initially rendered expanded or toggled interactively.
 
@@ -124,7 +123,7 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 | --- | --- | --- |
 | Edge points to container when expanded | edgesByState key mismatch or missing consumer mapping | `renderer.py` / `app.js` |
 | Input appears outside expanded container | ownerContainer not set | `renderer.py` `_compute_input_scope()` |
-| DATA node duplicated when expanded | container DATA not filtered | `state_utils.js` / `renderer.py` |
+| DATA node duplicated when expanded | container DATA not filtered | `renderer.py` |
 | Separate outputs edge becomes function edge | Step 5 reroute clobbers DATA edge | `layout.js` `applyEdgeReroutesPhase` |
 | Edge starts/ends with visible gap | wrong node-type offset | `constants.js` + layout/routing usage |
 
@@ -133,7 +132,6 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 - `tests/viz/test_scope_aware_visibility.py`
 - `tests/viz/test_edges_by_state_contract.py`
 - `tests/viz/test_edge_connections.py`
-- `tests/viz/test_state_utils_js.py`
 - `tests/viz/test_visual_layout_issues.py`
 
 ## File Map
@@ -141,6 +139,5 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 - `src/hypergraph/viz/renderer.py`: edge computation, scoping, precomputed states
 - `src/hypergraph/viz/assets/layout.js`: layout phases + reroute logic
 - `src/hypergraph/viz/assets/constraint-layout.js`: constraint solver + routing
-- `src/hypergraph/viz/assets/state_utils.js`: applyState visibility filtering
 - `src/hypergraph/viz/assets/constants.js`: shared layout constants
 - `src/hypergraph/viz/html_generator.py`: HTML + centering + debug overlays

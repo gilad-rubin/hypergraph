@@ -210,7 +210,7 @@ rag_for_chat = rag.as_node().with_inputs(query="user_message")
 ## Visualization Development
 
 - Shared measurement constants live in `src/hypergraph/viz/assets/constants.js` and are loaded before layout/render assets.
-- JS visibility logic is exercised via Playwright tests in `tests/viz/test_state_utils_js.py`.
+- Visibility/state logic is computed in Python and exercised via `tests/viz/test_edges_by_state_contract.py`.
 - `Graph.visualize()` auto-sizes and writes HTML via `filepath=...` (no width/height args).
 
 ### 7. Think Singular, Scale with Map

@@ -858,7 +858,7 @@ def _create_input_nodes(
     param_to_consumers: dict[str, list[str]],
     expansion_state: dict[str, bool],
     input_groups: list[dict[str, Any]] | None = None,
-) -> dict[str, str]:
+) -> None:
     """Create INPUT nodes for external input parameters, grouping where possible.
 
     INPUT nodes are grouped when they have:
@@ -872,12 +872,7 @@ def _create_input_nodes(
     - If ALL consumers are inside a single expanded container, the INPUT is
       placed inside that container (with parentNode set)
     - Otherwise, the INPUT stays at root level
-
-    Returns:
-        Dict mapping param_name -> input_node_id for edge creation.
     """
-    input_node_map: dict[str, str] = {}
-
     if input_groups is None:
         input_groups = _build_input_groups(input_spec, param_to_consumers, bound_params)
 
@@ -914,7 +909,6 @@ def _create_input_nodes(
                 "targetPosition": "top",
             }
             nodes.append(input_node)
-            input_node_map[param] = input_node_id
         else:
             # Multiple params: create INPUT_GROUP node
             group_id = f"input_group_{'_'.join(params)}"
@@ -945,12 +939,7 @@ def _create_input_nodes(
                 "targetPosition": "top",
             }
             nodes.append(group_node)
-
-            # Map each param to the group node ID for edge routing
-            for param in params:
-                input_node_map[param] = group_id
-
-    return input_node_map
+            # Edge routing uses param_to_consumer mappings, not node IDs here.
 
 
 def _get_root_ancestor(node_id: str, flat_graph: nx.DiGraph) -> str:
@@ -1128,50 +1117,6 @@ def _create_data_nodes(
 
             # NOTE: Output edges (function → DATA) are now handled by pre-computed
             # edges in _add_separate_output_edges() when separate_outputs=True
-
-
-def _create_input_edges(
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
-    input_node_map: dict[str, str],
-) -> None:
-    """Create edges from INPUT and INPUT_GROUP nodes to their actual targets.
-
-    Each INPUT node connects to ALL its consumer nodes.
-    Each INPUT_GROUP node creates one edge per consumer (not per param).
-    The targets are explicitly computed based on expansion state.
-    """
-    for node in nodes:
-        node_type = node.get("data", {}).get("nodeType")
-
-        if node_type == "INPUT":
-            input_node_id = node["id"]
-            actual_targets = node["data"].get("actualTargets", [])
-
-            for actual_target in actual_targets:
-                edges.append({
-                    "id": f"e_{input_node_id}_to_{actual_target}",
-                    "source": input_node_id,
-                    "target": actual_target,
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                    "data": {"edgeType": "input"},
-                })
-
-        elif node_type == "INPUT_GROUP":
-            group_id = node["id"]
-            actual_targets = node["data"].get("actualTargets", [])
-
-            # Create one edge per consumer (not per param)
-            for actual_target in actual_targets:
-                edges.append({
-                    "id": f"e_{group_id}_{actual_target}",
-                    "source": group_id,
-                    "target": actual_target,
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                    "data": {"edgeType": "input"},
-                })
 
 
 def _find_common_ancestor(
