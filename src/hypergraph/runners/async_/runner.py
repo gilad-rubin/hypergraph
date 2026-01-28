@@ -271,14 +271,46 @@ class AsyncRunner(BaseRunner):
             token = None
 
         try:
-            # Execute all variations concurrently
-            # The shared semaphore controls total concurrent operations
-            tasks = [
-                self.run(graph, v, select=select, max_concurrency=max_concurrency)
-                for v in input_variations
-            ]
-            results = await asyncio.gather(*tasks)
-            return list(results)
+            if max_concurrency is None:
+                # Execute all variations concurrently
+                tasks = [
+                    self.run(graph, v, select=select, max_concurrency=max_concurrency)
+                    for v in input_variations
+                ]
+                results = await asyncio.gather(*tasks)
+                return list(results)
+            else:
+                # Use a worker pool to limit the number of pending tasks
+                # to avoid overhead of creating thousands of tasks at once
+                results = [None] * len(input_variations)
+                queue = asyncio.Queue()
+
+                for idx, v in enumerate(input_variations):
+                    queue.put_nowait((idx, v))
+
+                async def worker() -> None:
+                    while True:
+                        try:
+                            idx, v = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            return
+
+                        try:
+                            # We can cast results list because we know we'll fill it
+                            results[idx] = await self.run(  # type: ignore
+                                graph, v, select=select, max_concurrency=max_concurrency
+                            )
+                        finally:
+                            queue.task_done()
+
+                # Spawn workers
+                num_workers = min(max_concurrency, len(input_variations))
+                workers = [asyncio.create_task(worker()) for _ in range(num_workers)]
+
+                # Wait for all workers to complete
+                await asyncio.gather(*workers)
+
+                return results  # type: ignore
         finally:
             if token is not None:
                 reset_concurrency_limiter(token)
