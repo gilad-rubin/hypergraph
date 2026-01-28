@@ -47,20 +47,11 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
     Returns:
         Set of activated node names
     """
-    from hypergraph.nodes.gate import GateNode, END
-
-    # Build map of node -> controlling gates
-    controlled_by: dict[str, list[str]] = {}  # node_name -> [gate_names]
-    for node in graph._nodes.values():
-        if isinstance(node, GateNode):
-            for target in node.targets:
-                if target is not END and target in graph._nodes:
-                    controlled_by.setdefault(target, []).append(node.name)
-
     activated = set()
 
+    # Use cached map of node -> controlling gates
     for node_name in graph._nodes:
-        gates = controlled_by.get(node_name, [])
+        gates = graph.controlled_by.get(node_name, [])
         if not gates:
             # No controlling gates - always activated
             activated.add(node_name)
