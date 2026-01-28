@@ -915,7 +915,7 @@
   // Configuration matching standard defaults
   const defaultOptions = {
     layout: {
-      spaceX: 14,
+      spaceX: 30,
       spaceY: 140,      // Vertical spacing between nodes
       layerSpaceY: 120, // Vertical spacing between layers
       spreadX: 2.2,

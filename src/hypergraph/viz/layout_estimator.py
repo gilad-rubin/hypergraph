@@ -19,7 +19,7 @@ class LayoutEstimator:
     # Constants matching constraint-layout.js defaultOptions
     LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes
     LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers
-    LAYOUT_SPACE_X = 14
+    LAYOUT_SPACE_X = 30
     # Fixed padding values matching JS fitWithFixedPadding
     PADDING_LEFT = 20
     PADDING_RIGHT = 70  # Extra space for control buttons

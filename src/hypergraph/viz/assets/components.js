@@ -278,20 +278,32 @@
         edgePath = curveBasis(points);
       }
 
-      // Position label at 35% along the path (closer to source) to keep it away from the arrow
-      var labelPos = 0.35;
-      var totalLength = points.length - 1;
-      var labelIdx = Math.floor(totalLength * labelPos);
-      var labelFrac = (totalLength * labelPos) - labelIdx;
-      if (points.length > 1 && labelIdx < points.length - 1) {
-        labelX = points[labelIdx].x + (points[labelIdx + 1].x - points[labelIdx].x) * labelFrac;
-        labelY = points[labelIdx].y + (points[labelIdx + 1].y - points[labelIdx].y) * labelFrac;
-      } else if (points.length > 1) {
-        labelX = (points[0].x + points[1].x) / 2;
-        labelY = (points[0].y + points[1].y) / 2;
+      // Position label along the edge path
+      var edgeLabel = label || (data && data.label);
+      var isBranchLabel = (edgeLabel === 'True' || edgeLabel === 'False');
+
+      if (isBranchLabel) {
+        // True/False labels: use geometric vertical center between start and end
+        labelY = (startPt.y + endPt.y) / 2;
+        // Find X by interpolating based on Y position
+        var yFrac = (labelY - startPt.y) / (endPt.y - startPt.y || 1);
+        labelX = startPt.x + (endPt.x - startPt.x) * yFrac;
       } else {
-        labelX = points[0].x;
-        labelY = points[0].y;
+        // Other labels: position at 35% along path points (away from arrow)
+        var labelPos = 0.35;
+        var totalLength = points.length - 1;
+        var labelIdx = Math.floor(totalLength * labelPos);
+        var labelFrac = (totalLength * labelPos) - labelIdx;
+        if (points.length > 1 && labelIdx < points.length - 1) {
+          labelX = points[labelIdx].x + (points[labelIdx + 1].x - points[labelIdx].x) * labelFrac;
+          labelY = points[labelIdx].y + (points[labelIdx + 1].y - points[labelIdx].y) * labelFrac;
+        } else if (points.length > 1) {
+          labelX = (points[0].x + points[1].x) / 2;
+          labelY = (points[0].y + points[1].y) / 2;
+        } else {
+          labelX = points[0].x;
+          labelY = points[0].y;
+        }
       }
     } else {
       var result = getBezierPath({
@@ -299,12 +311,15 @@
         targetX: targetX, targetY: targetY, targetPosition: targetPosition
       });
       edgePath = result[0];
-      // Position label at 35% along the path (closer to source) to keep it away from the arrow
-      labelX = sourceX + (targetX - sourceX) * 0.35;
-      labelY = sourceY + (targetY - sourceY) * 0.35;
+      // Position label along the edge path
+      var edgeLabel = label || (data && data.label);
+      var isBranchLabel = (edgeLabel === 'True' || edgeLabel === 'False');
+      // True/False: geometric center (0.5), others: 35% (away from arrow)
+      var labelPos = isBranchLabel ? 0.5 : 0.35;
+      labelX = sourceX + (targetX - sourceX) * labelPos;
+      labelY = sourceY + (targetY - sourceY) * labelPos;
     }
 
-    var edgeLabel = label || (data && data.label);
     var labelStyle = {};
     if (edgeLabel === 'True') {
       labelStyle = {
@@ -344,7 +359,7 @@
               }}
               className="px-1.5 py-0.5 rounded bg-slate-900/95 border border-slate-600 text-[8px] text-slate-300 font-mono whitespace-nowrap"
             >
-              RF:(${Math.round(sourceX)},${Math.round(sourceY)}) Pts:(${Math.round(startPt.x)},${Math.round(startPt.y)})
+              RF:(${Math.round(sourceX)},${Math.round(sourceY)}) Pts:(${startPt ? Math.round(startPt.x) + ',' + Math.round(startPt.y) : 'N/A'})
             </div>
           <//>
         ` : null}
