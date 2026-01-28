@@ -258,7 +258,11 @@ def _build_param_to_consumer_map(
                 continue
             selected = max(
                 consumers,
-                key=lambda node_id: (_get_nesting_depth(node_id, flat_graph), node_id),
+                key=lambda node_id: (
+                    1 if flat_graph.nodes[node_id].get("node_type") == "BRANCH" else 0,
+                    _get_nesting_depth(node_id, flat_graph),
+                    node_id,
+                ),
             )
             param_to_consumers[param] = [selected]
 
