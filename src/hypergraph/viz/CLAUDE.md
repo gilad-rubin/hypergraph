@@ -64,7 +64,7 @@ External inputs are grouped by **consumer set** and **bound status**:
 - Otherwise keep at root
 - `deepestOwnerContainer` is metadata for debugging
 
-`layout.js` dynamically assigns `parentNode` for owned inputs so they appear inside expanded containers without hiding them when collapsed.
+`layout.js` dynamically assigns `parentNode` for owned inputs so they appear inside expanded containers; Python controls visibility via precomputed `hidden` flags.
 
 ## Output Visibility
 
