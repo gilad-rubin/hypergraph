@@ -77,6 +77,17 @@ def test_edges_by_state_expanded_skips_container_data_nodes():
         assert edge.get("target") not in container_data_nodes
 
 
+def test_nodes_by_state_keys_match_edges_by_state_keys():
+    """nodesByState should define the same keys as edgesByState."""
+    graph = make_outer()
+
+    base = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+    nodes_by_state = base["meta"]["nodesByState"]
+    edges_by_state = base["meta"]["edgesByState"]
+
+    assert set(nodes_by_state.keys()) == set(edges_by_state.keys())
+
+
 def test_nodes_by_state_hides_container_data_when_expanded():
     """Expanded nodesByState should hide container DATA nodes."""
     graph = make_outer()
