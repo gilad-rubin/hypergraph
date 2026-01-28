@@ -46,3 +46,32 @@ def test_edges_by_state_matches_depth_expanded_and_collapsed():
         assert {_edge_signature(e) for e in expanded_edges} == {
             _edge_signature(e) for e in expanded_render
         }
+
+
+def test_edges_by_state_expanded_skips_container_data_nodes():
+    """Expanded edgesByState should not reference container DATA nodes."""
+    graph = make_outer()
+
+    base = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+    edges_by_state = base["meta"]["edgesByState"]
+    expandable = base["meta"]["expandableNodes"]
+
+    expanded_key = _state_key(expandable, expanded=True, separate_outputs=True)
+    expanded_edges = edges_by_state[expanded_key]
+
+    container_ids = {
+        n["id"]
+        for n in base["nodes"]
+        if n.get("data", {}).get("nodeType") == "PIPELINE"
+    }
+    container_data_nodes = {
+        n["id"]
+        for n in base["nodes"]
+        if n.get("data", {}).get("nodeType") == "DATA"
+        and n.get("data", {}).get("sourceId") in container_ids
+    }
+
+    assert container_data_nodes, "Expected container DATA nodes in base render"
+    for edge in expanded_edges:
+        assert edge.get("source") not in container_data_nodes
+        assert edge.get("target") not in container_data_nodes
