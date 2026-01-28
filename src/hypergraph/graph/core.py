@@ -71,7 +71,26 @@ class Graph:
         self._nodes = self._build_nodes_dict(nodes)
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
+        self._controlled_by: dict[str, list[str]] | None = None
         self._validate()
+
+    @property
+    def controlled_by(self) -> dict[str, list[str]]:
+        """Map of node_name -> list of controlling gate names."""
+        if self._controlled_by is None:
+            self._controlled_by = self._compute_controlled_by()
+        return self._controlled_by
+
+    def _compute_controlled_by(self) -> dict[str, list[str]]:
+        from hypergraph.nodes.gate import GateNode, END
+
+        controlled_by: dict[str, list[str]] = {}
+        for node in self._nodes.values():
+            if isinstance(node, GateNode):
+                for target in node.targets:
+                    if target is not END and target in self._nodes:
+                        controlled_by.setdefault(target, []).append(node.name)
+        return controlled_by
 
     @property
     def nodes(self) -> dict[str, HyperNode]:
