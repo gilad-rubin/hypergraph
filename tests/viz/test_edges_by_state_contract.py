@@ -75,3 +75,49 @@ def test_edges_by_state_expanded_skips_container_data_nodes():
     for edge in expanded_edges:
         assert edge.get("source") not in container_data_nodes
         assert edge.get("target") not in container_data_nodes
+
+
+def test_nodes_by_state_hides_container_data_when_expanded():
+    """Expanded nodesByState should hide container DATA nodes."""
+    graph = make_outer()
+
+    base = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+    nodes_by_state = base["meta"]["nodesByState"]
+    expandable = base["meta"]["expandableNodes"]
+
+    expanded_key = _state_key(expandable, expanded=True, separate_outputs=True)
+    expanded_nodes = nodes_by_state[expanded_key]
+
+    container_ids = {
+        n["id"]
+        for n in expanded_nodes
+        if n.get("data", {}).get("nodeType") == "PIPELINE"
+    }
+    container_data_nodes = [
+        n for n in expanded_nodes
+        if n.get("data", {}).get("nodeType") == "DATA"
+        and n.get("data", {}).get("sourceId") in container_ids
+    ]
+
+    assert container_data_nodes, "Expected container DATA nodes in expanded state"
+    assert all(n.get("hidden") is True for n in container_data_nodes)
+
+
+def test_nodes_by_state_hides_data_nodes_in_merged_mode():
+    """Merged mode nodesByState should hide DATA nodes."""
+    graph = make_outer()
+
+    base = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
+    nodes_by_state = base["meta"]["nodesByState"]
+    expandable = base["meta"]["expandableNodes"]
+
+    collapsed_key = _state_key(expandable, expanded=False, separate_outputs=False)
+    collapsed_nodes = nodes_by_state[collapsed_key]
+
+    data_nodes = [
+        n for n in collapsed_nodes
+        if n.get("data", {}).get("nodeType") == "DATA"
+    ]
+
+    assert data_nodes, "Expected DATA nodes in merged mode state"
+    assert all(n.get("hidden") is True for n in data_nodes)

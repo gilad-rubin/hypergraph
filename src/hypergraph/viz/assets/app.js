@@ -15,7 +15,6 @@
   var htm = root.htm;
 
   // Get our modules
-  var VizState = root.HypergraphVizState;
   var VizTheme = root.HypergraphVizTheme;
   var VizLayout = root.HypergraphVizLayout;
   var VizComponents = root.HypergraphVizComponents;
@@ -25,8 +24,8 @@
     return {};
   }
 
-  if (!VizState || !VizTheme || !VizLayout || !VizComponents) {
-    console.error('HypergraphVizApp: Missing required modules (VizState, VizTheme, VizLayout, VizComponents)');
+  if (!VizTheme || !VizLayout || !VizComponents) {
+    console.error('HypergraphVizApp: Missing required modules (VizTheme, VizLayout, VizComponents)');
     return {};
   }
 
@@ -50,8 +49,6 @@
   var html = htm.bind(React.createElement);
 
   // Import from modules
-  var applyState = VizState.applyState;
-  var applyVisibility = VizState.applyVisibility;
   var detectHostTheme = VizTheme.detectHostTheme;
   var normalizeThemePref = VizTheme.normalizeThemePref;
   var useLayout = VizLayout.useLayout;
@@ -792,19 +789,37 @@
       });
     }, []);
 
-    // Apply state transformations
-    var stateResult = useMemo(function() {
-      return applyState(initialData.nodes, initialData.edges, {
-        expansionState: expansionState,
-        separateOutputs: separateOutputs,
-        showTypes: showTypes,
-        theme: activeTheme,
+    // Select precomputed nodes for current expansion state
+    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
+    var selectedNodes = useMemo(function() {
+      var key = expansionStateToKey(expansionState, separateOutputs);
+      var precomputed = nodesByState[key];
+
+      if (precomputed && precomputed.length > 0) {
+        if (root.__hypergraph_debug_viz) {
+          console.log('[App] Using pre-computed nodes for key:', key, '- count:', precomputed.length);
+        }
+      } else if (root.__hypergraph_debug_viz) {
+        console.log('[App] No pre-computed nodes for key:', key, '- using initialData.nodes');
+      }
+
+      var baseNodes = (precomputed && precomputed.length > 0) ? precomputed : initialData.nodes;
+      return baseNodes.map(function(n) {
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            theme: activeTheme,
+            showTypes: showTypes,
+            separateOutputs: separateOutputs,
+          },
+        };
       });
-    }, [initialData, expansionState, separateOutputs, showTypes, activeTheme]);
+    }, [expansionState, separateOutputs, showTypes, activeTheme, nodesByState, initialData.nodes]);
 
     // Add callbacks to nodes
     var nodesWithCallbacks = useMemo(function() {
-      return stateResult.nodes.map(function(n) {
+      return selectedNodes.map(function(n) {
         return {
           ...n,
           data: {
@@ -813,14 +828,7 @@
           },
         };
       });
-    }, [stateResult.nodes, onToggleExpand]);
-
-    // Apply visibility
-    var nodesWithVisibility = useMemo(function() {
-      var nextNodes = applyVisibility(nodesWithCallbacks, expansionState);
-      nodesRef.current = nextNodes;
-      return nextNodes;
-    }, [nodesWithCallbacks, expansionState]);
+    }, [selectedNodes, onToggleExpand]);
 
     // Theme detection listener
     useEffect(function() {
@@ -917,23 +925,24 @@
         return precomputed;
       }
 
-      // Fallback to state-derived edges (for backwards compatibility with old renders)
+      // Fallback to initial edges for compatibility with older renders
       if (root.__hypergraph_debug_viz) {
-        console.log('[App] No pre-computed edges for key:', key, '- using stateResult.edges');
+        console.log('[App] No pre-computed edges for key:', key, '- using initialData.edges');
       }
-      return stateResult.edges;
-    }, [expansionState, separateOutputs, stateResult.edges]);
+      return initialData.edges || [];
+    }, [expansionState, separateOutputs, edgesByState, initialData.edges]);
 
     // Update React Flow state
     useEffect(function() {
-      setNodes(nodesWithVisibility);
+      nodesRef.current = nodesWithCallbacks;
+      setNodes(nodesWithCallbacks);
       setEdges(selectedEdges);
-    }, [nodesWithVisibility, selectedEdges, setNodes, setEdges]);
+    }, [nodesWithCallbacks, selectedEdges, setNodes, setEdges]);
 
     // Grouped nodes/edges
     var grouped = useMemo(function() {
-      return { nodes: nodesWithVisibility, edges: selectedEdges };
-    }, [nodesWithVisibility, selectedEdges]);
+      return { nodes: nodesWithCallbacks, edges: selectedEdges };
+    }, [nodesWithCallbacks, selectedEdges]);
 
     // Get routing data from initialData meta for edge re-routing
     var routingData = useMemo(function() {
@@ -1489,7 +1498,6 @@
         style=${{ backgroundColor: bgColor, height: '100vh', width: '100vw' }}
         onClick=${notifyParentClick}
       >
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 pointer-events-none mix-blend-overlay"></div>
 
         <${ReactFlow}
           nodes=${layoutedNodes}
