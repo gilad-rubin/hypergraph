@@ -167,8 +167,13 @@ def _check_defaults_consistency(
     param: str, info_list: list[tuple[bool, Any, str]]
 ) -> None:
     """Check that defaults are consistent for a shared parameter."""
-    with_default = [(v, n) for has, v, n in info_list if has]
-    without_default = [n for has, v, n in info_list if not has]
+    with_default = []
+    without_default = []
+    for has, v, n in info_list:
+        if has:
+            with_default.append((v, n))
+        else:
+            without_default.append(n)
 
     if with_default and without_default:
         raise GraphConfigError(
