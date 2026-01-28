@@ -15,6 +15,13 @@ if TYPE_CHECKING:
     from hypergraph.viz.debug import VizDebugger
 
 
+def _build_hierarchical_id(node_name: str, parent_id: str | None) -> str:
+    """Build hierarchical ID: root nodes keep bare name, nested get 'parent/child'."""
+    if parent_id is None:
+        return node_name
+    return f"{parent_id}/{node_name}"
+
+
 class Graph:
     """Define a computation graph from nodes.
 
@@ -536,14 +543,23 @@ class Graph:
         Returns a new DiGraph where:
         - All nodes (root + nested) are in one graph
         - Node attributes include `parent` for hierarchy
+        - Node IDs are hierarchical to prevent collisions (e.g., "pipeline1/process")
         - Edges include both root-level and nested edges
-        - Graph attributes include `input_spec`
+        - Graph attributes include `input_spec` and `output_to_sources`
 
         This is the canonical representation for visualization and analysis.
         """
         G = nx.DiGraph()
         self._flatten_nodes(G, list(self._nodes.values()), parent=None)
         self._flatten_edges(G)
+
+        # Build output_to_sources mapping (supports mutex outputs with multiple sources)
+        output_to_sources: dict[str, list[str]] = {}
+        for node_id, attrs in G.nodes(data=True):
+            for output in attrs.get("outputs", ()):
+                if output not in output_to_sources:
+                    output_to_sources[output] = []
+                output_to_sources[output].append(node_id)
 
         # Add graph-level attributes
         input_spec = self.inputs
@@ -553,6 +569,7 @@ class Graph:
             "bound": dict(input_spec.bound),
             "seeds": input_spec.seeds,
         }
+        G.graph["output_to_sources"] = output_to_sources
         return G
 
     def _flatten_nodes(
@@ -561,37 +578,88 @@ class Graph:
         nodes: list[HyperNode],
         parent: str | None,
     ) -> None:
-        """Recursively add nodes to graph with parent relationships."""
+        """Recursively add nodes to graph with parent relationships.
+
+        Uses hierarchical IDs to prevent collisions across nested graphs:
+        - Root nodes: bare name (e.g., "process")
+        - Nested nodes: "parent/child" (e.g., "pipeline1/process")
+        """
         for node in nodes:
+            node_id = _build_hierarchical_id(node.name, parent)
             attrs = node.nx_attrs
             attrs["parent"] = parent
-            G.add_node(node.name, **attrs)
+            attrs["original_name"] = node.name  # Store for lookups
+            G.add_node(node_id, **attrs)
 
             inner = node.nested_graph
             if inner is not None:
-                self._flatten_nodes(G, list(inner.nodes.values()), parent=node.name)
+                self._flatten_nodes(G, list(inner.nodes.values()), parent=node_id)
+
+    def _build_name_to_id_lookup(
+        self, G: nx.DiGraph, parent_id: str | None
+    ) -> dict[str, str]:
+        """Build a lookup from original node names to hierarchical IDs for a scope.
+
+        Args:
+            G: The flattened graph with hierarchical IDs
+            parent_id: The parent container ID (None for root level)
+
+        Returns:
+            Dict mapping original_name -> hierarchical_id for nodes in this scope
+        """
+        lookup: dict[str, str] = {}
+        for node_id, attrs in G.nodes(data=True):
+            if attrs.get("parent") == parent_id:
+                original_name = attrs.get("original_name", node_id)
+                lookup[original_name] = node_id
+        return lookup
 
     def _flatten_edges(self, G: nx.DiGraph) -> None:
-        """Add all edges (root + nested) to the flattened graph."""
-        # Add root-level edges
+        """Add all edges (root + nested) to the flattened graph.
+
+        Translates node names to hierarchical IDs for proper edge routing.
+        """
+        # Build lookup for root-level nodes
+        root_lookup = self._build_name_to_id_lookup(G, None)
+
+        # Add root-level edges with translated IDs
         for src, tgt, data in self._nx_graph.edges(data=True):
-            G.add_edge(src, tgt, **data)
+            src_id = root_lookup.get(src, src)
+            tgt_id = root_lookup.get(tgt, tgt)
+            G.add_edge(src_id, tgt_id, **data)
 
         # Recursively add edges from nested graphs
         for node in self._nodes.values():
-            self._add_nested_edges(G, node)
+            node_id = root_lookup.get(node.name, node.name)
+            self._add_nested_edges(G, node, node_id)
 
-    def _add_nested_edges(self, G: nx.DiGraph, node: HyperNode) -> None:
-        """Recursively add edges from nested graphs."""
+    def _add_nested_edges(
+        self, G: nx.DiGraph, node: HyperNode, parent_id: str
+    ) -> None:
+        """Recursively add edges from nested graphs.
+
+        Args:
+            G: The flattened graph
+            node: The container node
+            parent_id: The hierarchical ID of the container
+        """
         inner = node.nested_graph
         if inner is None:
             return
 
-        for src, tgt, data in inner.nx_graph.edges(data=True):
-            G.add_edge(src, tgt, **data)
+        # Build lookup for this container's children
+        child_lookup = self._build_name_to_id_lookup(G, parent_id)
 
+        # Add edges with translated IDs
+        for src, tgt, data in inner.nx_graph.edges(data=True):
+            src_id = child_lookup.get(src, src)
+            tgt_id = child_lookup.get(tgt, tgt)
+            G.add_edge(src_id, tgt_id, **data)
+
+        # Recurse into children
         for child_node in inner.nodes.values():
-            self._add_nested_edges(G, child_node)
+            child_id = child_lookup.get(child_node.name, child_node.name)
+            self._add_nested_edges(G, child_node, child_id)
 
     def debug_viz(self) -> "VizDebugger":
         """Get a debugger for this graph's visualization.
