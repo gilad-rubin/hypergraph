@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING, Any, Iterator
 
 from hypergraph.nodes.base import HyperNode
@@ -49,6 +50,10 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
     """
     from hypergraph.nodes.gate import GateNode, END
 
+    # Clear stale gate decisions: if a gate will re-execute (inputs changed),
+    # its previous routing decision is outdated and must not activate targets
+    _clear_stale_gate_decisions(graph, state)
+
     # Build map of node -> controlling gates
     controlled_by: dict[str, list[str]] = {}  # node_name -> [gate_names]
     for node in graph._nodes.values():
@@ -77,6 +82,21 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
                     break
 
     return activated
+
+
+def _clear_stale_gate_decisions(graph: "Graph", state: GraphState) -> None:
+    """Clear routing decisions for gates that will re-execute.
+
+    If a gate's inputs have changed since its last execution, its previous
+    routing decision is stale. Keeping it would let targets activate before
+    the gate re-evaluates — causing off-by-one iterations in cycles.
+    """
+    from hypergraph.nodes.gate import GateNode
+
+    for node in graph._nodes.values():
+        if isinstance(node, GateNode) and node.name in state.routing_decisions:
+            if _needs_execution(node, state):
+                del state.routing_decisions[node.name]
 
 
 def _is_node_activated_by_decision(node_name: str, decision: Any) -> bool:
@@ -205,9 +225,9 @@ def _resolve_input(
     if param in graph.inputs.bound:
         return graph.inputs.bound[param]
 
-    # 4. Function default
+    # 4. Function default (deep-copy to prevent cross-run mutation)
     if node.has_default_for(param):
-        return node.get_default_for(param)
+        return copy.deepcopy(node.get_default_for(param))
 
     # This shouldn't happen if validation passed
     raise KeyError(f"No value for input '{param}'")

@@ -68,7 +68,7 @@ class AsyncGraphNodeExecutor:
         result = await self.runner.run(node.graph, inner_inputs)
         if result.status == RunStatus.FAILED:
             raise result.error or RuntimeError("Nested graph execution failed")
-        return result.values
+        return node.map_outputs_from_original(result.values)
 
     def _collect_as_lists(
         self,

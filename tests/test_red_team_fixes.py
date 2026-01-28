@@ -1,0 +1,219 @@
+"""Tests for red-team findings fixes.
+
+Each test validates a specific issue from the consolidated red-team report.
+Tests are written to fail before the fix and pass after.
+"""
+
+import pytest
+
+from hypergraph import Graph, node, route, END, SyncRunner
+from hypergraph.nodes._rename import RenameError
+
+
+# === Fix #1: Mutable default arguments shared across runs ===
+
+
+class TestMutableDefaults:
+    def test_list_default_not_shared_across_runs(self):
+        """A mutable list default must not leak between runs."""
+
+        @node(output_name="result")
+        def append_to_list(item: str, container: list = []) -> list:
+            container.append(item)
+            return container
+
+        graph = Graph(nodes=[append_to_list])
+        runner = SyncRunner()
+
+        res1 = runner.run(graph, {"item": "A"})
+        res2 = runner.run(graph, {"item": "B"})
+
+        assert res1["result"] == ["A"]
+        assert res2["result"] == ["B"], "List default leaked from run 1 to run 2"
+
+    def test_dict_default_not_shared_across_runs(self):
+        """A mutable dict default must not leak between runs."""
+
+        @node(output_name="result")
+        def update_dict(key: str, val: int, d: dict = {}) -> dict:
+            d[key] = val
+            return d
+
+        graph = Graph(nodes=[update_dict])
+        runner = SyncRunner()
+
+        res1 = runner.run(graph, {"key": "a", "val": 1})
+        res2 = runner.run(graph, {"key": "b", "val": 2})
+
+        assert res1["result"] == {"a": 1}
+        assert res2["result"] == {"b": 2}, "Dict default leaked"
+
+
+# === Fix #2: Cycle termination off-by-one ===
+
+
+class TestCycleTermination:
+    def test_no_extra_iteration_after_end(self):
+        """Gate returning END must stop the loop immediately."""
+
+        @node(output_name="count")
+        def increment(count: int) -> int:
+            return count + 1
+
+        @route(targets=["increment", END])
+        def check(count: int) -> str:
+            return END if count >= 3 else "increment"
+
+        graph = Graph(nodes=[increment, check])
+        runner = SyncRunner()
+        result = runner.run(graph, {"count": 0})
+
+        assert result["count"] == 3, (
+            f"Expected count=3, got count={result['count']}. "
+            "Extra iteration after END."
+        )
+
+    def test_single_iteration_loop(self):
+        """Loop that should execute exactly once."""
+
+        @node(output_name="count")
+        def increment(count: int) -> int:
+            return count + 1
+
+        @route(targets=["increment", END])
+        def check(count: int) -> str:
+            return END if count >= 1 else "increment"
+
+        graph = Graph(nodes=[increment, check])
+        runner = SyncRunner()
+        result = runner.run(graph, {"count": 0})
+
+        assert result["count"] == 1
+
+
+# === Fix #4: Intermediate value injection ===
+
+
+class TestIntermediateInjection:
+    def test_skip_upstream_with_intermediate_value(self):
+        """Providing an intermediate output should skip upstream nodes."""
+
+        @node(output_name="mid")
+        def step1(start: str) -> str:
+            return start + "_mid"
+
+        @node(output_name="end")
+        def step2(mid: str) -> str:
+            return mid + "_end"
+
+        graph = Graph(nodes=[step1, step2])
+        runner = SyncRunner()
+
+        # Provide "mid" directly — step1 should be skipped
+        result = runner.run(graph, {"mid": "SKIP"})
+        assert result["end"] == "SKIP_end"
+
+    def test_normal_execution_still_works(self):
+        """Normal execution (no intermediate injection) still works."""
+
+        @node(output_name="mid")
+        def step1(start: str) -> str:
+            return start + "_mid"
+
+        @node(output_name="end")
+        def step2(mid: str) -> str:
+            return mid + "_end"
+
+        graph = Graph(nodes=[step1, step2])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"start": "hello"})
+        assert result["end"] == "hello_mid_end"
+
+
+# === Fix #6: Rename collision silently allowed ===
+
+
+class TestRenameCollision:
+    def test_duplicate_output_rename_raises(self):
+        """Renaming two outputs to the same name must raise."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        with pytest.raises(RenameError, match="duplicate"):
+            split.with_outputs(left="dup", right="dup")
+
+    def test_duplicate_input_rename_raises(self):
+        """Renaming two inputs to the same name must raise."""
+
+        @node(output_name="result")
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        with pytest.raises(RenameError, match="duplicate"):
+            add.with_inputs(a="same", b="same")
+
+    def test_non_colliding_rename_works(self):
+        """Non-colliding renames still work fine."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        renamed = split.with_outputs(left="a", right="b")
+        assert renamed.outputs == ("a", "b")
+
+
+# === Fix #9: Control-only cycles don't require seed inputs ===
+
+
+class TestControlOnlyCycles:
+    def test_control_only_cycle_no_false_seeds(self):
+        """A control-only cycle should not mark data inputs as seeds."""
+
+        @node(output_name="result")
+        def process(data: str) -> str:
+            return data.upper()
+
+        @route(targets=["process", END])
+        def check(result: str) -> str:
+            return END if len(result) > 5 else "process"
+
+        graph = Graph(nodes=[process, check])
+
+        # "data" feeds process but is NOT part of any data cycle
+        assert "data" in graph.inputs.required, (
+            f"'data' should be required, got: {graph.inputs.required}"
+        )
+        assert "data" not in graph.inputs.seeds, (
+            f"'data' should NOT be a seed: {graph.inputs.seeds}"
+        )
+
+
+# === Fix #11: Output rename propagation in GraphNode ===
+
+
+class TestOutputRenamePropagation:
+    def test_graphnode_with_outputs_propagates(self):
+        """with_outputs() on a GraphNode must translate output names."""
+
+        @node(output_name="inner_out")
+        def inner_step(x: int) -> int:
+            return x * 2
+
+        inner_graph = Graph(nodes=[inner_step], name="inner")
+        graph_node = inner_graph.as_node().with_outputs(inner_out="renamed_out")
+
+        @node(output_name="final")
+        def outer_step(renamed_out: int) -> int:
+            return renamed_out + 1
+
+        outer_graph = Graph(nodes=[graph_node, outer_step])
+        runner = SyncRunner()
+        result = runner.run(outer_graph, {"x": 5})
+
+        assert result["final"] == 11, (
+            f"Expected 11 (5*2+1), got {result['final']}"
+        )
