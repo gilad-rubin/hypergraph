@@ -261,27 +261,61 @@ class TestRenameCollision:
         renamed = split.with_outputs(left="a", right="b")
         assert renamed.outputs == ("a", "b")
 
-    def test_graphnode_mutex_duplicates_allowed(self):
-        """GraphNode with mutex branches producing the same output can be renamed."""
+    def test_mutex_graphnode_in_outer_graph(self):
+        """GraphNode with mutex branches sharing an output composes into outer graph.
 
-        @node(output_name="result")
-        def skip_document(reason: str) -> str:
-            return f"skipped: {reason}"
+        Reproduces: GraphConfigError: Multiple nodes produce 'index_results'
+          -> process_all_documents creates 'index_results'
+          -> process_all_documents creates 'index_results'
+        """
 
-        @node(output_name="result")
-        def process_document(text: str) -> str:
-            return text.upper()
+        @node(output_name="index_results")
+        def skip_document(reason: str) -> dict:
+            return {"status": "skipped", "reason": reason}
+
+        @node(output_name="index_results")
+        def process_document(text: str, config: dict) -> dict:
+            return {"status": "indexed", "chunks": len(text) // 100}
 
         @route(targets=["skip_document", "process_document"])
-        def check(text: str) -> str:
-            return "skip_document" if not text else "process_document"
+        def check_document(text: str) -> str:
+            return "skip_document" if len(text) < 10 else "process_document"
 
-        inner = Graph(nodes=[check, skip_document, process_document], name="inner")
+        process_all_documents = Graph(
+            nodes=[check_document, skip_document, process_document],
+            name="process_all_documents",
+        )
+
+        @node(output_name="summary")
+        def summarize(index_results: dict) -> str:
+            return f"Done: {index_results['status']}"
+
+        pipeline = Graph(nodes=[process_all_documents.as_node(), summarize])
+        assert "summary" in pipeline.outputs
+
+    def test_mutex_graphnode_rename(self):
+        """GraphNode with mutex outputs can be renamed via with_outputs."""
+
+        @node(output_name="index_results")
+        def skip_document(reason: str) -> dict:
+            return {"status": "skipped"}
+
+        @node(output_name="index_results")
+        def process_document(text: str) -> dict:
+            return {"status": "indexed"}
+
+        @route(targets=["skip_document", "process_document"])
+        def check_document(text: str) -> str:
+            return "skip_document" if len(text) < 10 else "process_document"
+
+        inner = Graph(
+            nodes=[check_document, skip_document, process_document],
+            name="process_all_documents",
+        )
         graph_node = inner.as_node()
 
-        # Pre-existing duplicate "result" from mutex branches — should not raise
-        renamed = graph_node.with_outputs(result="index_result")
-        assert "index_result" in renamed.outputs
+        renamed = graph_node.with_outputs(index_results="all_results")
+        assert "all_results" in renamed.outputs
 
 
 # === Fix #9: Control-only cycles don't require seed inputs ===
