@@ -442,6 +442,10 @@ class Graph:
                 f"Cannot select {invalid}: not graph outputs. "
                 f"Valid outputs: {self.outputs}"
             )
+        if len(names) != len(set(names)):
+            raise ValueError(
+                f"with_select() requires unique output names. Received: {names}"
+            )
 
         new_graph = self._shallow_copy()
         new_graph._selected = names

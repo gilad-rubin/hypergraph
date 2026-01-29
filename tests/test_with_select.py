@@ -44,6 +44,11 @@ class TestWithSelectGraph:
         with pytest.raises(ValueError, match="not graph outputs"):
             g.with_select("nonexistent")
 
+    def test_with_select_rejects_duplicates(self):
+        g = _build_graph()
+        with pytest.raises(ValueError, match="unique output names"):
+            g.with_select("final", "final")
+
     def test_with_select_multiple_outputs(self):
         g = _build_graph().with_select("doubled", "final")
         assert g.selected == ("doubled", "final")
