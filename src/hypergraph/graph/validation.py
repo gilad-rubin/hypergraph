@@ -349,7 +349,7 @@ def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> No
             target = nodes.get(target_name)
             if target is None:
                 continue
-            for output in set(target.outputs):
+            for output in target.outputs:
                 output_producers.setdefault(output, []).append(target_name)
 
         for output, producers in output_producers.items():

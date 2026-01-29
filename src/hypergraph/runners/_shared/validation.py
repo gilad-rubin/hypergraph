@@ -205,7 +205,7 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
     # Build output -> producer nodes mapping (handle mutex branches)
     output_to_nodes: dict[str, list[str]] = {}
     for node in graph._nodes.values():
-        for output in set(node.outputs):
+        for output in node.outputs:
             output_to_nodes.setdefault(output, []).append(node.name)
 
     # Find which outputs are consumed by downstream nodes
