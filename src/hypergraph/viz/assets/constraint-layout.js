@@ -677,57 +677,6 @@
     // Track used corridor positions to prevent edge overlap
     const usedCorridorPositions = { left: [], right: [] };
     const minEdgeSpacing = spaceX * 0.8;  // Minimum spacing between parallel edges
-    const clearance = Math.max(minPassageGap * 0.5, 12);
-
-    const pointInRect = (x, y, rect) =>
-      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-
-    const segmentIntersects = (ax, ay, bx, by, cx, cy, dx, dy) => {
-      const onSegment = (px, py, qx, qy, rx, ry) =>
-        Math.min(px, rx) <= qx && qx <= Math.max(px, rx) &&
-        Math.min(py, ry) <= qy && qy <= Math.max(py, ry);
-
-      const cross = (x1, y1, x2, y2) => x1 * y2 - y1 * x2;
-      const abx = bx - ax;
-      const aby = by - ay;
-      const acx = cx - ax;
-      const acy = cy - ay;
-      const adx = dx - ax;
-      const ady = dy - ay;
-      const cdx = dx - cx;
-      const cdy = dy - cy;
-      const cax = ax - cx;
-      const cay = ay - cy;
-      const cbx = bx - cx;
-      const cby = by - cy;
-
-      const d1 = cross(abx, aby, acx, acy);
-      const d2 = cross(abx, aby, adx, ady);
-      const d3 = cross(cdx, cdy, cax, cay);
-      const d4 = cross(cdx, cdy, cbx, cby);
-
-      if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-          ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
-        return true;
-      }
-
-      if (d1 === 0 && onSegment(ax, ay, cx, cy, bx, by)) return true;
-      if (d2 === 0 && onSegment(ax, ay, dx, dy, bx, by)) return true;
-      if (d3 === 0 && onSegment(cx, cy, ax, ay, dx, dy)) return true;
-      if (d4 === 0 && onSegment(cx, cy, bx, by, dx, dy)) return true;
-
-      return false;
-    };
-
-    const segmentIntersectsRect = (x1, y1, x2, y2, rect) => {
-      if (pointInRect(x1, y1, rect) || pointInRect(x2, y2, rect)) return true;
-      return (
-        segmentIntersects(x1, y1, x2, y2, rect.left, rect.top, rect.right, rect.top) ||
-        segmentIntersects(x1, y1, x2, y2, rect.right, rect.top, rect.right, rect.bottom) ||
-        segmentIntersects(x1, y1, x2, y2, rect.right, rect.bottom, rect.left, rect.bottom) ||
-        segmentIntersects(x1, y1, x2, y2, rect.left, rect.bottom, rect.left, rect.top)
-      );
-    };
 
     // Sort edges by span length (ascending) - shorter edges processed first get inner positions
     // Longer edges get processed later and pushed to outer positions
@@ -755,20 +704,13 @@
       let firstBlockedRow = -1;
       let lastBlockedRow = -1;
       const blockedRows = [];
-      const srcY = nodeVisibleBottom(source);
-      const tgtY = nodeTop(target);
 
       for (let i = source.row + 1; i < target.row; i += 1) {
         let rowBlocks = false;
         for (const node of rows[i]) {
-          const rect = {
-            left: nodeLeft(node) - clearance,
-            right: nodeRight(node) + clearance,
-            top: nodeTop(node) - clearance,
-            bottom: nodeBottom(node) + clearance,
-          };
-
-          if (segmentIntersectsRect(source.x, srcY, target.x, tgtY, rect)) {
+          // Check if this node blocks the natural path
+          if (naturalX >= nodeLeft(node) - spaceX * 0.5 &&
+              naturalX <= nodeRight(node) + spaceX * 0.5) {
             rowBlocks = true;
             break;
           }
@@ -810,9 +752,8 @@
 
       // Choose a single corridor x-position that clears the blocking nodes
       // Use left or right side, whichever is closer to the natural path
-      const corridorGap = Math.max(spaceX, clearance);
-      const leftCorridorX = globalNodeLeft - corridorGap;
-      const rightCorridorX = globalNodeRight + corridorGap;
+      const leftCorridorX = globalNodeLeft - spaceX;
+      const rightCorridorX = globalNodeRight + spaceX;
 
       let corridorX;
       let corridorSide;
