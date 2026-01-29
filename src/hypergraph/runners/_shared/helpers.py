@@ -292,10 +292,13 @@ def filter_outputs(
     Warns:
         UserWarning: If select contains names not found in state values
     """
-    if select is not None:
+    # Runtime select= overrides graph-level default
+    effective_select = select if select is not None else graph.selected
+
+    if effective_select is not None:
         result = {}
         missing = []
-        for k in select:
+        for k in effective_select:
             if k in state.values:
                 result[k] = state.values[k]
             else:
