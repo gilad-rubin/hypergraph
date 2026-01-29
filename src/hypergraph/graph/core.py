@@ -11,7 +11,17 @@ from hypergraph.graph.input_spec import InputSpec, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from hypergraph.nodes.graph_node import GraphNode
+
+
+def _unique_outputs(nodes: Iterable[HyperNode]) -> tuple[str, ...]:
+    """Collect outputs from nodes, deduplicating while preserving order.
+
+    GraphNodes wrapping mutex branches can list the same output multiple
+    times (e.g., skip_path and process_path both produce 'result').
+    """
+    return tuple(dict.fromkeys(o for n in nodes for o in n.outputs))
 
 
 class Graph:
@@ -95,29 +105,17 @@ class Graph:
     @property
     def outputs(self) -> tuple[str, ...]:
         """All unique output names produced by nodes."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for node in self._nodes.values():
-            for output in node.outputs:
-                if output not in seen:
-                    seen.add(output)
-                    result.append(output)
-        return tuple(result)
+        return _unique_outputs(self._nodes.values())
 
     @property
     def leaf_outputs(self) -> tuple[str, ...]:
         """Unique outputs from leaf nodes (no downstream destinations)."""
-        leaf_names = [
-            name for name in self._nodes if self._nx_graph.out_degree(name) == 0
+        leaves = [
+            self._nodes[name]
+            for name in self._nodes
+            if self._nx_graph.out_degree(name) == 0
         ]
-        seen: set[str] = set()
-        result: list[str] = []
-        for name in leaf_names:
-            for output in self._nodes[name].outputs:
-                if output not in seen:
-                    seen.add(output)
-                    result.append(output)
-        return tuple(result)
+        return _unique_outputs(leaves)
 
     @property
     def inputs(self) -> InputSpec:
