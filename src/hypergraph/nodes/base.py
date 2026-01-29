@@ -267,7 +267,7 @@ class HyperNode(ABC):
                     raise clone._make_rename_error(old, attr)
                 clone._rename_history.append(RenameEntry(attr, old, new, batch_id))  # type: ignore[arg-type]
             new_values = tuple(mapping.get(v, v) for v in current)
-            _check_rename_duplicates(new_values, attr)
+            _check_rename_introduces_duplicates(current, new_values, attr, mapping)
             setattr(clone, attr, new_values)
 
         return clone
@@ -311,12 +311,44 @@ class HyperNode(ABC):
         return chain
 
 
-def _check_rename_duplicates(values: tuple[str, ...], attr: str) -> None:
-    """Raise RenameError if a rename produces duplicate names."""
-    if len(values) == len(set(values)):
+def _check_rename_introduces_duplicates(
+    old_values: tuple[str, ...],
+    new_values: tuple[str, ...],
+    attr: str,
+    mapping: dict[str, str],
+) -> None:
+    """Raise RenameError only if the rename *introduced* new duplicates.
+
+    Pre-existing duplicates (e.g., mutex branches producing the same output
+    in a GraphNode) are allowed through.
+    """
+    if len(new_values) == len(set(new_values)):
         return
-    dupes = sorted({v for v in values if values.count(v) > 1})
+
+    from collections import Counter
+
+    old_counts = Counter(old_values)
+    new_counts = Counter(new_values)
+
+    # A new value is a problem only if its count exceeds the max old count
+    # of any single old value that maps to it.
+    new_dupes: list[str] = []
+    for val, count in new_counts.items():
+        if count <= 1:
+            continue
+        # Find the max count of any single old value that renamed to this val
+        max_old = max(
+            (old_counts[old_val]
+             for old_val in old_counts
+             if mapping.get(old_val, old_val) == val),
+            default=0
+        )
+        if count > max_old:
+            new_dupes.append(val)
+
+    if not new_dupes:
+        return
     raise RenameError(
-        f"Rename produces duplicate {attr}: {dupes}. "
+        f"Rename produces duplicate {attr}: {sorted(new_dupes)}. "
         f"Each name must be unique."
     )

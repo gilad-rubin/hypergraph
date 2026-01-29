@@ -261,6 +261,28 @@ class TestRenameCollision:
         renamed = split.with_outputs(left="a", right="b")
         assert renamed.outputs == ("a", "b")
 
+    def test_graphnode_mutex_duplicates_allowed(self):
+        """GraphNode with mutex branches producing the same output can be renamed."""
+
+        @node(output_name="result")
+        def skip_document(reason: str) -> str:
+            return f"skipped: {reason}"
+
+        @node(output_name="result")
+        def process_document(text: str) -> str:
+            return text.upper()
+
+        @route(targets=["skip_document", "process_document"])
+        def check(text: str) -> str:
+            return "skip_document" if not text else "process_document"
+
+        inner = Graph(nodes=[check, skip_document, process_document], name="inner")
+        graph_node = inner.as_node()
+
+        # Pre-existing duplicate "result" from mutex branches — should not raise
+        renamed = graph_node.with_outputs(result="index_result")
+        assert "index_result" in renamed.outputs
+
 
 # === Fix #9: Control-only cycles don't require seed inputs ===
 
