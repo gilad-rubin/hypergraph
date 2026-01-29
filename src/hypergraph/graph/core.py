@@ -94,22 +94,30 @@ class Graph:
 
     @property
     def outputs(self) -> tuple[str, ...]:
-        """All output names produced by nodes."""
-        return tuple(
-            output for node in self._nodes.values() for output in node.outputs
-        )
+        """All unique output names produced by nodes."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for node in self._nodes.values():
+            for output in node.outputs:
+                if output not in seen:
+                    seen.add(output)
+                    result.append(output)
+        return tuple(result)
 
     @property
     def leaf_outputs(self) -> tuple[str, ...]:
-        """Outputs from leaf nodes (no downstream destinations)."""
+        """Unique outputs from leaf nodes (no downstream destinations)."""
         leaf_names = [
             name for name in self._nodes if self._nx_graph.out_degree(name) == 0
         ]
-        return tuple(
-            output
-            for name in leaf_names
-            for output in self._nodes[name].outputs
-        )
+        seen: set[str] = set()
+        result: list[str] = []
+        for name in leaf_names:
+            for output in self._nodes[name].outputs:
+                if output not in seen:
+                    seen.add(output)
+                    result.append(output)
+        return tuple(result)
 
     @property
     def inputs(self) -> InputSpec:
