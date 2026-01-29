@@ -284,8 +284,6 @@
     layerSpaceY,
     iterations,
     orientation,
-    layoutProfile = 'modern',
-    denseRowScale = 0,  // 0 = uniform spacing
   }) => {
     let coordPrimary = 'x';
     let coordSecondary = 'y';
@@ -309,7 +307,6 @@
       coordPrimary,
       coordSecondary,
       extraVerticalGap: 0,
-      layoutProfile,
     };
 
     const rowConstraints = createRowConstraints(edges, layoutConfig);
@@ -328,57 +325,24 @@
     }
 
     const separationConstraints = createSeparationConstraints(rows, layoutConfig);
-    const sharedTargetConstraints = layoutProfile === 'classic'
-      ? []
-      : createSharedTargetConstraints(edges, layoutConfig);
 
     solveStrict(
-      [...separationConstraints, ...sharedTargetConstraints, ...parallelConstraints],
+      [...separationConstraints, ...parallelConstraints],
       layoutConfig,
       1
     );
 
-    if (layoutProfile === 'classic') {
-      expandDenseRows(edges, rows, coordSecondary, spaceY, orientation);
-    } else if (denseRowScale > 0) {
-      // Only expand dense rows if scale > 0 (0 = uniform spacing)
-      expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, denseRowScale);
-    }
+    expandDenseRows(edges, rows, coordSecondary, spaceY, orientation);
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => {
-      if (layoutConfig.layoutProfile === 'classic') {
-        return {
-          base: rowConstraint,
-          property: layoutConfig.coordSecondary,
-          a: edge.targetNode,
-          b: edge.sourceNode,
-          separation: layoutConfig.spaceY,
-        };
-      }
-
-      const sourceHeight = edge.sourceNode.height || 0;
-      const targetHeight = edge.targetNode.height || 0;
-
-      // Calculate what visual gap would be with default center-to-center separation
-      const defaultVisualGap = layoutConfig.spaceY - (sourceHeight + targetHeight) / 2;
-
-      // Only increase separation if visual gap would be too small
-      // This preserves original behavior for typical nodes, only fixes edge cases
-      const MIN_VISUAL_GAP = 60;
-      const separation = defaultVisualGap < MIN_VISUAL_GAP
-        ? MIN_VISUAL_GAP + (sourceHeight + targetHeight) / 2
-        : layoutConfig.spaceY;
-
-      return {
-        base: rowConstraint,
-        property: layoutConfig.coordSecondary,
-        a: edge.targetNode,
-        b: edge.sourceNode,
-        separation,
-      };
-    });
+    edges.map((edge) => ({
+      base: rowConstraint,
+      property: layoutConfig.coordSecondary,
+      a: edge.targetNode,
+      b: edge.sourceNode,
+      separation: layoutConfig.spaceY,
+    }));
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
@@ -516,60 +480,6 @@
     }
 
     return separationConstraints;
-  };
-
-  /**
-   * Creates horizontal separation constraints between source nodes that share
-   * a common target. This prevents INPUT nodes from overlapping when multiple
-   * sources feed into the same function.
-   *
-   * Without this, parallelConstraints pull all sources toward the target's X,
-   * causing them to stack vertically and potentially overlap.
-   */
-  const createSharedTargetConstraints = (edges, layoutConfig) => {
-    const { spaceX, coordPrimary } = layoutConfig;
-    const constraints = [];
-
-    // Group edges by target node
-    const sourcesByTarget = {};
-    for (const edge of edges) {
-      const targetId = edge.targetNode.id;
-      if (!sourcesByTarget[targetId]) {
-        sourcesByTarget[targetId] = [];
-      }
-      // Avoid duplicates (same source can have multiple edges to same target)
-      if (!sourcesByTarget[targetId].includes(edge.sourceNode)) {
-        sourcesByTarget[targetId].push(edge.sourceNode);
-      }
-    }
-
-    // For each target with multiple sources, add separation constraints
-    for (const targetId in sourcesByTarget) {
-      const sources = sourcesByTarget[targetId];
-      if (sources.length < 2) continue;
-
-      // Sort sources by current X position for consistent constraint ordering
-      sources.sort((a, b) => a[coordPrimary] - b[coordPrimary]);
-
-      // Add separation constraints between adjacent sources
-      for (let i = 0; i < sources.length - 1; i++) {
-        const nodeA = sources[i];
-        const nodeB = sources[i + 1];
-
-        // Use minimum separation to avoid excessive spreading
-        const separation = nodeA.width * 0.5 + spaceX * 0.5 + nodeB.width * 0.5;
-
-        constraints.push({
-          base: separationConstraint,
-          property: coordPrimary,
-          a: nodeA,
-          b: nodeB,
-          separation,
-        });
-      }
-    }
-
-    return constraints;
   };
 
   const expandDenseRows = (
@@ -931,13 +841,12 @@
   // Configuration matching standard defaults
   const defaultOptions = {
     layout: {
-      spaceX: 30,
+      spaceX: 14,
       spaceY: 140,      // Vertical spacing between nodes
       layerSpaceY: 120, // Vertical spacing between layers
       spreadX: 2.2,
       padding: 50,        // Reduced from 100 for less empty space around graph
       iterations: 25,
-      denseRowScale: 0,   // 0 = uniform spacing; >0 adds space for dense edge rows
     },
     routing: {
       spaceX: 45,       // Increased from 26 for more edge-to-node clearance

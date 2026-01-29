@@ -503,7 +503,6 @@ class Graph:
         theme: str = "auto",
         show_types: bool = False,
         separate_outputs: bool = False,
-        layout_profile: str | None = None,
         filepath: str | None = None,
     ) -> Any:
         """Create an interactive visualization of this graph.
@@ -516,7 +515,6 @@ class Graph:
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
-            layout_profile: Optional layout profile override (e.g. "classic")
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
@@ -536,7 +534,6 @@ class Graph:
             theme=theme,
             show_types=show_types,
             separate_outputs=separate_outputs,
-            layout_profile=layout_profile,
             filepath=filepath,
         )
 

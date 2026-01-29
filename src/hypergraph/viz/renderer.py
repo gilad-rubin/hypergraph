@@ -60,7 +60,6 @@ def render_graph(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    layout_profile: str | None = None,
     debug_overlays: bool = False,
 ) -> dict[str, Any]:
     """Convert a flattened NetworkX graph to React Flow JSON format.
@@ -71,7 +70,6 @@ def render_graph(
         theme: "dark", "light", or "auto" (detect from environment)
         show_types: Whether to show type annotations
         separate_outputs: Whether to render outputs as separate DATA nodes
-        layout_profile: Optional layout profile override (e.g. "classic")
         debug_overlays: Whether to enable debug overlays (internal use)
 
     Returns:
@@ -80,8 +78,7 @@ def render_graph(
     # Get input_spec from graph attributes
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
-    profile = layout_profile or "modern"
-    input_consumer_mode = "all"
+    input_consumer_mode = "primary"
 
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)
@@ -91,11 +88,7 @@ def render_graph(
         expansion_state,
         mode=input_consumer_mode,
     )
-    input_groups = (
-        _build_classic_input_groups(input_spec, bound_params)
-        if profile == "classic"
-        else _build_input_groups(input_spec, param_to_consumer, bound_params)
-    )
+    input_groups = _build_classic_input_groups(input_spec, bound_params)
     graph_output_visibility = _build_graph_output_visibility(flat_graph)
     # For JS meta data: use deepest targets (for interactive expand routing)
     param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
@@ -147,7 +140,6 @@ def render_graph(
             "separate_outputs": separate_outputs,
             "show_types": show_types,
             "debug_overlays": debug_overlays,
-            "layout_profile": profile,
             # Routing data for JS to re-route edges to actual internal nodes
             # Use deepest targets so interactive expand can route correctly
             "output_to_producer": output_to_producer_deepest,
