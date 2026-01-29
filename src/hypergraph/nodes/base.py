@@ -338,9 +338,10 @@ def _check_rename_introduces_duplicates(
             continue
         # Find the max count of any single old value that renamed to this val
         max_old = max(
-            old_counts[old_val]
-            for old_val in old_counts
-            if mapping.get(old_val, old_val) == val
+            (old_counts[old_val]
+             for old_val in old_counts
+             if mapping.get(old_val, old_val) == val),
+            default=0
         )
         if count > max_old:
             new_dupes.append(val)
