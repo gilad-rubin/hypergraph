@@ -21,7 +21,8 @@ def _unique_outputs(nodes: Iterable[HyperNode]) -> tuple[str, ...]:
     GraphNodes wrapping mutex branches can list the same output multiple
     times (e.g., skip_path and process_path both produce 'result').
     """
-    return tuple(dict.fromkeys(o for n in nodes for o in n.outputs))
+    all_outputs = [o for n in nodes for o in n.outputs]
+    return tuple(dict.fromkeys(all_outputs))
 
 
 class Graph:
