@@ -691,7 +691,6 @@
 
     // Pre-computed nodes/edges for all expansion states (from Python)
     var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
-    var layoutEdgesByState = (initialData.meta && initialData.meta.layoutEdgesByState) || null;
     var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
 
@@ -933,24 +932,6 @@
       return initialData.edges || [];
     }, [expansionState, separateOutputs, edgesByState, initialData.edges]);
 
-    var layoutEdges = useMemo(function() {
-      if (!layoutEdgesByState) return selectedEdges;
-      var key = expansionStateToKey(expansionState, separateOutputs);
-      var precomputed = layoutEdgesByState[key];
-
-      if (precomputed && precomputed.length > 0) {
-        if (root.__hypergraph_debug_viz) {
-          console.log('[App] Using layout edges for key:', key, '- count:', precomputed.length);
-        }
-        return precomputed;
-      }
-
-      if (root.__hypergraph_debug_viz) {
-        console.log('[App] No layout edges for key:', key, '- using selectedEdges');
-      }
-      return selectedEdges;
-    }, [expansionState, separateOutputs, layoutEdgesByState, selectedEdges]);
-
     // Update React Flow state
     useEffect(function() {
       nodesRef.current = nodesWithCallbacks;
@@ -974,7 +955,7 @@
 
     // Run layout
     var layoutProfile = (initialData.meta && initialData.meta.layout_profile) || 'modern';
-    var layoutResult = useLayout(grouped.nodes, layoutEdges, expansionState, routingData, layoutProfile);
+    var layoutResult = useLayout(grouped.nodes, grouped.edges, expansionState, routingData, layoutProfile);
     var rawLayoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
@@ -1480,52 +1461,11 @@
       markerEnd: { type: MarkerType.ArrowClosed, color: theme === 'light' ? '#94a3b8' : '#64748b' },
     };
 
-    var displayEdges = useMemo(function() {
-      if (isLayouting) return [];
-
-      var layoutEdgeMap = new Map(layoutedEdges.map(function(e) { return [e.id, e]; }));
-      var nodeMap = new Map(layoutedNodes.map(function(n) { return [n.id, n]; }));
-
-      return selectedEdges.map(function(e) {
-        var layoutEdge = layoutEdgeMap.get(e.id);
-        if (layoutEdge) return layoutEdge;
-
-        var sourceId = (e.data && e.data.actualSource) || e.source;
-        var targetId = (e.data && e.data.actualTarget) || e.target;
-        var sourceNode = nodeMap.get(sourceId);
-        var targetNode = nodeMap.get(targetId);
-        if (!sourceNode || !targetNode) return e;
-
-        var sourceWidth = sourceNode.width || (sourceNode.style && sourceNode.style.width) || 200;
-        var sourceHeight = sourceNode.height || (sourceNode.style && sourceNode.style.height) || 50;
-        var targetWidth = targetNode.width || (targetNode.style && targetNode.style.width) || 200;
-        var targetHeight = targetNode.height || (targetNode.style && targetNode.style.height) || 50;
-
-        var sourceType = sourceNode.data && sourceNode.data.nodeType;
-        var sourceOffset = getNodeTypeOffset(sourceType, sourceNode.data && sourceNode.data.isExpanded);
-
-        var srcX = (sourceNode.position.x || 0) + sourceWidth / 2;
-        var srcY = (sourceNode.position.y || 0) + sourceHeight - sourceOffset;
-        var tgtX = (targetNode.position.x || 0) + targetWidth / 2;
-        var tgtY = (targetNode.position.y || 0);
-
-        var points = [
-          { x: srcX, y: srcY },
-          { x: tgtX, y: tgtY },
-        ];
-
-        return {
-          ...e,
-          data: { ...e.data, points: points },
-        };
-      });
-    }, [selectedEdges, layoutedEdges, layoutedNodes, isLayouting]);
-
     // Style edges
     var styledEdges = useMemo(function() {
       if (isLayouting) return [];
 
-      return displayEdges.map(function(e) {
+      return layoutedEdges.map(function(e) {
         var isDataLink = e.data && e.data.isDataLink;
         var isControlEdge = e.data && e.data.edgeType === 'control';
         var edgeStyle = {
@@ -1544,7 +1484,7 @@
           data: { ...e.data, debugMode: debugOverlays }
         };
       });
-    }, [displayEdges, theme, isLayouting, debugOverlays, expansionKey]);
+    }, [layoutedEdges, theme, isLayouting, debugOverlays, expansionKey]);
 
     // Notify parent of click
     var notifyParentClick = useCallback(function() {

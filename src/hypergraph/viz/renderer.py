@@ -81,8 +81,7 @@ def render_graph(
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
     profile = layout_profile or "modern"
-    render_consumer_mode = "all"
-    layout_consumer_mode = "primary" if profile == "classic" else "all"
+    input_consumer_mode = "all"
 
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)
@@ -90,7 +89,7 @@ def render_graph(
     param_to_consumer = _build_param_to_consumer_map(
         flat_graph,
         expansion_state,
-        mode=render_consumer_mode,
+        mode=input_consumer_mode,
     )
     input_groups = (
         _build_classic_input_groups(input_spec, bound_params)
@@ -113,20 +112,8 @@ def render_graph(
         theme,
         input_groups,
         graph_output_visibility,
-        input_consumer_mode=render_consumer_mode,
+        input_consumer_mode=input_consumer_mode,
     )
-
-    layout_edges_by_state = None
-    if profile == "classic":
-        layout_edges_by_state, _ = _precompute_all_edges(
-            flat_graph,
-            input_spec,
-            show_types,
-            theme,
-            input_groups,
-            graph_output_visibility,
-            input_consumer_mode=layout_consumer_mode,
-        )
 
     # Pre-compute nodes for ALL valid expansion state combinations
     nodes_by_state, _ = _precompute_all_nodes(
@@ -136,7 +123,7 @@ def render_graph(
         theme,
         graph_output_visibility=graph_output_visibility,
         input_groups=input_groups,
-        input_consumer_mode=render_consumer_mode,
+        input_consumer_mode=input_consumer_mode,
     )
 
     # Use pre-computed edges for the initial state
@@ -168,7 +155,6 @@ def render_graph(
             "node_to_parent": node_to_parent,
             # Pre-computed edges for all expansion states (collapse/expand consistency)
             "edgesByState": edges_by_state,
-            "layoutEdgesByState": layout_edges_by_state,
             # Pre-computed nodes for all expansion states (Python-driven visibility)
             "nodesByState": nodes_by_state,
             "expandableNodes": expandable_nodes,
