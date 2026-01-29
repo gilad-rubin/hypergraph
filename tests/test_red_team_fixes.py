@@ -283,6 +283,31 @@ class TestRenameCollision:
         renamed = graph_node.with_outputs(result="index_result")
         assert "index_result" in renamed.outputs
 
+    def test_graphnode_mutex_duplicates_in_outer_graph(self):
+        """GraphNode with mutex duplicate outputs can be composed in an outer Graph."""
+
+        @node(output_name="result")
+        def skip_document(reason: str) -> str:
+            return f"skipped: {reason}"
+
+        @node(output_name="result")
+        def process_document(text: str) -> str:
+            return text.upper()
+
+        @route(targets=["skip_document", "process_document"])
+        def check(text: str) -> str:
+            return "skip_document" if not text else "process_document"
+
+        inner = Graph(nodes=[check, skip_document, process_document], name="inner")
+
+        @node(output_name="formatted")
+        def format_result(result: str) -> str:
+            return f"[{result}]"
+
+        # Should not raise "Multiple nodes produce 'result'"
+        outer = Graph(nodes=[inner.as_node(), format_result])
+        assert "formatted" in outer.outputs
+
 
 # === Fix #9: Control-only cycles don't require seed inputs ===
 

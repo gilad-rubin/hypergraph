@@ -150,7 +150,7 @@ class Graph:
         """
         output_sources: dict[str, list[str]] = {}
         for node in nodes:
-            for output in node.outputs:
+            for output in set(node.outputs):
                 output_sources.setdefault(output, []).append(node.name)
         return output_sources
 
