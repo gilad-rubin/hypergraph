@@ -208,15 +208,6 @@
       ),
   };
 
-  const alignConstraint = {
-    strict: (constraint, layoutConfig, variableA, variableB) =>
-      new Constraint(
-        variableA.minus(variableB),
-        Operator.Eq,
-        0,
-        Strength.required
-      ),
-  };
 
   // ============================================================================
   // SOLVER.JS - Constraint solving
@@ -512,10 +503,9 @@
 
     const rowConstraints = createRowConstraints(edges, layoutConfig);
     const layerConstraints = createLayerConstraints(nodes, layers, layoutConfig);
-    const sourceAlignmentConstraints = createSourceAlignmentConstraints(nodes, layoutConfig);
 
     solveStrict(
-      [...rowConstraints, ...layerConstraints, ...sourceAlignmentConstraints],
+      [...rowConstraints, ...layerConstraints],
       layoutConfig,
       1
     );
@@ -572,21 +562,6 @@
         separation,
       };
     });
-
-  const createSourceAlignmentConstraints = (nodes, layoutConfig) => {
-    const sourceNodes = nodes.filter((node) => node.sources.length === 0);
-    if (sourceNodes.length < 2) return [];
-
-    sourceNodes.sort((a, b) => compare(a.id, b.id));
-    const anchor = sourceNodes[0];
-
-    return sourceNodes.slice(1).map((node) => ({
-      base: alignConstraint,
-      property: layoutConfig.coordSecondary,
-      a: node,
-      b: anchor,
-    }));
-  };
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
