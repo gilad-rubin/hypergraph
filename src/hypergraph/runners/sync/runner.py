@@ -17,6 +17,7 @@ from hypergraph.runners._shared.helpers import (
 )
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.types import (
+    ErrorHandling,
     GraphState,
     RunnerCapabilities,
     RunResult,
@@ -214,6 +215,7 @@ class SyncRunner(BaseRunner):
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         select: list[str] | None = None,
+        error_handling: ErrorHandling = "raise",
     ) -> list[RunResult]:
         """Execute graph multiple times with different inputs.
 
@@ -223,9 +225,15 @@ class SyncRunner(BaseRunner):
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
+            error_handling: "raise" to stop on first failure, "continue" to
+                collect all results including failures
 
         Returns:
             List of RunResult, one per iteration
+
+        Raises:
+            Exception: The underlying error from the first failed item
+                when ``error_handling="raise"``
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
@@ -246,5 +254,7 @@ class SyncRunner(BaseRunner):
         for variation_inputs in input_variations:
             result = self.run(graph, variation_inputs, select=select)
             results.append(result)
+            if error_handling == "raise" and result.status == RunStatus.FAILED:
+                raise result.error  # type: ignore[misc]
 
         return results

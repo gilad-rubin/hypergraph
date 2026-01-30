@@ -37,7 +37,8 @@ Refactor `SyncRunner.run()` and `AsyncRunner.run()` to return partial values (st
 
 ---
 
-### [ ] Step: error_handling parameter in runner.map()
+### [x] Step: error_handling parameter in runner.map()
+<!-- chat-id: 79bf0846-bb13-4e69-af2e-7f6022f1eb42 -->
 
 Add `error_handling: Literal["raise", "continue"] = "raise"` parameter to both `SyncRunner.map()` and `AsyncRunner.map()`.
 
@@ -67,3 +68,11 @@ Propagate error_handling through `GraphNode.map_over()` to executors.
 - Run full test suite: `uv run pytest tests/ -x`
 - Verify no regressions in existing tests
 - Write report to `{@artifacts_path}/report.md`
+
+### [ ] Step: Code Quality
+
+review code quality based on CLAUDE.md and other rule files and cleanup the code
+
+### [ ] Step: documentation
+
+update documentation, API reference, README

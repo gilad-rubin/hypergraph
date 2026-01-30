@@ -18,6 +18,7 @@ from hypergraph.runners._shared.helpers import (
 )
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.types import (
+    ErrorHandling,
     GraphState,
     RunnerCapabilities,
     RunResult,
@@ -246,6 +247,7 @@ class AsyncRunner(BaseRunner):
         map_mode: Literal["zip", "product"] = "zip",
         select: list[str] | None = None,
         max_concurrency: int | None = None,
+        error_handling: ErrorHandling = "raise",
     ) -> list[RunResult]:
         """Execute graph multiple times with different inputs.
 
@@ -256,9 +258,15 @@ class AsyncRunner(BaseRunner):
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
             max_concurrency: Max concurrent operations (shared across all items)
+            error_handling: "raise" to stop on first failure, "continue" to
+                collect all results including failures
 
         Returns:
             List of RunResult, one per iteration
+
+        Raises:
+            Exception: The underlying error from the first failed item
+                when ``error_handling="raise"``
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
@@ -290,8 +298,13 @@ class AsyncRunner(BaseRunner):
                     self.run(graph, v, select=select, max_concurrency=max_concurrency)
                     for v in input_variations
                 ]
-                results = await asyncio.gather(*tasks)
-                return list(results)
+                results = list(await asyncio.gather(*tasks))
+                # Check for failures after all tasks complete
+                if error_handling == "raise":
+                    for result in results:
+                        if result.status == RunStatus.FAILED:
+                            raise result.error  # type: ignore[misc]
+                return results
             else:
                 # Worker pool: fixed number of workers pull from a queue,
                 # avoiding the overhead of creating thousands of tasks at once.
@@ -301,9 +314,10 @@ class AsyncRunner(BaseRunner):
                     queue.put_nowait((idx, v))
 
                 order: list[int] = []
+                stop_event = asyncio.Event()
 
                 async def _worker() -> None:
-                    while True:
+                    while not stop_event.is_set():
                         try:
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
@@ -313,12 +327,22 @@ class AsyncRunner(BaseRunner):
                         )
                         results_list.append(result)
                         order.append(idx)
+                        if (
+                            error_handling == "raise"
+                            and result.status == RunStatus.FAILED
+                        ):
+                            stop_event.set()
 
                 num_workers = min(max_concurrency, len(input_variations))
                 workers = [asyncio.create_task(_worker()) for _ in range(num_workers)]
                 await asyncio.gather(*workers)
                 # Restore original input order
                 ordered = [r for _, r in sorted(zip(order, results_list))]
+                # Raise first failure (by original order) if fail-fast
+                if error_handling == "raise":
+                    for result in ordered:
+                        if result.status == RunStatus.FAILED:
+                            raise result.error  # type: ignore[misc]
                 return ordered
         finally:
             if token is not None:
