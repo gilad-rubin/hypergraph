@@ -873,8 +873,7 @@
           source.targets.indexOf(edge) - (source.targets.length - 1) * 0.5;
         const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
 
-        let laneX = source.x + sourceOffsetX;
-        const startPoint = { x: laneX, y: source.y };
+        const startPoint = { x: source.x, y: source.y };
         let currentPoint = startPoint;
 
         for (let i = source.row + 1; i < target.row; i += 1) {
@@ -904,8 +903,10 @@
             const targetX = nodeLeft(nextNode) - offsetX;
             const targetY = nodeTop(nextNode) - spaceY;
 
-            if (!lockedToCurrent && laneX >= sourceX && laneX <= targetX) {
-              nearestPoint = { x: laneX, y: sourceY };
+            if (!lockedToCurrent &&
+                currentPoint.x >= sourceX &&
+                currentPoint.x <= targetX) {
+              nearestPoint = { x: currentPoint.x, y: sourceY };
               nearestDistance = 0;
               lockedToCurrent = true;
               break;
@@ -932,18 +933,17 @@
           }
 
           const offsetY = firstNode.height + spaceY;
-          laneX = nearestPoint.x;
           edge.points.push({
-            x: laneX,
+            x: nearestPoint.x + sourceOffsetX,
             y: nearestPoint.y,
           });
           edge.points.push({
-            x: laneX,
+            x: nearestPoint.x + sourceOffsetX,
             y: nearestPoint.y + offsetY,
           });
 
           currentPoint = {
-            x: laneX,
+            x: nearestPoint.x,
             y: nearestPoint.y + offsetY,
           };
         }
