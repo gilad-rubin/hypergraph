@@ -18,47 +18,51 @@ Do not make assumptions on important decisions — get clarification first.
 
 ## Workflow Steps
 
-### [ ] Step: Technical Specification
+### [x] Step: Technical Specification
+<!-- chat-id: 59974add-b1fa-449f-bbae-ef2a41b0edb1 -->
 
-Assess the task's difficulty, as underestimating it leads to poor outcomes.
-- easy: Straightforward implementation, trivial bug fix or feature
-- medium: Moderate complexity, some edge cases or caveats to consider
-- hard: Complex logic, many caveats, architectural considerations, or high-risk changes
-
-Create a technical specification for the task that is appropriate for the complexity level:
-- Review the existing codebase architecture and identify reusable components.
-- Define the implementation approach based on established patterns in the project.
-- Identify all source code files that will be created or modified.
-- Define any necessary data model, API, or interface changes.
-- Describe verification steps using the project's test and lint commands.
-
-Save the output to `{@artifacts_path}/spec.md` with:
-- Technical context (language, dependencies)
-- Implementation approach
-- Source code structure changes
-- Data model / API / interface changes
-- Verification approach
-
-If the task is complex enough, create a detailed implementation plan based on `{@artifacts_path}/spec.md`:
-- Break down the work into concrete tasks (incrementable, testable milestones)
-- Each task should reference relevant contracts and include verification steps
-- Replace the Implementation step below with the planned tasks
-
-Rule of thumb for step size: each step should represent a coherent unit of work (e.g., implement a component, add an API endpoint, write tests for a module). Avoid steps that are too granular (single function).
-
-Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warrant this breakdown, keep the Implementation step below as is.
+Completed. See `spec.md` for full details.
 
 ---
 
-### [ ] Step: Implementation
+### [ ] Step: Partial values in run() on failure
 
-Implement the task according to the technical specification and general engineering best practices.
+Refactor `SyncRunner.run()` and `AsyncRunner.run()` to return partial values (state accumulated before the error) instead of `values={}` when execution fails.
 
-1. Break the task into steps where possible.
-2. Implement the required changes in the codebase.
-3. Add and run relevant tests and linters.
-4. Perform basic manual verification if applicable.
-5. After completion, write a report to `{@artifacts_path}/report.md` describing:
-   - What was implemented
-   - How the solution was tested
-   - The biggest issues or challenges encountered
+- Split state initialization out of `_execute_graph` so `run()` has access to state even after an exception
+- Use `filter_outputs(state, graph, select)` to populate `RunResult.values` on failure
+- Both sync and async runners need identical changes
+- Add tests: run a graph where node 2 of 3 fails, verify `values` contains node 1's output
+
+---
+
+### [ ] Step: error_handling parameter in runner.map()
+
+Add `error_handling: Literal["raise", "continue"] = "raise"` parameter to both `SyncRunner.map()` and `AsyncRunner.map()`.
+
+- Add `ErrorHandling` type alias in `_shared/types.py`
+- **SyncRunner**: Check result status after each iteration, raise on first failure if `"raise"`
+- **AsyncRunner unlimited**: After `asyncio.gather`, scan results and raise first failure if `"raise"`
+- **AsyncRunner worker pool**: Use `asyncio.Event` to signal workers to stop on failure if `"raise"`
+- `"continue"` mode: return all results as-is (some may be FAILED)
+- Add tests for both modes in both runners
+
+---
+
+### [ ] Step: error_handling in as_node().map_over()
+
+Propagate error_handling through `GraphNode.map_over()` to executors.
+
+- Add `error_handling` parameter to `GraphNode.map_over()`
+- Store as `_error_handling` on GraphNode, expose via `map_config`
+- Update `SyncGraphNodeExecutor` and `AsyncGraphNodeExecutor` to pass `error_handling` to `runner.map()`
+- Update `_collect_as_lists` to use `None` placeholders for failed items (preserving list length)
+- Add tests: `as_node().map_over("x", error_handling="continue")` with partial failures
+
+---
+
+### [ ] Step: Final verification and cleanup
+
+- Run full test suite: `uv run pytest tests/ -x`
+- Verify no regressions in existing tests
+- Write report to `{@artifacts_path}/report.md`
