@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import networkx as nx
+from collections import Counter
 from typing import Any, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode
@@ -240,11 +241,18 @@ class Graph:
             t: set(nx.descendants(G, t)) | {t} for t in targets
         }
 
-        # For each target, exclude nodes reachable from other targets
+        # Count how many targets can reach each node
+        # Optimization: Instead of N^2 set operations, count node occurrences
+        # A node is exclusive to a target if it appears exactly once across all reachable sets
+        all_reachable_nodes = [node for nodes in reachable.values() for node in nodes]
+        node_counts = Counter(all_reachable_nodes)
+
+        # For each target, select nodes that are only reachable from this target (count == 1)
         exclusive: dict[str, set[str]] = {}
         for t in targets:
-            others = set().union(*(reachable[o] for o in targets if o != t))
-            exclusive[t] = reachable[t] - others
+            exclusive[t] = {
+                node for node in reachable[t] if node_counts[node] == 1
+            }
 
         return exclusive
 
