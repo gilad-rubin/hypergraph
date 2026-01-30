@@ -64,7 +64,8 @@ Propagate error_handling through `GraphNode.map_over()` to executors.
 
 ---
 
-### [ ] Step: Final verification and cleanup
+### [x] Step: Final verification and cleanup
+<!-- chat-id: ac0a0bda-9614-430d-9545-782df8805c82 -->
 
 - Run full test suite: `uv run pytest tests/ -x`
 - Verify no regressions in existing tests
