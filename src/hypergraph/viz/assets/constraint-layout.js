@@ -330,10 +330,14 @@
 
   /**
    * Reorder nodes within each row based on barycenter of their connections.
-   * Uses classic Sugiyama two-sweep approach:
-   * 1. Bottom-to-top sweep: position nodes based on their targets (downstream)
-   * 2. Top-to-bottom sweep: refine positions based on sources (upstream)
-   * This handles both "shared output" and "shared input" cases.
+   * Uses a weighted average of both upstream (sources) and downstream (targets)
+   * positions to minimize total edge length.
+   *
+   * Algorithm:
+   * 1. Initialize bottom row evenly
+   * 2. Bottom-to-top sweep: position based on targets
+   * 3. Top-to-bottom sweep: use weighted average of sources AND targets
+   * 4. Optional refinement passes to converge on optimal positions
    */
   const reorderRowsByBarycenter = (rows, edges, coordPrimary) => {
     if (rows.length === 0) return;
@@ -359,16 +363,34 @@
       }
     }
 
-    // === SWEEP 1: Bottom-to-top using targets ===
+    // Helper: compute weighted barycenter from both sources and targets
+    const computeWeightedBarycenter = (node, sourceWeight, targetWeight) => {
+      let sum = 0;
+      let count = 0;
+
+      // Add source contributions
+      for (const src of node._sources) {
+        sum += src[coordPrimary] * sourceWeight;
+        count += sourceWeight;
+      }
+
+      // Add target contributions
+      for (const tgt of node._targets) {
+        sum += tgt[coordPrimary] * targetWeight;
+        count += targetWeight;
+      }
+
+      return count > 0 ? sum / count : null;
+    };
+
+    // === SWEEP 1: Bottom-to-top using targets only ===
     // Establishes initial order based on downstream connections
 
-    // Bottom row gets initial even spread
     const bottomRow = rows[rows.length - 1];
     bottomRow.forEach((node, i) => {
       node[coordPrimary] = i * spacing;
     });
 
-    // Process remaining rows from bottom to top
     for (let rowIdx = rows.length - 2; rowIdx >= 0; rowIdx--) {
       const row = rows[rowIdx];
 
@@ -377,7 +399,6 @@
           const sum = node._targets.reduce((acc, t) => acc + t[coordPrimary], 0);
           node._barycenter = sum / node._targets.length;
         } else {
-          // No targets - preserve current position
           node._barycenter = row.indexOf(node) * spacing;
         }
       }
@@ -388,24 +409,39 @@
       });
     }
 
-    // === SWEEP 2: Top-to-bottom using sources ===
-    // Refines order based on upstream connections (shared inputs)
+    // === SWEEP 2: Top-to-bottom using weighted average of sources AND targets ===
+    // This ensures nodes consider both their inputs and outputs for positioning
 
-    // Top row keeps its position from sweep 1
     for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
       const row = rows[rowIdx];
 
       for (const node of row) {
-        if (node._sources.length > 0) {
-          // Barycenter based on upstream sources
-          const sum = node._sources.reduce((acc, s) => acc + s[coordPrimary], 0);
-          node._barycenter = sum / node._sources.length;
-        } else if (node._targets.length > 0) {
-          // Fallback: use targets if no sources
-          const sum = node._targets.reduce((acc, t) => acc + t[coordPrimary], 0);
-          node._barycenter = sum / node._targets.length;
+        // Weight sources and targets equally to balance both directions
+        const weighted = computeWeightedBarycenter(node, 1, 1);
+        if (weighted !== null) {
+          node._barycenter = weighted;
         } else {
-          // No connections - preserve current position
+          node._barycenter = node[coordPrimary];
+        }
+      }
+
+      row.sort((a, b) => compare(a._barycenter, b._barycenter, a.id, b.id));
+      row.forEach((node, i) => {
+        node[coordPrimary] = i * spacing;
+      });
+    }
+
+    // === SWEEP 3: Bottom-to-top refinement with weighted barycenter ===
+    // Propagate the improved positions back up
+
+    for (let rowIdx = rows.length - 2; rowIdx >= 0; rowIdx--) {
+      const row = rows[rowIdx];
+
+      for (const node of row) {
+        const weighted = computeWeightedBarycenter(node, 1, 1);
+        if (weighted !== null) {
+          node._barycenter = weighted;
+        } else {
           node._barycenter = node[coordPrimary];
         }
       }
