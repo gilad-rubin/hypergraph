@@ -218,7 +218,7 @@ results = runner.map(graph, values={"document": documents}, map_over="document")
 Pause execution for user input. Resume with a response.
 
 ```python
-from hypergraph import InterruptNode
+from hypergraph import AsyncRunner, Graph, InterruptNode, node
 
 approval = InterruptNode(
     name="approval",

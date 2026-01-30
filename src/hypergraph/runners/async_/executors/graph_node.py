@@ -71,6 +71,7 @@ class AsyncGraphNodeExecutor:
     def _handle_nested_result(self, node: "GraphNode", result: RunResult) -> dict[str, Any]:
         """Handle result from nested graph, propagating pause if needed."""
         if result.status == RunStatus.PAUSED:
+            assert result.pause is not None, "PAUSED status requires pause info"
             nested_pause = PauseInfo(
                 node_name=f"{node.name}/{result.pause.node_name}",
                 output_param=result.pause.output_param,

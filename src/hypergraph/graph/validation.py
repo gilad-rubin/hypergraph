@@ -278,7 +278,6 @@ def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None
 def _validate_no_interrupt_in_map_over(nodes: dict[str, "HyperNode"]) -> None:
     """GraphNodes with map_over cannot wrap graphs containing InterruptNodes."""
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.nodes.interrupt import InterruptNode
 
     for node in nodes.values():
         if not isinstance(node, GraphNode):
@@ -287,10 +286,7 @@ def _validate_no_interrupt_in_map_over(nodes: dict[str, "HyperNode"]) -> None:
             continue
         if not node.graph.has_interrupts:
             continue
-        interrupt_names = [
-            n.name for n in node.graph._nodes.values()
-            if isinstance(n, InterruptNode)
-        ]
+        interrupt_names = [n.name for n in node.graph.interrupt_nodes]
         raise GraphConfigError(
             f"GraphNode '{node.name}' has map_over but wrapped graph contains "
             f"InterruptNode(s): {', '.join(interrupt_names)}. "

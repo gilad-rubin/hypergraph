@@ -71,7 +71,7 @@ class InterruptNode(HyperNode):
     @property
     def definition_hash(self) -> str:
         """Hash includes response_type but excludes handler."""
-        rt = self.response_type.__qualname__ if self.response_type else "None"
+        rt = _response_type_label(self.response_type)
         content = f"InterruptNode:{self.name}:{self.inputs}:{self.outputs}:{rt}"
         return hashlib.sha256(content.encode()).hexdigest()
 
@@ -96,6 +96,17 @@ class InterruptNode(HyperNode):
         clone = self._copy()
         clone.handler = handler
         return clone
+
+
+def _response_type_label(response_type: type | None) -> str:
+    """Return a stable string label for a response type, handling union types."""
+    if response_type is None:
+        return "None"
+    qualname = getattr(response_type, "__qualname__", None)
+    if qualname is None:
+        qualname = repr(response_type)
+    module = getattr(response_type, "__module__", None)
+    return f"{module}.{qualname}" if module else qualname
 
 
 def _validate_param_name(name: str, label: str) -> None:

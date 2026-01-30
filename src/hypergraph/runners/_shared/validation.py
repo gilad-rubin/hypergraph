@@ -199,7 +199,7 @@ def validate_map_compatible(graph: "Graph") -> None:
         graph: The graph to validate
 
     Raises:
-        GraphConfigError: If graph contains features incompatible with map
+        IncompatibleRunnerError: If graph contains InterruptNodes
     """
     if graph.has_interrupts:
         raise IncompatibleRunnerError(

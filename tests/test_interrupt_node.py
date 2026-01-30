@@ -63,6 +63,24 @@ class TestInterruptNodeConstruction:
         assert n1.definition_hash == n2.definition_hash
 
 
+class TestInterruptNodeParameterValidation:
+    def test_invalid_identifier_input_param(self):
+        with pytest.raises(ValueError, match="input_param"):
+            InterruptNode(name="x", input_param="123bad", output_param="b")
+
+    def test_invalid_identifier_output_param(self):
+        with pytest.raises(ValueError, match="output_param"):
+            InterruptNode(name="x", input_param="a", output_param="not-valid")
+
+    def test_keyword_input_param(self):
+        with pytest.raises(ValueError, match="input_param"):
+            InterruptNode(name="x", input_param="class", output_param="b")
+
+    def test_keyword_output_param(self):
+        with pytest.raises(ValueError, match="output_param"):
+            InterruptNode(name="x", input_param="a", output_param="return")
+
+
 class TestInterruptNodeRename:
     def test_with_name(self):
         n = InterruptNode(name="x", input_param="a", output_param="b")
@@ -375,6 +393,36 @@ class TestAsyncRunnerPause:
         )
         assert r3.status == RunStatus.COMPLETED
         assert r3["result"] == "done: resp2"
+
+
+class TestHandlerFailure:
+    @pytest.mark.asyncio
+    async def test_handler_exception_wrapped_in_runtime_error(self):
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        def bad_handler(value):
+            raise ValueError("handler broke")
+
+        interrupt = InterruptNode(
+            name="approval",
+            input_param="draft",
+            output_param="decision",
+            handler=bad_handler,
+        )
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return decision
+
+        graph = Graph([make_draft, interrupt, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.FAILED
+        assert isinstance(result.error, RuntimeError)
+        assert "handler broke" in str(result.error)
 
 
 class TestNestedInterruptPropagation:

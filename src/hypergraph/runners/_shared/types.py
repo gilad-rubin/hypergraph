@@ -33,10 +33,11 @@ class RunResult:
 
     Attributes:
         values: Dict of all output values produced
-        status: Run status (COMPLETED or FAILED)
+        status: Run status (COMPLETED, FAILED, or PAUSED)
         run_id: Unique identifier for this run
         workflow_id: Optional workflow identifier for tracking related runs
         error: Exception if status is FAILED, else None
+        pause: PauseInfo if status is PAUSED, else None
     """
 
     values: dict[str, Any]
