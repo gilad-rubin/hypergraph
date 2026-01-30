@@ -522,9 +522,10 @@
     reorderRowsByBarycenter(rows, edges, coordPrimary);
 
     const separationConstraints = createSeparationConstraints(rows, layoutConfig);
+    const sharedTargetConstraints = createSharedTargetConstraints(edges, layoutConfig);
 
     solveStrict(
-      [...separationConstraints, ...parallelConstraints],
+      [...separationConstraints, ...sharedTargetConstraints, ...parallelConstraints],
       layoutConfig,
       1
     );
@@ -693,6 +694,45 @@
     }
 
     return separationConstraints;
+  };
+
+  const createSharedTargetConstraints = (edges, layoutConfig) => {
+    const { spaceX, coordPrimary } = layoutConfig;
+    const sourcesByTarget = {};
+
+    for (const edge of edges) {
+      const targetId = edge.targetNode.id;
+      if (!sourcesByTarget[targetId]) sourcesByTarget[targetId] = [];
+      if (!sourcesByTarget[targetId].includes(edge.sourceNode)) {
+        sourcesByTarget[targetId].push(edge.sourceNode);
+      }
+    }
+
+    const constraints = [];
+    for (const targetId in sourcesByTarget) {
+      const sources = sourcesByTarget[targetId];
+      if (sources.length < 2) continue;
+
+      sources.sort((a, b) =>
+        compare(a[coordPrimary], b[coordPrimary], a.id, b.id)
+      );
+
+      for (let i = 0; i < sources.length - 1; i += 1) {
+        const nodeA = sources[i];
+        const nodeB = sources[i + 1];
+        const separation =
+          nodeA.width * 0.5 + spaceX * 0.5 + nodeB.width * 0.5;
+        constraints.push({
+          base: separationConstraint,
+          property: coordPrimary,
+          a: nodeA,
+          b: nodeB,
+          separation,
+        });
+      }
+    }
+
+    return constraints;
   };
 
   // Configuration constants for edge routing
