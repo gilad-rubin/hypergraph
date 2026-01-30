@@ -84,6 +84,23 @@ Updated documentation for error_handling feature:
 - docs/06-api-reference/nodes.md: Added error_handling param to GraphNode.map_over() with example
 - docs/05-how-to/batch-processing.md: Rewrote Error Handling section with fail-fast, continue, and nested graph examples
 
-### [ ] Step: Re-examine edge cases, look at capabilities matrix
+### [x] Step: Re-examine edge cases, look at capabilities matrix
+<!-- chat-id: 85aa9f5e-aca3-401f-b0b7-731c19540f9f -->
 
 add tests for edge cases, "red-team" the implementation to find issues and fix them / surface for discussion
+
+Completed: Added 22 edge case tests in `tests/test_error_handling_edge_cases.py` covering:
+- All items fail (continue mode) - sync, async, async+concurrency
+- Multiple failures (continue mode) - correct None positioning
+- First item fails (boundary case) - raise and continue
+- Single item - success and failure
+- Empty input lists - raise and continue
+- Product mode + error_handling - continue and raise
+- Renamed outputs + continue mode
+- map_over: all-None output, multiple failures, single item, empty input
+- map_over raise mode: outer run() correctly reports FAILED
+
+Findings surfaced:
+- Multi-output inner graphs + map_over is untested (not error_handling-specific)
+- Capabilities matrix does NOT include error_handling as a dimension; adding it would double the full matrix (~16K tests). Current targeted tests provide sufficient coverage.
+- All 950 tests pass (22 new + 928 existing).
