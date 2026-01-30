@@ -5,7 +5,7 @@ A **Graph** defines a computation graph from nodes with automatic edge inference
 - **Automatic wiring** - Edges inferred from matching output/input names
 - **Build-time validation (`strict_types`)** - Type mismatches caught at construction when `strict_types=True`
 - **Hierarchical composition** - Graphs nest as nodes via `.as_node()`
-- **Immutable** - `bind()` and other methods return new instances
+- **Immutable** - `bind()`, `with_select()`, and other methods return new instances
 
 ```python
 from hypergraph import node, Graph
@@ -128,6 +128,18 @@ g = Graph([double, add_one])
 print(g.leaf_outputs)  # ('result',) - only add_one is a leaf
 ```
 
+### `selected: tuple[str, ...] | None`
+
+Default output selection set via `with_select()`, or `None` if all outputs are returned.
+
+```python
+g = Graph([double, add_one])
+print(g.selected)  # None
+
+g2 = g.with_select("result")
+print(g2.selected)  # ('result',)
+```
+
 ### `has_cycles: bool`
 
 True if the graph contains cycles.
@@ -214,6 +226,55 @@ print(partial.inputs.bound)  # {'y': 10}
 - `*names`: Names to unbind
 
 **Returns:** New Graph with specified bindings removed
+
+### `with_select(*names) -> Graph`
+
+Set a default output selection. Returns a new Graph (immutable pattern).
+
+This controls which outputs are returned by `runner.run()` and which outputs are exposed when the graph is used as a nested node via `as_node()`.
+
+All nodes still execute and all intermediate values are still computed internally. `with_select` only filters what is **returned to the caller**.
+
+```python
+g = Graph([embed, retrieve, generate])
+print(g.outputs)  # ('embedding', 'docs', 'answer')
+
+# Only return "answer" by default
+g_selected = g.with_select("answer")
+result = runner.run(g_selected, {"text": "hello", "query": "what?"})
+print(result.values.keys())  # dict_keys(['answer'])
+
+# Runtime select= overrides graph default
+result = runner.run(g_selected, inputs, select=["docs", "answer"])
+print(result.values.keys())  # dict_keys(['docs', 'answer'])
+```
+
+**Args:**
+- `*names`: Output names to include. Must be valid graph outputs.
+
+**Returns:** New Graph with default selection set
+
+**Raises:**
+- `ValueError` - If any name is not in `graph.outputs`
+
+#### Nested graph behavior
+
+When a graph with `with_select` is used as a nested node, only the selected outputs are visible to the parent graph. Unselected outputs cannot be wired to downstream nodes.
+
+```python
+inner = Graph([embed, retrieve, generate], name="rag").with_select("answer")
+gn = inner.as_node()
+print(gn.outputs)  # ('answer',) — only "answer" is exposed
+
+# Parent graph can only use "answer" from the nested graph
+outer = Graph([gn, postprocess])  # postprocess must consume "answer", not "docs"
+```
+
+If the parent graph needs an intermediate output, add it to the selection:
+
+```python
+inner = Graph([embed, retrieve, generate], name="rag").with_select("answer", "docs")
+```
 
 ### `as_node(*, name=None) -> GraphNode`
 

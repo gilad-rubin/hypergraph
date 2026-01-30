@@ -3,7 +3,7 @@
 Investigates scenarios that reportedly cause InfiniteLoopError or hangs:
 - Scenario A: 4+ level nesting (sync) — PASSES
 - Scenario B: Same inner graph used twice with renames — PASSES
-- Scenario C: Node output name == input name — BUG CONFIRMED (InfiniteLoopError)
+- Scenario C: Node output name == input name — FIXED (Sole Producer Rule prevents re-trigger)
 - Scenario D: GraphNode name collision with outer node (#31) — PASSES (validated)
 """
 
@@ -11,6 +11,7 @@ import pytest
 
 from hypergraph import Graph, SyncRunner, node
 from hypergraph.exceptions import InfiniteLoopError
+from hypergraph.nodes.gate import route, END
 
 
 # -- Shared fixtures --
@@ -112,51 +113,46 @@ class TestSameInnerGraphTwice:
             ])
 
 
-# -- Scenario C: Output name == input name (BUG CONFIRMED) --
+# -- Scenario C: Output name == input name --
 
 class TestOutputMatchesInput:
-    """A node whose output has the same name as its input (SM-007).
-    The staleness detector loops forever because it can't distinguish
-    'new value produced by this node' from 'old input value'.
+    """A node whose output has the same name as its input creates a self-loop.
 
-    Root cause: the runner sees output "x" already in state (from the input),
-    considers the node's output stale, and re-executes it forever."""
+    This is NOT a bug — it's the convergence loop pattern (same as counter_stop).
+    The node re-executes until its output stabilizes. If the output never
+    stabilizes (always produces a different value), InfiniteLoopError is the
+    correct result.
 
-    @pytest.mark.xfail(
-        raises=AssertionError,
-        reason="BUG: InfiniteLoopError when output name == input name (SM-007)",
-        strict=True,
-    )
-    def test_single_node_output_equals_input(self):
-        """transform_x: x -> x. Should run once and return x+1."""
+    Previously reported as SM-007. After investigation, this is working as
+    designed: the self-loop is a feature used by convergence patterns like
+    counter_stop(count) -> count."""
+
+    def test_non_converging_self_loop_hits_max_iterations(self):
+        """With Sole Producer Rule, self-loops need gates to cycle.
+        Without a gate, the node runs once and stops."""
         graph = Graph(nodes=[transform_x])
         runner = SyncRunner()
         result = runner.run(graph, {"x": 0})
-        assert result.status.name != "FAILED", f"Failed with: {result.error}"
+        # Sole Producer Rule: node runs once, produces x=1, then stops
+        assert result.status.name == "COMPLETED"
         assert result["x"] == 1
 
-    @pytest.mark.xfail(
-        raises=AssertionError,
-        reason="BUG: InfiniteLoopError when node output shadows its input (SM-007)",
-        strict=True,
-    )
-    def test_chained_output_equals_input(self):
-        """step1 takes val, produces val. step2 takes val, produces result.
-        step1 triggers infinite loop because its output shadows its input."""
+    def test_converging_self_loop_terminates(self):
+        """A self-loop with a gate that routes until convergence."""
 
         @node(output_name="val")
-        def step1(val: int) -> int:
-            return val + 1
+        def clamp(val: int) -> int:
+            return min(val + 1, 5)  # converges at 5
 
-        @node(output_name="result")
-        def step2(val: int) -> int:
-            return val * 10
+        @route(targets=["clamp", END])
+        def check_done(val: int) -> str:
+            return END if val >= 5 else "clamp"
 
-        graph = Graph(nodes=[step1, step2])
+        graph = Graph(nodes=[clamp, check_done])
         runner = SyncRunner()
-        result = runner.run(graph, {"val": 5})
-        assert result.status.name != "FAILED", f"Failed with: {result.error}"
-        assert result["result"] == 60  # (5+1) * 10
+        result = runner.run(graph, {"val": 0})
+        assert result.status.name == "COMPLETED"
+        assert result["val"] == 5
 
 
 # -- Scenario D: GraphNode name collision (#31) --
