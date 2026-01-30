@@ -54,6 +54,8 @@
   };
   const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
   const VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
+  const ROUTE_MAX_X_STEP_MULT = VizConstants.ROUTE_MAX_X_STEP_MULT || 1.25;
+  const ROUTE_TARGET_BIAS = VizConstants.ROUTE_TARGET_BIAS || 0.6;
 
   // Get visible bottom of node (accounts for wrapper/content offset)
   const nodeVisibleBottom = (node) => {
@@ -367,6 +369,9 @@
       }
     }
 
+    const coordValue = (node) =>
+      node._seedCoord !== undefined ? node._seedCoord : node[coordPrimary];
+
     // Helper: compute weighted barycenter from both sources and targets
     const computeWeightedBarycenter = (node, sourceWeight, targetWeight) => {
       let sum = 0;
@@ -374,13 +379,13 @@
 
       // Add source contributions
       for (const src of node._sources) {
-        sum += src[coordPrimary] * sourceWeight;
+        sum += coordValue(src) * sourceWeight;
         count += sourceWeight;
       }
 
       // Add target contributions
       for (const tgt of node._targets) {
-        sum += tgt[coordPrimary] * targetWeight;
+        sum += coordValue(tgt) * targetWeight;
         count += targetWeight;
       }
 
@@ -400,7 +405,7 @@
 
       for (const node of row) {
         if (node._targets.length > 0) {
-          const sum = node._targets.reduce((acc, t) => acc + t[coordPrimary], 0);
+          const sum = node._targets.reduce((acc, t) => acc + coordValue(t), 0);
           node._barycenter = sum / node._targets.length;
         } else {
           node._barycenter = row.indexOf(node) * spacing;
@@ -420,7 +425,6 @@
       const row = rows[rowIdx];
 
       for (const node of row) {
-        // Weight sources and targets equally to balance both directions
         const weighted = computeWeightedBarycenter(node, 1, 1);
         if (weighted !== null) {
           node._barycenter = weighted;
@@ -509,6 +513,10 @@
       layoutConfig,
       1
     );
+
+    for (const node of nodes) {
+      node._seedCoord = node[coordPrimary];
+    }
 
     // Initialize x positions using barycenter heuristic AFTER y positions are set
     // This gives better initial ordering before separation constraints lock things in
@@ -654,7 +662,7 @@
       // Increased base strength from 0.6 to 1.5 to better align nodes vertically
       // Still scales down with node degree to allow flexibility for highly connected nodes
       strength:
-        1.5 /
+        (1.5 * (sourceNode.targets.length === 1 ? 2 : 1)) /
         Math.max(1, sourceNode.targets.length + targetNode.sources.length - 2),
     }));
 
@@ -911,7 +919,9 @@
               targetY
             );
 
-            const distance = distance1d(currentPoint.x, candidatePoint.x);
+            const distance =
+              distance1d(currentPoint.x, candidatePoint.x) +
+              ROUTE_TARGET_BIAS * distance1d(target.x, candidatePoint.x);
             if (distance > nearestDistance) {
               break;
             }
@@ -923,17 +933,21 @@
           }
 
           const offsetY = firstNode.height + spaceY;
+          const maxStep = Math.max(spaceX * ROUTE_MAX_X_STEP_MULT, minPassageGap * 0.5);
+          const stepX = clamp(nearestPoint.x - currentPoint.x, -maxStep, maxStep);
+          const laneX = currentPoint.x + stepX + sourceOffsetX;
+
           edge.points.push({
-            x: nearestPoint.x + sourceOffsetX,
+            x: laneX,
             y: nearestPoint.y,
           });
           edge.points.push({
-            x: nearestPoint.x + sourceOffsetX,
+            x: laneX,
             y: nearestPoint.y + offsetY,
           });
 
           currentPoint = {
-            x: nearestPoint.x,
+            x: laneX - sourceOffsetX,
             y: nearestPoint.y + offsetY,
           };
         }
