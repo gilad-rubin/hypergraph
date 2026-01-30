@@ -36,6 +36,10 @@
     // Layout spacing (visible edge-to-edge gap)
     VERTICAL_GAP: 100,
 
+    // Complex graph layout scaling
+    COMPLEX_GRAPH_NODE_THRESHOLD: 18,
+    COMPLEX_GRAPH_SPACE_X_MULT: 1.35,
+
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS,
     DEFAULT_OFFSET: 10,

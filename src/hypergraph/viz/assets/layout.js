@@ -34,6 +34,8 @@
   var GRAPH_PADDING = VizConstants.GRAPH_PADDING || 24;
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
   var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
+  var COMPLEX_GRAPH_NODE_THRESHOLD = VizConstants.COMPLEX_GRAPH_NODE_THRESHOLD || 18;
+  var COMPLEX_GRAPH_SPACE_X_MULT = VizConstants.COMPLEX_GRAPH_SPACE_X_MULT || 1.35;
 
 
   /**
@@ -384,8 +386,23 @@
   }
 
   // Get layout options (keep a single spacing profile)
-  function getLayoutOptions() {
-    return ConstraintLayout.defaultOptions;
+  function getLayoutOptions(layoutNodes) {
+    if (!layoutNodes || layoutNodes.length < COMPLEX_GRAPH_NODE_THRESHOLD) {
+      return ConstraintLayout.defaultOptions;
+    }
+
+    var base = ConstraintLayout.defaultOptions;
+    return {
+      layout: {
+        ...base.layout,
+        spaceX: base.layout.spaceX * COMPLEX_GRAPH_SPACE_X_MULT,
+      },
+      routing: {
+        ...base.routing,
+        spaceX: base.routing.spaceX * COMPLEX_GRAPH_SPACE_X_MULT,
+        minPassageGap: base.routing.minPassageGap * COMPLEX_GRAPH_SPACE_X_MULT,
+      },
+    };
   }
 
   function buildNodeDimensionsAndTypes(visibleNodes) {
