@@ -18,7 +18,8 @@ Do not make assumptions on important decisions — get clarification first.
 
 ## Workflow Steps
 
-### [ ] Step: Technical Specification
+### [x] Step: Technical Specification
+<!-- chat-id: 4960b368-b2ef-4844-bf32-a1695ad39321 -->
 
 Assess the task's difficulty, as underestimating it leads to poor outcomes.
 - easy: Straightforward implementation, trivial bug fix or feature
@@ -50,15 +51,18 @@ Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warra
 
 ---
 
-### [ ] Step: Implementation
+### [ ] Step: Build benchmarks for valid PRs (#20, #22, #24)
 
-Implement the task according to the technical specification and general engineering best practices.
+Create `benchmarks/test_optimization_prs.py` with:
+- PR #20: Benchmark `_compute_exclusive_reachability` old (O(N²)) vs new (Counter-based) with varying branch counts
+- PR #22: Benchmark `AsyncRunner.map` old (all-tasks) vs new (worker-pool) measuring memory and time
+- PR #24: Benchmark `_get_activated_nodes` with controlled_by computed per-superstep vs cached
+- Include sanity checks for PR #19 and #21 at realistic scales to confirm negligible difference
 
-1. Break the task into steps where possible.
-2. Implement the required changes in the codebase.
-3. Add and run relevant tests and linters.
-4. Perform basic manual verification if applicable.
-5. After completion, write a report to `{@artifacts_path}/report.md` describing:
-   - What was implemented
-   - How the solution was tested
-   - The biggest issues or challenges encountered
+### [ ] Step: Run benchmarks and write report
+
+1. Run all benchmarks and collect results
+2. Write `{@artifacts_path}/report.md` with:
+   - Per-PR verdict (accept/reject/flag)
+   - Benchmark data supporting each verdict
+   - Recommendations for which PRs to merge
