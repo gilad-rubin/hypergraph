@@ -60,7 +60,8 @@ Create `benchmarks/test_optimization_prs.py` with:
 - PR #24: Benchmark `_get_activated_nodes` with controlled_by computed per-superstep vs cached
 - Include sanity checks for PR #19 and #21 at realistic scales to confirm negligible difference
 
-### [ ] Step: Run benchmarks and write report
+### [x] Step: Run benchmarks and write report
+<!-- chat-id: 68e54502-4ae8-4daf-976e-c7c5cfa31530 -->
 
 1. Run all benchmarks and collect results
 2. Write `{@artifacts_path}/report.md` with:
