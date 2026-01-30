@@ -39,3 +39,4 @@ deprecated/*
 # Visualization outputs
 outputs/
 *.pyc
+.auto-claude/*
