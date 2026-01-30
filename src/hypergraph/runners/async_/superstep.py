@@ -62,6 +62,14 @@ async def run_superstep_async(
     """
     new_state = state.copy()
 
+    # If any ready node is an InterruptNode, execute only that node
+    # to avoid PauseExecution (BaseException) cancelling sibling tasks in gather
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    interrupt_nodes = [n for n in ready_nodes if isinstance(n, InterruptNode)]
+    if interrupt_nodes:
+        ready_nodes = [interrupt_nodes[0]]
+
     async def execute_one(
         node: HyperNode,
     ) -> tuple[HyperNode, dict[str, Any], dict[str, int]]:

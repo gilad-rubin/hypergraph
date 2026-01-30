@@ -66,6 +66,15 @@ class AsyncGraphNodeExecutor:
             return self._collect_as_lists(results, node)
 
         result = await self.runner.run(node.graph, inner_inputs)
+        if result.status == RunStatus.PAUSED:
+            from hypergraph.runners._shared.types import PauseExecution, PauseInfo
+
+            nested_pause = PauseInfo(
+                node_name=f"{node.name}/{result.pause.node_name}",
+                output_param=result.pause.output_param,
+                value=result.pause.value,
+            )
+            raise PauseExecution(nested_pause)
         if result.status == RunStatus.FAILED:
             raise result.error or RuntimeError("Nested graph execution failed")
         return node.map_outputs_from_original(result.values)
