@@ -8,6 +8,7 @@ from hypergraph.nodes import (
     GraphNode,
     HyperNode,
     IfElseNode,
+    InterruptNode,
     RenameError,
     RouteNode,
     ifelse,
@@ -22,6 +23,7 @@ from hypergraph.exceptions import (
 from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
+    PauseInfo,
     RunResult,
     RunStatus,
     SyncRunner,
@@ -37,6 +39,7 @@ __all__ = [
     "GateNode",
     "IfElseNode",
     "RouteNode",
+    "InterruptNode",
     "HyperNode",
     "END",
     # Graph
@@ -46,6 +49,7 @@ __all__ = [
     "SyncRunner",
     "AsyncRunner",
     "BaseRunner",
+    "PauseInfo",
     "RunResult",
     "RunStatus",
     # Errors

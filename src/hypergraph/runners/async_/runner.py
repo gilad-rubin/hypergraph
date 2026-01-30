@@ -9,6 +9,7 @@ from hypergraph.exceptions import InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
+from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.helpers import (
     filter_outputs,
@@ -19,6 +20,7 @@ from hypergraph.runners._shared.helpers import (
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.types import (
     GraphState,
+    PauseExecution,
     RunnerCapabilities,
     RunResult,
     RunStatus,
@@ -33,6 +35,7 @@ from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
     AsyncIfElseNodeExecutor,
+    AsyncInterruptNodeExecutor,
     AsyncRouteNodeExecutor,
 )
 from hypergraph.runners.async_.superstep import (
@@ -63,6 +66,7 @@ class AsyncRunner(BaseRunner):
     - Concurrent execution of independent nodes
     - Configurable concurrency limit
     - Supports both sync and async nodes
+    - Human-in-the-loop via InterruptNode (pause and resume)
 
     Example:
         >>> from hypergraph import Graph, node, AsyncRunner
@@ -83,6 +87,7 @@ class AsyncRunner(BaseRunner):
             GraphNode: AsyncGraphNodeExecutor(self),
             IfElseNode: AsyncIfElseNodeExecutor(),
             RouteNode: AsyncRouteNodeExecutor(),
+            InterruptNode: AsyncInterruptNodeExecutor(),
         }
 
     @property
@@ -93,6 +98,7 @@ class AsyncRunner(BaseRunner):
             supports_async_nodes=True,
             supports_streaming=False,  # Phase 2
             returns_coroutine=True,
+            supports_interrupts=True,
         )
 
     @property
@@ -138,6 +144,12 @@ class AsyncRunner(BaseRunner):
             return RunResult(
                 values=output_values,
                 status=RunStatus.COMPLETED,
+            )
+        except PauseExecution as pause:
+            return RunResult(
+                values={},
+                status=RunStatus.PAUSED,
+                pause=pause.pause_info,
             )
         except Exception as e:
             return RunResult(

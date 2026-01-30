@@ -522,6 +522,19 @@ class Graph:
         """True if any node requires async execution."""
         return any(node.is_async for node in self._nodes.values())
 
+
+    @property
+    def has_interrupts(self) -> bool:
+        """True if any node is an InterruptNode."""
+        from hypergraph.nodes.interrupt import InterruptNode
+        return any(isinstance(node, InterruptNode) for node in self._nodes.values())
+
+    @property
+    def interrupt_nodes(self) -> list:
+        """Ordered list of InterruptNode instances."""
+        from hypergraph.nodes.interrupt import InterruptNode
+        return [node for node in self._nodes.values() if isinstance(node, InterruptNode)]
+
     @property
     def definition_hash(self) -> str:
         """Merkle-tree hash of graph structure (cached)."""
