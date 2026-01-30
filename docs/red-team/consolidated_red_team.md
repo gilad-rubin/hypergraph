@@ -10,39 +10,32 @@
 
 ## Status Summary
 
-| # | Issue | Severity | Status |
+| # | Issue | Severity | Source |
 |---|-------|----------|--------|
-| 1 | Mutable defaults shared | CRITICAL | ✅ Resolved (PR #25) |
-| 2 | Cycle off-by-one | HIGH | ✅ Resolved (PR #25) |
-| 3 | Runtime type checking | MEDIUM-HIGH | ⏸️ Deferred — by design |
-| 4 | Intermediate injection | HIGH | ✅ Resolved (PR #25) |
-| 5 | Disconnected nodes | HIGH | ⏸️ Deferred — design decision |
-| 6 | Rename collision | MEDIUM | ✅ Resolved (PR #25) |
-| 7 | Invalid gate target | MEDIUM | ✅ Already fixed |
-| 8 | Mutex branch outputs | MEDIUM | ✅ Already fixed (PR #8) |
-| 9 | Control-only cycles | MEDIUM | ✅ Resolved (PR #25) |
-| 10 | Deep nesting / infinite loops | HIGH | 🔴 **OPEN** |
-| 11 | Rename propagation | MEDIUM | ✅ Resolved (PR #25) |
-| 12 | kwargs detection | LOW | ⏸️ Deferred — low priority |
-| 13 | GraphNode output leakage | MEDIUM | 🔵 **OPEN** — from PR #23 |
-| 14 | Stale branch values persist | MEDIUM | 🔵 **OPEN** — from PR #23 |
-| 15 | Type subclass compatibility | LOW | 🔵 **OPEN** — from PR #23 |
-| 16 | DiGraph drops parallel edges | MEDIUM | 🔵 **OPEN** — from PR #23 |
-| 17 | Empty/edge-case graphs | LOW | 🔵 **OPEN** — from PR #23 |
-| 18 | Routing edge cases (None, multi-target) | MEDIUM | 🔵 **OPEN** — from PR #23 |
-| 19 | Bind/unbind edge cases | LOW | 🔵 **OPEN** — from PR #23 |
-| 20 | Generator node behavior | LOW | 🔵 **OPEN** — from PR #23 |
-| 21 | Complex type validation (Optional, generics) | LOW | 🔵 **OPEN** — from PR #23 |
-| 22 | Superstep determinism | LOW | 🔵 **OPEN** — from PR #23 |
-| 23 | Max iterations boundary | LOW | 🔵 **OPEN** — from PR #23 |
-| 24 | GateNode property edge cases | LOW | 🔵 **OPEN** — from PR #23 |
-| 25 | Select parameter filtering | LOW | 🔵 **OPEN** — from PR #23 |
-| 26 | Map with empty list / zip mismatch | MEDIUM | 🔵 **OPEN** — from PR #18 extended |
-| 27 | Nested graph bindings persistence | LOW | 🔵 **OPEN** — from PR #18 extended |
-| 28 | Async exception propagation | MEDIUM | 🔵 **OPEN** — from PR #18 extended |
-| 29 | Cyclic gate→END infinite loop | HIGH | 🔵 **OPEN** — from AMP (CY-005) |
-| 30 | Type checking with renamed inputs | MEDIUM | 🔵 **OPEN** — from AMP (TC-010) |
-| 31 | GraphNode name collision not detected | MEDIUM | 🔵 **OPEN** — from AMP (GN-008) |
+| 10 | Deep nesting / infinite loops | HIGH | AMP (GN-001, GN-003, SM-007) |
+| 29 | Cyclic gate→END infinite loop | HIGH | AMP (CY-005) |
+| 13 | GraphNode output leakage | MEDIUM | PR #23 |
+| 14 | Stale branch values persist | MEDIUM | PR #23 |
+| 16 | DiGraph drops parallel edges | MEDIUM | PR #23 |
+| 18 | Routing edge cases (None, multi-target) | MEDIUM | PR #23 |
+| 26 | Map with empty list / zip mismatch | MEDIUM | PR #18 extended |
+| 28 | Async exception propagation | MEDIUM | PR #18 extended |
+| 30 | Type checking with renamed inputs | MEDIUM | AMP (TC-010) |
+| 31 | GraphNode name collision not detected | MEDIUM | AMP (GN-008) |
+| 15 | Type subclass compatibility | LOW | PR #23 |
+| 17 | Empty/edge-case graphs | LOW | PR #23 |
+| 19 | Bind/unbind edge cases | LOW | PR #23 |
+| 20 | Generator node behavior | LOW | PR #23 |
+| 21 | Complex type validation (Optional, generics) | LOW | PR #23 |
+| 22 | Superstep determinism | LOW | PR #23 |
+| 23 | Max iterations boundary | LOW | PR #23 |
+| 24 | GateNode property edge cases | LOW | PR #23 |
+| 25 | Select parameter filtering | LOW | PR #23 |
+| 27 | Nested graph bindings persistence | LOW | PR #18 extended |
+
+**Deferred**: #3 runtime type checking (by design), #5 disconnected nodes (design decision), #12 kwargs detection (low priority)
+
+**Resolved**: #1, #2, #4, #6, #9, #11 in PR #25; #7, #8 already fixed
 
 ---
 
@@ -183,69 +176,6 @@ Several nesting scenarios cause `InfiniteLoopError` or hang:
 | 24 | GateNode properties | `TestGateNodeProperties` | Gate has no outputs, get_output_type returns None |
 | 25 | Select parameter | `TestSelectParameter` | select filters outputs, warns on non-existent |
 | 27 | Nested graph bindings | `test_red_team_extended.py` | Bindings may persist/be lost when wrapped as GraphNode |
-
----
-
-## ⏸️ DEFERRED — By Design or Low Priority
-
-### 3. Runtime Inputs Not Type-Checked (`strict_types`)
-
-| | |
-|---|---|
-| **Severity** | MEDIUM-HIGH |
-| **Sources** | Jules PR #18 (B3), Gemini (T1), Codex (issue 6) |
-
-**Problem**: `strict_types=True` only validates node-to-node edges at build time. Values passed via `runner.run()` are never checked.
-
-**Why deferred**: Runtime type checking adds overhead. Current behavior matches many frameworks. Could use `beartype` for opt-in validation.
-
-**Future**: Add an optional `validate_inputs=True` parameter to `runner.run()`.
-
----
-
-### 5. Disconnected / Unreachable Nodes Force All Inputs
-
-| | |
-|---|---|
-| **Severity** | HIGH |
-| **Sources** | Jules PR #18 (D1, D2), Gemini (SPLIT-1, UNR-1), Codex (issue 3) |
-
-**Problem**: The runner demands inputs for every node, even if unreachable from provided inputs.
-
-**Why deferred**: Arguably correct — a graph should be self-contained. Computing reachability adds complexity.
-
-**Future**: Add a `select_subgraph(outputs=[...])` method to extract runnable subgraphs.
-
----
-
-### 12. `**kwargs` Not Detected as Graph Inputs
-
-| | |
-|---|---|
-| **Severity** | LOW |
-| **Sources** | Jules PR #18 (D4) |
-
-**Problem**: Nodes using `**kwargs` can't receive extra inputs via the graph.
-
-**Why deferred**: Rare use case. Workaround: use explicit parameters or a dict parameter.
-
----
-
-## Confirmed Working (Not Bugs)
-
-| Area | Detail |
-|---|---|
-| Async parallel execution | `AsyncRunner` correctly runs independent async nodes concurrently |
-| Mixed sync/async | `AsyncRunner` handles both sync and async nodes in one graph |
-| Rename swap | `with_inputs(a='b', b='a')` swaps atomically |
-| Chained renames | `with_inputs(x='y').with_inputs(y='z')` composes correctly |
-| Union type compatibility | `int` → `int \| str` passes `strict_types` |
-| State isolation between runs | Basic state (non-mutable-default) is isolated |
-| Duplicate node name detection | Caught at build time |
-| Mutex branch-local consumers | Validation correctly handles same-name outputs in exclusive branches |
-| Gate invalid target detection | Runtime validation catches undeclared targets |
-| Map exception handling | `runner.map` returns `RunResult` with `status=FAILED` for failed items |
-| Recursive graph construction | Graph copies nodes at construction, preventing self-reference |
 
 ---
 
