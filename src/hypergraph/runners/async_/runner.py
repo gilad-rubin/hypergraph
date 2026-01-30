@@ -280,37 +280,33 @@ class AsyncRunner(BaseRunner):
                 results = await asyncio.gather(*tasks)
                 return list(results)
             else:
-                # Use a worker pool to limit the number of pending tasks
-                # to avoid overhead of creating thousands of tasks at once
-                results = [None] * len(input_variations)
-                queue = asyncio.Queue()
-
+                # Worker pool: fixed number of workers pull from a queue,
+                # avoiding the overhead of creating thousands of tasks at once.
+                results_list: list[RunResult] = []
+                queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
                 for idx, v in enumerate(input_variations):
                     queue.put_nowait((idx, v))
 
-                async def worker() -> None:
+                order: list[int] = []
+
+                async def _worker() -> None:
                     while True:
                         try:
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
                             return
+                        result = await self.run(
+                            graph, v, select=select, max_concurrency=max_concurrency
+                        )
+                        results_list.append(result)
+                        order.append(idx)
 
-                        try:
-                            # We can cast results list because we know we'll fill it
-                            results[idx] = await self.run(  # type: ignore
-                                graph, v, select=select, max_concurrency=max_concurrency
-                            )
-                        finally:
-                            queue.task_done()
-
-                # Spawn workers
                 num_workers = min(max_concurrency, len(input_variations))
-                workers = [asyncio.create_task(worker()) for _ in range(num_workers)]
-
-                # Wait for all workers to complete
+                workers = [asyncio.create_task(_worker()) for _ in range(num_workers)]
                 await asyncio.gather(*workers)
-
-                return results  # type: ignore
+                # Restore original input order
+                ordered = [r for _, r in sorted(zip(order, results_list))]
+                return ordered
         finally:
             if token is not None:
                 reset_concurrency_limiter(token)
