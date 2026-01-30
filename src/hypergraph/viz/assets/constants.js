@@ -36,10 +36,6 @@
     // Layout spacing (visible edge-to-edge gap)
     VERTICAL_GAP: 100,
 
-    // Routing shaping
-    ROUTE_MAX_X_STEP_MULT: 1.25,
-    ROUTE_TARGET_BIAS: 0.6,
-
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS,
     DEFAULT_OFFSET: 10,
