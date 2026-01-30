@@ -39,3 +39,6 @@ deprecated/*
 # Visualization outputs
 outputs/
 *.pyc
+
+# Auto Claude data directory
+.auto-claude/
