@@ -547,7 +547,7 @@ class TestSyncRunnerMap:
         sums = sorted(r["sum"] for r in results)
         assert sums == [11, 12, 21, 22]
 
-    def test_map_with_select(self):
+    def test_map_select(self):
         """Map respects select parameter."""
         graph = Graph([double, add.with_inputs(a="doubled")])
         runner = SyncRunner()

@@ -462,7 +462,7 @@ class Graph:
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
-    def with_select(self, *names: str) -> "Graph":
+    def select(self, *names: str) -> "Graph":
         """Set default output selection. Returns new Graph (immutable).
 
         Controls which outputs are returned by runner.run() and which outputs
@@ -484,7 +484,7 @@ class Graph:
             ValueError: If any name is not a graph output.
 
         Example:
-            >>> graph = Graph([embed, retrieve, generate]).with_select("answer")
+            >>> graph = Graph([embed, retrieve, generate]).select("answer")
             >>> result = runner.run(graph, inputs)
             >>> assert list(result.keys()) == ["answer"]
 
@@ -500,7 +500,7 @@ class Graph:
             )
         if len(names) != len(set(names)):
             raise ValueError(
-                f"with_select() requires unique output names. Received: {names}"
+                f"select() requires unique output names. Received: {names}"
             )
 
         new_graph = self._shallow_copy()

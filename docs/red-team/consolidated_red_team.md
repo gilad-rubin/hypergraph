@@ -12,7 +12,6 @@
 
 | # | Issue | Severity | Source |
 |---|-------|----------|--------|
-| 10 | Deep nesting / infinite loops | HIGH | AMP (GN-001, GN-003, SM-007) |
 | 29 | Cyclic gate→END infinite loop | HIGH | AMP (CY-005) |
 | 13 | GraphNode output leakage | MEDIUM | PR #23 |
 | 14 | Stale branch values persist | MEDIUM | PR #23 |
@@ -35,36 +34,11 @@
 
 **Deferred**: #3 runtime type checking (by design), #5 disconnected nodes (design decision), #12 kwargs detection (low priority)
 
-**Resolved**: #1, #2, #4, #6, #9, #11 in PR #25; #7, #8 already fixed
+**Resolved**: #1, #2, #4, #6, #9, #11 in PR #25; #7, #8 already fixed; #10, #31 in PR #29
 
 ---
 
 ## 🔴 OPEN — High Severity
-
-### 10. Deep Nesting / Multiple GraphNodes — Infinite Loops
-
-Several nesting scenarios cause `InfiniteLoopError` or hang:
-
-```python
-# Scenario A: 4+ levels of nesting
-g1 = Graph(nodes=[add_one])
-g2 = Graph(nodes=[g1.as_node()])
-g3 = Graph(nodes=[g2.as_node()])
-g4 = Graph(nodes=[g3.as_node()])  # InfiniteLoopError at 4 levels
-
-# Scenario B: same inner graph used twice
-inner = Graph(nodes=[double])
-outer = Graph(nodes=[inner.as_node(name="a"), inner.as_node(name="b")])  # hangs
-
-# Scenario C: output name == input name
-@node(output_name="x")
-def transform(x: int) -> int: return x + 1  # staleness detector loops forever
-```
-
-**Expected**: All should run or raise a clear validation error.
-**Actual**: `InfiniteLoopError` after 1000 iterations, or hangs indefinitely. The staleness detector can't distinguish "new value" from "same-named old value" across nesting boundaries.
-
----
 
 ### 29. Cyclic Gate→END Infinite Loop
 
