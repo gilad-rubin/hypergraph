@@ -79,6 +79,7 @@ class Graph:
         self.name = name
         self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
+        self._selected: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
@@ -412,6 +413,56 @@ class Graph:
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
+    def with_select(self, *names: str) -> "Graph":
+        """Set default output selection. Returns new Graph (immutable).
+
+        Controls which outputs are returned by runner.run() and which outputs
+        are exposed when this graph is used as a nested node via as_node().
+
+        This does NOT affect internal graph execution — all nodes still run
+        and all intermediate values are still computed. It only filters what
+        is returned to the caller.
+
+        A runtime ``select=`` passed to runner.run() overrides this default.
+
+        Args:
+            *names: Output names to include. Must be valid graph outputs.
+
+        Returns:
+            New Graph with default selection set.
+
+        Raises:
+            ValueError: If any name is not a graph output.
+
+        Example:
+            >>> graph = Graph([embed, retrieve, generate]).with_select("answer")
+            >>> result = runner.run(graph, inputs)
+            >>> assert list(result.keys()) == ["answer"]
+
+            >>> # As nested node, only "answer" is visible to the parent graph
+            >>> outer = Graph([graph.as_node(), postprocess])
+        """
+        all_outputs = set(self.outputs)
+        invalid = [n for n in names if n not in all_outputs]
+        if invalid:
+            raise ValueError(
+                f"Cannot select {invalid}: not graph outputs. "
+                f"Valid outputs: {self.outputs}"
+            )
+        if len(names) != len(set(names)):
+            raise ValueError(
+                f"with_select() requires unique output names. Received: {names}"
+            )
+
+        new_graph = self._shallow_copy()
+        new_graph._selected = names
+        return new_graph
+
+    @property
+    def selected(self) -> tuple[str, ...] | None:
+        """Default output selection, or None if all outputs are returned."""
+        return self._selected
+
     @property
     def has_cycles(self) -> bool:
         """True if graph contains cycles."""
@@ -467,6 +518,7 @@ class Graph:
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
+        # _selected is an immutable tuple (or None), safe to share via copy.copy
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 
