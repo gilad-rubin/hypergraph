@@ -880,7 +880,6 @@
           const firstNode = rows[i][0];
           let nearestPoint = { x: nodeLeft(firstNode) - spaceX, y: firstNode.y };
           let nearestDistance = Infinity;
-          let lockedToCurrent = false;
 
           const rowExtended = [
             { ...firstNode, x: Number.MIN_SAFE_INTEGER },
@@ -902,15 +901,6 @@
             const sourceY = nodeTop(node) - spaceY;
             const targetX = nodeLeft(nextNode) - offsetX;
             const targetY = nodeTop(nextNode) - spaceY;
-
-            if (!lockedToCurrent &&
-                currentPoint.x >= sourceX &&
-                currentPoint.x <= targetX) {
-              nearestPoint = { x: currentPoint.x, y: sourceY };
-              nearestDistance = 0;
-              lockedToCurrent = true;
-              break;
-            }
 
             const candidatePoint = nearestOnLine(
               currentPoint.x,
