@@ -181,7 +181,7 @@ class TestExceptionInCycle:
             return count + 1
 
         @route(targets=["counter_with_error", END])
-        def cycle_gate(count: int, fail_at: int = 3) -> str:
+        def cycle_gate(count: int) -> str:
             return END if count >= 10 else "counter_with_error"
 
         graph = Graph([counter_with_error, cycle_gate])
