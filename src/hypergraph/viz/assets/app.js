@@ -81,6 +81,11 @@
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
   }
 
+  function getVisibleBottom(y, height, nodeType, isExpanded) {
+    var offset = getNodeTypeOffset(nodeType, isExpanded);
+    return y + height - offset;
+  }
+
   // === DEBUG OVERLAY COMPONENT ===
   var DebugOverlay = function(props) {
     var nodes = props.nodes;
@@ -310,7 +315,7 @@
       // Use absolute positions for edge validation
       var srcCenterX = srcNode.absX + srcNode.width / 2;
       var tgtCenterX = tgtNode.absX + tgtNode.width / 2;
-      var srcBottom = srcNode.absY + srcNode.height;
+      var srcBottom = getVisibleBottom(srcNode.absY, srcNode.height, srcNode.nodeType, srcNode.isExpanded);
       var tgtTop = tgtNode.absY;
 
       var vertDist = tgtTop - srcBottom;
@@ -1226,7 +1231,7 @@
 
         var srcCenterX = srcNode.x + srcNode.width / 2;
         var tgtCenterX = tgtNode.x + tgtNode.width / 2;
-        var srcBottom = srcNode.y + srcNode.height;
+        var srcBottom = getVisibleBottom(srcNode.y, srcNode.height, srcNode.nodeType, srcNode.isExpanded);
         var tgtTop = tgtNode.y;
         var vertDist = tgtTop - srcBottom;
         var horizDist = tgtCenterX - srcCenterX;
