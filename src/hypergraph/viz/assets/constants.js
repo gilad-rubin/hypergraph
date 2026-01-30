@@ -34,7 +34,7 @@
     HEADER_HEIGHT: 32,
 
     // Layout spacing (visible edge-to-edge gap)
-    VERTICAL_GAP: 60,
+    VERTICAL_GAP: 80,
 
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS,
