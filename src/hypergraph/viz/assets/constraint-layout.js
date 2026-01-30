@@ -330,18 +330,23 @@
 
   /**
    * Reorder nodes within each row based on barycenter of their connections.
-   * Process from bottom to top: first establish bottom row order,
-   * then position upper rows based on their targets in the row below.
+   * Uses classic Sugiyama two-sweep approach:
+   * 1. Bottom-to-top sweep: position nodes based on their targets (downstream)
+   * 2. Top-to-bottom sweep: refine positions based on sources (upstream)
+   * This handles both "shared output" and "shared input" cases.
    */
   const reorderRowsByBarycenter = (rows, edges, coordPrimary) => {
     if (rows.length === 0) return;
 
-    // Build target edges map (source -> targets)
+    const spacing = 200;
+
+    // Build bidirectional adjacency: targets (downstream) and sources (upstream)
     const nodeById = {};
     for (const row of rows) {
       for (const node of row) {
         nodeById[node.id] = node;
         node._targets = [];
+        node._sources = [];
       }
     }
 
@@ -350,11 +355,14 @@
       const target = nodeById[edge.target];
       if (source && target) {
         source._targets.push(target);
+        target._sources.push(source);
       }
     }
 
-    // Process bottom row first - spread evenly
-    const spacing = 200;
+    // === SWEEP 1: Bottom-to-top using targets ===
+    // Establishes initial order based on downstream connections
+
+    // Bottom row gets initial even spread
     const bottomRow = rows[rows.length - 1];
     bottomRow.forEach((node, i) => {
       node[coordPrimary] = i * spacing;
@@ -364,21 +372,45 @@
     for (let rowIdx = rows.length - 2; rowIdx >= 0; rowIdx--) {
       const row = rows[rowIdx];
 
-      // Compute barycenter for each node based on its targets
       for (const node of row) {
         if (node._targets.length > 0) {
           const sum = node._targets.reduce((acc, t) => acc + t[coordPrimary], 0);
           node._barycenter = sum / node._targets.length;
         } else {
-          // No targets - use position in row
+          // No targets - preserve current position
           node._barycenter = row.indexOf(node) * spacing;
         }
       }
 
-      // Sort by barycenter
       row.sort((a, b) => compare(a._barycenter, b._barycenter, a.id, b.id));
+      row.forEach((node, i) => {
+        node[coordPrimary] = i * spacing;
+      });
+    }
 
-      // Assign positions
+    // === SWEEP 2: Top-to-bottom using sources ===
+    // Refines order based on upstream connections (shared inputs)
+
+    // Top row keeps its position from sweep 1
+    for (let rowIdx = 1; rowIdx < rows.length; rowIdx++) {
+      const row = rows[rowIdx];
+
+      for (const node of row) {
+        if (node._sources.length > 0) {
+          // Barycenter based on upstream sources
+          const sum = node._sources.reduce((acc, s) => acc + s[coordPrimary], 0);
+          node._barycenter = sum / node._sources.length;
+        } else if (node._targets.length > 0) {
+          // Fallback: use targets if no sources
+          const sum = node._targets.reduce((acc, t) => acc + t[coordPrimary], 0);
+          node._barycenter = sum / node._targets.length;
+        } else {
+          // No connections - preserve current position
+          node._barycenter = node[coordPrimary];
+        }
+      }
+
+      row.sort((a, b) => compare(a._barycenter, b._barycenter, a.id, b.id));
       row.forEach((node, i) => {
         node[coordPrimary] = i * spacing;
       });
@@ -388,6 +420,7 @@
     for (const row of rows) {
       for (const node of row) {
         delete node._targets;
+        delete node._sources;
         delete node._barycenter;
       }
     }
