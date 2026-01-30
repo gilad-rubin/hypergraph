@@ -3,7 +3,7 @@
 Investigates scenarios that reportedly cause InfiniteLoopError or hangs:
 - Scenario A: 4+ level nesting (sync) — PASSES
 - Scenario B: Same inner graph used twice with renames — PASSES
-- Scenario C: Node output name == input name — BUG CONFIRMED (InfiniteLoopError)
+- Scenario C: Node output name == input name — FIXED (Sole Producer Rule prevents re-trigger)
 - Scenario D: GraphNode name collision with outer node (#31) — PASSES (validated)
 """
 
@@ -11,6 +11,7 @@ import pytest
 
 from hypergraph import Graph, SyncRunner, node
 from hypergraph.exceptions import InfiniteLoopError
+from hypergraph.nodes.gate import route, END
 
 
 # -- Shared fixtures --
@@ -127,22 +128,27 @@ class TestOutputMatchesInput:
     counter_stop(count) -> count."""
 
     def test_non_converging_self_loop_hits_max_iterations(self):
-        """transform_x always produces x+1, so it never converges.
-        InfiniteLoopError is the correct behavior."""
+        """With Sole Producer Rule, self-loops need gates to cycle.
+        Without a gate, the node runs once and stops."""
         graph = Graph(nodes=[transform_x])
         runner = SyncRunner()
         result = runner.run(graph, {"x": 0})
-        assert result.status.name == "FAILED"
-        assert isinstance(result.error, InfiniteLoopError)
+        # Sole Producer Rule: node runs once, produces x=1, then stops
+        assert result.status.name == "COMPLETED"
+        assert result["x"] == 1
 
     def test_converging_self_loop_terminates(self):
-        """A self-loop that converges (returns same value) should terminate."""
+        """A self-loop with a gate that routes until convergence."""
 
         @node(output_name="val")
         def clamp(val: int) -> int:
             return min(val + 1, 5)  # converges at 5
 
-        graph = Graph(nodes=[clamp])
+        @route(targets=["clamp", END])
+        def check_done(val: int) -> str:
+            return END if val >= 5 else "clamp"
+
+        graph = Graph(nodes=[clamp, check_done])
         runner = SyncRunner()
         result = runner.run(graph, {"val": 0})
         assert result.status.name == "COMPLETED"

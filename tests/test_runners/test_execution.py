@@ -6,6 +6,7 @@ import time
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners._shared.helpers import (
     collect_inputs_for_node,
     filter_outputs,
@@ -157,8 +158,13 @@ class TestGetReadyNodes:
         assert ready[0].name == "counter"
 
     def test_stale_node_becomes_ready_again(self):
-        """Node becomes ready again when inputs change (cycles)."""
-        graph = Graph([counter])
+        """Node becomes ready again when inputs change (cycles with gates)."""
+
+        @route(targets=["counter", END])
+        def cycle_gate(count: int) -> str:
+            return "counter" if count < 10 else END
+
+        graph = Graph([counter, cycle_gate])
         state = initialize_state(graph, {"count": 0})
 
         # Execute counter once
@@ -169,7 +175,15 @@ class TestGetReadyNodes:
             outputs={"count": 1},
         )
 
-        # count is now at version 2, so counter is stale
+        # Execute gate to activate counter
+        state.routing_decisions["cycle_gate"] = "counter"
+        state.node_executions["cycle_gate"] = NodeExecution(
+            node_name="cycle_gate",
+            input_versions={"count": 2},
+            outputs={},
+        )
+
+        # count is now at version 2, so counter is stale (and gate-activated)
         assert state.versions["count"] == 2
 
         ready = get_ready_nodes(graph, state)

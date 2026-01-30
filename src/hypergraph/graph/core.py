@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import networkx as nx
 from typing import Any, TYPE_CHECKING
@@ -122,6 +123,27 @@ class Graph:
     def inputs(self) -> InputSpec:
         """Compute graph input specification."""
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
+
+    @functools.cached_property
+    def sole_producers(self) -> dict[str, str]:
+        """Map output_name → node_name for outputs with exactly one producer.
+
+        Used by the staleness detector to implement the Sole Producer Rule:
+        a node should not re-trigger from changes to values it produced itself.
+        This prevents infinite loops in accumulator patterns like
+        ``add_response(messages, response) -> messages`` and self-loops like
+        ``transform(x) -> x``.
+
+        Without this rule, the node's own output would make it appear stale,
+        causing immediate re-execution in an infinite loop. Cyclic re-execution
+        should instead be driven by gates (``@route``).
+        """
+        output_sources = self._collect_output_sources(list(self._nodes.values()))
+        return {
+            output: sources[0]
+            for output, sources in output_sources.items()
+            if len(sources) == 1
+        }
 
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
