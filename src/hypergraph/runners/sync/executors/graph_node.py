@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import map_inputs_to_func_params
-from hypergraph.runners._shared.types import RunResult, RunStatus
+from hypergraph.runners._shared.types import ErrorHandling, RunResult, RunStatus
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -51,13 +51,14 @@ class SyncGraphNodeExecutor:
         map_config = node.map_config
 
         if map_config:
-            _, mode = map_config
+            _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
             results = self.runner.map(
-                node.graph, inner_inputs, map_over=original_params, map_mode=mode
+                node.graph, inner_inputs, map_over=original_params, map_mode=mode,
+                error_handling=error_handling,
             )
-            return self._collect_as_lists(results, node)
+            return self._collect_as_lists(results, node, error_handling)
 
         result = self.runner.run(node.graph, inner_inputs)
         if result.status == RunStatus.FAILED:
@@ -68,6 +69,7 @@ class SyncGraphNodeExecutor:
         self,
         results: list[RunResult],
         node: "GraphNode",
+        error_handling: ErrorHandling = "raise",
     ) -> dict[str, list]:
         """Collect multiple RunResults into lists per output.
 
@@ -77,6 +79,8 @@ class SyncGraphNodeExecutor:
         Args:
             results: List of RunResult from runner.map()
             node: The GraphNode (used for output name translation)
+            error_handling: How to handle failed results. "raise" raises on first
+                failure, "continue" uses None placeholders to preserve list length.
 
         Returns:
             Dict mapping renamed output names to lists of values
@@ -84,7 +88,12 @@ class SyncGraphNodeExecutor:
         collected: dict[str, list] = {name: [] for name in node.outputs}
         for result in results:
             if result.status == RunStatus.FAILED:
-                raise result.error or RuntimeError("Nested graph execution failed")
+                if error_handling == "raise":
+                    raise result.error or RuntimeError("Nested graph execution failed")
+                # Continue mode: use None placeholders to preserve list length
+                for name in node.outputs:
+                    collected[name].append(None)
+                continue
             # Translate original output names to renamed names
             renamed_values = node.map_outputs_from_original(result.values)
             for name in node.outputs:

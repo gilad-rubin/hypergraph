@@ -52,6 +52,7 @@ Add `error_handling: Literal["raise", "continue"] = "raise"` parameter to both `
 ---
 
 ### [ ] Step: error_handling in as_node().map_over()
+<!-- chat-id: f789059b-ca53-4b31-9625-fd4414e17386 -->
 
 Propagate error_handling through `GraphNode.map_over()` to executors.
 
@@ -76,3 +77,7 @@ review code quality based on CLAUDE.md and other rule files and cleanup the code
 ### [ ] Step: documentation
 
 update documentation, API reference, README
+
+### [ ] Step: Re-examine edge cases, look at capabilities matrix
+
+add tests for edge cases, "red-team" the implementation to find issues and fix them / surface for discussion

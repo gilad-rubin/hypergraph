@@ -2,6 +2,8 @@
 
 from typing import Any, Literal, TYPE_CHECKING, TypeVar
 
+ErrorHandling = Literal["raise", "continue"]
+
 from hypergraph.nodes.base import HyperNode, RenameEntry
 from hypergraph.nodes._rename import build_reverse_rename_map
 
@@ -87,6 +89,7 @@ class GraphNode(HyperNode):
         # map_over configuration (None = no mapping)
         self._map_over: list[str] | None = None
         self._map_mode: Literal["zip", "product"] = "zip"
+        self._error_handling: ErrorHandling = "raise"
 
         # Core HyperNode attributes
         self.name = resolved_name
@@ -112,14 +115,14 @@ class GraphNode(HyperNode):
         return self._graph.has_async_nodes
 
     @property
-    def map_config(self) -> tuple[list[str], Literal["zip", "product"]] | None:
+    def map_config(self) -> tuple[list[str], Literal["zip", "product"], ErrorHandling] | None:
         """Map configuration if set, else None.
 
         Returns:
-            Tuple of (params, mode) if map_over was configured, else None.
+            Tuple of (params, mode, error_handling) if map_over was configured, else None.
         """
         if self._map_over:
-            return (self._map_over, self._map_mode)
+            return (self._map_over, self._map_mode, self._error_handling)
         return None
 
     @property
@@ -348,6 +351,7 @@ class GraphNode(HyperNode):
         self: _GN,
         *params: str,
         mode: Literal["zip", "product"] = "zip",
+        error_handling: ErrorHandling = "raise",
     ) -> _GN:
         """Configure this GraphNode for iteration over input parameters.
 
@@ -397,6 +401,7 @@ class GraphNode(HyperNode):
         clone = self._copy()
         clone._map_over = list(params)
         clone._map_mode = mode
+        clone._error_handling = error_handling
         return clone
 
     def _copy(self: _GN) -> _GN:
