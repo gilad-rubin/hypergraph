@@ -51,7 +51,8 @@ Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warra
 
 ---
 
-### [ ] Step: Build benchmarks for valid PRs (#20, #22, #24)
+### [x] Step: Build benchmarks for valid PRs (#20, #22, #24)
+<!-- chat-id: 45921edc-65e8-409b-95cc-1287b4c38b9c -->
 
 Create `benchmarks/test_optimization_prs.py` with:
 - PR #20: Benchmark `_compute_exclusive_reachability` old (O(N²)) vs new (Counter-based) with varying branch counts
