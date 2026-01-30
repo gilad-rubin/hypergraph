@@ -2,13 +2,15 @@
 
 from typing import Any, Literal, TYPE_CHECKING, TypeVar
 
-ErrorHandling = Literal["raise", "continue"]
-
 from hypergraph.nodes.base import HyperNode, RenameEntry
 from hypergraph.nodes._rename import build_reverse_rename_map
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
+
+# Duplicated from runners._shared.types to avoid circular import
+# (graph_node -> runners -> graph -> nodes -> graph_node)
+ErrorHandling = Literal["raise", "continue"]
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
@@ -366,6 +368,10 @@ class GraphNode(HyperNode):
                 - "zip": Parallel iteration (default). Parameters must have
                   equal-length lists. First values together, second together, etc.
                 - "product": Cartesian product. All combinations of values.
+            error_handling: How to handle failures during map execution:
+                - "raise": Stop on first failure and raise the error (default).
+                - "continue": Collect all results; failed items become None
+                  placeholders to preserve list length.
 
         Returns:
             New GraphNode instance with map_over configuration

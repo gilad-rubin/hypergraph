@@ -7,10 +7,17 @@ import warnings
 from typing import TYPE_CHECKING, Any, Iterator
 
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.types import (
+    ErrorHandling,
+    GraphState,
+    NodeExecution,
+    RunResult,
+    RunStatus,
+)
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+    from hypergraph.nodes.graph_node import GraphNode
 
 
 def _safe_deepcopy(value: Any) -> Any:
@@ -425,3 +432,39 @@ def _generate_product_inputs(
             **broadcast_values,
             **dict(zip(keys, combo)),
         }
+
+
+def collect_as_lists(
+    results: list[RunResult],
+    node: "GraphNode",
+    error_handling: ErrorHandling = "raise",
+) -> dict[str, list]:
+    """Collect multiple RunResults into lists per output.
+
+    Handles output name translation: inner graph produces original names,
+    but we need to return renamed names to match the GraphNode's interface.
+
+    Args:
+        results: List of RunResult from runner.map()
+        node: The GraphNode (used for output name translation)
+        error_handling: How to handle failed results. "raise" raises on first
+            failure, "continue" uses None placeholders to preserve list length.
+
+    Returns:
+        Dict mapping renamed output names to lists of values
+    """
+    collected: dict[str, list] = {name: [] for name in node.outputs}
+    for result in results:
+        if result.status == RunStatus.FAILED:
+            if error_handling == "raise":
+                raise result.error  # type: ignore[misc]
+            # Continue mode: use None placeholders to preserve list length
+            for name in node.outputs:
+                collected[name].append(None)
+            continue
+        # Translate original output names to renamed names
+        renamed_values = node.map_outputs_from_original(result.values)
+        for name in node.outputs:
+            if name in renamed_values:
+                collected[name].append(renamed_values[name])
+    return collected
