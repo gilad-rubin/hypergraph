@@ -175,11 +175,25 @@ def validate_runner_compatibility(
             capability="supports_cycles",
         )
 
+    # Check interrupts
+    if graph.has_interrupts and not capabilities.supports_interrupts:
+        from hypergraph.nodes.interrupt import InterruptNode
+        interrupt_names = [
+            node.name for node in graph._nodes.values()
+            if isinstance(node, InterruptNode)
+        ]
+        raise IncompatibleRunnerError(
+            f"Graph contains InterruptNode(s) but runner doesn't support interrupts: "
+            f"{', '.join(interrupt_names)}. Use AsyncRunner instead.",
+            node_name=interrupt_names[0] if interrupt_names else None,
+            capability="supports_interrupts",
+        )
+
 
 def validate_map_compatible(graph: "Graph") -> None:
     """Validate that a graph can be used with map().
 
-    Currently a placeholder for Phase 2 interrupt validation.
+    Checks that graphs with interrupts are not used with map().
 
     Args:
         graph: The graph to validate
@@ -187,9 +201,12 @@ def validate_map_compatible(graph: "Graph") -> None:
     Raises:
         GraphConfigError: If graph contains features incompatible with map
     """
-    # Phase 2: Check for interrupt nodes
-    # For now, all graphs are map-compatible
-    pass
+    if graph.has_interrupts:
+        raise IncompatibleRunnerError(
+            "Graph contains InterruptNode(s) which are incompatible with .map(). "
+            "Use .run() for graphs with interrupts.",
+            capability="supports_interrupts",
+        )
 
 
 def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
