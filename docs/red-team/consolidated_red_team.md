@@ -1,10 +1,10 @@
 # Consolidated Red-Team Findings
 
-> **Sources**: Jules ([PR #18](https://github.com/gilad-rubin/hypergraph/pull/18)), Gemini (`red_team_gemini.md`), Codex (`new_codex.md`), AMP subfolder (`How to Red-Team a Codebase for Potential Issues/`)
+> **Sources**: Jules ([PR #18](https://github.com/gilad-rubin/hypergraph/pull/18)), Claude Opus ([PR #23](https://github.com/gilad-rubin/hypergraph/pull/23)), Gemini (`red_team_gemini.md`), Codex (`new_codex.md`), AMP subfolder (`How to Red-Team a Codebase for Potential Issues/`)
 >
-> **Test files**: `test_critical_flaws.py`, `codex_tests_might_not_fail.py`, subfolder `test_red_team*.py`, `test_nodes_gate.py`, `test_routing.py`
+> **Test files**: `test_critical_flaws.py`, `codex_tests_might_not_fail.py`, subfolder `test_red_team*.py`, `test_nodes_gate.py`, `test_routing.py`, `test_red_team_audit.py` (PR #23)
 >
-> **Resolution PR**: [#25](https://github.com/gilad-rubin/hypergraph/pull/25) — fixes #1, #2, #4, #6, #9, #11
+> **Resolution PRs**: [#25](https://github.com/gilad-rubin/hypergraph/pull/25) — fixes #1, #2, #4, #6, #9, #11 | [#27](https://github.com/gilad-rubin/hypergraph/pull/27) — fixes mutex rename
 
 ---
 
@@ -24,6 +24,22 @@
 | 10 | Deep nesting loops | HIGH | 🔴 **OPEN** — needs investigation |
 | 11 | Rename propagation | MEDIUM | ✅ **RESOLVED** in PR #25 |
 | 12 | kwargs detection | LOW | ⏸️ **DEFERRED** — low priority |
+| 13 | GraphNode output leakage | MEDIUM | 🔵 **NEW** — from PR #23 |
+| 14 | Stale branch values persist | MEDIUM | 🔵 **NEW** — from PR #23 |
+| 15 | Type subclass compatibility | LOW | 🔵 **NEW** — from PR #23 |
+| 16 | DiGraph drops parallel edges | MEDIUM | 🔵 **NEW** — from PR #23 |
+| 17 | Empty/edge-case graphs | LOW | 🔵 **NEW** — from PR #23 |
+| 18 | Routing edge cases (None, multi-target) | MEDIUM | 🔵 **NEW** — from PR #23 |
+| 19 | Bind/unbind edge cases | LOW | 🔵 **NEW** — from PR #23 |
+| 20 | Generator node behavior | LOW | 🔵 **NEW** — from PR #23 |
+| 21 | Complex type validation (Optional, generics) | LOW | 🔵 **NEW** — from PR #23 |
+| 22 | Superstep determinism | LOW | 🔵 **NEW** — from PR #23 |
+| 23 | Max iterations boundary | LOW | 🔵 **NEW** — from PR #23 |
+| 24 | GateNode property edge cases | LOW | 🔵 **NEW** — from PR #23 |
+| 25 | Select parameter filtering | LOW | 🔵 **NEW** — from PR #23 |
+| 26 | Map with empty list / zip mismatch | MEDIUM | 🔵 **NEW** — from PR #18 extended |
+| 27 | Nested graph bindings persistence | LOW | 🔵 **NEW** — from PR #18 extended |
+| 28 | Async exception propagation | MEDIUM | 🔵 **NEW** — from PR #18 extended |
 
 ---
 
@@ -239,6 +255,130 @@ Several nesting scenarios cause `InfiniteLoopError` or hang:
 
 ---
 
+## 🔵 NEW Issues — From PR #23 and PR #18 Extended
+
+### 13. GraphNode Output Leakage
+
+| | |
+|---|---|
+| **Severity** | MEDIUM |
+| **Status** | 🔵 **NEW** — needs investigation |
+| **Sources** | PR #23 `TestGraphNodeOutputLeakage` |
+
+**Problem**: GraphNode exposes all intermediate outputs to the outer graph, not just its declared leaf outputs. This can cause unintended wiring.
+
+---
+
+### 14. Stale Branch Values Persist
+
+| | |
+|---|---|
+| **Severity** | MEDIUM |
+| **Status** | 🔵 **NEW** — needs investigation |
+| **Sources** | PR #23 `TestStaleBranchValues` |
+
+**Problem**: When a routing gate deactivates a branch, values produced in a previous iteration by that branch remain in state, potentially being consumed by downstream nodes.
+
+---
+
+### 15. Type Subclass Compatibility
+
+| | |
+|---|---|
+| **Severity** | LOW |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #23 `TestTypeCompatibilitySubclass` |
+
+**Problem**: `strict_types=True` may not correctly handle subclass relationships (e.g., `bool` → `int`).
+
+---
+
+### 16. DiGraph Drops Parallel Edges
+
+| | |
+|---|---|
+| **Severity** | MEDIUM |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #23 `TestMultipleOutputs` |
+
+**Problem**: NetworkX DiGraph drops parallel edges — when a node produces multiple outputs consumed by the same downstream node, only one edge is recorded.
+
+---
+
+### 17. Empty / Edge-Case Graph Configurations
+
+| | |
+|---|---|
+| **Severity** | LOW |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #23 `TestEdgeCaseGraphs` |
+
+**Problem**: Empty graphs, side-effect-only nodes, and self-referential configurations may be silently accepted or produce unexpected behavior.
+
+---
+
+### 18. Routing Edge Cases
+
+| | |
+|---|---|
+| **Severity** | MEDIUM |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #23 `TestRoutingEdgeCases` |
+
+**Problem**: Route returning `None`, IfElse with non-bool values, END termination semantics, and multi-target routing have under-specified behavior.
+
+---
+
+### 19–25. Additional Edge Cases (Low Severity)
+
+| # | Area | Test Class | Notes |
+|---|------|-----------|-------|
+| 19 | Bind/unbind | `TestBindEdgeCases` | Bind override precedence, unbind restoration |
+| 20 | Generator nodes | `TestGeneratorNodes` | Sync generators collected as list |
+| 21 | Complex types | `TestComplexTypeValidation` | Optional, generics with strict_types |
+| 22 | Superstep determinism | `TestSuperstepDeterminism` | Parallel nodes see same input state |
+| 23 | Max iterations | `TestMaxIterations` | Boundary conditions at exact max |
+| 24 | GateNode properties | `TestGateNodeProperties` | Gate has no outputs, get_output_type returns None |
+| 25 | Select parameter | `TestSelectParameter` | select filters outputs, warns on non-existent |
+
+---
+
+### 26. Map with Empty List / Zip Length Mismatch
+
+| | |
+|---|---|
+| **Severity** | MEDIUM |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #18 `test_red_team_extended.py` |
+
+**Problem**: `runner.map()` behavior with empty input lists and mismatched zip lengths may not be well-defined.
+
+---
+
+### 27. Nested Graph Bindings Persistence
+
+| | |
+|---|---|
+| **Severity** | LOW |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #18 `test_red_team_extended.py` |
+
+**Problem**: Bindings on inner graph nodes may persist or be lost when the graph is wrapped as a GraphNode.
+
+---
+
+### 28. Async Exception Propagation
+
+| | |
+|---|---|
+| **Severity** | MEDIUM |
+| **Status** | 🔵 **NEW** |
+| **Sources** | PR #18 `test_red_team_extended.py` |
+
+**Problem**: Exception propagation in async map operations may not correctly surface errors from individual items.
+
+---
+
 ## Confirmed Working (Not Bugs)
 
 | Area | Detail |
@@ -278,12 +418,16 @@ Several nesting scenarios cause `InfiniteLoopError` or hang:
 
 ### File Index
 
-| File | Description |
-|---|---|
-| `jules_red_team.md` | Points to [PR #18](https://github.com/gilad-rubin/hypergraph/pull/18) — 3 confirmed bugs, 3 design flaws, test suites |
-| `red_team_gemini.md` | Gemini findings — 6 confirmed, 2 not reproduced |
-| `new_codex.md` | Codex red-team plan — 7 hypotheses with suggested tests |
-| `test_critical_flaws.py` | 8 tests covering the core issues (mutable defaults, types, cycles, splits, intermediates, mutex) |
-| `codex_tests_might_not_fail.py` | 3 exploratory tests (input override, disconnected subgraph, rename collision) |
-| `How to Red-Team…/*.md` | AMP multi-phase reports — 218 tests, 68 failures, cross-framework research |
-| `How to Red-Team…/test_red_team*.py` | Batched test suites (gates, renames, types, nesting, defaults, map, generators, async, caching, bind, errors) |
+| File | Source | Description |
+|---|---|---|
+| `red-team/pr-23/test_red_team_audit.py` | PR #23 | 20 test classes, 1149 lines — comprehensive edge-case audit |
+| `red-team/pr-18/RED_TEAM_FINDINGS.md` | PR #18 | 3 confirmed bugs, 4 design flaws, recommendations |
+| `red-team/pr-18/test_red_team_plan.py` | PR #18 | Core regression tests — cycles, types, mutex, nesting |
+| `red-team/pr-18/test_red_team_extended.py` | PR #18 | Extended tests — map, kwargs, async, nested bindings |
+| `jules_red_team.md` | — | Points to PR #18 — original Jules analysis |
+| `red_team_gemini.md` | — | Gemini findings — 6 confirmed, 2 not reproduced |
+| `new_codex.md` | — | Codex red-team plan — 7 hypotheses with suggested tests |
+| `test_critical_flaws.py` | — | 8 tests covering core issues |
+| `codex_tests_might_not_fail.py` | — | 3 exploratory tests |
+| `How to Red-Team…/*.md` | — | AMP multi-phase reports — 218 tests, 68 failures |
+| `How to Red-Team…/test_red_team*.py` | — | Batched test suites (gates, renames, types, nesting, etc.) |
