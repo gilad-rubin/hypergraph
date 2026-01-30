@@ -51,7 +51,7 @@ Add `error_handling: Literal["raise", "continue"] = "raise"` parameter to both `
 
 ---
 
-### [ ] Step: error_handling in as_node().map_over()
+### [x] Step: error_handling in as_node().map_over()
 <!-- chat-id: f789059b-ca53-4b31-9625-fd4414e17386 -->
 
 Propagate error_handling through `GraphNode.map_over()` to executors.
