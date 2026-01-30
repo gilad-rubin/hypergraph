@@ -65,13 +65,15 @@
     return nodeBottom(node) - offset;
   };
 
-  const groupByRow = (nodes, orientation) => {
+  const groupByRow = (nodes, orientation, rowSnap = null) => {
     const rows = {};
     const primaryCoord = orientation === 'vertical' ? 'y' : 'x';
     const secondaryCoord = orientation === 'vertical' ? 'x' : 'y';
 
     for (const node of nodes) {
-      const key = node[primaryCoord];
+      const key = rowSnap
+        ? Math.round(node[primaryCoord] / rowSnap) * rowSnap
+        : node[primaryCoord];
       rows[key] = rows[key] || [];
       rows[key].push(node);
     }
@@ -202,6 +204,16 @@
         variableB.minus(variableA),
         Operator.Ge,
         constraint.separation,
+        Strength.required
+      ),
+  };
+
+  const alignConstraint = {
+    strict: (constraint, layoutConfig, variableA, variableB) =>
+      new Constraint(
+        variableA.minus(variableB),
+        Operator.Eq,
+        0,
         Strength.required
       ),
   };
@@ -500,14 +512,19 @@
 
     const rowConstraints = createRowConstraints(edges, layoutConfig);
     const layerConstraints = createLayerConstraints(nodes, layers, layoutConfig);
+    const sourceAlignmentConstraints = createSourceAlignmentConstraints(nodes, layoutConfig);
 
-    solveStrict([...rowConstraints, ...layerConstraints], layoutConfig, 1);
+    solveStrict(
+      [...rowConstraints, ...layerConstraints, ...sourceAlignmentConstraints],
+      layoutConfig,
+      1
+    );
 
     // Initialize x positions using barycenter heuristic AFTER y positions are set
     // This gives better initial ordering before separation constraints lock things in
     initializeBarycenterPositions(nodes, edges, coordPrimary);
 
-    const rows = groupByRow(nodes, orientation);
+    const rows = groupByRow(nodes, orientation, layoutConfig.spaceY);
 
     const crossingConstraints = createCrossingConstraints(edges, layoutConfig);
     const parallelConstraints = createParallelConstraints(edges, layoutConfig);
@@ -555,6 +572,21 @@
         separation,
       };
     });
+
+  const createSourceAlignmentConstraints = (nodes, layoutConfig) => {
+    const sourceNodes = nodes.filter((node) => node.sources.length === 0);
+    if (sourceNodes.length < 2) return [];
+
+    sourceNodes.sort((a, b) => compare(a.id, b.id));
+    const anchor = sourceNodes[0];
+
+    return sourceNodes.slice(1).map((node) => ({
+      base: alignConstraint,
+      property: layoutConfig.coordSecondary,
+      a: node,
+      b: anchor,
+    }));
+  };
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
@@ -836,7 +868,7 @@
     stemSpaceTarget,
     orientation,
   }) => {
-    const rows = groupByRow(nodes, orientation);
+    const rows = groupByRow(nodes, orientation, spaceY);
 
     // Sort edges by angle for each node (standard algorithm)
     // Tiebreaker: target node x position for deterministic ordering
