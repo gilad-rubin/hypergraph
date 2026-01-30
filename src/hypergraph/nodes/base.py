@@ -266,7 +266,9 @@ class HyperNode(ABC):
                 if old not in current:
                     raise clone._make_rename_error(old, attr)
                 clone._rename_history.append(RenameEntry(attr, old, new, batch_id))  # type: ignore[arg-type]
-            setattr(clone, attr, tuple(mapping.get(v, v) for v in current))
+            new_values = tuple(mapping.get(v, v) for v in current)
+            _check_rename_duplicates(new_values, attr)
+            setattr(clone, attr, new_values)
 
         return clone
 
@@ -307,3 +309,14 @@ class HyperNode(ABC):
                 current_name = entry.new
 
         return chain
+
+
+def _check_rename_duplicates(values: tuple[str, ...], attr: str) -> None:
+    """Raise RenameError if a rename produces duplicate names."""
+    if len(values) == len(set(values)):
+        return
+    dupes = sorted({v for v in values if values.count(v) > 1})
+    raise RenameError(
+        f"Rename produces duplicate {attr}: {dupes}. "
+        f"Each name must be unique."
+    )

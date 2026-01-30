@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import networkx as nx
+from collections import Counter
 from typing import Any, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode
@@ -11,7 +12,18 @@ from hypergraph.graph.input_spec import InputSpec, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from hypergraph.nodes.graph_node import GraphNode
+
+
+def _unique_outputs(nodes: Iterable[HyperNode]) -> tuple[str, ...]:
+    """Collect outputs from nodes, deduplicating while preserving order.
+
+    GraphNodes wrapping mutex branches can list the same output multiple
+    times (e.g., skip_path and process_path both produce 'result').
+    """
+    all_outputs = [o for n in nodes for o in n.outputs]
+    return tuple(dict.fromkeys(all_outputs))
 
 
 class Graph:
@@ -68,6 +80,7 @@ class Graph:
         self.name = name
         self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
+        self._selected: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
@@ -113,22 +126,18 @@ class Graph:
 
     @property
     def outputs(self) -> tuple[str, ...]:
-        """All output names produced by nodes."""
-        return tuple(
-            output for node in self._nodes.values() for output in node.outputs
-        )
+        """All unique output names produced by nodes."""
+        return _unique_outputs(self._nodes.values())
 
     @property
     def leaf_outputs(self) -> tuple[str, ...]:
-        """Outputs from leaf nodes (no downstream destinations)."""
-        leaf_names = [
-            name for name in self._nodes if self._nx_graph.out_degree(name) == 0
+        """Unique outputs from leaf nodes (no downstream destinations)."""
+        leaves = [
+            self._nodes[name]
+            for name in self._nodes
+            if self._nx_graph.out_degree(name) == 0
         ]
-        return tuple(
-            output
-            for name in leaf_names
-            for output in self._nodes[name].outputs
-        )
+        return _unique_outputs(leaves)
 
     @property
     def inputs(self) -> InputSpec:
@@ -251,11 +260,18 @@ class Graph:
             t: set(nx.descendants(G, t)) | {t} for t in targets
         }
 
-        # For each target, exclude nodes reachable from other targets
+        # Count how many targets can reach each node
+        # Optimization: Instead of N^2 set operations, count node occurrences
+        # A node is exclusive to a target if it appears exactly once across all reachable sets
+        all_reachable_nodes = [node for nodes in reachable.values() for node in nodes]
+        node_counts = Counter(all_reachable_nodes)
+
+        # For each target, select nodes that are only reachable from this target (count == 1)
         exclusive: dict[str, set[str]] = {}
         for t in targets:
-            others = set().union(*(reachable[o] for o in targets if o != t))
-            exclusive[t] = reachable[t] - others
+            exclusive[t] = {
+                node for node in reachable[t] if node_counts[node] == 1
+            }
 
         return exclusive
 
@@ -424,6 +440,56 @@ class Graph:
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
+    def with_select(self, *names: str) -> "Graph":
+        """Set default output selection. Returns new Graph (immutable).
+
+        Controls which outputs are returned by runner.run() and which outputs
+        are exposed when this graph is used as a nested node via as_node().
+
+        This does NOT affect internal graph execution — all nodes still run
+        and all intermediate values are still computed. It only filters what
+        is returned to the caller.
+
+        A runtime ``select=`` passed to runner.run() overrides this default.
+
+        Args:
+            *names: Output names to include. Must be valid graph outputs.
+
+        Returns:
+            New Graph with default selection set.
+
+        Raises:
+            ValueError: If any name is not a graph output.
+
+        Example:
+            >>> graph = Graph([embed, retrieve, generate]).with_select("answer")
+            >>> result = runner.run(graph, inputs)
+            >>> assert list(result.keys()) == ["answer"]
+
+            >>> # As nested node, only "answer" is visible to the parent graph
+            >>> outer = Graph([graph.as_node(), postprocess])
+        """
+        all_outputs = set(self.outputs)
+        invalid = [n for n in names if n not in all_outputs]
+        if invalid:
+            raise ValueError(
+                f"Cannot select {invalid}: not graph outputs. "
+                f"Valid outputs: {self.outputs}"
+            )
+        if len(names) != len(set(names)):
+            raise ValueError(
+                f"with_select() requires unique output names. Received: {names}"
+            )
+
+        new_graph = self._shallow_copy()
+        new_graph._selected = names
+        return new_graph
+
+    @property
+    def selected(self) -> tuple[str, ...] | None:
+        """Default output selection, or None if all outputs are returned."""
+        return self._selected
+
     @property
     def has_cycles(self) -> bool:
         """True if graph contains cycles."""
@@ -479,6 +545,7 @@ class Graph:
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
+        # _selected is an immutable tuple (or None), safe to share via copy.copy
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 

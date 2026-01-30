@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import warnings
 from typing import TYPE_CHECKING, Any, Iterator
 
 from hypergraph.nodes.base import HyperNode
@@ -9,6 +11,24 @@ from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+
+
+def _safe_deepcopy(value: Any) -> Any:
+    """Deep-copy a value, falling back gracefully for non-copyable objects.
+
+    Some objects (locks, file handles, C extensions) cannot be deep-copied.
+    For these, we return the original value and emit a warning.
+    """
+    try:
+        return copy.deepcopy(value)
+    except (TypeError, copy.Error) as e:
+        warnings.warn(
+            f"Cannot deep-copy default value of type {type(value).__name__}: {e}. "
+            f"Using original value. Mutating this default may affect future runs.",
+            UserWarning,
+            stacklevel=4,  # Point to the function using the default
+        )
+        return value
 
 
 def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
@@ -47,6 +67,10 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
     Returns:
         Set of activated node names
     """
+    # Clear stale gate decisions: if a gate will re-execute (inputs changed),
+    # its previous routing decision is outdated and must not activate targets
+    _clear_stale_gate_decisions(graph, state)
+
     activated = set()
 
     # Use cached map of node -> controlling gates
@@ -68,6 +92,21 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
                     break
 
     return activated
+
+
+def _clear_stale_gate_decisions(graph: "Graph", state: GraphState) -> None:
+    """Clear routing decisions for gates that will re-execute.
+
+    If a gate's inputs have changed since its last execution, its previous
+    routing decision is stale. Keeping it would let targets activate before
+    the gate re-evaluates — causing off-by-one iterations in cycles.
+    """
+    from hypergraph.nodes.gate import GateNode
+
+    for node in graph._nodes.values():
+        if isinstance(node, GateNode) and node.name in state.routing_decisions:
+            if _needs_execution(node, state):
+                del state.routing_decisions[node.name]
 
 
 def _is_node_activated_by_decision(node_name: str, decision: Any) -> bool:
@@ -196,9 +235,10 @@ def _resolve_input(
     if param in graph.inputs.bound:
         return graph.inputs.bound[param]
 
-    # 4. Function default
+    # 4. Function default (deep-copy to prevent cross-run mutation)
     if node.has_default_for(param):
-        return node.get_default_for(param)
+        default = node.get_default_for(param)
+        return _safe_deepcopy(default)
 
     # This shouldn't happen if validation passed
     raise KeyError(f"No value for input '{param}'")
@@ -283,10 +323,13 @@ def filter_outputs(
     Warns:
         UserWarning: If select contains names not found in state values
     """
-    if select is not None:
+    # Runtime select= overrides graph-level default
+    effective_select = select if select is not None else graph.selected
+
+    if effective_select is not None:
         result = {}
         missing = []
-        for k in select:
+        for k in effective_select:
             if k in state.values:
                 result[k] = state.values[k]
             else:

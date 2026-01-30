@@ -91,7 +91,7 @@ class GraphNode(HyperNode):
         # Core HyperNode attributes
         self.name = resolved_name
         self.inputs = graph.inputs.all
-        self.outputs = graph.outputs
+        self.outputs = graph.selected if graph.selected is not None else graph.outputs
 
     @property
     def graph(self) -> "Graph":

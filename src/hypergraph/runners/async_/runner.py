@@ -271,14 +271,42 @@ class AsyncRunner(BaseRunner):
             token = None
 
         try:
-            # Execute all variations concurrently
-            # The shared semaphore controls total concurrent operations
-            tasks = [
-                self.run(graph, v, select=select, max_concurrency=max_concurrency)
-                for v in input_variations
-            ]
-            results = await asyncio.gather(*tasks)
-            return list(results)
+            if max_concurrency is None:
+                # Execute all variations concurrently
+                tasks = [
+                    self.run(graph, v, select=select, max_concurrency=max_concurrency)
+                    for v in input_variations
+                ]
+                results = await asyncio.gather(*tasks)
+                return list(results)
+            else:
+                # Worker pool: fixed number of workers pull from a queue,
+                # avoiding the overhead of creating thousands of tasks at once.
+                results_list: list[RunResult] = []
+                queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
+                for idx, v in enumerate(input_variations):
+                    queue.put_nowait((idx, v))
+
+                order: list[int] = []
+
+                async def _worker() -> None:
+                    while True:
+                        try:
+                            idx, v = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            return
+                        result = await self.run(
+                            graph, v, select=select, max_concurrency=max_concurrency
+                        )
+                        results_list.append(result)
+                        order.append(idx)
+
+                num_workers = min(max_concurrency, len(input_variations))
+                workers = [asyncio.create_task(_worker()) for _ in range(num_workers)]
+                await asyncio.gather(*workers)
+                # Restore original input order
+                ordered = [r for _, r in sorted(zip(order, results_list))]
+                return ordered
         finally:
             if token is not None:
                 reset_concurrency_limiter(token)

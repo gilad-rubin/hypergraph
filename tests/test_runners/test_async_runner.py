@@ -189,18 +189,29 @@ class TestAsyncRunnerRun:
 
     async def test_parallel_nodes_run_concurrently(self):
         """Independent nodes run concurrently."""
-        slow1 = slow_node.with_name("slow1").with_outputs(result="r1")
-        slow2 = slow_node.with_name("slow2").with_outputs(result="r2")
+        timestamps = {}
 
-        graph = Graph([slow1, slow2])
+        @node(output_name="r1")
+        async def timed1(x: int) -> int:
+            timestamps["s1_start"] = time.monotonic()
+            await asyncio.sleep(0.05)
+            timestamps["s1_end"] = time.monotonic()
+            return x
+
+        @node(output_name="r2")
+        async def timed2(x: int) -> int:
+            timestamps["s2_start"] = time.monotonic()
+            await asyncio.sleep(0.05)
+            timestamps["s2_end"] = time.monotonic()
+            return x
+
+        graph = Graph([timed1, timed2])
         runner = AsyncRunner()
+        result = await runner.run(graph, {"x": 5})
 
-        start = time.time()
-        result = await runner.run(graph, {"x": 5, "delay": 0.05})
-        elapsed = time.time() - start
-
-        # Should be ~0.05s (concurrent), not ~0.1s (sequential)
-        assert elapsed < 0.08
+        # Verify execution windows overlap (concurrent, not sequential)
+        assert timestamps["s1_start"] < timestamps["s2_end"]
+        assert timestamps["s2_start"] < timestamps["s1_end"]
         assert result["r1"] == 5
         assert result["r2"] == 5
 
