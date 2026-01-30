@@ -78,7 +78,7 @@ def render_graph(
     # Get input_spec from graph attributes
     input_spec = flat_graph.graph.get("input_spec", {})
     bound_params = set(input_spec.get("bound", {}).keys())
-    input_consumer_mode = "primary"
+    input_consumer_mode = "all"
 
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)

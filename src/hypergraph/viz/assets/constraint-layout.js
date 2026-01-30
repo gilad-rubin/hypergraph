@@ -274,6 +274,125 @@
   // LAYOUT.JS - Main layout algorithm
   // ============================================================================
 
+  /**
+   * Initialize node positions using barycenter heuristic.
+   * First spreads bottom-row nodes, then positions upper-row nodes
+   * at the barycenter (average x) of their targets.
+   */
+  const initializeBarycenterPositions = (nodes, edges, coordPrimary) => {
+    // Build target lists (source -> targets)
+    const nodeById = {};
+    for (const node of nodes) {
+      nodeById[node.id] = node;
+      node._targets = [];
+      node._sources = [];
+    }
+
+    for (const edge of edges) {
+      const source = nodeById[edge.source];
+      const target = nodeById[edge.target];
+      if (source && target) {
+        source._targets.push(target);
+        target._sources.push(source);
+      }
+    }
+
+    // Find leaf nodes (no outgoing edges = bottom of DAG)
+    const leafNodes = nodes.filter(n => n._targets.length === 0);
+    const nonLeafNodes = nodes.filter(n => n._targets.length > 0);
+
+    // Spread leaf nodes evenly
+    const spacing = 200;
+    leafNodes.forEach((node, i) => {
+      node[coordPrimary] = i * spacing;
+    });
+
+    // Position non-leaf nodes at barycenter of their targets
+    // Multiple passes for nodes with dependencies on each other
+    for (let pass = 0; pass < 5; pass++) {
+      for (const node of nonLeafNodes) {
+        if (node._targets.length > 0) {
+          let sum = 0;
+          for (const target of node._targets) {
+            sum += target[coordPrimary];
+          }
+          node[coordPrimary] = sum / node._targets.length;
+        }
+      }
+    }
+
+    // Cleanup
+    for (const node of nodes) {
+      delete node._targets;
+      delete node._sources;
+    }
+  };
+
+  /**
+   * Reorder nodes within each row based on barycenter of their connections.
+   * Process from bottom to top: first establish bottom row order,
+   * then position upper rows based on their targets in the row below.
+   */
+  const reorderRowsByBarycenter = (rows, edges, coordPrimary) => {
+    if (rows.length === 0) return;
+
+    // Build target edges map (source -> targets)
+    const nodeById = {};
+    for (const row of rows) {
+      for (const node of row) {
+        nodeById[node.id] = node;
+        node._targets = [];
+      }
+    }
+
+    for (const edge of edges) {
+      const source = nodeById[edge.source];
+      const target = nodeById[edge.target];
+      if (source && target) {
+        source._targets.push(target);
+      }
+    }
+
+    // Process bottom row first - spread evenly
+    const spacing = 200;
+    const bottomRow = rows[rows.length - 1];
+    bottomRow.forEach((node, i) => {
+      node[coordPrimary] = i * spacing;
+    });
+
+    // Process remaining rows from bottom to top
+    for (let rowIdx = rows.length - 2; rowIdx >= 0; rowIdx--) {
+      const row = rows[rowIdx];
+
+      // Compute barycenter for each node based on its targets
+      for (const node of row) {
+        if (node._targets.length > 0) {
+          const sum = node._targets.reduce((acc, t) => acc + t[coordPrimary], 0);
+          node._barycenter = sum / node._targets.length;
+        } else {
+          // No targets - use position in row
+          node._barycenter = row.indexOf(node) * spacing;
+        }
+      }
+
+      // Sort by barycenter
+      row.sort((a, b) => compare(a._barycenter, b._barycenter, a.id, b.id));
+
+      // Assign positions
+      row.forEach((node, i) => {
+        node[coordPrimary] = i * spacing;
+      });
+    }
+
+    // Cleanup
+    for (const row of rows) {
+      for (const node of row) {
+        delete node._targets;
+        delete node._barycenter;
+      }
+    }
+  };
+
   const layout = ({
     nodes,
     edges,
@@ -314,6 +433,10 @@
 
     solveStrict([...rowConstraints, ...layerConstraints], layoutConfig, 1);
 
+    // Initialize x positions using barycenter heuristic AFTER y positions are set
+    // This gives better initial ordering before separation constraints lock things in
+    initializeBarycenterPositions(nodes, edges, coordPrimary);
+
     const rows = groupByRow(nodes, orientation);
 
     const crossingConstraints = createCrossingConstraints(edges, layoutConfig);
@@ -323,6 +446,10 @@
       solveLoose(crossingConstraints, 1, layoutConfig);
       solveLoose(parallelConstraints, 50, layoutConfig);
     }
+
+    // Reorder nodes within each row by barycenter of their connected nodes
+    // This minimizes edge crossings before separation constraints lock in order
+    reorderRowsByBarycenter(rows, edges, coordPrimary);
 
     const separationConstraints = createSeparationConstraints(rows, layoutConfig);
 
