@@ -53,6 +53,7 @@
     'BRANCH': 10,
   };
   const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
+  const VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
 
   // Get visible bottom of node (accounts for wrapper/content offset)
   const nodeVisibleBottom = (node) => {
@@ -528,17 +529,31 @@
       1
     );
 
-    expandDenseRows(edges, rows, coordSecondary, spaceY, orientation);
+    // Keep edge-to-edge spacing uniform by disabling density-based row expansion.
+    expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, 0);
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
-    edges.map((edge) => ({
-      base: rowConstraint,
-      property: layoutConfig.coordSecondary,
-      a: edge.targetNode,
-      b: edge.sourceNode,
-      separation: layoutConfig.spaceY,
-    }));
+    edges.map((edge) => {
+      let separation = layoutConfig.spaceY;
+
+      if (layoutConfig.orientation === 'vertical') {
+        const source = edge.sourceNode;
+        const target = edge.targetNode;
+        const sourceOffset = nodeBottom(source) - nodeVisibleBottom(source);
+        const sourceVisibleHalf = Math.max(0, source.height * 0.5 - sourceOffset);
+        const targetVisibleHalf = target.height * 0.5;
+        separation = VERTICAL_GAP + sourceVisibleHalf + targetVisibleHalf;
+      }
+
+      return {
+        base: rowConstraint,
+        property: layoutConfig.coordSecondary,
+        a: edge.targetNode,
+        b: edge.sourceNode,
+        separation,
+      };
+    });
 
   const createLayerConstraints = (nodes, layers, layoutConfig) => {
     const layerConstraints = [];
