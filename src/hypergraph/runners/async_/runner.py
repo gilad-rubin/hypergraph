@@ -140,8 +140,14 @@ class AsyncRunner(BaseRunner):
                 status=RunStatus.COMPLETED,
             )
         except Exception as e:
+            partial_state = getattr(e, "_partial_state", None)
+            partial_values = (
+                filter_outputs(partial_state, graph, select)
+                if partial_state is not None
+                else {}
+            )
             return RunResult(
-                values={},
+                values=partial_values,
                 status=RunStatus.FAILED,
                 error=e,
             )
@@ -153,7 +159,11 @@ class AsyncRunner(BaseRunner):
         max_iterations: int,
         max_concurrency: int | None,
     ) -> GraphState:
-        """Execute graph until no more ready nodes or max_iterations reached."""
+        """Execute graph until no more ready nodes or max_iterations reached.
+
+        On failure, attaches partial state to the exception as ``_partial_state``
+        so the caller can extract values accumulated before the error.
+        """
         state = initialize_state(graph, values)
 
         # Set up concurrency limiter only at top level (when none exists)
@@ -188,6 +198,9 @@ class AsyncRunner(BaseRunner):
                 if get_ready_nodes(graph, state):
                     raise InfiniteLoopError(max_iterations)
 
+        except Exception as e:
+            e._partial_state = state  # type: ignore[attr-defined]
+            raise
         finally:
             # Reset concurrency limiter only if we set it
             if token is not None:

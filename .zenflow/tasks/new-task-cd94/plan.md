@@ -25,7 +25,8 @@ Completed. See `spec.md` for full details.
 
 ---
 
-### [ ] Step: Partial values in run() on failure
+### [x] Step: Partial values in run() on failure
+<!-- chat-id: 8d4e1597-287a-459c-ba47-d10a2424b4b6 -->
 
 Refactor `SyncRunner.run()` and `AsyncRunner.run()` to return partial values (state accumulated before the error) instead of `values={}` when execution fails.
 

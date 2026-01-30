@@ -130,8 +130,14 @@ class SyncRunner(BaseRunner):
                 status=RunStatus.COMPLETED,
             )
         except Exception as e:
+            partial_state = getattr(e, "_partial_state", None)
+            partial_values = (
+                filter_outputs(partial_state, graph, select)
+                if partial_state is not None
+                else {}
+            )
             return RunResult(
-                values={},
+                values=partial_values,
                 status=RunStatus.FAILED,
                 error=e,
             )
@@ -142,24 +148,32 @@ class SyncRunner(BaseRunner):
         values: dict[str, Any],
         max_iterations: int,
     ) -> GraphState:
-        """Execute graph until no more ready nodes or max_iterations reached."""
+        """Execute graph until no more ready nodes or max_iterations reached.
+
+        On failure, attaches partial state to the exception as ``_partial_state``
+        so the caller can extract values accumulated before the error.
+        """
         state = initialize_state(graph, values)
 
-        for iteration in range(max_iterations):
-            ready_nodes = get_ready_nodes(graph, state)
+        try:
+            for iteration in range(max_iterations):
+                ready_nodes = get_ready_nodes(graph, state)
 
-            if not ready_nodes:
-                break  # No more nodes to execute
+                if not ready_nodes:
+                    break  # No more nodes to execute
 
-            # Execute all ready nodes
-            state = run_superstep_sync(
-                graph, state, ready_nodes, values, self._execute_node
-            )
+                # Execute all ready nodes
+                state = run_superstep_sync(
+                    graph, state, ready_nodes, values, self._execute_node
+                )
 
-        else:
-            # Loop completed without break = hit max_iterations
-            if get_ready_nodes(graph, state):
-                raise InfiniteLoopError(max_iterations)
+            else:
+                # Loop completed without break = hit max_iterations
+                if get_ready_nodes(graph, state):
+                    raise InfiniteLoopError(max_iterations)
+        except Exception as e:
+            e._partial_state = state  # type: ignore[attr-defined]
+            raise
 
         return state
 
