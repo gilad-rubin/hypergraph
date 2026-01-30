@@ -88,7 +88,7 @@ def render_graph(
         expansion_state,
         mode=input_consumer_mode,
     )
-    input_groups = _build_classic_input_groups(input_spec, bound_params)
+    input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
     graph_output_visibility = _build_graph_output_visibility(flat_graph)
     # For JS meta data: use deepest targets (for interactive expand routing)
     param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
@@ -656,12 +656,9 @@ def _compute_input_scope(
 ) -> str | None:
     """Determine which container (if any) should own this INPUT node.
 
-    An INPUT should be placed in the container of its HIGHEST (first in topological
-    order) consumer. This ensures inputs appear near where they are first used in
-    the data flow.
-
-    The function finds the topologically first consumer, then walks UP the ancestor
-    chain to find the deepest container that is EXPANDED.
+    An INPUT should be placed inside a container ONLY if ALL its consumers
+    are inside that same container (or its descendants). If any consumer is
+    at root level or in a different container, the INPUT stays at root.
 
     Args:
         param: Parameter name
@@ -678,39 +675,35 @@ def _compute_input_scope(
     if not consumers:
         return None
 
-    # Find the topologically first (highest) consumer
-    # Use topological sort to determine order in the flow
-    try:
-        topo_order = list(nx.topological_sort(flat_graph))
-        # Find the first consumer in topological order
-        first_consumer = None
-        for node_id in topo_order:
-            if node_id in consumers:
-                first_consumer = node_id
-                break
-        
-        if first_consumer is None:
-            return None
-        
-        # Get the parent container of the first consumer
-        parent = _get_parent(first_consumer, flat_graph)
-        
+    # Check if any consumer is at root level
+    # If so, the INPUT must stay at root
+    consumer_containers: set[str | None] = set()
+    for consumer in consumers:
+        parent = _get_parent(consumer, flat_graph)
         if parent is None:
-            # Consumer is at root level
+            # Consumer at root level - INPUT must stay at root
             return None
-        
-        # Walk up from the parent to find the deepest EXPANDED container
-        owner_chain = [parent] + _get_ancestor_chain(parent, flat_graph)
-        
-        for container in owner_chain:
-            if expansion_state.get(container, False):
-                return container
-        
-        # No container in the chain is expanded, INPUT stays at root
+        # Get the root-level container (top ancestor)
+        chain = _get_ancestor_chain(consumer, flat_graph)
+        root_container = chain[-1] if chain else parent
+        consumer_containers.add(root_container)
+
+    # If consumers are in different root-level containers, INPUT stays at root
+    if len(consumer_containers) > 1:
         return None
-    except nx.NetworkXError:
-        # Graph has cycles, fall back to old behavior
-        return None
+
+    # All consumers are in the same container tree
+    # Find the deepest expanded container that contains all consumers
+    common_container = next(iter(consumer_containers))
+
+    # Walk up the chain to find the deepest EXPANDED container
+    chain = [common_container] + _get_ancestor_chain(common_container, flat_graph)
+    for container in chain:
+        if expansion_state.get(container, False):
+            return container
+
+    # No container in the chain is expanded, INPUT stays at root
+    return None
 
 
 def _compute_deepest_input_scope(
