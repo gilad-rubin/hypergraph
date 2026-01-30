@@ -858,112 +858,145 @@
       );
     }
 
-    for (const edge of edges) {
+    // SINGLE-CORRIDOR ROUTING: Find ONE x-position that works for all intermediate rows
+    // This eliminates squiggly edges by committing to a single corridor
+
+    // Track used corridor positions to prevent edge overlap
+    const usedCorridorPositions = { left: [], right: [] };
+    const minEdgeSpacing = spaceX * 0.8;  // Minimum spacing between parallel edges
+
+    // Sort edges by span length (ascending) - shorter edges processed first get inner positions
+    // Longer edges get processed later and pushed to outer positions
+    // Tiebreaker: target x position (left-to-right) for deterministic ordering
+    const sortedEdges = [...edges].sort((a, b) => {
+      const spanA = a.targetNode.row - a.sourceNode.row;
+      const spanB = b.targetNode.row - b.sourceNode.row;
+      if (spanA !== spanB) return spanA - spanB;
+      // Tiebreaker: sort by target x position for consistent left-to-right ordering
+      return a.targetNode.x - b.targetNode.x;
+    });
+
+    for (const edge of sortedEdges) {
       const source = edge.sourceNode;
       const target = edge.targetNode;
 
       edge.points = [];
 
-      if (orientation === 'vertical') {
-        const sourceSeparation = Math.min(
-          (source.width - stemSpaceSource) / source.targets.length,
-          stemSpaceSource
-        );
-        const sourceEdgeDistance =
-          source.targets.indexOf(edge) - (source.targets.length - 1) * 0.5;
-        const sourceOffsetX = sourceSeparation * sourceEdgeDistance;
+      // The x position where the edge would naturally go
+      // Use target position to guide routing - edges should trend toward their destination
+      const naturalX = source.x + (target.x - source.x) * 0.5;
 
-        const startPoint = { x: source.x, y: source.y };
-        let currentPoint = startPoint;
+      // First pass: find which rows block the path from source to target
+      // Check the full horizontal range the edge might traverse, not just the midpoint
+      let firstBlockedRow = -1;
+      let lastBlockedRow = -1;
+      const blockedRows = [];
 
-        for (let i = source.row + 1; i < target.row; i += 1) {
-          const firstNode = rows[i][0];
-          let nearestPoint = { x: nodeLeft(firstNode) - spaceX, y: firstNode.y };
-          let nearestDistance = Infinity;
-          let lockedToCurrent = false;
-
-          const rowExtended = [
-            { ...firstNode, x: Number.MIN_SAFE_INTEGER },
-            ...rows[i],
-            { ...firstNode, x: Number.MAX_SAFE_INTEGER },
-          ];
-
-          for (let j = 0; j < rowExtended.length - 1; j += 1) {
-            const node = rowExtended[j];
-            const nextNode = rowExtended[j + 1];
-            const nodeGap = nodeLeft(nextNode) - nodeRight(node);
-
-            if (nodeGap < minPassageGap) {
-              continue;
-            }
-
-            const offsetX = Math.min(spaceX, nodeGap * 0.5);
-            const sourceX = nodeRight(node) + offsetX;
-            const sourceY = nodeTop(node) - spaceY;
-            const targetX = nodeLeft(nextNode) - offsetX;
-            const targetY = nodeTop(nextNode) - spaceY;
-
-            if (!lockedToCurrent &&
-                currentPoint.x >= sourceX &&
-                currentPoint.x <= targetX) {
-              nearestPoint = { x: currentPoint.x, y: sourceY };
-              nearestDistance = 0;
-              lockedToCurrent = true;
-              break;
-            }
-
-            const candidatePoint = nearestOnLine(
-              currentPoint.x,
-              currentPoint.y,
-              sourceX,
-              sourceY,
-              targetX,
-              targetY
-            );
-
-            const distance = distance1d(currentPoint.x, candidatePoint.x);
-            if (distance > nearestDistance) {
-              break;
-            }
-
-            if (distance < nearestDistance) {
-              nearestDistance = distance;
-              nearestPoint = candidatePoint;
-            }
+      for (let i = source.row + 1; i < target.row; i += 1) {
+        let rowBlocks = false;
+        for (const node of rows[i]) {
+          // Check if this node blocks the natural path
+          if (naturalX >= nodeLeft(node) - spaceX * 0.5 &&
+              naturalX <= nodeRight(node) + spaceX * 0.5) {
+            rowBlocks = true;
+            break;
           }
-
-          const offsetY = firstNode.height + spaceY;
-          edge.points.push({
-            x: nearestPoint.x + sourceOffsetX,
-            y: nearestPoint.y,
-          });
-          edge.points.push({
-            x: nearestPoint.x + sourceOffsetX,
-            y: nearestPoint.y + offsetY,
-          });
-
-          currentPoint = {
-            x: nearestPoint.x,
-            y: nearestPoint.y + offsetY,
-          };
         }
-      } else {
+
+        if (rowBlocks) {
+          if (firstBlockedRow === -1) firstBlockedRow = i;
+          lastBlockedRow = i;
+          blockedRows.push(i);
+        }
+      }
+
+      // If no rows block, use the most direct path possible
+      if (firstBlockedRow === -1) {
         const horizontalDist = Math.abs(target.x - source.x);
         const verticalDist = nodeTop(target) - nodeBottom(source);
 
+        // Only add intermediate waypoint if horizontal distance is very large
+        // This creates a gentler angle for edges that span significant horizontal distance
         const needsIntermediatePoint = horizontalDist > 100 && verticalDist > MIN_VERTICAL_DIST_FOR_WAYPOINT;
+        
         if (needsIntermediatePoint) {
+          // Add a single waypoint that moves most of the way toward target X
+          // Use a higher ratio (0.7 instead of 0.5) to get closer to target faster
           const shoulderY = nodeBottom(source) + verticalDist * 0.3;
           const shoulderX = source.x + (target.x - source.x) * 0.7;
           edge.points.push({ x: shoulderX, y: shoulderY });
         }
-
+        
+        // Only add convergence point if target has multiple sources (needs merging)
+        // or if horizontal distance is large (needs gradual approach)
         const needsConvergence = target.sources.length > 1 || horizontalDist > 80;
         if (needsConvergence && horizontalDist > 5) {
           const convergeY = calculateConvergenceY(target, stemMinTarget);
           edge.points.push({ x: target.x, y: convergeY });
         }
+        continue;
       }
+
+      // Calculate node bounds ONLY from the blocked rows
+      // This ensures short edges don't get pushed far out due to nodes in unrelated rows
+      let globalNodeLeft = Infinity;
+      let globalNodeRight = -Infinity;
+
+      for (const rowIdx of blockedRows) {
+        for (const node of rows[rowIdx]) {
+          globalNodeLeft = Math.min(globalNodeLeft, nodeLeft(node));
+          globalNodeRight = Math.max(globalNodeRight, nodeRight(node));
+        }
+      }
+
+      // Choose a single corridor x-position that clears the blocking nodes
+      // Use left or right side, whichever is closer to the natural path
+      const leftCorridorX = globalNodeLeft - spaceX;
+      const rightCorridorX = globalNodeRight + spaceX;
+
+      let corridorX;
+      let corridorSide;
+      if (Math.abs(naturalX - leftCorridorX) <= Math.abs(naturalX - rightCorridorX)) {
+        corridorX = leftCorridorX;
+        corridorSide = 'left';
+      } else {
+        corridorX = rightCorridorX;
+        corridorSide = 'right';
+      }
+
+      // Calculate y positions for the routing points
+      const firstBlockedNode = rows[firstBlockedRow][0];
+      const lastBlockedNode = rows[lastBlockedRow][0];
+
+      const y1 = nodeTop(firstBlockedNode) - spaceY;
+      const y2 = nodeBottom(lastBlockedNode) + spaceY;
+
+      // Check for conflicts with existing edges in this corridor
+      // and offset if needed to prevent overlapping
+      const usedPositions = usedCorridorPositions[corridorSide];
+      for (const used of usedPositions) {
+        // Check if y-ranges overlap
+        const yOverlap = !(y2 < used.y1 || y1 > used.y2);
+        if (yOverlap && Math.abs(corridorX - used.x) < minEdgeSpacing) {
+          // Offset away from the nodes
+          if (corridorSide === 'left') {
+            corridorX = used.x - minEdgeSpacing;
+          } else {
+            corridorX = used.x + minEdgeSpacing;
+          }
+        }
+      }
+
+      // Record this corridor position
+      usedPositions.push({ x: corridorX, y1, y2 });
+
+      // Add routing points through the corridor
+      edge.points.push({ x: corridorX, y: y1 });
+      edge.points.push({ x: corridorX, y: y2 });
+      
+      // Add final convergence point at target X for smooth merging
+      const convergeY = calculateConvergenceY(target, stemMinTarget);
+      edge.points.push({ x: target.x, y: convergeY });
     }
 
     for (const node of nodes) {
