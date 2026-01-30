@@ -146,11 +146,11 @@ class Graph:
 
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
-        return {
-            data["value_name"]
-            for _, _, data in self._nx_graph.edges(data=True)
-            if data.get("edge_type") == "data"
-        }
+        result: set[str] = set()
+        for _, _, data in self._nx_graph.edges(data=True):
+            if data.get("edge_type") == "data":
+                result.update(data.get("value_names", []))
+        return result
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""
@@ -368,16 +368,24 @@ class Graph:
         nodes: list[HyperNode],
         output_to_source: dict[str, str],
     ) -> None:
-        """Infer data edges by matching parameter names to output names."""
+        """Infer data edges by matching parameter names to output names.
+
+        Multiple values between the same node pair are merged into a single
+        edge with a ``value_names`` list, since NetworkX DiGraph only allows
+        one edge per (source, target) pair.
+        """
+        from collections import defaultdict
+
+        # Group values by (source, target) pair
+        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for n in nodes:
+            for param in n.inputs:
+                if param in output_to_source:
+                    edge_values[(output_to_source[param], n.name)].append(param)
+
         G.add_edges_from(
-            (
-                output_to_source[param],
-                node.name,
-                {"edge_type": "data", "value_name": param},
-            )
-            for node in nodes
-            for param in node.inputs
-            if param in output_to_source
+            (src, dst, {"edge_type": "data", "value_names": names})
+            for (src, dst), names in edge_values.items()
         )
 
     def _add_control_edges(
@@ -526,7 +534,7 @@ class Graph:
 
         # 2. Include structure (edges)
         edges = sorted(
-            (u, v, data.get("value_name", ""))
+            (u, v, ",".join(data.get("value_names", [])))
             for u, v, data in self._nx_graph.edges(data=True)
         )
         edge_str = str(edges)

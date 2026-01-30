@@ -89,11 +89,11 @@ def _get_edge_produced_values(nx_graph: nx.DiGraph) -> set[str]:
     Only data edges carry values. Control edges (from gates) define
     routing relationships but don't produce values.
     """
-    return {
-        data["value_name"]
-        for _, _, data in nx_graph.edges(data=True)
-        if data.get("edge_type") == "data"
-    }
+    result: set[str] = set()
+    for _, _, data in nx_graph.edges(data=True):
+        if data.get("edge_type") == "data":
+            result.update(data.get("value_names", []))
+    return result
 
 
 def _categorize_param(
