@@ -229,53 +229,12 @@
     var edgePath, labelX, labelY;
 
     if (data && data.points && data.points.length > 0) {
-      // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
-      // Use constraint layout points directly - they already have correct coordinates
-      // from either the constraint solver (internal edges) or Step 4 (cross-boundary)
       var points = data.points.slice();
-
-      // Use our points directly for position calculations
       var startPt = points[0];
       var endPt = points[points.length - 1];
-
-      // Simplify "mostly vertical" edges
-      var dx = Math.abs(endPt.x - startPt.x);
-      var dy = Math.abs(endPt.y - startPt.y);
-      var isNearlyVertical = dx < 30 && dy > dx * 2;
-
-      // curveBasis: B-spline interpolation
-      var curveBasis = function(pts) {
-        if (pts.length < 2) return 'M ' + pts[0].x + ' ' + pts[0].y;
-        if (pts.length === 2) return 'M ' + pts[0].x + ' ' + pts[0].y + ' L ' + pts[1].x + ' ' + pts[1].y;
-
-        var clamped = [pts[0]].concat(pts).concat([pts[pts.length - 1]]);
-        var path = 'M ' + clamped[0].x + ' ' + clamped[0].y;
-        var x0 = clamped[0].x, y0 = clamped[0].y;
-        var x1 = clamped[1].x, y1 = clamped[1].y;
-
-        path += ' L ' + ((5 * x0 + x1) / 6) + ' ' + ((5 * y0 + y1) / 6);
-
-        for (var i = 2; i < clamped.length; i++) {
-          var x = clamped[i].x, y = clamped[i].y;
-          path += ' C ' + ((2 * x0 + x1) / 3) + ' ' + ((2 * y0 + y1) / 3) + ' ' +
-                  ((x0 + 2 * x1) / 3) + ' ' + ((y0 + 2 * y1) / 3) + ' ' +
-                  ((x0 + 4 * x1 + x) / 6) + ' ' + ((y0 + 4 * y1 + y) / 6);
-          x0 = x1; y0 = y1;
-          x1 = x; y1 = y;
-        }
-
-        path += ' C ' + ((2 * x0 + x1) / 3) + ' ' + ((2 * y0 + y1) / 3) + ' ' +
-                ((x0 + 2 * x1) / 3) + ' ' + ((y0 + 2 * y1) / 3) + ' ' + x1 + ' ' + y1;
-
-        return path;
-      };
-
-      if (isNearlyVertical) {
-        // Use actual points for nearly-vertical edges (including re-routed ones)
-        var midY = (startPt.y + endPt.y) / 2;
-        edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
-      } else {
-        edgePath = curveBasis(points);
+      edgePath = 'M ' + points[0].x + ' ' + points[0].y;
+      for (var i = 1; i < points.length; i += 1) {
+        edgePath += ' L ' + points[i].x + ' ' + points[i].y;
       }
 
       // Position label along the edge path
