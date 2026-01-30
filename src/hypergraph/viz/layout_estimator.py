@@ -17,12 +17,12 @@ class LayoutEstimator:
     """Estimates visualization dimensions to match constraint-layout.js output."""
 
     # Constants matching constraint-layout.js defaultOptions
-    LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes
-    LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers
-    LAYOUT_SPACE_X = 30
+    LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes (matches Kedro-viz)
+    LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers (matches Kedro-viz)
+    LAYOUT_SPACE_X = 30  # Horizontal spacing (matches Kedro-viz)
     # Fixed padding values matching JS fitWithFixedPadding
     PADDING_LEFT = 20
-    PADDING_RIGHT = 70  # Extra space for control buttons
+    PADDING_RIGHT = 70  # Extra space for control buttons (matches Kedro-viz)
     PADDING_TOP = 16
     PADDING_BOTTOM = 16
 

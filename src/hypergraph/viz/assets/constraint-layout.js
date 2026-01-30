@@ -432,8 +432,10 @@
       property: layoutConfig.coordPrimary,
       a: sourceNode,
       b: targetNode,
+      // Increased base strength from 0.6 to 1.5 to better align nodes vertically
+      // Still scales down with node degree to allow flexibility for highly connected nodes
       strength:
-        0.6 /
+        1.5 /
         Math.max(1, sourceNode.targets.length + targetNode.sources.length - 2),
     }));
 
@@ -480,6 +482,23 @@
     }
 
     return separationConstraints;
+  };
+
+  // Configuration constants for edge routing
+  const EDGE_CONVERGENCE_OFFSET = 20;  // Y offset from target for convergence point
+  const MIN_HORIZONTAL_DIST_FOR_WAYPOINT = 20;
+  const MIN_VERTICAL_DIST_FOR_WAYPOINT = 50;
+  const SHOULDER_VERTICAL_RATIO = 0.4;
+  const SHOULDER_HORIZONTAL_RATIO = 0.5;
+
+  /**
+   * Calculate the convergence point where edges should merge before entering target stem.
+   * @param {Object} target - Target node
+   * @param {number} stemMinTarget - Minimum stem length at target
+   * @returns {number} Y coordinate for convergence point
+   */
+  const calculateConvergenceY = (target, stemMinTarget) => {
+    return nodeTop(target) - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
   };
 
   const expandDenseRows = (
@@ -633,17 +652,29 @@
         }
       }
 
-      // If no rows block, add subtle "shoulder" waypoint for gentle fan-out
+      // If no rows block, use the most direct path possible
       if (firstBlockedRow === -1) {
         const horizontalDist = Math.abs(target.x - source.x);
         const verticalDist = nodeTop(target) - nodeBottom(source);
 
-        // Only add shoulder if there's significant horizontal distance
-        if (horizontalDist > 20 && verticalDist > 50) {
-          // Subtle fan: move 50% toward target X, at 50% of vertical distance
-          const shoulderX = source.x + (target.x - source.x) * 0.6;
-          const shoulderY = nodeBottom(source) + verticalDist * 0.5;
+        // Only add intermediate waypoint if horizontal distance is very large
+        // This creates a gentler angle for edges that span significant horizontal distance
+        const needsIntermediatePoint = horizontalDist > 100 && verticalDist > MIN_VERTICAL_DIST_FOR_WAYPOINT;
+        
+        if (needsIntermediatePoint) {
+          // Add a single waypoint that moves most of the way toward target X
+          // Use a higher ratio (0.7 instead of 0.5) to get closer to target faster
+          const shoulderY = nodeBottom(source) + verticalDist * 0.3;
+          const shoulderX = source.x + (target.x - source.x) * 0.7;
           edge.points.push({ x: shoulderX, y: shoulderY });
+        }
+        
+        // Only add convergence point if target has multiple sources (needs merging)
+        // or if horizontal distance is large (needs gradual approach)
+        const needsConvergence = target.sources.length > 1 || horizontalDist > 80;
+        if (needsConvergence && horizontalDist > 5) {
+          const convergeY = calculateConvergenceY(target, stemMinTarget);
+          edge.points.push({ x: target.x, y: convergeY });
         }
         continue;
       }
@@ -701,9 +732,13 @@
       // Record this corridor position
       usedPositions.push({ x: corridorX, y1, y2 });
 
-      // Add just TWO routing points - entry and exit of the single corridor
+      // Add routing points through the corridor
       edge.points.push({ x: corridorX, y: y1 });
       edge.points.push({ x: corridorX, y: y2 });
+      
+      // Add final convergence point at target X for smooth merging
+      const convergeY = calculateConvergenceY(target, stemMinTarget);
+      edge.points.push({ x: target.x, y: convergeY });
     }
 
     for (const node of nodes) {
@@ -841,23 +876,23 @@
   // Configuration matching standard defaults
   const defaultOptions = {
     layout: {
-      spaceX: 14,
-      spaceY: 140,      // Vertical spacing between nodes
-      layerSpaceY: 120, // Vertical spacing between layers
-      spreadX: 2.2,
-      padding: 50,        // Reduced from 100 for less empty space around graph
-      iterations: 25,
+      spaceX: 30,       // Increased to match Kedro-viz horizontal spacing
+      spaceY: 140,      // Vertical spacing between nodes (matches Kedro-viz)
+      layerSpaceY: 120, // Vertical spacing between layers (matches Kedro-viz)
+      spreadX: 2.5,     // Slightly increased for better edge distribution
+      padding: 70,      // Increased padding for more breathing room
+      iterations: 30,   // More iterations for better convergence
     },
     routing: {
-      spaceX: 45,       // Increased from 26 for more edge-to-node clearance
-      spaceY: 36,       // Increased from 28 for better edge routing
-      minPassageGap: 60, // Increased from 50 for wider passages
-      stemUnit: 4,      // Reduced from 8 - smaller stem spread
+      spaceX: 50,       // Increased for more generous edge clearance
+      spaceY: 40,       // Increased for smoother edge routing
+      minPassageGap: 70, // Wider passages between nodes
+      stemUnit: 5,      // Moderate stem spread
       stemMinSource: 0,
-      stemMinTarget: 12, // Just enough for arrowhead visibility
-      stemMax: 4,       // Reduced from 10 - minimizes gap at source
-      stemSpaceSource: 6,
-      stemSpaceTarget: 2,
+      stemMinTarget: 15, // Better arrowhead visibility
+      stemMax: 6,       // Moderate gap at source
+      stemSpaceSource: 8,
+      stemSpaceTarget: 3,
     },
   };
 

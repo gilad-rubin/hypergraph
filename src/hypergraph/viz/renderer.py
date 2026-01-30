@@ -656,16 +656,12 @@ def _compute_input_scope(
 ) -> str | None:
     """Determine which container (if any) should own this INPUT node.
 
-    An INPUT should be placed inside a container if ALL its actual consumers
-    are inside that container.
+    An INPUT should be placed in the container of its HIGHEST (first in topological
+    order) consumer. This ensures inputs appear near where they are first used in
+    the data flow.
 
-    The function finds the deepest common container of all consumers, then
-    walks UP the ancestor chain to find the deepest container that is EXPANDED.
-    This handles nested containers correctly:
-    - If `retrieval` (inner) is expanded: INPUT goes inside `retrieval`
-    - If `retrieval` is collapsed but `batch_recall` (outer) is expanded:
-      INPUT goes inside `batch_recall`
-    - If both are collapsed: INPUT goes at root
+    The function finds the topologically first consumer, then walks UP the ancestor
+    chain to find the deepest container that is EXPANDED.
 
     Args:
         param: Parameter name
@@ -682,27 +678,39 @@ def _compute_input_scope(
     if not consumers:
         return None
 
-    # Get ancestor chains for all consumers
-    ancestor_chains = [_get_ancestor_chain(c, flat_graph) for c in consumers]
-
-    # Find the deepest common container
-    deepest_owner = _find_deepest_common_container(ancestor_chains)
-
-    if deepest_owner is None:
+    # Find the topologically first (highest) consumer
+    # Use topological sort to determine order in the flow
+    try:
+        topo_order = list(nx.topological_sort(flat_graph))
+        # Find the first consumer in topological order
+        first_consumer = None
+        for node_id in topo_order:
+            if node_id in consumers:
+                first_consumer = node_id
+                break
+        
+        if first_consumer is None:
+            return None
+        
+        # Get the parent container of the first consumer
+        parent = _get_parent(first_consumer, flat_graph)
+        
+        if parent is None:
+            # Consumer is at root level
+            return None
+        
+        # Walk up from the parent to find the deepest EXPANDED container
+        owner_chain = [parent] + _get_ancestor_chain(parent, flat_graph)
+        
+        for container in owner_chain:
+            if expansion_state.get(container, False):
+                return container
+        
+        # No container in the chain is expanded, INPUT stays at root
         return None
-
-    # Walk up from the deepest owner to find the deepest EXPANDED container
-    # The ancestor chain goes from deepest to root, so we check from start
-    owner_chain = _get_ancestor_chain(deepest_owner, flat_graph)
-    # Prepend the deepest owner itself (it might be expanded)
-    candidates = [deepest_owner] + list(owner_chain)
-
-    for container in candidates:
-        if expansion_state.get(container, False):
-            return container
-
-    # No container in the chain is expanded, INPUT stays at root
-    return None
+    except nx.NetworkXError:
+        # Graph has cycles, fall back to old behavior
+        return None
 
 
 def _compute_deepest_input_scope(
