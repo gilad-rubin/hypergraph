@@ -12,7 +12,7 @@
 
 | # | Issue | Severity | Source |
 |---|-------|----------|--------|
-| 10 | Deep nesting / infinite loops | HIGH | AMP (GN-001, GN-003, SM-007) |
+| 10 | Deep nesting / infinite loops | HIGH | ✅ Investigated in PR #29 — not bugs |
 | 29 | Cyclic gate→END infinite loop | HIGH | AMP (CY-005) |
 | 13 | GraphNode output leakage | MEDIUM | PR #23 |
 | 14 | Stale branch values persist | MEDIUM | PR #23 |
@@ -21,7 +21,7 @@
 | 26 | Map with empty list / zip mismatch | MEDIUM | PR #18 extended |
 | 28 | Async exception propagation | MEDIUM | PR #18 extended |
 | 30 | Type checking with renamed inputs | MEDIUM | AMP (TC-010) |
-| 31 | GraphNode name collision not detected | MEDIUM | AMP (GN-008) |
+| 31 | GraphNode name collision not detected | MEDIUM | ✅ Validated in PR #29 — detected |
 | 15 | Type subclass compatibility | LOW | PR #23 |
 | 17 | Empty/edge-case graphs | LOW | PR #23 |
 | 19 | Bind/unbind edge cases | LOW | PR #23 |
@@ -43,26 +43,20 @@
 
 ### 10. Deep Nesting / Multiple GraphNodes — Infinite Loops
 
-Several nesting scenarios cause `InfiniteLoopError` or hang:
+Investigated in [PR #29](https://github.com/gilad-rubin/hypergraph/pull/29):
 
-```python
-# Scenario A: 4+ levels of nesting
-g1 = Graph(nodes=[add_one])
-g2 = Graph(nodes=[g1.as_node()])
-g3 = Graph(nodes=[g2.as_node()])
-g4 = Graph(nodes=[g3.as_node()])  # InfiniteLoopError at 4 levels
+| Scenario | Result |
+|----------|--------|
+| A: 4+ level nesting | **PASSES** (sync and async) |
+| B: Same inner graph used twice | **PASSES** with renames, validates conflicts |
+| C: Output name == input name (SM-007) | **NOT A BUG** — convergence loop pattern |
+| D: GraphNode name collision (#31) | **PASSES** — validation catches it |
 
-# Scenario B: same inner graph used twice
-inner = Graph(nodes=[double])
-outer = Graph(nodes=[inner.as_node(name="a"), inner.as_node(name="b")])  # hangs
+Scenario C was the most interesting: `transform(x) -> x+1` creates a self-loop that never converges, so `InfiniteLoopError` is correct. The same pattern with convergence (`clamp(val) -> min(val+1, 5)`) terminates correctly. This is the convergence loop feature used by `counter_stop`.
 
-# Scenario C: output name == input name
-@node(output_name="x")
-def transform(x: int) -> int: return x + 1  # staleness detector loops forever
-```
+The Sole Producer Rule (from `specs/not_reviewed/conflict-resolution.md`) was attempted but reverted — it would break all convergence loops.
 
-**Expected**: All should run or raise a clear validation error.
-**Actual**: `InfiniteLoopError` after 1000 iterations, or hangs indefinitely. The staleness detector can't distinguish "new value" from "same-named old value" across nesting boundaries.
+**Status**: Scenarios A/B/D are not bugs. Scenario C is working as designed. Remaining open sub-issue is #29 (gate→END topology).
 
 ---
 
