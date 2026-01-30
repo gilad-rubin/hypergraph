@@ -33,6 +33,9 @@
     GRAPH_PADDING: 24,
     HEADER_HEIGHT: 32,
 
+    // Layout spacing (visible edge-to-edge gap)
+    VERTICAL_GAP: 60,
+
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS,
     DEFAULT_OFFSET: 10,

@@ -33,6 +33,7 @@
   // Constants for nested graph layout
   var GRAPH_PADDING = VizConstants.GRAPH_PADDING || 24;
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
+  var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
 
 
   /**
@@ -382,21 +383,9 @@
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
   }
 
-  // Get layout options based on whether DATA nodes are present (separate_outputs mode)
-  function getLayoutOptions(layoutNodes) {
-    var hasDATANodes = layoutNodes.some(function(n) {
-      return n.data && n.data.nodeType === 'DATA';
-    });
-    var baseOptions = hasDATANodes
-      ? {
-          ...ConstraintLayout.defaultOptions,
-          layout: {
-            ...ConstraintLayout.defaultOptions.layout,
-            spaceY: 94,  // Target ~60px visual gap for small nodes
-          },
-        }
-      : ConstraintLayout.defaultOptions;
-    return baseOptions;
+  // Get layout options (keep a single spacing profile)
+  function getLayoutOptions() {
+    return ConstraintLayout.defaultOptions;
   }
 
   function buildNodeDimensionsAndTypes(visibleNodes) {
@@ -527,7 +516,8 @@
       var tgtNode = nodeById.get(e.target);
       if (!srcNode || !tgtNode) return;
 
-      var srcBottom = srcNode.y + srcNode.height / 2;
+      var srcOffset = getNodeTypeOffset(srcNode.data && srcNode.data.nodeType, srcNode.data && srcNode.data.isExpanded);
+      var srcBottom = srcNode.y + srcNode.height / 2 - srcOffset;
       var tgtTop = tgtNode.y - tgtNode.height / 2;
       var gap = tgtTop - srcBottom;
 
@@ -548,7 +538,7 @@
 
   function layoutChildrenPhase(visibleNodes, edges, layoutOrder, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode) {
     var childLayoutResults = new Map();
-    var CHILD_EDGE_GAP = 30;
+    var CHILD_EDGE_GAP = VERTICAL_GAP;
 
     layoutOrder.forEach(function(graphNode) {
       var children = nodeGroups.get(graphNode.id) || [];
@@ -687,7 +677,7 @@
       })));
     }
 
-    applyVerticalGapFix(rootResult.nodes, rootLayoutEdges, 30, debugMode, 'root');
+    applyVerticalGapFix(rootResult.nodes, rootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
     rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
 
     return {
