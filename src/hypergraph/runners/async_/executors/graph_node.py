@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import map_inputs_to_func_params
-from hypergraph.runners._shared.types import RunResult, RunStatus
+from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
@@ -66,9 +66,11 @@ class AsyncGraphNodeExecutor:
             return self._collect_as_lists(results, node)
 
         result = await self.runner.run(node.graph, inner_inputs)
-        if result.status == RunStatus.PAUSED:
-            from hypergraph.runners._shared.types import PauseExecution, PauseInfo
+        return self._handle_nested_result(node, result)
 
+    def _handle_nested_result(self, node: "GraphNode", result: RunResult) -> dict[str, Any]:
+        """Handle result from nested graph, propagating pause if needed."""
+        if result.status == RunStatus.PAUSED:
             nested_pause = PauseInfo(
                 node_name=f"{node.name}/{result.pause.node_name}",
                 output_param=result.pause.output_param,
@@ -98,6 +100,11 @@ class AsyncGraphNodeExecutor:
         """
         collected: dict[str, list] = {name: [] for name in node.outputs}
         for result in results:
+            if result.status == RunStatus.PAUSED:
+                raise RuntimeError(
+                    "Unexpected PAUSED status in map results. "
+                    "InterruptNodes are not supported inside mapped graphs."
+                )
             if result.status == RunStatus.FAILED:
                 raise result.error or RuntimeError("Nested graph execution failed")
             # Translate original output names to renamed names

@@ -14,6 +14,7 @@ class RunStatus(Enum):
     Values:
         COMPLETED: Run finished successfully
         FAILED: Run encountered an error
+        PAUSED: Execution paused at an InterruptNode, waiting for user response
     """
 
     COMPLETED = "completed"
@@ -95,6 +96,11 @@ class PauseExecution(BaseException):
 
     Extends BaseException (not Exception) so it won't be caught
     by the runner's generic ``except Exception`` handler.
+
+    When raised inside a nested graph, the parent GraphNode executor
+    catches it and re-raises with a prefixed node_name (e.g.
+    ``"outer/inner/interrupt_node"``), propagating the pause up
+    through arbitrarily deep nesting.
     """
 
     def __init__(self, pause_info: PauseInfo):

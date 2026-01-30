@@ -66,6 +66,7 @@ class AsyncRunner(BaseRunner):
     - Concurrent execution of independent nodes
     - Configurable concurrency limit
     - Supports both sync and async nodes
+    - Human-in-the-loop via InterruptNode (pause and resume)
 
     Example:
         >>> from hypergraph import Graph, node, AsyncRunner

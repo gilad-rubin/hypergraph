@@ -31,9 +31,15 @@ class AsyncInterruptNodeExecutor:
 
         # Handler path: auto-resolve via node-attached handler
         if node.handler is not None:
-            response = node.handler(input_value)
-            if isawaitable(response):
-                response = await response
+            try:
+                response = node.handler(input_value)
+                if isawaitable(response):
+                    response = await response
+            except Exception as e:
+                raise RuntimeError(
+                    f"Handler for InterruptNode \'{node.name}\' failed: "
+                    f"{type(e).__name__}: {e}"
+                ) from e
             return {output_name: response}
 
         # Pause path: no handler, no resume value

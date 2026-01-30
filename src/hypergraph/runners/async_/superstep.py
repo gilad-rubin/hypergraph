@@ -62,8 +62,10 @@ async def run_superstep_async(
     """
     new_state = state.copy()
 
-    # If any ready node is an InterruptNode, execute only that node
-    # to avoid PauseExecution (BaseException) cancelling sibling tasks in gather
+    # Execute InterruptNodes alone (not concurrently with other nodes).
+    # PauseExecution extends BaseException, so if raised inside asyncio.gather
+    # it cancels all sibling tasks. By isolating InterruptNodes, other ready
+    # nodes are deferred to the next superstep where they'll still be ready.
     from hypergraph.nodes.interrupt import InterruptNode
 
     interrupt_nodes = [n for n in ready_nodes if isinstance(n, InterruptNode)]
