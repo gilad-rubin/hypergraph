@@ -12,7 +12,6 @@
 
 | # | Issue | Severity | Source |
 |---|-------|----------|--------|
-| 10 | Deep nesting / infinite loops | HIGH | ✅ Fixed in PR #29 — Sole Producer Rule |
 | 29 | Cyclic gate→END infinite loop | HIGH | AMP (CY-005) |
 | 13 | GraphNode output leakage | MEDIUM | PR #23 |
 | 14 | Stale branch values persist | MEDIUM | PR #23 |
@@ -21,7 +20,7 @@
 | 26 | Map with empty list / zip mismatch | MEDIUM | PR #18 extended |
 | 28 | Async exception propagation | MEDIUM | PR #18 extended |
 | 30 | Type checking with renamed inputs | MEDIUM | AMP (TC-010) |
-| 31 | GraphNode name collision not detected | MEDIUM | ✅ Validated in PR #29 — detected |
+| 31 | GraphNode name collision not detected | MEDIUM | AMP (GN-008) |
 | 15 | Type subclass compatibility | LOW | PR #23 |
 | 17 | Empty/edge-case graphs | LOW | PR #23 |
 | 19 | Bind/unbind edge cases | LOW | PR #23 |
@@ -35,28 +34,11 @@
 
 **Deferred**: #3 runtime type checking (by design), #5 disconnected nodes (design decision), #12 kwargs detection (low priority)
 
-**Resolved**: #1, #2, #4, #6, #9, #11 in PR #25; #7, #8 already fixed
+**Resolved**: #1, #2, #4, #6, #9, #11 in PR #25; #7, #8 already fixed; #10, #31 in PR #29
 
 ---
 
 ## 🔴 OPEN — High Severity
-
-### 10. Deep Nesting / Multiple GraphNodes — Infinite Loops
-
-✅ **Fixed in [PR #29](https://github.com/gilad-rubin/hypergraph/pull/29)** via the **Sole Producer Rule**.
-
-| Scenario | Result |
-|----------|--------|
-| A: 4+ level nesting | **PASSES** (sync and async) |
-| B: Same inner graph used twice | **PASSES** with renames, validates conflicts |
-| C: Output name == input name (SM-007) | **✅ FIXED** — Sole Producer Rule prevents re-trigger |
-| D: GraphNode name collision (#31) | **PASSES** — validation catches it |
-
-**Sole Producer Rule**: When a node is the only producer of a value it also consumes (e.g., `add_response(messages) -> messages`), skip that value in the staleness check. This prevents infinite self-retriggering. Exception: gate-controlled nodes are exempt — gates explicitly drive cycle re-execution.
-
-**Design change**: Convergence loops (e.g., `counter_stop(count) -> count`) now require an explicit `@route` gate to cycle. Gateless self-loops run once and stop.
-
----
 
 ### 29. Cyclic Gate→END Infinite Loop
 
