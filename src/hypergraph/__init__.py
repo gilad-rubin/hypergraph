@@ -8,6 +8,7 @@ from hypergraph.nodes import (
     GraphNode,
     HyperNode,
     IfElseNode,
+    InterruptNode,
     RenameError,
     RouteNode,
     ifelse,
@@ -37,6 +38,7 @@ __all__ = [
     "GateNode",
     "IfElseNode",
     "RouteNode",
+    "InterruptNode",
     "HyperNode",
     "END",
     # Graph
