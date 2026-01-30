@@ -12,7 +12,7 @@
 
 | # | Issue | Severity | Source |
 |---|-------|----------|--------|
-| 10 | Deep nesting / infinite loops | HIGH | ✅ Investigated in PR #29 — not bugs |
+| 10 | Deep nesting / infinite loops | HIGH | ✅ Fixed in PR #29 — Sole Producer Rule |
 | 29 | Cyclic gate→END infinite loop | HIGH | AMP (CY-005) |
 | 13 | GraphNode output leakage | MEDIUM | PR #23 |
 | 14 | Stale branch values persist | MEDIUM | PR #23 |
@@ -43,20 +43,18 @@
 
 ### 10. Deep Nesting / Multiple GraphNodes — Infinite Loops
 
-Investigated in [PR #29](https://github.com/gilad-rubin/hypergraph/pull/29):
+✅ **Fixed in [PR #29](https://github.com/gilad-rubin/hypergraph/pull/29)** via the **Sole Producer Rule**.
 
 | Scenario | Result |
 |----------|--------|
 | A: 4+ level nesting | **PASSES** (sync and async) |
 | B: Same inner graph used twice | **PASSES** with renames, validates conflicts |
-| C: Output name == input name (SM-007) | **NOT A BUG** — convergence loop pattern |
+| C: Output name == input name (SM-007) | **✅ FIXED** — Sole Producer Rule prevents re-trigger |
 | D: GraphNode name collision (#31) | **PASSES** — validation catches it |
 
-Scenario C was the most interesting: `transform(x) -> x+1` creates a self-loop that never converges, so `InfiniteLoopError` is correct. The same pattern with convergence (`clamp(val) -> min(val+1, 5)`) terminates correctly. This is the convergence loop feature used by `counter_stop`.
+**Sole Producer Rule**: When a node is the only producer of a value it also consumes (e.g., `add_response(messages) -> messages`), skip that value in the staleness check. This prevents infinite self-retriggering. Exception: gate-controlled nodes are exempt — gates explicitly drive cycle re-execution.
 
-The Sole Producer Rule (from `specs/not_reviewed/conflict-resolution.md`) was attempted but reverted — it would break all convergence loops.
-
-**Status**: Scenarios A/B/D are not bugs. Scenario C is working as designed. Remaining open sub-issue is #29 (gate→END topology).
+**Design change**: Convergence loops (e.g., `counter_stop(count) -> count`) now require an explicit `@route` gate to cycle. Gateless self-loops run once and stop.
 
 ---
 
