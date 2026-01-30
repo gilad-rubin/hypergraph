@@ -23,6 +23,7 @@ from hypergraph.exceptions import (
 from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
+    PauseInfo,
     RunResult,
     RunStatus,
     SyncRunner,
@@ -48,6 +49,7 @@ __all__ = [
     "SyncRunner",
     "AsyncRunner",
     "BaseRunner",
+    "PauseInfo",
     "RunResult",
     "RunStatus",
     # Errors

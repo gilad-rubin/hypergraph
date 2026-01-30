@@ -18,6 +18,7 @@ class RunStatus(Enum):
 
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
 
 
 def _generate_run_id() -> str:
@@ -42,6 +43,12 @@ class RunResult:
     run_id: str = field(default_factory=_generate_run_id)
     workflow_id: str | None = None
     error: BaseException | None = None
+    pause: PauseInfo | None = None
+
+    @property
+    def paused(self) -> bool:
+        """Whether execution is paused at an InterruptNode."""
+        return self.status == RunStatus.PAUSED
 
     def __getitem__(self, key: str) -> Any:
         """Dict-like access to values."""
@@ -54,6 +61,45 @@ class RunResult:
     def get(self, key: str, default: Any = None) -> Any:
         """Get value with default."""
         return self.values.get(key, default)
+
+
+@dataclass
+class PauseInfo:
+    """Information about a paused execution.
+
+    Attributes:
+        node_name: Name of the InterruptNode that paused (uses "/" for nesting)
+        output_param: The output parameter name where the response goes
+        value: The input value surfaced to the caller
+    """
+
+    node_name: str
+    output_param: str
+    value: Any
+
+    @property
+    def response_key(self) -> str:
+        """Key to use in values dict when resuming.
+
+        Top-level: returns output_param directly (e.g., 'decision').
+        Nested: dot-separated path (e.g., 'review.decision').
+        """
+        parts = self.node_name.split("/")
+        if len(parts) == 1:
+            return self.output_param
+        return ".".join(parts[:-1]) + "." + self.output_param
+
+
+class PauseExecution(BaseException):
+    """Raised by InterruptNode executor to signal a pause.
+
+    Extends BaseException (not Exception) so it won't be caught
+    by the runner's generic ``except Exception`` handler.
+    """
+
+    def __init__(self, pause_info: PauseInfo):
+        self.pause_info = pause_info
+        super().__init__(f"Paused at {pause_info.node_name}")
 
 
 @dataclass
@@ -73,6 +119,7 @@ class RunnerCapabilities:
     supports_async_nodes: bool = False
     supports_streaming: bool = False
     returns_coroutine: bool = False
+    supports_interrupts: bool = False
 
 
 @dataclass
