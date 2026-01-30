@@ -158,6 +158,41 @@ class HyperNode(ABC):
         """
         return inputs
 
+    # === NetworkX Representation ===
+
+    @property
+    def node_type(self) -> str:
+        """Node type: "FUNCTION", "GRAPH", or "BRANCH".
+
+        Default: "FUNCTION". Override in subclasses.
+        """
+        return "FUNCTION"
+
+    @property
+    def nested_graph(self) -> Any:
+        """Returns the nested Graph if this node contains one, else None.
+
+        Default: None. Override in GraphNode.
+        """
+        return None
+
+    @property
+    def nx_attrs(self) -> dict[str, Any]:
+        """Flattened attributes for NetworkX graph representation.
+
+        Returns dict with node_type, label, inputs, outputs, types, defaults.
+        Subclasses may extend to add additional attributes.
+        """
+        return {
+            "node_type": self.node_type,
+            "label": self.name,
+            "inputs": self.inputs,
+            "outputs": self.outputs,
+            "input_types": {p: self.get_input_type(p) for p in self.inputs},
+            "output_types": {o: self.get_output_type(o) for o in self.outputs},
+            "has_defaults": {p: self.has_default_for(p) for p in self.inputs},
+        }
+
     # === Public API ===
 
     def with_name(self: _T, name: str) -> _T:

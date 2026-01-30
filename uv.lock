@@ -1375,6 +1375,9 @@ telemetry = [
     { name = "rich" },
     { name = "tqdm" },
 ]
+viz = [
+    { name = "ipykernel" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1396,6 +1399,7 @@ requires-dist = [
     { name = "ipykernel", marker = "extra == 'all'", specifier = "<7" },
     { name = "ipykernel", marker = "extra == 'examples'", specifier = ">=6.31.0" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = "<7" },
+    { name = "ipykernel", marker = "extra == 'viz'", specifier = ">=6.31.0" },
     { name = "ipywidgets", marker = "extra == 'all'", specifier = ">=8.1.7" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.7" },
     { name = "logfire", marker = "extra == 'all'", specifier = ">=2.0.0" },
