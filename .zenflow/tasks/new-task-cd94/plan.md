@@ -77,8 +77,12 @@ Propagate error_handling through `GraphNode.map_over()` to executors.
 review code quality based on CLAUDE.md and other rule files and cleanup the code
 
 ### [ ] Step: documentation
+<!-- chat-id: ad049605-bdb4-408a-8b38-9afa72902ec3 -->
 
-update documentation, API reference, README
+Updated documentation for error_handling feature:
+- docs/06-api-reference/runners.md: Added error_handling param to SyncRunner.map() and AsyncRunner.map(), added partial values on failure section
+- docs/06-api-reference/nodes.md: Added error_handling param to GraphNode.map_over() with example
+- docs/05-how-to/batch-processing.md: Rewrote Error Handling section with fail-fast, continue, and nested graph examples
 
 ### [ ] Step: Re-examine edge cases, look at capabilities matrix
 

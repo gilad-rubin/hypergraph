@@ -153,16 +153,55 @@ batch_pipeline = Graph([
 
 ## Error Handling
 
-By default, errors in one item don't stop others:
+Control what happens when individual items fail using the `error_handling` parameter.
+
+### Fail-Fast (Default)
+
+By default, `map()` stops on the first failure and raises the exception. This is useful during development and when failures indicate a systematic bug:
 
 ```python
+# Raises immediately if any item fails
 results = runner.map(graph, {"text": texts}, map_over="text")
+```
+
+### Continue on Error
+
+Use `error_handling="continue"` to collect all results, including failures. This is useful in production when occasional bad data shouldn't block the entire batch:
+
+```python
+from hypergraph import RunStatus
+
+results = runner.map(
+    graph,
+    {"text": texts},
+    map_over="text",
+    error_handling="continue",
+)
 
 for r in results:
     if r.status == RunStatus.FAILED:
         print(f"Error: {r.error}")
     else:
         print(f"Success: {r['result']}")
+
+# Summary
+successes = [r for r in results if r.status == RunStatus.COMPLETED]
+failures = [r for r in results if r.status == RunStatus.FAILED]
+print(f"{len(successes)} succeeded, {len(failures)} failed")
+```
+
+### Error Handling in Nested Graphs
+
+When using `map_over()` on a nested graph, error handling works the same way. Failed items produce `None` placeholders to preserve list alignment with inputs:
+
+```python
+gn = processor.as_node().map_over("item", error_handling="continue")
+
+batch = Graph([load_items, gn, summarize])
+result = runner.run(batch, {"path": "data.txt"})
+
+# result["output"] → [value, value, None, value, ...]
+# None entries correspond to failed items
 ```
 
 ## When to Use Map vs Loop
