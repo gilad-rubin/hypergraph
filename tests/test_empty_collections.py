@@ -3,6 +3,7 @@
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, SyncRunner
 
 
@@ -136,7 +137,7 @@ class TestEmptyListInCycleSeed:
     """Test empty list as cycle seed value."""
 
     def test_empty_list_accumulator(self):
-        """Cycle with empty list seed accumulates correctly."""
+        """Cycle with empty list seed and gate accumulates correctly."""
 
         @node(output_name="acc")
         def accumulator(acc: list, value: int, limit: int = 3) -> list:
@@ -144,7 +145,11 @@ class TestEmptyListInCycleSeed:
                 return acc
             return acc + [value]
 
-        graph = Graph([accumulator])
+        @route(targets=["accumulator", END])
+        def accumulator_gate(acc: list, limit: int = 3) -> str:
+            return END if len(acc) >= limit else "accumulator"
+
+        graph = Graph([accumulator, accumulator_gate])
         runner = SyncRunner()
 
         result = runner.run(graph, {"acc": [], "value": 42, "limit": 3})

@@ -3,6 +3,7 @@
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
 
 
@@ -168,7 +169,7 @@ class TestExceptionInCycle:
     """Tests for exceptions in cyclic graphs."""
 
     def test_exception_in_cycle_iteration(self):
-        """Exception during cycle iteration."""
+        """Exception during cycle iteration driven by gate."""
         iteration = 0
 
         @node(output_name="count")
@@ -179,7 +180,11 @@ class TestExceptionInCycle:
                 raise CustomError(f"failed at iteration {iteration}")
             return count + 1
 
-        graph = Graph([counter_with_error])
+        @route(targets=["counter_with_error", END])
+        def cycle_gate(count: int) -> str:
+            return END if count >= 10 else "counter_with_error"
+
+        graph = Graph([counter_with_error, cycle_gate])
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0, "fail_at": 3})
@@ -188,7 +193,7 @@ class TestExceptionInCycle:
         assert isinstance(result.error, CustomError)
 
     def test_exception_in_convergence_cycle(self):
-        """Exception in a convergence cycle."""
+        """Exception in a convergence cycle driven by gate."""
 
         @node(output_name="value")
         def converge_with_error(value: float, target: float = 10.0) -> float:
@@ -196,7 +201,11 @@ class TestExceptionInCycle:
                 raise CustomError("convergence error")
             return value + (target - value) * 0.5
 
-        graph = Graph([converge_with_error])
+        @route(targets=["converge_with_error", END])
+        def converge_gate(value: float, target: float = 10.0) -> str:
+            return END if abs(target - value) < 0.01 else "converge_with_error"
+
+        graph = Graph([converge_with_error, converge_gate])
         runner = SyncRunner()
 
         result = runner.run(graph, {"value": 0.0, "target": 10.0})
