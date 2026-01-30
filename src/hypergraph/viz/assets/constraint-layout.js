@@ -26,6 +26,53 @@
 
   const distance1d = (a, b) => Math.abs(a - b);
 
+  const pointInRect = (x, y, rect) =>
+    x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+
+  const orientation2d = (a, b, c) => {
+    const val = (b.y - a.y) * (c.x - b.x) - (b.x - a.x) * (c.y - b.y);
+    if (val === 0) return 0;
+    return val > 0 ? 1 : 2;
+  };
+
+  const onSegment = (a, b, c) =>
+    Math.min(a.x, c.x) <= b.x &&
+    b.x <= Math.max(a.x, c.x) &&
+    Math.min(a.y, c.y) <= b.y &&
+    b.y <= Math.max(a.y, c.y);
+
+  const segmentsIntersect = (p1, p2, p3, p4) => {
+    const o1 = orientation2d(p1, p2, p3);
+    const o2 = orientation2d(p1, p2, p4);
+    const o3 = orientation2d(p3, p4, p1);
+    const o4 = orientation2d(p3, p4, p2);
+
+    if (o1 !== o2 && o3 !== o4) return true;
+    if (o1 === 0 && onSegment(p1, p3, p2)) return true;
+    if (o2 === 0 && onSegment(p1, p4, p2)) return true;
+    if (o3 === 0 && onSegment(p3, p1, p4)) return true;
+    if (o4 === 0 && onSegment(p3, p2, p4)) return true;
+    return false;
+  };
+
+  const lineIntersectsRect = (p1, p2, rect) => {
+    if (pointInRect(p1.x, p1.y, rect) || pointInRect(p2.x, p2.y, rect)) {
+      return true;
+    }
+
+    const topLeft = { x: rect.left, y: rect.top };
+    const topRight = { x: rect.right, y: rect.top };
+    const bottomLeft = { x: rect.left, y: rect.bottom };
+    const bottomRight = { x: rect.right, y: rect.bottom };
+
+    return (
+      segmentsIntersect(p1, p2, topLeft, topRight) ||
+      segmentsIntersect(p1, p2, topRight, bottomRight) ||
+      segmentsIntersect(p1, p2, bottomRight, bottomLeft) ||
+      segmentsIntersect(p1, p2, bottomLeft, topLeft)
+    );
+  };
+
   const angle = (a, b, orientation) => {
     if (orientation === 'vertical') {
       return Math.atan2(a.y - b.y, a.x - b.x);
@@ -907,6 +954,34 @@
           if (firstBlockedRow === -1) firstBlockedRow = i;
           lastBlockedRow = i;
           blockedRows.push(i);
+        }
+      }
+
+      if (firstBlockedRow === -1) {
+        const pad = (minPassageGap || 0) * 0.5;
+        const srcPoint = { x: source.x, y: nodeVisibleBottom(source) };
+        const tgtPoint = { x: target.x, y: nodeTop(target) };
+
+        for (let i = source.row + 1; i < target.row; i += 1) {
+          let rowBlocks = false;
+          for (const node of rows[i]) {
+            if (node.id === source.id || node.id === target.id) continue;
+            const rect = {
+              left: nodeLeft(node) - pad,
+              right: nodeRight(node) + pad,
+              top: nodeTop(node) - pad,
+              bottom: nodeBottom(node) + pad,
+            };
+            if (lineIntersectsRect(srcPoint, tgtPoint, rect)) {
+              rowBlocks = true;
+              break;
+            }
+          }
+          if (rowBlocks) {
+            if (firstBlockedRow === -1) firstBlockedRow = i;
+            lastBlockedRow = i;
+            blockedRows.push(i);
+          }
         }
       }
 
