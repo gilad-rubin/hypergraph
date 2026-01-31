@@ -238,7 +238,7 @@ class AsyncRunner(BaseRunner):
 
     def _make_execute_node(
         self, event_processors: list[EventProcessor] | None
-    ):
+    ) -> AsyncNodeExecutor:
         """Create an async node executor closure that carries event context.
 
         The superstep calls execute_node(node, state, inputs). For GraphNode

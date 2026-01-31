@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from hypergraph.exceptions import InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
@@ -205,7 +205,7 @@ class SyncRunner(BaseRunner):
 
     def _make_execute_node(
         self, event_processors: list[EventProcessor] | None
-    ):
+    ) -> Callable:
         """Create a node executor closure that carries event context.
 
         The superstep calls execute_node(node, state, inputs). For GraphNode
@@ -318,6 +318,7 @@ class SyncRunner(BaseRunner):
 def _create_dispatcher(
     processors: list[EventProcessor] | None,
 ) -> "EventDispatcher":
+    """Create an EventDispatcher from processor list."""
     from hypergraph.events.dispatcher import EventDispatcher
 
     return EventDispatcher(processors)
