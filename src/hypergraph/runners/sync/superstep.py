@@ -45,7 +45,11 @@ def run_superstep_sync(
         input_versions = {param: state.get_version(param) for param in node.inputs}
 
         # Execute node using the provided executor
-        outputs = execute_node(node, new_state, inputs)
+        try:
+            outputs = execute_node(node, new_state, inputs)
+        except Exception as e:
+            e._partial_state = new_state  # type: ignore[attr-defined]
+            raise
 
         # Update state with outputs
         for name, value in outputs.items():

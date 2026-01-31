@@ -173,7 +173,8 @@ class SyncRunner(BaseRunner):
                 if get_ready_nodes(graph, state):
                     raise InfiniteLoopError(max_iterations)
         except Exception as e:
-            e._partial_state = state  # type: ignore[attr-defined]
+            if not hasattr(e, "_partial_state"):
+                e._partial_state = state  # type: ignore[attr-defined]
             raise
 
         return state
