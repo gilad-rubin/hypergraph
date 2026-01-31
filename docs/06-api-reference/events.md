@@ -91,6 +91,7 @@ class NodeEndEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
     duration_ms: float           # Wall-clock duration in milliseconds
+    cached: bool                 # True if result was served from cache
 ```
 
 ### NodeErrorEvent
@@ -142,12 +143,25 @@ class StopRequestedEvent(BaseEvent):
     workflow_id: str | None      # Workflow identifier
 ```
 
+### CacheHitEvent
+
+Emitted when a node result is served from cache instead of being executed.
+
+```python
+@dataclass(frozen=True)
+class CacheHitEvent(BaseEvent):
+    node_name: str               # Name of the cached node
+    graph_name: str              # Graph containing the node
+    cache_key: str               # The cache key that was hit
+```
+
 ### Event (Union Type)
 
 ```python
 Event = (
     RunStartEvent | RunEndEvent | NodeStartEvent | NodeEndEvent
     | NodeErrorEvent | RouteDecisionEvent | InterruptEvent | StopRequestedEvent
+    | CacheHitEvent
 )
 ```
 
@@ -205,6 +219,7 @@ class TypedEventProcessor(EventProcessor):
     def on_route_decision(self, event: RouteDecisionEvent) -> None: ...
     def on_interrupt(self, event: InterruptEvent) -> None: ...
     def on_stop_requested(self, event: StopRequestedEvent) -> None: ...
+    def on_cache_hit(self, event: CacheHitEvent) -> None: ...
 ```
 
 **Example — timing processor:**
@@ -332,6 +347,14 @@ RunStartEvent(graph_name="rag")
   NodeStartEvent(node_name="generate")
   NodeEndEvent(node_name="generate")
 RunEndEvent(graph_name="rag", status="completed")
+```
+
+For cached nodes, the sequence includes a `CacheHitEvent`:
+
+```text
+NodeStartEvent(node_name="embed")
+CacheHitEvent(node_name="embed", cache_key="abc123...")
+NodeEndEvent(node_name="embed", cached=True, duration_ms=0.0)
 ```
 
 For map operations, each item gets its own `RunStartEvent`/`RunEndEvent` pair nested under the map's span:

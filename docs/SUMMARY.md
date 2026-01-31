@@ -22,6 +22,7 @@
 * [Multi-Agent](03-patterns/05-multi-agent.md)
 * [Streaming](03-patterns/06-streaming.md)
 * [Human-in-the-Loop](03-patterns/07-human-in-the-loop.md)
+* [Caching](03-patterns/08-caching.md)
 
 ## Real-World Examples
 
