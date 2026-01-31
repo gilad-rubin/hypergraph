@@ -989,3 +989,155 @@ unnamed.as_node()
 # ValueError: GraphNode requires a name. Either set name on Graph(..., name='x')
 # or pass name to as_node(name='x')
 ```
+
+---
+
+## InterruptNode
+
+**InterruptNode** is a declarative pause point for human-in-the-loop workflows. It has one input (the value surfaced to the caller) and one output (where the response goes). When execution reaches an interrupt without a pre-supplied response or handler, the graph pauses.
+
+### Constructor
+
+```python
+class InterruptNode(HyperNode):
+    def __init__(
+        self,
+        name: str,
+        *,
+        input_param: str,
+        output_param: str,
+        response_type: type | None = None,
+        handler: Callable[..., Any] | None = None,
+    ) -> None: ...
+```
+
+**Args:**
+
+- `name` (required): Node name
+- `input_param` (required): Name of the input parameter (value shown to the caller)
+- `output_param` (required): Name of the output parameter (where the user's response goes)
+- `response_type`: Optional type annotation for the response value
+- `handler`: Optional callable to auto-resolve the interrupt. Accepts one argument (the input value) and returns the response. May be sync or async.
+
+**Raises:**
+- `ValueError` - If `input_param` or `output_param` is not a valid Python identifier or is a reserved keyword
+
+### Creating an InterruptNode
+
+```python
+from hypergraph import InterruptNode
+
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+)
+
+print(approval.name)         # "approval"
+print(approval.inputs)       # ("draft",)
+print(approval.outputs)      # ("decision",)
+print(approval.input_param)  # "draft"
+print(approval.output_param) # "decision"
+print(approval.cache)        # False (always)
+```
+
+### Properties
+
+#### `input_param: str`
+
+The input parameter name (shorthand for `inputs[0]`).
+
+#### `output_param: str`
+
+The output parameter name (shorthand for `outputs[0]`).
+
+#### `cache: bool`
+
+Always `False`. InterruptNodes never cache.
+
+#### `response_type: type | None`
+
+Optional type annotation for the response. Included in `definition_hash`.
+
+#### `handler: Callable | None`
+
+Optional callable to auto-resolve. Excluded from `definition_hash`.
+
+#### `definition_hash: str`
+
+SHA256 hash that includes the node name, inputs, outputs, and response_type, but excludes the handler.
+
+```python
+n1 = InterruptNode(name="x", input_param="a", output_param="b")
+n2 = InterruptNode(name="x", input_param="a", output_param="b", response_type=str)
+n3 = InterruptNode(name="x", input_param="a", output_param="b", handler=lambda x: x)
+
+assert n1.definition_hash != n2.definition_hash  # response_type differs
+assert n1.definition_hash == n3.definition_hash   # handler is excluded
+```
+
+### Methods
+
+#### `with_handler(handler) -> InterruptNode`
+
+Return a new InterruptNode with the given handler attached. The original is unchanged.
+
+```python
+approval = InterruptNode(name="x", input_param="a", output_param="b")
+auto = approval.with_handler(lambda val: "approved")
+
+assert approval.handler is None   # original unchanged
+assert auto.handler is not None
+```
+
+#### Inherited: `with_name()`, `with_inputs()`, `with_outputs()`
+
+All HyperNode rename methods work as expected:
+
+```python
+approval = InterruptNode(name="x", input_param="a", output_param="b")
+
+renamed = approval.with_name("review")
+adapted = approval.with_inputs(a="draft").with_outputs(b="decision")
+
+print(renamed.name)          # "review"
+print(adapted.input_param)   # "draft"
+print(adapted.output_param)  # "decision"
+```
+
+### Example: Pause and Resume
+
+```python
+from hypergraph import Graph, node, AsyncRunner, InterruptNode
+
+@node(output_name="draft")
+def make_draft(query: str) -> str:
+    return f"Draft for: {query}"
+
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+)
+
+@node(output_name="result")
+def finalize(decision: str) -> str:
+    return f"Final: {decision}"
+
+graph = Graph([make_draft, approval, finalize])
+runner = AsyncRunner()
+
+# Pauses at the interrupt
+result = await runner.run(graph, {"query": "hello"})
+assert result.paused
+assert result.pause.value == "Draft for: hello"
+
+# Resume with response
+result = await runner.run(graph, {
+    "query": "hello",
+    result.pause.response_key: "approved",
+})
+assert result["result"] == "Final: approved"
+```
+
+For a full guide with multiple interrupts, nested graphs, and handler patterns, see [Human-in-the-Loop](../03-patterns/04-human-in-the-loop.md).

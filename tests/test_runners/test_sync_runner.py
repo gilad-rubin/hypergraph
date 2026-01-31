@@ -8,6 +8,7 @@ from hypergraph.exceptions import (
     InfiniteLoopError,
     MissingInputError,
 )
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunResult, RunStatus, SyncRunner
 
 
@@ -44,6 +45,11 @@ def counter_stop(count: int, limit: int = 10) -> int:
     if count >= limit:
         return count  # Stop condition - return same value
     return count + 1
+
+
+@route(targets=["counter_stop", END])
+def counter_gate(count: int, limit: int = 10) -> str:
+    return END if count >= limit else "counter_stop"
 
 
 @node(output_name="items")
@@ -261,7 +267,7 @@ class TestSyncRunnerRun:
 
     def test_cycle_executes_until_stable(self):
         """Cyclic graph runs until outputs stabilize."""
-        graph = Graph([counter_stop])
+        graph = Graph([counter_stop, counter_gate])
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0, "limit": 5})
@@ -270,7 +276,12 @@ class TestSyncRunnerRun:
 
     def test_cycle_respects_max_iterations(self):
         """max_iterations limits execution."""
-        graph = Graph([counter])  # Never stops
+
+        @route(targets=["counter", END])
+        def always_continue(count: int) -> str:
+            return "counter"
+
+        graph = Graph([counter, always_continue])
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0}, max_iterations=5)
@@ -281,7 +292,12 @@ class TestSyncRunnerRun:
 
     def test_cycle_raises_on_infinite_loop(self):
         """Infinite loop detected and reported."""
-        graph = Graph([counter])
+
+        @route(targets=["counter", END])
+        def always_continue(count: int) -> str:
+            return "counter"
+
+        graph = Graph([counter, always_continue])
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0}, max_iterations=10)
@@ -531,7 +547,7 @@ class TestSyncRunnerMap:
         sums = sorted(r["sum"] for r in results)
         assert sums == [11, 12, 21, 22]
 
-    def test_map_with_select(self):
+    def test_map_select(self):
         """Map respects select parameter."""
         graph = Graph([double, add.with_inputs(a="doubled")])
         runner = SyncRunner()

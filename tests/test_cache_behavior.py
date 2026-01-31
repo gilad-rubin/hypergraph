@@ -8,6 +8,7 @@ of result caching may be pending.
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, SyncRunner
 
 
@@ -95,7 +96,7 @@ class TestCachedNodeExecution:
         assert counter.count >= 1
 
     def test_uncached_node_executes_each_time(self):
-        """Node without cache runs each time it's triggered."""
+        """Node without cache runs each time it's triggered by a gate."""
         counter = CallCounter()
 
         @node(output_name="count")
@@ -105,14 +106,18 @@ class TestCachedNodeExecution:
                 return count
             return count + 1
 
-        graph = Graph([counting_node])
+        @route(targets=["counting_node", END])
+        def cycle_gate(count: int, limit: int = 3) -> str:
+            return END if count >= limit else "counting_node"
+
+        graph = Graph([counting_node, cycle_gate])
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0, "limit": 3})
 
         assert result.status == RunStatus.COMPLETED
-        # Node should run multiple times: 0->1->2->3 (4 executions)
-        assert counter.count == 4
+        # Gate-driven cycle: 0->1->2->3 (3 executions, gate stops at 3)
+        assert counter.count == 3
 
     def test_cached_node_in_dag(self):
         """Cached node in a DAG executes correctly."""
@@ -141,7 +146,7 @@ class TestCacheWithCycles:
     """Tests for cache behavior in cyclic graphs."""
 
     def test_cycle_with_cache_flag(self):
-        """Cyclic graph with cache flag behaves correctly."""
+        """Cyclic graph with cache flag and gate behaves correctly."""
         counter = CallCounter()
 
         @node(output_name="count", cache=True)
@@ -151,7 +156,11 @@ class TestCacheWithCycles:
                 return count
             return count + 1
 
-        graph = Graph([counter_node])
+        @route(targets=["counter_node", END])
+        def cycle_gate(count: int, limit: int = 3) -> str:
+            return END if count >= limit else "counter_node"
+
+        graph = Graph([counter_node, cycle_gate])
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0, "limit": 3})

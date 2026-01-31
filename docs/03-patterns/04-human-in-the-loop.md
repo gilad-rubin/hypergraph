@@ -1,0 +1,290 @@
+# Human-in-the-Loop
+
+Pause execution for human input. Resume when ready.
+
+- **InterruptNode** - Declarative pause point with one input and one output
+- **PauseInfo** - Metadata about the pause (what value is surfaced, where to resume)
+- **Handlers** - Auto-resolve interrupts programmatically (testing, automation)
+
+## The Problem
+
+Many workflows need human judgment at key points: approving a draft, confirming a destructive action, providing feedback on generated content. You need a way to pause the graph, surface a value to the user, and resume with their response.
+
+## Basic Pause and Resume
+
+An `InterruptNode` takes one input (the value shown to the user) and produces one output (the user's response). When execution reaches an interrupt without a response, it pauses.
+
+```python
+from hypergraph import Graph, node, AsyncRunner, InterruptNode
+
+@node(output_name="draft")
+def generate_draft(prompt: str) -> str:
+    return f"Blog post about: {prompt}"
+
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+)
+
+@node(output_name="result")
+def finalize(decision: str) -> str:
+    return f"Published: {decision}"
+
+graph = Graph([generate_draft, approval, finalize])
+runner = AsyncRunner()
+
+# First run: pauses at the interrupt
+result = await runner.run(graph, {"prompt": "Python async"})
+
+assert result.paused
+assert result.pause.value == "Blog post about: Python async"
+assert result.pause.response_key == "decision"
+
+# Resume with the user's response
+result = await runner.run(graph, {
+    "prompt": "Python async",
+    result.pause.response_key: "Looks great, publish it!",
+})
+
+assert result["result"] == "Published: Looks great, publish it!"
+```
+
+The key flow:
+
+1. **Run** the graph. Execution pauses at the `InterruptNode`.
+2. **Inspect** `result.pause.value` to see what the user needs to review.
+3. **Resume** by passing the response via `result.pause.response_key`.
+
+### RunResult Properties
+
+When paused, the `RunResult` has:
+
+| Property | Description |
+|----------|-------------|
+| `result.paused` | `True` when execution is paused |
+| `result.pause.value` | The input value surfaced to the caller |
+| `result.pause.node_name` | Name of the InterruptNode that paused |
+| `result.pause.output_param` | Output parameter name |
+| `result.pause.response_key` | Key to use in the values dict when resuming |
+
+## Auto-Resolve with Handlers
+
+For testing or automation, attach a handler that resolves the interrupt without human input.
+
+### Handler in Constructor
+
+```python
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+    handler=lambda draft: "auto-approved",
+)
+
+graph = Graph([generate_draft, approval, finalize])
+result = await runner.run(graph, {"prompt": "Python async"})
+
+# No pause — handler resolved it
+assert result["result"] == "Published: auto-approved"
+```
+
+### Handler via with_handler()
+
+Use `with_handler()` to attach a handler after construction. This returns a new instance (immutable pattern).
+
+```python
+# Define the interrupt without a handler
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+)
+
+# For testing: attach a handler
+test_approval = approval.with_handler(lambda draft: "test-approved")
+
+# Original unchanged
+assert approval.handler is None
+assert test_approval.handler is not None
+```
+
+This is useful when the same interrupt needs human input in production but auto-resolution in tests.
+
+### Async Handlers
+
+Handlers can be async:
+
+```python
+async def llm_review(draft: str) -> str:
+    """Use an LLM to auto-review the draft."""
+    return await call_llm(f"Review this draft: {draft}")
+
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+    handler=llm_review,
+)
+```
+
+## Multiple Sequential Interrupts
+
+A graph can have multiple interrupts. Execution pauses at each one in topological order.
+
+```python
+@node(output_name="draft")
+def generate(prompt: str) -> str:
+    return f"Draft: {prompt}"
+
+review = InterruptNode(
+    name="review",
+    input_param="draft",
+    output_param="feedback",
+)
+
+edit = InterruptNode(
+    name="edit",
+    input_param="feedback",
+    output_param="final_draft",
+)
+
+@node(output_name="result")
+def publish(final_draft: str) -> str:
+    return f"Published: {final_draft}"
+
+graph = Graph([generate, review, edit, publish])
+runner = AsyncRunner()
+
+# Pause 1: review
+r1 = await runner.run(graph, {"prompt": "hello"})
+assert r1.pause.node_name == "review"
+
+# Pause 2: edit (provide review response)
+r2 = await runner.run(graph, {
+    "prompt": "hello",
+    "feedback": "Needs more detail",
+})
+assert r2.pause.node_name == "edit"
+assert r2.pause.value == "Needs more detail"
+
+# Complete (provide both responses)
+r3 = await runner.run(graph, {
+    "prompt": "hello",
+    "feedback": "Needs more detail",
+    "final_draft": "Detailed draft about hello",
+})
+assert r3["result"] == "Published: Detailed draft about hello"
+```
+
+Each resume call replays the graph from the start, providing previously-collected responses as input values. The interrupt detects that its output is already in the state and skips the pause.
+
+## Nested Graph Interrupts
+
+InterruptNodes inside nested graphs propagate the pause to the outer graph. The `node_name` is prefixed with the nested graph's name.
+
+```python
+# Inner graph with an interrupt
+approval = InterruptNode(name="approval", input_param="x", output_param="y")
+inner = Graph([approval], name="inner")
+
+@node(output_name="x")
+def produce(query: str) -> str:
+    return query
+
+@node(output_name="result")
+def consume(y: str) -> str:
+    return f"got: {y}"
+
+outer = Graph([produce, inner.as_node(), consume])
+runner = AsyncRunner()
+
+result = await runner.run(outer, {"query": "hello"})
+
+assert result.paused
+assert result.pause.node_name == "inner/approval"
+assert result.pause.response_key == "inner.y"
+```
+
+The `response_key` uses dot-separated paths for nested interrupts: `"inner.y"` means the output `y` inside the graph node `inner`.
+
+## Runner Compatibility
+
+Only `AsyncRunner` supports interrupts. `SyncRunner` raises `IncompatibleRunnerError` at runtime if the graph contains InterruptNodes.
+
+```python
+from hypergraph import SyncRunner
+from hypergraph.exceptions import IncompatibleRunnerError
+
+runner = SyncRunner()
+
+# Raises IncompatibleRunnerError
+runner.run(graph_with_interrupt, {"query": "hello"})
+```
+
+Similarly, `AsyncRunner.map()` does not support interrupts — a graph with interrupts cannot be used with `map()`.
+
+## API Reference
+
+### InterruptNode
+
+```python
+class InterruptNode(HyperNode):
+    def __init__(
+        self,
+        name: str,
+        *,
+        input_param: str,
+        output_param: str,
+        response_type: type | None = None,
+        handler: Callable[..., Any] | None = None,
+    ) -> None: ...
+```
+
+**Args:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `str` | Node name |
+| `input_param` | `str` | Name of the input parameter (value surfaced to caller) |
+| `output_param` | `str` | Name of the output parameter (where response goes) |
+| `response_type` | `type \| None` | Optional type annotation for the response |
+| `handler` | `Callable \| None` | Optional callable to auto-resolve (sync or async) |
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `input_param` | `str` | The input parameter name |
+| `output_param` | `str` | The output parameter name |
+| `cache` | `bool` | Always `False` |
+| `definition_hash` | `str` | SHA256 hash (includes response_type, excludes handler) |
+
+**Methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `with_handler(handler)` | `InterruptNode` | New instance with the given handler attached |
+| `with_name(name)` | `InterruptNode` | New instance with a different name |
+| `with_inputs(**kwargs)` | `InterruptNode` | New instance with renamed inputs |
+| `with_outputs(**kwargs)` | `InterruptNode` | New instance with renamed outputs |
+
+**Raises:**
+
+- `ValueError` if `input_param` or `output_param` is not a valid Python identifier or is a reserved keyword.
+
+### PauseInfo
+
+```python
+@dataclass
+class PauseInfo:
+    node_name: str      # Name of the InterruptNode (uses "/" for nesting)
+    output_param: str   # Output parameter name
+    value: Any          # Input value surfaced to the caller
+```
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `response_key` | `str` | Key to use when resuming. Top-level: `output_param`. Nested: dot-separated path (e.g., `"inner.decision"`) |

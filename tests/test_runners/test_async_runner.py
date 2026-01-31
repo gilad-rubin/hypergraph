@@ -7,6 +7,7 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.exceptions import InfiniteLoopError, MissingInputError
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, AsyncRunner
 
 
@@ -285,7 +286,12 @@ class TestAsyncRunnerRun:
 
     async def test_cycle_executes_until_stable(self):
         """Cyclic graph runs until outputs stabilize."""
-        graph = Graph([counter_stop])
+
+        @route(targets=["counter_stop", END])
+        def cycle_gate(count: int, limit: int = 10) -> str:
+            return END if count >= limit else "counter_stop"
+
+        graph = Graph([counter_stop, cycle_gate])
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"count": 0, "limit": 5})
@@ -301,7 +307,11 @@ class TestAsyncRunnerRun:
                 return count
             return count + 1
 
-        graph = Graph([async_counter_stop])
+        @route(targets=["async_counter_stop", END])
+        def async_cycle_gate(count: int, limit: int = 10) -> str:
+            return END if count >= limit else "async_counter_stop"
+
+        graph = Graph([async_counter_stop, async_cycle_gate])
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"count": 0, "limit": 5})
