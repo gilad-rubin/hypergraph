@@ -306,9 +306,9 @@ def _validate_reserved_names(nodes: dict[str, "HyperNode"]) -> None:
     for name in nodes:
         if name == "END":
             raise GraphConfigError(
-                f"Invalid node name: 'END'\n\n"
-                f"  -> 'END' is reserved for the routing sentinel\n\n"
-                f"How to fix: Use a different name (e.g., 'end_node', 'finish')"
+                "Invalid node name: 'END'\n\n"
+                "  -> 'END' is reserved for the routing sentinel\n\n"
+                "How to fix: Use a different name (e.g., 'end_node', 'finish')"
             )
 
 
