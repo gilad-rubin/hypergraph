@@ -53,7 +53,8 @@ Create `src/hypergraph/events/` package with core types and interfaces.
 - Write unit tests in `tests/events/test_types.py` and `tests/events/test_dispatcher.py` covering: TypedEventProcessor auto-dispatch, EventDispatcher best-effort error handling, event immutability
 - Run `uv run ruff check src/hypergraph/events/` and `uv run pytest tests/events/`
 
-### [ ] Step: SyncRunner event emission
+### [x] Step: SyncRunner event emission
+<!-- chat-id: f622a887-a6c5-4ba4-b55d-b7cfc0ba259b -->
 
 Integrate event emission into SyncRunner and its executors.
 
@@ -102,3 +103,11 @@ Finalize exports, dependencies, and documentation.
 ### [ ] Step: Edge Case detection
 
 find edge cases, look at capabilities matrix and fix issues in the implementation or surface dillemas
+
+### [ ] Step: Improve code
+
+Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat structure" rule, "code smells" skills and improve implementation;
+
+### [ ] Step: Update the docs, README, api reference;
+
+Update the docs, README, api reference; Add examples for real life usage, like the rest of the docs
