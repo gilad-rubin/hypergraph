@@ -33,6 +33,24 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
   <img alt="Hypergraph execution spectrum" src="docs/spectrum-light.svg">
 </picture>
 
+### Progress Tracking
+
+Observe execution with event processors. Get hierarchical Rich progress bars out of the box.
+
+```python
+from hypergraph import SyncRunner, RichProgressProcessor
+
+runner = SyncRunner()
+result = runner.run(graph, inputs, event_processors=[RichProgressProcessor()])
+```
+
+```
+📦 my_graph ━━━━━━━━━━━━━━━━━━━━ 100% 3/3 nodes
+  🌳 inner_rag ━━━━━━━━━━━━━━━━━ 100% 2/2 nodes
+```
+
+Build custom processors by subclassing `EventProcessor` or `TypedEventProcessor`.
+
 ## Installation
 
 ```bash

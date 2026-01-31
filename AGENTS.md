@@ -28,6 +28,16 @@
 - Tests run in parallel via pytest-xdist. Graph builds are cached.
 - Add new capability dimensions to `tests/capabilities/matrix.py`.
 
+## Event System
+
+- Events are emitted during runner execution (`RunStartEvent`, `NodeStartEvent`, etc.)
+- Pass `event_processors=[...]` to `runner.run()` or `runner.map()` to observe execution
+- `EventProcessor` (sync) and `AsyncEventProcessor` (async) are the base interfaces
+- `TypedEventProcessor` auto-dispatches to `on_run_start()`, `on_node_end()`, etc.
+- `RichProgressProcessor` provides hierarchical Rich progress bars (requires `pip install 'hypergraph[progress]'`)
+- Event types live in `src/hypergraph/events/types.py`; processors in `events/processor.py`
+- Tests in `tests/events/`
+
 ## Maintaining Instructions
 
 After making significant code structure changes, update the AGENTS.md and README.md markdown files

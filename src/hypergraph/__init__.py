@@ -26,6 +26,23 @@ from hypergraph.runners import (
     RunStatus,
     SyncRunner,
 )
+from hypergraph.events import (
+    AsyncEventProcessor,
+    BaseEvent,
+    Event,
+    EventDispatcher,
+    EventProcessor,
+    InterruptEvent,
+    NodeEndEvent,
+    NodeErrorEvent,
+    NodeStartEvent,
+    RouteDecisionEvent,
+    RunEndEvent,
+    RunStartEvent,
+    StopRequestedEvent,
+    TypedEventProcessor,
+)
+from hypergraph.events.rich_progress import RichProgressProcessor
 
 __all__ = [
     # Decorators and node types
@@ -54,4 +71,20 @@ __all__ = [
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",
+    # Events
+    "BaseEvent",
+    "Event",
+    "EventDispatcher",
+    "EventProcessor",
+    "AsyncEventProcessor",
+    "TypedEventProcessor",
+    "InterruptEvent",
+    "NodeEndEvent",
+    "NodeErrorEvent",
+    "NodeStartEvent",
+    "RouteDecisionEvent",
+    "RunEndEvent",
+    "RunStartEvent",
+    "StopRequestedEvent",
+    "RichProgressProcessor",
 ]

@@ -92,6 +92,7 @@ Implement the Rich-based hierarchical progress bar.
 - Run `uv run pytest tests/events/`
 
 ### [ ] Step: Public API and packaging
+<!-- chat-id: ef369419-7b8f-4a70-8f4c-59cb7926615f -->
 
 Finalize exports, dependencies, and documentation.
 
