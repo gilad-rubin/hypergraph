@@ -78,7 +78,8 @@ Mirror sync event emission for the async runner.
 - Write integration tests in `tests/events/test_async_events.py` mirroring sync scenarios
 - Run `uv run pytest tests/events/`
 
-### [ ] Step: RichProgressProcessor
+### [x] Step: RichProgressProcessor
+<!-- chat-id: f0e663a2-624d-4c2a-8ca8-85b066643e29 -->
 
 Implement the Rich-based hierarchical progress bar.
 
