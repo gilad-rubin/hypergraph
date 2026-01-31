@@ -25,7 +25,7 @@ All cache-related tests pass. 28 cache-specific tests + 59 capability matrix tes
 - Skipped when `diskcache` not installed via `pytest.importorskip`
 
 ### `tests/test_cache_validation.py` (new)
-- `test_route_with_cache_raises`: `cache=True` on `@route` gate raises `GraphConfigError`
+- `test_route_with_cache_builds_successfully`: `cache=True` on `@route` gate is supported
 - `test_interrupt_node_cache_raises`: InterruptNode.cache is always False
 - `test_graph_node_cache_is_false`: GraphNode.cache is always False
 

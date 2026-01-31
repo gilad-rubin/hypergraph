@@ -28,9 +28,9 @@ class TestCacheValidationOnGates:
 
 
 class TestCacheValidationOnInterruptNode:
-    """cache=True should be rejected on InterruptNode at build time."""
+    """InterruptNode.cache always returns False (not user-configurable)."""
 
-    def test_interrupt_node_cache_raises(self):
+    def test_interrupt_node_cache_is_false(self):
         @node(output_name="draft")
         def producer() -> str:
             return "hello"
@@ -46,7 +46,7 @@ class TestCacheValidationOnInterruptNode:
 
 
 class TestCacheValidationOnGraphNode:
-    """cache=True should be rejected on GraphNode at build time."""
+    """GraphNode.cache always returns False (not user-configurable)."""
 
     def test_graph_node_cache_is_false(self):
         @node(output_name="x")

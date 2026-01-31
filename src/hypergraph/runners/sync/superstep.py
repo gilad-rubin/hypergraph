@@ -66,7 +66,7 @@ def run_superstep_sync(
                 cached_hit, cached_value = cache.get(cache_key)
 
         if cached_hit:
-            outputs = cached_value
+            outputs = dict(cached_value)  # Copy to avoid mutating cache entry
             # Restore routing decision for gate nodes
             if isinstance(node, (RouteNode, IfElseNode)):
                 routing_decision = outputs.pop("__routing_decision__", None)

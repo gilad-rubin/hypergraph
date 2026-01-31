@@ -141,7 +141,7 @@ Add `on_cache_hit(self, event: CacheHitEvent) -> None` to `TypedEventProcessor` 
 
 - **Generator nodes with `cache=True`**: Cache the fully-materialized list (generators are already collected to lists before output).
 - **Non-picklable inputs**: Log warning, skip cache for that call (cache miss).
-- **Gate nodes**: Gates should NOT be cacheable (routing decisions depend on execution context). Validate at graph build time that `cache=True` is not set on `GateNode` subclasses.
+- **Gate nodes**: Route/IfElse gate decisions may be cached when a cache backend is provided. The runner stores and restores routing decisions (via `__routing_decision__` key) on cache hits.
 - **InterruptNode**: Should NOT be cacheable (pauses execution for human input). Validate at graph build time alongside gates.
 - **GraphNode with `cache=True`**: Disallow at build time. Caching applies to inner nodes individually. A user wanting to cache an entire subgraph result should cache the individual nodes inside it.
 - **Cyclic graphs**: Cache works per-invocation — different input values in each iteration produce different cache keys. The cache key includes actual input values, not versions.

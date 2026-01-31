@@ -413,3 +413,109 @@ class TestInMemoryCacheThreadSafety:
             t.join()
 
         assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Cache mutation bug: pop() on cached dict must not corrupt cache entries
+# ---------------------------------------------------------------------------
+
+
+class TestCachedRoutingDecisionNotMutated:
+    """Verify that cache hits for gate nodes don't corrupt cached entries.
+
+    When a gate node hits cache, the routing decision is popped from the
+    cached dict. If the cache returns the same dict reference (InMemoryCache),
+    pop() would permanently remove __routing_decision__ from the entry,
+    breaking subsequent cache hits.
+    """
+
+    def test_route_cache_hit_twice_preserves_routing(self):
+        """Second cache hit on a @route node must still restore routing."""
+        counter = CallCounter()
+
+        @route(targets=["a", END], cache=True)
+        def gate(x: int) -> str:
+            counter.increment()
+            return "a"
+
+        @node(output_name="a")
+        def a(x: int) -> int:
+            return x * 2
+
+        graph = Graph([gate, a])
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
+
+        r1 = runner.run(graph, {"x": 1})
+        assert r1["a"] == 2
+        assert counter.count == 1
+
+        # Second run — cache hit, routing must still work
+        r2 = runner.run(graph, {"x": 1})
+        assert r2["a"] == 2
+        assert counter.count == 1  # still cached
+
+        # Third run — cache hit again, routing must still work
+        r3 = runner.run(graph, {"x": 1})
+        assert r3["a"] == 2
+        assert counter.count == 1
+
+    def test_ifelse_cache_hit_twice_preserves_routing(self):
+        """Second cache hit on an @ifelse node must still restore routing."""
+        counter = CallCounter()
+
+        @ifelse(when_true="t", when_false="f", cache=True)
+        def gate(x: int) -> bool:
+            counter.increment()
+            return True
+
+        @node(output_name="t")
+        def t(x: int) -> int:
+            return x
+
+        @node(output_name="f")
+        def f(x: int) -> int:
+            return -x
+
+        graph = Graph([gate, t, f])
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
+
+        r1 = runner.run(graph, {"x": 5})
+        assert r1["t"] == 5
+        assert counter.count == 1
+
+        r2 = runner.run(graph, {"x": 5})
+        assert r2["t"] == 5
+        assert counter.count == 1
+
+        r3 = runner.run(graph, {"x": 5})
+        assert r3["t"] == 5
+        assert counter.count == 1
+
+    def test_route_cache_hit_twice_async(self):
+        """Async: second cache hit on a @route node must still restore routing."""
+        counter = CallCounter()
+
+        @route(targets=["a", END], cache=True)
+        def gate(x: int) -> str:
+            counter.increment()
+            return "a"
+
+        @node(output_name="a")
+        def a(x: int) -> int:
+            return x * 2
+
+        graph = Graph([gate, a])
+        cache = InMemoryCache()
+        runner = AsyncRunner(cache=cache)
+
+        r1 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
+        assert r1["a"] == 2
+
+        r2 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
+        assert r2["a"] == 2
+
+        r3 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
+        assert r3["a"] == 2
+        assert counter.count == 1
