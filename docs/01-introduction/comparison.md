@@ -254,7 +254,6 @@ Can you test functions without the framework?
 - You want minimal boilerplate
 - Hierarchical composition is important
 - You're building multi-agent systems
-- You want to avoid framework lock-in
 
 ### Choose LangGraph when
 
