@@ -255,6 +255,40 @@ class TestNestedGraph:
 # ---------------------------------------------------------------------------
 
 
+class TestMapFailures:
+    def test_failed_items_shown_in_map_bar(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=3))
+
+        # Item 1 succeeds
+        proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
+        proc.on_run_end(_run_end(run_id="r2", span_id="item1", parent_span_id="map1", status="completed"))
+
+        # Item 2 fails
+        proc.on_run_start(_run_start(run_id="r3", span_id="item2", parent_span_id="map1"))
+        proc.on_run_end(_run_end(run_id="r3", span_id="item2", parent_span_id="map1", status="failed"))
+
+        # Map bar should show failure count
+        update_calls = [c for c in mock.update.call_args_list if "description" in c.kwargs]
+        assert len(update_calls) == 1
+        desc = update_calls[0].kwargs["description"]
+        assert "1 failed" in desc
+        assert "red" in desc.lower()
+
+    def test_multiple_failures_accumulate(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=3))
+
+        # Two items fail
+        for i, sid in enumerate(["item1", "item2"]):
+            proc.on_run_start(_run_start(run_id=f"r{i+2}", span_id=sid, parent_span_id="map1"))
+            proc.on_run_end(_run_end(run_id=f"r{i+2}", span_id=sid, parent_span_id="map1", status="failed"))
+
+        update_calls = [c for c in mock.update.call_args_list if "description" in c.kwargs]
+        last_desc = update_calls[-1].kwargs["description"]
+        assert "2 failed" in last_desc
+
+
 class TestNodeError:
     def test_marks_bar_as_failed(self):
         proc, mock = _make_processor()

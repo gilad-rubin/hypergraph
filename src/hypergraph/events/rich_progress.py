@@ -81,6 +81,8 @@ class RichProgressProcessor(TypedEventProcessor):
         # Track total for node bars under a map context
         # (graph_name, node_name, depth) -> total
         self._node_totals: dict[tuple[str, str, int], int] = {}
+        # Track failed item count per map span
+        self._map_failures: dict[str, int] = {}
 
         self._started = False
 
@@ -214,6 +216,19 @@ class RichProgressProcessor(TypedEventProcessor):
         map_parent = self._run_to_map.get(span)
         if map_parent and map_parent in self._map_tasks:
             self._progress.advance(self._map_tasks[map_parent], 1)
+
+            # Track failures and update map bar description
+            if event.status == "failed":
+                self._map_failures[map_parent] = self._map_failures.get(map_parent, 0) + 1
+                fail_count = self._map_failures[map_parent]
+                task_id = self._map_tasks[map_parent]
+                depth = self._depth.get(map_parent, 0)
+                name = event.graph_name or "Map"
+                base_desc = self._make_description(f"{name} Progress", depth, is_map=True)
+                self._progress.update(
+                    task_id,
+                    description=f"{base_desc} [red]({fail_count} failed)[/red]",
+                )
 
         # If this is a root run (no parent), show completion
         if self._parents.get(span) is None:

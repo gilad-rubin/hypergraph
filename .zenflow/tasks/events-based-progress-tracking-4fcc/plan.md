@@ -109,6 +109,7 @@ Finalize exports, dependencies, and documentation.
 find edge cases, look at capabilities matrix and fix issues in the implementation or surface dillemas
 
 ### [ ] Step: Improve code
+<!-- chat-id: be9505dc-3ee2-418f-b430-6362bcba2f65 -->
 
 Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat structure" rule, "code smells" skills and improve implementation;
 
