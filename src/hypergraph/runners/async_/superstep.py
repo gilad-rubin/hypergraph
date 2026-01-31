@@ -13,6 +13,7 @@ from hypergraph.runners._shared.helpers import collect_inputs_for_node
 from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 if TYPE_CHECKING:
+    from hypergraph.cache import CacheBackend
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.graph import Graph
     from hypergraph.runners._shared.protocols import AsyncNodeExecutor
@@ -46,6 +47,7 @@ async def run_superstep_async(
     execute_node: "AsyncNodeExecutor",
     max_concurrency: int | None = None,
     *,
+    cache: "CacheBackend | None" = None,
     dispatcher: "EventDispatcher | None" = None,
     run_id: str = "",
     run_span_id: str = "",
@@ -89,6 +91,29 @@ async def run_superstep_async(
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         input_versions = {param: state.get_version(param) for param in node.inputs}
 
+        # Check cache before execution
+        cache_key = ""
+        if cache is not None and getattr(node, "cache", False):
+            from hypergraph.cache import compute_cache_key
+
+            cache_key = compute_cache_key(node.definition_hash, inputs)
+            if cache_key:
+                cached_hit, cached_value = cache.get(cache_key)
+                if cached_hit:
+                    # Emit NodeStartEvent → CacheHitEvent → NodeEndEvent(cached=True)
+                    node_span_id = await _emit_node_start(
+                        dispatcher, run_id, run_span_id, node, graph,
+                    )
+                    await _emit_cache_hit(
+                        dispatcher, run_id, node_span_id, run_span_id,
+                        node, graph, cache_key,
+                    )
+                    await _emit_node_end(
+                        dispatcher, run_id, node_span_id, run_span_id,
+                        node, graph, duration_ms=0.0, cached=True,
+                    )
+                    return node, cached_value, input_versions
+
         # Emit NodeStartEvent
         node_span_id = await _emit_node_start(dispatcher, run_id, run_span_id, node, graph)
 
@@ -102,6 +127,10 @@ async def run_superstep_async(
             outputs = await execute_node(node, new_state, inputs)
 
             duration_ms = (time.time() - node_start) * 1000
+
+            # Store result in cache
+            if cache is not None and cache_key:
+                cache.set(cache_key, outputs)
 
             # Emit RouteDecisionEvent if this was a routing node
             await _emit_route_decision(
@@ -188,6 +217,7 @@ async def _emit_node_end(
     node: HyperNode,
     graph: "Graph",
     duration_ms: float,
+    cached: bool = False,
 ) -> None:
     """Emit NodeEndEvent."""
     if dispatcher is None or not dispatcher.active:
@@ -202,6 +232,32 @@ async def _emit_node_end(
         node_name=node.name,
         graph_name=graph.name,
         duration_ms=duration_ms,
+        cached=cached,
+    ))
+
+
+async def _emit_cache_hit(
+    dispatcher: "EventDispatcher | None",
+    run_id: str,
+    node_span_id: str,
+    run_span_id: str,
+    node: HyperNode,
+    graph: "Graph",
+    cache_key: str,
+) -> None:
+    """Emit CacheHitEvent."""
+    if dispatcher is None or not dispatcher.active:
+        return
+
+    from hypergraph.events.types import CacheHitEvent
+
+    await dispatcher.emit_async(CacheHitEvent(
+        run_id=run_id,
+        span_id=node_span_id,
+        parent_span_id=run_span_id,
+        node_name=node.name,
+        graph_name=graph.name,
+        cache_key=cache_key,
     ))
 
 

@@ -50,6 +50,7 @@ from hypergraph.runners.async_.superstep import (
 from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
+    from hypergraph.cache import CacheBackend
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -85,8 +86,14 @@ class AsyncRunner(BaseRunner):
         10
     """
 
-    def __init__(self):
-        """Initialize AsyncRunner with its node executors."""
+    def __init__(self, cache: "CacheBackend | None" = None):
+        """Initialize AsyncRunner with its node executors.
+
+        Args:
+            cache: Optional cache backend for node result caching.
+                Nodes opt in with ``cache=True``.
+        """
+        self._cache = cache
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -242,6 +249,7 @@ class AsyncRunner(BaseRunner):
                     values,
                     self._make_execute_node(event_processors),
                     max_concurrency,
+                    cache=self._cache,
                     dispatcher=dispatcher,
                     run_id=run_id,
                     run_span_id=run_span_id,
