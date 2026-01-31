@@ -53,29 +53,17 @@ Step 4 is **impossible** in a DAG - you cannot loop back to retrieval. The entir
 
 ---
 
-## Why Not State-Based Frameworks?
+## The Design Choice: Functions as Contracts
 
-Existing agent frameworks solve cycles. But they require:
+When it came time to support cycles, hypergraph doubled down on its core idea: **functions define their own contracts through parameters and named outputs.**
 
-- **Explicit state objects** that functions must read from and write to
-- **Manual edge wiring** between nodes
-- **Framework-coupled functions** that are not portable or testable in isolation
-- **Reducer annotations** for append semantics (e.g., conversation history)
-- **Field names repeated** in state class, reads, writes, and edges (not DRY)
+This means:
+- **Inputs are parameters** — what a function needs is visible in its signature
+- **Outputs are named** — what a function produces is declared with `output_name`
+- **Edges are inferred** — matching names create connections automatically
+- **Functions are portable** — they work standalone, testable without the framework
 
-**The frustration**: We want to write pure functions where inputs and outputs define the contract. Not functions that reach into a shared state bag and return partial updates.
-
----
-
-## Key Differentiators
-
-| Aspect | State-Based Frameworks | Hypergraph |
-|--------|---------------------------|------------|
-| **State definition** | Static TypedDict or Pydantic model required | No state class needed - edges inferred from names |
-| **Graph construction** | Edges defined at class definition time | Build graphs dynamically at runtime |
-| **Validation timing** | Compile time (static types) | Build time (when Graph() is called) |
-| **Type hints** | Mandatory | Optional (opt-in for extra checks) |
-| **Function portability** | Framework-coupled | Pure functions, testable without imports |
+This extends naturally to cycles. A function that accumulates conversation history just takes `history` as a parameter and returns a new `history`. The graph handles iteration.
 
 ---
 
@@ -88,7 +76,7 @@ Nodes define what flows through the system via their signatures:
 - Output names declare what a node produces
 - Edges are inferred from matching names - no manual wiring
 
-No edge configuration. No state schemas. Just pure functions with clear contracts.
+Pure functions with clear contracts — the framework handles the wiring.
 
 ---
 
@@ -160,6 +148,24 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 - Stateless microservices - API endpoints don't need graphs
 - Simple scripts - Single functions don't need composition
 - Real-time event streaming - Event streams, not batch workflows
+
+---
+
+## Inspiration & Acknowledgments
+
+Hypergraph stands on the shoulders of projects we admire:
+
+### [Hamilton](https://github.com/DAGWorks-Inc/hamilton)
+
+Hamilton pioneered the idea that a Python function's signature *is* the graph definition — inputs become edges, outputs flow downstream. Hypergraph's automatic edge inference is a direct descendant of this insight. Hamilton's team has built something genuinely elegant, and their focus on lineage, observability, and production-grade data pipelines continues to push the ecosystem forward.
+
+### [Pipefunc](https://github.com/pipefunc/pipefunc)
+
+Pipefunc inspired hypergraph's `.map()` operation and parallelization model — the idea that you write logic for one item and the framework handles fan-out. Much of the syntax for defining nodes and composing graphs was influenced by Pipefunc's clean, expressive API.
+
+### [Kedro-Viz](https://github.com/kedro-org/kedro-viz)
+
+Kedro-Viz showed what graph visualization could look like — interactive, collapsible, and hierarchical. The aspiration for hypergraph's visualization layer draws heavily from Kedro-Viz's approach to making complex pipelines understandable at a glance.
 
 ---
 
