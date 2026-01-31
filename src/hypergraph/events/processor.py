@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.events.types import (
+        CacheHitEvent,
         Event,
         InterruptEvent,
         NodeEndEvent,
@@ -24,6 +25,7 @@ _EVENT_METHOD_MAP: dict[str, str] = {
     "RunEndEvent": "on_run_end",
     "NodeStartEvent": "on_node_start",
     "NodeEndEvent": "on_node_end",
+    "CacheHitEvent": "on_cache_hit",
     "NodeErrorEvent": "on_node_error",
     "RouteDecisionEvent": "on_route_decision",
     "InterruptEvent": "on_interrupt",
@@ -77,6 +79,7 @@ class TypedEventProcessor(EventProcessor):
     def on_run_end(self, event: RunEndEvent) -> None: ...
     def on_node_start(self, event: NodeStartEvent) -> None: ...
     def on_node_end(self, event: NodeEndEvent) -> None: ...
+    def on_cache_hit(self, event: CacheHitEvent) -> None: ...
     def on_node_error(self, event: NodeErrorEvent) -> None: ...
     def on_route_decision(self, event: RouteDecisionEvent) -> None: ...
     def on_interrupt(self, event: InterruptEvent) -> None: ...
