@@ -67,7 +67,8 @@ Integrate event emission into SyncRunner and its executors.
 - Write integration tests in `tests/events/test_sync_events.py` using a `ListProcessor` to assert event sequences for: simple DAG, cyclic graph, nested graph, map, error cases
 - Run `uv run pytest tests/events/`
 
-### [ ] Step: AsyncRunner event emission
+### [x] Step: AsyncRunner event emission
+<!-- chat-id: 5d61b882-7c58-458b-ab12-03adae04db79 -->
 
 Mirror sync event emission for the async runner.
 
