@@ -99,7 +99,7 @@ class GateNode(HyperNode):
 
     @property
     def cache(self) -> bool:
-        """Whether results should be cached. Default False for gates."""
+        """Whether routing function results should be cached."""
         return self._cache
 
     @property
@@ -337,7 +337,9 @@ def route(
         targets: Valid target names (list or dict with descriptions)
         fallback: Default target if function returns None
         multi_target: If True, function returns list of targets
-        cache: Whether to cache routing decisions
+        cache: Cache the routing function's return value. On cache hit,
+            the runner restores the routing decision without calling the
+            function. Requires a cache backend on the runner.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
 
@@ -495,7 +497,9 @@ def ifelse(
     Args:
         when_true: Target to activate when function returns True
         when_false: Target to activate when function returns False
-        cache: Whether to cache routing decisions
+        cache: Cache the routing function's return value. On cache hit,
+            the runner restores the routing decision without calling the
+            function. Requires a cache backend on the runner.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
 

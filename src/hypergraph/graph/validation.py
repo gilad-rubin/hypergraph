@@ -352,23 +352,23 @@ def _validate_no_gate_self_loop(nodes: dict[str, "HyperNode"]) -> None:
 
 
 def _validate_no_cache_on_non_function_nodes(nodes: dict[str, "HyperNode"]) -> None:
-    """Disallow cache=True on GateNode, InterruptNode, and GraphNode.
+    """Disallow cache=True on InterruptNode and GraphNode.
 
-    Only FunctionNode supports caching. Gates make routing decisions that
-    depend on execution context, InterruptNodes pause for human input,
+    InterruptNodes pause for human input (non-deterministic),
     and GraphNodes should cache individual inner nodes instead.
+    GateNodes are allowed — the routing function's return value is cached,
+    and the runner restores the routing decision on cache hit.
     """
-    from hypergraph.nodes.gate import GateNode
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.nodes.interrupt import InterruptNode
 
-    disallowed = (GateNode, InterruptNode, GraphNode)
+    disallowed = (InterruptNode, GraphNode)
     for node in nodes.values():
         if isinstance(node, disallowed) and node.cache:
             kind = type(node).__name__
             raise GraphConfigError(
                 f"Node '{node.name}' has cache=True but is a {kind}\n\n"
-                f"  -> Caching is only supported on FunctionNode\n\n"
+                f"  -> Caching is not supported on {kind}\n\n"
                 f"How to fix:\n"
                 f"  Remove cache=True from '{node.name}'"
             )

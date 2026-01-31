@@ -139,19 +139,30 @@ CacheHitEvent(node_name="embed", cache_key="abc123...")
 NodeEndEvent(node_name="embed", cached=True, duration_ms=0.0)
 ```
 
-## Restrictions
+## Caching Route and IfElse Nodes
 
-Caching is only valid for **pure function nodes**. These node types reject `cache=True` at build time:
-
-- **GateNode** (`@route`, `@ifelse`) — routing decisions must always execute
-- **InterruptNode** — human-in-the-loop pauses can't be cached
-- **GraphNode** — nested graphs have their own execution flow; cache individual nodes inside them instead
+Gate nodes (`@route`, `@ifelse`) are cacheable. The routing function's return value is cached, and the runner restores the routing decision on cache hit:
 
 ```python
-@route(targets=["a", "b"], cache=True)  # Build-time error
-def decide(x: int) -> str:
-    return "a"
+@route(targets=["fast_path", "full_rag", END], cache=True)
+def classify_query(query: str) -> str:
+    """Expensive classification — cache the decision."""
+    category = llm.classify(query)
+    if category == "faq":
+        return "fast_path"
+    elif category == "complex":
+        return "full_rag"
+    return END
 ```
+
+On cache hit, the runner replays the cached routing decision without calling the function again. Downstream routing still works correctly — the cached decision is restored into the graph state.
+
+## Restrictions
+
+These node types reject `cache=True` at build time:
+
+- **InterruptNode** — human-in-the-loop pauses can't be cached
+- **GraphNode** — nested graphs have their own execution flow; cache individual nodes inside them instead
 
 ## Real-World Example: Cached RAG Pipeline
 

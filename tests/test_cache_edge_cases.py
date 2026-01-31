@@ -290,8 +290,8 @@ class TestCacheKeyStability:
 class TestCacheValidation:
     """cache=True on disallowed node types must raise at build time."""
 
-    def test_cache_on_route_node_raises(self):
-        """cache=True on a @route node should raise GraphConfigError."""
+    def test_cache_on_route_node_builds(self):
+        """cache=True on a @route node should build successfully."""
 
         @route(targets=["a", END], cache=True)
         def gate(x: int) -> str:
@@ -301,11 +301,12 @@ class TestCacheValidation:
         def a(x: int) -> int:
             return x
 
-        with pytest.raises(GraphConfigError, match="cache=True"):
-            Graph([gate, a])
+        # Gates are cacheable — their routing function return value is cached
+        graph = Graph([gate, a])
+        assert graph is not None
 
-    def test_cache_on_ifelse_node_raises(self):
-        """cache=True on an @ifelse node should raise GraphConfigError."""
+    def test_cache_on_ifelse_node_builds(self):
+        """cache=True on an @ifelse node should build successfully."""
 
         @ifelse(when_true="t", when_false="f", cache=True)
         def gate(x: int) -> bool:
@@ -319,8 +320,8 @@ class TestCacheValidation:
         def f(x: int) -> int:
             return x
 
-        with pytest.raises(GraphConfigError, match="cache=True"):
-            Graph([gate, t, f])
+        graph = Graph([gate, t, f])
+        assert graph is not None
 
 
 # ---------------------------------------------------------------------------

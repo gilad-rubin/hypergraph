@@ -11,9 +11,9 @@ from hypergraph.nodes.interrupt import InterruptNode
 
 
 class TestCacheValidationOnGates:
-    """cache=True should be rejected on GateNode at build time."""
+    """cache=True is allowed on GateNode — routing functions are cacheable."""
 
-    def test_route_with_cache_raises(self):
+    def test_route_with_cache_builds_successfully(self):
         @node(output_name="x")
         def producer() -> int:
             return 1
@@ -22,8 +22,9 @@ class TestCacheValidationOnGates:
         def gate(x: int) -> str:
             return END
 
-        with pytest.raises(GraphConfigError, match="cache=True"):
-            Graph([producer, gate])
+        # Should build without error
+        graph = Graph([producer, gate])
+        assert graph is not None
 
 
 class TestCacheValidationOnInterruptNode:

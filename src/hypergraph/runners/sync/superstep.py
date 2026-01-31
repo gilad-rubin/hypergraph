@@ -67,9 +67,17 @@ def run_superstep_sync(
 
         if cached_hit:
             outputs = cached_value
+            # Restore routing decision for gate nodes
+            if isinstance(node, (RouteNode, IfElseNode)):
+                routing_decision = outputs.pop("__routing_decision__", None)
+                if routing_decision is not None:
+                    new_state.routing_decisions[node.name] = routing_decision
             # Emit NodeStartEvent → CacheHitEvent → NodeEndEvent(cached=True)
             node_span_id = _emit_node_start(dispatcher, run_id, run_span_id, node, graph)
             _emit_cache_hit(dispatcher, run_id, node_span_id, run_span_id, node, graph, cache_key)
+            _emit_route_decision(
+                dispatcher, run_id, run_span_id, node, graph, new_state,
+            )
             _emit_node_end(
                 dispatcher, run_id, node_span_id, run_span_id, node, graph,
                 duration_ms=0.0, cached=True,
@@ -89,9 +97,14 @@ def run_superstep_sync(
 
                 duration_ms = (time.time() - node_start) * 1000
 
-                # Store result in cache
+                # Store result in cache (include routing decision for gates)
                 if cache is not None and cache_key:
-                    cache.set(cache_key, outputs)
+                    to_cache = dict(outputs)
+                    if isinstance(node, (RouteNode, IfElseNode)):
+                        decision = new_state.routing_decisions.get(node.name)
+                        if decision is not None:
+                            to_cache["__routing_decision__"] = decision
+                    cache.set(cache_key, to_cache)
 
                 # Emit RouteDecisionEvent if this was a routing node
                 _emit_route_decision(

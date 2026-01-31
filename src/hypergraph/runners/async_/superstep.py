@@ -100,7 +100,13 @@ async def run_superstep_async(
             if cache_key:
                 cached_hit, cached_value = cache.get(cache_key)
                 if cached_hit:
-                    # Emit NodeStartEvent → CacheHitEvent → NodeEndEvent(cached=True)
+                    outputs = cached_value
+                    # Restore routing decision for gate nodes
+                    if isinstance(node, (RouteNode, IfElseNode)):
+                        routing_decision = outputs.pop("__routing_decision__", None)
+                        if routing_decision is not None:
+                            new_state.routing_decisions[node.name] = routing_decision
+                    # Emit NodeStartEvent → CacheHitEvent → RouteDecision? → NodeEndEvent(cached=True)
                     node_span_id = await _emit_node_start(
                         dispatcher, run_id, run_span_id, node, graph,
                     )
@@ -108,11 +114,14 @@ async def run_superstep_async(
                         dispatcher, run_id, node_span_id, run_span_id,
                         node, graph, cache_key,
                     )
+                    await _emit_route_decision(
+                        dispatcher, run_id, run_span_id, node, graph, new_state,
+                    )
                     await _emit_node_end(
                         dispatcher, run_id, node_span_id, run_span_id,
                         node, graph, duration_ms=0.0, cached=True,
                     )
-                    return node, cached_value, input_versions
+                    return node, outputs, input_versions
 
         # Emit NodeStartEvent
         node_span_id = await _emit_node_start(dispatcher, run_id, run_span_id, node, graph)
@@ -128,9 +137,14 @@ async def run_superstep_async(
 
             duration_ms = (time.time() - node_start) * 1000
 
-            # Store result in cache
+            # Store result in cache (include routing decision for gates)
             if cache is not None and cache_key:
-                cache.set(cache_key, outputs)
+                to_cache = dict(outputs)
+                if isinstance(node, (RouteNode, IfElseNode)):
+                    decision = new_state.routing_decisions.get(node.name)
+                    if decision is not None:
+                        to_cache["__routing_decision__"] = decision
+                cache.set(cache_key, to_cache)
 
             # Emit RouteDecisionEvent if this was a routing node
             await _emit_route_decision(
