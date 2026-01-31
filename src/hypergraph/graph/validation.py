@@ -46,6 +46,7 @@ def validate_graph(
     _validate_no_gate_self_loop(nodes)
     _validate_multi_target_output_conflicts(nodes)
     _validate_no_interrupt_in_map_over(nodes)
+    _validate_no_cache_on_non_function_nodes(nodes)
     if strict_types:
         _validate_types(nodes, nx_graph)
 
@@ -347,6 +348,29 @@ def _validate_no_gate_self_loop(nodes: dict[str, "HyperNode"]) -> None:
                 f"  -> targets include '{node.name}'\n\n"
                 f"How to fix:\n"
                 f"  Create a separate node for the retry logic and route to it"
+            )
+
+
+def _validate_no_cache_on_non_function_nodes(nodes: dict[str, "HyperNode"]) -> None:
+    """Disallow cache=True on GateNode, InterruptNode, and GraphNode.
+
+    Only FunctionNode supports caching. Gates make routing decisions that
+    depend on execution context, InterruptNodes pause for human input,
+    and GraphNodes should cache individual inner nodes instead.
+    """
+    from hypergraph.nodes.gate import GateNode
+    from hypergraph.nodes.graph_node import GraphNode
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    disallowed = (GateNode, InterruptNode, GraphNode)
+    for node in nodes.values():
+        if isinstance(node, disallowed) and node.cache:
+            kind = type(node).__name__
+            raise GraphConfigError(
+                f"Node '{node.name}' has cache=True but is a {kind}\n\n"
+                f"  -> Caching is only supported on FunctionNode\n\n"
+                f"How to fix:\n"
+                f"  Remove cache=True from '{node.name}'"
             )
 
 

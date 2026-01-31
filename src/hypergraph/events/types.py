@@ -94,6 +94,22 @@ class NodeEndEvent(BaseEvent):
     node_name: str = ""
     graph_name: str = ""
     duration_ms: float = 0.0
+    cached: bool = False
+
+
+@dataclass(frozen=True)
+class CacheHitEvent(BaseEvent):
+    """Emitted when a node result is served from cache.
+
+    Attributes:
+        node_name: Name of the cached node.
+        graph_name: Name of the graph containing the node.
+        cache_key: The cache key that was hit.
+    """
+
+    node_name: str = ""
+    graph_name: str = ""
+    cache_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,6 +179,7 @@ Event = (
     | RunEndEvent
     | NodeStartEvent
     | NodeEndEvent
+    | CacheHitEvent
     | NodeErrorEvent
     | RouteDecisionEvent
     | InterruptEvent
