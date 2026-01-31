@@ -153,7 +153,7 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 
 ## Inspiration & Acknowledgments
 
-Hypergraph stands on the shoulders of projects we admire:
+Hypergraph stands on the shoulders of giants:
 
 ### [Hamilton](https://github.com/DAGWorks-Inc/hamilton)
 
