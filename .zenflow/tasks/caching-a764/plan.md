@@ -105,7 +105,7 @@ Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat struc
 
 Update the docs, README, api reference; Add examples for real life usage, like the rest of the docs
 
+
 ### [ ] Step: PR
-<!-- chat-id: a815643d-dc96-4212-9189-023898049d3b -->
 
 Create a PR push; Wait 15 minutes and read the comments on the PR, make improvements (add TDD) until no further comments are made

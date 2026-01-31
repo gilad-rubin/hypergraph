@@ -444,7 +444,7 @@ def node(
 - `source`: The function (when used without parens like `@node`)
 - `output_name`: Output name(s). If None, side-effect only (outputs = ())
 - `rename_inputs`: Optional dict to rename inputs
-- `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on gates, InterruptNode, or GraphNode
+- `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on InterruptNode or GraphNode
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)

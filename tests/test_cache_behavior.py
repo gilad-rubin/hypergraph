@@ -366,6 +366,122 @@ class TestCacheWithMapOver:
         assert counter.count == 1  # Only computed once
 
 
+class TestCacheWithGates:
+    """Tests for cache behavior on route/ifelse gate nodes."""
+
+    def test_cached_route_skips_second_execution(self):
+        """Cached route gate function is not called on second run with same inputs."""
+        counter = CallCounter()
+
+        @node(output_name="count")
+        def producer(count: int) -> int:
+            return count
+
+        @route(targets=["producer", END], cache=True)
+        def gate(count: int) -> str:
+            counter.increment()
+            return END if count >= 3 else "producer"
+
+        graph = Graph([producer, gate])
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
+
+        r1 = runner.run(graph, {"count": 5})
+        assert r1.status == RunStatus.COMPLETED
+        assert r1["count"] == 5
+        assert counter.count == 1
+
+        # Second run — gate should be served from cache
+        r2 = runner.run(graph, {"count": 5})
+        assert r2["count"] == 5
+        assert counter.count == 1  # Gate not called again
+
+    def test_cached_route_different_inputs_miss(self):
+        """Different inputs to cached gate produce cache miss."""
+        counter = CallCounter()
+
+        @node(output_name="count")
+        def producer(count: int) -> int:
+            return count
+
+        @route(targets=["producer", END], cache=True)
+        def gate(count: int) -> str:
+            counter.increment()
+            return END if count >= 3 else "producer"
+
+        graph = Graph([producer, gate])
+        runner = SyncRunner(cache=InMemoryCache())
+
+        runner.run(graph, {"count": 5})
+        runner.run(graph, {"count": 1})
+
+        assert counter.count == 2  # Different inputs → different cache keys
+
+    def test_cached_ifelse_skips_second_execution(self):
+        """Cached ifelse gate function is not called on second run."""
+        from hypergraph.nodes.gate import ifelse
+
+        counter = CallCounter()
+
+        @node(output_name="x")
+        def producer(val: int) -> int:
+            return val
+
+        @ifelse(when_true="big", when_false="small", cache=True)
+        def check(x: int) -> bool:
+            counter.increment()
+            return x > 10
+
+        @node(output_name="result")
+        def big(x: int) -> str:
+            return "big"
+
+        @node(output_name="result")
+        def small(x: int) -> str:
+            return "small"
+
+        graph = Graph([producer, check, big, small])
+        runner = SyncRunner(cache=InMemoryCache())
+
+        r1 = runner.run(graph, {"val": 20})
+        assert r1["result"] == "big"
+        assert counter.count == 1
+
+        r2 = runner.run(graph, {"val": 20})
+        assert r2["result"] == "big"
+        assert counter.count == 1  # Served from cache
+
+    def test_cached_route_in_cycle(self):
+        """Cached route in a cycle: gate is cached per-input across runs."""
+        gate_counter = CallCounter()
+        node_counter = CallCounter()
+
+        @node(output_name="count", cache=True)
+        def increment(count: int) -> int:
+            node_counter.increment()
+            return count + 1
+
+        @route(targets=["increment", END], cache=True)
+        def loop_gate(count: int) -> str:
+            gate_counter.increment()
+            return END if count >= 3 else "increment"
+
+        graph = Graph([increment, loop_gate])
+        runner = SyncRunner(cache=InMemoryCache())
+
+        r1 = runner.run(graph, {"count": 0})
+        assert r1["count"] == 3
+        first_gate_count = gate_counter.count
+        first_node_count = node_counter.count
+
+        # Second run with same initial input — everything from cache
+        r2 = runner.run(graph, {"count": 0})
+        assert r2["count"] == 3
+        # Gate and node calls should not increase (all cached)
+        assert gate_counter.count == first_gate_count
+        assert node_counter.count == first_node_count
+
+
 class TestCacheWithBoundValues:
     """Tests for cache behavior with bound values."""
 
