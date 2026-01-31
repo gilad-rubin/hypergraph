@@ -95,7 +95,7 @@ Update existing tests and add new ones:
 
 find edge cases, look at capabilities matrix and fix issues in the implementation or surface dilemmas; "Red Team" the implemenation and try to find and create failing tests. use subagents
 
-### [ ] Step: Improve Code quality
+### [x] Step: Improve Code quality
 <!-- chat-id: 9a4901c5-6851-429b-aa18-7cd029d78300 -->
 
 Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat structure" rule, "code smells" skills and improve implementation;
