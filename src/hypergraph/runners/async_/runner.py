@@ -272,7 +272,7 @@ class AsyncRunner(BaseRunner):
         executors, we need to pass event_processors and parent_span_id so
         nested graphs propagate events. This closure captures that context.
 
-        The superstep sets ``execute_node.current_node_span_id`` before each
+        The superstep sets ``execute_node.current_span_id`` before each
         call so that nested graph runs know their parent span.
         """
         current_span_id: list[str | None] = [None]
