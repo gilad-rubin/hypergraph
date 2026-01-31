@@ -54,26 +54,31 @@ Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warra
 ### [ ] Step: Cache backend and event types
 
 Create the cache module and add the cache event:
-- Create `src/hypergraph/cache.py` with `CacheBackend` protocol, `InMemoryCache`, `DiskCache`, and cache key computation
+- Create `src/hypergraph/cache.py` with `CacheBackend` protocol, `InMemoryCache` (with optional `max_size` LRU), `DiskCache`, and `compute_cache_key()` helper
 - Add `CacheHitEvent` to `src/hypergraph/events/types.py` and update the `Event` union
+- Add `cached: bool = False` field to `NodeEndEvent`
 - Add `on_cache_hit` to `TypedEventProcessor` in `src/hypergraph/events/processor.py`
 - Add `[cache]` optional dependency for `diskcache` in `pyproject.toml`
 - Update `src/hypergraph/__init__.py` exports
+- Add build-time validation: `cache=True` disallowed on `GateNode`, `InterruptNode`, `GraphNode`
 
 ### [ ] Step: Runner and superstep integration
 
 Wire caching into the execution path:
-- Add `cache` parameter to `BaseRunner.__init__`, `SyncRunner`, `AsyncRunner`
+- Add `cache` parameter to `SyncRunner.__init__` and `AsyncRunner.__init__` (not BaseRunner — cache is concrete)
 - Pass cache backend through to superstep functions
 - Add cache lookup/store logic in `run_superstep_sync` and `run_superstep_async` around `execute_node`
-- Emit `CacheHitEvent` on cache hits, skip node execution, still emit `NodeStartEvent`/`NodeEndEvent`
+- On cache hit: emit `NodeStartEvent` → `CacheHitEvent` → `NodeEndEvent(cached=True)`, skip execution
+- Cache propagation to nested graphs is automatic (executors use `self.runner`)
 
 ### [ ] Step: Tests and verification
 
 Update existing tests and add new ones:
 - Update `tests/test_cache_behavior.py` to use `SyncRunner(cache=InMemoryCache())` and verify cache hit counts
-- Create `tests/test_cache_events.py` for `CacheHitEvent` emission tests
+- Create `tests/test_cache_events.py` for `CacheHitEvent` emission and `NodeEndEvent.cached` field
 - Add `DiskCache` tests for cross-run persistence
+- Add build-time validation tests (cache=True on gates, InterruptNode, GraphNode)
+- Add `Caching` dimension to `tests/capabilities/matrix.py`
 - Run `uv run pytest` and `uv run ruff check`
 - Write report to `{@artifacts_path}/report.md`
 
