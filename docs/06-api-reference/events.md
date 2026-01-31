@@ -19,7 +19,7 @@ result = runner.run(graph, inputs, event_processors=[RichProgressProcessor()])
 
 Events flow through this pipeline:
 
-```
+```text
 Runner emits event → EventDispatcher → each EventProcessor.on_event()
 ```
 
@@ -253,20 +253,20 @@ class RichProgressProcessor(TypedEventProcessor):
 
 **Single run:**
 
-```
+```text
 📦 my_graph ━━━━━━━━━━━━━━━━━━━━ 100% 3/3
 ```
 
 **Nested graph:**
 
-```
+```text
 📦 outer_graph ━━━━━━━━━━━━━━━━━ 100% 3/3
   🌳 inner_rag ━━━━━━━━━━━━━━━━━ 100% 2/2
 ```
 
 **Map operation:**
 
-```
+```text
 🗺️ scrape_graph Progress ━━━━━━━ 100% 50/50
   📦 fetch ━━━━━━━━━━━━━━━━━━━━━ 100% 50/50
   📦 parse ━━━━━━━━━━━━━━━━━━━━━ 100% 50/50
@@ -274,7 +274,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
 **Map with failures:**
 
-```
+```text
 🗺️ scrape_graph Progress ━━━━━━━ 100% 50/50 (3 failed)
   📦 fetch ━━━━━━━━━━━━━━━━━━━━━ 100% 50/50
   📦 parse ━━━━━━━━━━━━━━━━━━━━━  94% 47/50
@@ -323,7 +323,7 @@ class EventDispatcher:
 
 A typical DAG run emits events in this order:
 
-```
+```text
 RunStartEvent(graph_name="rag")
   NodeStartEvent(node_name="embed")
   NodeEndEvent(node_name="embed")
@@ -336,7 +336,7 @@ RunEndEvent(graph_name="rag", status="completed")
 
 For map operations, each item gets its own `RunStartEvent`/`RunEndEvent` pair nested under the map's span:
 
-```
+```text
 RunStartEvent(is_map=True, map_size=3)
   RunStartEvent(graph_name="pipeline")   # item 1
     NodeStartEvent / NodeEndEvent ...
@@ -350,7 +350,7 @@ RunEndEvent(status="completed")
 
 For nested graphs, `parent_span_id` links inner events to the outer run:
 
-```
+```text
 RunStartEvent(graph_name="outer")
   NodeStartEvent(node_name="validate")
   NodeEndEvent(node_name="validate")

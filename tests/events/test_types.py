@@ -128,7 +128,7 @@ class TestTypedEventProcessor:
             def __init__(self):
                 self.seen = False
 
-            def on_run_start(self, event):
+            def on_run_start(self, _event):
                 self.seen = True
 
         p = Partial()

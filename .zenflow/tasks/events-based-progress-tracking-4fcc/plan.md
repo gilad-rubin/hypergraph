@@ -106,7 +106,7 @@ Finalize exports, dependencies, and documentation.
 ### [x] Step: Edge Case detection
 <!-- chat-id: 6b04b82d-dcfc-445f-9644-4c9a6300cf35 -->
 
-find edge cases, look at capabilities matrix and fix issues in the implementation or surface dillemas
+find edge cases, look at capabilities matrix and fix issues in the implementation or surface dilemmas
 
 ### [x] Step: Improve code
 <!-- chat-id: be9505dc-3ee2-418f-b430-6362bcba2f65 -->

@@ -479,11 +479,7 @@ class TestRouteDecisionSpanId:
 
         runner.run(graph, {"count": 0}, event_processors=[lp])
 
-        span_ids = [e.span_id for e in lp.events]
-        # RunStartEvent and RunEndEvent share the same span_id (they're the same span),
-        # and NodeStartEvent/NodeEndEvent share span_id too. So we check
-        # that non-paired events don't collide.
-        # At minimum, RouteDecisionEvent span_ids should be unique from RunStart span_ids.
+        # RouteDecisionEvent span_ids should be unique from RunStart span_ids.
         route_spans = {e.span_id for e in lp.of_type(RouteDecisionEvent)}
         run_spans = {e.span_id for e in lp.of_type(RunStartEvent)}
         assert route_spans.isdisjoint(run_spans)

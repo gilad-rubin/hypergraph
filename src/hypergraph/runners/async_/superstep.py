@@ -88,9 +88,6 @@ async def run_superstep_async(
 
         node_start = time.time()
         try:
-            # Snapshot routing decisions before execution
-            routing_before = set(new_state.routing_decisions.keys())
-
             # Pass new_state so routing decisions are stored in the updated state
             outputs = await execute_node(node, new_state, inputs)
 
@@ -98,7 +95,7 @@ async def run_superstep_async(
 
             # Emit RouteDecisionEvent if this was a routing node
             await _emit_route_decision(
-                dispatcher, run_id, node_span_id, run_span_id, node, graph, new_state, routing_before,
+                dispatcher, run_id, run_span_id, node, graph, new_state,
             )
 
             # Emit NodeEndEvent
@@ -220,12 +217,10 @@ async def _emit_node_error(
 async def _emit_route_decision(
     dispatcher: "EventDispatcher | None",
     run_id: str,
-    node_span_id: str,
     run_span_id: str,
     node: HyperNode,
     graph: "Graph",
     state: GraphState,
-    routing_before: set[str],
 ) -> None:
     """Emit RouteDecisionEvent if the node made a routing decision."""
     if dispatcher is None or not dispatcher.active:

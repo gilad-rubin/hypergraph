@@ -58,9 +58,6 @@ def run_superstep_sync(
 
         node_start = time.time()
         try:
-            # Snapshot routing decisions before execution to detect new decisions
-            routing_before = set(new_state.routing_decisions.keys())
-
             # Set node span_id on executor for nested graph propagation
             if hasattr(execute_node, "current_span_id"):
                 execute_node.current_span_id[0] = node_span_id  # type: ignore[attr-defined]
@@ -72,7 +69,7 @@ def run_superstep_sync(
 
             # Emit RouteDecisionEvent if this was a routing node
             _emit_route_decision(
-                dispatcher, run_id, node_span_id, run_span_id, node, graph, new_state, routing_before,
+                dispatcher, run_id, run_span_id, node, graph, new_state,
             )
 
             # Emit NodeEndEvent
@@ -185,12 +182,10 @@ def _emit_node_error(
 def _emit_route_decision(
     dispatcher: "EventDispatcher | None",
     run_id: str,
-    node_span_id: str,
     run_span_id: str,
     node: HyperNode,
     graph: "Graph",
     state: GraphState,
-    routing_before: set[str],
 ) -> None:
     """Emit RouteDecisionEvent if the node made a routing decision."""
     if dispatcher is None or not dispatcher.active:

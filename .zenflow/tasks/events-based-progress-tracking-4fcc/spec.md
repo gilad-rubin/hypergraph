@@ -3,7 +3,7 @@
 ## Technical Context
 
 - **Language**: Python 3.10+
-- **New dependency**: `rich` (optional extra: `hypergraph[rich]`)
+- **New dependency**: `rich` (optional extra: `hypergraph[progress]`)
 - **Existing patterns**: Runners use executor dispatch, superstep-based execution, `GraphState` for runtime state
 - **Key files touched**: `runners/base.py`, `runners/sync/runner.py`, `runners/async_/runner.py`, superstep modules, new `events/` package
 

@@ -456,6 +456,67 @@ class TestNoProcessors:
         assert result["out"] == 10
 
     @pytest.mark.asyncio
+    async def test_concurrent_graph_nodes_event_context(self):
+        """Two GraphNodes in the same superstep get correct parent_span_ids.
+
+        Regression test for race condition: when two GraphNodes execute
+        concurrently, set_event_context() on the shared executor must not
+        overwrite one node's context before it runs.
+        """
+        import asyncio
+
+        @node(output_name="a_out")
+        async def inner_a(x: int) -> int:
+            await asyncio.sleep(0.01)  # Ensure overlap
+            return x + 1
+
+        @node(output_name="b_out")
+        async def inner_b(y: int) -> int:
+            await asyncio.sleep(0.01)
+            return y + 2
+
+        graph_a = Graph([inner_a], name="graph_a")
+        graph_b = Graph([inner_b], name="graph_b")
+
+        # Both GraphNodes take "val" as input → both ready in same superstep
+        @node(output_name="val")
+        def produce(x: int) -> int:
+            return x
+
+        outer = Graph([
+            produce,
+            graph_a.as_node().with_inputs(x="val"),
+            graph_b.as_node().with_inputs(y="val"),
+        ], name="outer")
+
+        lp = ListProcessor()
+        runner = AsyncRunner()
+        result = await runner.run(outer, {"x": 5}, event_processors=[lp])
+
+        # Both nested graphs should have completed
+        assert result["a_out"] == 6
+        assert result["b_out"] == 7
+
+        # Each nested RunStartEvent's parent_span_id should match
+        # a NodeStartEvent for the corresponding GraphNode
+        nested_run_starts = [
+            e for e in lp.of_type(RunStartEvent)
+            if e.parent_span_id is not None and e.graph_name in ("graph_a", "graph_b")
+        ]
+        assert len(nested_run_starts) == 2
+
+        node_starts = {e.span_id: e for e in lp.of_type(NodeStartEvent)}
+        for rs in nested_run_starts:
+            parent_node = node_starts.get(rs.parent_span_id)
+            assert parent_node is not None, (
+                f"Nested run for {rs.graph_name} has parent_span_id={rs.parent_span_id} "
+                f"which doesn't match any NodeStartEvent"
+            )
+            assert parent_node.node_name in ("graph_a", "graph_b"), (
+                f"Expected parent node to be a graph node, got {parent_node.node_name}"
+            )
+
+    @pytest.mark.asyncio
     async def test_map_without_processors(self):
         @node(output_name="out")
         def step(x: int) -> int:
