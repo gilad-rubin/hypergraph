@@ -49,6 +49,19 @@ result = runner.run(graph, inputs, event_processors=[RichProgressProcessor()])
   🌳 inner_rag ━━━━━━━━━━━━━━━━━ 100% 2/2 nodes
 ```
 
+Works with `map()` too — failed items are tracked automatically:
+
+```python
+results = runner.map(graph, {"url": urls}, map_over="url",
+                     event_processors=[RichProgressProcessor()])
+```
+
+```
+🗺️ scrape_graph Progress ━━━━━━━ 100% 50/50 (3 failed)
+  📦 fetch ━━━━━━━━━━━━━━━━━━━━━ 100% 50/50
+  📦 parse ━━━━━━━━━━━━━━━━━━━━━  94% 47/50
+```
+
 Build custom processors by subclassing `EventProcessor` or `TypedEventProcessor`.
 
 ## Installation
