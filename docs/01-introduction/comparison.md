@@ -8,13 +8,13 @@ How hypergraph compares to other Python workflow frameworks.
 
 ## Quick Comparison
 
-| Framework | DAG Pipelines | Agentic Loops | Hierarchical | Dynamic Graphs | HITL | Streaming |
-|-----------|:---:|:---:|:---:|:---:|:---:|:---:|
-| **hypergraph** | ✓ | ✓ | First-class | ✓ | ✓ | ✓ |
-| **LangGraph** | Awkward | ✓ | Possible | ✗ | ✓ | ✓ |
-| **Hamilton** | ✓ | ✗ | Possible | ✓ | ✗ | ✗ |
-| **Pipefunc** | ✓ | ✗ | Possible | ✓ | ✗ | ✗ |
-| **Pydantic-Graph** | Awkward | ✓ | Possible | ✗ | ✓ | ✓ |
+| Framework | DAG Pipelines | Agentic Loops | Hierarchical | Dynamic Graphs | HITL |
+|-----------|:---:|:---:|:---:|:---:|:---:|
+| **hypergraph** | ✓ | ✓ | First-class | ✓ | ✓ |
+| **LangGraph** | Awkward | ✓ | Possible | ✗ | ✓ |
+| **Hamilton** | ✓ | ✗ | Possible | ✓ | ✗ |
+| **Pipefunc** | ✓ | ✗ | Possible | ✓ | ✗ |
+| **Pydantic-Graph** | Awkward | ✓ | Possible | ✗ | ✓ |
 
 ## The Design Space
 
