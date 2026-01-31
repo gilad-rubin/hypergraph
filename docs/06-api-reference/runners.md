@@ -51,6 +51,7 @@ def run(
     *,
     select: list[str] | None = None,
     max_iterations: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult: ...
 ```
 
@@ -61,6 +62,7 @@ Execute a graph once.
 - `values` - Input values as `{param_name: value}`
 - `select` - Optional list of output names to return (default: all outputs)
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** `RunResult` with outputs and status
 
@@ -79,6 +81,10 @@ result = runner.run(graph, values, select=["final_answer"])
 
 # Limit iterations for cyclic graphs
 result = runner.run(cyclic_graph, values, max_iterations=50)
+
+# With progress bars
+from hypergraph import RichProgressProcessor
+result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
 ```
 
 ### map()
@@ -93,6 +99,7 @@ def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
+    event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
 
@@ -107,6 +114,7 @@ Execute a graph multiple times with different inputs.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** List of `RunResult`, one per iteration
 
@@ -201,6 +209,7 @@ async def run(
     select: list[str] | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult: ...
 ```
 
@@ -212,6 +221,7 @@ Execute a graph asynchronously.
 - `select` - Optional list of output names to return
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
 
 **Returns:** `RunResult` with outputs and status
 
@@ -263,6 +273,7 @@ async def map(
     select: list[str] | None = None,
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
+    event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
 
@@ -278,6 +289,7 @@ Execute graph multiple times concurrently.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Example:**
 

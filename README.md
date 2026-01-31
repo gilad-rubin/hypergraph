@@ -33,6 +33,37 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
   <img alt="Hypergraph execution spectrum" src="docs/spectrum-light.svg">
 </picture>
 
+### Progress Tracking
+
+Observe execution with event processors. Get hierarchical Rich progress bars out of the box.
+
+```python
+from hypergraph import SyncRunner, RichProgressProcessor
+
+runner = SyncRunner()
+result = runner.run(graph, inputs, event_processors=[RichProgressProcessor()])
+```
+
+```
+📦 my_graph ━━━━━━━━━━━━━━━━━━━━ 100% 3/3 nodes
+  🌳 inner_rag ━━━━━━━━━━━━━━━━━ 100% 2/2 nodes
+```
+
+Works with `map()` too — failed items are tracked automatically:
+
+```python
+results = runner.map(graph, {"url": urls}, map_over="url",
+                     event_processors=[RichProgressProcessor()])
+```
+
+```
+🗺️ scrape_graph Progress ━━━━━━━ 100% 50/50 (3 failed)
+  📦 fetch ━━━━━━━━━━━━━━━━━━━━━ 100% 50/50
+  📦 parse ━━━━━━━━━━━━━━━━━━━━━  94% 47/50
+```
+
+Build custom processors by subclassing `EventProcessor` or `TypedEventProcessor`.
+
 ## Installation
 
 ```bash
@@ -310,8 +341,10 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 - [Philosophy](docs/07-design/philosophy.md) - Why hypergraph exists
 - [API Reference: Nodes](docs/06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
 - [API Reference: Runners](docs/06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [API Reference: Events](docs/06-api-reference/events.md) - Event types, processors, and RichProgressProcessor
 - [API Reference: Graph](docs/06-api-reference/graph.md) - Graph construction and validation
 - [API Reference: Gates](docs/06-api-reference/gates.md) - RouteNode, @route decorator, and END sentinel
+- [Observe Execution](docs/05-how-to/observe-execution.md) - Progress bars and custom event processors
 - [Human-in-the-Loop](docs/03-patterns/04-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
 
 For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/01-introduction/comparison.md).

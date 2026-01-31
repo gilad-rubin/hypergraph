@@ -44,6 +44,10 @@ notebook = [
     "nbformat>=5.10.4",
 ]
 
+progress = [
+    "rich>=13.0.0",
+]
+
 telemetry = [
     "logfire>=2.0.0",
     "tqdm>=4.67.1",

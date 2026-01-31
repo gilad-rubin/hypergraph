@@ -8,6 +8,7 @@ from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_f
 from hypergraph.runners._shared.types import RunStatus
 
 if TYPE_CHECKING:
+    from hypergraph.events.processor import EventProcessor
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.runners._shared.types import GraphState
     from hypergraph.runners.sync.runner import SyncRunner
@@ -34,6 +35,9 @@ class SyncGraphNodeExecutor:
         node: "GraphNode",
         state: "GraphState",
         inputs: dict[str, Any],
+        *,
+        event_processors: "list[EventProcessor] | None" = None,
+        parent_span_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
 
@@ -41,6 +45,8 @@ class SyncGraphNodeExecutor:
             node: The GraphNode to execute
             state: Current graph execution state (unused directly)
             inputs: Input values for the nested graph
+            event_processors: Processors to propagate to nested runs
+            parent_span_id: Span ID of the parent node for event linking
 
         Returns:
             Dict mapping output names to their values
@@ -55,12 +61,19 @@ class SyncGraphNodeExecutor:
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
             results = self.runner.map(
-                node.graph, inner_inputs, map_over=original_params, map_mode=mode,
+                node.graph, inner_inputs,
+                map_over=original_params, map_mode=mode,
                 error_handling=error_handling,
+                event_processors=event_processors,
+                _parent_span_id=parent_span_id,
             )
             return collect_as_lists(results, node, error_handling)
 
-        result = self.runner.run(node.graph, inner_inputs)
+        result = self.runner.run(
+            node.graph, inner_inputs,
+            event_processors=event_processors,
+            _parent_span_id=parent_span_id,
+        )
         if result.status == RunStatus.FAILED:
             raise result.error  # type: ignore[misc]
         return node.map_outputs_from_original(result.values)

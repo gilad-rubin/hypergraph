@@ -36,6 +36,7 @@
 * [Rename and Adapt](05-how-to/rename-and-adapt.md)
 * [Integrate with LLMs](05-how-to/integrate-with-llms.md)
 * [Test Without Framework](05-how-to/test-without-framework.md)
+* [Observe Execution](05-how-to/observe-execution.md)
 
 ## API Reference
 
@@ -43,6 +44,7 @@
 * [Nodes](06-api-reference/nodes.md)
 * [Gates](06-api-reference/gates.md)
 * [Runners](06-api-reference/runners.md)
+* [Events](06-api-reference/events.md)
 * [InputSpec](06-api-reference/inputspec.md)
 
 ## Design
