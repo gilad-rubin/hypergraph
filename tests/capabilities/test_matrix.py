@@ -10,9 +10,11 @@ All tests run in parallel via pytest-xdist.
 
 import pytest
 
+from hypergraph import InMemoryCache
 from hypergraph.runners import SyncRunner, AsyncRunner, RunStatus
 
 from .matrix import (
+    Caching,
     Capability,
     Runner,
     Topology,
@@ -34,12 +36,19 @@ from .builders import build_graph_for_capability, get_test_inputs
 # =============================================================================
 
 
+def _make_cache(cap: Capability):
+    """Return a cache backend if the capability requires one."""
+    if cap.caching == Caching.IN_MEMORY:
+        return InMemoryCache()
+    return None
+
+
 def run_capability_sync(cap: Capability) -> None:
     """Run a capability test with SyncRunner."""
     graph = build_graph_for_capability(cap)
     inputs = get_test_inputs(cap)
 
-    runner = SyncRunner()
+    runner = SyncRunner(cache=_make_cache(cap))
     kwargs = {"max_iterations": 10} if cap.topology == Topology.CYCLIC else {}
 
     result = runner.run(graph, inputs, **kwargs)
@@ -51,7 +60,7 @@ async def run_capability_async(cap: Capability) -> None:
     graph = build_graph_for_capability(cap)
     inputs = get_test_inputs(cap)
 
-    runner = AsyncRunner()
+    runner = AsyncRunner(cache=_make_cache(cap))
     kwargs = {"max_iterations": 10} if cap.topology == Topology.CYCLIC else {}
 
     result = await runner.run(graph, inputs, **kwargs)
