@@ -519,3 +519,24 @@ class TestCachedRoutingDecisionNotMutated:
         r3 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
         assert r3["a"] == 2
         assert counter.count == 1
+
+    def test_routing_decision_key_not_in_result_values(self):
+        """__routing_decision__ internal key must not leak into RunResult.values."""
+        @route(targets=["a", END], cache=True)
+        def gate(x: int) -> str:
+            return "a"
+
+        @node(output_name="a")
+        def a(x: int) -> int:
+            return x * 2
+
+        graph = Graph([gate, a])
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
+
+        # First run (cache miss) and second run (cache hit)
+        r1 = runner.run(graph, {"x": 1})
+        r2 = runner.run(graph, {"x": 1})
+
+        for r in (r1, r2):
+            assert "__routing_decision__" not in r.values

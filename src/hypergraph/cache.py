@@ -99,8 +99,13 @@ class DiskCache:
         return True, value
 
     def set(self, key: str, value: Any) -> None:
-        """Store a value to disk cache."""
-        self._cache.set(key, value)
+        """Store a value to disk cache. Skips silently if value is not picklable."""
+        try:
+            self._cache.set(key, value)
+        except (pickle.PicklingError, TypeError, AttributeError):
+            logger.warning(
+                "Cache write skipped: output not picklable for key %s", key
+            )
 
 
 def compute_cache_key(definition_hash: str, inputs: dict[str, Any]) -> str:
