@@ -290,7 +290,7 @@ Hypergraph is younger than these alternatives. Tradeoffs to consider:
 | Production use | Limited testing at scale |
 | Ecosystem | Smaller community |
 | Integrations | Fewer pre-built connectors |
-| Routing | ✓ Working (`@route`, `END`) |
+| Routing | ✓ (`@route`, `END`) |
 | Checkpointing | Coming soon |
 
 If you need a battle-tested solution today, LangGraph or Hamilton may be safer choices. If you value the unified model and cleaner API, hypergraph is worth evaluating.
