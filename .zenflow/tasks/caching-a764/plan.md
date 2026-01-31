@@ -100,7 +100,8 @@ find edge cases, look at capabilities matrix and fix issues in the implementatio
 
 Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat structure" rule, "code smells" skills and improve implementation;
 
-### [ ] Step: Update Documentation
+### [x] Step: Update Documentation
+<!-- chat-id: 7cb74301-9c16-42a4-a05b-fed02fe5210e -->
 
 Update the docs, README, api reference; Add examples for real life usage, like the rest of the docs
 
