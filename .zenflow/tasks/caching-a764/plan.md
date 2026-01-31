@@ -90,20 +90,19 @@ Update existing tests and add new ones:
 ## Configuration
 - **Artifacts Path**: {@artifacts_path} → `.zenflow/tasks/{task_id}`
 
-### [ ] Step: Edge Case detection
-<!-- chat-id: 6b04b82d-dcfc-445f-9644-4c9a6300cf35 -->
+### [x] Step: Edge Cases & Red-Team
+<!-- chat-id: 33dd9abb-09fb-451e-9f05-5ea711e09c2d -->
 
-find edge cases, look at capabilities matrix and fix issues in the implementation or surface dilemmas
+find edge cases, look at capabilities matrix and fix issues in the implementation or surface dilemmas; "Red Team" the implemenation and try to find and create failing tests. use subagents
 
-### [ ] Step: Improve code
-<!-- chat-id: be9505dc-3ee2-418f-b430-6362bcba2f65 -->
+### [ ] Step: Improve Code quality
 
 Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat structure" rule, "code smells" skills and improve implementation;
 
-### [ ] Step: Update the docs, README, api reference;
-<!-- chat-id: 473568f5-9178-48a5-9f02-99e7720f7120 -->
+### [ ] Step: Update Documentation
 
 Update the docs, README, api reference; Add examples for real life usage, like the rest of the docs
 
+### [ ] Step: PR
 
-### [ ] Step: Create a PR push; Wait 15 minutes and read the comments on the PR, make improvements (add TDD) until no further comments are made
+Create a PR push; Wait 15 minutes and read the comments on the PR, make improvements (add TDD) until no further comments are made
