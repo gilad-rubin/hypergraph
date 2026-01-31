@@ -31,7 +31,7 @@ graph = Graph(nodes=[embed, retrieve, generate])
 
 # Run the graph
 runner = SyncRunner()
-result = runner.run(graph, {"query": "What is RAG?"})
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
 print(result["answer"])
 ```
 
@@ -79,7 +79,7 @@ Test pieces independently. Reuse across workflows.
 
 ## Documentation
 
-### Introduction
+### Getting Started
 - [What is Hypergraph?](01-introduction/what-is-hypergraph.md) - The problem, solution, and key differentiators
 - [When to Use](01-introduction/when-to-use.md) - Is hypergraph right for your use case?
 - [Quick Start](01-introduction/quick-start.md) - Get running in 5 minutes
@@ -94,13 +94,20 @@ Test pieces independently. Reuse across workflows.
 - [Agentic Loops](03-patterns/03-agentic-loops.md) - Iterative refinement, multi-turn workflows
 - [Hierarchical Composition](03-patterns/04-hierarchical.md) - Nest graphs, Think Singular Scale with Map
 - [Multi-Agent](03-patterns/05-multi-agent.md) - Agent teams, orchestration patterns
+- [Streaming](03-patterns/06-streaming.md) - Stream LLM responses token-by-token
+- [Human-in-the-Loop](03-patterns/07-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
 
 ### Real-World Examples
+- [RAG Pipeline](04-real-world/rag-pipeline.md) - Single-pass retrieval-augmented generation
 - [Multi-Turn RAG](04-real-world/multi-turn-rag.md) - Conversational RAG with follow-up questions
 - [Evaluation Harness](04-real-world/evaluation-harness.md) - Test conversation systems at scale
+- [Data Pipeline](04-real-world/data-pipeline.md) - Classic ETL without LLMs
+- [Prompt Optimization](04-real-world/prompt-optimization.md) - Iterative prompt improvement with nested graphs
 
 ### How-To Guides
 - [Batch Processing](05-how-to/batch-processing.md) - Process multiple inputs with runner.map()
+- [Rename and Adapt](05-how-to/rename-and-adapt.md) - Reuse functions in different contexts
+- [Integrate with LLMs](05-how-to/integrate-with-llms.md) - Patterns for OpenAI, Anthropic, and others
 - [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
 - [Observe Execution](05-how-to/observe-execution.md) - Progress bars, custom event processors, and monitoring
 
@@ -114,6 +121,7 @@ Test pieces independently. Reuse across workflows.
 
 ### Design
 - [Philosophy](07-design/philosophy.md) - Why hypergraph exists and design principles
+- [Roadmap](07-design/roadmap.md) - What's implemented, what's coming next
 
 ## Design Principles
 

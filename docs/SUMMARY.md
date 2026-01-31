@@ -21,6 +21,7 @@
 * [Hierarchical Composition](03-patterns/04-hierarchical.md)
 * [Multi-Agent](03-patterns/05-multi-agent.md)
 * [Streaming](03-patterns/06-streaming.md)
+* [Human-in-the-Loop](03-patterns/07-human-in-the-loop.md)
 
 ## Real-World Examples
 
@@ -51,3 +52,4 @@
 
 * [Philosophy](07-design/philosophy.md)
 * [Roadmap](07-design/roadmap.md)
+* [Changelog](changelog.md)

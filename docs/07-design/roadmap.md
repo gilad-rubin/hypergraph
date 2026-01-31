@@ -29,6 +29,16 @@ Core features are working and stable. API may still change before 1.0.
 - `@ifelse` for binary boolean routing
 - Cyclic graphs for agentic loops and multi-turn workflows
 
+### Human-in-the-Loop
+- `InterruptNode` to pause execution and wait for input
+- Resume with user-provided data
+- Auto-resolve with handler functions
+
+### Events & Observability
+- Event system with `EventProcessor`, `AsyncEventProcessor`, `TypedEventProcessor`
+- `RichProgressProcessor` for hierarchical Rich progress bars
+- Event types: `RunStartEvent`, `RunEndEvent`, `NodeStartEvent`, `NodeEndEvent`, `NodeErrorEvent`, `RouteDecisionEvent`, `InterruptEvent`
+
 ### Validation
 - `strict_types=True` for type checking at graph construction
 - Type mismatch detection with helpful error messages
@@ -41,20 +51,10 @@ Core features are working and stable. API may still change before 1.0.
 - Resume from checkpoint after failures
 - Support for various storage backends (local, Redis, S3)
 
-### Event Streaming
-- `.iter()` method for streaming graph events
-- Subscribe to node completions, errors, state changes
-- Enable real-time progress tracking
-
-### Observability Hooks
+### Observability Integrations
 - Integration with tracing systems (OpenTelemetry)
 - Structured logging for each node execution
 - Performance metrics (latency, token usage)
-
-### Human-in-the-Loop
-- `InterruptNode` to pause execution and wait for input
-- Resume with user-provided data
-- Timeout and fallback handling
 
 ## Future Considerations
 

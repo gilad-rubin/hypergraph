@@ -540,7 +540,7 @@ graph = Graph([embed, retrieve])
 
 # Create runner and execute
 runner = SyncRunner()
-result = runner.run(graph, {"query": "What is RAG?"})
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
 
 # Access results
 print(result["docs"])         # ["doc1", "doc2"]

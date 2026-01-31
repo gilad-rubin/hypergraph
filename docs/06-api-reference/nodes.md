@@ -1140,4 +1140,4 @@ result = await runner.run(graph, {
 assert result["result"] == "Final: approved"
 ```
 
-For a full guide with multiple interrupts, nested graphs, and handler patterns, see [Human-in-the-Loop](../03-patterns/04-human-in-the-loop.md).
+For a full guide with multiple interrupts, nested graphs, and handler patterns, see [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md).
