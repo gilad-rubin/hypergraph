@@ -8,17 +8,13 @@ How hypergraph compares to other Python workflow frameworks.
 
 ## Quick Comparison
 
-| Feature | hypergraph | LangGraph | Hamilton | Pipefunc | Pydantic-Graph |
-|---------|------------|-----------|----------|----------|----------------|
-| DAG pipelines | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Agentic loops | ✓ Working | ✓ | ✗ | ✗ | ✓ |
-| State schema required | ✗ | ✓ | ✗ | ✗ | ✓ |
-| Hierarchical composition | ✓ First-class | ✓ Possible | ✓ Possible | ✓ Possible | ✓ Possible |
-| Dynamic graph construction | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Build-time validation | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Human-in-the-loop | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Streaming | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Framework lock-in | Minimal | High | Low | Low | Medium |
+| Framework | DAG Pipelines | Agentic Loops | State Schema | Hierarchical | Dynamic Graphs | HITL | Streaming |
+|-----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **hypergraph** | ✓ | ✓ | Not required | First-class | ✓ | ✓ | ✓ |
+| **LangGraph** | ✓ | ✓ | Required | Possible | ✗ | ✓ | ✓ |
+| **Hamilton** | ✓ | ✗ | Not required | Possible | ✓ | ✗ | ✗ |
+| **Pipefunc** | ✓ | ✗ | Not required | Possible | ✓ | ✗ | ✗ |
+| **Pydantic-Graph** | ✓ | ✓ | Required | Possible | ✗ | ✓ | ✓ |
 
 ## The Design Space
 
