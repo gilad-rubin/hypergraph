@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import networkx as nx
 from collections import Counter
@@ -144,13 +145,34 @@ class Graph:
         """Compute graph input specification."""
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
 
+    @functools.cached_property
+    def sole_producers(self) -> dict[str, str]:
+        """Map output_name → node_name for outputs with exactly one producer.
+
+        Used by the staleness detector to implement the Sole Producer Rule:
+        a node should not re-trigger from changes to values it produced itself.
+        This prevents infinite loops in accumulator patterns like
+        ``add_response(messages, response) -> messages`` and self-loops like
+        ``transform(x) -> x``.
+
+        Without this rule, the node's own output would make it appear stale,
+        causing immediate re-execution in an infinite loop. Cyclic re-execution
+        should instead be driven by gates (``@route``).
+        """
+        output_sources = self._collect_output_sources(list(self._nodes.values()))
+        return {
+            output: sources[0]
+            for output, sources in output_sources.items()
+            if len(sources) == 1
+        }
+
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
-        return {
-            data["value_name"]
-            for _, _, data in self._nx_graph.edges(data=True)
-            if data.get("edge_type") == "data"
-        }
+        result: set[str] = set()
+        for _, _, data in self._nx_graph.edges(data=True):
+            if data.get("edge_type") == "data":
+                result.update(data.get("value_names", []))
+        return result
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""
@@ -368,16 +390,24 @@ class Graph:
         nodes: list[HyperNode],
         output_to_source: dict[str, str],
     ) -> None:
-        """Infer data edges by matching parameter names to output names."""
+        """Infer data edges by matching parameter names to output names.
+
+        Multiple values between the same node pair are merged into a single
+        edge with a ``value_names`` list, since NetworkX DiGraph only allows
+        one edge per (source, target) pair.
+        """
+        from collections import defaultdict
+
+        # Group values by (source, target) pair
+        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for n in nodes:
+            for param in n.inputs:
+                if param in output_to_source:
+                    edge_values[(output_to_source[param], n.name)].append(param)
+
         G.add_edges_from(
-            (
-                output_to_source[param],
-                node.name,
-                {"edge_type": "data", "value_name": param},
-            )
-            for node in nodes
-            for param in node.inputs
-            if param in output_to_source
+            (src, dst, {"edge_type": "data", "value_names": names})
+            for (src, dst), names in edge_values.items()
         )
 
     def _add_control_edges(
@@ -440,7 +470,7 @@ class Graph:
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
-    def with_select(self, *names: str) -> "Graph":
+    def select(self, *names: str) -> "Graph":
         """Set default output selection. Returns new Graph (immutable).
 
         Controls which outputs are returned by runner.run() and which outputs
@@ -462,7 +492,7 @@ class Graph:
             ValueError: If any name is not a graph output.
 
         Example:
-            >>> graph = Graph([embed, retrieve, generate]).with_select("answer")
+            >>> graph = Graph([embed, retrieve, generate]).select("answer")
             >>> result = runner.run(graph, inputs)
             >>> assert list(result.keys()) == ["answer"]
 
@@ -478,7 +508,7 @@ class Graph:
             )
         if len(names) != len(set(names)):
             raise ValueError(
-                f"with_select() requires unique output names. Received: {names}"
+                f"select() requires unique output names. Received: {names}"
             )
 
         new_graph = self._shallow_copy()
@@ -499,6 +529,19 @@ class Graph:
     def has_async_nodes(self) -> bool:
         """True if any node requires async execution."""
         return any(node.is_async for node in self._nodes.values())
+
+
+    @property
+    def has_interrupts(self) -> bool:
+        """True if any node is an InterruptNode."""
+        from hypergraph.nodes.interrupt import InterruptNode
+        return any(isinstance(node, InterruptNode) for node in self._nodes.values())
+
+    @property
+    def interrupt_nodes(self) -> list:
+        """Ordered list of InterruptNode instances."""
+        from hypergraph.nodes.interrupt import InterruptNode
+        return [node for node in self._nodes.values() if isinstance(node, InterruptNode)]
 
     @property
     def definition_hash(self) -> str:
@@ -526,7 +569,7 @@ class Graph:
 
         # 2. Include structure (edges)
         edges = sorted(
-            (u, v, data.get("value_name", ""))
+            (u, v, ",".join(data.get("value_names", [])))
             for u, v, data in self._nx_graph.edges(data=True)
         )
         edge_str = str(edges)

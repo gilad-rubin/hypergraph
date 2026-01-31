@@ -552,7 +552,7 @@ class TestMapWithNestedError:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp])
+        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x", error_handling="continue", event_processors=[lp])
 
         # run() catches exceptions and returns RunResult(status=FAILED)
         # so map completes but some results are failed

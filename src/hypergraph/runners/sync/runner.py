@@ -18,6 +18,7 @@ from hypergraph.runners._shared.helpers import (
 )
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.types import (
+    ErrorHandling,
     GraphState,
     RunnerCapabilities,
     RunResult,
@@ -156,8 +157,14 @@ class SyncRunner(BaseRunner):
                 dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
                 error=e,
             )
+            partial_state = getattr(e, "_partial_state", None)
+            partial_values = (
+                filter_outputs(partial_state, graph, select)
+                if partial_state is not None
+                else {}
+            )
             return RunResult(
-                values={},
+                values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
                 error=e,
@@ -178,28 +185,37 @@ class SyncRunner(BaseRunner):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
     ) -> GraphState:
-        """Execute graph until no more ready nodes or max_iterations reached."""
+        """Execute graph until no more ready nodes or max_iterations reached.
+
+        On failure, attaches partial state to the exception as ``_partial_state``
+        so the caller can extract values accumulated before the error.
+        """
         state = initialize_state(graph, values)
 
-        for iteration in range(max_iterations):
-            ready_nodes = get_ready_nodes(graph, state)
+        try:
+            for iteration in range(max_iterations):
+                ready_nodes = get_ready_nodes(graph, state)
 
-            if not ready_nodes:
-                break  # No more nodes to execute
+                if not ready_nodes:
+                    break  # No more nodes to execute
 
-            # Execute all ready nodes
-            state = run_superstep_sync(
-                graph, state, ready_nodes, values,
-                self._make_execute_node(event_processors),
-                dispatcher=dispatcher,
-                run_id=run_id,
-                run_span_id=run_span_id,
-            )
+                # Execute all ready nodes
+                state = run_superstep_sync(
+                    graph, state, ready_nodes, values,
+                    self._make_execute_node(event_processors),
+                    dispatcher=dispatcher,
+                    run_id=run_id,
+                    run_span_id=run_span_id,
+                )
 
-        else:
-            # Loop completed without break = hit max_iterations
-            if get_ready_nodes(graph, state):
-                raise InfiniteLoopError(max_iterations)
+            else:
+                # Loop completed without break = hit max_iterations
+                if get_ready_nodes(graph, state):
+                    raise InfiniteLoopError(max_iterations)
+        except Exception as e:
+            if not hasattr(e, "_partial_state"):
+                e._partial_state = state  # type: ignore[attr-defined]
+            raise
 
         return state
 
@@ -252,6 +268,7 @@ class SyncRunner(BaseRunner):
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         select: list[str] | None = None,
+        error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
     ) -> list[RunResult]:
@@ -263,11 +280,17 @@ class SyncRunner(BaseRunner):
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
+            error_handling: "raise" to stop on first failure, "continue" to
+                collect all results including failures
             event_processors: Optional list of event processors for execution events
             _parent_span_id: Internal. Span ID of parent scope for nested map runs.
 
         Returns:
             List of RunResult, one per iteration
+
+        Raises:
+            Exception: The underlying error from the first failed item
+                when ``error_handling="raise"``
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
@@ -300,6 +323,8 @@ class SyncRunner(BaseRunner):
                     _parent_span_id=map_span_id,
                 )
                 results.append(result)
+                if error_handling == "raise" and result.status == RunStatus.FAILED:
+                    raise result.error  # type: ignore[misc]
 
             _emit_run_end(dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id)
             return results

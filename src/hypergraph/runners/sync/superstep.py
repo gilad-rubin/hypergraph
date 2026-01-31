@@ -75,9 +75,10 @@ def run_superstep_sync(
             # Emit NodeEndEvent
             _emit_node_end(dispatcher, run_id, node_span_id, run_span_id, node, graph, duration_ms)
 
-        except Exception:
+        except Exception as e:
             duration_ms = (time.time() - node_start) * 1000
             _emit_node_error(dispatcher, run_id, node_span_id, run_span_id, node, graph)
+            e._partial_state = new_state  # type: ignore[attr-defined]
             raise
 
         # Update state with outputs

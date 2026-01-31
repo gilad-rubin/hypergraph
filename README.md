@@ -244,6 +244,32 @@ def extract(document: str) -> dict:
 results = runner.map(graph, values={"document": documents}, map_over="document")
 ```
 
+### 8. Human-in-the-Loop
+
+Pause execution for user input. Resume with a response.
+
+```python
+from hypergraph import AsyncRunner, Graph, InterruptNode, node
+
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+)
+
+graph = Graph(nodes=[generate_draft, approval, finalize])
+runner = AsyncRunner()
+
+result = await runner.run(graph, {"prompt": "Write a blog post"})
+# result.paused == True, result.pause.value has the draft
+
+result = await runner.run(graph, {
+    "prompt": "Write a blog post",
+    result.pause.response_key: "approved",
+})
+# Completed!
+```
+
 ## Why Hypergraph?
 
 ### The Problem: Fragmented Tools
@@ -319,6 +345,7 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 - [API Reference: Graph](docs/06-api-reference/graph.md) - Graph construction and validation
 - [API Reference: Gates](docs/06-api-reference/gates.md) - RouteNode, @route decorator, and END sentinel
 - [Observe Execution](docs/05-how-to/observe-execution.md) - Progress bars and custom event processors
+- [Human-in-the-Loop](docs/03-patterns/04-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
 
 For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/01-introduction/comparison.md).
 

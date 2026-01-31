@@ -7,10 +7,17 @@ import warnings
 from typing import TYPE_CHECKING, Any, Iterator
 
 from hypergraph.nodes.base import HyperNode
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.types import (
+    ErrorHandling,
+    GraphState,
+    NodeExecution,
+    RunResult,
+    RunStatus,
+)
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+    from hypergraph.nodes.graph_node import GraphNode
 
 
 def _safe_deepcopy(value: Any) -> Any:
@@ -105,7 +112,7 @@ def _clear_stale_gate_decisions(graph: "Graph", state: GraphState) -> None:
 
     for node in graph._nodes.values():
         if isinstance(node, GateNode) and node.name in state.routing_decisions:
-            if _needs_execution(node, state):
+            if _needs_execution(node, graph, state):
                 del state.routing_decisions[node.name]
 
 
@@ -138,7 +145,19 @@ def _is_node_ready(
         return False
 
     # Check if node needs execution (not executed or stale)
-    return _needs_execution(node, state)
+    return _needs_execution(node, graph, state)
+
+
+def _is_controlled_by_gate(node: HyperNode, graph: "Graph") -> bool:
+    """Check if a node is controlled by any gate."""
+    from hypergraph.nodes.gate import GateNode, END
+
+    for gate_node in graph._nodes.values():
+        if isinstance(gate_node, GateNode):
+            for target in gate_node.targets:
+                if target is not END and target == node.name:
+                    return True
+    return False
 
 
 def _has_all_inputs(node: HyperNode, graph: "Graph", state: GraphState) -> bool:
@@ -166,19 +185,43 @@ def _has_input(param: str, node: HyperNode, graph: "Graph", state: GraphState) -
     return False
 
 
-def _needs_execution(node: HyperNode, state: GraphState) -> bool:
+def _needs_execution(
+    node: HyperNode, graph: "Graph", state: GraphState
+) -> bool:
     """Check if node needs (re-)execution."""
     if node.name not in state.node_executions:
         return True  # Never executed
 
     # Check if any input has changed since last execution
     last_exec = state.node_executions[node.name]
-    return _is_stale(node, state, last_exec)
+    return _is_stale(node, graph, state, last_exec)
 
 
-def _is_stale(node: HyperNode, state: GraphState, last_exec: NodeExecution) -> bool:
-    """Check if node inputs have changed since last execution."""
+def _is_stale(
+    node: HyperNode,
+    graph: "Graph",
+    state: GraphState,
+    last_exec: NodeExecution,
+) -> bool:
+    """Check if node inputs have changed since last execution.
+
+    Implements the Sole Producer Rule: when a node is the only producer of a
+    value that it also consumes, changes to that value are skipped in the
+    staleness check. Without this, patterns like ``add_response(messages) ->
+    messages`` would re-trigger infinitely because the node's own output makes
+    it appear stale.
+
+    EXCEPTION: For gate-controlled nodes, the Sole Producer Rule does NOT apply.
+    Gates explicitly drive cycle execution, so self-produced inputs should
+    trigger re-execution when the gate routes back to the node.
+    """
+    sole_producers = graph.sole_producers
+    is_gated = _is_controlled_by_gate(node, graph)
+
     for param in node.inputs:
+        # Apply Sole Producer Rule only to non-gated nodes
+        if not is_gated and sole_producers.get(param) == node.name:
+            continue  # Sole Producer Rule: skip self-produced inputs
         current_version = state.get_version(param)
         consumed_version = last_exec.input_versions.get(param, 0)
         if current_version != consumed_version:
@@ -425,3 +468,39 @@ def _generate_product_inputs(
             **broadcast_values,
             **dict(zip(keys, combo)),
         }
+
+
+def collect_as_lists(
+    results: list[RunResult],
+    node: "GraphNode",
+    error_handling: ErrorHandling = "raise",
+) -> dict[str, list]:
+    """Collect multiple RunResults into lists per output.
+
+    Handles output name translation: inner graph produces original names,
+    but we need to return renamed names to match the GraphNode's interface.
+
+    Args:
+        results: List of RunResult from runner.map()
+        node: The GraphNode (used for output name translation)
+        error_handling: How to handle failed results. "raise" raises on first
+            failure, "continue" uses None placeholders to preserve list length.
+
+    Returns:
+        Dict mapping renamed output names to lists of values
+    """
+    collected: dict[str, list] = {name: [] for name in node.outputs}
+    for result in results:
+        if result.status == RunStatus.FAILED:
+            if error_handling == "raise":
+                raise result.error  # type: ignore[misc]
+            # Continue mode: use None placeholders to preserve list length
+            for name in node.outputs:
+                collected[name].append(None)
+            continue
+        # Translate original output names to renamed names
+        renamed_values = node.map_outputs_from_original(result.values)
+        for name in node.outputs:
+            if name in renamed_values:
+                collected[name].append(renamed_values[name])
+    return collected

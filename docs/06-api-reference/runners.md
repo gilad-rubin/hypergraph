@@ -98,6 +98,7 @@ def map(
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
@@ -110,7 +111,9 @@ Execute a graph multiple times with different inputs.
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `select` - Optional list of outputs to return
-
+- `error_handling` - How to handle failures:
+  - `"raise"` (default): Stop on first failure and raise the exception
+  - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** List of `RunResult`, one per iteration
@@ -136,6 +139,16 @@ results = runner.map(
     map_over=["a", "b"],
     map_mode="product",  # (1,10), (1,20), (2,10), (2,20)
 )
+
+# Continue on errors — collect partial results
+results = runner.map(
+    graph,
+    {"x": [1, 2, 3]},
+    map_over="x",
+    error_handling="continue",
+)
+successes = [r for r in results if r.status == RunStatus.COMPLETED]
+failures = [r for r in results if r.status == RunStatus.FAILED]
 ```
 
 ### capabilities
@@ -259,6 +272,7 @@ async def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
     max_concurrency: int | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
@@ -272,6 +286,9 @@ Execute graph multiple times concurrently.
 - `map_mode` - `"zip"` or `"product"`
 - `select` - Optional list of outputs to return
 - `max_concurrency` - Shared limit across all executions
+- `error_handling` - How to handle failures:
+  - `"raise"` (default): Stop on first failure and raise the exception
+  - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Example:**
@@ -283,6 +300,15 @@ results = await runner.map(
     {"doc": documents},
     map_over="doc",
     max_concurrency=20,  # Limit total concurrent operations
+)
+
+# Continue on errors with async
+results = await runner.map(
+    graph,
+    {"doc": documents},
+    map_over="doc",
+    max_concurrency=20,
+    error_handling="continue",
 )
 ```
 
@@ -351,6 +377,21 @@ result.get("key", default_value)
 # Check existence
 "key" in result
 ```
+
+### Partial Values on Failure
+
+When a graph execution fails, `RunResult` preserves any outputs computed before the error:
+
+```python
+result = runner.run(graph, {"x": 5})
+
+if result.status == RunStatus.FAILED:
+    # values contains outputs from nodes that succeeded before the failure
+    partial = result.values  # e.g. {"step1_output": 10}
+    error = result.error     # the exception that caused the failure
+```
+
+This is useful for debugging — you can inspect which nodes completed successfully.
 
 ---
 

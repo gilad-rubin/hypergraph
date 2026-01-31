@@ -72,6 +72,16 @@ async def run_superstep_async(
     """
     new_state = state.copy()
 
+    # Execute InterruptNodes alone (not concurrently with other nodes).
+    # PauseExecution extends BaseException, so if raised inside asyncio.gather
+    # it cancels all sibling tasks. By isolating InterruptNodes, other ready
+    # nodes are deferred to the next superstep where they'll still be ready.
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    interrupt_nodes = [n for n in ready_nodes if isinstance(n, InterruptNode)]
+    if interrupt_nodes:
+        ready_nodes = [interrupt_nodes[0]]
+
     async def execute_one(
         node: HyperNode,
     ) -> tuple[HyperNode, dict[str, Any], dict[str, int]]:
@@ -113,18 +123,27 @@ async def run_superstep_async(
     # Execute all ready nodes concurrently
     # Concurrency is controlled at the FunctionNode level via the global semaphore
     tasks = [execute_one(node) for node in ready_nodes]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Update state with all results
-    for node, outputs, input_versions in results:
+    # Separate successes from failures, applying successful outputs first
+    first_error: BaseException | None = None
+    for result in results:
+        if isinstance(result, BaseException):
+            if first_error is None:
+                first_error = result
+            continue
+        node, outputs, input_versions = result
         for name, value in outputs.items():
             new_state.update_value(name, value)
-
         new_state.node_executions[node.name] = NodeExecution(
             node_name=node.name,
             input_versions=input_versions,
             outputs=outputs,
         )
+
+    if first_error is not None:
+        first_error._partial_state = new_state  # type: ignore[attr-defined]
+        raise first_error
 
     return new_state
 

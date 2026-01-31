@@ -3,6 +3,7 @@
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
 
 
@@ -12,9 +13,12 @@ from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
 @node(output_name="count")
 def counter_stop(count: int, limit: int = 5) -> int:
     """Counter that increments until limit is reached."""
-    if count >= limit:
-        return count
     return count + 1
+
+
+@route(targets=["counter_stop", END])
+def counter_stop_gate(count: int, limit: int = 5) -> str:
+    return END if count >= limit else "counter_stop"
 
 
 @node(output_name="x")
@@ -42,7 +46,7 @@ class TestThreeLevelNestedWithInnerCycle:
     def test_three_level_nested_cycle(self):
         """Innermost graph has a cycle, wrapped by two outer graphs."""
         # Level 1 (innermost): Graph with cycle
-        inner = Graph([counter_stop], name="inner")
+        inner = Graph([counter_stop, counter_stop_gate], name="inner")
 
         # Level 2: Wrap inner graph
         middle = Graph([inner.as_node()], name="middle")
@@ -59,7 +63,7 @@ class TestThreeLevelNestedWithInnerCycle:
     def test_three_level_nested_cycle_with_processing(self):
         """Three levels with processing at each level."""
         # Innermost: cycle
-        inner = Graph([counter_stop], name="inner")
+        inner = Graph([counter_stop, counter_stop_gate], name="inner")
 
         # Middle: adds processing after inner cycle
         @node(output_name="processed")
@@ -94,9 +98,11 @@ class TestOuterCycleWithNestedGraph:
 
         @node(output_name="count")
         def counter(count: int, limit: int = 5) -> int:
-            if count >= limit:
-                return count
             return count + 1
+
+        @route(targets=["counter", END])
+        def counter_gate(count: int, limit: int = 5) -> str:
+            return END if count >= limit else "counter"
 
         @node(output_name="inner_result")
         def transform(count: int) -> int:
@@ -105,7 +111,7 @@ class TestOuterCycleWithNestedGraph:
         inner = Graph([transform], name="inner")
 
         # Outer: cycle runs first, then inner processes result
-        outer = Graph([counter, inner.as_node()])
+        outer = Graph([counter, counter_gate, inner.as_node()])
 
         runner = SyncRunner()
         result = runner.run(outer, {"count": 0, "limit": 3})
@@ -124,20 +130,24 @@ class TestParallelNestedGraphsWithCycles:
         # Inner graph A: counter
         @node(output_name="count_a")
         def counter_a(count_a: int, limit_a: int = 3) -> int:
-            if count_a >= limit_a:
-                return count_a
             return count_a + 1
 
-        inner_a = Graph([counter_a], name="inner_a")
+        @route(targets=["counter_a", END])
+        def counter_a_gate(count_a: int, limit_a: int = 3) -> str:
+            return END if count_a >= limit_a else "counter_a"
+
+        inner_a = Graph([counter_a, counter_a_gate], name="inner_a")
 
         # Inner graph B: different counter
         @node(output_name="count_b")
         def counter_b(count_b: int, limit_b: int = 5) -> int:
-            if count_b >= limit_b:
-                return count_b
             return count_b + 1
 
-        inner_b = Graph([counter_b], name="inner_b")
+        @route(targets=["counter_b", END])
+        def counter_b_gate(count_b: int, limit_b: int = 5) -> str:
+            return END if count_b >= limit_b else "counter_b"
+
+        inner_b = Graph([counter_b, counter_b_gate], name="inner_b")
 
         # Outer: combines both
         @node(output_name="sum")
@@ -172,9 +182,11 @@ class TestNestedGraphNodeInCyclePath:
 
         @node(output_name="count")
         def cycle_counter(count: int, limit: int = 5) -> int:
-            if count >= limit:
-                return count
             return count + 1
+
+        @route(targets=["cycle_counter", END])
+        def cycle_counter_gate(count: int, limit: int = 5) -> str:
+            return END if count >= limit else "cycle_counter"
 
         @node(output_name="result")
         def process(count: int) -> int:
@@ -183,7 +195,7 @@ class TestNestedGraphNodeInCyclePath:
         inner = Graph([process], name="processor")
 
         # Cycle runs, then processor transforms result
-        outer = Graph([cycle_counter, inner.as_node()])
+        outer = Graph([cycle_counter, cycle_counter_gate, inner.as_node()])
 
         runner = SyncRunner()
         result = runner.run(outer, {"count": 0, "limit": 5})
@@ -204,11 +216,14 @@ class TestDeeplyNestedConvergence:
         def converge(approx: float, target: float = 10.0, rate: float = 0.5) -> float:
             """Converge toward target by rate factor."""
             diff = target - approx
-            if abs(diff) < 0.1:
-                return approx
             return approx + diff * rate
 
-        level3 = Graph([converge], name="level3")
+        @route(targets=["converge", END])
+        def converge_gate(approx: float, target: float = 10.0) -> str:
+            diff = target - approx
+            return END if abs(diff) < 0.1 else "converge"
+
+        level3 = Graph([converge, converge_gate], name="level3")
 
         # Level 2: wraps level 3
         level2 = Graph([level3.as_node()], name="level2")
@@ -232,11 +247,13 @@ class TestNestedCyclesWithDifferentSeeds:
         # Inner graph has a cycle with its own seed
         @node(output_name="inner_count")
         def inner_cycle(inner_count: int, inner_limit: int = 2) -> int:
-            if inner_count >= inner_limit:
-                return inner_count
             return inner_count + 1
 
-        inner = Graph([inner_cycle], name="inner")
+        @route(targets=["inner_cycle", END])
+        def inner_cycle_gate(inner_count: int, inner_limit: int = 2) -> str:
+            return END if inner_count >= inner_limit else "inner_cycle"
+
+        inner = Graph([inner_cycle, inner_cycle_gate], name="inner")
 
         # Outer: processes inner's completed result
         @node(output_name="processed")
@@ -264,20 +281,24 @@ class TestNestedCyclesWithDifferentSeeds:
         # Inner A: cycle to limit_a
         @node(output_name="a")
         def cycle_a(a: int, limit_a: int = 3) -> int:
-            if a >= limit_a:
-                return a
             return a + 1
 
-        inner_a = Graph([cycle_a], name="inner_a")
+        @route(targets=["cycle_a", END])
+        def cycle_a_gate(a: int, limit_a: int = 3) -> str:
+            return END if a >= limit_a else "cycle_a"
+
+        inner_a = Graph([cycle_a, cycle_a_gate], name="inner_a")
 
         # Inner B: cycle to limit_b
         @node(output_name="b")
         def cycle_b(b: int, limit_b: int = 5) -> int:
-            if b >= limit_b:
-                return b
             return b + 1
 
-        inner_b = Graph([cycle_b], name="inner_b")
+        @route(targets=["cycle_b", END])
+        def cycle_b_gate(b: int, limit_b: int = 5) -> str:
+            return END if b >= limit_b else "cycle_b"
+
+        inner_b = Graph([cycle_b, cycle_b_gate], name="inner_b")
 
         # Outer: combines both independent results
         @node(output_name="sum")
@@ -308,7 +329,7 @@ class TestNestedCyclesAsync:
 
     async def test_nested_cycle_async_runner(self):
         """Nested cycle works with AsyncRunner."""
-        inner = Graph([counter_stop], name="inner")
+        inner = Graph([counter_stop, counter_stop_gate], name="inner")
         outer = Graph([inner.as_node()])
 
         runner = AsyncRunner()
@@ -323,11 +344,13 @@ class TestNestedCyclesAsync:
         # Innermost async cycle
         @node(output_name="count")
         async def async_counter(count: int, limit: int = 3) -> int:
-            if count >= limit:
-                return count
             return count + 1
 
-        inner = Graph([async_counter], name="inner")
+        @route(targets=["async_counter", END])
+        def async_counter_gate(count: int, limit: int = 3) -> str:
+            return END if count >= limit else "async_counter"
+
+        inner = Graph([async_counter, async_counter_gate], name="inner")
         middle = Graph([inner.as_node()], name="middle")
         outer = Graph([middle.as_node()])
 
@@ -344,7 +367,7 @@ class TestCycleWithMapOver:
     def test_map_over_graph_with_cycle(self):
         """map_over a graph that contains a cycle."""
         # Inner graph has cycle
-        inner = Graph([counter_stop], name="inner")
+        inner = Graph([counter_stop, counter_stop_gate], name="inner")
 
         # Outer maps over the cyclic graph
         outer = Graph([inner.as_node().map_over("count")])
@@ -364,7 +387,7 @@ class TestCycleWithMapOver:
 
     def test_map_over_with_different_limits(self):
         """map_over cycle with varying limits."""
-        inner = Graph([counter_stop], name="inner")
+        inner = Graph([counter_stop, counter_stop_gate], name="inner")
         outer = Graph([inner.as_node().map_over("count", "limit", mode="zip")])
 
         runner = SyncRunner()

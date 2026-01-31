@@ -10,6 +10,7 @@ from hypergraph.exceptions import InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
+from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.helpers import (
     filter_outputs,
@@ -19,7 +20,9 @@ from hypergraph.runners._shared.helpers import (
 )
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.types import (
+    ErrorHandling,
     GraphState,
+    PauseExecution,
     RunnerCapabilities,
     RunResult,
     RunStatus,
@@ -35,6 +38,7 @@ from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
     AsyncGraphNodeExecutor,
     AsyncIfElseNodeExecutor,
+    AsyncInterruptNodeExecutor,
     AsyncRouteNodeExecutor,
 )
 from hypergraph.runners.async_.superstep import (
@@ -67,6 +71,7 @@ class AsyncRunner(BaseRunner):
     - Concurrent execution of independent nodes
     - Configurable concurrency limit
     - Supports both sync and async nodes
+    - Human-in-the-loop via InterruptNode (pause and resume)
 
     Example:
         >>> from hypergraph import Graph, node, AsyncRunner
@@ -87,6 +92,7 @@ class AsyncRunner(BaseRunner):
             GraphNode: AsyncGraphNodeExecutor(self),
             IfElseNode: AsyncIfElseNodeExecutor(),
             RouteNode: AsyncRouteNodeExecutor(),
+            InterruptNode: AsyncInterruptNodeExecutor(),
         }
 
     @property
@@ -97,6 +103,7 @@ class AsyncRunner(BaseRunner):
             supports_async_nodes=True,
             supports_streaming=False,  # Phase 2
             returns_coroutine=True,
+            supports_interrupts=True,
         )
 
     @property
@@ -163,13 +170,25 @@ class AsyncRunner(BaseRunner):
                 dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
             )
             return result
+        except PauseExecution as pause:
+            return RunResult(
+                values={},
+                status=RunStatus.PAUSED,
+                pause=pause.pause_info,
+            )
         except Exception as e:
             await _emit_run_end(
                 dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
                 error=e,
             )
+            partial_state = getattr(e, "_partial_state", None)
+            partial_values = (
+                filter_outputs(partial_state, graph, select)
+                if partial_state is not None
+                else {}
+            )
             return RunResult(
-                values={},
+                values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
                 error=e,
@@ -191,7 +210,11 @@ class AsyncRunner(BaseRunner):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
     ) -> GraphState:
-        """Execute graph until no more ready nodes or max_iterations reached."""
+        """Execute graph until no more ready nodes or max_iterations reached.
+
+        On failure, attaches partial state to the exception as ``_partial_state``
+        so the caller can extract values accumulated before the error.
+        """
         state = initialize_state(graph, values)
 
         # Set up concurrency limiter only at top level (when none exists)
@@ -229,6 +252,10 @@ class AsyncRunner(BaseRunner):
                 if get_ready_nodes(graph, state):
                     raise InfiniteLoopError(max_iterations)
 
+        except Exception as e:
+            if not hasattr(e, "_partial_state"):
+                e._partial_state = state  # type: ignore[attr-defined]
+            raise
         finally:
             # Reset concurrency limiter only if we set it
             if token is not None:
@@ -286,6 +313,7 @@ class AsyncRunner(BaseRunner):
         map_mode: Literal["zip", "product"] = "zip",
         select: list[str] | None = None,
         max_concurrency: int | None = None,
+        error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
     ) -> list[RunResult]:
@@ -298,11 +326,17 @@ class AsyncRunner(BaseRunner):
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
             max_concurrency: Max concurrent operations (shared across all items)
+            error_handling: "raise" to stop on first failure, "continue" to
+                collect all results including failures
             event_processors: Optional list of event processors for execution events
             _parent_span_id: Internal. Span ID of parent scope for nested map runs.
 
         Returns:
             List of RunResult, one per iteration
+
+        Raises:
+            Exception: The underlying error from the first failed item
+                when ``error_handling="raise"``
         """
         # Validate
         validate_runner_compatibility(graph, self.capabilities)
@@ -347,6 +381,11 @@ class AsyncRunner(BaseRunner):
                     for v in input_variations
                 ]
                 results = list(await asyncio.gather(*tasks))
+                # Check for failures after all tasks complete
+                if error_handling == "raise":
+                    for result in results:
+                        if result.status == RunStatus.FAILED:
+                            raise result.error  # type: ignore[misc]
             else:
                 # Worker pool: fixed number of workers pull from a queue
                 results_list: list[RunResult] = []
@@ -355,9 +394,10 @@ class AsyncRunner(BaseRunner):
                     queue.put_nowait((idx, v))
 
                 order: list[int] = []
+                stop_event = asyncio.Event()
 
                 async def _worker() -> None:
-                    while True:
+                    while not stop_event.is_set():
                         try:
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
@@ -369,12 +409,22 @@ class AsyncRunner(BaseRunner):
                         )
                         results_list.append(result)
                         order.append(idx)
+                        if (
+                            error_handling == "raise"
+                            and result.status == RunStatus.FAILED
+                        ):
+                            stop_event.set()
 
                 num_workers = min(max_concurrency, len(input_variations))
                 workers = [asyncio.create_task(_worker()) for _ in range(num_workers)]
                 await asyncio.gather(*workers)
                 # Restore original input order
                 results = [r for _, r in sorted(zip(order, results_list))]
+                # Raise first failure (by original order) if fail-fast
+                if error_handling == "raise":
+                    for result in results:
+                        if result.status == RunStatus.FAILED:
+                            raise result.error  # type: ignore[misc]
 
             await _emit_run_end(
                 dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
