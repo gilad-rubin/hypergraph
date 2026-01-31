@@ -12,7 +12,7 @@ Usage:
         # ... test
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Iterator
 import itertools
@@ -97,6 +97,13 @@ class Binding(Enum):
     BOUND = auto()  # graph.bind() applied
 
 
+class Caching(Enum):
+    """Whether caching is enabled."""
+
+    NONE = auto()  # No cache backend
+    IN_MEMORY = auto()  # InMemoryCache on runner
+
+
 # =============================================================================
 # Capability dataclass
 # =============================================================================
@@ -120,6 +127,7 @@ class Capability:
     type_validation: TypeValidation
     renaming: Renaming
     binding: Binding
+    caching: Caching
 
     def is_valid(self) -> bool:
         """Check if this capability combination is valid."""
@@ -161,6 +169,8 @@ class Capability:
             parts.append(f"rename_{self.renaming.name.lower()}")
         if self.binding != Binding.NONE:
             parts.append("bound")
+        if self.caching != Caching.NONE:
+            parts.append("cached")
         return "-".join(parts)
 
 
@@ -260,6 +270,7 @@ def all_valid_combinations() -> Iterator[Capability]:
         type_validation,
         renaming,
         binding,
+        caching,
     ) in itertools.product(
         Runner,
         _all_node_type_combinations(),
@@ -270,6 +281,7 @@ def all_valid_combinations() -> Iterator[Capability]:
         TypeValidation,
         Renaming,
         Binding,
+        Caching,
     ):
         cap = Capability(
             runner=runner,
@@ -281,6 +293,7 @@ def all_valid_combinations() -> Iterator[Capability]:
             type_validation=type_validation,
             renaming=renaming,
             binding=binding,
+            caching=caching,
         )
         if cap.is_valid():
             yield cap
@@ -310,6 +323,7 @@ def pairwise_combinations() -> Iterator[Capability]:
         list(TypeValidation),
         list(Renaming),
         list(Binding),
+        list(Caching),
     ]
 
     def is_valid_combo(row: list) -> bool:
@@ -353,6 +367,7 @@ def pairwise_combinations() -> Iterator[Capability]:
             type_validation=combo[6],
             renaming=combo[7],
             binding=combo[8],
+            caching=combo[9],
         )
         # Final validation (in case filter missed something)
         if cap.is_valid():

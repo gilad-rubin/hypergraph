@@ -8,6 +8,7 @@ from hypergraph.events.processor import (
 )
 from hypergraph.events.types import (
     BaseEvent,
+    CacheHitEvent,
     Event,
     InterruptEvent,
     NodeEndEvent,
@@ -22,6 +23,7 @@ from hypergraph.events.types import (
 __all__ = [
     # Event types
     "BaseEvent",
+    "CacheHitEvent",
     "Event",
     "InterruptEvent",
     "NodeEndEvent",

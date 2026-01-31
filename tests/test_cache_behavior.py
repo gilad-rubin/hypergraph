@@ -1,13 +1,10 @@
 """Tests for runtime cache behavior validation (GAP-06).
 
-Note: These tests document expected caching behavior. The cache=True flag
-on nodes indicates that results should be cached, but the implementation
-of result caching may be pending.
+Tests verify that InMemoryCache prevents redundant node executions
+across repeated runs with the same inputs.
 """
 
-import pytest
-
-from hypergraph import Graph, node
+from hypergraph import Graph, InMemoryCache, node
 from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, SyncRunner
 
@@ -87,13 +84,34 @@ class TestCachedNodeExecution:
             return x * 2
 
         graph = Graph([counting_node])
-        runner = SyncRunner()
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
 
         result = runner.run(graph, {"x": 5})
 
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == 10
-        assert counter.count >= 1
+        assert counter.count == 1
+
+    def test_cached_node_skips_second_run(self):
+        """Second run with same inputs is served from cache."""
+        counter = CallCounter()
+
+        @node(output_name="result", cache=True)
+        def counting_node(x: int) -> int:
+            counter.increment()
+            return x * 2
+
+        graph = Graph([counting_node])
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
+
+        r1 = runner.run(graph, {"x": 5})
+        r2 = runner.run(graph, {"x": 5})
+
+        assert r1["result"] == 10
+        assert r2["result"] == 10
+        assert counter.count == 1  # Only executed once
 
     def test_uncached_node_executes_each_time(self):
         """Node without cache runs each time it's triggered by a gate."""
@@ -120,7 +138,7 @@ class TestCachedNodeExecution:
         assert counter.count == 3
 
     def test_cached_node_in_dag(self):
-        """Cached node in a DAG executes correctly."""
+        """Cached node in a DAG executes correctly and caches across runs."""
         counter = CallCounter()
 
         @node(output_name="a", cache=True)
@@ -133,13 +151,19 @@ class TestCachedNodeExecution:
             return a + 1
 
         graph = Graph([cached_producer, consumer])
-        runner = SyncRunner()
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
 
         result = runner.run(graph, {"x": 5})
-
         assert result.status == RunStatus.COMPLETED
         assert result["a"] == 10
         assert result["b"] == 11
+
+        # Second run: cached_producer served from cache
+        result2 = runner.run(graph, {"x": 5})
+        assert result2["a"] == 10
+        assert result2["b"] == 11
+        assert counter.count == 1
 
 
 class TestCacheWithCycles:
@@ -161,7 +185,7 @@ class TestCacheWithCycles:
             return END if count >= limit else "counter_node"
 
         graph = Graph([counter_node, cycle_gate])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
         result = runner.run(graph, {"count": 0, "limit": 3})
 
@@ -183,7 +207,7 @@ class TestCacheWithNestedGraph:
 
         inner = Graph([cached_double], name="inner")
         outer = Graph([inner.as_node()])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
         result = runner.run(outer, {"x": 5})
 
@@ -218,39 +242,44 @@ class TestCacheKeyBehavior:
     """Tests for cache key computation."""
 
     def test_different_inputs_produce_different_results(self):
-        """Different inputs should produce different results."""
+        """Different inputs should produce different results (separate cache keys)."""
+        counter = CallCounter()
 
         @node(output_name="result", cache=True)
         def cached_node(x: int) -> int:
+            counter.increment()
             return x * 2
 
         graph = Graph([cached_node])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
         result1 = runner.run(graph, {"x": 5})
         result2 = runner.run(graph, {"x": 10})
 
         assert result1["result"] == 10
         assert result2["result"] == 20
+        assert counter.count == 2  # Two distinct inputs
 
-    def test_multi_input_node_different_combinations(self):
-        """Multiple inputs should all contribute to result."""
+    def test_multi_input_node_cache_hit(self):
+        """Repeated identical multi-input calls hit cache."""
+        counter = CallCounter()
 
         @node(output_name="result", cache=True)
         def multi_input(a: int, b: int) -> int:
+            counter.increment()
             return a + b
 
         graph = Graph([multi_input])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
-        # Different input combinations
         r1 = runner.run(graph, {"a": 1, "b": 2})
         r2 = runner.run(graph, {"a": 2, "b": 1})
-        r3 = runner.run(graph, {"a": 1, "b": 2})
+        r3 = runner.run(graph, {"a": 1, "b": 2})  # same as r1
 
         assert r1["result"] == 3
         assert r2["result"] == 3
         assert r3["result"] == 3
+        assert counter.count == 2  # r3 served from cache
 
 
 class TestCacheWithGenerators:
@@ -267,12 +296,16 @@ class TestCacheWithGenerators:
                 yield i
 
         graph = Graph([gen_items])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
         result = runner.run(graph, {"n": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["items"] == [0, 1, 2]
+
+        # Second run hits cache
+        runner.run(graph, {"n": 3})
+        assert counter.count == 1
 
     def test_generator_results_are_lists(self):
         """Generator results are accumulated to lists."""
@@ -304,17 +337,16 @@ class TestCacheWithMapOver:
 
         inner = Graph([cached_double], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
         result = runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
-        # Each map iteration executes the node
-        assert counter.count >= 3
+        assert counter.count == 3
 
     def test_map_over_with_repeated_values(self):
-        """map_over with repeated input values."""
+        """map_over with repeated input values uses cache for duplicates."""
         counter = CallCounter()
 
         @node(output_name="doubled", cache=True)
@@ -324,13 +356,130 @@ class TestCacheWithMapOver:
 
         inner = Graph([cached_double], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
-        # Same value repeated
+        # Same value repeated — cache should deduplicate
         result = runner.run(outer, {"x": [5, 5, 5]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [10, 10, 10]
+        assert counter.count == 1  # Only computed once
+
+
+class TestCacheWithGates:
+    """Tests for cache behavior on route/ifelse gate nodes."""
+
+    def test_cached_route_skips_second_execution(self):
+        """Cached route gate function is not called on second run with same inputs."""
+        counter = CallCounter()
+
+        @node(output_name="count")
+        def producer(count: int) -> int:
+            return count
+
+        @route(targets=["producer", END], cache=True)
+        def gate(count: int) -> str:
+            counter.increment()
+            return END if count >= 3 else "producer"
+
+        graph = Graph([producer, gate])
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
+
+        r1 = runner.run(graph, {"count": 5})
+        assert r1.status == RunStatus.COMPLETED
+        assert r1["count"] == 5
+        assert counter.count == 1
+
+        # Second run — gate should be served from cache
+        r2 = runner.run(graph, {"count": 5})
+        assert r2["count"] == 5
+        assert counter.count == 1  # Gate not called again
+
+    def test_cached_route_different_inputs_miss(self):
+        """Different inputs to cached gate produce cache miss."""
+        counter = CallCounter()
+
+        @node(output_name="count")
+        def producer(count: int) -> int:
+            return count
+
+        @route(targets=["producer", END], cache=True)
+        def gate(count: int) -> str:
+            counter.increment()
+            return END if count >= 3 else "producer"
+
+        graph = Graph([producer, gate])
+        runner = SyncRunner(cache=InMemoryCache())
+
+        runner.run(graph, {"count": 5})
+        runner.run(graph, {"count": 1})
+
+        assert counter.count == 2  # Different inputs → different cache keys
+
+    def test_cached_ifelse_skips_second_execution(self):
+        """Cached ifelse gate function is not called on second run."""
+        from hypergraph.nodes.gate import ifelse
+
+        counter = CallCounter()
+
+        @node(output_name="x")
+        def producer(val: int) -> int:
+            return val
+
+        @ifelse(when_true="big", when_false="small", cache=True)
+        def check(x: int) -> bool:
+            counter.increment()
+            return x > 10
+
+        @node(output_name="result")
+        def big(x: int) -> str:
+            return "big"
+
+        @node(output_name="result")
+        def small(x: int) -> str:
+            return "small"
+
+        graph = Graph([producer, check, big, small])
+        runner = SyncRunner(cache=InMemoryCache())
+
+        r1 = runner.run(graph, {"val": 20})
+        assert r1["result"] == "big"
+        assert counter.count == 1
+
+        r2 = runner.run(graph, {"val": 20})
+        assert r2["result"] == "big"
+        assert counter.count == 1  # Served from cache
+
+    def test_cached_route_in_cycle(self):
+        """Cached route in a cycle: gate is cached per-input across runs."""
+        gate_counter = CallCounter()
+        node_counter = CallCounter()
+
+        @node(output_name="count", cache=True)
+        def increment(count: int) -> int:
+            node_counter.increment()
+            return count + 1
+
+        @route(targets=["increment", END], cache=True)
+        def loop_gate(count: int) -> str:
+            gate_counter.increment()
+            return END if count >= 3 else "increment"
+
+        graph = Graph([increment, loop_gate])
+        runner = SyncRunner(cache=InMemoryCache())
+
+        r1 = runner.run(graph, {"count": 0})
+        assert r1["count"] == 3
+        first_gate_count = gate_counter.count
+        first_node_count = node_counter.count
+
+        # Second run with same initial input — everything from cache
+        r2 = runner.run(graph, {"count": 0})
+        assert r2["count"] == 3
+        # Gate and node calls should not increase (all cached)
+        assert gate_counter.count == first_gate_count
+        assert node_counter.count == first_node_count
 
 
 class TestCacheWithBoundValues:
@@ -344,14 +493,14 @@ class TestCacheWithBoundValues:
             return x * multiplier
 
         graph = Graph([with_bound]).bind(multiplier=3)
-        runner = SyncRunner()
+        runner = SyncRunner(cache=InMemoryCache())
 
         result = runner.run(graph, {"x": 5})
 
         assert result["result"] == 15
 
     def test_different_bindings_produce_different_results(self):
-        """Different bindings should produce different results."""
+        """Different bindings should produce different cache keys."""
 
         @node(output_name="result", cache=True)
         def with_bound(x: int, multiplier: int = 2) -> int:
@@ -359,7 +508,8 @@ class TestCacheWithBoundValues:
 
         graph1 = Graph([with_bound]).bind(multiplier=2)
         graph2 = Graph([with_bound]).bind(multiplier=3)
-        runner = SyncRunner()
+        cache = InMemoryCache()
+        runner = SyncRunner(cache=cache)
 
         r1 = runner.run(graph1, {"x": 5})
         r2 = runner.run(graph2, {"x": 5})

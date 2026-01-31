@@ -38,6 +38,16 @@
 - Event types live in `src/hypergraph/events/types.py`; processors in `events/processor.py`
 - Tests in `tests/events/`
 
+## Caching System
+
+- Nodes opt-in to result caching with `@node(cache=True)` or `@route(cache=True)`
+- Pass `cache=InMemoryCache()` or `cache=DiskCache()` to runner constructor
+- Cache keys combine node `definition_hash` + resolved input values (auto-invalidates on code changes)
+- `CacheHitEvent` emitted on cache hits; `NodeEndEvent.cached` field tracks cache status
+- `CacheBackend` protocol in `src/hypergraph/cache.py`; `DiskCache` requires `pip install 'hypergraph[cache]'`
+- Gate nodes (route/ifelse) cache routing decisions; `InterruptNode` and `GraphNode` are never cacheable
+- Tests in `tests/test_cache_*.py`; `Caching` dimension in `tests/capabilities/matrix.py`
+
 ## Maintaining Instructions
 
 After making significant code structure changes, update the AGENTS.md and README.md markdown files

@@ -36,10 +36,11 @@ print(result["doubled"])  # 10
 
 ```python
 class SyncRunner:
-    def __init__(self) -> None: ...
+    def __init__(self, cache: CacheBackend | None = None) -> None: ...
 ```
 
-No configuration needed. Create once, use for multiple graphs.
+**Args:**
+- `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
 
 ### run()
 
@@ -195,8 +196,11 @@ result = await runner.run(graph, {"url": "https://api.example.com"})
 
 ```python
 class AsyncRunner:
-    def __init__(self) -> None: ...
+    def __init__(self, cache: CacheBackend | None = None) -> None: ...
 ```
+
+**Args:**
+- `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
 
 ### run()
 
@@ -554,4 +558,5 @@ result = runner.run(outer, {"x": 5})
 The runner automatically:
 - Delegates to the inner graph
 - Shares concurrency limits (AsyncRunner)
+- Propagates the cache backend to nested graphs
 - Propagates errors

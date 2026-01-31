@@ -41,6 +41,7 @@ from hypergraph.runners.sync.executors import (
 from hypergraph.runners.sync.superstep import run_superstep_sync
 
 if TYPE_CHECKING:
+    from hypergraph.cache import CacheBackend
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -72,8 +73,14 @@ class SyncRunner(BaseRunner):
         10
     """
 
-    def __init__(self):
-        """Initialize SyncRunner with its node executors."""
+    def __init__(self, cache: "CacheBackend | None" = None):
+        """Initialize SyncRunner with its node executors.
+
+        Args:
+            cache: Optional cache backend for node result caching.
+                Nodes opt in with ``cache=True``.
+        """
+        self._cache = cache
         self._executors: dict[type[HyperNode], NodeExecutor] = {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
@@ -203,6 +210,7 @@ class SyncRunner(BaseRunner):
                 state = run_superstep_sync(
                     graph, state, ready_nodes, values,
                     self._make_execute_node(event_processors),
+                    cache=self._cache,
                     dispatcher=dispatcher,
                     run_id=run_id,
                     run_span_id=run_span_id,

@@ -31,6 +31,7 @@ from hypergraph.runners import (
 from hypergraph.events import (
     AsyncEventProcessor,
     BaseEvent,
+    CacheHitEvent,
     Event,
     EventDispatcher,
     EventProcessor,
@@ -45,6 +46,7 @@ from hypergraph.events import (
     TypedEventProcessor,
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
+from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
 
 __all__ = [
     # Decorators and node types
@@ -90,5 +92,10 @@ __all__ = [
     "RunEndEvent",
     "RunStartEvent",
     "StopRequestedEvent",
+    "CacheHitEvent",
     "RichProgressProcessor",
+    # Cache
+    "CacheBackend",
+    "InMemoryCache",
+    "DiskCache",
 ]
