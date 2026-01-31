@@ -70,7 +70,7 @@ class DiskCache:
     Requires ``pip install hypergraph[cache]`` (installs diskcache).
 
     Args:
-        directory: Path to the cache directory.
+        cache_dir: Path to the cache directory.
         **kwargs: Additional arguments passed to ``diskcache.Cache``.
 
     Example:
@@ -80,7 +80,7 @@ class DiskCache:
         (True, 'value')
     """
 
-    def __init__(self, directory: str = "~/.cache/hypergraph", **kwargs: Any) -> None:
+    def __init__(self, cache_dir: str = "~/.cache/hypergraph", **kwargs: Any) -> None:
         try:
             import diskcache
         except ImportError:
@@ -89,7 +89,7 @@ class DiskCache:
                 "Install it with: pip install 'hypergraph[cache]'"
             ) from None
         import os
-        self._cache = diskcache.Cache(os.path.expanduser(directory), **kwargs)
+        self._cache = diskcache.Cache(os.path.expanduser(cache_dir), **kwargs)
 
     def get(self, key: str) -> tuple[bool, Any]:
         """Return (hit, value) from disk cache."""

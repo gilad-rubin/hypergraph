@@ -70,7 +70,7 @@ from hypergraph import DiskCache
 cache = DiskCache()
 
 # Custom directory
-cache = DiskCache(directory="/tmp/my-project-cache")
+cache = DiskCache(cache_dir="/tmp/my-project-cache")
 
 runner = SyncRunner(cache=cache)
 
