@@ -98,3 +98,7 @@ Finalize exports, dependencies, and documentation.
 - Update `README.md` with a progress bar example in the features section
 - Run full test suite: `uv run pytest`
 - Run lint: `uv run ruff check src/hypergraph/`
+
+### [ ] Step: Edge Case detection
+
+find edge cases, look at capabilities matrix and fix issues in the implementation or surface dillemas
