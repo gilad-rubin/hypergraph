@@ -80,7 +80,7 @@ class DiskCache:
         (True, 'value')
     """
 
-    def __init__(self, directory: str, **kwargs: Any) -> None:
+    def __init__(self, directory: str = "~/.cache/hypergraph", **kwargs: Any) -> None:
         try:
             import diskcache
         except ImportError:
@@ -88,7 +88,8 @@ class DiskCache:
                 "diskcache is required for DiskCache. "
                 "Install it with: pip install 'hypergraph[cache]'"
             ) from None
-        self._cache = diskcache.Cache(directory, **kwargs)
+        import os
+        self._cache = diskcache.Cache(os.path.expanduser(directory), **kwargs)
 
     def get(self, key: str) -> tuple[bool, Any]:
         """Return (hit, value) from disk cache."""
