@@ -103,7 +103,7 @@ Finalize exports, dependencies, and documentation.
 - Run full test suite: `uv run pytest`
 - Run lint: `uv run ruff check src/hypergraph/`
 
-### [ ] Step: Edge Case detection
+### [x] Step: Edge Case detection
 <!-- chat-id: 6b04b82d-dcfc-445f-9644-4c9a6300cf35 -->
 
 find edge cases, look at capabilities matrix and fix issues in the implementation or surface dillemas
