@@ -63,7 +63,7 @@ Create the cache module and add the cache event:
 - Update `src/hypergraph/__init__.py` exports
 - Add build-time validation: `cache=True` disallowed on `GateNode`, `InterruptNode`, `GraphNode`
 
-### [ ] Step: Runner and superstep integration
+### [x] Step: Runner and superstep integration
 <!-- chat-id: 918db6c6-c8b8-4e10-9b60-317ea2d9b388 -->
 
 Wire caching into the execution path:
