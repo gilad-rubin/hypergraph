@@ -18,7 +18,8 @@ Do not make assumptions on important decisions — get clarification first.
 
 ## Workflow Steps
 
-### [ ] Step: Technical Specification
+### [x] Step: Technical Specification
+<!-- chat-id: 1cebdb2d-1cdd-4d25-aadf-44fe927c2450 -->
 
 Assess the task's difficulty, as underestimating it leads to poor outcomes.
 - easy: Straightforward implementation, trivial bug fix or feature
@@ -50,15 +51,51 @@ Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warra
 
 ---
 
-### [ ] Step: Implementation
+### [ ] Step: Cache backend and event types
 
-Implement the task according to the technical specification and general engineering best practices.
+Create the cache module and add the cache event:
+- Create `src/hypergraph/cache.py` with `CacheBackend` protocol, `InMemoryCache`, `DiskCache`, and cache key computation
+- Add `CacheHitEvent` to `src/hypergraph/events/types.py` and update the `Event` union
+- Add `on_cache_hit` to `TypedEventProcessor` in `src/hypergraph/events/processor.py`
+- Add `[cache]` optional dependency for `diskcache` in `pyproject.toml`
+- Update `src/hypergraph/__init__.py` exports
 
-1. Break the task into steps where possible.
-2. Implement the required changes in the codebase.
-3. Add and run relevant tests and linters.
-4. Perform basic manual verification if applicable.
-5. After completion, write a report to `{@artifacts_path}/report.md` describing:
-   - What was implemented
-   - How the solution was tested
-   - The biggest issues or challenges encountered
+### [ ] Step: Runner and superstep integration
+
+Wire caching into the execution path:
+- Add `cache` parameter to `BaseRunner.__init__`, `SyncRunner`, `AsyncRunner`
+- Pass cache backend through to superstep functions
+- Add cache lookup/store logic in `run_superstep_sync` and `run_superstep_async` around `execute_node`
+- Emit `CacheHitEvent` on cache hits, skip node execution, still emit `NodeStartEvent`/`NodeEndEvent`
+
+### [ ] Step: Tests and verification
+
+Update existing tests and add new ones:
+- Update `tests/test_cache_behavior.py` to use `SyncRunner(cache=InMemoryCache())` and verify cache hit counts
+- Create `tests/test_cache_events.py` for `CacheHitEvent` emission tests
+- Add `DiskCache` tests for cross-run persistence
+- Run `uv run pytest` and `uv run ruff check`
+- Write report to `{@artifacts_path}/report.md`
+
+# Full SDD workflow
+
+## Configuration
+- **Artifacts Path**: {@artifacts_path} → `.zenflow/tasks/{task_id}`
+
+### [ ] Step: Edge Case detection
+<!-- chat-id: 6b04b82d-dcfc-445f-9644-4c9a6300cf35 -->
+
+find edge cases, look at capabilities matrix and fix issues in the implementation or surface dilemmas
+
+### [ ] Step: Improve code
+<!-- chat-id: be9505dc-3ee2-418f-b430-6362bcba2f65 -->
+
+Make sure all functions have docstrings, type hints. Read CLAUDE.md, "flat structure" rule, "code smells" skills and improve implementation;
+
+### [ ] Step: Update the docs, README, api reference;
+<!-- chat-id: 473568f5-9178-48a5-9f02-99e7720f7120 -->
+
+Update the docs, README, api reference; Add examples for real life usage, like the rest of the docs
+
+
+### [ ] Step: Create a PR push; Wait 15 minutes and read the comments on the PR, make improvements (add TDD) until no further comments are made
