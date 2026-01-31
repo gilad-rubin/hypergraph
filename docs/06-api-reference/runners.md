@@ -51,6 +51,7 @@ def run(
     *,
     select: list[str] | None = None,
     max_iterations: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult: ...
 ```
 
@@ -61,6 +62,7 @@ Execute a graph once.
 - `values` - Input values as `{param_name: value}`
 - `select` - Optional list of output names to return (default: all outputs)
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** `RunResult` with outputs and status
 
@@ -79,6 +81,10 @@ result = runner.run(graph, values, select=["final_answer"])
 
 # Limit iterations for cyclic graphs
 result = runner.run(cyclic_graph, values, max_iterations=50)
+
+# With progress bars
+from hypergraph import RichProgressProcessor
+result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
 ```
 
 ### map()
@@ -92,6 +98,7 @@ def map(
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
 
@@ -103,6 +110,8 @@ Execute a graph multiple times with different inputs.
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `select` - Optional list of outputs to return
+
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** List of `RunResult`, one per iteration
 
@@ -187,6 +196,7 @@ async def run(
     select: list[str] | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult: ...
 ```
 
@@ -198,6 +208,7 @@ Execute a graph asynchronously.
 - `select` - Optional list of output names to return
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
 
 **Returns:** `RunResult` with outputs and status
 
@@ -248,6 +259,7 @@ async def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
     max_concurrency: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
 
@@ -260,6 +272,7 @@ Execute graph multiple times concurrently.
 - `map_mode` - `"zip"` or `"product"`
 - `select` - Optional list of outputs to return
 - `max_concurrency` - Shared limit across all executions
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Example:**
 

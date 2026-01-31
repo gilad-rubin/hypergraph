@@ -102,12 +102,14 @@ Test pieces independently. Reuse across workflows.
 ### How-To Guides
 - [Batch Processing](05-how-to/batch-processing.md) - Process multiple inputs with runner.map()
 - [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
+- [Observe Execution](05-how-to/observe-execution.md) - Progress bars, custom event processors, and monitoring
 
 ### API Reference
 - [Graph](06-api-reference/graph.md) - Graph construction, validation, and properties
 - [Nodes](06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
 - [Gates](06-api-reference/gates.md) - RouteNode, IfElseNode, @route, @ifelse
 - [Runners](06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [Events](06-api-reference/events.md) - Event types, processors, and RichProgressProcessor
 - [InputSpec](06-api-reference/inputspec.md) - Input categorization and requirements
 
 ### Design

@@ -315,8 +315,10 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 - [Philosophy](docs/07-design/philosophy.md) - Why hypergraph exists
 - [API Reference: Nodes](docs/06-api-reference/nodes.md) - FunctionNode, GraphNode, and HyperNode
 - [API Reference: Runners](docs/06-api-reference/runners.md) - SyncRunner, AsyncRunner, and execution model
+- [API Reference: Events](docs/06-api-reference/events.md) - Event types, processors, and RichProgressProcessor
 - [API Reference: Graph](docs/06-api-reference/graph.md) - Graph construction and validation
 - [API Reference: Gates](docs/06-api-reference/gates.md) - RouteNode, @route decorator, and END sentinel
+- [Observe Execution](docs/05-how-to/observe-execution.md) - Progress bars and custom event processors
 
 For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/01-introduction/comparison.md).
 
