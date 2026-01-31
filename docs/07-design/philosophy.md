@@ -161,7 +161,7 @@ Hamilton pioneered the idea that a Python function's signature *is* the graph de
 
 ### [Pipefunc](https://github.com/pipefunc/pipefunc)
 
-Pipefunc inspired hypergraph's `.map()` operation and parallelization model — the idea that you write logic for one item and the framework handles fan-out. Much of the syntax for defining nodes and composing graphs was influenced by Pipefunc's clean, expressive API.
+Pipefunc has been a major influence on hypergraph's design. The `@pipefunc` decorator with `output_name`, the `Pipeline` that auto-connects functions by matching names, the `.map()` operation for parallel fan-out, the rename API for adapting functions to different contexts, nested pipelines for composition, and build-time type validation — hypergraph's versions of all of these trace back to Pipefunc's clean, well-thought-out API. The "think singular, scale with map" pattern is something Pipefunc got right early on.
 
 ### [Kedro-Viz](https://github.com/kedro-org/kedro-viz)
 
