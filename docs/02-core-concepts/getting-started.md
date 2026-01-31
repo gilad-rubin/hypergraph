@@ -45,7 +45,7 @@ def retrieve(embedding: list[float]) -> list[str]:
 # Edges inferred: embed → retrieve (via "embedding")
 ```
 
-No manual wiring. No configuration. Just name your outputs and inputs consistently.
+Name your outputs and inputs consistently — edges are inferred automatically.
 
 ## Creating Your First Node
 

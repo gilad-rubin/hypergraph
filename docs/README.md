@@ -5,7 +5,7 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
 - **Unified** - One framework for data pipelines and agentic AI. Same elegant code.
 - **Hierarchical** - Graphs nest as nodes. Build big from small, tested pieces.
 - **Versatile** - Sync, async, streaming. Branches, loops, human-in-the-loop. No limits.
-- **Minimal** - No state schemas. No boilerplate. Just functions.
+- **Minimal** - Pure functions with named outputs. Edges inferred automatically.
 
 ## Quick Start
 
@@ -16,17 +16,20 @@ from hypergraph import Graph, node, SyncRunner
 
 @node(output_name="embedding")
 def embed(text: str) -> list[float]:
-    return model.embed(text)
+    # Your embedding model here
+    return [0.1, 0.2, 0.3]
 
 @node(output_name="docs")
 def retrieve(embedding: list[float]) -> list[str]:
-    return db.search(embedding)
+    # Your vector search here
+    return ["Document 1", "Document 2"]
 
 @node(output_name="answer")
 def generate(docs: list[str], query: str) -> str:
-    return llm.generate(docs, query)
+    # Your LLM here
+    return f"Based on {len(docs)} docs: answer to {query}"
 
-# Edges inferred from names - no wiring needed
+# Edges inferred from matching names
 graph = Graph(nodes=[embed, retrieve, generate])
 
 # Run the graph
@@ -48,7 +51,7 @@ def test_embed():
     assert len(result) == 768
 ```
 
-Your functions are just functions. No state objects to mock. No framework setup.
+Your functions are just functions. Test them directly, with any test framework.
 
 **Build-Time Validation**
 

@@ -8,7 +8,7 @@ The simplest hypergraph workflow: a linear chain of functions where data flows i
 - Single-pass ML inference (preprocess → predict → postprocess)
 - Data transformations (clean → enrich → validate → save)
 
-No cycles, no branches — just straightforward data flow.
+Straightforward data flow — functions execute in a single pass.
 
 ## Basic Pattern
 
@@ -65,7 +65,7 @@ classify(features) → "result"
 - `extract_features` produces `"features"`
 - `classify` takes `features` as a parameter → edge created
 
-No manual wiring. No configuration. Just consistent naming.
+Consistent naming is all it takes — edges are inferred automatically.
 
 ## Inspecting the Graph
 
