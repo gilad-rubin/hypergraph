@@ -73,7 +73,8 @@ Wire caching into the execution path:
 - On cache hit: emit `NodeStartEvent` → `CacheHitEvent` → `NodeEndEvent(cached=True)`, skip execution
 - Cache propagation to nested graphs is automatic (executors use `self.runner`)
 
-### [ ] Step: Tests and verification
+### [x] Step: Tests and verification
+<!-- chat-id: 7c2a44ee-5d7e-482c-8675-71e89f06c8c0 -->
 
 Update existing tests and add new ones:
 - Update `tests/test_cache_behavior.py` to use `SyncRunner(cache=InMemoryCache())` and verify cache hit counts
