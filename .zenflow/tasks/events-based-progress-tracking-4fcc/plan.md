@@ -41,7 +41,8 @@ Save to `{@artifacts_path}/spec.md` with:
 
 Create a detailed implementation plan based on `{@artifacts_path}/spec.md`.
 
-### [ ] Step: Event types and processor interfaces
+### [x] Step: Event types and processor interfaces
+<!-- chat-id: 861f1fb2-b63d-4e8f-a737-f392a8a09d89 -->
 
 Create `src/hypergraph/events/` package with core types and interfaces.
 
