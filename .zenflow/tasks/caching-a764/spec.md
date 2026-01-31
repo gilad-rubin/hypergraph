@@ -39,10 +39,14 @@ The runner holds the cache backend. Nodes opt in with `cache=True`. The cache is
 ### Cache Key
 
 For a node with `cache=True`, the cache key is derived from:
-1. **Node identity** — `node.definition_hash` (already exists on HyperNode, hashes the function bytecode + output names)
-2. **Input values** — sorted tuple of `(param_name, value)` for all resolved inputs
+1. **Node identity** — `node.definition_hash` (`FunctionNode` overrides the base to hash the **function source code** via `inspect.getsource()` + output names; the base `HyperNode` hashes `class_name:name:inputs:outputs`)
+2. **Resolved input values** — sorted tuple of `(param_name, value)` for **all resolved inputs**, including bound values. The input collection already resolves bound values (step 2 in `_resolve_input`), so the collected `inputs` dict naturally includes them.
 
-Combined via a deterministic hash. Values are hashed using `pickle` → `hashlib.sha256`. Non-picklable values cause a cache miss (logged, not raised).
+Combined via `pickle.dumps(sorted_items)` → `hashlib.sha256`. Non-picklable values cause a cache miss (warning logged, not raised).
+
+**Limitations**:
+- `inspect.getsource()` may fail in frozen/compiled deployments — in that case `definition_hash` falls back to the base structural hash, which is still correct but less precise (renaming a function without changing its behavior would invalidate the cache).
+- `pickle` output is deterministic for built-in types in CPython 3.7+ but not guaranteed across Python versions. Cache should not be shared across Python versions.
 
 ### Cache Backend Protocol
 
@@ -60,8 +64,19 @@ class CacheBackend(Protocol):
 ```
 
 Two implementations:
-- `InMemoryCache` — wraps a `dict`
-- `DiskCache` — wraps `diskcache.Cache` (optional import)
+- `InMemoryCache` — wraps a `dict`. Optional `max_size: int | None` parameter (default `None` = unlimited). When `max_size` is set, uses LRU eviction via `OrderedDict`.
+- `DiskCache` — wraps `diskcache.Cache` (optional import). `diskcache` handles its own size limits and is process-safe.
+
+### Concurrency Safety
+
+The async superstep runs ready nodes concurrently via `asyncio.gather()`. Two concurrent nodes with `cache=True` could race on the same key (both miss, both execute, both write). This is acceptable:
+- **`InMemoryCache`**: `dict` writes are atomic in CPython. Worst case: duplicate execution, last write wins. Correct but not optimal.
+- **`DiskCache`**: `diskcache.Cache` is thread-safe and process-safe by design.
+- No locking needed in v1. If thundering herd becomes a problem (e.g., expensive nodes in `map()`), a future version could add `asyncio.Lock` per cache key.
+
+### Nested Graph Cache Propagation
+
+`SyncGraphNodeExecutor` and `AsyncGraphNodeExecutor` hold a reference to the parent runner (`self.runner`). When they call `self.runner.run()` for a nested graph, the runner already carries the cache backend. So **cache propagation is automatic** — no executor changes needed. Inner nodes with `cache=True` will use the same backend.
 
 ### Integration Point
 
@@ -73,13 +88,15 @@ For each ready node:
   2. If node.cache and cache_backend:
      a. Compute cache key from (node.definition_hash, inputs)
      b. Check cache → if hit, use cached outputs, emit CacheHitEvent, skip execution
-     c. If miss, execute normally, store result, emit CacheMissEvent
+     c. If miss, execute normally, store result in cache
   3. Else: execute normally (existing)
 ```
 
-This keeps caching orthogonal to the executor hierarchy — no changes to FunctionNodeExecutor, GraphNodeExecutor, etc.
+This keeps caching orthogonal to the executor hierarchy — no changes to individual executors.
 
-### New Event: `CacheHitEvent`
+### Events
+
+#### `CacheHitEvent`
 
 ```python
 @dataclass(frozen=True)
@@ -91,7 +108,11 @@ class CacheHitEvent(BaseEvent):
 
 When a cache hit occurs, the superstep emits `NodeStartEvent` → `CacheHitEvent` → `NodeEndEvent` (with duration_ms ≈ 0). This preserves the existing event contract (start/end always paired) while adding cache observability.
 
-No separate `CacheMissEvent` needed — a normal `NodeStartEvent` → `NodeEndEvent` without a `CacheHitEvent` in between implies a miss (or caching not enabled).
+#### Why no `CacheMissEvent`
+
+A separate `CacheMissEvent` would be emitted on every non-cached execution, adding noise. Instead, add a `cached: bool = False` field to `NodeEndEvent`. This is cheaper and allows filtering cache hits in any processor without a new event type. When `cached=True`, the node was served from cache. When `cached=False` (default), it was executed normally — whether caching was enabled or not is irrelevant to downstream consumers.
+
+**Decision**: Add `cached: bool = False` to `NodeEndEvent` instead of a separate `CacheMissEvent`. Still emit `CacheHitEvent` for detailed observability (includes cache key).
 
 ### TypedEventProcessor Extension
 
@@ -102,31 +123,39 @@ Add `on_cache_hit(self, event: CacheHitEvent) -> None` to `TypedEventProcessor` 
 | File | Action | Description |
 |------|--------|-------------|
 | `src/hypergraph/cache.py` | **Create** | `CacheBackend` protocol, `InMemoryCache`, `DiskCache`, cache key computation |
-| `src/hypergraph/events/types.py` | Modify | Add `CacheHitEvent`, update `Event` union |
+| `src/hypergraph/events/types.py` | Modify | Add `CacheHitEvent`, add `cached` field to `NodeEndEvent`, update `Event` union |
 | `src/hypergraph/events/processor.py` | Modify | Add `on_cache_hit` to `TypedEventProcessor` and `_EVENT_METHOD_MAP` |
 | `src/hypergraph/runners/sync/superstep.py` | Modify | Add cache lookup/store around `execute_node` |
 | `src/hypergraph/runners/async_/superstep.py` | Modify | Same for async path |
 | `src/hypergraph/runners/sync/runner.py` | Modify | Accept `cache` param, pass to superstep |
 | `src/hypergraph/runners/async_/runner.py` | Modify | Accept `cache` param, pass to superstep |
-| `src/hypergraph/runners/base.py` | Modify | Add `cache` param to BaseRunner |
 | `src/hypergraph/__init__.py` | Modify | Export `InMemoryCache`, `DiskCache`, `CacheBackend`, `CacheHitEvent` |
 | `tests/test_cache_behavior.py` | Modify | Update tests to use `SyncRunner(cache=InMemoryCache())` and verify cache hits |
-| `tests/test_cache_events.py` | **Create** | Test `CacheHitEvent` emission |
+| `tests/test_cache_events.py` | **Create** | Test `CacheHitEvent` emission and `NodeEndEvent.cached` field |
+| `tests/capabilities/matrix.py` | Modify | Add `Caching` dimension (`NONE`, `ENABLED`) |
 | `pyproject.toml` | Modify | Add `[cache]` optional dependency for `diskcache` |
+
+**Not modified**: `BaseRunner` — cache is a concrete runner concern, not an abstract interface requirement. Each runner stores it as `self._cache`.
 
 ## Edge Cases
 
 - **Generator nodes with `cache=True`**: Cache the fully-materialized list (generators are already collected to lists before output).
 - **Non-picklable inputs**: Log warning, skip cache for that call (cache miss).
-- **Gate nodes**: Gates should NOT be cacheable (routing decisions depend on execution context). Validate at graph build time that gate nodes don't have `cache=True`.
-- **Cyclic graphs**: Cache still works per-invocation — different input values in each iteration produce different cache keys. The cache key includes actual input values, not versions.
-- **Nested graphs (GraphNode)**: Caching applies to inner nodes individually, not to the GraphNode as a whole. The inner runner shares the same cache backend.
+- **Gate nodes**: Gates should NOT be cacheable (routing decisions depend on execution context). Validate at graph build time that `cache=True` is not set on `GateNode` subclasses.
+- **InterruptNode**: Should NOT be cacheable (pauses execution for human input). Validate at graph build time alongside gates.
+- **GraphNode with `cache=True`**: Disallow at build time. Caching applies to inner nodes individually. A user wanting to cache an entire subgraph result should cache the individual nodes inside it.
+- **Cyclic graphs**: Cache works per-invocation — different input values in each iteration produce different cache keys. The cache key includes actual input values, not versions.
+- **Nested graphs**: Cache propagation is automatic since executors delegate to `self.runner.run()` and the runner holds the cache backend.
+- **`map()` with caching**: Each `map()` iteration calls `runner.run()` independently. If multiple iterations share identical inputs for a cached node, the cache provides deduplication. Map iterations run sequentially in `SyncRunner` and concurrently in `AsyncRunner` (see Concurrency Safety above).
+- **Bound values**: Already covered — `collect_inputs_for_node` resolves bound values into the `inputs` dict, so they're included in the cache key automatically.
 
 ## Verification
 
 1. All existing tests in `test_cache_behavior.py` pass (update to use `InMemoryCache`).
 2. New tests verify cache hit/miss counts using `CallCounter`.
-3. New tests verify `CacheHitEvent` emission.
+3. New tests verify `CacheHitEvent` emission and `NodeEndEvent.cached` field.
 4. `DiskCache` tests check persistence across runner instantiations.
-5. Run `uv run pytest` — all tests green.
-6. Run `uv run ruff check` — no lint errors.
+5. Build-time validation tests for `cache=True` on gates, InterruptNode, and GraphNode.
+6. Capability matrix tests cover caching dimension.
+7. Run `uv run pytest` — all tests green.
+8. Run `uv run ruff check` — no lint errors.
