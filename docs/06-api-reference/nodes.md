@@ -841,6 +841,7 @@ def map_over(
     self,
     *params: str,
     mode: Literal["zip", "product"] = "zip",
+    error_handling: Literal["raise", "continue"] = "raise",
 ) -> GraphNode: ...
 ```
 
@@ -849,6 +850,9 @@ def map_over(
 - `mode` - How to combine multiple parameters:
   - `"zip"` (default): Parallel iteration, equal-length lists required
   - `"product"`: Cartesian product, all combinations
+- `error_handling` - How to handle failures during mapped execution:
+  - `"raise"` (default): Stop on first failure and raise the error
+  - `"continue"`: Collect all results, using `None` as placeholder for failed items (preserving list length)
 
 **Returns:** New GraphNode with map_over configuration
 
@@ -908,6 +912,19 @@ result = runner.run(outer, {"a": [1, 2], "b": [10, 20]})
 
 # All combinations: (1,10), (1,20), (2,10), (2,20)
 print(result["sum"])  # [11, 21, 12, 22]
+```
+
+**Example: Error Handling**
+
+```python
+# Continue on errors — failed items become None, preserving list length
+gn = inner.as_node().map_over("x", error_handling="continue")
+
+outer = Graph([gn])
+result = runner.run(outer, {"x": [1, 2, "bad_input", 4]})
+
+# result["doubled"] → [2, 4, None, 8]
+# None placeholders keep list aligned with inputs
 ```
 
 **Output Types with map_over**

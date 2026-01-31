@@ -230,44 +230,45 @@ def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None
     Only called when strict_types=True.
     """
     for source_name, target_name, edge_data in nx_graph.edges(data=True):
-        value_name = edge_data.get("value_name")
-        if value_name is None:
+        value_names = edge_data.get("value_names")
+        if not value_names:
             continue
 
         source_node = nodes[source_name]
         target_node = nodes[target_name]
 
-        # Get types using universal capability methods
-        output_type = source_node.get_output_type(value_name)
-        input_type = target_node.get_input_type(value_name)
+        for value_name in value_names:
+            # Get types using universal capability methods
+            output_type = source_node.get_output_type(value_name)
+            input_type = target_node.get_input_type(value_name)
 
-        # Check for missing annotations
-        if output_type is None:
-            raise GraphConfigError(
-                f"Missing type annotation in strict_types mode\n\n"
-                f"  -> Node '{source_name}' output '{value_name}' has no type annotation\n\n"
-                f"How to fix:\n"
-                f"  Add type annotation: def {source_name}(...) -> ReturnType"
-            )
+            # Check for missing annotations
+            if output_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {source_name}(...) -> ReturnType"
+                )
 
-        if input_type is None:
-            raise GraphConfigError(
-                f"Missing type annotation in strict_types mode\n\n"
-                f"  -> Node '{target_name}' parameter '{value_name}' has no type annotation\n\n"
-                f"How to fix:\n"
-                f"  Add type annotation: def {target_name}({value_name}: YourType) -> ReturnType"
-            )
+            if input_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{target_name}' parameter '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {target_name}({value_name}: YourType) -> ReturnType"
+                )
 
-        # Check type compatibility
-        if not is_type_compatible(output_type, input_type):
-            raise GraphConfigError(
-                f"Type mismatch between nodes\n\n"
-                f"  -> Node '{source_name}' output '{value_name}' has type: {output_type}\n"
-                f"  -> Node '{target_name}' input '{value_name}' expects type: {input_type}\n\n"
-                f"How to fix:\n"
-                f"  Either change the type annotation on one of the nodes, or add a\n"
-                f"  conversion node between them."
-            )
+            # Check type compatibility
+            if not is_type_compatible(output_type, input_type):
+                raise GraphConfigError(
+                    f"Type mismatch between nodes\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has type: {output_type}\n"
+                    f"  -> Node '{target_name}' input '{value_name}' expects type: {input_type}\n\n"
+                    f"How to fix:\n"
+                    f"  Either change the type annotation on one of the nodes, or add a\n"
+                    f"  conversion node between them."
+                )
 
 
 # =============================================================================

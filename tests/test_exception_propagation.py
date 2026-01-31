@@ -256,7 +256,7 @@ class TestExceptionPreservesPartialResults:
     """Tests for partial result preservation on failure."""
 
     def test_results_before_failure_available_in_values(self):
-        """Results computed before failure may be available."""
+        """Results computed before failure are returned in values."""
 
         @node(output_name="a")
         def step_a(x: int) -> int:
@@ -276,8 +276,12 @@ class TestExceptionPreservesPartialResults:
         result = runner.run(graph, {"x": 5})
 
         assert result.status == RunStatus.FAILED
-        # Result values may be empty on failure depending on implementation
-        # This documents the behavior
+        assert isinstance(result.error, CustomError)
+        # step_a completed before step_b failed, so "a" should be in values
+        assert "a" in result.values
+        assert result.values["a"] == 10
+        # step_c never ran, so "c" should not be in values
+        assert "c" not in result.values
 
     def test_independent_branches_with_one_failure(self):
         """Independent branches - one fails, checking behavior."""
@@ -296,6 +300,45 @@ class TestExceptionPreservesPartialResults:
         result = runner.run(graph, {"x": 5})
 
         assert result.status == RunStatus.FAILED
+
+    def test_partial_values_with_select(self):
+        """Partial values respect the select parameter."""
+
+        @node(output_name="a")
+        def step_a(x: int) -> int:
+            return x * 2
+
+        @node(output_name="b")
+        def step_b(a: int) -> int:
+            raise CustomError("step b failed")
+
+        graph = Graph([step_a, step_b])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 5}, select=["a"])
+
+        assert result.status == RunStatus.FAILED
+        assert result.values == {"a": 10}
+
+    def test_failure_at_first_node_returns_empty_values(self):
+        """When the first node fails, no outputs are available."""
+
+        @node(output_name="a")
+        def step_a(x: int) -> int:
+            raise CustomError("first node failed")
+
+        @node(output_name="b")
+        def step_b(a: int) -> int:
+            return a + 1
+
+        graph = Graph([step_a, step_b])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 5})
+
+        assert result.status == RunStatus.FAILED
+        assert "a" not in result.values
+        assert "b" not in result.values
 
 
 class TestAsyncExceptionHandling:
@@ -331,6 +374,27 @@ class TestAsyncExceptionHandling:
 
         assert result.status == RunStatus.FAILED
         assert isinstance(result.error, CustomError)
+
+    async def test_async_partial_values_on_failure(self):
+        """Async runner returns partial values when a node fails."""
+
+        @node(output_name="a")
+        async def step_a(x: int) -> int:
+            return x * 2
+
+        @node(output_name="b")
+        async def step_b(a: int) -> int:
+            raise CustomError("step b failed")
+
+        graph = Graph([step_a, step_b])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"x": 5})
+
+        assert result.status == RunStatus.FAILED
+        assert isinstance(result.error, CustomError)
+        assert "a" in result.values
+        assert result.values["a"] == 10
 
     async def test_async_parallel_with_one_failure(self):
         """Parallel async nodes with one failure."""
