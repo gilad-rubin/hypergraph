@@ -51,7 +51,7 @@ Save to `{@artifacts_path}/plan.md`. If the feature is trivial and doesn't warra
 
 ---
 
-### [ ] Step: Cache backend and event types
+### [x] Step: Cache backend and event types
 <!-- chat-id: a97c9e17-0394-4bff-a6f7-68a202b79b0c -->
 
 Create the cache module and add the cache event:
