@@ -98,7 +98,7 @@ async def run_superstep_async(
 
             # Emit RouteDecisionEvent if this was a routing node
             await _emit_route_decision(
-                dispatcher, run_id, run_span_id, node, graph, new_state, routing_before,
+                dispatcher, run_id, node_span_id, run_span_id, node, graph, new_state, routing_before,
             )
 
             # Emit NodeEndEvent
@@ -220,6 +220,7 @@ async def _emit_node_error(
 async def _emit_route_decision(
     dispatcher: "EventDispatcher | None",
     run_id: str,
+    node_span_id: str,
     run_span_id: str,
     node: HyperNode,
     graph: "Graph",
@@ -241,7 +242,6 @@ async def _emit_route_decision(
     decision = state.routing_decisions[node.name]
     await dispatcher.emit_async(RouteDecisionEvent(
         run_id=run_id,
-        span_id=run_span_id,
         parent_span_id=run_span_id,
         node_name=node.name,
         graph_name=graph.name,

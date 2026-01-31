@@ -425,3 +425,191 @@ class TestNoProcessors:
 
         results = runner.map(graph, {"x": [1, 2]}, map_over="x")
         assert len(results) == 2
+
+
+# ---------------------------------------------------------------------------
+# Edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRouteDecisionSpanId:
+    """RouteDecisionEvent should have a unique span_id, not reuse run_span_id."""
+
+    def test_route_decision_has_unique_span_id(self):
+        @node(output_name="count")
+        def increment(count: int) -> int:
+            return count + 1
+
+        @route(targets=["increment", END])
+        def check(count: int) -> str:
+            return END if count >= 1 else "increment"
+
+        graph = Graph([increment, check])
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        runner.run(graph, {"count": 0}, event_processors=[lp])
+
+        decisions = lp.of_type(RouteDecisionEvent)
+        assert len(decisions) >= 1
+
+        run_starts = lp.of_type(RunStartEvent)
+        run_span_id = run_starts[0].span_id
+
+        for d in decisions:
+            # span_id should NOT be the same as run_span_id
+            assert d.span_id != run_span_id, "RouteDecisionEvent should have its own span_id"
+            # parent should be the run
+            assert d.parent_span_id == run_span_id
+
+    def test_all_span_ids_unique(self):
+        """Every event should have a unique span_id."""
+
+        @node(output_name="count")
+        def increment(count: int) -> int:
+            return count + 1
+
+        @route(targets=["increment", END])
+        def check(count: int) -> str:
+            return END if count >= 1 else "increment"
+
+        graph = Graph([increment, check])
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        runner.run(graph, {"count": 0}, event_processors=[lp])
+
+        span_ids = [e.span_id for e in lp.events]
+        # RunStartEvent and RunEndEvent share the same span_id (they're the same span),
+        # and NodeStartEvent/NodeEndEvent share span_id too. So we check
+        # that non-paired events don't collide.
+        # At minimum, RouteDecisionEvent span_ids should be unique from RunStart span_ids.
+        route_spans = {e.span_id for e in lp.of_type(RouteDecisionEvent)}
+        run_spans = {e.span_id for e in lp.of_type(RunStartEvent)}
+        assert route_spans.isdisjoint(run_spans)
+
+
+class TestDeeplyNestedGraph:
+    """Test 3-level nesting: outer -> middle -> inner."""
+
+    def test_three_level_nesting_events(self):
+        @node(output_name="val")
+        def inner_step(x: int) -> int:
+            return x * 2
+
+        inner = Graph([inner_step], name="inner")
+
+        middle = Graph([inner.as_node()], name="middle")
+
+        @node(output_name="final")
+        def outer_step(val: int) -> int:
+            return val + 1
+
+        outer = Graph([middle.as_node(), outer_step], name="outer")
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        result = runner.run(outer, {"x": 3}, event_processors=[lp])
+
+        assert result["final"] == 7  # 3 * 2 + 1
+
+        run_starts = lp.of_type(RunStartEvent)
+        assert len(run_starts) == 3  # outer, middle, inner
+        names = [s.graph_name for s in run_starts]
+        assert names == ["outer", "middle", "inner"]
+
+        # Each nested run has a parent_span_id
+        assert run_starts[0].parent_span_id is None  # root
+        assert run_starts[1].parent_span_id is not None
+        assert run_starts[2].parent_span_id is not None
+
+    def test_three_level_nesting_all_run_ids_different(self):
+        @node(output_name="val")
+        def inner_step(x: int) -> int:
+            return x * 2
+
+        inner = Graph([inner_step], name="inner")
+        middle = Graph([inner.as_node()], name="middle")
+        outer = Graph([middle.as_node()], name="outer")
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        runner.run(outer, {"x": 3}, event_processors=[lp])
+
+        run_starts = lp.of_type(RunStartEvent)
+        run_ids = [s.run_id for s in run_starts]
+        assert len(set(run_ids)) == 3, "Each nesting level should have unique run_id"
+
+
+class TestMapWithNestedError:
+    """Map where one item's nested graph fails."""
+
+    def test_map_with_error_in_nested_graph(self):
+        @node(output_name="val")
+        def maybe_fail(x: int) -> int:
+            if x == 2:
+                raise ValueError("boom")
+            return x * 10
+
+        inner = Graph([maybe_fail], name="inner")
+        graph = Graph([inner.as_node()], name="outer")
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp])
+
+        # run() catches exceptions and returns RunResult(status=FAILED)
+        # so map completes but some results are failed
+        failed_results = [r for r in results if r.status.value == "failed"]
+        assert len(failed_results) >= 1
+
+        # Error events should be emitted
+        errors = lp.of_type(NodeErrorEvent)
+        assert len(errors) >= 1
+        assert "boom" in errors[0].error
+
+        # Failed runs should have status="failed" in RunEndEvent
+        failed_ends = [e for e in lp.of_type(RunEndEvent) if e.status == "failed"]
+        assert len(failed_ends) >= 1
+
+
+class TestEmptyMap:
+    """Map with zero items short-circuits without emitting events."""
+
+    def test_empty_map_returns_empty_without_events(self):
+        @node(output_name="out")
+        def step(x: int) -> int:
+            return x * 2
+
+        graph = Graph([step])
+        runner = SyncRunner()
+        lp = ListProcessor()
+
+        results = runner.map(graph, {"x": []}, map_over="x", event_processors=[lp])
+
+        assert len(results) == 0
+        # Empty map short-circuits before emitting any events
+        assert len(lp.events) == 0
+
+
+class TestProcessorExceptionDuringNodeEvent:
+    """Processor crash during node event should not affect execution."""
+
+    def test_processor_crash_on_node_start_doesnt_break_run(self):
+        class CrashOnNodeStart(TypedEventProcessor):
+            def on_node_start(self, event):
+                raise RuntimeError("processor crashed")
+
+        @node(output_name="out")
+        def step(x: int) -> int:
+            return x * 2
+
+        graph = Graph([step])
+        runner = SyncRunner()
+        good = ListProcessor()
+
+        result = runner.run(graph, {"x": 5}, event_processors=[CrashOnNodeStart(), good])
+
+        assert result["out"] == 10
+        # Good processor still got events
+        assert len(good.events) > 0
