@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from hypergraph.runners._shared.types import RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
+    from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
 
 
@@ -41,6 +42,7 @@ class BaseRunner(ABC):
         *,
         select: list[str] | None = None,
         max_iterations: int | None = None,
+        event_processors: list[EventProcessor] | None = None,
         **kwargs: Any,
     ) -> RunResult:
         """Execute a graph.
@@ -50,6 +52,7 @@ class BaseRunner(ABC):
             values: Input values
             select: Optional list of outputs to return (None = all)
             max_iterations: Max iterations for cyclic graphs (None = default)
+            event_processors: Optional list of event processors to receive execution events
             **kwargs: Runner-specific options
 
         Returns:
@@ -66,6 +69,7 @@ class BaseRunner(ABC):
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         select: list[str] | None = None,
+        event_processors: list[EventProcessor] | None = None,
         **kwargs: Any,
     ) -> list[RunResult]:
         """Execute a graph multiple times with different inputs.
@@ -76,6 +80,7 @@ class BaseRunner(ABC):
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
+            event_processors: Optional list of event processors to receive execution events
             **kwargs: Runner-specific options
 
         Returns:
