@@ -230,9 +230,13 @@ class SyncRunner(BaseRunner):
                     f"No executor registered for node type '{node_type.__name__}'"
                 )
 
-            # For GraphNodeExecutor, set context for nested event propagation
+            # For GraphNodeExecutor, pass context as params (not mutable state)
             if isinstance(executor, SyncGraphNodeExecutor):
-                executor.set_event_context(event_processors, current_span_id[0])
+                return executor(
+                    node, state, inputs,
+                    event_processors=event_processors,
+                    parent_span_id=current_span_id[0],
+                )
 
             return executor(node, state, inputs)
 

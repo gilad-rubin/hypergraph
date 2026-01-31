@@ -32,27 +32,15 @@ class AsyncGraphNodeExecutor:
             runner: The AsyncRunner that owns this executor
         """
         self.runner = runner
-        self._event_processors: list[EventProcessor] | None = None
-        self._parent_span_id: str | None = None
-
-    def set_event_context(
-        self,
-        event_processors: list[EventProcessor] | None,
-        parent_span_id: str | None,
-    ) -> None:
-        """Set event context for the next execution.
-
-        Called by the runner before each __call__ so that nested graph
-        runs propagate events with the correct parent span.
-        """
-        self._event_processors = event_processors
-        self._parent_span_id = parent_span_id
 
     async def __call__(
         self,
         node: "GraphNode",
         state: "GraphState",
         inputs: dict[str, Any],
+        *,
+        event_processors: "list[EventProcessor] | None" = None,
+        parent_span_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
 
@@ -63,6 +51,8 @@ class AsyncGraphNodeExecutor:
             node: The GraphNode to execute
             state: Current graph execution state (unused directly)
             inputs: Input values for the nested graph
+            event_processors: Processors to propagate to nested runs
+            parent_span_id: Span ID of the parent node for event linking
 
         Returns:
             Dict mapping output names to their values
@@ -79,15 +69,15 @@ class AsyncGraphNodeExecutor:
             results = await self.runner.map(
                 node.graph, inner_inputs,
                 map_over=original_params, map_mode=mode,
-                event_processors=self._event_processors,
-                _parent_span_id=self._parent_span_id,
+                event_processors=event_processors,
+                _parent_span_id=parent_span_id,
             )
             return self._collect_as_lists(results, node)
 
         result = await self.runner.run(
             node.graph, inner_inputs,
-            event_processors=self._event_processors,
-            _parent_span_id=self._parent_span_id,
+            event_processors=event_processors,
+            _parent_span_id=parent_span_id,
         )
         if result.status == RunStatus.FAILED:
             raise result.error or RuntimeError("Nested graph execution failed")
