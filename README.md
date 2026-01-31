@@ -34,6 +34,7 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
 </picture>
 
 ## Installation
+(Working on claiming the `hypergraph` name on PyPI from a dormant project.)
 
 ```bash
 uv add git+https://github.com/gilad-rubin/hypergraph.git
