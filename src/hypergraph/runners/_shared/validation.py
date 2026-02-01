@@ -103,8 +103,9 @@ def _get_suggestions(
         # Check provided values first (typo detection)
         matches = get_close_matches(m, provided, n=1, cutoff=0.6)
         # Fall back to valid inputs that weren't provided
+        # Exclude the missing parameter itself to avoid suggesting "embedder -> embedder?"
         if not matches:
-            matches = get_close_matches(m, all_inputs - provided, n=1, cutoff=0.6)
+            matches = get_close_matches(m, all_inputs - provided - {m}, n=1, cutoff=0.6)
         if matches:
             suggestions[m] = matches
     return suggestions
