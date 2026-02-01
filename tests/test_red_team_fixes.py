@@ -48,10 +48,11 @@ class TestMutableDefaults:
         assert res1["result"] == {"a": 1}
         assert res2["result"] == {"b": 2}, "Dict default leaked"
 
-    def test_non_copyable_default_warns_but_continues(self):
-        """Non-copyable defaults should warn but not crash."""
+    def test_non_copyable_default_raises_error(self):
+        """Non-copyable defaults should raise clear error (not warn)."""
         import threading
-        import warnings
+        from hypergraph.graph.validation import GraphConfigError
+        from hypergraph.runners._shared.types import RunStatus
 
         lock = threading.Lock()
 
@@ -64,13 +65,12 @@ class TestMutableDefaults:
         graph = Graph(nodes=[use_lock])
         runner = SyncRunner()
 
-        # Should emit warning but still run successfully
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = runner.run(graph, {"x": 5})
-            assert result["result"] == 10
-            # Should have warned about non-copyable default
-            assert any("Cannot deep-copy" in str(warning.message) for warning in w)
+        # Should fail with GraphConfigError (not warn and continue)
+        result = runner.run(graph, {"x": 5})
+        assert result.status == RunStatus.FAILED
+        assert isinstance(result.error, GraphConfigError)
+        assert "cannot be safely copied" in str(result.error)
+        assert ".bind()" in str(result.error)
 
 
 # === Fix #2: Cycle termination off-by-one ===

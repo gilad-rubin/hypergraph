@@ -4,8 +4,10 @@ Tests that bound parameters are not incorrectly treated as defaults during
 build-time validation, while still making parameters optional at runtime.
 """
 
+import threading
+
 import pytest
-from hypergraph import Graph, node
+from hypergraph import Graph, node, SyncRunner
 from hypergraph.graph.validation import GraphConfigError
 
 
@@ -151,3 +153,41 @@ def test_bound_value_overrides_signature_default():
     inner_unbound = Graph([func_with_default], name="inner")
     graph_ok = Graph([inner_unbound.as_node(), outer_func])
     assert set(graph_ok.inputs.optional) == {"x"}  # Both have x=10 default
+
+
+def test_user_rag_example_with_non_copyable_embedder():
+    """Reproduce and fix the exact bug from the user's notebook.
+
+    This tests the runtime issue: when a graph with bound non-copyable objects
+    (like Embedder with RLock) is used as a node, the runner should NOT attempt
+    to deep-copy those bound values.
+    """
+    class Embedder:
+        """Simplified Embedder with non-copyable RLock."""
+        def __init__(self):
+            self._lock = threading.RLock()
+
+        def embed(self, text: str) -> list[float]:
+            return [0.1, 0.2, 0.3]
+
+    @node(output_name="embedding")
+    def embed_query(query: str, embedder: Embedder) -> list[float]:
+        return embedder.embed(query)
+
+    @node(output_name="result")
+    def process(query: str, embedding: list[float]) -> str:
+        return f"Processed {query}"
+
+    embedder = Embedder()
+
+    # Bind embedder in inner graph
+    inner_graph = Graph([embed_query], name="retrieval").bind(embedder=embedder)
+
+    # Use as node in outer graph
+    outer_graph = Graph([inner_graph.as_node(), process], name="rag")
+
+    # Should work without deep-copy errors
+    runner = SyncRunner()
+    result = runner.run(outer_graph, {"query": "test"})
+
+    assert result["result"] == "Processed test"

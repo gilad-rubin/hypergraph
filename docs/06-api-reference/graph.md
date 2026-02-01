@@ -210,6 +210,57 @@ print(g.inputs.required)  # ('x',)
 - `ValueError` - If binding a name that is an output of another node
 - `ValueError` - If binding a name not in `graph.inputs.all`
 
+#### Shared State and Non-Copyable Objects
+
+Bound values are **intentionally shared** across runs, not deep-copied. This makes `.bind()` ideal for:
+- **Stateful objects** (database connections, vector stores, embedders)
+- **Non-copyable objects** (objects with thread locks, file handles, C extensions)
+- **Dependency injection** (providing shared resources to multiple nodes)
+
+```python
+class Embedder:
+    """Stateful embedder with internal connection pool."""
+    def __init__(self):
+        self._lock = threading.RLock()  # Non-copyable!
+        self._cache = {}
+
+    def embed(self, text: str) -> list[float]:
+        with self._lock:
+            if text not in self._cache:
+                self._cache[text] = compute_embedding(text)
+            return self._cache[text]
+
+embedder = Embedder()
+
+@node(output_name="embedding")
+def embed_query(query: str, embedder: Embedder) -> list[float]:
+    return embedder.embed(query)
+
+# ✅ CORRECT: Use .bind() for shared resources
+graph = Graph([embed_query]).bind(embedder=embedder)
+```
+
+**Why not use function defaults?**
+
+Function signature defaults are deep-copied per run to prevent mutable default mutation:
+
+```python
+# ❌ WRONG: Non-copyable object as signature default
+@node(output_name="embedding")
+def embed_query(query: str, embedder: Embedder = Embedder()) -> list[float]:
+    return embedder.embed(query)
+
+graph = Graph([embed_query])
+runner.run(graph, {"query": "test"})
+# GraphConfigError: Parameter 'embedder' has a default value that cannot be safely copied.
+#
+# Solution:
+#   Use .bind() to provide this value at the graph level instead:
+#     graph = Graph([...]).bind(embedder=your_embedder_instance)
+```
+
+The error message explains why copying is needed for signature defaults and suggests using `.bind()` for shared state.
+
 ### `unbind(*names) -> Graph`
 
 Remove specific bindings. Returns a new Graph.

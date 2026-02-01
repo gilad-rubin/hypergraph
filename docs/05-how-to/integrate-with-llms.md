@@ -314,46 +314,84 @@ def safe_generate(prompt: str, max_retries: int = 3) -> str:
 
 ---
 
-## Testing LLM Nodes
+## Dependency Injection with .bind()
 
-Mock the client for unit tests:
-
-```python
-from unittest.mock import MagicMock, patch
-
-def test_generate():
-    mock_response = MagicMock()
-    mock_response.content = [MagicMock(text="Test response")]
-
-    with patch.object(client.messages, "create", return_value=mock_response):
-        result = generate.func("Test prompt")
-        assert result == "Test response"
-```
-
-Or use dependency injection:
+**Best practice**: Use `.bind()` to provide shared LLM clients at the graph level instead of global variables or function defaults.
 
 ```python
-@node(output_name="response")
-def generate(prompt: str, client: Anthropic | None = None) -> str:
-    """Generate with injectable client."""
-    client = client or Anthropic()
+from anthropic import Anthropic
+
+# Define nodes with client as a parameter
+@node(output_name="embedding")
+def embed(query: str, client: Anthropic) -> list[float]:
+    """Embed query using the provided client."""
+    # Use client.embeddings.create(...) or similar
+    return [0.1, 0.2, 0.3]  # Simplified
+
+@node(output_name="answer")
+def generate(docs: list[str], query: str, client: Anthropic) -> str:
+    """Generate answer using the provided client."""
+    context = "\n\n---\n\n".join(docs)
 
     message = client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2048,
+        system=f"Answer based on this context:\n\n{context}",
+        messages=[{"role": "user", "content": query}],
     )
 
     return message.content[0].text
 
+# Create client once and bind it to the graph
+client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+rag_pipeline = Graph([embed, retrieve, generate]).bind(client=client)
+```
 
-# In tests:
+**Why use `.bind()` instead of function defaults?**
+
+1. **Shared state** — Bound values are intentionally shared across runs (no deep-copy)
+2. **Non-copyable objects** — Many clients use thread locks internally and can't be deep-copied
+3. **Testability** — Easy to swap in mock clients for testing
+4. **Lifecycle control** — You manage when the client is created and destroyed
+
+```python
+# ❌ WRONG: Client as function default may fail
+@node(output_name="answer")
+def generate(query: str, client: Anthropic = Anthropic()) -> str:
+    # This might raise: GraphConfigError: cannot deep-copy default value
+    ...
+
+# ✅ CORRECT: Bind client at graph level
+graph = Graph([generate]).bind(client=Anthropic())
+```
+
+## Testing LLM Nodes
+
+With `.bind()`, testing is straightforward:
+
+```python
+from unittest.mock import MagicMock
+
 def test_generate():
+    # Create mock client
     mock_client = MagicMock()
-    mock_client.messages.create.return_value.content = [MagicMock(text="Mocked")]
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text="Test response")]
+    mock_client.messages.create.return_value = mock_response
 
-    result = generate.func("Test", client=mock_client)
-    assert result == "Mocked"
+    # Test the pure function
+    result = generate.func(
+        docs=["doc1", "doc2"],
+        query="test query",
+        client=mock_client,
+    )
+    assert result == "Test response"
+
+    # Or test the graph with bound mock client
+    graph = Graph([generate]).bind(client=mock_client)
+    runner = SyncRunner()
+    result = runner.run(graph, {"docs": ["doc1"], "query": "test"})
+    assert result["answer"] == "Test response"
 ```
 
 ## What's Next?
