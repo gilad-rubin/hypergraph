@@ -423,7 +423,7 @@ class VizDebugger:
     def visualize(
         self,
         *,
-        depth: int = 1,
+        depth: int = 0,
         theme: str = "auto",
         show_types: bool = False,
         filepath: Optional[str] = None,
@@ -603,7 +603,7 @@ class RenderedDebugData:
 async def _extract_debug_data_async(
     graph: "Graph",
     *,
-    depth: int = 1,
+    depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
     headless: bool = True,
@@ -653,7 +653,7 @@ async def _extract_debug_data_async(
 def _extract_debug_data_sync(
     graph: "Graph",
     *,
-    depth: int = 1,
+    depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
     headless: bool = True,
@@ -740,7 +740,7 @@ def _is_in_async_context() -> bool:
 def extract_debug_data(
     graph: "Graph",
     *,
-    depth: int = 1,
+    depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
     headless: bool = True,

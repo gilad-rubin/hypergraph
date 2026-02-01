@@ -66,7 +66,7 @@ class ScrollablePipelineWidget:
 def visualize(
     graph: Graph,
     *,
-    depth: int = 1,
+    depth: int = 0,
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,

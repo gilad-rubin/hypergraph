@@ -369,7 +369,7 @@ def _build_output_to_producer_map(
 def build_instructions(
     flat_graph: "nx.DiGraph",
     *,
-    depth: int = 1,
+    depth: int = 0,
     theme: str = "dark",
     show_types: bool = False,
 ) -> VizInstructions:

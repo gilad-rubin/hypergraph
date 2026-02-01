@@ -56,7 +56,7 @@ def _simplify_type_string(type_str: str) -> str:
 def render_graph(
     flat_graph: nx.DiGraph,
     *,
-    depth: int = 1,
+    depth: int = 0,
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,

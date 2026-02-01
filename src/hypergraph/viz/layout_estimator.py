@@ -54,7 +54,7 @@ class LayoutEstimator:
         *,
         separate_outputs: bool = False,
         show_types: bool = False,
-        depth: int = 1,
+        depth: int = 0,
     ):
         self.graph = graph
         self.separate_outputs = separate_outputs
@@ -276,7 +276,7 @@ def estimate_layout(
     *,
     separate_outputs: bool = False,
     show_types: bool = False,
-    depth: int = 1,
+    depth: int = 0,
 ) -> tuple[int, int]:
     """Convenience function to estimate layout dimensions.
 

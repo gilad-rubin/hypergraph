@@ -628,7 +628,7 @@ class Graph:
     def visualize(
         self,
         *,
-        depth: int = 1,
+        depth: int = 0,
         theme: str = "auto",
         show_types: bool = False,
         separate_outputs: bool = False,
@@ -640,7 +640,7 @@ class Graph:
         notebook. Works offline with all assets bundled.
 
         Args:
-            depth: How many levels of nested graphs to expand (default: 1)
+            depth: How many levels of nested graphs to expand (default: 0)
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
