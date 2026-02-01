@@ -420,6 +420,24 @@ class TestGateNodeBase:
         assert hasattr(decide, "descriptions")
         assert decide.descriptions["a"] == "Option A"
 
+    def test_gatenode_default_open_defaults_true(self):
+        """GateNode default_open should default to True."""
+
+        @route(targets=["a"])
+        def decide(x):
+            return "a"
+
+        assert decide.default_open is True
+
+    def test_gatenode_default_open_can_be_set(self):
+        """GateNode default_open should be configurable."""
+
+        @route(targets=["a"], default_open=False)
+        def decide(x):
+            return "a"
+
+        assert decide.default_open is False
+
 
 # =============================================================================
 # GateNode Type Annotation Tests

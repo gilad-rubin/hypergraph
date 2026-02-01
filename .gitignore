@@ -34,3 +34,4 @@ specs/*
 deprecated/*
 .doc-manager/*
 .auto-claude/*
+.env

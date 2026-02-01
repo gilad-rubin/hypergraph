@@ -96,6 +96,7 @@ class GateNode(HyperNode):
     func: Callable
     _definition_hash: str
     _cache: bool
+    default_open: bool
 
     @property
     def cache(self) -> bool:
@@ -220,6 +221,7 @@ class RouteNode(GateNode):
         fallback: str | type[END] | None = None,
         multi_target: bool = False,
         cache: bool = False,
+        default_open: bool = True,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
     ) -> None:
@@ -287,6 +289,7 @@ class RouteNode(GateNode):
         self.fallback = fallback
         self.multi_target = multi_target
         self._cache = cache
+        self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
@@ -322,6 +325,7 @@ def route(
     fallback: str | type[END] | None = None,
     multi_target: bool = False,
     cache: bool = False,
+    default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
 ) -> Callable[[Callable], RouteNode]:
@@ -340,6 +344,9 @@ def route(
         cache: Cache the routing function's return value. On cache hit,
             the runner restores the routing decision without calling the
             function. Requires a cache backend on the runner.
+        default_open: If True, targets may execute before the gate runs the
+            first time. If False, targets are blocked until the gate executes
+            and records a decision.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
 
@@ -363,6 +370,7 @@ def route(
             fallback=fallback,
             multi_target=multi_target,
             cache=cache,
+            default_open=default_open,
             name=name,
             rename_inputs=rename_inputs,
         )
@@ -409,6 +417,7 @@ class IfElseNode(GateNode):
         when_false: str | type[END],
         *,
         cache: bool = False,
+        default_open: bool = True,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
     ) -> None:
@@ -419,6 +428,9 @@ class IfElseNode(GateNode):
             when_true: Target to activate when func returns True
             when_false: Target to activate when func returns False
             cache: Whether to cache routing decisions (default: False)
+            default_open: If True, targets may execute before the gate runs
+                the first time. If False, targets are blocked until the gate
+                executes and records a decision.
             name: Node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
 
@@ -448,6 +460,7 @@ class IfElseNode(GateNode):
         self.targets = [when_true, when_false]
         self.descriptions = {True: "True", False: "False"}
         self._cache = cache
+        self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
@@ -483,6 +496,7 @@ def ifelse(
     when_false: str | type[END],
     *,
     cache: bool = False,
+    default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
 ) -> Callable[[Callable[..., bool]], IfElseNode]:
@@ -500,6 +514,9 @@ def ifelse(
         cache: Cache the routing function's return value. On cache hit,
             the runner restores the routing decision without calling the
             function. Requires a cache backend on the runner.
+        default_open: If True, targets may execute before the gate runs the
+            first time. If False, targets are blocked until the gate executes
+            and records a decision.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
 
@@ -522,6 +539,7 @@ def ifelse(
             when_true=when_true,
             when_false=when_false,
             cache=cache,
+            default_open=default_open,
             name=name,
             rename_inputs=rename_inputs,
         )

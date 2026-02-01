@@ -24,7 +24,9 @@ class AsyncInterruptNodeExecutor:
         output_name = node.outputs[0]
 
         # Resume path: output already in state (provided via values dict)
-        if output_name in state.values:
+        # Skip pause only if value exists AND node hasn't executed yet this run
+        # (in cycles, the node re-executes and should pause again)
+        if output_name in state.values and node.name not in state.node_executions:
             return {output_name: state.values[output_name]}
 
         input_value = inputs[node.inputs[0]]

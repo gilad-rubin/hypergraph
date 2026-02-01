@@ -40,7 +40,8 @@ def validate_inputs(
     # Warn about providing values for internal edge-produced outputs
     # These bypass normal graph execution flow (similar to graph.bind() restriction)
     expected_inputs = set(inputs_spec.all)
-    unexpected = provided - expected_inputs
+    interrupt_outputs = _get_interrupt_outputs(graph)
+    unexpected = provided - expected_inputs - interrupt_outputs
     if unexpected:
         import warnings
         warnings.warn(
@@ -213,6 +214,18 @@ def validate_map_compatible(graph: "Graph") -> None:
             "Use .run() for graphs with interrupts.",
             capability="supports_interrupts",
         )
+
+
+def _get_interrupt_outputs(graph: "Graph") -> set[str]:
+    """Get all output names produced by InterruptNodes in the graph."""
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    return {
+        output
+        for n in graph._nodes.values()
+        if isinstance(n, InterruptNode)
+        for output in n.outputs
+    }
 
 
 def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
