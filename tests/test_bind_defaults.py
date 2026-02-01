@@ -191,3 +191,86 @@ def test_user_rag_example_with_non_copyable_embedder():
     result = runner.run(outer_graph, {"query": "test"})
 
     assert result["result"] == "Processed test"
+
+
+def test_three_level_nested_binding():
+    """Test that bound values propagate through three levels of nesting.
+
+    Regression test: bound values from deeply nested graphs must be accessible
+    at runtime via graph.inputs.bound, not just categorized as optional.
+
+    Before fix: embedder was optional but not in eval_graph.inputs.bound
+    After fix: embedder is in eval_graph.inputs.bound (propagated from inner graph)
+    """
+    class Embedder:
+        def embed(self, text: str) -> list[float]:
+            return [0.1, 0.2]
+
+    class VectorStore:
+        def search(self, embedding: list[float]) -> list[str]:
+            return ["doc1"]
+
+    class LLM:
+        def generate(self, docs: list[str], query: str) -> str:
+            return f"Answer: {query}"
+
+    @node(output_name="embedding")
+    def embed(text: str, embedder: Embedder) -> list[float]:
+        return embedder.embed(text)
+
+    @node(output_name="docs")
+    def retrieve(embedding: list[float], vector_store: VectorStore) -> list[str]:
+        return vector_store.search(embedding)
+
+    @node(output_name="answer")
+    def generate(docs: list[str], query: str, llm: LLM) -> str:
+        return llm.generate(docs, query)
+
+    @node(output_name="judgment")
+    def judge(query: str, answer: str, expected_answer: str, llm: LLM) -> str:
+        return f"Judged: {answer}"
+
+    embedder = Embedder()
+    vector_store = VectorStore()
+    llm = LLM()
+
+    # Level 1: retrieval graph with bound dependencies
+    retrieval_graph = Graph(
+        [embed, retrieve],
+        name="retrieval",
+    ).bind(embedder=embedder, vector_store=vector_store)
+
+    # Level 2: RAG graph using retrieval as nested node
+    rag_graph = Graph(
+        [retrieval_graph.as_node(name="retrieval"), generate],
+        name="rag",
+    ).bind(llm=llm)
+
+    # Level 3: evaluation graph using RAG as nested node
+    eval_graph = Graph(
+        [rag_graph.as_node(name="rag"), judge],
+        name="evaluation",
+    ).bind(llm=llm)
+
+    # Verify bound values propagate through all levels
+    assert "embedder" in retrieval_graph.inputs.bound
+    assert "vector_store" in retrieval_graph.inputs.bound
+
+    # Key assertion: bound values from retrieval_graph must appear in rag_graph
+    assert "embedder" in rag_graph.inputs.bound
+    assert "vector_store" in rag_graph.inputs.bound
+    assert "llm" in rag_graph.inputs.bound
+
+    # Key assertion: bound values must propagate to eval_graph
+    assert "embedder" in eval_graph.inputs.bound
+    assert "vector_store" in eval_graph.inputs.bound
+    assert "llm" in eval_graph.inputs.bound
+
+    # Runtime execution should work
+    runner = SyncRunner()
+    result = runner.run(
+        eval_graph,
+        {"text": "test query", "query": "test query", "expected_answer": "expected"},
+    )
+
+    assert result["judgment"] == "Judged: Answer: test query"
