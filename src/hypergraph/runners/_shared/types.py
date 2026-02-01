@@ -54,6 +54,11 @@ class RunResult:
         """Whether execution is paused at an InterruptNode."""
         return self.status == RunStatus.PAUSED
 
+    @property
+    def completed(self) -> bool:
+        """Whether execution completed successfully."""
+        return self.status == RunStatus.COMPLETED
+
     def __getitem__(self, key: str) -> Any:
         """Dict-like access to values."""
         return self.values[key]

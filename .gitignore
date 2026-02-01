@@ -49,3 +49,4 @@ outputs/
 .worktrees/
 .security-key
 logs/security/
+.env

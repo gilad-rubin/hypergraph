@@ -110,12 +110,24 @@ def _categorize_param(
     has_edge = param in edge_produced
 
     if has_edge:
-        return "seed" if param in cycle_params else None
+        if param in cycle_params:
+            return None if _is_interrupt_produced(param, nodes) else "seed"
+        return None
 
     if param in bound or _any_node_has_default(param, nodes):
         return "optional"
 
     return "required"
+
+
+def _is_interrupt_produced(param: str, nodes: dict[str, "HyperNode"]) -> bool:
+    """Check if param is produced by an InterruptNode."""
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    return any(
+        isinstance(n, InterruptNode) and param in n.outputs
+        for n in nodes.values()
+    )
 
 
 def _any_node_has_default(param: str, nodes: dict[str, "HyperNode"]) -> bool:

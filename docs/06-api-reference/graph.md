@@ -474,6 +474,8 @@ Graph([a, b])
 # GraphConfigError: Multiple nodes produce 'result'
 ```
 
+> **Exception**: Multiple nodes *can* produce the same output if they all belong to the same cycle. Cycles have deterministic execution order, so the consumer always gets the most recently produced value. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
+
 **Invalid identifiers:**
 ```python
 process.with_name("123-invalid")

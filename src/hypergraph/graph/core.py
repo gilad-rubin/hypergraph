@@ -154,24 +154,32 @@ class Graph:
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
 
     @functools.cached_property
-    def sole_producers(self) -> dict[str, str]:
-        """Map output_name → node_name for outputs with exactly one producer.
+    def self_producers(self) -> dict[str, set[str]]:
+        """Map output_name → set of node names that produce it.
 
-        Used by the staleness detector to implement the Sole Producer Rule:
-        a node should not re-trigger from changes to values it produced itself.
-        This prevents infinite loops in accumulator patterns like
-        ``add_response(messages, response) -> messages`` and self-loops like
-        ``transform(x) -> x``.
+        Used by the staleness detector: a node skips staleness checks for
+        outputs it produces itself, even when other nodes in the same cycle
+        also produce that output. This prevents infinite loops in accumulator
+        patterns like ``add_response(messages) -> messages``.
 
-        Without this rule, the node's own output would make it appear stale,
-        causing immediate re-execution in an infinite loop. Cyclic re-execution
-        should instead be driven by gates (``@route``).
+        Cyclic re-execution should instead be driven by gates (``@route``).
         """
         output_sources = self._collect_output_sources(list(self._nodes.values()))
         return {
-            output: sources[0]
+            output: set(sources)
             for output, sources in output_sources.items()
-            if len(sources) == 1
+        }
+
+    @functools.cached_property
+    def sole_producers(self) -> dict[str, str]:
+        """Map output_name → node_name for outputs with exactly one producer.
+
+        Convenience accessor; prefer ``self_producers`` for staleness checks.
+        """
+        return {
+            output: next(iter(nodes))
+            for output, nodes in self.self_producers.items()
+            if len(nodes) == 1
         }
 
     def _get_edge_produced_values(self) -> set[str]:
@@ -267,6 +275,38 @@ class Graph:
                 return True
 
         return False
+
+    def _are_all_in_same_cycle(
+        self,
+        node_names: list[str],
+        G: nx.DiGraph,
+        nodes: list[HyperNode],
+        output_to_sources: dict[str, list[str]],
+    ) -> bool:
+        """Check if all given nodes are in at least one common cycle.
+
+        Builds a temporary graph with edges from ALL producers (not just the
+        first) so that cycles involving multiple producers of the same output
+        are detected correctly.
+        """
+        if len(node_names) < 2:
+            return True
+
+        # Build a temporary data graph with all producer edges
+        temp = nx.DiGraph()
+        temp.add_nodes_from(G.nodes())
+        # Add all existing data edges
+        for u, v, data in G.edges(data=True):
+            if data.get("edge_type") == "data":
+                temp.add_edge(u, v)
+        # Add edges from ALL producers (not just first)
+        for node in nodes:
+            for param in node.inputs:
+                for source in output_to_sources.get(param, []):
+                    temp.add_edge(source, node.name)
+
+        nodes_set = set(node_names)
+        return any(nodes_set.issubset(set(cycle)) for cycle in nx.simple_cycles(temp))
 
     def _compute_exclusive_reachability(
         self, G: nx.DiGraph, targets: list[str]
@@ -380,7 +420,10 @@ class Graph:
             if self._are_all_mutex(sources, expanded_groups):
                 continue  # All sources are mutually exclusive - OK
 
-            # Not all sources are mutex - this is an error
+            if self._are_all_in_same_cycle(sources, G, nodes, output_to_sources):
+                continue  # All sources are in the same cycle - OK
+
+            # Not all sources are mutex or in same cycle - this is an error
             raise GraphConfigError(
                 f"Multiple nodes produce '{output}'\n\n"
                 f"  -> {sources[0]} creates '{output}'\n"

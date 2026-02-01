@@ -136,6 +136,27 @@ def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
     for node in graph._nodes.values():
         if _is_node_ready(node, graph, state, activated_nodes):
             ready.append(node)
+
+    # If a gate is ready, its routing decision should apply before targets run.
+    # Block targets of ready gates for this superstep so decisions take effect
+    # on the next iteration.
+    from hypergraph.nodes.gate import END, GateNode
+
+    ready_gate_names = {n.name for n in ready if isinstance(n, GateNode)}
+    if ready_gate_names:
+        blocked_targets: set[str] = set()
+        for gate_name in ready_gate_names:
+            gate = graph._nodes.get(gate_name)
+            if gate is None:
+                continue
+            for target in gate.targets:
+                if target is END:
+                    continue
+                if target == gate_name:
+                    continue
+                blocked_targets.add(target)
+        if blocked_targets:
+            ready = [n for n in ready if n.name not in blocked_targets]
     return ready
 
 
@@ -166,7 +187,17 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
             for gate_name in gates:
                 decision = state.routing_decisions.get(gate_name)
                 if decision is None:
-                    continue  # Gate hasn't made a decision yet
+                    if gate_name not in state.node_executions:
+                        gate = graph._nodes.get(gate_name)
+                        if gate is None:
+                            continue
+                        default_open = getattr(gate, "default_open", True)
+                        if default_open:
+                            # Gate has never executed — default to open (configurable)
+                            activated.add(node_name)
+                            break
+                        continue
+                    continue  # Gate executed before but decision was cleared (stale)
 
                 # Check if this node was activated by the decision
                 if _is_node_activated_by_decision(node_name, decision):
@@ -183,10 +214,13 @@ def _clear_stale_gate_decisions(graph: "Graph", state: GraphState) -> None:
     routing decision is stale. Keeping it would let targets activate before
     the gate re-evaluates — causing off-by-one iterations in cycles.
     """
-    from hypergraph.nodes.gate import GateNode
+    from hypergraph.nodes.gate import END, GateNode
 
     for node in graph._nodes.values():
         if isinstance(node, GateNode) and node.name in state.routing_decisions:
+            # END is terminal — never clear it, even if inputs changed
+            if state.routing_decisions[node.name] is END:
+                continue
             if _needs_execution(node, graph, state):
                 del state.routing_decisions[node.name]
 
@@ -290,13 +324,13 @@ def _is_stale(
     Gates explicitly drive cycle execution, so self-produced inputs should
     trigger re-execution when the gate routes back to the node.
     """
-    sole_producers = graph.sole_producers
+    self_producers = graph.self_producers
     is_gated = _is_controlled_by_gate(node, graph)
 
     for param in node.inputs:
-        # Apply Sole Producer Rule only to non-gated nodes
-        if not is_gated and sole_producers.get(param) == node.name:
-            continue  # Sole Producer Rule: skip self-produced inputs
+        # Self-Producer Rule: skip inputs this node produces itself (non-gated only)
+        if not is_gated and node.name in self_producers.get(param, set()):
+            continue
         current_version = state.get_version(param)
         consumed_version = last_exec.input_versions.get(param, 0)
         if current_version != consumed_version:

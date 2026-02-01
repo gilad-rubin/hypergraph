@@ -1716,3 +1716,87 @@ class TestStrictTypesWithNestedGraphNode:
         error_msg = str(exc_info.value)
         assert "Type mismatch" in error_msg
         assert "b" in error_msg
+
+
+class TestCycleSameOutput:
+    """Test that multiple nodes can produce the same output when in the same cycle."""
+
+    def test_same_cycle_same_output_allowed(self):
+        """Two nodes producing 'messages' in a cycle should not raise."""
+        from hypergraph.nodes.gate import route, END
+
+        @node(output_name="messages")
+        def accumulate_query(messages: list, query: str) -> list:
+            return messages + [{"role": "user", "content": query}]
+
+        @node(output_name="messages")
+        def accumulate_response(messages: list, response: str) -> list:
+            return messages + [{"role": "assistant", "content": response}]
+
+        @route(targets=["accumulate_query", END])
+        def should_continue(messages: list) -> str:
+            return END if len(messages) >= 4 else "accumulate_query"
+
+        # Should NOT raise GraphConfigError
+        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        assert graph is not None
+
+    def test_same_cycle_same_output_runs(self):
+        """Same-output cycle nodes should execute end-to-end."""
+        from hypergraph.nodes.gate import route, END
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="messages")
+        def accumulate_query(messages: list, query: str) -> list:
+            return messages + [{"role": "user", "content": query}]
+
+        @node(output_name="messages")
+        def accumulate_response(messages: list, response: str) -> list:
+            return messages + [{"role": "assistant", "content": response}]
+
+        @route(targets=["accumulate_query", END])
+        def should_continue(messages: list) -> str:
+            return END if len(messages) >= 4 else "accumulate_query"
+
+        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        runner = SyncRunner()
+        result = runner.run(graph, {"messages": [], "query": "hi", "response": "hello"})
+        assert "messages" in result
+        assert len(result["messages"]) >= 2
+
+    def test_non_cycle_same_output_still_raises(self):
+        """Two nodes producing 'result' in a plain DAG should still raise."""
+
+        @node(output_name="result")
+        def producer_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="result")
+        def producer_b(y: int) -> int:
+            return y + 2
+
+        with pytest.raises(GraphConfigError):
+            Graph([producer_a, producer_b])
+
+    def test_self_producers_property(self):
+        """After the fix, graph should expose self_producers mapping output to producer sets."""
+        from hypergraph.nodes.gate import route, END
+
+        @node(output_name="messages")
+        def accumulate_query(messages: list, query: str) -> list:
+            return messages + [{"role": "user", "content": query}]
+
+        @node(output_name="messages")
+        def accumulate_response(messages: list, response: str) -> list:
+            return messages + [{"role": "assistant", "content": response}]
+
+        @route(targets=["accumulate_query", END])
+        def should_continue(messages: list) -> str:
+            return END if len(messages) >= 4 else "accumulate_query"
+
+        graph = Graph([accumulate_query, accumulate_response, should_continue])
+
+        # self_producers should map output names to sets of producer node names
+        assert hasattr(graph, "self_producers")
+        producers = graph.self_producers
+        assert producers["messages"] == {"accumulate_query", "accumulate_response"}
