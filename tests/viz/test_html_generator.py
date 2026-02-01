@@ -54,8 +54,8 @@ class TestGenerateHtml:
         assert "ReactDOM" in html
         # ReactFlow
         assert "ReactFlow" in html
-        # ELK
-        assert "ELK" in html
+        # ConstraintLayout (Kiwi constraint solver)
+        assert "ConstraintLayout" in html
 
     def test_no_external_scripts(self):
         """Test that HTML has no external script sources."""
