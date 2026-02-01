@@ -178,8 +178,14 @@ class AsyncRunner(BaseRunner):
             )
             return result
         except PauseExecution as pause:
+            partial_state = getattr(pause, "_partial_state", None)
+            partial_values = (
+                filter_outputs(partial_state, graph, select)
+                if partial_state is not None
+                else {}
+            )
             return RunResult(
-                values={},
+                values=partial_values,
                 status=RunStatus.PAUSED,
                 pause=pause.pause_info,
             )
@@ -260,6 +266,9 @@ class AsyncRunner(BaseRunner):
                 if get_ready_nodes(graph, state):
                     raise InfiniteLoopError(max_iterations)
 
+        except PauseExecution as pause:
+            pause._partial_state = state  # type: ignore[attr-defined]
+            raise
         except Exception as e:
             if not hasattr(e, "_partial_state"):
                 e._partial_state = state  # type: ignore[attr-defined]
