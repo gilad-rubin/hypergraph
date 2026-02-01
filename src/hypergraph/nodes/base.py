@@ -131,6 +131,24 @@ class HyperNode(ABC):
         """
         return self.has_default_for(param)
 
+    def get_signature_default_for(self, param: str) -> Any:
+        """Get the signature default value for a parameter.
+
+        Returns ONLY signature defaults, NOT bound values. Used for validation
+        to compare actual default values across nodes.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            The signature default value.
+
+        Raises:
+            KeyError: If no signature default exists for this parameter.
+            Default implementation delegates to get_default_for().
+        """
+        return self.get_default_for(param)
+
     def get_input_type(self, param: str) -> type | None:
         """Get expected type for an input parameter.
 

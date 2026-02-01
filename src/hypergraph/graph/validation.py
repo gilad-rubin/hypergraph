@@ -164,7 +164,8 @@ def _collect_param_default_info(
             # Check for signature defaults only (excludes bound values)
             has_default = node.has_signature_default_for(param)
             if has_default:
-                default_value = node.get_default_for(param)
+                # Get signature default value (not bound value)
+                default_value = node.get_signature_default_for(param)
                 param_info[param].append((True, default_value, node.name))
             else:
                 param_info[param].append((False, None, node.name))

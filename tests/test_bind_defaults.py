@@ -107,3 +107,47 @@ def test_user_rag_example():
     # The user can provide llm to override both nodes, or omit it to use rag's binding
     assert "llm" in eval_graph.inputs.optional
     assert "llm" not in eval_graph.inputs.required
+
+
+def test_bound_value_overrides_signature_default():
+    """Edge case: binding a parameter that already has a signature default.
+
+    When a graph has a signature default (x=10) and then binds it to a different
+    value (x=20), the bound value takes precedence. From a validation perspective,
+    the GraphNode no longer exposes a signature default (it's now bound/configured).
+
+    This means if another node requires x=10 as a signature default, validation
+    will correctly flag an inconsistency, forcing the user to either:
+    1. Remove the binding (expose the signature default)
+    2. Bind at the outer graph level to satisfy both nodes
+    """
+    @node(output_name="result1")
+    def func_with_default(x: int = 10) -> int:
+        return x
+
+    # Bind x to a different value, overriding the signature default
+    inner = Graph([func_with_default], name="inner").bind(x=20)
+
+    @node(output_name="result2")
+    def outer_func(result1: int, x: int = 10) -> int:
+        return result1 + x
+
+    # Should FAIL validation: inner has x bound (no signature default exposed),
+    # outer_func has x=10 as signature default - inconsistent!
+    with pytest.raises(GraphConfigError, match="Inconsistent defaults"):
+        Graph([inner.as_node(), outer_func])
+
+    # Verify the inner graph node correctly reports it has NO signature default
+    # (because it's bound, even though the inner function has a default)
+    inner_node = inner.as_node()
+    assert inner_node.has_default_for("x") is True  # Runtime: has value (bound)
+    assert inner_node.has_signature_default_for("x") is False  # Validation: no signature default (bound)
+
+    # The bound value should be accessible at runtime
+    assert inner_node.get_default_for("x") == 20
+
+    # Solution 1: Don't use both together (incompatible)
+    # Solution 2: Use inner WITHOUT binding, so signature default is exposed
+    inner_unbound = Graph([func_with_default], name="inner")
+    graph_ok = Graph([inner_unbound.as_node(), outer_func])
+    assert set(graph_ok.inputs.optional) == {"x"}  # Both have x=10 default
