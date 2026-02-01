@@ -384,11 +384,6 @@ def _find_internal_producer_for_output(
             if _is_node_visible(producer, flat_graph, expansion_state):
                 return producer
 
-    # Fall back to any visible terminal producer
-    for internal_out, producer in terminal_outputs.items():
-        if _is_node_visible(producer, flat_graph, expansion_state):
-            return producer
-
     return None
 
 

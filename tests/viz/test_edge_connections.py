@@ -312,7 +312,7 @@ class TestOuterDepth1:
             f"Expected middle/inner or middle/validate in nodes: {node_ids}"
         )
 
-    def test_outer_depth1_input_routes_to_inner(self, page):
+    def test_outer_depth1_internal_inputs_hidden(self, page):
         """Internal-only inputs are hidden when inner is collapsed."""
         graph = make_outer()
         nodes, edges = extract_geometries(page, graph, depth=1)

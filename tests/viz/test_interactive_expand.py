@@ -297,15 +297,14 @@ class TestInteractiveCollapseEdgeRouting:
             f"Unexpected targets: {sorted(bad_targets)}"
         )
 
-    def test_input_edge_routes_to_container_after_collapse(self, page, temp_html_file):
-        """Specifically test that input_text edge targets preprocess after collapse.
+    def test_internal_input_edges_hidden_after_collapse(self, page, temp_html_file):
+        """Specifically test that input_text edge is hidden after collapse.
 
-        This is the most direct test of the collapse bug:
-        - At depth=1: input_text -> clean_text (internal) - CORRECT
-        - After collapse: input_text -> preprocess (container) - EXPECTED
-        - Bug: Edge disappears or stays targeting clean_text - ACTUAL BUG
+        This is the most direct test of the collapse behavior:
+        - At depth=1: input_text -> clean_text (internal) - visible
+        - After collapse: input edge is hidden (not routed to container)
 
-        The edge should be re-routed to the container when internal node is hidden.
+        Internal-only inputs are hidden when their consuming nodes are collapsed.
         """
         workflow = make_workflow()
         # Render at depth=1 (expanded), click to collapse

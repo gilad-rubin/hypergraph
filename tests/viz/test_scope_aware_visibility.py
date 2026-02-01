@@ -791,7 +791,7 @@ class TestInputGroupEdgesAcrossExpansion:
     """INPUT_GROUP edge sources should match visible group IDs when expanded."""
 
     def test_input_group_edges_exist_when_expanded(self):
-        """Expanded edge set should reference the existing INPUT_GROUP node."""
+        """Expanded edge set should NOT reference INPUT_GROUP node; individual inputs take over."""
         from hypergraph.viz.renderer import render_graph
 
         graph = make_input_group_container_graph()
@@ -812,8 +812,8 @@ class TestInputGroupEdgesAcrossExpansion:
 
         group_edges = [e for e in edges if e["source"] == group_node["id"]]
 
-        assert group_edges, (
-            f"Expected edges from INPUT_GROUP {group_node['id']} in expanded state.\n"
+        assert not group_edges, (
+            f"Expected NO edges from INPUT_GROUP {group_node['id']} in expanded state.\n"
             f"Edges: {[(e['source'], e['target']) for e in edges]}"
         )
 
