@@ -221,11 +221,11 @@ class VizInstructions:
 
 def _get_expandable_nodes(flat_graph: "nx.DiGraph") -> list[str]:
     """Get list of node IDs that can be expanded/collapsed (GRAPH nodes)."""
-    return [
+    return sorted([
         node_id
         for node_id, attrs in flat_graph.nodes(data=True)
         if attrs.get("node_type") == "GRAPH"
-    ]
+    ])
 
 
 def _expansion_state_to_key(expansion_state: dict[str, bool]) -> str:
