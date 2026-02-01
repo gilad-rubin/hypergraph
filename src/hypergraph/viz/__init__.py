@@ -23,12 +23,12 @@ from hypergraph.viz.debug import (
 )
 
 __all__ = [
-    "visualize",
-    "ScrollablePipelineWidget",
-    "VizDebugger",
-    "validate_graph",
-    "find_issues",
-    "extract_debug_data",
     "RenderedDebugData",
     "RenderedEdge",
+    "ScrollablePipelineWidget",
+    "VizDebugger",
+    "extract_debug_data",
+    "find_issues",
+    "validate_graph",
+    "visualize",
 ]
