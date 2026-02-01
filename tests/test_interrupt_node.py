@@ -13,6 +13,8 @@ from hypergraph import (
     RunStatus,
     SyncRunner,
     node,
+    route,
+    END,
 )
 from hypergraph.exceptions import IncompatibleRunnerError
 
@@ -448,3 +450,121 @@ class TestNestedInterruptPropagation:
         assert result.pause.node_name == "inner/approval"
         assert result.pause.response_key == "inner.y"
         assert result.pause.value == "hello"
+
+
+# ── Phase 6: InterruptNode in cycles ──
+
+
+class TestInterruptNodeInCycle:
+    """InterruptNode inside a cycle should pause on every iteration."""
+
+    @pytest.mark.asyncio
+    async def test_interrupt_output_not_classified_as_seed(self):
+        """Interrupt output in a cycle should NOT be a seed input."""
+        ask_user = InterruptNode(
+            name="ask_user", input_param="messages", output_param="query"
+        )
+
+        @node(output_name="response")
+        def process(query: str) -> str:
+            return f"response to {query}"
+
+        @node(output_name="messages")
+        def accumulate(messages: list, response: str) -> list:
+            return messages + [response]
+
+        @route(targets=["ask_user", END])
+        def decide(messages: list) -> str:
+            return END if len(messages) > 2 else "ask_user"
+
+        graph = Graph([ask_user, process, accumulate, decide])
+        # query should NOT be in seeds since it's produced by an InterruptNode
+        assert "query" not in graph.inputs.seeds
+        assert "messages" in graph.inputs.seeds
+
+    @pytest.mark.asyncio
+    async def test_cycle_interrupt_pauses_first_run(self):
+        """First run with no query should pause at the interrupt."""
+        ask_user = InterruptNode(
+            name="ask_user", input_param="messages", output_param="query"
+        )
+
+        @node(output_name="response")
+        def process(query: str) -> str:
+            return f"response to {query}"
+
+        @node(output_name="messages")
+        def accumulate(messages: list, response: str) -> list:
+            return messages + [response]
+
+        @route(targets=["ask_user", END])
+        def decide(messages: list) -> str:
+            return END if len(messages) > 2 else "ask_user"
+
+        graph = Graph([ask_user, process, accumulate, decide])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"messages": []})
+        assert result.paused
+        assert result.pause.node_name == "ask_user"
+        assert result.pause.value == []
+
+    @pytest.mark.asyncio
+    async def test_cycle_interrupt_resumes_then_pauses_again(self):
+        """Resuming with a query should process it, then pause again on next iteration."""
+        ask_user = InterruptNode(
+            name="ask_user", input_param="messages", output_param="query"
+        )
+
+        @node(output_name="response")
+        def process(query: str) -> str:
+            return f"response to {query}"
+
+        @node(output_name="messages")
+        def accumulate(messages: list, response: str) -> list:
+            return messages + [response]
+
+        @route(targets=["ask_user", END])
+        def decide(messages: list) -> str:
+            return END if len(messages) > 2 else "ask_user"
+
+        graph = Graph([ask_user, process, accumulate, decide])
+        runner = AsyncRunner()
+
+        # Run 1: pause immediately
+        r1 = await runner.run(graph, {"messages": []})
+        assert r1.paused
+
+        # Run 2: provide query -> processes -> loops -> pauses again
+        r2 = await runner.run(graph, {"messages": [], "query": "What is RAG?"})
+        assert r2.paused
+        assert r2.pause.node_name == "ask_user"
+        # Messages now contain the response from first query
+        assert r2.pause.value == ["response to What is RAG?"]
+
+    @pytest.mark.asyncio
+    async def test_cycle_interrupt_completes_after_enough_messages(self):
+        """Cycle should complete when decide returns END."""
+        ask_user = InterruptNode(
+            name="ask_user", input_param="messages", output_param="query"
+        )
+
+        @node(output_name="response")
+        def process(query: str) -> str:
+            return f"response to {query}"
+
+        @node(output_name="messages")
+        def accumulate(messages: list, response: str) -> list:
+            return messages + [response]
+
+        @route(targets=["ask_user", END])
+        def decide(messages: list) -> str:
+            return END if len(messages) >= 1 else "ask_user"
+
+        graph = Graph([ask_user, process, accumulate, decide])
+        runner = AsyncRunner()
+
+        # Provide query, process completes, decide returns END
+        result = await runner.run(graph, {"messages": [], "query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["messages"] == ["response to hello"]
