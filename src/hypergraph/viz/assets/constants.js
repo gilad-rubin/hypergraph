@@ -39,5 +39,8 @@
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS,
     DEFAULT_OFFSET: 10,
+
+    // Edge routing
+    EDGE_CONVERGENCE_OFFSET: 20,
   };
 });

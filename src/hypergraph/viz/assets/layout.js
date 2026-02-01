@@ -34,6 +34,7 @@
   var GRAPH_PADDING = VizConstants.GRAPH_PADDING || 24;
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
   var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
+  var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
 
 
   /**
@@ -1054,6 +1055,63 @@
     });
   }
 
+  function mergeSharedTargetEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, debugMode) {
+    var edgesByTarget = new Map();
+
+    allPositionedEdges.forEach(function(e) {
+      var points = e.data && e.data.points;
+      if (!points || points.length < 2) return;
+      if (points.length > 2) return;
+
+      var actualTarget = (e.data && e.data.actualTarget) || e.target;
+      if (!nodePositions.has(actualTarget) || !nodeDimensions.has(actualTarget)) return;
+
+      if (!edgesByTarget.has(actualTarget)) edgesByTarget.set(actualTarget, []);
+      edgesByTarget.get(actualTarget).push(e);
+    });
+
+    var layoutOptions = getLayoutOptions();
+    var stemMinTarget = (layoutOptions && layoutOptions.routing && layoutOptions.routing.stemMinTarget) || 15;
+
+    edgesByTarget.forEach(function(targetEdges, targetId) {
+      if (targetEdges.length < 2) return;
+
+      var targetPos = nodePositions.get(targetId);
+      var targetDims = nodeDimensions.get(targetId);
+      if (!targetPos || !targetDims) return;
+
+      var targetX = targetPos.x + targetDims.width / 2;
+      var targetTopY = targetPos.y;
+      var convergeY = targetTopY - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
+
+      targetEdges.forEach(function(e) {
+        var points = (e.data && e.data.points) ? e.data.points.slice() : [];
+        if (points.length < 2) return;
+
+        points[points.length - 1] = { x: targetX, y: targetTopY };
+
+        var convergePoint = { x: targetX, y: convergeY };
+        var insertIndex = points.length - 1;
+        var prev = points[insertIndex - 1];
+        var alreadyConverged = prev &&
+          Math.abs(prev.x - convergePoint.x) < 0.5 &&
+          Math.abs(prev.y - convergePoint.y) < 0.5;
+
+        if (!alreadyConverged) {
+          points.splice(insertIndex, 0, convergePoint);
+        }
+
+        e.data = { ...(e.data || {}), points: points };
+      });
+
+      if (debugMode) {
+        console.log('[recursive layout] merged', targetEdges.length, 'edges into target', targetId);
+      }
+    });
+
+    return allPositionedEdges;
+  }
+
   function validateEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes) {
     allPositionedEdges.forEach(function(e) {
       var points = e.data && e.data.points;
@@ -1170,6 +1228,13 @@
       nodeDimensions,
       nodeTypes,
       routingLookups,
+      debugMode
+    );
+
+    allPositionedEdges = mergeSharedTargetEdgesPhase(
+      allPositionedEdges,
+      nodePositions,
+      nodeDimensions,
       debugMode
     );
 

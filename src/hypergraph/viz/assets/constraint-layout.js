@@ -743,7 +743,7 @@
   };
 
   // Configuration constants for edge routing
-  const EDGE_CONVERGENCE_OFFSET = 20;  // Y offset from target for convergence point
+  const EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;  // Y offset from target for convergence point
   const MIN_HORIZONTAL_DIST_FOR_WAYPOINT = 20;
   const MIN_VERTICAL_DIST_FOR_WAYPOINT = 50;
   const SHOULDER_VERTICAL_RATIO = 0.4;
