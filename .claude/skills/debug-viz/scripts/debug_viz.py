@@ -4,6 +4,7 @@ import argparse
 import importlib
 import json
 import keyword
+import subprocess
 import sys
 import tempfile
 from pathlib import Path

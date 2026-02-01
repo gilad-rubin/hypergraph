@@ -434,7 +434,7 @@ class VizDebugger:
         with debug overlays (BOUNDS/WIDTHS/TEXTS tabs, edge debug points).
 
         Args:
-            depth: How many levels of nested graphs to expand (default: 1)
+            depth: How many levels of nested graphs to expand (default: 0)
             theme: "dark", "light", or "auto" (default: "auto")
             show_types: Whether to show type annotations (default: False)
             filepath: Path to save HTML file (default: None, display in notebook)
@@ -755,7 +755,7 @@ def extract_debug_data(
 
     Args:
         graph: Graph to visualize and debug
-        depth: How many levels of nested graphs to expand (default: 1)
+        depth: How many levels of nested graphs to expand (default: 0)
         theme: "dark", "light", or "auto" (default: "auto")
         separate_outputs: Show outputs as separate DATA nodes (default: False)
         headless: Run browser in headless mode (default: True)

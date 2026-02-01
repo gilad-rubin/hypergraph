@@ -77,7 +77,7 @@ def visualize(
 
     Args:
         graph: The hypergraph Graph to visualize
-        depth: How many levels of nested graphs to expand (default: 1)
+        depth: How many levels of nested graphs to expand (default: 0)
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)

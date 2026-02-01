@@ -595,8 +595,8 @@ class TestEdgeShadowGap:
 
         assert len(issues) == 0, (
             f"Found {len(issues)} edge-to-visible-boundary gaps!\n\n"
-            f"Issues:\n" + "\n".join(f"  - {issue}" for issue in issues) + "\n\n"
-            f"Gap Details:\n" + "\n".join(detail_lines)
+            "Issues:\n" + "\n".join(f"  - {issue}" for issue in issues) + "\n\n"
+            "Gap Details:\n" + "\n".join(detail_lines)
         )
 
     def test_outer_depth2_edge_to_visible_bounds(self, page, temp_html_file):
@@ -672,8 +672,8 @@ class TestEdgeShadowGap:
 
         assert len(issues) == 0, (
             f"Found {len(issues)} edge-to-visible-boundary gaps in outer depth=2!\n\n"
-            f"Issues:\n" + "\n".join(f"  - {issue}" for issue in issues) + "\n\n"
-            f"Gap Details:\n" + "\n".join(detail_lines)
+            "Issues:\n" + "\n".join(f"  - {issue}" for issue in issues) + "\n\n"
+            "Gap Details:\n" + "\n".join(detail_lines)
         )
 
     def test_shadow_offset_detection(self, page, temp_html_file):

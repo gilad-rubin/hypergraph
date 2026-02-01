@@ -18,7 +18,7 @@ graph = Graph(nodes=[double, square])
 # Import and use renderer directly to see the JSON structure
 from hypergraph.viz.renderer import render_graph
 
-result = render_graph(graph, separate_outputs=False, show_types=True)
+result = render_graph(graph.to_flat_graph(), separate_outputs=False, show_types=True)
 
 print("=== NODES ===")
 for n in result["nodes"]:
