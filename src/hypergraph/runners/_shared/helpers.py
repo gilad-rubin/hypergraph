@@ -290,13 +290,13 @@ def _is_stale(
     Gates explicitly drive cycle execution, so self-produced inputs should
     trigger re-execution when the gate routes back to the node.
     """
-    sole_producers = graph.sole_producers
+    self_producers = graph.self_producers
     is_gated = _is_controlled_by_gate(node, graph)
 
     for param in node.inputs:
-        # Apply Sole Producer Rule only to non-gated nodes
-        if not is_gated and sole_producers.get(param) == node.name:
-            continue  # Sole Producer Rule: skip self-produced inputs
+        # Self-Producer Rule: skip inputs this node produces itself (non-gated only)
+        if not is_gated and node.name in self_producers.get(param, set()):
+            continue
         current_version = state.get_version(param)
         consumed_version = last_exec.input_versions.get(param, 0)
         if current_version != consumed_version:
