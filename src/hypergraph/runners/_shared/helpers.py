@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import copy
-import warnings
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Iterator
 
+from hypergraph.graph.validation import GraphConfigError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.types import (
     ErrorHandling,
@@ -20,22 +21,96 @@ if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
 
 
-def _safe_deepcopy(value: Any) -> Any:
+class ValueSource(Enum):
+    """Source of a parameter's value during graph execution."""
+    EDGE = "edge"           # From upstream node output
+    PROVIDED = "provided"   # From run() call
+    BOUND = "bound"         # From graph.bind() - NEVER copy
+    DEFAULT = "default"     # From function signature - MUST copy
+
+
+def _safe_deepcopy(value: Any, param_name: str = "<unknown>") -> Any:
     """Deep-copy a value, falling back gracefully for non-copyable objects.
 
     Some objects (locks, file handles, C extensions) cannot be deep-copied.
-    For these, we return the original value and emit a warning.
+    For these, we raise a clear error explaining the issue.
+
+    Args:
+        value: The value to deep-copy
+        param_name: Name of the parameter (for error messages)
+
+    Raises:
+        GraphConfigError: If value cannot be deep-copied
     """
     try:
         return copy.deepcopy(value)
     except (TypeError, copy.Error) as e:
-        warnings.warn(
-            f"Cannot deep-copy default value of type {type(value).__name__}: {e}. "
-            f"Using original value. Mutating this default may affect future runs.",
-            UserWarning,
-            stacklevel=4,  # Point to the function using the default
-        )
-        return value
+        # Clear, human-friendly explanation
+        raise GraphConfigError(
+            f"Parameter '{param_name}' has a default value that cannot be safely copied.\n\n"
+            f"Why copying is needed:\n"
+            f"  Default values in Python are shared across function calls. If your\n"
+            f"  default is mutable (like a list, dict, or object), changes in one run\n"
+            f"  would affect future runs unless we make a fresh copy each time.\n\n"
+            f"Why this default can't be copied:\n"
+            f"  The {type(value).__name__} object contains thread locks or other system\n"
+            f"  resources that cannot be duplicated.\n\n"
+            f"Solution:\n"
+            f"  Use .bind() to provide this value at the graph level instead:\n\n"
+            f"    graph = Graph([...]).bind({param_name}=your_{type(value).__name__.lower()}_instance)\n\n"
+            f"  This way the object is shared intentionally, and you control its lifecycle.\n\n"
+            f"Technical details: {e}"
+        ) from e
+
+
+def get_value_source(
+    param: str,
+    node: HyperNode,
+    graph: "Graph",
+    state: GraphState,
+    provided_values: dict[str, Any],
+) -> tuple[ValueSource, Any]:
+    """Determine where a parameter's value comes from.
+
+    Returns:
+        (ValueSource, value) tuple indicating the source and the actual value.
+
+    Resolution order (first match wins):
+        1. EDGE - From upstream node output (state.values)
+        2. PROVIDED - From run() call (provided_values)
+        3. BOUND - From graph.bind() (never copied)
+        4. DEFAULT - From function signature (must be deep-copied)
+
+    Raises:
+        KeyError: If no value source is found for the parameter.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    # 1. Edge value (from upstream node output)
+    if param in state.values:
+        return (ValueSource.EDGE, state.values[param])
+
+    # 2. Input value (from run() call)
+    if param in provided_values:
+        return (ValueSource.PROVIDED, provided_values[param])
+
+    # 3. Bound value (from graph.bind()) - check both graph and GraphNode
+    if param in graph.inputs.bound:
+        return (ValueSource.BOUND, graph.inputs.bound[param])
+
+    # 3b. For GraphNode: check if inner graph has it bound
+    if isinstance(node, GraphNode):
+        original_param = node._resolve_original_input_name(param)
+        if original_param in node._graph.inputs.bound:
+            return (ValueSource.BOUND, node._graph.inputs.bound[original_param])
+
+    # 4. Function default (from signature)
+    if node.has_signature_default_for(param):
+        default = node.get_signature_default_for(param)
+        return (ValueSource.DEFAULT, default)
+
+    # No value found - this shouldn't happen if validation passed
+    raise KeyError(f"No value for input '{param}'")
 
 
 def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
@@ -265,26 +340,19 @@ def _resolve_input(
     state: GraphState,
     provided_values: dict[str, Any],
 ) -> Any:
-    """Resolve a single input value following the precedence order."""
-    # 1. Edge value (from upstream node output)
-    if param in state.values:
-        return state.values[param]
+    """Resolve a single input value following the precedence order.
 
-    # 2. Input value (from run() call)
-    if param in provided_values:
-        return provided_values[param]
+    Uses get_value_source() to determine where the value comes from,
+    then applies deep-copy ONLY for signature defaults (never for bound values).
+    """
+    source, value = get_value_source(param, node, graph, state, provided_values)
 
-    # 3. Bound value (from graph.bind())
-    if param in graph.inputs.bound:
-        return graph.inputs.bound[param]
+    # Deep-copy ONLY signature defaults to prevent mutable default mutation
+    if source == ValueSource.DEFAULT:
+        return _safe_deepcopy(value, param_name=param)
 
-    # 4. Function default (deep-copy to prevent cross-run mutation)
-    if node.has_default_for(param):
-        default = node.get_default_for(param)
-        return _safe_deepcopy(default)
-
-    # This shouldn't happen if validation passed
-    raise KeyError(f"No value for input '{param}'")
+    # All other sources: return as-is (no copying)
+    return value
 
 
 def map_inputs_to_func_params(
