@@ -116,6 +116,21 @@ class HyperNode(ABC):
         """
         raise KeyError(f"No default for '{param}'")
 
+    def has_signature_default_for(self, param: str) -> bool:
+        """Check if a parameter has a default in the function signature.
+
+        This only checks actual function signature defaults, NOT bound values
+        from graph.bind(). Used for validation to check default consistency.
+
+        Args:
+            param: Input parameter name
+
+        Returns:
+            True if parameter has a signature default, False otherwise.
+            Default implementation delegates to has_default_for().
+        """
+        return self.has_default_for(param)
+
     def get_input_type(self, param: str) -> type | None:
         """Get expected type for an input parameter.
 

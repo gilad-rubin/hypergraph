@@ -349,6 +349,30 @@ class GraphNode(HyperNode):
                 return inner_node.get_default_for(original_param)
         raise KeyError(f"No default value for parameter '{param}'")
 
+    def has_signature_default_for(self, param: str) -> bool:
+        """Check if a parameter has a signature default in any inner node.
+
+        This only checks actual function signature defaults, NOT bound values.
+        Used for validation to ensure consistent defaults across nodes.
+
+        Args:
+            param: Input parameter name (may be a renamed external name)
+
+        Returns:
+            True if any inner node has a signature default for this parameter.
+        """
+        if param not in self.inputs:
+            return False
+
+        # Resolve to original name for inner graph lookup
+        original_param = self._resolve_original_input_name(param)
+
+        # Only check signature defaults in inner nodes, NOT bound values
+        for inner_node in self._graph._nodes.values():
+            if original_param in inner_node.inputs and inner_node.has_signature_default_for(original_param):
+                return True
+        return False
+
     def map_over(
         self: _GN,
         *params: str,

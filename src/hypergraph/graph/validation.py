@@ -152,11 +152,17 @@ def _validate_consistent_defaults(nodes: dict[str, "HyperNode"]) -> None:
 def _collect_param_default_info(
     nodes: dict[str, "HyperNode"],
 ) -> dict[str, list[tuple[bool, Any, str]]]:
-    """Collect default info for each parameter across all nodes."""
+    """Collect signature default info for each parameter across all nodes.
+
+    Only checks actual function signature defaults, not bound values from
+    graph.bind(). This ensures validation only checks for consistent defaults
+    in function signatures, not configuration values.
+    """
     param_info: dict[str, list[tuple[bool, Any, str]]] = defaultdict(list)
     for node in nodes.values():
         for param in node.inputs:
-            has_default = node.has_default_for(param)
+            # Check for signature defaults only (excludes bound values)
+            has_default = node.has_signature_default_for(param)
             if has_default:
                 default_value = node.get_default_for(param)
                 param_info[param].append((True, default_value, node.name))
