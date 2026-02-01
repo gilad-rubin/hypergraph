@@ -30,6 +30,7 @@
 
 ### Fixed
 
+- **Bound values no longer deep-copied** — nested graphs with bound non-copyable objects (e.g., embedders with thread locks) now work correctly. Bound values are intentionally shared (not copied), matching dependency injection patterns. Non-copyable signature defaults now raise `GraphConfigError` with helpful guidance to use `.bind()` instead
 - Preserve partial state from same-superstep nodes on failure
 - Support multiple values per edge in graph data model
 - Deduplicate `Graph.outputs` for mutex branches
