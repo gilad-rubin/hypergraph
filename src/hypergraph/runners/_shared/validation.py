@@ -138,6 +138,11 @@ def _build_missing_input_message(
         for m, sugg in suggestions.items():
             msg += f"\n  - '{m}' -> '{sugg[0]}'?"
 
+    # Add helpful hint about common .bind() mistake
+    msg += "\n\nHint: If you used graph.bind(), remember it returns a NEW graph."
+    msg += "\n  ❌ graph.bind(x=10)           # Result discarded!"
+    msg += "\n  ✅ graph = graph.bind(x=10)   # Correct"
+
     return msg
 
 
