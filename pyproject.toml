@@ -35,7 +35,9 @@ daft = [
     "daft>=0.6.11",
 ]
 
-viz = []
+viz = [
+    "ipykernel>=6.31.0",
+]
 
 notebook = [
     "notebook>=7.5.0",
@@ -140,8 +142,10 @@ markers = [
     "slow: marks tests as slow (run with pytest -m slow)",
     "full_matrix: marks tests that run the full capability matrix (CI only)",
 ]
-# Run tests in parallel, exclude full_matrix by default
-addopts = "-n auto --dist worksteal -m 'not full_matrix'"
+# Run tests in parallel with minimal output; show only failures/errors by default
+addopts = "-q -r fE -n auto --dist worksteal -m 'not full_matrix'"
+# Persist pytest cache between runs for faster reruns
+cache_dir = ".pytest_cache"
 # Ignore old tests that may be broken or deprecated
 norecursedirs = [
     "old",

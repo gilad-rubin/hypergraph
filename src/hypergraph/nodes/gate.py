@@ -118,6 +118,23 @@ class GateNode(HyperNode):
         """Route functions must not be generators, so always False."""
         return False
 
+    @property
+    def node_type(self) -> str:
+        """Node type for NetworkX representation."""
+        return "BRANCH"
+
+    @property
+    def branch_data(self) -> dict[str, Any] | None:
+        """Branch-specific routing data. Override in subclasses."""
+        return None
+
+    @property
+    def nx_attrs(self) -> dict[str, Any]:
+        """Flattened attributes including branch_data."""
+        attrs = super().nx_attrs
+        attrs["branch_data"] = self.branch_data
+        return attrs
+
     def has_default_for(self, param: str) -> bool:
         """Check if this parameter has a default value."""
         sig = inspect.signature(self.func)
@@ -313,6 +330,13 @@ class RouteNode(GateNode):
             return f"RouteNode({self.name}, targets={targets_str})"
         return f"RouteNode({original} as '{self.name}', targets={targets_str})"
 
+    @property
+    def branch_data(self) -> dict[str, Any]:
+        """Branch-specific data for visualization."""
+        return {
+            "targets": ["END" if t is END else t for t in self.targets],
+        }
+
 
 # =============================================================================
 # @route Decorator
@@ -484,6 +508,14 @@ class IfElseNode(GateNode):
         if self.name == original:
             return f"IfElseNode({self.name}, true={true_str}, false={false_str})"
         return f"IfElseNode({original} as '{self.name}', true={true_str}, false={false_str})"
+
+    @property
+    def branch_data(self) -> dict[str, Any]:
+        """Branch-specific data for visualization."""
+        return {
+            "when_true": "END" if self.when_true is END else self.when_true,
+            "when_false": "END" if self.when_false is END else self.when_false,
+        }
 
 
 # =============================================================================

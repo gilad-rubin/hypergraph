@@ -494,6 +494,27 @@ Graph([a, b])
 # GraphConfigError: Inconsistent defaults for 'value'
 ```
 
+### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, filepath=None)`
+
+Render an interactive visualization of the graph.
+
+```python
+graph.visualize()                          # Display in notebook
+graph.visualize(depth=1, show_types=True)  # Expand nested graphs, show types
+graph.visualize(filepath="graph.html")     # Save standalone HTML
+```
+
+**Args:**
+- `depth` (int): How many levels of nested graphs to expand. Default: 0 (all collapsed).
+- `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
+- `show_types` (bool): Display type annotations on nodes. Default: False.
+- `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
+- `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
+
+**Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).
+
+See [Visualize Graphs](../05-how-to/visualize-graphs.md) for the full usage guide.
+
 ## Complete Example
 
 ```python

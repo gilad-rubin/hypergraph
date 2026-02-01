@@ -23,6 +23,8 @@ docs/plans/*
 thoughts/*
 specs/deprecated/*
 .claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # Documentation manager cache
 .doc-manager/cache/*
@@ -33,5 +35,18 @@ notebooks/*
 specs/*
 deprecated/*
 .doc-manager/*
+
+# Visualization outputs
+outputs/
+*.pyc
+
+# Auto Claude generated files
 .auto-claude/*
+.auto-claude/
+.auto-claude-security.json
+.auto-claude-status
+.claude_settings.json
+.worktrees/
+.security-key
+logs/security/
 .env
