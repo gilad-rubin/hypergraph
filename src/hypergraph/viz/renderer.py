@@ -1385,60 +1385,16 @@ def _add_merged_output_edges(
             continue
 
         edge_type = edge_data.get("edge_type", "data")
-        value_name = edge_data.get("value_name", "")
+        value_names = edge_data.get("value_names", [])
 
-        # Determine actual source - re-route if source is expanded container
-        actual_source = source
-        source_attrs = flat_graph.nodes.get(source, {})
-        is_source_container = source_attrs.get("node_type") == "GRAPH"
-        is_source_expanded = expansion_state.get(source, False)
+        # Handle control edges separately - they have no values
+        if edge_type == "control":
+            actual_target = target
+            target_attrs = flat_graph.nodes.get(target, {})
+            is_target_container = target_attrs.get("node_type") == "GRAPH"
+            is_target_expanded = expansion_state.get(target, False)
 
-        if is_source_container and is_source_expanded:
-            if value_name:
-                # Data edge: find the actual internal producer of this value
-                internal_producer = output_to_producer.get(value_name)
-                if internal_producer and internal_producer != source and _is_descendant_of(internal_producer, source, flat_graph):
-                    # Found internal producer that's a descendant of the container
-                    actual_source = internal_producer
-                else:
-                    # No direct match - this happens when with_outputs renames parameters
-                    # (e.g., container exposes "retrieval_eval_results" but internal
-                    # node produces "retrieval_eval_result")
-                    # Use smart lookup to find the internal producer
-                    internal_source = _find_internal_producer_for_output(
-                        source, value_name, flat_graph, expansion_state
-                    )
-                    if internal_source:
-                        actual_source = internal_source
-
-        # Determine actual target - re-route if target is expanded container
-        actual_target = target
-        target_attrs = flat_graph.nodes.get(target, {})
-        is_target_container = target_attrs.get("node_type") == "GRAPH"
-        is_target_expanded = expansion_state.get(target, False)
-
-        if is_target_container and is_target_expanded:
-            if value_name:
-                # Data edge: find the actual internal consumer of this value
-                consumers = param_to_consumers.get(value_name, [])
-                # Filter to consumers that are INSIDE this target container (descendants only)
-                # Exclude the container itself - we want the actual internal consumer
-                internal_consumers = [
-                    c for c in consumers
-                    if c != target and _is_descendant_of(c, target, flat_graph)
-                ]
-                if internal_consumers:
-                    # Use the first internal consumer (there should typically be one)
-                    actual_target = internal_consumers[0]
-                else:
-                    # No exact match - this happens when with_inputs renames parameters
-                    # Fall back to entry points (nodes with no internal predecessors)
-                    entry_points = _find_container_entry_points(
-                        target, flat_graph, expansion_state
-                    )
-                    if entry_points:
-                        actual_target = entry_points[0]
-            elif edge_type == "control":
+            if is_target_container and is_target_expanded:
                 # Control edge: route to entry point(s) of the container
                 # Entry points are direct children with no internal predecessors
                 entry_points = _find_container_entry_points(
@@ -1447,31 +1403,24 @@ def _add_merged_output_edges(
                 if entry_points:
                     actual_target = entry_points[0]
 
-        # Skip if actual source or target is not visible
-        if not _is_node_visible(actual_source, flat_graph, expansion_state):
-            continue
-        if not _is_node_visible(actual_target, flat_graph, expansion_state):
-            continue
+            # Skip if actual target is not visible
+            if not _is_node_visible(actual_target, flat_graph, expansion_state):
+                continue
 
-        # Direct edge from actual source to actual target
-        edge_id = f"e_{actual_source}_{actual_target}"
-        if value_name:
-            edge_id = f"e_{actual_source}_{value_name}_{actual_target}"
+            edge_id = f"e_{source}_{actual_target}"
+            rf_edge = {
+                "id": edge_id,
+                "source": source,
+                "target": actual_target,
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {
+                    "edgeType": edge_type,
+                    "valueName": "",
+                },
+            }
 
-        rf_edge = {
-            "id": edge_id,
-            "source": actual_source,
-            "target": actual_target,
-            "animated": False,
-            "style": {"stroke": "#64748b", "strokeWidth": 2},
-            "data": {
-                "edgeType": edge_type,
-                "valueName": value_name,
-            },
-        }
-
-        # Add label for IfElse branch edges (True/False)
-        if edge_type == "control":
+            # Add label for IfElse branch edges (True/False)
             original_source_attrs = flat_graph.nodes.get(source, {})
             branch_data = original_source_attrs.get("branch_data", {})
             if branch_data and "when_true" in branch_data:
@@ -1480,7 +1429,90 @@ def _add_merged_output_edges(
                 elif target == branch_data["when_false"]:
                     rf_edge["data"]["label"] = "False"
 
-        edges.append(rf_edge)
+            edges.append(rf_edge)
+            continue
+
+        # For data edges, create one edge per value
+        # If value_names is empty, create one edge with empty value_name (backward compat)
+        values_to_process = value_names if value_names else [""]
+
+        for value_name in values_to_process:
+            # Determine actual source - re-route if source is expanded container
+            actual_source = source
+            source_attrs = flat_graph.nodes.get(source, {})
+            is_source_container = source_attrs.get("node_type") == "GRAPH"
+            is_source_expanded = expansion_state.get(source, False)
+
+            if is_source_container and is_source_expanded:
+                if value_name:
+                    # Data edge: find the actual internal producer of this value
+                    internal_producer = output_to_producer.get(value_name)
+                    if internal_producer and internal_producer != source and _is_descendant_of(internal_producer, source, flat_graph):
+                        # Found internal producer that's a descendant of the container
+                        actual_source = internal_producer
+                    else:
+                        # No direct match - this happens when with_outputs renames parameters
+                        # (e.g., container exposes "retrieval_eval_results" but internal
+                        # node produces "retrieval_eval_result")
+                        # Use smart lookup to find the internal producer
+                        internal_source = _find_internal_producer_for_output(
+                            source, value_name, flat_graph, expansion_state
+                        )
+                        if internal_source:
+                            actual_source = internal_source
+
+            # Determine actual target - re-route if target is expanded container
+            actual_target = target
+            target_attrs = flat_graph.nodes.get(target, {})
+            is_target_container = target_attrs.get("node_type") == "GRAPH"
+            is_target_expanded = expansion_state.get(target, False)
+
+            if is_target_container and is_target_expanded:
+                if value_name:
+                    # Data edge: find the actual internal consumer of this value
+                    consumers = param_to_consumers.get(value_name, [])
+                    # Filter to consumers that are INSIDE this target container (descendants only)
+                    # Exclude the container itself - we want the actual internal consumer
+                    internal_consumers = [
+                        c for c in consumers
+                        if c != target and _is_descendant_of(c, target, flat_graph)
+                    ]
+                    if internal_consumers:
+                        # Use the first internal consumer (there should typically be one)
+                        actual_target = internal_consumers[0]
+                    else:
+                        # No exact match - this happens when with_inputs renames parameters
+                        # Fall back to entry points (nodes with no internal predecessors)
+                        entry_points = _find_container_entry_points(
+                            target, flat_graph, expansion_state
+                        )
+                        if entry_points:
+                            actual_target = entry_points[0]
+
+            # Skip if actual source or target is not visible
+            if not _is_node_visible(actual_source, flat_graph, expansion_state):
+                continue
+            if not _is_node_visible(actual_target, flat_graph, expansion_state):
+                continue
+
+            # Direct edge from actual source to actual target
+            edge_id = f"e_{actual_source}_{actual_target}"
+            if value_name:
+                edge_id = f"e_{actual_source}_{value_name}_{actual_target}"
+
+            rf_edge = {
+                "id": edge_id,
+                "source": actual_source,
+                "target": actual_target,
+                "animated": False,
+                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "data": {
+                    "edgeType": edge_type,
+                    "valueName": value_name,
+                },
+            }
+
+            edges.append(rf_edge)
 
 
 def _add_separate_output_edges(
@@ -1542,62 +1574,70 @@ def _add_separate_output_edges(
             continue
 
         edge_type = edge_data.get("edge_type", "data")
-        value_name = edge_data.get("value_name", "")
+        value_names = edge_data.get("value_names", [])
 
         # For data edges, route through the DATA node
-        if edge_type == "data" and value_name:
-            # Check if source is an expanded container (GRAPH node)
-            source_attrs = flat_graph.nodes.get(source, {})
-            is_source_container = source_attrs.get("node_type") == "GRAPH"
-            is_source_expanded = expansion_state.get(source, False)
-            if graph_output_visibility is not None and is_source_container:
-                allowed_outputs = graph_output_visibility.get(source, set())
-                if value_name not in allowed_outputs:
+        if edge_type == "data":
+            # Process each value independently
+            # If value_names is empty, create one edge with empty value_name (backward compat)
+            values_to_process = value_names if value_names else [""]
+
+            for value_name in values_to_process:
+                if not value_name:
                     continue
 
-            if is_source_container and is_source_expanded:
-                # Reroute through internal producer's DATA node
-                actual_producer = output_to_producer.get(value_name, source)
-                data_value = value_name
-                # Handle with_outputs renaming: if actual_producer is the container itself,
-                # find the internal node that produces the terminal output
-                if actual_producer == source:
-                    internal_producer = _find_internal_producer_for_output(
-                        source, value_name, flat_graph, expansion_state
-                    )
-                    if internal_producer:
-                        actual_producer = internal_producer
-                        # Find the internal output name (may differ due to renaming)
-                        internal_outputs = flat_graph.nodes[actual_producer].get("outputs", ())
-                        # Use fuzzy match to find internal output name
-                        internal_value = value_name
-                        for out in internal_outputs:
-                            if out in value_name or value_name in out:
-                                internal_value = out
-                                break
-                        data_value = internal_value
-                data_source = actual_producer
-                if not _is_data_node_visible(data_source, data_value, flat_graph, expansion_state):
-                    continue
-                data_node_id = f"data_{data_source}_{data_value}"
-            else:
-                if not _is_data_node_visible(source, value_name, flat_graph, expansion_state):
-                    continue
-                data_node_id = f"data_{source}_{value_name}"
+                # Check if source is an expanded container (GRAPH node)
+                source_attrs = flat_graph.nodes.get(source, {})
+                is_source_container = source_attrs.get("node_type") == "GRAPH"
+                is_source_expanded = expansion_state.get(source, False)
+                if graph_output_visibility is not None and is_source_container:
+                    allowed_outputs = graph_output_visibility.get(source, set())
+                    if value_name not in allowed_outputs:
+                        continue
 
-            edge_id = f"e_{data_node_id}_to_{target}"
+                if is_source_container and is_source_expanded:
+                    # Reroute through internal producer's DATA node
+                    actual_producer = output_to_producer.get(value_name, source)
+                    data_value = value_name
+                    # Handle with_outputs renaming: if actual_producer is the container itself,
+                    # find the internal node that produces the terminal output
+                    if actual_producer == source:
+                        internal_producer = _find_internal_producer_for_output(
+                            source, value_name, flat_graph, expansion_state
+                        )
+                        if internal_producer:
+                            actual_producer = internal_producer
+                            # Find the internal output name (may differ due to renaming)
+                            internal_outputs = flat_graph.nodes[actual_producer].get("outputs", ())
+                            # Use fuzzy match to find internal output name
+                            internal_value = value_name
+                            for out in internal_outputs:
+                                if out in value_name or value_name in out:
+                                    internal_value = out
+                                    break
+                            data_value = internal_value
+                    data_source = actual_producer
+                    if not _is_data_node_visible(data_source, data_value, flat_graph, expansion_state):
+                        continue
+                    data_node_id = f"data_{data_source}_{data_value}"
+                else:
+                    if not _is_data_node_visible(source, value_name, flat_graph, expansion_state):
+                        continue
+                    data_node_id = f"data_{source}_{value_name}"
 
-            edges.append({
-                "id": edge_id,
-                "source": data_node_id,
-                "target": target,
-                "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
-                "data": {
-                    "edgeType": "data",
-                    "valueName": value_name,
-                },
-            })
+                edge_id = f"e_{data_node_id}_to_{target}"
+
+                edges.append({
+                    "id": edge_id,
+                    "source": data_node_id,
+                    "target": target,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {
+                        "edgeType": "data",
+                        "valueName": value_name,
+                    },
+                })
         else:
             # Control edges go direct (not through DATA nodes)
             # But we still need to re-route if target is an expanded container
@@ -1616,8 +1656,6 @@ def _add_separate_output_edges(
                         actual_target = entry_points[0]
 
             edge_id = f"e_{source}_{actual_target}"
-            if value_name:
-                edge_id = f"e_{source}_{value_name}_{actual_target}"
 
             rf_edge = {
                 "id": edge_id,
@@ -1627,7 +1665,7 @@ def _add_separate_output_edges(
                 "style": {"stroke": "#64748b", "strokeWidth": 2},
                 "data": {
                     "edgeType": edge_type,
-                    "valueName": value_name,
+                    "valueName": "",
                 },
             }
 

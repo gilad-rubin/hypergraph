@@ -320,14 +320,17 @@ def _compute_edges_for_state(
         if not _is_node_visible(target, flat_graph, expansion_state):
             continue
 
-        value_name = edge_data.get("value_name", "")
+        value_names = edge_data.get("value_names", [])
 
-        # Create edge directly between visible nodes
-        edge_id = f"e_{source}_to_{target}"
-        if value_name:
-            edge_id = f"e_{source}_{value_name}_to_{target}"
-
-        edges.append(VizEdge(source=source, target=target, id=edge_id))
+        # Create one edge per value
+        # If value_names is empty, create one edge without a value suffix
+        if value_names:
+            for value_name in value_names:
+                edge_id = f"e_{source}_{value_name}_to_{target}"
+                edges.append(VizEdge(source=source, target=target, id=edge_id))
+        else:
+            edge_id = f"e_{source}_to_{target}"
+            edges.append(VizEdge(source=source, target=target, id=edge_id))
 
     return edges
 
@@ -674,11 +677,14 @@ def _add_edges(
             continue
 
         edge_type = edge_data.get("edge_type", "data")
-        value_name = edge_data.get("value_name", "")
+        value_names = edge_data.get("value_names", [])
 
-        # Create edge directly between visible nodes
-        edge_id = f"e_{source}_to_{target}"
-        if value_name:
-            edge_id = f"e_{source}_{value_name}_to_{target}"
-
-        instructions.add_edge(source, target, id=edge_id)
+        # Create one edge per value
+        # If value_names is empty, create one edge without a value suffix
+        if value_names:
+            for value_name in value_names:
+                edge_id = f"e_{source}_{value_name}_to_{target}"
+                instructions.add_edge(source, target, id=edge_id)
+        else:
+            edge_id = f"e_{source}_to_{target}"
+            instructions.add_edge(source, target, id=edge_id)

@@ -189,7 +189,7 @@ class VizDebugger:
         incoming = [
             {
                 "from": src,
-                "value": data.get("value_name", ""),
+                "value": ", ".join(data.get("value_names", [])) if data.get("value_names") else "",
                 "type": data.get("edge_type", "data"),
             }
             for src, tgt, data in G.edges(data=True)
@@ -198,7 +198,7 @@ class VizDebugger:
         outgoing = [
             {
                 "to": tgt,
-                "value": data.get("value_name", ""),
+                "value": ", ".join(data.get("value_names", [])) if data.get("value_names") else "",
                 "type": data.get("edge_type", "data"),
             }
             for src, tgt, data in G.edges(data=True)
