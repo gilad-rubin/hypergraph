@@ -458,8 +458,7 @@ class TestNestedInterruptPropagation:
 class TestInterruptNodeInCycle:
     """InterruptNode inside a cycle should pause on every iteration."""
 
-    @pytest.mark.asyncio
-    async def test_interrupt_output_not_classified_as_seed(self):
+    def test_interrupt_output_not_classified_as_seed(self):
         """Interrupt output in a cycle should NOT be a seed input."""
         ask_user = InterruptNode(
             name="ask_user", input_param="messages", output_param="query"

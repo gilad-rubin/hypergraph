@@ -227,20 +227,34 @@ result = runner.run(graph, {
 Multiple nodes can produce the same output name when they're all part of the same cycle. Nodes in a cycle execute in a deterministic order, so there's no ambiguity about which value a consumer receives — it always gets the most recently produced value. Outside of cycles, duplicate output names remain an error because execution order isn't guaranteed.
 
 ```python
+@node(output_name="query")
+def generate_query(messages: list) -> str:
+    """Get the next user query (e.g., from input or an LLM)."""
+    return get_user_input(messages)
+
 @node(output_name="messages")
 def accumulate_query(messages: list, query: str) -> list:
     return messages + [{"role": "user", "content": query}]
+
+@node(output_name="response")
+def generate_response(messages: list) -> str:
+    """Generate an assistant response from the conversation so far."""
+    return llm.chat(messages)
 
 @node(output_name="messages")
 def accumulate_response(messages: list, response: str) -> list:
     return messages + [{"role": "assistant", "content": response}]
 
-@route(targets=["accumulate_query", END])
+@route(targets=["generate_query", END])
 def should_continue(messages: list) -> str:
-    return END if len(messages) >= 10 else "accumulate_query"
+    return END if len(messages) >= 10 else "generate_query"
 
-# Allowed: both nodes are in the same cycle
-graph = Graph([accumulate_query, accumulate_response, should_continue])
+# Allowed: both accumulate nodes produce "messages" in the same cycle
+graph = Graph([
+    generate_query, accumulate_query,
+    generate_response, accumulate_response,
+    should_continue,
+])
 ```
 
 ## Preventing Infinite Loops

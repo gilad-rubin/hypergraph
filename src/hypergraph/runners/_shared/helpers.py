@@ -189,6 +189,8 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
                 if decision is None:
                     if gate_name not in state.node_executions:
                         gate = graph._nodes.get(gate_name)
+                        if gate is None:
+                            continue
                         default_open = getattr(gate, "default_open", True)
                         if default_open:
                             # Gate has never executed — default to open (configurable)

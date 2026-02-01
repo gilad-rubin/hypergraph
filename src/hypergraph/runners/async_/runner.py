@@ -187,6 +187,7 @@ class AsyncRunner(BaseRunner):
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
+                run_id=run_id,
                 pause=pause.pause_info,
             )
         except Exception as e:
