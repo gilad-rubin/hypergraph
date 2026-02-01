@@ -65,11 +65,14 @@ def compute_input_spec(
         elif category == "seed":
             seeds.append(param)
 
+    # Merge bound values from nested GraphNodes
+    all_bound = _collect_bound_values(nodes, bound)
+
     return InputSpec(
         required=tuple(required),
         optional=tuple(optional),
         seeds=tuple(seeds),
-        bound=dict(bound),
+        bound=all_bound,
     )
 
 
@@ -176,3 +179,39 @@ def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
     subgraph.add_nodes_from(nx_graph.nodes())
     subgraph.add_edges_from(data_edges)
     return subgraph
+
+
+def _collect_bound_values(
+    nodes: dict[str, "HyperNode"],
+    bound: dict[str, Any],
+) -> dict[str, Any]:
+    """Collect all bound values from graph and nested GraphNodes.
+
+    When a graph contains GraphNodes with bound values, those values need to be
+    accessible at runtime for parameter resolution. This function merges:
+    1. The graph's own bound values
+    2. Bound values from all nested GraphNodes (recursively)
+
+    Args:
+        nodes: Map of node name -> HyperNode
+        bound: Bound values from the current graph
+
+    Returns:
+        Merged dict of all bound values (current graph + nested graphs)
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    # Start with current graph's bound values
+    all_bound = dict(bound)
+
+    # Merge bound values from nested GraphNodes
+    for node in nodes.values():
+        if isinstance(node, GraphNode):
+            # Get bound values from the inner graph
+            inner_bound = node._graph.inputs.bound
+            # Merge into all_bound (current graph's values take precedence)
+            for key, value in inner_bound.items():
+                if key not in all_bound:
+                    all_bound[key] = value
+
+    return all_bound
