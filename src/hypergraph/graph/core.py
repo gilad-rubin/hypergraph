@@ -636,8 +636,8 @@ class Graph:
     ) -> Any:
         """Create an interactive visualization of this graph.
 
-        Renders the graph using React Flow with ELK layout in a Jupyter/VSCode
-        notebook. Works offline with all assets bundled.
+        Renders the graph using React Flow with Kiwi constraint-based layout
+        in a Jupyter/VSCode notebook. Works offline with all assets bundled.
 
         Args:
             depth: How many levels of nested graphs to expand (default: 0)
