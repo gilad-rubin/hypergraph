@@ -82,14 +82,8 @@ def render_graph(
 
     # Build maps for routing edges to actual internal nodes when expanded
     expansion_state = _build_expansion_state(flat_graph, depth)
-    # For static edges: use visibility-based targets
-    param_to_consumer = _build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
-        mode=input_consumer_mode,
-    )
-    input_groups = _build_input_groups(input_spec, param_to_consumer, bound_params)
     graph_output_visibility = _build_graph_output_visibility(flat_graph)
+
     # For JS meta data: use deepest targets (for interactive expand routing)
     param_to_consumer_deepest = _build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
     output_to_producer_deepest = _build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
@@ -98,24 +92,28 @@ def render_graph(
 
     # Pre-compute edges for ALL valid expansion state combinations
     # JavaScript can select the correct edge set based on current expansion state
+    # CRITICAL: Pass input_groups=None so each state computes its own groups
+    # This ensures depth=0+expand uses the same groups as depth=1 (from precomputed states)
     edges_by_state, expandable_nodes = _precompute_all_edges(
         flat_graph,
         input_spec,
         show_types,
         theme,
-        input_groups,
-        graph_output_visibility,
+        input_groups=None,  # Let each state compute its own input groups
+        graph_output_visibility=graph_output_visibility,
         input_consumer_mode=input_consumer_mode,
     )
 
     # Pre-compute nodes for ALL valid expansion state combinations
+    # CRITICAL: Pass input_groups=None so each state computes its own groups
+    # This ensures depth=0+expand uses the same groups as depth=1 (from precomputed states)
     nodes_by_state, _ = _precompute_all_nodes(
         flat_graph,
         input_spec,
         show_types,
         theme,
         graph_output_visibility=graph_output_visibility,
-        input_groups=input_groups,
+        input_groups=None,  # Let each state compute its own input groups
         input_consumer_mode=input_consumer_mode,
     )
 
