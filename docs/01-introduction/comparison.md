@@ -9,16 +9,11 @@ How hypergraph compares to other Python workflow frameworks.
 ## Quick Comparison
 
 | Feature | hypergraph | LangGraph | Hamilton | Pipefunc | Pydantic-Graph |
-|---------|------------|-----------|----------|----------|----------------|
-| DAG pipelines | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Agentic loops | ✓ Working | ✓ | ✗ | ✗ | ✓ |
-| State schema required | ✗ | ✓ | ✗ | ✗ | ✓ |
-| Hierarchical composition | ✓ First-class | ✓ Possible | ✓ Possible | ✓ Possible | ✓ Possible |
-| Dynamic graph construction | ✓ | ✗ | ✓ | ✓ | ✗ |
-| Build-time validation | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Human-in-the-loop | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Streaming | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Framework lock-in | Minimal | High | Low | Low | Medium |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| DAG Pipelines | ✓ | Awkward | ✓ | ✓ | Awkward |
+| Agentic Loops | ✓ | ✓ | ✗ | ✗ | ✓ |
+| Hierarchical | First-class | Possible | Possible | Possible | Possible |
+| Human-in-the-Loop | ✓ | ✓ | ✗ | ✗ | ✓ |
 
 ## The Design Space
 
@@ -258,7 +253,6 @@ Can you test functions without the framework?
 - You want minimal boilerplate
 - Hierarchical composition is important
 - You're building multi-agent systems
-- You want to avoid framework lock-in
 
 ### Choose LangGraph when
 
@@ -294,7 +288,7 @@ Hypergraph is younger than these alternatives. Tradeoffs to consider:
 | Production use | Limited testing at scale |
 | Ecosystem | Smaller community |
 | Integrations | Fewer pre-built connectors |
-| Routing | ✓ Working (`@route`, `END`) |
+| Routing | ✓ (`@route`, `END`) |
 | Checkpointing | Coming soon |
 
 If you need a battle-tested solution today, LangGraph or Hamilton may be safer choices. If you value the unified model and cleaner API, hypergraph is worth evaluating.

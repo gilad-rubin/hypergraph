@@ -58,19 +58,19 @@ def should_continue(quality: float, attempts: int) -> str:
     return "generate"
 ```
 
-DAG frameworks can't do this. Hypergraph handles it naturally.
+Hypergraph handles cycles naturally with `@route` and `END`.
 
 ### You Want Minimal Boilerplate
 
-No state schemas. No manual edge wiring. Just pure functions:
+Define functions, name outputs, and let hypergraph infer the edges:
 
 ```python
 @node(output_name="result")
 def process(data: str) -> str:
-    return transform(data)
+    return data.upper()
 
-# That's it. Inputs from parameters, outputs from output_name.
-graph = Graph([process, next_step])  # Edges inferred
+# Inputs from parameters, outputs from output_name. Edges inferred.
+graph = Graph([process, format_output])
 ```
 
 ## Don't Use Hypergraph When...
@@ -87,12 +87,6 @@ result2 = step_two(result1)
 
 Hypergraph adds value when you have non-trivial composition, reuse, or control flow.
 
-### You Need Real-Time Event Streaming
-
-Hypergraph is designed for **workflows** — discrete runs with inputs and outputs. It's not designed for continuous event streams where events arrive unpredictably.
-
-For event streaming, consider dedicated tools like Kafka, Flink, or Temporal.
-
 ### You Need Production Maturity Today
 
 Hypergraph is in **alpha**. The core features work, but:
@@ -101,43 +95,7 @@ Hypergraph is in **alpha**. The core features work, but:
 - Some features are "coming soon" (checkpointing, observability hooks)
 - Ecosystem integrations are limited
 
-If you need battle-tested production infrastructure today, consider Prefect (for DAGs) or LangGraph (for agents) which have larger communities and more integrations.
-
-## Coming From Other Frameworks
-
-### From Hamilton or Pipefunc
-
-You'll feel right at home. The name-based edge inference is similar, and you already think in DAGs.
-
-**What's new:**
-- `@route` and `END` for cycles (Hamilton can't do this)
-- `.as_node()` for hierarchical composition
-- Same patterns, but now you can build agents too
-
-### From LangGraph or Pydantic-Graph
-
-The mental model shift: **functions return values, not state updates**.
-
-**What's different:**
-- No `State` class to define
-- No explicit `add_edge()` calls
-- No reading from `state["key"]` — just use parameters
-- Edges are inferred from parameter names matching output names
-
-**What's the same:**
-- Cyclic graphs work
-- Conditional routing exists (`@route` ≈ conditional edges)
-- Multi-turn workflows are first-class
-
-### From Prefect or Airflow
-
-Hypergraph is for **in-process orchestration**, not distributed job scheduling.
-
-**Use hypergraph for:** The logic inside a single workflow — the graph of functions that run together.
-
-**Use Prefect/Airflow for:** Scheduling, retries, infrastructure, distributed execution across machines.
-
-They can work together: Prefect schedules and monitors jobs, hypergraph defines what happens inside each job.
+Hypergraph is in **alpha**. The core features work, but breaking API changes are possible and ecosystem integrations are limited. See the [Comparison](comparison.md) page for how hypergraph relates to other frameworks.
 
 ## Summary
 
@@ -149,5 +107,4 @@ They can work together: Prefect schedules and monitors jobs, hypergraph defines 
 | Multi-turn AI workflows | Yes |
 | Minimal boilerplate | Yes |
 | Simple scripts | No — just use functions |
-| Real-time event streaming | No — use Kafka/Flink |
 | Production maturity today | Maybe — evaluate alpha status |

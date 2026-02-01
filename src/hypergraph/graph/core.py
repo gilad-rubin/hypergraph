@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import networkx as nx
+from collections import Counter
 from typing import Any, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode
@@ -11,6 +13,7 @@ from hypergraph.graph.input_spec import InputSpec, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.viz.debug import VizDebugger
 
@@ -20,6 +23,16 @@ def _build_hierarchical_id(node_name: str, parent_id: str | None) -> str:
     if parent_id is None:
         return node_name
     return f"{parent_id}/{node_name}"
+
+
+def _unique_outputs(nodes: Iterable[HyperNode]) -> tuple[str, ...]:
+    """Collect outputs from nodes, deduplicating while preserving order.
+
+    GraphNodes wrapping mutex branches can list the same output multiple
+    times (e.g., skip_path and process_path both produce 'result').
+    """
+    all_outputs = [o for n in nodes for o in n.outputs]
+    return tuple(dict.fromkeys(all_outputs))
 
 
 class Graph:
@@ -76,10 +89,30 @@ class Graph:
         self.name = name
         self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
+        self._selected: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
+        self._controlled_by: dict[str, list[str]] | None = None
         self._validate()
+
+    @property
+    def controlled_by(self) -> dict[str, list[str]]:
+        """Map of node_name -> list of controlling gate names."""
+        if self._controlled_by is None:
+            self._controlled_by = self._compute_controlled_by()
+        return self._controlled_by
+
+    def _compute_controlled_by(self) -> dict[str, list[str]]:
+        from hypergraph.nodes.gate import GateNode, END
+
+        controlled_by: dict[str, list[str]] = {}
+        for node in self._nodes.values():
+            if isinstance(node, GateNode):
+                for target in node.targets:
+                    if target is not END and target in self._nodes:
+                        controlled_by.setdefault(target, []).append(node.name)
+        return controlled_by
 
     @property
     def nodes(self) -> dict[str, HyperNode]:
@@ -102,35 +135,52 @@ class Graph:
 
     @property
     def outputs(self) -> tuple[str, ...]:
-        """All output names produced by nodes."""
-        return tuple(
-            output for node in self._nodes.values() for output in node.outputs
-        )
+        """All unique output names produced by nodes."""
+        return _unique_outputs(self._nodes.values())
 
     @property
     def leaf_outputs(self) -> tuple[str, ...]:
-        """Outputs from leaf nodes (no downstream destinations)."""
-        leaf_names = [
-            name for name in self._nodes if self._nx_graph.out_degree(name) == 0
+        """Unique outputs from leaf nodes (no downstream destinations)."""
+        leaves = [
+            self._nodes[name]
+            for name in self._nodes
+            if self._nx_graph.out_degree(name) == 0
         ]
-        return tuple(
-            output
-            for name in leaf_names
-            for output in self._nodes[name].outputs
-        )
+        return _unique_outputs(leaves)
 
     @property
     def inputs(self) -> InputSpec:
         """Compute graph input specification."""
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
 
+    @functools.cached_property
+    def sole_producers(self) -> dict[str, str]:
+        """Map output_name → node_name for outputs with exactly one producer.
+
+        Used by the staleness detector to implement the Sole Producer Rule:
+        a node should not re-trigger from changes to values it produced itself.
+        This prevents infinite loops in accumulator patterns like
+        ``add_response(messages, response) -> messages`` and self-loops like
+        ``transform(x) -> x``.
+
+        Without this rule, the node's own output would make it appear stale,
+        causing immediate re-execution in an infinite loop. Cyclic re-execution
+        should instead be driven by gates (``@route``).
+        """
+        output_sources = self._collect_output_sources(list(self._nodes.values()))
+        return {
+            output: sources[0]
+            for output, sources in output_sources.items()
+            if len(sources) == 1
+        }
+
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
-        return {
-            data["value_name"]
-            for _, _, data in self._nx_graph.edges(data=True)
-            if data.get("edge_type") == "data"
-        }
+        result: set[str] = set()
+        for _, _, data in self._nx_graph.edges(data=True):
+            if data.get("edge_type") == "data":
+                result.update(data.get("value_names", []))
+        return result
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""
@@ -240,11 +290,18 @@ class Graph:
             t: set(nx.descendants(G, t)) | {t} for t in targets
         }
 
-        # For each target, exclude nodes reachable from other targets
+        # Count how many targets can reach each node
+        # Optimization: Instead of N^2 set operations, count node occurrences
+        # A node is exclusive to a target if it appears exactly once across all reachable sets
+        all_reachable_nodes = [node for nodes in reachable.values() for node in nodes]
+        node_counts = Counter(all_reachable_nodes)
+
+        # For each target, select nodes that are only reachable from this target (count == 1)
         exclusive: dict[str, set[str]] = {}
         for t in targets:
-            others = set().union(*(reachable[o] for o in targets if o != t))
-            exclusive[t] = reachable[t] - others
+            exclusive[t] = {
+                node for node in reachable[t] if node_counts[node] == 1
+            }
 
         return exclusive
 
@@ -344,16 +401,24 @@ class Graph:
         nodes: list[HyperNode],
         output_to_source: dict[str, str],
     ) -> None:
-        """Infer data edges by matching parameter names to output names."""
+        """Infer data edges by matching parameter names to output names.
+
+        Multiple values between the same node pair are merged into a single
+        edge with a ``value_names`` list, since NetworkX DiGraph only allows
+        one edge per (source, target) pair.
+        """
+        from collections import defaultdict
+
+        # Group values by (source, target) pair
+        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for n in nodes:
+            for param in n.inputs:
+                if param in output_to_source:
+                    edge_values[(output_to_source[param], n.name)].append(param)
+
         G.add_edges_from(
-            (
-                output_to_source[param],
-                node.name,
-                {"edge_type": "data", "value_name": param},
-            )
-            for node in nodes
-            for param in node.inputs
-            if param in output_to_source
+            (src, dst, {"edge_type": "data", "value_names": names})
+            for (src, dst), names in edge_values.items()
         )
 
     def _add_control_edges(
@@ -416,6 +481,56 @@ class Graph:
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
+    def select(self, *names: str) -> "Graph":
+        """Set default output selection. Returns new Graph (immutable).
+
+        Controls which outputs are returned by runner.run() and which outputs
+        are exposed when this graph is used as a nested node via as_node().
+
+        This does NOT affect internal graph execution — all nodes still run
+        and all intermediate values are still computed. It only filters what
+        is returned to the caller.
+
+        A runtime ``select=`` passed to runner.run() overrides this default.
+
+        Args:
+            *names: Output names to include. Must be valid graph outputs.
+
+        Returns:
+            New Graph with default selection set.
+
+        Raises:
+            ValueError: If any name is not a graph output.
+
+        Example:
+            >>> graph = Graph([embed, retrieve, generate]).select("answer")
+            >>> result = runner.run(graph, inputs)
+            >>> assert list(result.keys()) == ["answer"]
+
+            >>> # As nested node, only "answer" is visible to the parent graph
+            >>> outer = Graph([graph.as_node(), postprocess])
+        """
+        all_outputs = set(self.outputs)
+        invalid = [n for n in names if n not in all_outputs]
+        if invalid:
+            raise ValueError(
+                f"Cannot select {invalid}: not graph outputs. "
+                f"Valid outputs: {self.outputs}"
+            )
+        if len(names) != len(set(names)):
+            raise ValueError(
+                f"select() requires unique output names. Received: {names}"
+            )
+
+        new_graph = self._shallow_copy()
+        new_graph._selected = names
+        return new_graph
+
+    @property
+    def selected(self) -> tuple[str, ...] | None:
+        """Default output selection, or None if all outputs are returned."""
+        return self._selected
+
     @property
     def has_cycles(self) -> bool:
         """True if graph contains cycles."""
@@ -425,6 +540,19 @@ class Graph:
     def has_async_nodes(self) -> bool:
         """True if any node requires async execution."""
         return any(node.is_async for node in self._nodes.values())
+
+
+    @property
+    def has_interrupts(self) -> bool:
+        """True if any node is an InterruptNode."""
+        from hypergraph.nodes.interrupt import InterruptNode
+        return any(isinstance(node, InterruptNode) for node in self._nodes.values())
+
+    @property
+    def interrupt_nodes(self) -> list:
+        """Ordered list of InterruptNode instances."""
+        from hypergraph.nodes.interrupt import InterruptNode
+        return [node for node in self._nodes.values() if isinstance(node, InterruptNode)]
 
     @property
     def definition_hash(self) -> str:
@@ -452,7 +580,7 @@ class Graph:
 
         # 2. Include structure (edges)
         edges = sorted(
-            (u, v, data.get("value_name", ""))
+            (u, v, ",".join(data.get("value_names", [])))
             for u, v, data in self._nx_graph.edges(data=True)
         )
         edge_str = str(edges)
@@ -471,6 +599,7 @@ class Graph:
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
+        # _selected is an immutable tuple (or None), safe to share via copy.copy
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 

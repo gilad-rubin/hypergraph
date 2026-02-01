@@ -76,7 +76,7 @@ def generate(docs: list[str], query: str) -> str:
 # Build and run
 graph = Graph([embed, retrieve, generate])
 runner = SyncRunner()
-result = runner.run(graph, {"query": "What is RAG?"})
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
 
 print(result["answer"])
 ```

@@ -39,9 +39,9 @@ deprecated/*
 # Visualization outputs
 outputs/
 *.pyc
-.auto-claude/*
 
 # Auto Claude generated files
+.auto-claude/*
 .auto-claude/
 .auto-claude-security.json
 .auto-claude-status

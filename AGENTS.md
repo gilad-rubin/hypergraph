@@ -95,6 +95,26 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
+## Event System
+
+- Events are emitted during runner execution (`RunStartEvent`, `NodeStartEvent`, etc.)
+- Pass `event_processors=[...]` to `runner.run()` or `runner.map()` to observe execution
+- `EventProcessor` (sync) and `AsyncEventProcessor` (async) are the base interfaces
+- `TypedEventProcessor` auto-dispatches to `on_run_start()`, `on_node_end()`, etc.
+- `RichProgressProcessor` provides hierarchical Rich progress bars (requires `pip install 'hypergraph[progress]'`)
+- Event types live in `src/hypergraph/events/types.py`; processors in `events/processor.py`
+- Tests in `tests/events/`
+
+## Caching System
+
+- Nodes opt-in to result caching with `@node(cache=True)` or `@route(cache=True)`
+- Pass `cache=InMemoryCache()` or `cache=DiskCache()` to runner constructor
+- Cache keys combine node `definition_hash` + resolved input values (auto-invalidates on code changes)
+- `CacheHitEvent` emitted on cache hits; `NodeEndEvent.cached` field tracks cache status
+- `CacheBackend` protocol in `src/hypergraph/cache.py`; `DiskCache` requires `pip install 'hypergraph[cache]'`
+- Gate nodes (route/ifelse) cache routing decisions; `InterruptNode` and `GraphNode` are never cacheable
+- Tests in `tests/test_cache_*.py`; `Caching` dimension in `tests/capabilities/matrix.py`
+
 ## Maintaining Instructions
 
 After making significant code structure changes, update the AGENTS.md and README.md markdown files

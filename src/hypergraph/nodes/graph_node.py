@@ -8,6 +8,10 @@ from hypergraph.nodes._rename import build_reverse_rename_map
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
 
+# Duplicated from runners._shared.types to avoid circular import
+# (graph_node -> runners -> graph -> nodes -> graph_node)
+ErrorHandling = Literal["raise", "continue"]
+
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
 
@@ -87,11 +91,12 @@ class GraphNode(HyperNode):
         # map_over configuration (None = no mapping)
         self._map_over: list[str] | None = None
         self._map_mode: Literal["zip", "product"] = "zip"
+        self._error_handling: ErrorHandling = "raise"
 
         # Core HyperNode attributes
         self.name = resolved_name
         self.inputs = graph.inputs.all
-        self.outputs = graph.outputs
+        self.outputs = graph.selected if graph.selected is not None else graph.outputs
 
     @property
     def graph(self) -> "Graph":
@@ -112,24 +117,14 @@ class GraphNode(HyperNode):
         return self._graph.has_async_nodes
 
     @property
-    def node_type(self) -> str:
-        """Node type for NetworkX representation."""
-        return "GRAPH"
-
-    @property
-    def nested_graph(self) -> "Graph":
-        """Returns the nested Graph."""
-        return self._graph
-
-    @property
-    def map_config(self) -> tuple[list[str], Literal["zip", "product"]] | None:
+    def map_config(self) -> tuple[list[str], Literal["zip", "product"], ErrorHandling] | None:
         """Map configuration if set, else None.
 
         Returns:
-            Tuple of (params, mode) if map_over was configured, else None.
+            Tuple of (params, mode, error_handling) if map_over was configured, else None.
         """
         if self._map_over:
-            return (self._map_over, self._map_mode)
+            return (self._map_over, self._map_mode, self._error_handling)
         return None
 
     @property
@@ -358,6 +353,7 @@ class GraphNode(HyperNode):
         self: _GN,
         *params: str,
         mode: Literal["zip", "product"] = "zip",
+        error_handling: ErrorHandling = "raise",
     ) -> _GN:
         """Configure this GraphNode for iteration over input parameters.
 
@@ -372,6 +368,10 @@ class GraphNode(HyperNode):
                 - "zip": Parallel iteration (default). Parameters must have
                   equal-length lists. First values together, second together, etc.
                 - "product": Cartesian product. All combinations of values.
+            error_handling: How to handle failures during map execution:
+                - "raise": Stop on first failure and raise the error (default).
+                - "continue": Collect all results; failed items become None
+                  placeholders to preserve list length.
 
         Returns:
             New GraphNode instance with map_over configuration
@@ -407,6 +407,7 @@ class GraphNode(HyperNode):
         clone = self._copy()
         clone._map_over = list(params)
         clone._map_mode = mode
+        clone._error_handling = error_handling
         return clone
 
     def _copy(self: _GN) -> _GN:

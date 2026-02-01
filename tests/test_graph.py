@@ -261,7 +261,7 @@ class TestGraphConstruction:
         # Check edge attributes
         edge_data = g.nx_graph.get_edge_data("node_a", "node_b")
         assert edge_data["edge_type"] == "data"
-        assert edge_data["value_name"] == "a_out"
+        assert edge_data["value_names"] == ["a_out"]
 
     def test_nx_graph_has_node_attributes(self):
         """Test NetworkX nodes contain flattened attributes."""

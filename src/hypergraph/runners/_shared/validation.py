@@ -51,12 +51,18 @@ def validate_inputs(
             stacklevel=3,  # Point to caller's caller (run method)
         )
 
-    # Required inputs must be provided
+    # If the user provided intermediate values (internal outputs),
+    # upstream nodes that produce those values don't need to run,
+    # so their inputs shouldn't be required.
     required = set(inputs_spec.required)
-    missing_required = required - provided
-
-    # Seed inputs must also be provided (for cyclic graphs)
     seeds = set(inputs_spec.seeds)
+
+    # Remove inputs that belong to nodes bypassed by intermediate injection
+    bypassed_inputs = _find_bypassed_inputs(graph, provided)
+    required -= bypassed_inputs
+    seeds -= bypassed_inputs
+
+    missing_required = required - provided
     missing_seeds = seeds - provided
 
     missing = sorted(missing_required | missing_seeds)
@@ -169,21 +175,90 @@ def validate_runner_compatibility(
             capability="supports_cycles",
         )
 
+    # Check interrupts
+    if graph.has_interrupts and not capabilities.supports_interrupts:
+        from hypergraph.nodes.interrupt import InterruptNode
+        interrupt_names = [
+            node.name for node in graph._nodes.values()
+            if isinstance(node, InterruptNode)
+        ]
+        raise IncompatibleRunnerError(
+            f"Graph contains InterruptNode(s) but runner doesn't support interrupts: "
+            f"{', '.join(interrupt_names)}. Use AsyncRunner instead.",
+            node_name=interrupt_names[0] if interrupt_names else None,
+            capability="supports_interrupts",
+        )
+
 
 def validate_map_compatible(graph: "Graph") -> None:
     """Validate that a graph can be used with map().
 
-    Currently a placeholder for Phase 2 interrupt validation.
+    Checks that graphs with interrupts are not used with map().
 
     Args:
         graph: The graph to validate
 
     Raises:
-        GraphConfigError: If graph contains features incompatible with map
+        IncompatibleRunnerError: If graph contains InterruptNodes
     """
-    # Phase 2: Check for interrupt nodes
-    # For now, all graphs are map-compatible
-    pass
+    if graph.has_interrupts:
+        raise IncompatibleRunnerError(
+            "Graph contains InterruptNode(s) which are incompatible with .map(). "
+            "Use .run() for graphs with interrupts.",
+            capability="supports_interrupts",
+        )
+
+
+def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
+    """Find inputs that belong to nodes fully bypassed by intermediate injection.
+
+    A node is bypassed ONLY if ALL of its outputs that are consumed downstream
+    are provided by the user. If any consumed output is missing, the node must
+    still run to produce it.
+
+    When a node is bypassed, its exclusive inputs (not needed by other nodes)
+    can be removed from the required set.
+    """
+    # Build output -> producer nodes mapping (handle mutex branches)
+    output_to_nodes: dict[str, list[str]] = {}
+    for node in graph._nodes.values():
+        for output in node.outputs:
+            output_to_nodes.setdefault(output, []).append(node.name)
+
+    # Find which outputs are consumed by downstream nodes
+    consumed_outputs: set[str] = set()
+    for node in graph._nodes.values():
+        consumed_outputs.update(node.inputs)
+
+    # A node is bypassed only if ALL its consumed outputs are provided
+    bypassed_nodes: set[str] = set()
+    for node in graph._nodes.values():
+        node_consumed_outputs = set(node.outputs) & consumed_outputs
+        if node_consumed_outputs and node_consumed_outputs <= provided:
+            # All consumed outputs are provided — node is bypassed
+            bypassed_nodes.add(node.name)
+
+    if not bypassed_nodes:
+        return set()
+
+    # Also mark nodes as bypassed if ALL their outputs (consumed or not) are provided
+    # This handles the case where user provides all outputs even if some aren't consumed
+    for node in graph._nodes.values():
+        if set(node.outputs) <= provided:
+            bypassed_nodes.add(node.name)
+
+    # Collect inputs exclusively needed by bypassed nodes
+    bypassed_inputs: set[str] = set()
+    for node_name in bypassed_nodes:
+        node = graph._nodes[node_name]
+        bypassed_inputs.update(node.inputs)
+
+    # Remove inputs that are also consumed by non-bypassed nodes
+    for node in graph._nodes.values():
+        if node.name not in bypassed_nodes:
+            bypassed_inputs -= set(node.inputs)
+
+    return bypassed_inputs
 
 
 def validate_node_types(

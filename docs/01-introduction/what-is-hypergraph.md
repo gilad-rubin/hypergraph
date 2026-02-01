@@ -2,22 +2,10 @@
 
 **One framework for the full spectrum of Python workflows** — from batch data pipelines to multi-turn AI agents.
 
-## The Problem
+## The Idea
 
-Building AI and ML systems today means choosing between fragmented approaches:
+Data pipelines and agentic AI share more than you'd expect. Both are graphs of functions — the difference is whether the graph has cycles. Hypergraph gives you one framework that handles the full spectrum:
 
-| Approach | Strength | Limitation |
-|----------|----------|------------|
-| **DAG-only tools** | Clean pipelines, automatic wiring | No loops, no multi-turn |
-| **Agent-focused tools** | Cycles, multi-turn, agentic | Heavy boilerplate, state schemas |
-
-DAG tools can't handle multi-turn conversations or agentic loops. Agent tools make simple pipelines feel over-engineered.
-
-**You shouldn't need different mental models for data pipelines and agentic AI.**
-
-## The Solution
-
-Hypergraph spans the full spectrum with a single, minimal API:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
@@ -41,17 +29,20 @@ from hypergraph import Graph, node, SyncRunner
 
 @node(output_name="embedding")
 def embed(text: str) -> list[float]:
-    return model.embed(text)
+    # Your embedding model here
+    return [0.1, 0.2, 0.3]
 
 @node(output_name="docs")
 def retrieve(embedding: list[float]) -> list[str]:
-    return db.search(embedding)
+    # Your vector search here
+    return ["Document 1", "Document 2"]
 
 @node(output_name="answer")
 def generate(docs: list[str], query: str) -> str:
-    return llm.generate(docs, query)
+    # Your LLM here
+    return f"Based on {len(docs)} docs: answer to {query}"
 
-# Edges inferred from names — no wiring needed
+# Edges inferred from matching names
 graph = Graph(nodes=[embed, retrieve, generate])
 
 runner = SyncRunner()
@@ -90,14 +81,15 @@ eval_pipeline = Graph([
 ])
 ```
 
-### 3. Minimal Boilerplate
+### 3. Just Functions
 
-No state schemas. No TypedDict classes. No manual edge wiring. Just functions with named outputs:
+Define functions, name their outputs, and let hypergraph wire them together:
 
 ```python
 @node(output_name="response")
 def chatbot(messages: list) -> str:
-    return llm.invoke(messages)
+    # Your LLM here
+    return f"Response to: {messages[-1]}"
 
 @node(output_name="history")
 def accumulate(history: list, response: str, query: str) -> list:
@@ -112,10 +104,10 @@ For a detailed comparison with other frameworks, see [Comparison](comparison.md)
 
 ### 4. Pure, Testable Functions
 
-Your functions are just functions. Test them without the framework:
+Your functions are just functions. Test them directly:
 
 ```python
-# Test directly — no framework setup, no mocking
+# Test with any test framework — functions work standalone
 def test_embed():
     result = embed.func("hello world")
     assert len(result) == 768

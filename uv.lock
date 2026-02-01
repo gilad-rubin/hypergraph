@@ -1343,6 +1343,9 @@ all = [
 batch = [
     { name = "pyarrow" },
 ]
+cache = [
+    { name = "diskcache" },
+]
 daft = [
     { name = "daft" },
 ]
@@ -1370,6 +1373,9 @@ notebook = [
     { name = "nbformat" },
     { name = "notebook" },
 ]
+progress = [
+    { name = "rich" },
+]
 telemetry = [
     { name = "logfire" },
     { name = "rich" },
@@ -1395,6 +1401,7 @@ requires-dist = [
     { name = "daft", marker = "extra == 'all'", specifier = ">=0.6.11" },
     { name = "daft", marker = "extra == 'daft'", specifier = ">=0.6.11" },
     { name = "daft", marker = "extra == 'examples'", specifier = ">=0.6.7" },
+    { name = "diskcache", marker = "extra == 'cache'", specifier = ">=5.6.3" },
     { name = "diskcache", marker = "extra == 'examples'", specifier = ">=5.6.3" },
     { name = "ipykernel", marker = "extra == 'all'", specifier = "<7" },
     { name = "ipykernel", marker = "extra == 'examples'", specifier = ">=6.31.0" },
@@ -1419,11 +1426,12 @@ requires-dist = [
     { name = "pytrec-eval", marker = "extra == 'examples'", specifier = ">=0.5" },
     { name = "rank-bm25", marker = "extra == 'examples'", specifier = ">=0.2.2" },
     { name = "rich", marker = "extra == 'all'", specifier = ">=13.0.0" },
+    { name = "rich", marker = "extra == 'progress'", specifier = ">=13.0.0" },
     { name = "rich", marker = "extra == 'telemetry'", specifier = ">=13.0.0" },
     { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.67.1" },
     { name = "tqdm", marker = "extra == 'telemetry'", specifier = ">=4.67.1" },
 ]
-provides-extras = ["batch", "daft", "viz", "notebook", "telemetry", "all", "modal", "examples", "dev"]
+provides-extras = ["batch", "daft", "viz", "notebook", "cache", "progress", "telemetry", "all", "modal", "examples", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -45,7 +45,7 @@ def retrieve(embedding: list[float]) -> list[str]:
 # Edges inferred: embed → retrieve (via "embedding")
 ```
 
-No manual wiring. No configuration. Just name your outputs and inputs consistently.
+Name your outputs and inputs consistently — edges are inferred automatically.
 
 ## Creating Your First Node
 
@@ -540,7 +540,7 @@ graph = Graph([embed, retrieve])
 
 # Create runner and execute
 runner = SyncRunner()
-result = runner.run(graph, {"query": "What is RAG?"})
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
 
 # Access results
 print(result["docs"])         # ["doc1", "doc2"]

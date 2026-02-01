@@ -7,10 +7,10 @@
 </p>
 
 <div align="center">
-  <a href="docs/getting-started.md"><strong>Docs</strong></a> ·
+  <a href="https://gilad-rubin.gitbook.io/hypergraph"><strong>Docs</strong></a> ·
   <a href="https://github.com/gilad-rubin/hypergraph/issues/new"><strong>Report Bug</strong></a> ·
   <a href="https://github.com/gilad-rubin/hypergraph/issues/new"><strong>Feature Request</strong></a> ·
-  <a href="docs/comparison.md"><strong>Comparison</strong></a>
+  <a href="https://gilad-rubin.gitbook.io/hypergraph/getting-started/comparison"><strong>Comparison</strong></a>
 </div>
 
 <br>
@@ -34,6 +34,7 @@ A unified framework for Python workflow orchestration. DAG pipelines, agentic wo
 </picture>
 
 ## Installation
+(Working on claiming the `hypergraph` name on PyPI from a dormant project.)
 
 ```bash
 uv add git+https://github.com/gilad-rubin/hypergraph.git
@@ -41,7 +42,7 @@ uv add git+https://github.com/gilad-rubin/hypergraph.git
 pip install git+https://github.com/gilad-rubin/hypergraph.git
 ```
 
-> **Alpha**: Core features are working - nodes, graphs, runners, `@route` for conditional routing, and cyclic graphs for agentic loops.
+> **Alpha**: API may change between releases. Core features are stable — nodes, graphs, runners, routing, and cyclic graphs.
 
 ## Quick Start
 
@@ -73,32 +74,9 @@ print(result["answer"])
 
 `embed` produces `embedding`. `retrieve` takes `embedding`. Connected automatically.
 
-<!-- TODO: simple-dag.svg - 3-node RAG pipeline: embed → retrieve → generate -->
+## Examples
 
-## Visualization (High-Level)
-
-Hypergraph visualization is Python-driven:
-
-1. `Graph.to_flat_graph()` builds the canonical hierarchical graph.
-2. `render_graph()` precomputes `nodesByState` and `edgesByState` for all valid expansion states.
-3. The HTML bundle embeds those precomputed states and JavaScript performs layout only.
-
-## Progressive Examples
-
-### 1. Simple Pipeline (DAG)
-
-The RAG example above is a classic DAG - data flows in one direction. No special annotations needed.
-
-```python
-# Linear flow: clean → transform → save
-pipeline = Graph(nodes=[clean, transform, save])
-
-# Check what the graph needs
-print(pipeline.input_spec)
-# InputSpec(required={'raw_data'}, optional={'config'}, ...)
-```
-
-### 2. Branching
+### Branching
 
 Route execution based on conditions.
 
@@ -112,11 +90,9 @@ def check_cache(query: str) -> bool:
 graph = Graph(nodes=[check_cache, fast_path, full_rag, merge])
 ```
 
-<!-- TODO: branch-node.svg - Diamond decision node with two paths -->
+### Agentic Loops
 
-### 3. Agentic Loops
-
-Multi-turn conversations, iterative refinement, agent workflows - define when to loop, when to stop.
+Multi-turn conversations, iterative refinement, agent workflows — define when to loop, when to stop.
 
 ```python
 from hypergraph import route, END
@@ -141,9 +117,7 @@ graph = Graph(nodes=[retrieve, generate, accumulate, should_continue])
 
 The graph loops back to `retrieve` until `should_continue` returns `END`.
 
-<!-- TODO: cyclic-graph.svg - Agentic loop with END node -->
-
-### 4. Hierarchical Composition
+### Hierarchical Composition
 
 Graphs are nodes. Test pieces independently. Reuse across workflows.
 
@@ -161,99 +135,56 @@ workflow = Graph(nodes=[
 
 Each nested graph runs to completion before the outer graph continues. Test the RAG pipeline alone, then compose it into larger workflows.
 
-<!-- TODO: nested-collapsed.svg - Graph shown as single node -->
-<!-- TODO: nested-expanded.svg - Same graph expanded to show internals -->
+### Human-in-the-Loop
 
-### 5. Multi-Agent Orchestration
-
-Build agent teams by composing graphs. Each agent is a graph. The orchestrator is a graph of agents.
+Pause execution for user input. Resume with a response.
 
 ```python
-# Each agent is its own graph
-researcher = Graph(nodes=[search, analyze, summarize], name="researcher")
-writer = Graph(nodes=[draft, refine, format], name="writer")
-reviewer = Graph(nodes=[check_facts, check_style, score], name="reviewer")
+from hypergraph import AsyncRunner, Graph, InterruptNode, node
 
-# Agents as nodes with a review loop
-@route(targets=["writer", END])
-def review_gate(score: float) -> str:
-    return END if score > 0.9 else "writer"
+approval = InterruptNode(
+    name="approval",
+    input_param="draft",
+    output_param="decision",
+)
 
-team = Graph(nodes=[
-    researcher.as_node(),
-    writer.as_node(),
-    reviewer.as_node(),
-    review_gate,
-])
+graph = Graph(nodes=[generate_draft, approval, finalize])
+runner = AsyncRunner()
+
+result = await runner.run(graph, {"prompt": "Write a blog post"})
+# result.paused == True, result.pause.value has the draft
+
+result = await runner.run(graph, {
+    "prompt": "Write a blog post",
+    result.pause.response_key: "approved",
+})
+# Completed!
 ```
 
-<!-- TODO: multi-agent.svg - Three agent nodes with review loop -->
+See the docs for more patterns: [multi-agent orchestration](https://gilad-rubin.gitbook.io/hypergraph/patterns/05-multi-agent), [rename & adapt](docs/05-how-to/rename-and-adapt.md), [batch processing with map](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/batch-processing), [streaming](docs/03-patterns/06-streaming.md), and [caching](docs/03-patterns/08-caching.md).
 
-### 6. Rename and Adapt
+## Key Features
 
-Same function, different contexts. Same graph, different interfaces.
+### Graph Introspection
 
 ```python
-# Original node
-@node(output_name="embedding")
-def embed(text: str) -> list[float]: ...
+# What does a graph need?
+print(graph.input_spec)
+# InputSpec(required={'text', 'query'}, optional={'config'}, seed={'messages'})
 
-# Adapt for different contexts
-query_embed = embed.with_inputs(text="query").with_outputs(embedding="query_vec")
-doc_embed = embed.with_inputs(text="document").with_outputs(embedding="doc_vec")
+# Pre-fill inputs for reuse
+configured = graph.bind(model="gpt-4", temperature=0.7)
 
-# Same graph, different interfaces
-rag_for_search = rag.as_node().with_inputs(query="search_query")
-rag_for_chat = rag.as_node().with_inputs(query="user_message")
+# Return only specific outputs
+focused = graph.select("answer", "confidence")
+
+# Enable build-time type checking across node boundaries
+graph = Graph(nodes=[...], strict_types=True)
 ```
 
-## Visualization Development
+### Build-Time Validation
 
-- Shared measurement constants live in `src/hypergraph/viz/assets/constants.js` and are loaded before layout/render assets.
-- Visibility/state logic is computed in Python and exercised via `tests/viz/test_edges_by_state_contract.py`.
-- `Graph.visualize()` auto-sizes and writes HTML via `filepath=...` (no width/height args).
-
-### 7. Think Singular, Scale with Map
-
-Write logic for one item. Scale to many with map.
-
-```python
-# Write for one document
-@node(output_name="features")
-def extract(document: str) -> dict:
-    return analyze(document)
-
-# Scale to many
-results = runner.map(graph, values={"document": documents}, map_over="document")
-```
-
-## Why Hypergraph?
-
-### The Problem: Fragmented Tools
-
-| Tool | Strength | Limitation |
-|------|----------|------------|
-| Hamilton, Pipefunc | Clean DAG pipelines | No agentic patterns, no loops |
-| LangGraph, Pydantic-Graph | Agents, multi-turn | Boilerplate, state schemas, no dynamic graphs |
-
-DAG frameworks can't handle agents. Agent frameworks have too much ceremony. You shouldn't need different tools for data pipelines and agentic AI.
-
-### The Solution: One Unified Framework
-
-Hypergraph spans the full spectrum - from batch data pipelines to multi-turn AI agents - with the same minimal API.
-
-**Pure Functions Stay Pure**
-
-```python
-# Test without the framework
-def test_embed():
-    result = embed.func("hello")
-    assert len(result) == 768
-```
-
-Your functions are just functions. No state objects to mock. No framework setup.
-
-**Build-Time Validation**
+Typos, missing connections, dead ends — caught when you build the graph, not at runtime.
 
 ```python
 @route(targets=["step_a", "step_b", END])
@@ -266,18 +197,22 @@ graph = Graph(nodes=[decide, step_a, step_b])
 # Did you mean 'step_a'?
 ```
 
-Typos, missing connections, dead ends - caught when you build the graph, not buried in a stack trace at 2am.
-
-**Automatic Edge Inference**
-
-Name your outputs. Hypergraph connects them to matching inputs automatically.
+### Pure Functions Stay Pure
 
 ```python
-# embed produces "embedding"
-# retrieve takes "embedding", produces "docs"
-# generate takes "docs", produces "answer"
-# Edges inferred - no manual wiring needed.
+# Test without the framework
+def test_embed():
+    result = embed.func("hello")
+    assert len(result) == 768
 ```
+
+Your functions are just functions. No state objects to mock. No framework setup.
+
+## Why Hypergraph?
+
+DAG frameworks can't handle agents. Agent frameworks have too much ceremony. You shouldn't need different tools for data pipelines and agentic AI.
+
+Hypergraph spans the full spectrum — from batch data pipelines to multi-turn AI agents — with the same minimal API. See how it [compares to other frameworks](https://gilad-rubin.gitbook.io/hypergraph/getting-started/comparison).
 
 ## Design Principles
 
@@ -293,15 +228,17 @@ Name your outputs. Hypergraph connects them to matching inputs automatically.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Core concepts and first steps
-- [Routing Guide](docs/guides/routing.md) - Conditional routing, agentic loops, and real-world patterns
-- [Philosophy](docs/philosophy.md) - Why hypergraph exists
-- [API Reference: Nodes](docs/api/nodes.md) - FunctionNode, GraphNode, and HyperNode
-- [API Reference: Runners](docs/api/runners.md) - SyncRunner, AsyncRunner, and execution model
-- [API Reference: Graph](docs/api/graph.md) - Graph construction and validation
-- [API Reference: Gates](docs/api/gates.md) - RouteNode, @route decorator, and END sentinel
-
-For a detailed comparison with LangGraph, Hamilton, and other frameworks, see [COMPARISON.md](docs/comparison.md).
+- [Getting Started](https://gilad-rubin.gitbook.io/hypergraph/core-concepts/getting-started) - Core concepts and first steps
+- [Routing Guide](https://gilad-rubin.gitbook.io/hypergraph/patterns/02-routing) - Conditional routing, agentic loops, and real-world patterns
+- [Philosophy](https://gilad-rubin.gitbook.io/hypergraph/design/philosophy) - Why hypergraph exists
+- [API Reference: Nodes](https://gilad-rubin.gitbook.io/hypergraph/api-reference/nodes) - FunctionNode, GraphNode, and HyperNode
+- [API Reference: Runners](https://gilad-rubin.gitbook.io/hypergraph/api-reference/runners) - SyncRunner, AsyncRunner, and execution model
+- [API Reference: Events](https://gilad-rubin.gitbook.io/hypergraph/api-reference/events) - Event types, processors, and RichProgressProcessor
+- [API Reference: Graph](https://gilad-rubin.gitbook.io/hypergraph/api-reference/graph) - Graph construction and validation
+- [API Reference: Gates](https://gilad-rubin.gitbook.io/hypergraph/api-reference/gates) - RouteNode, @route decorator, and END sentinel
+- [Observe Execution](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/observe-execution) - Progress bars and custom event processors
+- [Human-in-the-Loop](docs/03-patterns/07-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
+- [Caching](docs/03-patterns/08-caching.md) - In-memory and disk caching for node results
 
 ## License
 

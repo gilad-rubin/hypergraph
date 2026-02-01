@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, get_type_hints
 
 from hypergraph._utils import hash_definition
 from hypergraph.nodes._rename import _apply_renames, build_reverse_rename_map
@@ -99,7 +99,7 @@ class GateNode(HyperNode):
 
     @property
     def cache(self) -> bool:
-        """Whether results should be cached. Default False for gates."""
+        """Whether routing function results should be cached."""
         return self._cache
 
     @property
@@ -156,6 +156,28 @@ class GateNode(HyperNode):
         """Map a current input name back to the original function parameter."""
         reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
         return reverse_map.get(current_name, current_name)
+
+    def get_input_type(self, param: str) -> type | None:
+        """Get expected type for an input parameter.
+
+        Args:
+            param: Input parameter name (using current/renamed name)
+
+        Returns:
+            The type annotation, or None if not annotated or param is not a valid input.
+        """
+        # Only return type for valid current input names
+        if param not in self.inputs:
+            return None
+
+        try:
+            hints = get_type_hints(self.func)
+        except Exception:
+            return None
+
+        # Map current name back to original function parameter name
+        original_param = self._get_original_param_name(param)
+        return hints.get(original_param)
 
     def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Map renamed input names back to original function parameter names.
@@ -339,7 +361,9 @@ def route(
         targets: Valid target names (list or dict with descriptions)
         fallback: Default target if function returns None
         multi_target: If True, function returns list of targets
-        cache: Whether to cache routing decisions
+        cache: Cache the routing function's return value. On cache hit,
+            the runner restores the routing decision without calling the
+            function. Requires a cache backend on the runner.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
 
@@ -505,7 +529,9 @@ def ifelse(
     Args:
         when_true: Target to activate when function returns True
         when_false: Target to activate when function returns False
-        cache: Whether to cache routing decisions
+        cache: Cache the routing function's return value. On cache hit,
+            the runner restores the routing decision without calling the
+            function. Requires a cache backend on the runner.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
 

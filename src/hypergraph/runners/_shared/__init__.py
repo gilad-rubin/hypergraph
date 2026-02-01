@@ -4,6 +4,8 @@ from hypergraph.runners._shared.types import (
     GraphState,
     NodeExecution,
     RunnerCapabilities,
+    PauseExecution,
+    PauseInfo,
     RunResult,
     RunStatus,
 )
@@ -32,6 +34,8 @@ __all__ = [
     "GraphState",
     "NodeExecution",
     "RunnerCapabilities",
+    "PauseExecution",
+    "PauseInfo",
     "RunResult",
     "RunStatus",
     # Protocols

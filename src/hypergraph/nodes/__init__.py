@@ -5,6 +5,7 @@ from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode, node
 from hypergraph.nodes.gate import END, GateNode, IfElseNode, RouteNode, ifelse, route
 from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.nodes.interrupt import InterruptNode
 
 __all__ = [
     "HyperNode",
@@ -15,6 +16,7 @@ __all__ = [
     "GateNode",
     "IfElseNode",
     "RouteNode",
+    "InterruptNode",
     "node",
     "ifelse",
     "route",

@@ -8,6 +8,7 @@ from hypergraph.nodes import (
     GraphNode,
     HyperNode,
     IfElseNode,
+    InterruptNode,
     RenameError,
     RouteNode,
     ifelse,
@@ -22,10 +23,30 @@ from hypergraph.exceptions import (
 from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
+    PauseInfo,
     RunResult,
     RunStatus,
     SyncRunner,
 )
+from hypergraph.events import (
+    AsyncEventProcessor,
+    BaseEvent,
+    CacheHitEvent,
+    Event,
+    EventDispatcher,
+    EventProcessor,
+    InterruptEvent,
+    NodeEndEvent,
+    NodeErrorEvent,
+    NodeStartEvent,
+    RouteDecisionEvent,
+    RunEndEvent,
+    RunStartEvent,
+    StopRequestedEvent,
+    TypedEventProcessor,
+)
+from hypergraph.events.rich_progress import RichProgressProcessor
+from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
 
 __all__ = [
     # Decorators and node types
@@ -37,6 +58,7 @@ __all__ = [
     "GateNode",
     "IfElseNode",
     "RouteNode",
+    "InterruptNode",
     "HyperNode",
     "END",
     # Graph
@@ -46,6 +68,7 @@ __all__ = [
     "SyncRunner",
     "AsyncRunner",
     "BaseRunner",
+    "PauseInfo",
     "RunResult",
     "RunStatus",
     # Errors
@@ -54,4 +77,25 @@ __all__ = [
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",
+    # Events
+    "BaseEvent",
+    "Event",
+    "EventDispatcher",
+    "EventProcessor",
+    "AsyncEventProcessor",
+    "TypedEventProcessor",
+    "InterruptEvent",
+    "NodeEndEvent",
+    "NodeErrorEvent",
+    "NodeStartEvent",
+    "RouteDecisionEvent",
+    "RunEndEvent",
+    "RunStartEvent",
+    "StopRequestedEvent",
+    "CacheHitEvent",
+    "RichProgressProcessor",
+    # Cache
+    "CacheBackend",
+    "InMemoryCache",
+    "DiskCache",
 ]

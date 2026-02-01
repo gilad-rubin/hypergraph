@@ -45,6 +45,8 @@ def validate_graph(
     _validate_gate_targets(nodes)
     _validate_no_gate_self_loop(nodes)
     _validate_multi_target_output_conflicts(nodes)
+    _validate_no_interrupt_in_map_over(nodes)
+    _validate_no_cache_on_non_function_nodes(nodes)
     if strict_types:
         _validate_types(nodes, nx_graph)
 
@@ -229,44 +231,69 @@ def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None
     Only called when strict_types=True.
     """
     for source_name, target_name, edge_data in nx_graph.edges(data=True):
-        value_name = edge_data.get("value_name")
-        if value_name is None:
+        value_names = edge_data.get("value_names")
+        if not value_names:
             continue
 
         source_node = nodes[source_name]
         target_node = nodes[target_name]
 
-        # Get types using universal capability methods
-        output_type = source_node.get_output_type(value_name)
-        input_type = target_node.get_input_type(value_name)
+        for value_name in value_names:
+            # Get types using universal capability methods
+            output_type = source_node.get_output_type(value_name)
+            input_type = target_node.get_input_type(value_name)
 
-        # Check for missing annotations
-        if output_type is None:
-            raise GraphConfigError(
-                f"Missing type annotation in strict_types mode\n\n"
-                f"  -> Node '{source_name}' output '{value_name}' has no type annotation\n\n"
-                f"How to fix:\n"
-                f"  Add type annotation: def {source_name}(...) -> ReturnType"
-            )
+            # Check for missing annotations
+            if output_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {source_name}(...) -> ReturnType"
+                )
 
-        if input_type is None:
-            raise GraphConfigError(
-                f"Missing type annotation in strict_types mode\n\n"
-                f"  -> Node '{target_name}' parameter '{value_name}' has no type annotation\n\n"
-                f"How to fix:\n"
-                f"  Add type annotation: def {target_name}({value_name}: YourType) -> ReturnType"
-            )
+            if input_type is None:
+                raise GraphConfigError(
+                    f"Missing type annotation in strict_types mode\n\n"
+                    f"  -> Node '{target_name}' parameter '{value_name}' has no type annotation\n\n"
+                    f"How to fix:\n"
+                    f"  Add type annotation: def {target_name}({value_name}: YourType) -> ReturnType"
+                )
 
-        # Check type compatibility
-        if not is_type_compatible(output_type, input_type):
-            raise GraphConfigError(
-                f"Type mismatch between nodes\n\n"
-                f"  -> Node '{source_name}' output '{value_name}' has type: {output_type}\n"
-                f"  -> Node '{target_name}' input '{value_name}' expects type: {input_type}\n\n"
-                f"How to fix:\n"
-                f"  Either change the type annotation on one of the nodes, or add a\n"
-                f"  conversion node between them."
-            )
+            # Check type compatibility
+            if not is_type_compatible(output_type, input_type):
+                raise GraphConfigError(
+                    f"Type mismatch between nodes\n\n"
+                    f"  -> Node '{source_name}' output '{value_name}' has type: {output_type}\n"
+                    f"  -> Node '{target_name}' input '{value_name}' expects type: {input_type}\n\n"
+                    f"How to fix:\n"
+                    f"  Either change the type annotation on one of the nodes, or add a\n"
+                    f"  conversion node between them."
+                )
+
+
+# =============================================================================
+# Interrupt Validation Functions
+# =============================================================================
+
+
+def _validate_no_interrupt_in_map_over(nodes: dict[str, "HyperNode"]) -> None:
+    """GraphNodes with map_over cannot wrap graphs containing InterruptNodes."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    for node in nodes.values():
+        if not isinstance(node, GraphNode):
+            continue
+        if not (hasattr(node, 'map_config') and node.map_config):
+            continue
+        if not node.graph.has_interrupts:
+            continue
+        interrupt_names = [n.name for n in node.graph.interrupt_nodes]
+        raise GraphConfigError(
+            f"GraphNode '{node.name}' has map_over but wrapped graph contains "
+            f"InterruptNode(s): {', '.join(interrupt_names)}. "
+            f"Interrupts are incompatible with map execution."
+        )
 
 
 # =============================================================================
@@ -279,9 +306,9 @@ def _validate_reserved_names(nodes: dict[str, "HyperNode"]) -> None:
     for name in nodes:
         if name == "END":
             raise GraphConfigError(
-                f"Invalid node name: 'END'\n\n"
-                f"  -> 'END' is reserved for the routing sentinel\n\n"
-                f"How to fix: Use a different name (e.g., 'end_node', 'finish')"
+                "Invalid node name: 'END'\n\n"
+                "  -> 'END' is reserved for the routing sentinel\n\n"
+                "How to fix: Use a different name (e.g., 'end_node', 'finish')"
             )
 
 
@@ -321,6 +348,29 @@ def _validate_no_gate_self_loop(nodes: dict[str, "HyperNode"]) -> None:
                 f"  -> targets include '{node.name}'\n\n"
                 f"How to fix:\n"
                 f"  Create a separate node for the retry logic and route to it"
+            )
+
+
+def _validate_no_cache_on_non_function_nodes(nodes: dict[str, "HyperNode"]) -> None:
+    """Disallow cache=True on InterruptNode and GraphNode.
+
+    InterruptNodes pause for human input (non-deterministic),
+    and GraphNodes should cache individual inner nodes instead.
+    GateNodes are allowed — the routing function's return value is cached,
+    and the runner restores the routing decision on cache hit.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+    from hypergraph.nodes.interrupt import InterruptNode
+
+    disallowed = (InterruptNode, GraphNode)
+    for node in nodes.values():
+        if isinstance(node, disallowed) and node.cache:
+            kind = type(node).__name__
+            raise GraphConfigError(
+                f"Node '{node.name}' has cache=True but is a {kind}\n\n"
+                f"  -> Caching is not supported on {kind}\n\n"
+                f"How to fix:\n"
+                f"  Remove cache=True from '{node.name}'"
             )
 
 

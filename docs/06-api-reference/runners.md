@@ -36,10 +36,11 @@ print(result["doubled"])  # 10
 
 ```python
 class SyncRunner:
-    def __init__(self) -> None: ...
+    def __init__(self, cache: CacheBackend | None = None) -> None: ...
 ```
 
-No configuration needed. Create once, use for multiple graphs.
+**Args:**
+- `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
 
 ### run()
 
@@ -51,6 +52,7 @@ def run(
     *,
     select: list[str] | None = None,
     max_iterations: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult: ...
 ```
 
@@ -61,6 +63,7 @@ Execute a graph once.
 - `values` - Input values as `{param_name: value}`
 - `select` - Optional list of output names to return (default: all outputs)
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** `RunResult` with outputs and status
 
@@ -79,6 +82,10 @@ result = runner.run(graph, values, select=["final_answer"])
 
 # Limit iterations for cyclic graphs
 result = runner.run(cyclic_graph, values, max_iterations=50)
+
+# With progress bars
+from hypergraph import RichProgressProcessor
+result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
 ```
 
 ### map()
@@ -92,6 +99,8 @@ def map(
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
+    event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
 
@@ -103,6 +112,10 @@ Execute a graph multiple times with different inputs.
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `select` - Optional list of outputs to return
+- `error_handling` - How to handle failures:
+  - `"raise"` (default): Stop on first failure and raise the exception
+  - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Returns:** List of `RunResult`, one per iteration
 
@@ -127,6 +140,16 @@ results = runner.map(
     map_over=["a", "b"],
     map_mode="product",  # (1,10), (1,20), (2,10), (2,20)
 )
+
+# Continue on errors — collect partial results
+results = runner.map(
+    graph,
+    {"x": [1, 2, 3]},
+    map_over="x",
+    error_handling="continue",
+)
+successes = [r for r in results if r.status == RunStatus.COMPLETED]
+failures = [r for r in results if r.status == RunStatus.FAILED]
 ```
 
 ### capabilities
@@ -173,8 +196,11 @@ result = await runner.run(graph, {"url": "https://api.example.com"})
 
 ```python
 class AsyncRunner:
-    def __init__(self) -> None: ...
+    def __init__(self, cache: CacheBackend | None = None) -> None: ...
 ```
+
+**Args:**
+- `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
 
 ### run()
 
@@ -187,6 +213,7 @@ async def run(
     select: list[str] | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
+    event_processors: list[EventProcessor] | None = None,
 ) -> RunResult: ...
 ```
 
@@ -198,6 +225,7 @@ Execute a graph asynchronously.
 - `select` - Optional list of output names to return
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
+- `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
 
 **Returns:** `RunResult` with outputs and status
 
@@ -248,6 +276,8 @@ async def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
     max_concurrency: int | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
+    event_processors: list[EventProcessor] | None = None,
 ) -> list[RunResult]: ...
 ```
 
@@ -260,6 +290,10 @@ Execute graph multiple times concurrently.
 - `map_mode` - `"zip"` or `"product"`
 - `select` - Optional list of outputs to return
 - `max_concurrency` - Shared limit across all executions
+- `error_handling` - How to handle failures:
+  - `"raise"` (default): Stop on first failure and raise the exception
+  - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
+- `event_processors` - Optional list of [event processors](events.md) to observe execution
 
 **Example:**
 
@@ -270,6 +304,15 @@ results = await runner.map(
     {"doc": documents},
     map_over="doc",
     max_concurrency=20,  # Limit total concurrent operations
+)
+
+# Continue on errors with async
+results = await runner.map(
+    graph,
+    {"doc": documents},
+    map_over="doc",
+    max_concurrency=20,
+    error_handling="continue",
 )
 ```
 
@@ -338,6 +381,21 @@ result.get("key", default_value)
 # Check existence
 "key" in result
 ```
+
+### Partial Values on Failure
+
+When a graph execution fails, `RunResult` preserves any outputs computed before the error:
+
+```python
+result = runner.run(graph, {"x": 5})
+
+if result.status == RunStatus.FAILED:
+    # values contains outputs from nodes that succeeded before the failure
+    partial = result.values  # e.g. {"step1_output": 10}
+    error = result.error     # the exception that caused the failure
+```
+
+This is useful for debugging — you can inspect which nodes completed successfully.
 
 ---
 
@@ -500,4 +558,5 @@ result = runner.run(outer, {"x": 5})
 The runner automatically:
 - Delegates to the inner graph
 - Shares concurrency limits (AsyncRunner)
+- Propagates the cache backend to nested graphs
 - Propagates errors
