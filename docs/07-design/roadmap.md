@@ -39,6 +39,14 @@ Core features are working and stable. API may still change before 1.0.
 - `RichProgressProcessor` for hierarchical Rich progress bars
 - Event types: `RunStartEvent`, `RunEndEvent`, `NodeStartEvent`, `NodeEndEvent`, `NodeErrorEvent`, `RouteDecisionEvent`, `InterruptEvent`
 
+### Visualization
+- `graph.visualize()` for interactive graph rendering in notebooks
+- Dark/light/auto theme support
+- Expand/collapse nested graphs interactively
+- Type annotation display (`show_types=True`)
+- Standalone HTML export (`filepath="graph.html"`)
+- Constraint-based layout with bundled React Flow — works offline
+
 ### Validation
 - `strict_types=True` for type checking at graph construction
 - Type mismatch detection with helpful error messages
@@ -68,10 +76,9 @@ Core features are working and stable. API may still change before 1.0.
 - Skip re-execution for unchanged nodes
 - Cache invalidation strategies
 
-### Visualization
-- Graph visualization (Mermaid, Graphviz)
-- Execution trace visualization
-- Interactive debugging
+### Execution Trace Visualization
+- Overlay execution traces on graph visualization
+- Show timing, values, and errors per node
 
 ### Persistence
 - State snapshots for long-running workflows

@@ -197,6 +197,18 @@ graph = Graph(nodes=[decide, step_a, step_b])
 # Did you mean 'step_a'?
 ```
 
+### Interactive Visualization
+
+See your graph structure instantly — in notebooks or as standalone HTML.
+
+```python
+graph.visualize()                          # Display in notebook
+graph.visualize(depth=1, show_types=True)  # Expand nested graphs, show types
+graph.visualize(filepath="graph.html")     # Save standalone HTML
+```
+
+Supports dark/light themes, expand/collapse for nested graphs, and type annotation display. All assets bundled — works offline.
+
 ### Pure Functions Stay Pure
 
 ```python
@@ -239,6 +251,7 @@ Hypergraph spans the full spectrum — from batch data pipelines to multi-turn A
 - [Observe Execution](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/observe-execution) - Progress bars and custom event processors
 - [Human-in-the-Loop](docs/03-patterns/07-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
 - [Caching](docs/03-patterns/08-caching.md) - In-memory and disk caching for node results
+- [Visualize Graphs](docs/05-how-to/visualize-graphs.md) - Interactive graph visualization in notebooks and HTML
 
 ## License
 
