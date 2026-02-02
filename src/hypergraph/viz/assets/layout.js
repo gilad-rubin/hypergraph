@@ -473,10 +473,12 @@
     var tgtCenterX = tgtPos.x + tgtDims.width / 2;
     var tgtTopY = tgtPos.y;
 
-    var gutterX = Math.min(srcCenterX, tgtCenterX) - FEEDBACK_EDGE_GUTTER;
+    var srcLeft = srcPos.x;
+    var tgtLeft = tgtPos.x;
+    var gutterX = Math.min(srcLeft, tgtLeft) - FEEDBACK_EDGE_GUTTER;
     if (gutterX < 0) gutterX = 0;
 
-    var loopY = Math.min(srcBottomY, tgtTopY) - FEEDBACK_EDGE_HEADROOM;
+    var loopY = Math.min(srcPos.y, tgtPos.y) - FEEDBACK_EDGE_HEADROOM;
     if (loopY < 0) loopY = 0;
 
     return [
