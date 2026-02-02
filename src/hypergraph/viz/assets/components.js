@@ -238,6 +238,8 @@
       var startPt = points[0];
       var endPt = points[points.length - 1];
 
+      var isFeedbackEdge = data && data.isFeedbackEdge;
+
       // Simplify "mostly vertical" edges
       var dx = Math.abs(endPt.x - startPt.x);
       var dy = Math.abs(endPt.y - startPt.y);
@@ -270,7 +272,7 @@
         return path;
       };
 
-      if (isNearlyVertical) {
+      if (isNearlyVertical && !isFeedbackEdge) {
         // Use actual points for nearly-vertical edges (including re-routed ones)
         var midY = (startPt.y + endPt.y) / 2;
         edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
