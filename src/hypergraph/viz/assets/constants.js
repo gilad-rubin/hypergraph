@@ -42,5 +42,7 @@
 
     // Edge routing
     EDGE_CONVERGENCE_OFFSET: 20,
+    FEEDBACK_EDGE_GUTTER: 40,
+    FEEDBACK_EDGE_HEADROOM: 30,
   };
 });

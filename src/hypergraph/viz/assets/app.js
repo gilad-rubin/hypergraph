@@ -1472,11 +1472,14 @@
       return layoutedEdges.map(function(e) {
         var isDataLink = e.data && e.data.isDataLink;
         var isControlEdge = e.data && e.data.edgeType === 'control';
+        var isFeedbackEdge = e.data && e.data.isFeedbackEdge;
         var edgeStyle = {
           ...edgeOptions.style,
           strokeWidth: isDataLink ? 1.5 : 2,
         };
-        if (isControlEdge) {
+        if (isFeedbackEdge) {
+          edgeStyle.strokeDasharray = '4 6';
+        } else if (isControlEdge) {
           edgeStyle.strokeDasharray = '6 4';
         }
         return {
