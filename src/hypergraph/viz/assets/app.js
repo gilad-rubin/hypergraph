@@ -1479,6 +1479,8 @@
         };
         if (isFeedbackEdge) {
           edgeStyle.strokeDasharray = '4 6';
+          edgeStyle.strokeLinecap = 'round';
+          edgeStyle.strokeLinejoin = 'round';
         } else if (isControlEdge) {
           edgeStyle.strokeDasharray = '6 4';
         }

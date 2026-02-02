@@ -36,8 +36,7 @@
   var VizConstants = root.HypergraphVizConstants || {};
   var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
   var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
-  var FEEDBACK_EDGE_DOT_RADIUS = VizConstants.FEEDBACK_EDGE_DOT_RADIUS || 3;
-  var FEEDBACK_EDGE_DOT_OFFSET = VizConstants.FEEDBACK_EDGE_DOT_OFFSET || 3;
+  var FEEDBACK_EDGE_STUB = VizConstants.FEEDBACK_EDGE_STUB || 18;
 
   // Keep RF handle anchors aligned with layout edge points.
   var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
@@ -235,12 +234,43 @@
       // Use constraint layout points directly - they already have correct coordinates
       // from either the constraint solver (internal edges) or Step 4 (cross-boundary)
       var points = data.points.slice();
+      var isFeedbackEdge = data && data.isFeedbackEdge;
+
+      var feedbackStubPath = null;
+      var feedbackStubStyle = null;
+      var renderPoints = points;
+      if (isFeedbackEdge && points.length > 0) {
+        var stubStart = points[0];
+        var stubEndY = stubStart.y + FEEDBACK_EDGE_STUB;
+        if (points.length > 1) {
+          stubEndY = Math.min(stubEndY, points[1].y);
+        }
+        var solidStroke = style.stroke;
+        if (typeof solidStroke === 'string') {
+          if (solidStroke.indexOf('rgba(') === 0) {
+            solidStroke = solidStroke.replace(/rgba\(([^,]+),([^,]+),([^,]+),[^\)]+\)/, 'rgba($1,$2,$3,1)');
+          } else if (solidStroke.indexOf('hsla(') === 0) {
+            solidStroke = solidStroke.replace(/hsla\(([^,]+),([^,]+),([^,]+),[^\)]+\)/, 'hsla($1,$2,$3,1)');
+          }
+        }
+        feedbackStubPath = 'M ' + stubStart.x + ' ' + stubStart.y +
+          ' L ' + stubStart.x + ' ' + stubEndY;
+        feedbackStubStyle = {
+          ...style,
+          stroke: solidStroke,
+          strokeDasharray: '0 0',
+          strokeWidth: Math.max((style.strokeWidth || 1.5) + 1.5, 3.5),
+          strokeLinecap: 'round',
+          opacity: 1,
+        };
+        if (points.length > 1) {
+          renderPoints = [{ x: stubStart.x, y: stubEndY }].concat(points.slice(1));
+        }
+      }
 
       // Use our points directly for position calculations
-      var startPt = points[0];
-      var endPt = points[points.length - 1];
-
-      var isFeedbackEdge = data && data.isFeedbackEdge;
+      var startPt = renderPoints[0];
+      var endPt = renderPoints[renderPoints.length - 1];
 
       // Simplify "mostly vertical" edges
       var dx = Math.abs(endPt.x - startPt.x);
@@ -274,43 +304,12 @@
         return path;
       };
 
-      var polylinePath = function(pts) {
-        if (!pts.length) return '';
-        var path = 'M ' + pts[0].x + ' ' + pts[0].y;
-        for (var i = 1; i < pts.length; i++) {
-          path += ' L ' + pts[i].x + ' ' + pts[i].y;
-        }
-        return path;
-      };
-
-      var feedbackStubPath = null;
-      var feedbackStubStyle = null;
-      var feedbackDot = null;
-      var feedbackDotColor = null;
-      if (isFeedbackEdge && points.length > 1) {
-        feedbackStubPath = 'M ' + points[0].x + ' ' + points[0].y + ' L ' + points[1].x + ' ' + points[1].y;
-        feedbackStubStyle = {
-          ...style,
-          strokeDasharray: '0',
-          strokeWidth: (style.strokeWidth || 1.5) + 2,
-          opacity: 1,
-        };
-        feedbackDot = {
-          x: points[0].x,
-          y: points[0].y + FEEDBACK_EDGE_DOT_OFFSET,
-          r: FEEDBACK_EDGE_DOT_RADIUS,
-        };
-        feedbackDotColor = (style && style.stroke) ? style.stroke : '#64748b';
-      }
-
-      if (isFeedbackEdge) {
-        edgePath = polylinePath(points);
-      } else if (isNearlyVertical) {
+      if (isNearlyVertical && !isFeedbackEdge) {
         // Use actual points for nearly-vertical edges (including re-routed ones)
         var midY = (startPt.y + endPt.y) / 2;
         edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
       } else {
-        edgePath = curveBasis(points);
+        edgePath = curveBasis(renderPoints);
       }
 
       // Position label along the edge path
@@ -326,18 +325,18 @@
       } else {
         // Other labels: position at 35% along path points (away from arrow)
         var labelPos = 0.35;
-        var totalLength = points.length - 1;
+        var totalLength = renderPoints.length - 1;
         var labelIdx = Math.floor(totalLength * labelPos);
         var labelFrac = (totalLength * labelPos) - labelIdx;
-        if (points.length > 1 && labelIdx < points.length - 1) {
-          labelX = points[labelIdx].x + (points[labelIdx + 1].x - points[labelIdx].x) * labelFrac;
-          labelY = points[labelIdx].y + (points[labelIdx + 1].y - points[labelIdx].y) * labelFrac;
-        } else if (points.length > 1) {
-          labelX = (points[0].x + points[1].x) / 2;
-          labelY = (points[0].y + points[1].y) / 2;
+        if (renderPoints.length > 1 && labelIdx < renderPoints.length - 1) {
+          labelX = renderPoints[labelIdx].x + (renderPoints[labelIdx + 1].x - renderPoints[labelIdx].x) * labelFrac;
+          labelY = renderPoints[labelIdx].y + (renderPoints[labelIdx + 1].y - renderPoints[labelIdx].y) * labelFrac;
+        } else if (renderPoints.length > 1) {
+          labelX = (renderPoints[0].x + renderPoints[1].x) / 2;
+          labelY = (renderPoints[0].y + renderPoints[1].y) / 2;
         } else {
-          labelX = points[0].x;
-          labelY = points[0].y;
+          labelX = renderPoints[0].x;
+          labelY = renderPoints[0].y;
         }
       }
     } else {
@@ -381,9 +380,8 @@
 
     return html`
       <${React.Fragment}>
-        ${feedbackStubPath ? html`<${BaseEdge} path=${feedbackStubPath} style=${feedbackStubStyle} />` : null}
-        ${feedbackDot ? html`<circle cx=${feedbackDot.x} cy=${feedbackDot.y} r=${feedbackDot.r} fill=${feedbackDotColor} />` : null}
         <${BaseEdge} path=${edgePath} markerEnd=${markerEnd} style=${style} />
+        ${feedbackStubPath ? html`<${BaseEdge} path=${feedbackStubPath} style=${feedbackStubStyle} />` : null}
         ${showDebug ? html`
           <circle cx=${sourceX} cy=${sourceY} r="5" fill="#22c55e" stroke="#15803d" strokeWidth="1" />
           <circle cx=${targetX} cy=${targetY} r="5" fill="#3b82f6" stroke="#1d4ed8" strokeWidth="1" />

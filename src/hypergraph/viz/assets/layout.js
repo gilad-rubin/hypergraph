@@ -37,6 +37,7 @@
   var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
   var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
+  var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
 
 
   /**
@@ -467,9 +468,8 @@
 
     if (!srcPos || !tgtPos || !srcDims || !tgtDims) return null;
 
-    var srcType = nodeTypes.get(edge.source) || 'FUNCTION';
     var srcCenterX = srcPos.x + srcDims.width / 2;
-    var srcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcType);
+    var srcBottomY = srcPos.y + srcDims.height;
     var tgtCenterX = tgtPos.x + tgtDims.width / 2;
     var tgtTopY = tgtPos.y;
 
@@ -478,12 +478,23 @@
     var gutterX = Math.min(srcLeft, tgtLeft) - FEEDBACK_EDGE_GUTTER;
     if (gutterX < 0) gutterX = 0;
 
+    var stemQuarterY = srcBottomY + FEEDBACK_EDGE_STEM * 0.25;
+    var stemMidY = srcBottomY + FEEDBACK_EDGE_STEM * 0.5;
+    var stemThreeQuarterY = srcBottomY + FEEDBACK_EDGE_STEM * 0.75;
+    var stemY = srcBottomY + FEEDBACK_EDGE_STEM;
     var loopY = Math.min(srcPos.y, tgtPos.y) - FEEDBACK_EDGE_HEADROOM;
     if (loopY < 0) loopY = 0;
+    if (loopY >= stemY) {
+      loopY = Math.max(0, stemY - FEEDBACK_EDGE_HEADROOM);
+    }
 
     return [
       { x: srcCenterX, y: srcBottomY },
-      { x: gutterX, y: srcBottomY },
+      { x: srcCenterX, y: stemQuarterY },
+      { x: srcCenterX, y: stemMidY },
+      { x: srcCenterX, y: stemThreeQuarterY },
+      { x: srcCenterX, y: stemY },
+      { x: gutterX, y: stemY },
       { x: gutterX, y: loopY },
       { x: tgtCenterX, y: loopY },
       { x: tgtCenterX, y: tgtTopY },
