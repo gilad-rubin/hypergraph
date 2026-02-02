@@ -36,6 +36,8 @@
   var VizConstants = root.HypergraphVizConstants || {};
   var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
   var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
+  var FEEDBACK_EDGE_DOT_RADIUS = VizConstants.FEEDBACK_EDGE_DOT_RADIUS || 3;
+  var FEEDBACK_EDGE_DOT_OFFSET = VizConstants.FEEDBACK_EDGE_DOT_OFFSET || 3;
 
   // Keep RF handle anchors aligned with layout edge points.
   var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
@@ -272,7 +274,38 @@
         return path;
       };
 
-      if (isNearlyVertical && !isFeedbackEdge) {
+      var polylinePath = function(pts) {
+        if (!pts.length) return '';
+        var path = 'M ' + pts[0].x + ' ' + pts[0].y;
+        for (var i = 1; i < pts.length; i++) {
+          path += ' L ' + pts[i].x + ' ' + pts[i].y;
+        }
+        return path;
+      };
+
+      var feedbackStubPath = null;
+      var feedbackStubStyle = null;
+      var feedbackDot = null;
+      var feedbackDotColor = null;
+      if (isFeedbackEdge && points.length > 1) {
+        feedbackStubPath = 'M ' + points[0].x + ' ' + points[0].y + ' L ' + points[1].x + ' ' + points[1].y;
+        feedbackStubStyle = {
+          ...style,
+          strokeDasharray: '0',
+          strokeWidth: (style.strokeWidth || 1.5) + 2,
+          opacity: 1,
+        };
+        feedbackDot = {
+          x: points[0].x,
+          y: points[0].y + FEEDBACK_EDGE_DOT_OFFSET,
+          r: FEEDBACK_EDGE_DOT_RADIUS,
+        };
+        feedbackDotColor = (style && style.stroke) ? style.stroke : '#64748b';
+      }
+
+      if (isFeedbackEdge) {
+        edgePath = polylinePath(points);
+      } else if (isNearlyVertical) {
         // Use actual points for nearly-vertical edges (including re-routed ones)
         var midY = (startPt.y + endPt.y) / 2;
         edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
@@ -348,6 +381,8 @@
 
     return html`
       <${React.Fragment}>
+        ${feedbackStubPath ? html`<${BaseEdge} path=${feedbackStubPath} style=${feedbackStubStyle} />` : null}
+        ${feedbackDot ? html`<circle cx=${feedbackDot.x} cy=${feedbackDot.y} r=${feedbackDot.r} fill=${feedbackDotColor} />` : null}
         <${BaseEdge} path=${edgePath} markerEnd=${markerEnd} style=${style} />
         ${showDebug ? html`
           <circle cx=${sourceX} cy=${sourceY} r="5" fill="#22c55e" stroke="#15803d" strokeWidth="1" />
