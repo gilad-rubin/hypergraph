@@ -982,58 +982,22 @@ def _create_input_nodes(
             # Edge routing uses param_to_consumer mappings, not node IDs here.
 
 
-def _get_terminal_outputs(flat_graph: nx.DiGraph) -> list[tuple[str, str, type | None]]:
-    """Find terminal outputs - outputs not consumed by any node in the graph.
-
-    Returns:
-        List of (producer_node_id, output_name, output_type) tuples
-    """
-    # Collect all inputs (consumed values)
-    all_inputs: set[str] = set()
-    for node_id, attrs in flat_graph.nodes(data=True):
-        for inp in attrs.get("inputs", ()):
-            all_inputs.add(inp)
-
-    # Find outputs not in inputs (terminal outputs)
-    terminal_outputs: list[tuple[str, str, type | None]] = []
-    for node_id, attrs in flat_graph.nodes(data=True):
-        # Only consider root-level nodes for terminal outputs
-        if attrs.get("parent") is not None:
-            continue
-        output_types = attrs.get("output_types", {})
-        for output_name in attrs.get("outputs", ()):
-            if output_name not in all_inputs:
-                terminal_outputs.append((node_id, output_name, output_types.get(output_name)))
-
-    return terminal_outputs
-
-
-def _get_gates_to_end(flat_graph: nx.DiGraph) -> list[str]:
-    """Find gate nodes (ifelse/route) that route to the END sentinel.
-
-    Returns:
-        List of gate node IDs that have END as a target
-    """
-    gates_to_end: list[str] = []
+def _has_end_routing(flat_graph: nx.DiGraph) -> bool:
+    """Check if any gate node routes to the END sentinel."""
     for node_id, attrs in flat_graph.nodes(data=True):
         branch_data = attrs.get("branch_data", {})
         if not branch_data:
             continue
-
         # Check ifelse nodes
         if branch_data.get("when_false") == "END" or branch_data.get("when_true") == "END":
-            gates_to_end.append(node_id)
+            return True
         # Check route nodes
-        elif "targets" in branch_data:
+        if "targets" in branch_data:
             targets = branch_data["targets"]
-            # targets can be a list or dict
             target_values = targets.values() if isinstance(targets, dict) else targets
-            for target in target_values:
-                if target == "END":
-                    gates_to_end.append(node_id)
-                    break
-
-    return gates_to_end
+            if "END" in target_values:
+                return True
+    return False
 
 
 def _create_end_node(
@@ -1042,17 +1006,8 @@ def _create_end_node(
     theme: str,
     show_types: bool,
 ) -> None:
-    """Create the END node for terminal outputs and gate-to-END routing.
-
-    The END node appears when:
-    1. There are outputs not consumed by any other node (terminal outputs)
-    2. Any gate node (ifelse/route) routes to the END sentinel
-    """
-    terminal_outputs = _get_terminal_outputs(flat_graph)
-    gates_to_end = _get_gates_to_end(flat_graph)
-
-    # Only create END node if there are terminal outputs OR gates routing to END
-    if not terminal_outputs and not gates_to_end:
+    """Create the END node when the graph explicitly routes to END."""
+    if not _has_end_routing(flat_graph):
         return
 
     end_node: dict[str, Any] = {
@@ -1062,10 +1017,6 @@ def _create_end_node(
         "data": {
             "nodeType": "END",
             "label": "End",
-            "outputs": [
-                {"name": output_name, "type": _format_type(output_type)}
-                for _, output_name, output_type in terminal_outputs
-            ],
             "theme": theme,
             "showTypes": show_types,
         },
@@ -1081,89 +1032,43 @@ def _add_end_node_edges(
     expansion_state: dict[str, bool],
     separate_outputs: bool,
 ) -> None:
-    """Add edges from terminal output producers and gates to the END node.
-
-    Handles two cases:
-    1. Terminal outputs (outputs not consumed by any node)
-    2. Gate nodes (ifelse/route) that route to the END sentinel
-    """
-    terminal_outputs = _get_terminal_outputs(flat_graph)
-    gates_to_end = _get_gates_to_end(flat_graph)
-
-    # If no END node will be created, skip
-    if not terminal_outputs and not gates_to_end:
+    """Add edges from gates that route to END."""
+    if not _has_end_routing(flat_graph):
         return
 
-    # Add edges from terminal output producers
-    for producer_id, output_name, _ in terminal_outputs:
-        # Check if producer is visible
-        if not _is_node_visible(producer_id, flat_graph, expansion_state):
-            # Find visible ancestor
-            actual_source = _get_root_ancestor(producer_id, flat_graph)
-        else:
-            actual_source = producer_id
-
-        # Check if source is an expanded container - route from internal producer
-        source_attrs = flat_graph.nodes.get(actual_source, {})
-        is_source_container = source_attrs.get("node_type") == "GRAPH"
-        is_source_expanded = expansion_state.get(actual_source, False)
-
-        if is_source_container and is_source_expanded:
-            # Find internal producer
-            internal_producer = _find_internal_producer_for_output(
-                actual_source, output_name, flat_graph, expansion_state
-            )
-            if internal_producer:
-                actual_source = internal_producer
-
-        if separate_outputs:
-            # Route through DATA node
-            data_node_id = f"data_{actual_source}_{output_name}"
-            edge_id = f"e_{data_node_id}_to___end__"
-            source_id = data_node_id
-        else:
-            # Direct from producer
-            edge_id = f"e_{actual_source}_{output_name}_to___end__"
-            source_id = actual_source
-
-        edges.append({
-            "id": edge_id,
-            "source": source_id,
-            "target": "__end__",
-            "animated": False,
-            "style": {"stroke": "#10b981", "strokeWidth": 2},  # Emerald color for END edges
-            "data": {
-                "edgeType": "end",
-                "valueName": output_name,
-            },
-        })
-
-    # Add edges from gates that route to END
-    for gate_id in gates_to_end:
-        if not _is_node_visible(gate_id, flat_graph, expansion_state):
+    for node_id, attrs in flat_graph.nodes(data=True):
+        branch_data = attrs.get("branch_data", {})
+        if not branch_data:
             continue
 
-        # Determine the label based on which branch goes to END
-        attrs = flat_graph.nodes.get(gate_id, {})
-        branch_data = attrs.get("branch_data", {})
+        if not _is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+
+        # Check ifelse nodes
         label = None
+        has_end = False
         if branch_data.get("when_false") == "END":
             label = "False"
+            has_end = True
         elif branch_data.get("when_true") == "END":
             label = "True"
+            has_end = True
+        # Check route nodes
+        elif "targets" in branch_data:
+            targets = branch_data["targets"]
+            target_values = targets.values() if isinstance(targets, dict) else targets
+            if "END" in target_values:
+                has_end = True
 
-        edge_id = f"e_{gate_id}_to___end__"
-        edges.append({
-            "id": edge_id,
-            "source": gate_id,
-            "target": "__end__",
-            "animated": False,
-            "style": {"stroke": "#10b981", "strokeWidth": 2},
-            "data": {
-                "edgeType": "end",
-                "label": label,
-            },
-        })
+        if has_end:
+            edges.append({
+                "id": f"e_{node_id}_to___end__",
+                "source": node_id,
+                "target": "__end__",
+                "animated": False,
+                "style": {"stroke": "#10b981", "strokeWidth": 2},
+                "data": {"edgeType": "end", "label": label},
+            })
 
 
 def _get_root_ancestor(node_id: str, flat_graph: nx.DiGraph) -> str:
