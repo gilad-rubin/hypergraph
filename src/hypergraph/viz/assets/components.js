@@ -659,13 +659,12 @@
             ${truncateLabel(data.label)}
           </button>
           ${showSelfLoop ? html`
-            <div className=${'absolute top-2 right-2 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide flex items-center gap-1 ' +
+            <div className=${'absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center ' +
                 (isLight
-                    ? ' bg-amber-100 text-amber-700 border border-amber-200'
-                    : ' bg-slate-950 text-amber-300 border border-amber-500/50')}
+                    ? ' bg-white border border-amber-200 text-amber-600 shadow-sm'
+                    : ' bg-slate-950 border border-amber-500/50 text-amber-300 shadow-black/50')}
                  title="Self loop">
               <${Icons.Loop} />
-              self loop
             </div>
           ` : null}
           <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
@@ -697,13 +696,12 @@
                  (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>${truncateLabel(data.label)}</div>
 
             ${showSelfLoop ? html`
-                <div className=${'absolute top-2 left-2 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide flex items-center gap-1 ' +
+                <div className=${'absolute top-2 left-2 w-6 h-6 rounded-full flex items-center justify-center ' +
                     (isLight
-                        ? ' bg-slate-100 text-slate-600 border border-slate-200'
-                        : ' bg-slate-900 text-slate-300 border border-slate-700')}
+                        ? ' bg-white border border-slate-200 text-slate-500 shadow-sm'
+                        : ' bg-slate-900 border border-slate-700 text-slate-300 shadow-black/50')}
                      title="Self loop">
                   <${Icons.Loop} />
-                  self loop
                 </div>
             ` : null}
 
