@@ -418,8 +418,13 @@ def _build_output_to_producer_map(
 
 
 def _is_node_visible(node_id: str, flat_graph: nx.DiGraph, expansion_state: dict[str, bool]) -> bool:
-    """Check if a node is visible (all ancestors are expanded)."""
+    """Check if a node is visible (not hidden and all ancestors are expanded)."""
     attrs = flat_graph.nodes[node_id]
+
+    # Hidden nodes are never visible
+    if attrs.get("hide", False):
+        return False
+
     parent_id = attrs.get("parent")
 
     while parent_id is not None:
@@ -977,6 +982,108 @@ def _create_input_nodes(
             # Edge routing uses param_to_consumer mappings, not node IDs here.
 
 
+def _has_end_routing(
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> bool:
+    """Check if any visible gate node routes to the END sentinel.
+
+    Only counts gates that are visible in the current expansion state,
+    so the END node doesn't appear when all END-routing gates are hidden.
+    """
+    for node_id, attrs in flat_graph.nodes(data=True):
+        branch_data = attrs.get("branch_data", {})
+        if not branch_data:
+            continue
+
+        # Only count visible gates
+        if not _is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+
+        # Check ifelse nodes
+        if branch_data.get("when_false") == "END" or branch_data.get("when_true") == "END":
+            return True
+        # Check route nodes
+        if "targets" in branch_data:
+            targets = branch_data["targets"]
+            target_values = targets.values() if isinstance(targets, dict) else targets
+            if "END" in target_values:
+                return True
+    return False
+
+
+def _create_end_node(
+    nodes: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    theme: str,
+    show_types: bool,
+    expansion_state: dict[str, bool],
+) -> None:
+    """Create the END node when the graph explicitly routes to END."""
+    if not _has_end_routing(flat_graph, expansion_state):
+        return
+
+    end_node: dict[str, Any] = {
+        "id": "__end__",
+        "type": "custom",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "nodeType": "END",
+            "label": "End",
+            "theme": theme,
+            "showTypes": show_types,
+        },
+        "sourcePosition": "bottom",
+        "targetPosition": "top",
+    }
+    nodes.append(end_node)
+
+
+def _add_end_node_edges(
+    edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+    separate_outputs: bool,
+) -> None:
+    """Add edges from gates that route to END."""
+    if not _has_end_routing(flat_graph, expansion_state):
+        return
+
+    for node_id, attrs in flat_graph.nodes(data=True):
+        branch_data = attrs.get("branch_data", {})
+        if not branch_data:
+            continue
+
+        if not _is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+
+        # Check ifelse nodes
+        label = None
+        has_end = False
+        if branch_data.get("when_false") == "END":
+            label = "False"
+            has_end = True
+        elif branch_data.get("when_true") == "END":
+            label = "True"
+            has_end = True
+        # Check route nodes
+        elif "targets" in branch_data:
+            targets = branch_data["targets"]
+            target_values = targets.values() if isinstance(targets, dict) else targets
+            if "END" in target_values:
+                has_end = True
+
+        if has_end:
+            edges.append({
+                "id": f"e_{node_id}_to___end__",
+                "source": node_id,
+                "target": "__end__",
+                "animated": False,
+                "style": {"stroke": "#10b981", "strokeWidth": 2},
+                "data": {"edgeType": "end", "label": label},
+            })
+
+
 def _get_root_ancestor(node_id: str, flat_graph: nx.DiGraph) -> str:
     """Get the root-level ancestor of a node (or itself if root-level)."""
     attrs = flat_graph.nodes[node_id]
@@ -1087,6 +1194,10 @@ def _create_data_nodes(
     to hide them when the container is collapsed.
     """
     for node_id, attrs in flat_graph.nodes(data=True):
+        # Skip hidden nodes - they should not produce DATA nodes
+        if attrs.get("hide", False):
+            continue
+
         output_types = attrs.get("output_types", {})
         parent_id = attrs.get("parent")
         allowed_outputs = None
@@ -1276,6 +1387,9 @@ def _compute_edges_for_state(
     else:
         _add_merged_output_edges(edges, flat_graph, expansion_state)
 
+    # 3. Add edges from terminal outputs to END node
+    _add_end_node_edges(edges, flat_graph, expansion_state, separate_outputs)
+
     return edges
 
 
@@ -1292,6 +1406,12 @@ def _compute_nodes_for_state(
 ) -> list[dict[str, Any]]:
     """Compute nodes for a specific expansion state."""
     nodes: list[dict[str, Any]] = []
+
+    self_loop_nodes = {
+        source
+        for source, target in flat_graph.edges()
+        if source == target and _is_node_visible(source, flat_graph, expansion_state)
+    }
 
     bound_params = set(input_spec.get("bound", {}).keys())
     param_to_consumer = _build_param_to_consumer_map(
@@ -1315,6 +1435,10 @@ def _compute_nodes_for_state(
     )
 
     for node_id, attrs in flat_graph.nodes(data=True):
+        # Skip hidden nodes
+        if attrs.get("hide", False):
+            continue
+
         parent_id = attrs.get("parent")
         node_type = attrs.get("node_type", "FUNCTION")
         rf_node_type = "PIPELINE" if node_type == "GRAPH" else node_type
@@ -1331,6 +1455,8 @@ def _compute_nodes_for_state(
             show_types,
             separate_outputs,
         )
+        if node_id in self_loop_nodes:
+            rf_node.setdefault("data", {})["selfLoop"] = True
 
         if node_type == "GRAPH" and not separate_outputs:
             allowed_outputs = graph_output_visibility.get(node_id) if graph_output_visibility else None
@@ -1343,6 +1469,9 @@ def _compute_nodes_for_state(
         nodes.append(rf_node)
 
     _create_data_nodes(nodes, [], flat_graph, theme, show_types, graph_output_visibility)
+
+    # Create END node for terminal outputs
+    _create_end_node(nodes, flat_graph, theme, show_types, expansion_state)
 
     for node in nodes:
         node.setdefault("data", {})["separateOutputs"] = separate_outputs
@@ -1486,6 +1615,8 @@ def _add_merged_output_edges(
             if not _is_node_visible(actual_source, flat_graph, expansion_state):
                 continue
             if not _is_node_visible(actual_target, flat_graph, expansion_state):
+                continue
+            if actual_source == actual_target:
                 continue
 
             # Direct edge from actual source to actual target
@@ -1647,6 +1778,9 @@ def _add_separate_output_edges(
                     )
                     if entry_points:
                         actual_target = entry_points[0]
+
+            if source == actual_target:
+                continue
 
             edge_id = f"e_{source}_{actual_target}"
 

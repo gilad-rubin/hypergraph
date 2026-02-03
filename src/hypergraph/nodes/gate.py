@@ -96,12 +96,18 @@ class GateNode(HyperNode):
     func: Callable
     _definition_hash: str
     _cache: bool
+    _hide: bool
     default_open: bool
 
     @property
     def cache(self) -> bool:
         """Whether routing function results should be cached."""
         return self._cache
+
+    @property
+    def hide(self) -> bool:
+        """Whether this node is hidden from visualization."""
+        return self._hide
 
     @property
     def definition_hash(self) -> str:
@@ -238,6 +244,7 @@ class RouteNode(GateNode):
         fallback: str | type[END] | None = None,
         multi_target: bool = False,
         cache: bool = False,
+        hide: bool = False,
         default_open: bool = True,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
@@ -250,6 +257,7 @@ class RouteNode(GateNode):
             fallback: Default target if func returns None (incompatible with multi_target)
             multi_target: If True, func returns list of targets to run in parallel
             cache: Whether to cache routing decisions (default: False)
+            hide: Whether to hide from visualization (default: False)
             name: Node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
 
@@ -306,6 +314,7 @@ class RouteNode(GateNode):
         self.fallback = fallback
         self.multi_target = multi_target
         self._cache = cache
+        self._hide = hide
         self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
@@ -349,6 +358,7 @@ def route(
     fallback: str | type[END] | None = None,
     multi_target: bool = False,
     cache: bool = False,
+    hide: bool = False,
     default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
@@ -368,6 +378,7 @@ def route(
         cache: Cache the routing function's return value. On cache hit,
             the runner restores the routing decision without calling the
             function. Requires a cache backend on the runner.
+        hide: Whether to hide from visualization (default: False)
         default_open: If True, targets may execute before the gate runs the
             first time. If False, targets are blocked until the gate executes
             and records a decision.
@@ -394,6 +405,7 @@ def route(
             fallback=fallback,
             multi_target=multi_target,
             cache=cache,
+            hide=hide,
             default_open=default_open,
             name=name,
             rename_inputs=rename_inputs,
@@ -441,6 +453,7 @@ class IfElseNode(GateNode):
         when_false: str | type[END],
         *,
         cache: bool = False,
+        hide: bool = False,
         default_open: bool = True,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
@@ -452,6 +465,7 @@ class IfElseNode(GateNode):
             when_true: Target to activate when func returns True
             when_false: Target to activate when func returns False
             cache: Whether to cache routing decisions (default: False)
+            hide: Whether to hide from visualization (default: False)
             default_open: If True, targets may execute before the gate runs
                 the first time. If False, targets are blocked until the gate
                 executes and records a decision.
@@ -484,6 +498,7 @@ class IfElseNode(GateNode):
         self.targets = [when_true, when_false]
         self.descriptions = {True: "True", False: "False"}
         self._cache = cache
+        self._hide = hide
         self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
@@ -528,6 +543,7 @@ def ifelse(
     when_false: str | type[END],
     *,
     cache: bool = False,
+    hide: bool = False,
     default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
@@ -546,6 +562,7 @@ def ifelse(
         cache: Cache the routing function's return value. On cache hit,
             the runner restores the routing decision without calling the
             function. Requires a cache backend on the runner.
+        hide: Whether to hide from visualization (default: False)
         default_open: If True, targets may execute before the gate runs the
             first time. If False, targets are blocked until the gate executes
             and records a decision.
@@ -571,6 +588,7 @@ def ifelse(
             when_true=when_true,
             when_false=when_false,
             cache=cache,
+            hide=hide,
             default_open=default_open,
             name=name,
             rename_inputs=rename_inputs,

@@ -35,6 +35,9 @@
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
   var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
   var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
+  var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
+  var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
+  var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
 
 
   /**
@@ -96,6 +99,47 @@
     if (n.style && n.style.height) height = n.style.height;
 
     return { width: width, height: height };
+  }
+
+  function buildEdgeKey(source, target) {
+    return source + '->' + target;
+  }
+
+  function computeFeedbackEdgeKeys(nodes, edges) {
+    var nodeIds = new Set(nodes.map(function(n) { return n.id; }));
+    var adjacency = new Map();
+    nodes.forEach(function(n) { adjacency.set(n.id, []); });
+
+    edges.forEach(function(e) {
+      if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) return;
+      adjacency.get(e.source).push(e);
+    });
+
+    var state = new Map();
+    nodes.forEach(function(n) { state.set(n.id, 0); });
+    var feedbackEdges = new Set();
+
+    var dfs = function(nodeId) {
+      state.set(nodeId, 1);
+      var outgoing = adjacency.get(nodeId) || [];
+      outgoing.forEach(function(edge) {
+        var target = edge.target;
+        if (!nodeIds.has(target)) return;
+        var targetState = state.get(target) || 0;
+        if (targetState === 0) {
+          dfs(target);
+        } else if (targetState === 1) {
+          feedbackEdges.add(buildEdgeKey(edge.source, edge.target));
+        }
+      });
+      state.set(nodeId, 2);
+    };
+
+    nodes.forEach(function(n) {
+      if (state.get(n.id) === 0) dfs(n.id);
+    });
+
+    return feedbackEdges;
   }
 
   /**
@@ -215,6 +259,7 @@
           return visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target);
         });
         if (debugMode) console.log('[useLayout] visible:', flatVisibleNodes.length, 'edges:', visibleEdges.length);
+        var feedbackEdgeKeys = computeFeedbackEdgeKeys(flatVisibleNodes, visibleEdges);
 
         // Prepare nodes for constraint layout
         var layoutNodes = flatVisibleNodes.map(function(n) {
@@ -231,7 +276,9 @@
         });
 
         // Prepare edges for constraint layout
-        var layoutEdges = visibleEdges.map(function(e) {
+        var layoutEdges = visibleEdges
+          .filter(function(e) { return !feedbackEdgeKeys.has(buildEdgeKey(e.source, e.target)); })
+          .map(function(e) {
           return {
             id: e.id,
             source: e.source,
@@ -281,8 +328,37 @@
           };
         });
 
+        var nodePositions = new Map();
+        var nodeDimensions = new Map();
+        var nodeTypes = new Map();
+        positionedNodes.forEach(function(n) {
+          nodePositions.set(n.id, n.position);
+          nodeDimensions.set(n.id, { width: n.width, height: n.height });
+          var nodeType = n.data && n.data.nodeType ? n.data.nodeType : 'FUNCTION';
+          if (nodeType === 'PIPELINE' && !(n.data && n.data.isExpanded)) {
+            nodeType = 'FUNCTION';
+          }
+          nodeTypes.set(n.id, nodeType);
+        });
+
+        var feedbackEdges = visibleEdges
+          .filter(function(e) { return feedbackEdgeKeys.has(buildEdgeKey(e.source, e.target)); })
+          .map(function(e) {
+            var points = buildFeedbackEdgePoints(e, nodePositions, nodeDimensions, nodeTypes);
+            if (!points) return null;
+            return {
+              ...e,
+              data: {
+                ...e.data,
+                points: points,
+                isFeedbackEdge: true,
+              },
+            };
+          })
+          .filter(function(e) { return e; });
+
         setLayoutedNodes(positionedNodes);
-        setLayoutedEdges(positionedEdges);
+        setLayoutedEdges(positionedEdges.concat(feedbackEdges));
         setLayoutVersion(function(v) { return v + 1; });
         setIsLayouting(false);
         setLayoutError(null);
@@ -382,6 +458,42 @@
 
   function getNodeTypeOffset(nodeType) {
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+  }
+
+  function buildFeedbackEdgePoints(edge, nodePositions, nodeDimensions, nodeTypes) {
+    var srcPos = nodePositions.get(edge.source);
+    var tgtPos = nodePositions.get(edge.target);
+    var srcDims = nodeDimensions.get(edge.source);
+    var tgtDims = nodeDimensions.get(edge.target);
+
+    if (!srcPos || !tgtPos || !srcDims || !tgtDims) return null;
+
+    var srcCenterX = srcPos.x + srcDims.width / 2;
+    var srcNodeType = nodeTypes.get(edge.source) || 'FUNCTION';
+    var srcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcNodeType);
+    var tgtCenterX = tgtPos.x + tgtDims.width / 2;
+    var tgtTopY = tgtPos.y;
+
+    var srcLeft = srcPos.x;
+    var tgtLeft = tgtPos.x;
+    var gutterX = Math.min(srcLeft, tgtLeft) - FEEDBACK_EDGE_GUTTER;
+    if (gutterX < 0) gutterX = 0;
+
+    var stemY = srcBottomY + FEEDBACK_EDGE_STEM;
+    var loopY = Math.min(srcPos.y, tgtPos.y) - FEEDBACK_EDGE_HEADROOM;
+    if (loopY < 0) loopY = 0;
+    if (loopY >= stemY) {
+      loopY = Math.max(0, stemY - FEEDBACK_EDGE_HEADROOM);
+    }
+
+    return [
+      { x: srcCenterX, y: srcBottomY },
+      { x: srcCenterX, y: stemY },
+      { x: gutterX, y: stemY },
+      { x: gutterX, y: loopY },
+      { x: tgtCenterX, y: loopY },
+      { x: tgtCenterX, y: tgtTopY },
+    ];
   }
 
   // Get layout options (keep a single spacing profile)
@@ -492,6 +604,8 @@
         target = deepToChild.get(target);
       }
 
+      // Filter self-loops: feedback edges (cycles) are detected and styled separately
+      // in the cycle detection pass - this layout pass handles only forward edges
       if (childIds.has(source) && childIds.has(target) && source !== target) {
         var edgeKey = source + '->' + target;
         if (!internalEdgeSet.has(edgeKey)) {
@@ -557,9 +671,12 @@
       var internalEdges = collectInternalEdges(edges, childIds, deepToChild);
 
       var childLayoutNodes = buildLayoutNodes(children, nodeDimensions);
-      var childLayoutEdges = internalEdges.map(function(e) {
-        return { id: e.id, source: e.source, target: e.target, _original: e._original || e };
-      });
+      var feedbackEdgeKeys = computeFeedbackEdgeKeys(children, internalEdges);
+      var childLayoutEdges = internalEdges
+        .filter(function(e) { return !feedbackEdgeKeys.has(buildEdgeKey(e.source, e.target)); })
+        .map(function(e) {
+          return { id: e.id, source: e.source, target: e.target, _original: e._original || e };
+        });
 
       var childResult = ConstraintLayout.graph(
         childLayoutNodes,
@@ -630,6 +747,8 @@
         target = childToRootAncestor.get(target);
       }
 
+      // Filter self-loops: feedback edges (cycles) are detected and styled separately
+      // in the cycle detection pass - this layout pass handles only forward edges
       if (rootNodeIds.has(source) && rootNodeIds.has(target) && source !== target) {
         var edgeKey = source + '->' + target;
         if (!rootEdgeSet.has(edgeKey)) {
@@ -664,9 +783,14 @@
     var rootLayoutEdges = collectRootEdges(edges, rootNodeIds, childToRootAncestor);
     var rootLayoutNodes = buildLayoutNodes(rootNodes, nodeDimensions);
 
+    var feedbackEdgeKeys = computeFeedbackEdgeKeys(rootNodes, rootLayoutEdges);
+    var filteredRootLayoutEdges = rootLayoutEdges.filter(function(e) {
+      return !feedbackEdgeKeys.has(buildEdgeKey(e.source, e.target));
+    });
+
     var rootResult = ConstraintLayout.graph(
       rootLayoutNodes,
-      rootLayoutEdges,
+      filteredRootLayoutEdges,
       null,
       'vertical',
       getLayoutOptions(rootLayoutNodes)
@@ -678,7 +802,7 @@
       })));
     }
 
-    applyVerticalGapFix(rootResult.nodes, rootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
+    applyVerticalGapFix(rootResult.nodes, filteredRootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
     rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
 
     return {
@@ -686,7 +810,7 @@
       rootNodeIds: rootNodeIds,
       rootResult: rootResult,
       rootLayoutNodes: rootLayoutNodes,
-      rootLayoutEdges: rootLayoutEdges,
+      rootLayoutEdges: filteredRootLayoutEdges,
       childToRootAncestor: childToRootAncestor,
     };
   }
@@ -825,7 +949,7 @@
     };
   }
 
-  function routeCrossBoundaryEdgesPhase(edges, allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, debugMode) {
+  function routeCrossBoundaryEdgesPhase(edges, allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, feedbackEdgeKeys, debugMode) {
     var handledEdges = new Set(allPositionedEdges.map(function(e) {
       return e.source + '->' + e.target;
     }));
@@ -927,10 +1051,24 @@
       var tgtCenterX = actualTgtPos.x + actualTgtDims.width / 2;
       var tgtTopY = actualTgtPos.y;
 
-      var points = [
-        { x: srcCenterX, y: srcBottomY },
-        { x: tgtCenterX, y: tgtTopY }
-      ];
+      var isFeedbackEdge = feedbackEdgeKeys && feedbackEdgeKeys.has(edgeKey);
+      var points = null;
+
+      if (isFeedbackEdge) {
+        points = buildFeedbackEdgePoints(
+          { source: actualSrc, target: actualTgt },
+          nodePositions,
+          nodeDimensions,
+          nodeTypes
+        );
+      }
+
+      if (!points) {
+        points = [
+          { x: srcCenterX, y: srcBottomY },
+          { x: tgtCenterX, y: tgtTopY }
+        ];
+      }
 
       if (debugMode) {
         var rerouted = (actualSrc !== e.source || actualTgt !== e.target);
@@ -946,6 +1084,7 @@
           points: points,
           actualSource: actualSrc,
           actualTarget: actualTgt,
+          isFeedbackEdge: isFeedbackEdge,
         },
       });
     });
@@ -1166,6 +1305,7 @@
     var dimensionResult = buildNodeDimensionsAndTypes(visibleNodes);
     var nodeDimensions = dimensionResult.nodeDimensions;
     var nodeTypes = dimensionResult.nodeTypes;
+    var feedbackEdgeKeys = computeFeedbackEdgeKeys(visibleNodes, edges);
 
     var inputResult = buildInputNodesInContainers(visibleNodes, expansionState);
     var inputNodesInContainers = inputResult.inputNodesInContainers;
@@ -1219,6 +1359,7 @@
       nodeDimensions,
       nodeTypes,
       routingLookups,
+      feedbackEdgeKeys,
       debugMode
     );
 

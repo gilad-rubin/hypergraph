@@ -65,6 +65,93 @@ class TestInterruptNodeConstruction:
         assert n1.definition_hash == n2.definition_hash
 
 
+class TestInterruptNodeMultiParam:
+    """Tests for multi-input/output InterruptNode construction."""
+
+    def test_multi_input_construction(self):
+        n = InterruptNode(
+            name="review",
+            input_param=("draft", "metadata"),
+            output_param="decision",
+        )
+        assert n.inputs == ("draft", "metadata")
+        assert n.outputs == ("decision",)
+        assert n.input_param == "draft"  # backward compat: first input
+        assert n.is_multi_input is True
+        assert n.is_multi_output is False
+
+    def test_multi_output_construction(self):
+        n = InterruptNode(
+            name="review",
+            input_param="draft",
+            output_param=("decision", "notes"),
+        )
+        assert n.inputs == ("draft",)
+        assert n.outputs == ("decision", "notes")
+        assert n.output_param == "decision"  # backward compat: first output
+        assert n.is_multi_input is False
+        assert n.is_multi_output is True
+
+    def test_multi_both_construction(self):
+        n = InterruptNode(
+            name="review",
+            input_param=("draft", "metadata"),
+            output_param=("decision", "notes"),
+        )
+        assert n.inputs == ("draft", "metadata")
+        assert n.outputs == ("decision", "notes")
+        assert n.is_multi_input is True
+        assert n.is_multi_output is True
+
+    def test_multi_output_with_dict_response_type(self):
+        n = InterruptNode(
+            name="review",
+            input_param="draft",
+            output_param=("decision", "notes"),
+            response_type={"decision": bool, "notes": str},
+        )
+        assert n.get_output_type("decision") is bool
+        assert n.get_output_type("notes") is str
+        assert n.get_output_type("unknown") is None
+
+    def test_single_output_get_output_type_unchanged(self):
+        n = InterruptNode(
+            name="x", input_param="a", output_param="b", response_type=str
+        )
+        assert n.get_output_type("b") is str
+        assert n.get_output_type("unknown") is None
+
+    def test_definition_hash_includes_dict_response_type(self):
+        n1 = InterruptNode(
+            name="x",
+            input_param="a",
+            output_param=("b", "c"),
+        )
+        n2 = InterruptNode(
+            name="x",
+            input_param="a",
+            output_param=("b", "c"),
+            response_type={"b": str, "c": int},
+        )
+        assert n1.definition_hash != n2.definition_hash
+
+    def test_multi_input_validation(self):
+        with pytest.raises(ValueError, match="input_param"):
+            InterruptNode(
+                name="x",
+                input_param=("valid", "123bad"),
+                output_param="out",
+            )
+
+    def test_multi_output_validation(self):
+        with pytest.raises(ValueError, match="output_param"):
+            InterruptNode(
+                name="x",
+                input_param="inp",
+                output_param=("valid", "class"),
+            )
+
+
 class TestInterruptNodeParameterValidation:
     def test_invalid_identifier_input_param(self):
         with pytest.raises(ValueError, match="input_param"):
@@ -101,6 +188,20 @@ class TestInterruptNodeRename:
         renamed = n.with_outputs(b="d")
         assert renamed.outputs == ("d",)
         assert renamed.output_param == "d"
+
+    def test_with_inputs_multi(self):
+        n = InterruptNode(
+            name="x", input_param=("a", "b"), output_param="out"
+        )
+        renamed = n.with_inputs(a="c", b="d")
+        assert renamed.inputs == ("c", "d")
+
+    def test_with_outputs_multi(self):
+        n = InterruptNode(
+            name="x", input_param="inp", output_param=("a", "b")
+        )
+        renamed = n.with_outputs(a="c", b="d")
+        assert renamed.outputs == ("c", "d")
 
 
 class TestInterruptNodeWithHandler:
@@ -177,6 +278,41 @@ class TestPauseInfo:
             node_name="outer/review/approval", output_param="decision", value=None
         )
         assert p.response_key == "outer.review.decision"
+
+    def test_response_keys_single_output(self):
+        p = PauseInfo(node_name="approval", output_param="decision", value=None)
+        assert p.response_keys == {"decision": "decision"}
+
+    def test_response_keys_multi_output(self):
+        p = PauseInfo(
+            node_name="approval",
+            output_param="decision",
+            value=None,
+            output_params=("decision", "notes"),
+        )
+        assert p.response_keys == {"decision": "decision", "notes": "notes"}
+
+    def test_response_keys_nested_multi_output(self):
+        p = PauseInfo(
+            node_name="review/approval",
+            output_param="decision",
+            value=None,
+            output_params=("decision", "notes"),
+        )
+        assert p.response_keys == {
+            "decision": "review.decision",
+            "notes": "review.notes",
+        }
+
+    def test_multi_input_values(self):
+        p = PauseInfo(
+            node_name="review",
+            output_param="decision",
+            value="draft text",
+            values={"draft": "draft text", "metadata": {"author": "me"}},
+        )
+        assert p.value == "draft text"  # backward compat
+        assert p.values == {"draft": "draft text", "metadata": {"author": "me"}}
 
 
 class TestRunResultPaused:
@@ -395,6 +531,196 @@ class TestAsyncRunnerPause:
         )
         assert r3.status == RunStatus.COMPLETED
         assert r3["result"] == "done: resp2"
+
+
+class TestAsyncRunnerMultiParam:
+    """Tests for multi-input/output InterruptNode execution."""
+
+    @pytest.mark.asyncio
+    async def test_multi_input_pause(self):
+        """InterruptNode with multiple inputs receives all values in pause."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @node(output_name="metadata")
+        def make_meta(query: str) -> dict:
+            return {"query": query}
+
+        interrupt = InterruptNode(
+            name="review",
+            input_param=("draft", "metadata"),
+            output_param="decision",
+        )
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, make_meta, interrupt, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.paused
+        assert result.pause.node_name == "review"
+        assert result.pause.value == "Draft for: hello"  # first input
+        assert result.pause.values == {
+            "draft": "Draft for: hello",
+            "metadata": {"query": "hello"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_multi_output_pause(self):
+        """InterruptNode with multiple outputs exposes all output keys."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        interrupt = InterruptNode(
+            name="review",
+            input_param="draft",
+            output_param=("decision", "notes"),
+        )
+
+        @node(output_name="result")
+        def finalize(decision: str, notes: str) -> str:
+            return f"{decision}: {notes}"
+
+        graph = Graph([make_draft, interrupt, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.paused
+        assert result.pause.output_param == "decision"  # first output
+        assert result.pause.output_params == ("decision", "notes")
+        assert result.pause.response_keys == {
+            "decision": "decision",
+            "notes": "notes",
+        }
+
+    @pytest.mark.asyncio
+    async def test_multi_output_resume(self):
+        """Resuming multi-output interrupt with all values completes."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        interrupt = InterruptNode(
+            name="review",
+            input_param="draft",
+            output_param=("decision", "notes"),
+        )
+
+        @node(output_name="result")
+        def finalize(decision: str, notes: str) -> str:
+            return f"{decision}: {notes}"
+
+        graph = Graph([make_draft, interrupt, finalize])
+        runner = AsyncRunner()
+
+        # Pause
+        r1 = await runner.run(graph, {"query": "hello"})
+        assert r1.paused
+
+        # Resume with all outputs
+        r2 = await runner.run(
+            graph, {"query": "hello", "decision": "approved", "notes": "looks good"}
+        )
+        assert r2.status == RunStatus.COMPLETED
+        assert r2["result"] == "approved: looks good"
+
+    @pytest.mark.asyncio
+    async def test_multi_input_handler_receives_dict(self):
+        """Handler for multi-input InterruptNode receives dict of values."""
+        received = {}
+
+        def handler(inputs_dict):
+            received.update(inputs_dict)
+            return "handled"
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        @node(output_name="metadata")
+        def make_meta(query: str) -> dict:
+            return {"key": "value"}
+
+        interrupt = InterruptNode(
+            name="review",
+            input_param=("draft", "metadata"),
+            output_param="decision",
+            handler=handler,
+        )
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return decision
+
+        graph = Graph([make_draft, make_meta, interrupt, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert received == {"draft": "draft", "metadata": {"key": "value"}}
+
+    @pytest.mark.asyncio
+    async def test_multi_output_handler_returns_dict(self):
+        """Handler for multi-output InterruptNode can return dict."""
+
+        def handler(value):
+            return {"decision": "approved", "notes": f"for: {value}"}
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        interrupt = InterruptNode(
+            name="review",
+            input_param="draft",
+            output_param=("decision", "notes"),
+            handler=handler,
+        )
+
+        @node(output_name="result")
+        def finalize(decision: str, notes: str) -> str:
+            return f"{decision}: {notes}"
+
+        graph = Graph([make_draft, interrupt, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "approved: for: draft"
+
+    @pytest.mark.asyncio
+    async def test_multi_output_handler_single_value_goes_to_first(self):
+        """Handler returning single value for multi-output assigns to first."""
+
+        def handler(value):
+            return "only_decision"
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        interrupt = InterruptNode(
+            name="review",
+            input_param="draft",
+            output_param=("decision", "notes"),
+            handler=handler,
+        )
+
+        graph = Graph([make_draft, interrupt])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["decision"] == "only_decision"
+        assert "notes" not in result.values
 
 
 class TestHandlerFailure:

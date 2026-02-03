@@ -90,6 +90,9 @@ class AsyncGraphNodeExecutor:
                 node_name=f"{node.name}/{result.pause.node_name}",
                 output_param=result.pause.output_param,
                 value=result.pause.value,
+                # Propagate multi-output fields (new in PR #40)
+                output_params=result.pause.output_params,
+                values=result.pause.values,
             )
             raise PauseExecution(nested_pause)
         if result.status == RunStatus.FAILED:

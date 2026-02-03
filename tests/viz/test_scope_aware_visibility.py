@@ -472,8 +472,11 @@ class TestControlEdgeRouting:
         assert collapsed_key in edges_by_state
         edges = edges_by_state[collapsed_key]
 
-        # Find the control edge from decide
-        control_edges = [e for e in edges if e["source"] == "decide"]
+        # Find control edges from decide (excluding END edges)
+        control_edges = [
+            e for e in edges
+            if e["source"] == "decide" and e["target"] != "__end__"
+        ]
         assert len(control_edges) == 1
 
         # When collapsed, target should be the container
@@ -511,8 +514,11 @@ class TestControlEdgeRouting:
         assert expanded_key in edges_by_state
         edges = edges_by_state[expanded_key]
 
-        # Find the control edge from decide
-        control_edges = [e for e in edges if e["source"] == "decide"]
+        # Find control edges from decide (excluding END edges)
+        control_edges = [
+            e for e in edges
+            if e["source"] == "decide" and e["target"] != "__end__"
+        ]
         assert len(control_edges) == 1
 
         # When expanded, target should be the internal entry point (hierarchical ID)

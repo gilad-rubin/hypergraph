@@ -89,6 +89,14 @@ class HyperNode(ABC):
         """
         return False
 
+    @property
+    def hide(self) -> bool:
+        """Should this node be hidden from visualization?
+
+        Default: False. Override in subclasses that support hiding.
+        """
+        return False
+
     def has_default_for(self, param: str) -> bool:
         """Does this node have a fallback value for this input?
 
@@ -224,6 +232,7 @@ class HyperNode(ABC):
             "input_types": {p: self.get_input_type(p) for p in self.inputs},
             "output_types": {o: self.get_output_type(o) for o in self.outputs},
             "has_defaults": {p: self.has_default_for(p) for p in self.inputs},
+            "hide": self.hide,
         }
 
     # === Public API ===

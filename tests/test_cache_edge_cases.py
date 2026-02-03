@@ -493,7 +493,7 @@ class TestCachedRoutingDecisionNotMutated:
         assert r3["t"] == 5
         assert counter.count == 1
 
-    def test_route_cache_hit_twice_async(self):
+    async def test_route_cache_hit_twice_async(self):
         """Async: second cache hit on a @route node must still restore routing."""
         counter = CallCounter()
 
@@ -510,13 +510,13 @@ class TestCachedRoutingDecisionNotMutated:
         cache = InMemoryCache()
         runner = AsyncRunner(cache=cache)
 
-        r1 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
+        r1 = await runner.run(graph, {"x": 1})
         assert r1["a"] == 2
 
-        r2 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
+        r2 = await runner.run(graph, {"x": 1})
         assert r2["a"] == 2
 
-        r3 = asyncio.get_event_loop().run_until_complete(runner.run(graph, {"x": 1}))
+        r3 = await runner.run(graph, {"x": 1})
         assert r3["a"] == 2
         assert counter.count == 1
 
