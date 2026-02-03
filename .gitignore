@@ -31,7 +31,6 @@ specs/deprecated/*
 !.doc-manager/cache/.gitkeep
 .DS_Store
 tmp/*
-notebooks/*
 specs/*
 deprecated/*
 .doc-manager/*
@@ -41,10 +40,7 @@ outputs/
 *.pyc
 
 # Auto Claude generated files
-.auto-claude/*
-.auto-claude/
-.auto-claude-security.json
-.auto-claude-status
+.auto-claude*
 .claude_settings.json
 .worktrees/
 .security-key
