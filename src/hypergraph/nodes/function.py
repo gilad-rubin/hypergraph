@@ -134,6 +134,7 @@ class FunctionNode(HyperNode):
 
     func: Callable
     _cache: bool
+    _hide: bool
     _definition_hash: str
     _is_async: bool
     _is_generator: bool
