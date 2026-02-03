@@ -487,7 +487,7 @@
 
     // --- Render Data Node (Compact) ---
     if (data.nodeType === 'DATA') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var isOutput = data.sourceId != null;
       var showAsOutput = data.separateOutputs && isOutput;
       var showTypes = data.showTypes;
@@ -514,7 +514,7 @@
 
     // --- Render Input Node (Compact - styled as DATA) ---
     if (data.nodeType === 'INPUT') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var isBound = Boolean(data.isBound);
       var showTypes = data.showTypes;
       var typeHint = data.typeHint;
@@ -540,7 +540,7 @@
 
     // --- Render Input Group Node ---
     if (data.nodeType === 'INPUT_GROUP') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var params = data.params || [];
       var paramTypes = data.paramTypes || [];
       var isBound = data.isBound;
@@ -572,7 +572,7 @@
 
     // --- Render End Node (Terminal marker) ---
     if (data.nodeType === 'END') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
 
       return html`
           <div className="w-full h-full relative" style=${outerWrapperStyle}>
@@ -591,7 +591,7 @@
 
     // --- Render Branch Node (Diamond Shape) ---
     if (data.nodeType === 'BRANCH') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var hoverState = useState(false);
       var isHovered = hoverState[0];
       var setIsHovered = hoverState[1];
@@ -652,7 +652,7 @@
 
     // --- Render Expanded Pipeline Group ---
     if (data.nodeType === 'PIPELINE' && isExpanded) {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var handleCollapseClick = function(e) {
         e.stopPropagation();
         e.preventDefault();
@@ -684,7 +684,7 @@
     }
 
     // --- Render Standard Node ---
-    var isLight = theme === 'light';
+    const isLight = theme === 'light';
     var boundInputs = data.inputs ? data.inputs.filter(function(i) { return i.is_bound; }).length : 0;
     var outputs = data.outputs || [];
     var showCombined = !data.separateOutputs && outputs.length > 0;

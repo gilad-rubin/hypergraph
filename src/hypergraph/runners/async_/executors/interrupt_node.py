@@ -24,8 +24,15 @@ class AsyncInterruptNodeExecutor:
         is_multi_output = node.is_multi_output
         is_multi_input = node.is_multi_input
 
-        # Collect all input values
-        input_values = {name: inputs[name] for name in node.inputs}
+        # Collect all input values with validation
+        input_values = {}
+        for name in node.inputs:
+            if name not in inputs:
+                raise KeyError(
+                    f"InterruptNode '{node.name}' requires input '{name}' "
+                    f"but it was not provided. Available inputs: {list(inputs.keys())}"
+                )
+            input_values[name] = inputs[name]
 
         # Resume path: ALL outputs already in state (provided via values dict)
         # Skip pause only if all values exist AND node hasn't executed yet this run
@@ -52,6 +59,19 @@ class AsyncInterruptNodeExecutor:
             # Normalize response to dict
             if is_multi_output:
                 if isinstance(response, dict):
+                    # Validate handler returned correct keys for multi-output
+                    expected_keys = set(node.outputs)
+                    actual_keys = set(response.keys())
+                    if actual_keys != expected_keys:
+                        missing = expected_keys - actual_keys
+                        extra = actual_keys - expected_keys
+                        raise ValueError(
+                            f"Handler for InterruptNode '{node.name}' returned dict "
+                            f"with incorrect keys. Expected: {sorted(expected_keys)}, "
+                            f"Got: {sorted(actual_keys)}. "
+                            + (f"Missing: {sorted(missing)}. " if missing else "")
+                            + (f"Extra: {sorted(extra)}." if extra else "")
+                        )
                     return response
                 # Single value returned for multi-output: assign to first output
                 return {node.outputs[0]: response}

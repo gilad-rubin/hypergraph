@@ -982,12 +982,24 @@ def _create_input_nodes(
             # Edge routing uses param_to_consumer mappings, not node IDs here.
 
 
-def _has_end_routing(flat_graph: nx.DiGraph) -> bool:
-    """Check if any gate node routes to the END sentinel."""
+def _has_end_routing(
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> bool:
+    """Check if any visible gate node routes to the END sentinel.
+
+    Only counts gates that are visible in the current expansion state,
+    so the END node doesn't appear when all END-routing gates are hidden.
+    """
     for node_id, attrs in flat_graph.nodes(data=True):
         branch_data = attrs.get("branch_data", {})
         if not branch_data:
             continue
+
+        # Only count visible gates
+        if not _is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+
         # Check ifelse nodes
         if branch_data.get("when_false") == "END" or branch_data.get("when_true") == "END":
             return True
@@ -1005,9 +1017,10 @@ def _create_end_node(
     flat_graph: nx.DiGraph,
     theme: str,
     show_types: bool,
+    expansion_state: dict[str, bool],
 ) -> None:
     """Create the END node when the graph explicitly routes to END."""
-    if not _has_end_routing(flat_graph):
+    if not _has_end_routing(flat_graph, expansion_state):
         return
 
     end_node: dict[str, Any] = {
@@ -1033,7 +1046,7 @@ def _add_end_node_edges(
     separate_outputs: bool,
 ) -> None:
     """Add edges from gates that route to END."""
-    if not _has_end_routing(flat_graph):
+    if not _has_end_routing(flat_graph, expansion_state):
         return
 
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -1181,6 +1194,10 @@ def _create_data_nodes(
     to hide them when the container is collapsed.
     """
     for node_id, attrs in flat_graph.nodes(data=True):
+        # Skip hidden nodes - they should not produce DATA nodes
+        if attrs.get("hide", False):
+            continue
+
         output_types = attrs.get("output_types", {})
         parent_id = attrs.get("parent")
         allowed_outputs = None
@@ -1454,7 +1471,7 @@ def _compute_nodes_for_state(
     _create_data_nodes(nodes, [], flat_graph, theme, show_types, graph_output_visibility)
 
     # Create END node for terminal outputs
-    _create_end_node(nodes, flat_graph, theme, show_types)
+    _create_end_node(nodes, flat_graph, theme, show_types, expansion_state)
 
     for node in nodes:
         node.setdefault("data", {})["separateOutputs"] = separate_outputs

@@ -604,6 +604,8 @@
         target = deepToChild.get(target);
       }
 
+      // Filter self-loops: feedback edges (cycles) are detected and styled separately
+      // in the cycle detection pass - this layout pass handles only forward edges
       if (childIds.has(source) && childIds.has(target) && source !== target) {
         var edgeKey = source + '->' + target;
         if (!internalEdgeSet.has(edgeKey)) {
@@ -745,6 +747,8 @@
         target = childToRootAncestor.get(target);
       }
 
+      // Filter self-loops: feedback edges (cycles) are detected and styled separately
+      // in the cycle detection pass - this layout pass handles only forward edges
       if (rootNodeIds.has(source) && rootNodeIds.has(target) && source !== target) {
         var edgeKey = source + '->' + target;
         if (!rootEdgeSet.has(edgeKey)) {
