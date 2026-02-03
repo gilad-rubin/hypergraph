@@ -576,10 +576,12 @@
       var showTypes = data.showTypes;
       var outputs = data.outputs || [];
       var typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
+      var hasOutputs = outputs.length > 0;
 
       return html`
           <div className="w-full h-full relative" style=${outerWrapperStyle}>
-              <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' +
+              <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col items-center transition-colors transition-shadow duration-200 hover:shadow-lg' +
+                  (hasOutputs ? ' gap-1' : ' justify-center') +
                   (isLight
                       ? ' bg-white border-emerald-300 text-slate-700 shadow-slate-200 hover:border-emerald-400'
                       : ' bg-slate-900 border-emerald-500/50 text-slate-300 shadow-black/50 hover:border-emerald-400/70')
@@ -589,11 +591,11 @@
                       <${Icons.End} />
                       <span>End</span>
                   </div>
-                  ${outputs.length > 0 ? html`
-                      <div className=${'border-t pt-1 flex flex-col gap-0.5 ' + (isLight ? 'border-slate-100' : 'border-slate-800/50')}>
+                  ${hasOutputs ? html`
+                      <div className=${'border-t pt-1 flex flex-col gap-0.5 w-full ' + (isLight ? 'border-slate-100' : 'border-slate-800/50')}>
                           ${outputs.map(function(out) {
                               return html`
-                                  <div key=${out.name} className="flex items-center gap-2 whitespace-nowrap">
+                                  <div key=${out.name} className="flex items-center justify-center gap-2 whitespace-nowrap">
                                       <span className=${isLight ? 'text-slate-400' : 'text-slate-500'}><${Icons.Data} className="w-3 h-3" /></span>
                                       <span className="text-xs font-mono leading-tight">${out.name}</span>
                                       ${showTypes && out.type ? html`<span className=${'text-[10px] font-mono ' + typeClass} title=${out.type}>: ${truncateTypeHint(out.type)}</span>` : null}
