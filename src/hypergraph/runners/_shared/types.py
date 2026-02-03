@@ -78,17 +78,21 @@ class PauseInfo:
 
     Attributes:
         node_name: Name of the InterruptNode that paused (uses "/" for nesting)
-        output_param: The output parameter name where the response goes
-        value: The input value surfaced to the caller
+        output_param: The first output parameter name (backward compat)
+        value: The first input value surfaced to the caller (backward compat)
+        output_params: All output parameter names if multi-output, else None
+        values: All input values as {name: value} if multi-input, else None
     """
 
     node_name: str
     output_param: str
     value: Any
+    output_params: tuple[str, ...] | None = None
+    values: dict[str, Any] | None = None
 
     @property
     def response_key(self) -> str:
-        """Key to use in values dict when resuming.
+        """Key to use in values dict when resuming (first output).
 
         Top-level: returns output_param directly (e.g., 'decision').
         Nested: dot-separated path (e.g., 'review.decision').
@@ -97,6 +101,18 @@ class PauseInfo:
         if len(parts) == 1:
             return self.output_param
         return ".".join(parts[:-1]) + "." + self.output_param
+
+    @property
+    def response_keys(self) -> dict[str, str]:
+        """Map output names to resume keys.
+
+        Returns a dict mapping each output parameter name to the key to use
+        when providing the response value in the input dict.
+        """
+        params = self.output_params or (self.output_param,)
+        parts = self.node_name.split("/")
+        prefix = ".".join(parts[:-1]) + "." if len(parts) > 1 else ""
+        return {p: prefix + p for p in params}
 
 
 class PauseExecution(BaseException):
