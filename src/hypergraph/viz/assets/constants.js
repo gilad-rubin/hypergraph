@@ -16,6 +16,7 @@
     'INPUT': 6,        // Input nodes (shadow-sm)
     'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
     'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
+    'END': 6,          // End node (shadow-sm, similar to DATA)
   };
 
   return {

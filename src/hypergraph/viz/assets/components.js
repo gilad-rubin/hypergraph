@@ -96,7 +96,8 @@
     MergeOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 3H3v5"></path><path d="m3 3 5.586 5.586a2 2 0 0 1 .586 1.414V22"></path><path d="M16 3h5v5"></path><path d="m21 3-5.586 5.586a2 2 0 0 0-.586 1.414V22"></path></svg>`; },
     Type: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`; }
     ,
-    Loop: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M17 3h4v4"/></svg>`; }
+    Loop: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M17 3h4v4"/></svg>`; },
+    End: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>`; }
   };
 
   // === TOOLTIP BUTTON COMPONENT ===
@@ -565,6 +566,44 @@
                   })}
               </div>
               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
+          </div>
+      `;
+    }
+
+    // --- Render End Node (Terminal marker) ---
+    if (data.nodeType === 'END') {
+      var isLight = theme === 'light';
+      var showTypes = data.showTypes;
+      var outputs = data.outputs || [];
+      var typeClass = isLight ? 'text-slate-400' : 'text-slate-500';
+
+      return html`
+          <div className="w-full h-full relative" style=${outerWrapperStyle}>
+              <div className=${'px-3 py-2 w-full h-full relative rounded-xl border shadow-sm flex flex-col gap-1 transition-colors transition-shadow duration-200 hover:shadow-lg' +
+                  (isLight
+                      ? ' bg-white border-emerald-300 text-slate-700 shadow-slate-200 hover:border-emerald-400'
+                      : ' bg-slate-900 border-emerald-500/50 text-slate-300 shadow-black/50 hover:border-emerald-400/70')
+              }>
+                  <div className=${'flex items-center justify-center gap-2 text-xs font-semibold uppercase tracking-wide ' +
+                      (isLight ? 'text-emerald-600' : 'text-emerald-400')}>
+                      <${Icons.End} />
+                      <span>End</span>
+                  </div>
+                  ${outputs.length > 0 ? html`
+                      <div className=${'border-t pt-1 flex flex-col gap-0.5 ' + (isLight ? 'border-slate-100' : 'border-slate-800/50')}>
+                          ${outputs.map(function(out) {
+                              return html`
+                                  <div key=${out.name} className="flex items-center gap-2 whitespace-nowrap">
+                                      <span className=${isLight ? 'text-slate-400' : 'text-slate-500'}><${Icons.Data} className="w-3 h-3" /></span>
+                                      <span className="text-xs font-mono leading-tight">${out.name}</span>
+                                      ${showTypes && out.type ? html`<span className=${'text-[10px] font-mono ' + typeClass} title=${out.type}>: ${truncateTypeHint(out.type)}</span>` : null}
+                                  </div>
+                              `;
+                          })}
+                      </div>
+                  ` : null}
+              </div>
+              <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
           </div>
       `;
     }

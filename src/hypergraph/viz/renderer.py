@@ -418,8 +418,13 @@ def _build_output_to_producer_map(
 
 
 def _is_node_visible(node_id: str, flat_graph: nx.DiGraph, expansion_state: dict[str, bool]) -> bool:
-    """Check if a node is visible (all ancestors are expanded)."""
+    """Check if a node is visible (not hidden and all ancestors are expanded)."""
     attrs = flat_graph.nodes[node_id]
+
+    # Hidden nodes are never visible
+    if attrs.get("hide", False):
+        return False
+
     parent_id = attrs.get("parent")
 
     while parent_id is not None:
@@ -977,6 +982,128 @@ def _create_input_nodes(
             # Edge routing uses param_to_consumer mappings, not node IDs here.
 
 
+def _get_terminal_outputs(flat_graph: nx.DiGraph) -> list[tuple[str, str, type | None]]:
+    """Find terminal outputs - outputs not consumed by any node in the graph.
+
+    Returns:
+        List of (producer_node_id, output_name, output_type) tuples
+    """
+    # Collect all inputs (consumed values)
+    all_inputs: set[str] = set()
+    for node_id, attrs in flat_graph.nodes(data=True):
+        for inp in attrs.get("inputs", ()):
+            all_inputs.add(inp)
+
+    # Find outputs not in inputs (terminal outputs)
+    terminal_outputs: list[tuple[str, str, type | None]] = []
+    for node_id, attrs in flat_graph.nodes(data=True):
+        # Only consider root-level nodes for terminal outputs
+        if attrs.get("parent") is not None:
+            continue
+        output_types = attrs.get("output_types", {})
+        for output_name in attrs.get("outputs", ()):
+            if output_name not in all_inputs:
+                terminal_outputs.append((node_id, output_name, output_types.get(output_name)))
+
+    return terminal_outputs
+
+
+def _create_end_node(
+    nodes: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    theme: str,
+    show_types: bool,
+) -> None:
+    """Create the END node for terminal outputs.
+
+    The END node shows all outputs that are not consumed by any other node
+    in the graph - these are the "final" outputs of the computation.
+    """
+    terminal_outputs = _get_terminal_outputs(flat_graph)
+
+    if not terminal_outputs:
+        return
+
+    end_node: dict[str, Any] = {
+        "id": "__end__",
+        "type": "custom",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "nodeType": "END",
+            "label": "End",
+            "outputs": [
+                {"name": output_name, "type": _format_type(output_type)}
+                for _, output_name, output_type in terminal_outputs
+            ],
+            "theme": theme,
+            "showTypes": show_types,
+        },
+        "sourcePosition": "bottom",
+        "targetPosition": "top",
+    }
+    nodes.append(end_node)
+
+
+def _add_end_node_edges(
+    edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+    separate_outputs: bool,
+) -> None:
+    """Add edges from terminal output producers to the END node.
+
+    In merged mode: edges go from producer function → END
+    In separate mode: edges go from DATA node → END
+    """
+    terminal_outputs = _get_terminal_outputs(flat_graph)
+
+    if not terminal_outputs:
+        return
+
+    for producer_id, output_name, _ in terminal_outputs:
+        # Check if producer is visible
+        if not _is_node_visible(producer_id, flat_graph, expansion_state):
+            # Find visible ancestor
+            actual_source = _get_root_ancestor(producer_id, flat_graph)
+        else:
+            actual_source = producer_id
+
+        # Check if source is an expanded container - route from internal producer
+        source_attrs = flat_graph.nodes.get(actual_source, {})
+        is_source_container = source_attrs.get("node_type") == "GRAPH"
+        is_source_expanded = expansion_state.get(actual_source, False)
+
+        if is_source_container and is_source_expanded:
+            # Find internal producer
+            internal_producer = _find_internal_producer_for_output(
+                actual_source, output_name, flat_graph, expansion_state
+            )
+            if internal_producer:
+                actual_source = internal_producer
+
+        if separate_outputs:
+            # Route through DATA node
+            data_node_id = f"data_{actual_source}_{output_name}"
+            edge_id = f"e_{data_node_id}_to___end__"
+            source_id = data_node_id
+        else:
+            # Direct from producer
+            edge_id = f"e_{actual_source}_{output_name}_to___end__"
+            source_id = actual_source
+
+        edges.append({
+            "id": edge_id,
+            "source": source_id,
+            "target": "__end__",
+            "animated": False,
+            "style": {"stroke": "#10b981", "strokeWidth": 2},  # Emerald color for END edges
+            "data": {
+                "edgeType": "end",
+                "valueName": output_name,
+            },
+        })
+
+
 def _get_root_ancestor(node_id: str, flat_graph: nx.DiGraph) -> str:
     """Get the root-level ancestor of a node (or itself if root-level)."""
     attrs = flat_graph.nodes[node_id]
@@ -1276,6 +1403,9 @@ def _compute_edges_for_state(
     else:
         _add_merged_output_edges(edges, flat_graph, expansion_state)
 
+    # 3. Add edges from terminal outputs to END node
+    _add_end_node_edges(edges, flat_graph, expansion_state, separate_outputs)
+
     return edges
 
 
@@ -1321,6 +1451,10 @@ def _compute_nodes_for_state(
     )
 
     for node_id, attrs in flat_graph.nodes(data=True):
+        # Skip hidden nodes
+        if attrs.get("hide", False):
+            continue
+
         parent_id = attrs.get("parent")
         node_type = attrs.get("node_type", "FUNCTION")
         rf_node_type = "PIPELINE" if node_type == "GRAPH" else node_type
@@ -1351,6 +1485,9 @@ def _compute_nodes_for_state(
         nodes.append(rf_node)
 
     _create_data_nodes(nodes, [], flat_graph, theme, show_types, graph_output_visibility)
+
+    # Create END node for terminal outputs
+    _create_end_node(nodes, flat_graph, theme, show_types)
 
     for node in nodes:
         node.setdefault("data", {})["separateOutputs"] = separate_outputs
