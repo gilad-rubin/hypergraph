@@ -1008,20 +1008,51 @@ def _get_terminal_outputs(flat_graph: nx.DiGraph) -> list[tuple[str, str, type |
     return terminal_outputs
 
 
+def _get_gates_to_end(flat_graph: nx.DiGraph) -> list[str]:
+    """Find gate nodes (ifelse/route) that route to the END sentinel.
+
+    Returns:
+        List of gate node IDs that have END as a target
+    """
+    gates_to_end: list[str] = []
+    for node_id, attrs in flat_graph.nodes(data=True):
+        branch_data = attrs.get("branch_data", {})
+        if not branch_data:
+            continue
+
+        # Check ifelse nodes
+        if branch_data.get("when_false") == "END" or branch_data.get("when_true") == "END":
+            gates_to_end.append(node_id)
+        # Check route nodes
+        elif "targets" in branch_data:
+            targets = branch_data["targets"]
+            # targets can be a list or dict
+            target_values = targets.values() if isinstance(targets, dict) else targets
+            for target in target_values:
+                if target == "END":
+                    gates_to_end.append(node_id)
+                    break
+
+    return gates_to_end
+
+
 def _create_end_node(
     nodes: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     theme: str,
     show_types: bool,
 ) -> None:
-    """Create the END node for terminal outputs.
+    """Create the END node for terminal outputs and gate-to-END routing.
 
-    The END node shows all outputs that are not consumed by any other node
-    in the graph - these are the "final" outputs of the computation.
+    The END node appears when:
+    1. There are outputs not consumed by any other node (terminal outputs)
+    2. Any gate node (ifelse/route) routes to the END sentinel
     """
     terminal_outputs = _get_terminal_outputs(flat_graph)
+    gates_to_end = _get_gates_to_end(flat_graph)
 
-    if not terminal_outputs:
+    # Only create END node if there are terminal outputs OR gates routing to END
+    if not terminal_outputs and not gates_to_end:
         return
 
     end_node: dict[str, Any] = {
@@ -1050,16 +1081,20 @@ def _add_end_node_edges(
     expansion_state: dict[str, bool],
     separate_outputs: bool,
 ) -> None:
-    """Add edges from terminal output producers to the END node.
+    """Add edges from terminal output producers and gates to the END node.
 
-    In merged mode: edges go from producer function → END
-    In separate mode: edges go from DATA node → END
+    Handles two cases:
+    1. Terminal outputs (outputs not consumed by any node)
+    2. Gate nodes (ifelse/route) that route to the END sentinel
     """
     terminal_outputs = _get_terminal_outputs(flat_graph)
+    gates_to_end = _get_gates_to_end(flat_graph)
 
-    if not terminal_outputs:
+    # If no END node will be created, skip
+    if not terminal_outputs and not gates_to_end:
         return
 
+    # Add edges from terminal output producers
     for producer_id, output_name, _ in terminal_outputs:
         # Check if producer is visible
         if not _is_node_visible(producer_id, flat_graph, expansion_state):
@@ -1100,6 +1135,33 @@ def _add_end_node_edges(
             "data": {
                 "edgeType": "end",
                 "valueName": output_name,
+            },
+        })
+
+    # Add edges from gates that route to END
+    for gate_id in gates_to_end:
+        if not _is_node_visible(gate_id, flat_graph, expansion_state):
+            continue
+
+        # Determine the label based on which branch goes to END
+        attrs = flat_graph.nodes.get(gate_id, {})
+        branch_data = attrs.get("branch_data", {})
+        label = None
+        if branch_data.get("when_false") == "END":
+            label = "False"
+        elif branch_data.get("when_true") == "END":
+            label = "True"
+
+        edge_id = f"e_{gate_id}_to___end__"
+        edges.append({
+            "id": edge_id,
+            "source": gate_id,
+            "target": "__end__",
+            "animated": False,
+            "style": {"stroke": "#10b981", "strokeWidth": 2},
+            "data": {
+                "edgeType": "end",
+                "label": label,
             },
         })
 
