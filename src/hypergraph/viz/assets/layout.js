@@ -469,7 +469,8 @@
     if (!srcPos || !tgtPos || !srcDims || !tgtDims) return null;
 
     var srcCenterX = srcPos.x + srcDims.width / 2;
-    var srcBottomY = srcPos.y + srcDims.height;
+    var srcNodeType = nodeTypes.get(edge.source) || 'FUNCTION';
+    var srcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcNodeType);
     var tgtCenterX = tgtPos.x + tgtDims.width / 2;
     var tgtTopY = tgtPos.y;
 
@@ -478,9 +479,6 @@
     var gutterX = Math.min(srcLeft, tgtLeft) - FEEDBACK_EDGE_GUTTER;
     if (gutterX < 0) gutterX = 0;
 
-    var stemQuarterY = srcBottomY + FEEDBACK_EDGE_STEM * 0.25;
-    var stemMidY = srcBottomY + FEEDBACK_EDGE_STEM * 0.5;
-    var stemThreeQuarterY = srcBottomY + FEEDBACK_EDGE_STEM * 0.75;
     var stemY = srcBottomY + FEEDBACK_EDGE_STEM;
     var loopY = Math.min(srcPos.y, tgtPos.y) - FEEDBACK_EDGE_HEADROOM;
     if (loopY < 0) loopY = 0;
@@ -490,9 +488,6 @@
 
     return [
       { x: srcCenterX, y: srcBottomY },
-      { x: srcCenterX, y: stemQuarterY },
-      { x: srcCenterX, y: stemMidY },
-      { x: srcCenterX, y: stemThreeQuarterY },
       { x: srcCenterX, y: stemY },
       { x: gutterX, y: stemY },
       { x: gutterX, y: loopY },
