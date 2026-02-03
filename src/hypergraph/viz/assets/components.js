@@ -95,6 +95,8 @@
     SplitOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M16 3h5v5"></path><path d="M8 3H3v5"></path><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"></path><path d="m15 9 6-6"></path></svg>`; },
     MergeOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 3H3v5"></path><path d="m3 3 5.586 5.586a2 2 0 0 1 .586 1.414V22"></path><path d="M16 3h5v5"></path><path d="m21 3-5.586 5.586a2 2 0 0 0-.586 1.414V22"></path></svg>`; },
     Type: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`; }
+    ,
+    Loop: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>`; }
   };
 
   // === TOOLTIP BUTTON COMPONENT ===
@@ -631,6 +633,7 @@
     // --- Render Expanded Pipeline Group ---
     if (data.nodeType === 'PIPELINE' && isExpanded) {
       var isLight = theme === 'light';
+      var showSelfLoop = Boolean(data.selfLoop);
       var handleCollapseClick = function(e) {
         e.stopPropagation();
         e.preventDefault();
@@ -655,6 +658,16 @@
             <${Icon} />
             ${truncateLabel(data.label)}
           </button>
+          ${showSelfLoop ? html`
+            <div className=${'absolute top-2 right-2 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide flex items-center gap-1 ' +
+                (isLight
+                    ? ' bg-amber-100 text-amber-700 border border-amber-200'
+                    : ' bg-slate-950 text-amber-300 border border-amber-500/50')}
+                 title="Self loop">
+              <${Icons.Loop} />
+              self loop
+            </div>
+          ` : null}
           <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
           <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
         </div>
@@ -667,6 +680,7 @@
     var outputs = data.outputs || [];
     var showCombined = !data.separateOutputs && outputs.length > 0;
     var showTypes = data.showTypes;
+    var showSelfLoop = Boolean(data.selfLoop);
 
     return html`
       <div className="w-full h-full relative" style=${outerWrapperStyle}>
@@ -681,6 +695,17 @@
                (showCombined ? (isLight ? ' border-b border-slate-100' : ' border-b border-slate-800/50') : '')}>
             <div className=${'text-sm font-semibold truncate max-w-full text-center' +
                  (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>${truncateLabel(data.label)}</div>
+
+            ${showSelfLoop ? html`
+                <div className=${'absolute top-2 left-2 px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide flex items-center gap-1 ' +
+                    (isLight
+                        ? ' bg-slate-100 text-slate-600 border border-slate-200'
+                        : ' bg-slate-900 text-slate-300 border border-slate-700')}
+                     title="Self loop">
+                  <${Icons.Loop} />
+                  self loop
+                </div>
+            ` : null}
 
             ${boundInputs > 0 ? html`
                 <div className=${'absolute top-2 right-2 w-2 h-2 rounded-full ring-2 ring-offset-1' +

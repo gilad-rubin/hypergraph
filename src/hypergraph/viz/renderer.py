@@ -1293,6 +1293,12 @@ def _compute_nodes_for_state(
     """Compute nodes for a specific expansion state."""
     nodes: list[dict[str, Any]] = []
 
+    self_loop_nodes = {
+        source
+        for source, target in flat_graph.edges()
+        if source == target and _is_node_visible(source, flat_graph, expansion_state)
+    }
+
     bound_params = set(input_spec.get("bound", {}).keys())
     param_to_consumer = _build_param_to_consumer_map(
         flat_graph,
@@ -1331,6 +1337,8 @@ def _compute_nodes_for_state(
             show_types,
             separate_outputs,
         )
+        if node_id in self_loop_nodes:
+            rf_node.setdefault("data", {})["selfLoop"] = True
 
         if node_type == "GRAPH" and not separate_outputs:
             allowed_outputs = graph_output_visibility.get(node_id) if graph_output_visibility else None
@@ -1486,6 +1494,8 @@ def _add_merged_output_edges(
             if not _is_node_visible(actual_source, flat_graph, expansion_state):
                 continue
             if not _is_node_visible(actual_target, flat_graph, expansion_state):
+                continue
+            if actual_source == actual_target:
                 continue
 
             # Direct edge from actual source to actual target
@@ -1647,6 +1657,9 @@ def _add_separate_output_edges(
                     )
                     if entry_points:
                         actual_target = entry_points[0]
+
+            if source == actual_target:
+                continue
 
             edge_id = f"e_{source}_{actual_target}"
 
