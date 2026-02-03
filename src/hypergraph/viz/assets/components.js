@@ -236,37 +236,7 @@
       var points = data.points.slice();
       var isFeedbackEdge = data && data.isFeedbackEdge;
 
-      var feedbackStubPath = null;
-      var feedbackStubStyle = null;
       var renderPoints = points;
-      if (isFeedbackEdge && points.length > 0) {
-        var stubStart = points[0];
-        var stubEndY = stubStart.y + FEEDBACK_EDGE_STUB;
-        if (points.length > 1) {
-          stubEndY = Math.min(stubEndY, points[1].y);
-        }
-        var solidStroke = style.stroke;
-        if (typeof solidStroke === 'string') {
-          if (solidStroke.indexOf('rgba(') === 0) {
-            solidStroke = solidStroke.replace(/rgba\(([^,]+),([^,]+),([^,]+),[^\)]+\)/, 'rgba($1,$2,$3,1)');
-          } else if (solidStroke.indexOf('hsla(') === 0) {
-            solidStroke = solidStroke.replace(/hsla\(([^,]+),([^,]+),([^,]+),[^\)]+\)/, 'hsla($1,$2,$3,1)');
-          }
-        }
-        feedbackStubPath = 'M ' + stubStart.x + ' ' + stubStart.y +
-          ' L ' + stubStart.x + ' ' + stubEndY;
-        feedbackStubStyle = {
-          ...style,
-          stroke: solidStroke,
-          strokeDasharray: '0 0',
-          strokeWidth: Math.max((style.strokeWidth || 1.5) + 1.5, 3.5),
-          strokeLinecap: 'round',
-          opacity: 1,
-        };
-        if (points.length > 1) {
-          renderPoints = [{ x: stubStart.x, y: stubEndY }].concat(points.slice(1));
-        }
-      }
 
       // Use our points directly for position calculations
       var startPt = renderPoints[0];
@@ -381,7 +351,6 @@
     return html`
       <${React.Fragment}>
         <${BaseEdge} path=${edgePath} markerEnd=${markerEnd} style=${style} />
-        ${feedbackStubPath ? html`<${BaseEdge} path=${feedbackStubPath} style=${feedbackStubStyle} />` : null}
         ${showDebug ? html`
           <circle cx=${sourceX} cy=${sourceY} r="5" fill="#22c55e" stroke="#15803d" strokeWidth="1" />
           <circle cx=${targetX} cy=${targetY} r="5" fill="#3b82f6" stroke="#1d4ed8" strokeWidth="1" />
