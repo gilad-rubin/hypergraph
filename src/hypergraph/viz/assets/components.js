@@ -653,7 +653,6 @@
     // --- Render Expanded Pipeline Group ---
     if (data.nodeType === 'PIPELINE' && isExpanded) {
       var isLight = theme === 'light';
-      var showSelfLoop = Boolean(data.selfLoop);
       var handleCollapseClick = function(e) {
         e.stopPropagation();
         e.preventDefault();
@@ -677,15 +676,6 @@
                title=${data.label}>
             <${Icon} />
             ${truncateLabel(data.label)}
-            ${showSelfLoop ? html`
-              <span className=${'w-4 h-4 rounded-full flex items-center justify-center ' +
-                  (isLight
-                      ? ' bg-white border border-amber-200 text-amber-600'
-                      : ' bg-slate-950 border border-amber-500/50 text-amber-300')}
-                  title="Self loop">
-                <${Icons.Loop} />
-              </span>
-            ` : null}
           </button>
           <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
           <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
@@ -699,7 +689,6 @@
     var outputs = data.outputs || [];
     var showCombined = !data.separateOutputs && outputs.length > 0;
     var showTypes = data.showTypes;
-    var showSelfLoop = Boolean(data.selfLoop);
 
     return html`
       <div className="w-full h-full relative" style=${outerWrapperStyle}>
@@ -710,19 +699,11 @@
              }
              onClick=${data.nodeType === 'PIPELINE' ? function(e) { e.stopPropagation(); if(data.onToggleExpand) data.onToggleExpand(); } : undefined}>
 
-          <div className=${'px-3 py-2.5 flex flex-col items-center justify-center' +
+          <div className=${'px-3 py-2.5 flex flex-col items-center justify-center overflow-hidden' +
                (showCombined ? (isLight ? ' border-b border-slate-100' : ' border-b border-slate-800/50') : '')}>
+
             <div className=${'text-sm font-semibold truncate max-w-full text-center flex items-center justify-center gap-2' +
                  (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>
-              ${showSelfLoop ? html`
-                <span className=${'w-5 h-5 rounded-full flex items-center justify-center ' +
-                    (isLight
-                        ? ' bg-white border border-slate-200 text-slate-500 shadow-sm'
-                        : ' bg-slate-900 border border-slate-700 text-slate-300 shadow-black/50')}
-                    title="Self loop">
-                  <${Icons.Loop} />
-                </span>
-              ` : null}
               ${truncateLabel(data.label)}
             </div>
 
