@@ -54,7 +54,7 @@ class VizCapture:
         slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", value).strip("_")
         return slug or "graph"
 
-    def _next_filepath(self, graph: Any, kwargs: dict[str, Any]) -> Path:
+    def _next_filepath(self, graph: Any) -> Path:
         if not self._notebook:
             notebook_part = "notebook"
         else:
@@ -92,7 +92,7 @@ class VizCapture:
 
         filepath = kwargs.get("filepath")
         if not filepath:
-            filepath = self._next_filepath(graph, kwargs)
+            filepath = self._next_filepath(graph)
             kwargs["filepath"] = str(filepath)
         else:
             filepath = Path(filepath)
@@ -122,13 +122,19 @@ def exec_notebook_cells(
             continue
         try:
             if verbose:
-                exec(compile(source, str(nb_path), "exec"), globals_ns)
+                exec(  # noqa: S102  # intentional use of exec to execute notebook cells (trusted input)
+                    compile(source, str(nb_path), "exec"),
+                    globals_ns,
+                )
             else:
                 stdout_buffer = StringIO()
                 stderr_buffer = StringIO()
                 with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                    exec(compile(source, str(nb_path), "exec"), globals_ns)
-        except Exception as exc:  # noqa: BLE001
+                    exec(  # noqa: S102  # intentional use of exec to execute notebook cells (trusted input)
+                        compile(source, str(nb_path), "exec"),
+                        globals_ns,
+                    )
+        except Exception as exc:
             print(f"\n[ERROR] {nb_path} cell {i} failed:")
             print(source)
             print("\n" + "-" * 80)
@@ -171,7 +177,8 @@ def build_index(
     for notebook, items in records_by_notebook.items():
         lines.append(f"  <h2>{notebook}</h2>")
         for item in items:
-            rel = os.path.relpath(item.filepath, output_dir)
+            raw_rel = os.path.relpath(item.filepath, output_dir)
+            rel = raw_rel.replace(os.sep, "/")
             details = []
             for key in (
                 "depth",
@@ -223,7 +230,7 @@ def main() -> None:
         "--iframe-height",
         type=int,
         default=1200,
-        help="Iframe height for embedded previews (default: 800)",
+        help="Iframe height for embedded previews (default: 1200)",
     )
     parser.add_argument(
         "notebooks",
@@ -250,17 +257,18 @@ def main() -> None:
         kwargs.pop("width", None)
         kwargs.pop("height", None)
         kwargs.pop("_debug_overlays", None)
-        return original_graph_visualize(self, *args, **kwargs)
+        return viz.visualize(self, *args, **kwargs)
 
     Graph.visualize = graph_visualize_wrapper  # type: ignore[assignment]
 
     # Also patch the widget module reference (Graph.visualize imports from hypergraph.viz)
     try:
         import hypergraph.viz.widget as widget
+    except ImportError:
+        widget = None
 
+    if widget is not None:
         widget.visualize = capture.visualize  # type: ignore[assignment]
-    except Exception:
-        pass
 
     # Run notebooks
     for notebook_path in args.notebooks:

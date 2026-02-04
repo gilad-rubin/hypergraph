@@ -772,7 +772,11 @@
     const alignWeight = Math.max(0, Math.min(1, DATA_NODE_ALIGN_WEIGHT));
     const coordPrimary = layoutConfig.coordPrimary;
     const nodeById = new Map();
-    rows.forEach((row) => row.forEach((node) => nodeById.set(node.id, node)));
+    rows.forEach((row) => {
+      row.forEach((node) => {
+        nodeById.set(node.id, node);
+      });
+    });
     const dataSources = buildDataSourceMap(Array.from(nodeById.values()), edges);
 
     const degreeOf = (node) =>
@@ -867,9 +871,9 @@
   };
 
   // Configuration constants for edge routing
-  const EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;  // Y offset from target for convergence point
-  const EDGE_STRAIGHTEN_MAX_SHIFT = VizConstants.EDGE_STRAIGHTEN_MAX_SHIFT || 140;
-  const EDGE_MICRO_X_SNAP = VizConstants.EDGE_MICRO_X_SNAP || 6;
+  const EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET ?? 20;  // Y offset from target for convergence point
+  const EDGE_STRAIGHTEN_MAX_SHIFT = VizConstants.EDGE_STRAIGHTEN_MAX_SHIFT ?? 140;
+  const EDGE_MICRO_X_SNAP = VizConstants.EDGE_MICRO_X_SNAP ?? 6;
   const EDGE_ANGLE_WEIGHT = VizConstants.EDGE_ANGLE_WEIGHT ?? 1;
   const EDGE_CURVE_WEIGHT = VizConstants.EDGE_CURVE_WEIGHT ?? 0.75;
   const EDGE_TURN_WEIGHT = VizConstants.EDGE_TURN_WEIGHT ?? 0.25;
@@ -1069,6 +1073,20 @@
       if (Math.abs(d2) <= eps && onSegment(ax, ay, bx, by, dx, dy)) return true;
       if (Math.abs(d3) <= eps && onSegment(cx, cy, dx, dy, ax, ay)) return true;
       if (Math.abs(d4) <= eps && onSegment(cx, cy, dx, dy, bx, by)) return true;
+      if (
+        Math.abs(d1) <= eps &&
+        Math.abs(d2) <= eps &&
+        Math.abs(d3) <= eps &&
+        Math.abs(d4) <= eps
+      ) {
+        const ab_x_overlap =
+          Math.max(ax, bx) + eps >= Math.min(cx, dx) &&
+          Math.max(cx, dx) + eps >= Math.min(ax, bx);
+        const ab_y_overlap =
+          Math.max(ay, by) + eps >= Math.min(cy, dy) &&
+          Math.max(cy, dy) + eps >= Math.min(ay, by);
+        if (ab_x_overlap && ab_y_overlap) return true;
+      }
       return false;
     };
 
@@ -1240,9 +1258,13 @@
       const segmentNodeHits = (ax, ay, bx, by, rowA, rowB) => {
         if (EDGE_NODE_PENALTY <= 0) return 0;
         const rects = [];
-        getRowRects(rowA).forEach((rect) => rects.push(rect));
+        getRowRects(rowA).forEach((rect) => {
+          rects.push(rect);
+        });
         if (rowB !== rowA) {
-          getRowRects(rowB).forEach((rect) => rects.push(rect));
+          getRowRects(rowB).forEach((rect) => {
+            rects.push(rect);
+          });
         }
         let hits = 0;
         for (const rect of rects) {
