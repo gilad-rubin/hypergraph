@@ -34,12 +34,12 @@
 
   // === LAYOUT CONSTANTS ===
   var VizConstants = root.HypergraphVizConstants || {};
-var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
-var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
-var FEEDBACK_EDGE_STUB = VizConstants.FEEDBACK_EDGE_STUB || 18;
-var EDGE_SHARP_TURN_ANGLE = VizConstants.EDGE_SHARP_TURN_ANGLE ?? 0;
-var EDGE_CURVE_STYLE = VizConstants.EDGE_CURVE_STYLE ?? 1;
-var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
+  var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
+  var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
+  var FEEDBACK_EDGE_STUB = VizConstants.FEEDBACK_EDGE_STUB || 18;
+  var EDGE_SHARP_TURN_ANGLE = VizConstants.EDGE_SHARP_TURN_ANGLE ?? 0;
+  var EDGE_CURVE_STYLE = VizConstants.EDGE_CURVE_STYLE ?? 1;
+  var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
 
   // Keep RF handle anchors aligned with layout edge points.
   var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
@@ -347,6 +347,7 @@ var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
           var x = last.x;
           for (var i = pts.length - 2; i >= 0; i -= 1) {
             if (Math.abs(pts[i].x - x) > eps) return i + 1;
+            if (i === 0) return 1;
           }
           return 0;
         }
@@ -354,6 +355,7 @@ var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
           var y = last.y;
           for (var j = pts.length - 2; j >= 0; j -= 1) {
             if (Math.abs(pts[j].y - y) > eps) return j + 1;
+            if (j === 0) return 1;
           }
           return 0;
         }
@@ -382,10 +384,10 @@ var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
           return path;
         }
 
-        for (var i = 1; i < pts.length - 1; i += 1) {
-          var p0 = pts[i - 1];
-          var p1 = pts[i];
-          var p2 = pts[i + 1];
+        for (var j = 1; j < pts.length - 1; j += 1) {
+          var p0 = pts[j - 1];
+          var p1 = pts[j];
+          var p2 = pts[j + 1];
           var v1x = p1.x - p0.x;
           var v1y = p1.y - p0.y;
           var v2x = p2.x - p1.x;
