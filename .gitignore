@@ -46,3 +46,5 @@ outputs/
 .security-key
 logs/security/
 .env
+
+.codex/
