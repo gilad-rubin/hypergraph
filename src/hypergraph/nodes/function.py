@@ -134,6 +134,7 @@ class FunctionNode(HyperNode):
 
     func: Callable
     _cache: bool
+    _hide: bool
     _definition_hash: str
     _is_async: bool
     _is_generator: bool
@@ -146,6 +147,7 @@ class FunctionNode(HyperNode):
         *,
         rename_inputs: dict[str, str] | None = None,
         cache: bool = False,
+        hide: bool = False,
     ) -> None:
         """Wrap a function as a node.
 
@@ -156,6 +158,7 @@ class FunctionNode(HyperNode):
                          (side-effect only node).
             rename_inputs: Mapping to rename inputs {old: new}
             cache: Whether to cache results (default: False)
+            hide: Whether to hide from visualization (default: False)
 
         Warning:
             If the function has a return type annotation but no output_name
@@ -173,6 +176,7 @@ class FunctionNode(HyperNode):
 
         self.func = func
         self._cache = cache
+        self._hide = hide
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
@@ -211,6 +215,11 @@ class FunctionNode(HyperNode):
     def cache(self) -> bool:
         """Whether results should be cached."""
         return self._cache
+
+    @property
+    def hide(self) -> bool:
+        """Whether this node is hidden from visualization."""
+        return self._hide
 
     @property
     def defaults(self) -> dict[str, Any]:
@@ -418,6 +427,7 @@ def node(
     *,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
+    hide: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -435,6 +445,7 @@ def node(
                      (side-effect only node).
         rename_inputs: Mapping to rename inputs {old: new}
         cache: Whether to cache results (default: False)
+        hide: Whether to hide from visualization (default: False)
 
     Returns:
         FunctionNode if source provided, else decorator function.
@@ -456,6 +467,7 @@ def node(
             output_name=output_name,
             rename_inputs=rename_inputs,
             cache=cache,
+            hide=hide,
         )
 
     if source is not None:

@@ -36,6 +36,7 @@
   var VizConstants = root.HypergraphVizConstants || {};
   var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
   var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
+  var FEEDBACK_EDGE_STUB = VizConstants.FEEDBACK_EDGE_STUB || 18;
 
   // Keep RF handle anchors aligned with layout edge points.
   var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
@@ -94,6 +95,9 @@
     SplitOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M16 3h5v5"></path><path d="M8 3H3v5"></path><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"></path><path d="m15 9 6-6"></path></svg>`; },
     MergeOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 3H3v5"></path><path d="m3 3 5.586 5.586a2 2 0 0 1 .586 1.414V22"></path><path d="M16 3h5v5"></path><path d="m21 3-5.586 5.586a2 2 0 0 0-.586 1.414V22"></path></svg>`; },
     Type: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`; }
+    ,
+    Loop: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M17 3h4v4"/></svg>`; },
+    End: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>`; }
   };
 
   // === TOOLTIP BUTTON COMPONENT ===
@@ -233,10 +237,13 @@
       // Use constraint layout points directly - they already have correct coordinates
       // from either the constraint solver (internal edges) or Step 4 (cross-boundary)
       var points = data.points.slice();
+      var isFeedbackEdge = data && data.isFeedbackEdge;
+
+      var renderPoints = points;
 
       // Use our points directly for position calculations
-      var startPt = points[0];
-      var endPt = points[points.length - 1];
+      var startPt = renderPoints[0];
+      var endPt = renderPoints[renderPoints.length - 1];
 
       // Simplify "mostly vertical" edges
       var dx = Math.abs(endPt.x - startPt.x);
@@ -270,12 +277,12 @@
         return path;
       };
 
-      if (isNearlyVertical) {
+      if (isNearlyVertical && !isFeedbackEdge) {
         // Use actual points for nearly-vertical edges (including re-routed ones)
         var midY = (startPt.y + endPt.y) / 2;
         edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
       } else {
-        edgePath = curveBasis(points);
+        edgePath = curveBasis(renderPoints);
       }
 
       // Position label along the edge path
@@ -291,18 +298,18 @@
       } else {
         // Other labels: position at 35% along path points (away from arrow)
         var labelPos = 0.35;
-        var totalLength = points.length - 1;
+        var totalLength = renderPoints.length - 1;
         var labelIdx = Math.floor(totalLength * labelPos);
         var labelFrac = (totalLength * labelPos) - labelIdx;
-        if (points.length > 1 && labelIdx < points.length - 1) {
-          labelX = points[labelIdx].x + (points[labelIdx + 1].x - points[labelIdx].x) * labelFrac;
-          labelY = points[labelIdx].y + (points[labelIdx + 1].y - points[labelIdx].y) * labelFrac;
-        } else if (points.length > 1) {
-          labelX = (points[0].x + points[1].x) / 2;
-          labelY = (points[0].y + points[1].y) / 2;
+        if (renderPoints.length > 1 && labelIdx < renderPoints.length - 1) {
+          labelX = renderPoints[labelIdx].x + (renderPoints[labelIdx + 1].x - renderPoints[labelIdx].x) * labelFrac;
+          labelY = renderPoints[labelIdx].y + (renderPoints[labelIdx + 1].y - renderPoints[labelIdx].y) * labelFrac;
+        } else if (renderPoints.length > 1) {
+          labelX = (renderPoints[0].x + renderPoints[1].x) / 2;
+          labelY = (renderPoints[0].y + renderPoints[1].y) / 2;
         } else {
-          labelX = points[0].x;
-          labelY = points[0].y;
+          labelX = renderPoints[0].x;
+          labelY = renderPoints[0].y;
         }
       }
     } else {
@@ -480,7 +487,7 @@
 
     // --- Render Data Node (Compact) ---
     if (data.nodeType === 'DATA') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var isOutput = data.sourceId != null;
       var showAsOutput = data.separateOutputs && isOutput;
       var showTypes = data.showTypes;
@@ -507,7 +514,7 @@
 
     // --- Render Input Node (Compact - styled as DATA) ---
     if (data.nodeType === 'INPUT') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var isBound = Boolean(data.isBound);
       var showTypes = data.showTypes;
       var typeHint = data.typeHint;
@@ -533,7 +540,7 @@
 
     // --- Render Input Group Node ---
     if (data.nodeType === 'INPUT_GROUP') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var params = data.params || [];
       var paramTypes = data.paramTypes || [];
       var isBound = data.isBound;
@@ -563,9 +570,28 @@
       `;
     }
 
+    // --- Render End Node (Terminal marker) ---
+    if (data.nodeType === 'END') {
+      const isLight = theme === 'light';
+
+      return html`
+          <div className="w-full h-full relative" style=${outerWrapperStyle}>
+              <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' +
+                  (isLight
+                      ? ' bg-white border-emerald-300 text-emerald-600 shadow-slate-200 hover:border-emerald-400'
+                      : ' bg-slate-900 border-emerald-500/50 text-emerald-400 shadow-black/50 hover:border-emerald-400/70')
+              }>
+                  <${Icons.End} />
+                  <span className="text-xs font-semibold uppercase tracking-wide">End</span>
+              </div>
+              <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${targetHandleStyle} />
+          </div>
+      `;
+    }
+
     // --- Render Branch Node (Diamond Shape) ---
     if (data.nodeType === 'BRANCH') {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var hoverState = useState(false);
       var isHovered = hoverState[0];
       var setIsHovered = hoverState[1];
@@ -626,7 +652,7 @@
 
     // --- Render Expanded Pipeline Group ---
     if (data.nodeType === 'PIPELINE' && isExpanded) {
-      var isLight = theme === 'light';
+      const isLight = theme === 'light';
       var handleCollapseClick = function(e) {
         e.stopPropagation();
         e.preventDefault();
@@ -658,7 +684,7 @@
     }
 
     // --- Render Standard Node ---
-    var isLight = theme === 'light';
+    const isLight = theme === 'light';
     var boundInputs = data.inputs ? data.inputs.filter(function(i) { return i.is_bound; }).length : 0;
     var outputs = data.outputs || [];
     var showCombined = !data.separateOutputs && outputs.length > 0;
@@ -673,10 +699,13 @@
              }
              onClick=${data.nodeType === 'PIPELINE' ? function(e) { e.stopPropagation(); if(data.onToggleExpand) data.onToggleExpand(); } : undefined}>
 
-          <div className=${'px-3 py-2.5 flex flex-col items-center justify-center' +
+          <div className=${'px-3 py-2.5 flex flex-col items-center justify-center overflow-hidden' +
                (showCombined ? (isLight ? ' border-b border-slate-100' : ' border-b border-slate-800/50') : '')}>
-            <div className=${'text-sm font-semibold truncate max-w-full text-center' +
-                 (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>${truncateLabel(data.label)}</div>
+
+            <div className=${'text-sm font-semibold truncate max-w-full text-center flex items-center justify-center gap-2' +
+                 (isLight ? ' text-slate-800' : ' text-slate-100')} title=${data.label}>
+              ${truncateLabel(data.label)}
+            </div>
 
             ${boundInputs > 0 ? html`
                 <div className=${'absolute top-2 right-2 w-2 h-2 rounded-full ring-2 ring-offset-1' +

@@ -21,34 +21,69 @@ class AsyncInterruptNodeExecutor:
         state: "GraphState",
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
-        output_name = node.outputs[0]
+        is_multi_output = node.is_multi_output
+        is_multi_input = node.is_multi_input
 
-        # Resume path: output already in state (provided via values dict)
-        # Skip pause only if value exists AND node hasn't executed yet this run
+        # Collect all input values with validation
+        input_values = {}
+        for name in node.inputs:
+            if name not in inputs:
+                raise KeyError(
+                    f"InterruptNode '{node.name}' requires input '{name}' "
+                    f"but it was not provided. Available inputs: {list(inputs.keys())}"
+                )
+            input_values[name] = inputs[name]
+
+        # Resume path: ALL outputs already in state (provided via values dict)
+        # Skip pause only if all values exist AND node hasn't executed yet this run
         # (in cycles, the node re-executes and should pause again)
-        if output_name in state.values and node.name not in state.node_executions:
-            return {output_name: state.values[output_name]}
-
-        input_value = inputs[node.inputs[0]]
+        all_outputs_present = all(o in state.values for o in node.outputs)
+        if all_outputs_present and node.name not in state.node_executions:
+            return {o: state.values[o] for o in node.outputs}
 
         # Handler path: auto-resolve via node-attached handler
         if node.handler is not None:
             try:
-                response = node.handler(input_value)
+                if is_multi_input:
+                    response = node.handler(input_values)
+                else:
+                    response = node.handler(input_values[node.inputs[0]])
                 if isawaitable(response):
                     response = await response
             except Exception as e:
                 raise RuntimeError(
-                    f"Handler for InterruptNode \'{node.name}\' failed: "
+                    f"Handler for InterruptNode '{node.name}' failed: "
                     f"{type(e).__name__}: {e}"
                 ) from e
-            return {output_name: response}
+
+            # Normalize response to dict
+            if is_multi_output:
+                if isinstance(response, dict):
+                    # Validate handler returned correct keys for multi-output
+                    expected_keys = set(node.outputs)
+                    actual_keys = set(response.keys())
+                    if actual_keys != expected_keys:
+                        missing = expected_keys - actual_keys
+                        extra = actual_keys - expected_keys
+                        raise ValueError(
+                            f"Handler for InterruptNode '{node.name}' returned dict "
+                            f"with incorrect keys. Expected: {sorted(expected_keys)}, "
+                            f"Got: {sorted(actual_keys)}. "
+                            + (f"Missing: {sorted(missing)}. " if missing else "")
+                            + (f"Extra: {sorted(extra)}." if extra else "")
+                        )
+                    return response
+                # Single value returned for multi-output: assign to first output
+                return {node.outputs[0]: response}
+            return {node.outputs[0]: response}
 
         # Pause path: no handler, no resume value
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
-                output_param=output_name,
-                value=input_value,
+                output_param=node.outputs[0],
+                value=input_values[node.inputs[0]],
+                output_params=node.outputs if is_multi_output else None,
+                values=input_values if is_multi_input else None,
             )
         )
