@@ -95,6 +95,61 @@ The recursive layout is split into explicit phases:
 
 Key config values live in `assets/constants.js` and are shared across layout and routing.
 
+## Edge Styling + Routing Knobs (constants.js)
+
+These are the main “shape” controls we’ve added and tuned.
+
+- `EDGE_CURVE_STYLE`
+  - `0` = straight polyline
+  - `1` = smooth curve (B‑spline)
+  - between `0..1` = gentler Catmull‑Rom curve
+- `EDGE_ELBOW_RADIUS`
+  - Only used for straight polylines (rounded elbows)
+  - Example: `EDGE_CURVE_STYLE: 0`, `EDGE_ELBOW_RADIUS: 12`
+- `EDGE_SHARP_TURN_ANGLE`
+  - Only applies when `EDGE_CURVE_STYLE < 1`
+  - Forces straight segments on sharp turns
+- `EDGE_NONSTRAIGHT_WEIGHT`
+  - Penalizes cumulative bend angles
+  - Helps prefer “big angle then straight” over many small bends
+- `EDGE_CURVE_WEIGHT`, `EDGE_TURN_WEIGHT`, `EDGE_LATERAL_WEIGHT`
+  - Penalize extra X changes, left/right flips, and total sideways travel
+- `EDGE_NODE_PENALTY`, `EDGE_NODE_CLEARANCE`
+  - Penalize corridor segments passing over nodes
+  - Expanded containers are excluded
+- `EDGE_EDGE_PENALTY`, `EDGE_EDGE_CLEARANCE`
+  - Penalize corridor segments crossing other edges
+- `EDGE_SHARED_TARGET_SPACING_SCALE`
+  - Scales separation between sources of the same target
+- `EDGE_STRAIGHTEN_MAX_SHIFT`
+  - Limits how far we can shift to keep a straight corridor
+
+**Blending invariant**
+- The final tail segment into a node is always straight (even for curved heads).
+- This forces all incoming edges to share the same stem and visually merge.
+
+## Edge Renderer Notes (components.js)
+
+- Curves are drawn by default using B‑spline or Catmull‑Rom (based on `EDGE_CURVE_STYLE`).
+- If `EDGE_CURVE_STYLE == 0` or sharp‑turn mode kicks in, edges are polylines.
+- We detect the **final vertical tail** and draw it as straight lines to guarantee
+  convergence, because B‑splines do not pass through intermediate points.
+
+## Gallery Script (render_notebook_viz.py)
+
+Generates a scrollable gallery of all notebook visualizations.
+
+**Usage**
+- `uv run python scripts/render_notebook_viz.py`
+- Output: `outputs/viz_gallery/index.html`
+
+**Options**
+- `--no-open` disables auto‑open
+- `--iframe-height 800` adjusts embedded preview height
+- `--verbose` shows notebook output
+
+Debug overlays are forced **off** in gallery renders.
+
 ## Node-Type Offsets and Visible Bounds
 
 Different node types have different wrapper-to-visible gaps (shadows, padding). Offsets are defined in `constants.js` and applied in:
@@ -126,6 +181,7 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 | DATA node duplicated when expanded | container DATA not filtered | `renderer.py` |
 | Separate outputs edge becomes function edge | Step 5 reroute clobbers DATA edge | `layout.js` `applyEdgeReroutesPhase` |
 | Edge starts/ends with visible gap | wrong node-type offset | `constants.js` + layout/routing usage |
+| Incoming edges don’t merge | curve doesn’t pass through convergence point | `components.js` tail‑straight logic |
 
 ## Test Coverage Pointers
 

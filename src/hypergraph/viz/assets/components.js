@@ -34,9 +34,12 @@
 
   // === LAYOUT CONSTANTS ===
   var VizConstants = root.HypergraphVizConstants || {};
-  var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
-  var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
-  var FEEDBACK_EDGE_STUB = VizConstants.FEEDBACK_EDGE_STUB || 18;
+var TYPE_HINT_MAX_CHARS = VizConstants.TYPE_HINT_MAX_CHARS || 25;
+var NODE_LABEL_MAX_CHARS = VizConstants.NODE_LABEL_MAX_CHARS || 25;
+var FEEDBACK_EDGE_STUB = VizConstants.FEEDBACK_EDGE_STUB || 18;
+var EDGE_SHARP_TURN_ANGLE = VizConstants.EDGE_SHARP_TURN_ANGLE ?? 0;
+var EDGE_CURVE_STYLE = VizConstants.EDGE_CURVE_STYLE ?? 1;
+var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
 
   // Keep RF handle anchors aligned with layout edge points.
   var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
@@ -249,6 +252,7 @@
       var dx = Math.abs(endPt.x - startPt.x);
       var dy = Math.abs(endPt.y - startPt.y);
       var isNearlyVertical = dx < 30 && dy > dx * 2;
+      var hasIntermediatePoints = points.length > 2;
 
       // curveBasis: B-spline interpolation
       var curveBasis = function(pts) {
@@ -277,12 +281,163 @@
         return path;
       };
 
-      if (isNearlyVertical && !isFeedbackEdge) {
+      var curveCatmullRom = function(pts, tension) {
+        if (pts.length < 2) return 'M ' + pts[0].x + ' ' + pts[0].y;
+        if (pts.length === 2) return 'M ' + pts[0].x + ' ' + pts[0].y + ' L ' + pts[1].x + ' ' + pts[1].y;
+
+        var t = Math.max(0, Math.min(1, tension));
+        var path = 'M ' + pts[0].x + ' ' + pts[0].y;
+
+        for (var i = 0; i < pts.length - 1; i += 1) {
+          var p0 = (i === 0) ? pts[i] : pts[i - 1];
+          var p1 = pts[i];
+          var p2 = pts[i + 1];
+          var p3 = (i + 2 < pts.length) ? pts[i + 2] : p2;
+
+          var c1x = p1.x + (p2.x - p0.x) * (t / 6);
+          var c1y = p1.y + (p2.y - p0.y) * (t / 6);
+          var c2x = p2.x - (p3.x - p1.x) * (t / 6);
+          var c2y = p2.y - (p3.y - p1.y) * (t / 6);
+
+          path += ' C ' + c1x + ' ' + c1y + ' ' + c2x + ' ' + c2y + ' ' + p2.x + ' ' + p2.y;
+        }
+
+        return path;
+      };
+
+      var computeMaxTurnAngle = function(pts) {
+        if (!pts || pts.length < 3) return 0;
+        var maxAngle = 0;
+        for (var i = 1; i < pts.length - 1; i += 1) {
+          var prev = pts[i - 1];
+          var curr = pts[i];
+          var next = pts[i + 1];
+          var v1x = curr.x - prev.x;
+          var v1y = curr.y - prev.y;
+          var v2x = next.x - curr.x;
+          var v2y = next.y - curr.y;
+          var mag1 = Math.sqrt(v1x * v1x + v1y * v1y);
+          var mag2 = Math.sqrt(v2x * v2x + v2y * v2y);
+          if (mag1 === 0 || mag2 === 0) continue;
+          var dot = v1x * v2x + v1y * v2y;
+          var cos = dot / (mag1 * mag2);
+          cos = Math.max(-1, Math.min(1, cos));
+          var angle = Math.acos(cos) * 180 / Math.PI;
+          if (angle > maxAngle) maxAngle = angle;
+        }
+        return maxAngle;
+      };
+
+      var buildLineTail = function(pts) {
+        var tail = '';
+        for (var i = 1; i < pts.length; i += 1) {
+          tail += ' L ' + pts[i].x + ' ' + pts[i].y;
+        }
+        return tail;
+      };
+
+      var findTailStartIndex = function(pts) {
+        if (!pts || pts.length < 3) return 0;
+        var last = pts[pts.length - 1];
+        var prev = pts[pts.length - 2];
+        var eps = 0.5;
+        var dxTail = Math.abs(last.x - prev.x);
+        var dyTail = Math.abs(last.y - prev.y);
+        if (dxTail < dyTail) {
+          var x = last.x;
+          for (var i = pts.length - 2; i >= 0; i -= 1) {
+            if (Math.abs(pts[i].x - x) > eps) return i + 1;
+          }
+          return 0;
+        }
+        if (dyTail < dxTail) {
+          var y = last.y;
+          for (var j = pts.length - 2; j >= 0; j -= 1) {
+            if (Math.abs(pts[j].y - y) > eps) return j + 1;
+          }
+          return 0;
+        }
+        return 0;
+      };
+
+      var maxTurnAngle = computeMaxTurnAngle(points);
+      var curveStyle = Math.max(0, Math.min(1, EDGE_CURVE_STYLE));
+      var sharpTurnsEnabled = EDGE_SHARP_TURN_ANGLE > 0 && curveStyle < 1;
+      var usePolyline = curveStyle <= 0 || (sharpTurnsEnabled && maxTurnAngle >= EDGE_SHARP_TURN_ANGLE);
+      var tailStartIdx = findTailStartIndex(points);
+      var headPoints = tailStartIdx > 0 ? points.slice(0, tailStartIdx + 1) : points;
+      var tailPoints = tailStartIdx > 0 ? points.slice(tailStartIdx) : [];
+
+      var buildRoundedPolyline = function(pts, radius) {
+        if (!pts || pts.length === 0) return '';
+        if (pts.length === 1) return 'M ' + pts[0].x + ' ' + pts[0].y;
+
+        var r = Math.max(0, radius || 0);
+        var path = 'M ' + pts[0].x + ' ' + pts[0].y;
+
+        if (r <= 0 || pts.length < 3) {
+          for (var i = 1; i < pts.length; i += 1) {
+            path += ' L ' + pts[i].x + ' ' + pts[i].y;
+          }
+          return path;
+        }
+
+        for (var i = 1; i < pts.length - 1; i += 1) {
+          var p0 = pts[i - 1];
+          var p1 = pts[i];
+          var p2 = pts[i + 1];
+          var v1x = p1.x - p0.x;
+          var v1y = p1.y - p0.y;
+          var v2x = p2.x - p1.x;
+          var v2y = p2.y - p1.y;
+          var len1 = Math.sqrt(v1x * v1x + v1y * v1y);
+          var len2 = Math.sqrt(v2x * v2x + v2y * v2y);
+
+          if (len1 === 0 || len2 === 0) {
+            path += ' L ' + p1.x + ' ' + p1.y;
+            continue;
+          }
+
+          var u1x = v1x / len1;
+          var u1y = v1y / len1;
+          var u2x = v2x / len2;
+          var u2y = v2y / len2;
+          var dot = u1x * u2x + u1y * u2y;
+          if (Math.abs(1 - Math.abs(dot)) < 1e-3) {
+            path += ' L ' + p1.x + ' ' + p1.y;
+            continue;
+          }
+
+          var cornerRadius = Math.min(r, len1 / 2, len2 / 2);
+          var startX = p1.x - u1x * cornerRadius;
+          var startY = p1.y - u1y * cornerRadius;
+          var endX = p1.x + u2x * cornerRadius;
+          var endY = p1.y + u2y * cornerRadius;
+
+          path += ' L ' + startX + ' ' + startY;
+          path += ' Q ' + p1.x + ' ' + p1.y + ' ' + endX + ' ' + endY;
+        }
+
+        path += ' L ' + pts[pts.length - 1].x + ' ' + pts[pts.length - 1].y;
+        return path;
+      };
+
+      if (usePolyline || curveStyle <= 0) {
+        edgePath = buildRoundedPolyline(points, EDGE_ELBOW_RADIUS);
+      } else if (isNearlyVertical && curveStyle >= 1 && !hasIntermediatePoints && !isFeedbackEdge) {
         // Use actual points for nearly-vertical edges (including re-routed ones)
         var midY = (startPt.y + endPt.y) / 2;
         edgePath = 'M ' + startPt.x + ' ' + startPt.y + ' C ' + startPt.x + ' ' + midY + ' ' + endPt.x + ' ' + midY + ' ' + endPt.x + ' ' + endPt.y;
+      } else if (curveStyle >= 1) {
+        edgePath = curveBasis(headPoints);
+        if (tailPoints.length > 1) {
+          edgePath += buildLineTail(tailPoints);
+        }
       } else {
-        edgePath = curveBasis(renderPoints);
+        edgePath = curveCatmullRom(headPoints, curveStyle);
+        if (tailPoints.length > 1) {
+          edgePath += buildLineTail(tailPoints);
+        }
       }
 
       // Position label along the edge path
@@ -531,7 +686,7 @@
               }>
                   <span className=${'shrink-0 ' + (isLight ? 'text-slate-400' : 'text-slate-500')}><${Icons.Data} /></span>
                   <span className="text-xs font-mono font-medium shrink-0">${data.label}</span>
-                  ${hasType ? html`<span className=${'text-[10px] font-mono truncate min-w-0 ' + typeClass} title=${typeHint}>: ${displayType}</span>` : null}
+                  ${hasType ? html`<span className=${'text-xs font-mono truncate min-w-0 ' + typeClass} title=${typeHint}>: ${displayType}</span>` : null}
               </div>
               <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${sourceHandleStyle} />
           </div>
@@ -560,7 +715,7 @@
                           <div className="flex items-center gap-2 whitespace-nowrap">
                               <span className=${isLight ? 'text-slate-400' : 'text-slate-500'}><${Icons.Data} className="w-3 h-3" /></span>
                               <div className="text-xs font-mono leading-tight">${p}</div>
-                              ${showTypes && paramTypes[i] ? html`<span className=${'text-[10px] font-mono ' + typeClass} title=${paramTypes[i]}>: ${truncateTypeHint(paramTypes[i])}</span>` : null}
+                              ${showTypes && paramTypes[i] ? html`<span className=${'text-xs font-mono ' + typeClass} title=${paramTypes[i]}>: ${truncateTypeHint(paramTypes[i])}</span>` : null}
                           </div>
                       `;
                   })}
