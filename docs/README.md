@@ -114,6 +114,7 @@ Test pieces independently. Reuse across workflows.
 - [Integrate with LLMs](05-how-to/integrate-with-llms.md) - Patterns for OpenAI, Anthropic, and others
 - [Test Without Framework](05-how-to/test-without-framework.md) - Test nodes as pure functions
 - [Observe Execution](05-how-to/observe-execution.md) - Progress bars, custom event processors, and monitoring
+- [Visualize Graphs](05-how-to/visualize-graphs.md) - Interactive graph visualization in notebooks and HTML
 
 ### API Reference
 - [Graph](06-api-reference/graph.md) - Graph construction, validation, and properties
@@ -125,7 +126,9 @@ Test pieces independently. Reuse across workflows.
 
 ### Design
 - [Philosophy](07-design/philosophy.md) - Why hypergraph exists and design principles
+- [Inspiration](07-design/inspiration.md) - Frameworks that influenced hypergraph's design
 - [Roadmap](07-design/roadmap.md) - What's implemented, what's coming next
+- [Changelog](changelog.md) - Release history and changes
 
 ## Design Principles
 
