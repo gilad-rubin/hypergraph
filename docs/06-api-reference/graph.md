@@ -166,6 +166,22 @@ g = Graph([fetch])
 print(g.has_async_nodes)  # True
 ```
 
+### `has_interrupts: bool`
+
+True if any node in the graph is an InterruptNode.
+
+```python
+from hypergraph import InterruptNode
+
+approval = InterruptNode(name="approval", input_param="draft", output_param="decision")
+g = Graph([make_draft, approval, finalize])
+print(g.has_interrupts)  # True
+```
+
+### `interrupt_nodes: list[InterruptNode]`
+
+Ordered list of InterruptNode instances in the graph.
+
 ### `definition_hash: str`
 
 Merkle-tree style hash of graph structure. Used for cache invalidation.

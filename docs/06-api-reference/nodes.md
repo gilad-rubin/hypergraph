@@ -154,6 +154,7 @@ def __init__(
     *,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
+    hide: bool = False,
 ) -> None: ...
 ```
 
@@ -167,6 +168,7 @@ def __init__(
   - `None` - Side-effect only, no outputs
 - `rename_inputs`: Optional dict `{old_param: new_param}` for input renaming
 - `cache`: Whether to cache results (default: False)
+- `hide`: Whether to hide this node from visualization (default: False)
 
 **Returns:** FunctionNode instance
 
@@ -437,6 +439,7 @@ def node(
     *,
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
+    hide: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -445,6 +448,7 @@ def node(
 - `output_name`: Output name(s). If None, side-effect only (outputs = ())
 - `rename_inputs`: Optional dict to rename inputs
 - `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on InterruptNode or GraphNode
+- `hide`: Whether to hide this node from visualization (default: False)
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)
@@ -967,7 +971,7 @@ Check the current map_over configuration:
 
 ```python
 @property
-def map_config(self) -> tuple[list[str], Literal["zip", "product"]] | None: ...
+def map_config(self) -> tuple[list[str], Literal["zip", "product"], ErrorHandling] | None: ...
 ```
 
 ```python
@@ -975,7 +979,7 @@ gn = inner.as_node()
 print(gn.map_config)  # None
 
 gn_mapped = gn.map_over("x", "y", mode="product")
-print(gn_mapped.map_config)  # (['x', 'y'], 'product')
+print(gn_mapped.map_config)  # (['x', 'y'], 'product', 'raise')
 ```
 
 ### Error: Missing Name
@@ -1004,9 +1008,9 @@ class InterruptNode(HyperNode):
         self,
         name: str,
         *,
-        input_param: str,
-        output_param: str,
-        response_type: type | None = None,
+        input_param: str | tuple[str, ...],
+        output_param: str | tuple[str, ...],
+        response_type: type | dict[str, type] | None = None,
         handler: Callable[..., Any] | None = None,
     ) -> None: ...
 ```
@@ -1014,10 +1018,10 @@ class InterruptNode(HyperNode):
 **Args:**
 
 - `name` (required): Node name
-- `input_param` (required): Name of the input parameter (value shown to the caller)
-- `output_param` (required): Name of the output parameter (where the user's response goes)
-- `response_type`: Optional type annotation for the response value
-- `handler`: Optional callable to auto-resolve the interrupt. Accepts one argument (the input value) and returns the response. May be sync or async.
+- `input_param` (required): Name(s) of the input parameter(s). Can be a single string or a tuple for multiple inputs.
+- `output_param` (required): Name(s) of the output parameter(s). Can be a single string or a tuple for multiple outputs.
+- `response_type`: Optional type annotation. For single output: a type. For multiple outputs: a dict mapping output names to types.
+- `handler`: Optional callable to auto-resolve the interrupt. For single input: accepts one argument. For multiple inputs: accepts a dict. May be sync or async.
 
 **Raises:**
 - `ValueError` - If `input_param` or `output_param` is not a valid Python identifier or is a reserved keyword
