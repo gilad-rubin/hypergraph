@@ -260,9 +260,10 @@ Test the accumulated output:
 ```python
 @pytest.mark.asyncio
 async def test_streaming():
+    graph = Graph([stream_response])
     runner = AsyncRunner()
 
-    result = await runner.run(stream_response, {
+    result = await runner.run(graph, {
         "messages": [{"role": "user", "content": "Say hello"}],
     })
 

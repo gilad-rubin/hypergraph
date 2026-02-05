@@ -196,6 +196,20 @@ def quality_gate(all_valid: bool, attempts: int = 0) -> str:
 quality_loop = Graph([generate_content, validate, check_validation, quality_gate])
 ```
 
+## Seed Inputs
+
+When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes a **seed** — an initial value needed to start the first iteration. Provide seeds in the `values` dict when calling `runner.run()`:
+
+```python
+result = runner.run(graph, {
+    "prompt": "...",
+    "history": [],       # Seed: initial value before first iteration
+    "iteration": 0,      # Seed: starting counter
+})
+```
+
+You can check what seeds a graph needs via `graph.inputs.seeds`. For full details, see [InputSpec](../06-api-reference/inputspec.md).
+
 ## Tracking State Across Iterations
 
 Use a node to accumulate state:

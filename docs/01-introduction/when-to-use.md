@@ -92,10 +92,9 @@ Hypergraph adds value when you have non-trivial composition, reuse, or control f
 Hypergraph is in **alpha**. The core features work, but:
 
 - Breaking API changes are possible
-- Some features are "coming soon" (checkpointing, observability hooks)
 - Ecosystem integrations are limited
 
-Hypergraph is in **alpha**. The core features work, but breaking API changes are possible and ecosystem integrations are limited. See the [Comparison](comparison.md) page for how hypergraph relates to other frameworks.
+See the [Comparison](comparison.md) page for how hypergraph relates to other frameworks.
 
 ## Summary
 
