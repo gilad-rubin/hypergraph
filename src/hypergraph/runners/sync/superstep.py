@@ -122,11 +122,17 @@ def run_superstep_sync(
         for name, value in outputs.items():
             new_state.update_value(name, value)
 
+        # Record wait_for versions
+        wait_for_versions = {
+            name: state.get_version(name) for name in node.wait_for
+        }
+
         # Record execution
         new_state.node_executions[node.name] = NodeExecution(
             node_name=node.name,
             input_versions=input_versions,
             outputs=outputs,
+            wait_for_versions=wait_for_versions,
         )
 
     return new_state

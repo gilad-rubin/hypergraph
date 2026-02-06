@@ -9,6 +9,9 @@ from typing import Any, TypeVar
 
 from hypergraph.nodes._rename import RenameEntry, RenameError, get_next_batch_id
 
+# Sentinel value auto-produced for emit outputs when a node runs.
+_EMIT_SENTINEL = object()
+
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _T = TypeVar("_T", bound="HyperNode")
 
@@ -96,6 +99,22 @@ class HyperNode(ABC):
         Default: False. Override in subclasses that support hiding.
         """
         return False
+
+    @property
+    def wait_for(self) -> tuple[str, ...]:
+        """Ordering-only inputs: node won't run until these values exist and are fresh.
+
+        Default: empty tuple. Override in subclasses that support wait_for.
+        """
+        return ()
+
+    @property
+    def data_outputs(self) -> tuple[str, ...]:
+        """Outputs that carry data (excludes emit-only outputs).
+
+        Default: same as outputs. Override in subclasses that support emit.
+        """
+        return self.outputs
 
     def has_default_for(self, param: str) -> bool:
         """Does this node have a fallback value for this input?

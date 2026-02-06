@@ -157,6 +157,10 @@ def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
                 blocked_targets.add(target)
         if blocked_targets:
             ready = [n for n in ready if n.name not in blocked_targets]
+
+    # Defer wait_for consumers whose producers are also ready this superstep
+    ready = _defer_wait_for_nodes(ready, graph)
+
     return ready
 
 
@@ -253,6 +257,10 @@ def _is_node_ready(
     if not _has_all_inputs(node, graph, state):
         return False
 
+    # Check wait_for satisfaction (ordering-only inputs)
+    if not _wait_for_satisfied(node, state):
+        return False
+
     # Check if node needs execution (not executed or stale)
     return _needs_execution(node, graph, state)
 
@@ -260,6 +268,66 @@ def _is_node_ready(
 def _is_controlled_by_gate(node: HyperNode, graph: "Graph") -> bool:
     """Check if a node is controlled by any gate (O(1) via cached map)."""
     return bool(graph.controlled_by.get(node.name))
+
+
+def _wait_for_satisfied(node: HyperNode, state: GraphState) -> bool:
+    """Check if all wait_for ordering dependencies are satisfied.
+
+    A wait_for name must:
+    - Exist in state (value has been produced)
+    - On re-execution: have a fresh version since last consumed
+    """
+    if not node.wait_for:
+        return True
+
+    last_exec = state.node_executions.get(node.name)
+
+    for name in node.wait_for:
+        if name not in state.values:
+            return False
+        # On re-execution, check freshness
+        if last_exec is not None:
+            current_version = state.get_version(name)
+            consumed_version = last_exec.wait_for_versions.get(name, 0)
+            if current_version <= consumed_version:
+                return False
+    return True
+
+
+def _defer_wait_for_nodes(
+    ready: list[HyperNode], graph: "Graph",
+) -> list[HyperNode]:
+    """If a producer and its wait_for consumer are both ready, defer the consumer.
+
+    This handles the first-superstep edge case: both nodes have all inputs
+    satisfied, but the consumer should wait for the producer to run first.
+    """
+    if not ready:
+        return ready
+
+    # Collect all outputs that will be produced this superstep
+    ready_outputs: set[str] = set()
+    for node in ready:
+        ready_outputs.update(node.outputs)
+
+    # Defer nodes whose wait_for includes an output from a co-ready node
+    deferred: set[str] = set()
+    for node in ready:
+        if not node.wait_for:
+            continue
+        for name in node.wait_for:
+            if name in ready_outputs:
+                # Check the producer is a different node
+                for other in ready:
+                    if other.name != node.name and name in other.outputs:
+                        deferred.add(node.name)
+                        break
+            if node.name in deferred:
+                break
+
+    if not deferred:
+        return ready
+    return [n for n in ready if n.name not in deferred]
 
 
 def _has_all_inputs(node: HyperNode, graph: "Graph", state: GraphState) -> bool:
@@ -401,24 +469,34 @@ def map_inputs_to_func_params(
 
 
 def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
-    """Wrap execution result in a dict mapping output names to values."""
-    outputs = node.outputs
+    """Wrap execution result in a dict mapping output names to values.
 
-    # No outputs (side-effect only)
-    if not outputs:
-        return {}
+    Uses node.data_outputs for unpacking the function return value, then
+    auto-produces _EMIT_SENTINEL for each emit output.
+    """
+    from hypergraph.nodes.base import _EMIT_SENTINEL
 
-    # Single output
-    if len(outputs) == 1:
-        return {outputs[0]: result}
+    data_outputs = node.data_outputs
+    emit_outputs = node.outputs[len(data_outputs):]  # emit portion
 
-    # Multiple outputs - unpack tuple
-    if len(outputs) != len(result):
-        raise ValueError(
-            f"Node '{node.name}' has {len(outputs)} outputs but returned "
-            f"{len(result)} values"
-        )
-    return dict(zip(outputs, result))
+    # Wrap data outputs
+    if not data_outputs:
+        wrapped = {}
+    elif len(data_outputs) == 1:
+        wrapped = {data_outputs[0]: result}
+    else:
+        if len(data_outputs) != len(result):
+            raise ValueError(
+                f"Node '{node.name}' has {len(data_outputs)} data outputs but returned "
+                f"{len(result)} values"
+            )
+        wrapped = dict(zip(data_outputs, result))
+
+    # Auto-produce sentinel for each emit output
+    for name in emit_outputs:
+        wrapped[name] = _EMIT_SENTINEL
+
+    return wrapped
 
 
 def initialize_state(
@@ -450,6 +528,9 @@ def filter_outputs(
 ) -> dict[str, Any]:
     """Filter state values to only include requested outputs.
 
+    Excludes emit sentinel values from the output — they are internal
+    ordering signals and should never be visible to the user.
+
     Args:
         state: Final execution state
         graph: The executed graph
@@ -461,6 +542,8 @@ def filter_outputs(
     Warns:
         UserWarning: If select contains names not found in state values
     """
+    from hypergraph.nodes.base import _EMIT_SENTINEL
+
     # Runtime select= overrides graph-level default
     effective_select = select if select is not None else graph.selected
 
@@ -468,14 +551,17 @@ def filter_outputs(
         result = {}
         missing = []
         for k in effective_select:
-            if k in state.values:
+            if k in state.values and state.values[k] is not _EMIT_SENTINEL:
                 result[k] = state.values[k]
-            else:
+            elif k not in state.values:
                 missing.append(k)
 
         if missing:
             import warnings
-            available = list(state.values.keys())
+            available = [
+                k for k in state.values.keys()
+                if state.values[k] is not _EMIT_SENTINEL
+            ]
             warnings.warn(
                 f"Requested outputs not found: {missing}. "
                 f"Available outputs: {available}",
@@ -485,8 +571,12 @@ def filter_outputs(
 
         return result
 
-    # Default: return all graph outputs
-    return {k: state.values[k] for k in graph.outputs if k in state.values}
+    # Default: return all graph outputs, excluding emit sentinels
+    return {
+        k: state.values[k]
+        for k in graph.outputs
+        if k in state.values and state.values[k] is not _EMIT_SENTINEL
+    }
 
 
 def generate_map_inputs(
