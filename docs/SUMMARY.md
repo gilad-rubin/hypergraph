@@ -52,6 +52,7 @@
 
 ## Design
 
+* [Guiding Principles](07-design/guiding-principles.md)
 * [Philosophy](07-design/philosophy.md)
 * [Inspiration](07-design/inspiration.md)
 * [Roadmap](07-design/roadmap.md)
