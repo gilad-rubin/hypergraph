@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
-from hypergraph.nodes.gate import IfElseNode, RouteNode
+from hypergraph.runners._shared.caching import (
+    check_cache,
+    restore_routing_decision,
+    store_in_cache,
+)
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
 from hypergraph.runners._shared.event_helpers import (
     build_cache_hit_event,
@@ -65,22 +69,13 @@ def run_superstep_sync(
         input_versions = {param: state.get_version(param) for param in node.inputs}
 
         # Check cache before execution
-        cached_hit = False
-        cache_key = ""
-        if cache is not None and getattr(node, "cache", False):
-            from hypergraph.cache import compute_cache_key
+        cache_key, cached_outputs = ("", None)
+        if cache is not None:
+            cache_key, cached_outputs = check_cache(node, inputs, cache)
 
-            cache_key = compute_cache_key(node.definition_hash, inputs)
-            if cache_key:
-                cached_hit, cached_value = cache.get(cache_key)
-
-        if cached_hit:
-            outputs = dict(cached_value)  # Copy to avoid mutating cache entry
-            # Restore routing decision for gate nodes
-            if isinstance(node, (RouteNode, IfElseNode)):
-                routing_decision = outputs.pop("__routing_decision__", None)
-                if routing_decision is not None:
-                    new_state.routing_decisions[node.name] = routing_decision
+        if cached_outputs is not None:
+            outputs = cached_outputs
+            restore_routing_decision(node, outputs, new_state)
             # Emit NodeStartEvent -> CacheHitEvent -> NodeEndEvent(cached=True)
             node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
             if active:
@@ -107,14 +102,9 @@ def run_superstep_sync(
 
                 duration_ms = (time.time() - node_start) * 1000
 
-                # Store result in cache (include routing decision for gates)
+                # Store result in cache
                 if cache is not None and cache_key:
-                    to_cache = dict(outputs)
-                    if isinstance(node, (RouteNode, IfElseNode)):
-                        decision = new_state.routing_decisions.get(node.name)
-                        if decision is not None:
-                            to_cache["__routing_decision__"] = decision
-                    cache.set(cache_key, to_cache)
+                    store_in_cache(node, outputs, new_state, cache, cache_key)
 
                 if active:
                     route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
