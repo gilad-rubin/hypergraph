@@ -1,12 +1,13 @@
 """Output conflict validation for graphs.
 
 Validates that multiple nodes producing the same output are either in
-mutually exclusive branches (mutex) or in the same cycle.
+mutually exclusive branches (mutex) or provably ordered.
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from itertools import combinations
 from typing import TYPE_CHECKING
 
 import networkx as nx
@@ -22,39 +23,170 @@ def validate_output_conflicts(
     nodes: list["HyperNode"],
     output_to_sources: dict[str, list[str]],
 ) -> None:
-    """Validate that duplicate outputs are in mutually exclusive branches.
+    """Validate that duplicate outputs are mutex or ordered.
 
-    Called after the graph structure is built (edges added) so we can
-    use graph reachability to determine if nodes producing the same output
-    are in mutex branches.
+    Two producers of the same output are allowed if they are:
+    1. In mutually exclusive gate branches (mutex), OR
+    2. Connected by a directed path after removing contested data edges (ordered)
 
     Args:
-        G: The NetworkX directed graph (with edges)
+        G: The NetworkX directed graph (with edges from first producer only)
         nodes: List of all nodes in the graph
         output_to_sources: Mapping from output name to list of nodes producing it
 
     Raises:
         GraphConfigError: If multiple nodes produce the same output and they
-            are not in mutually exclusive branches.
+            are neither mutex nor ordered.
     """
     expanded_groups = _expand_mutex_groups(G, nodes)
 
-    for output, sources in output_to_sources.items():
-        if len(sources) <= 1:
-            continue
+    # Collect outputs that have multiple producers
+    contested_outputs = {
+        output: sources
+        for output, sources in output_to_sources.items()
+        if len(sources) > 1
+    }
+    if not contested_outputs:
+        return
 
-        if _are_all_mutex(sources, expanded_groups):
-            continue
+    # Build complete edge map with edges from ALL producers
+    node_names, edge_map = _build_full_edge_map(G, nodes, output_to_sources)
 
-        if _are_all_in_same_cycle(sources, G, nodes, output_to_sources):
-            continue
+    for output, sources in contested_outputs.items():
+        # Find all outputs contested by THIS set of producers
+        producer_set = set(sources)
+        all_contested = _contested_values_for(producer_set, output_to_sources)
 
-        raise GraphConfigError(
-            f"Multiple nodes produce '{output}'\n\n"
-            f"  -> {sources[0]} creates '{output}'\n"
-            f"  -> {sources[1]} creates '{output}'\n\n"
-            f"How to fix: Rename one output to avoid conflict"
-        )
+        for a, b in combinations(sources, 2):
+            if _is_pair_mutex(a, b, expanded_groups):
+                continue
+            if _is_pair_ordered(a, b, all_contested, node_names, edge_map):
+                continue
+
+            raise GraphConfigError(
+                f"Multiple nodes produce '{output}'\n\n"
+                f"  -> {a} creates '{output}'\n"
+                f"  -> {b} creates '{output}'\n\n"
+                f"How to fix:\n"
+                f"  - Add ordering with emit/wait_for between the producers\n"
+                f"  - Or place them in exclusive gate branches"
+            )
+
+
+def _contested_values_for(
+    producer_set: set[str],
+    output_to_sources: dict[str, list[str]],
+) -> set[str]:
+    """Find all output names that are contested by the given producer set."""
+    return {
+        output
+        for output, sources in output_to_sources.items()
+        if len(sources) > 1 and producer_set & set(sources)
+    }
+
+
+class _EdgeInfo:
+    """Track multiple edge types between a (u, v) pair."""
+
+    __slots__ = ("data_values", "has_control", "has_ordering")
+
+    def __init__(self) -> None:
+        self.data_values: set[str] = set()
+        self.has_control: bool = False
+        self.has_ordering: bool = False
+
+
+def _build_full_edge_map(
+    G: nx.DiGraph,
+    nodes: list["HyperNode"],
+    output_to_sources: dict[str, list[str]],
+) -> tuple[set[str], dict[tuple[str, str], _EdgeInfo]]:
+    """Build a complete edge map with edges from ALL producers.
+
+    Returns node names and a dict mapping (u, v) to EdgeInfo that tracks
+    all edge types (data, control, ordering) between each pair. This avoids
+    the DiGraph limitation of one edge per pair.
+    """
+    node_names = set(G.nodes())
+    edges: dict[tuple[str, str], _EdgeInfo] = {}
+
+    def get_info(u: str, v: str) -> _EdgeInfo:
+        key = (u, v)
+        if key not in edges:
+            edges[key] = _EdgeInfo()
+        return edges[key]
+
+    # Copy existing edges from G
+    for u, v, data in G.edges(data=True):
+        info = get_info(u, v)
+        edge_type = data.get("edge_type")
+        if edge_type == "data":
+            info.data_values.update(data.get("value_names", []))
+        elif edge_type == "control":
+            info.has_control = True
+        elif edge_type == "ordering":
+            info.has_ordering = True
+
+    # Add data edges from non-first producers
+    for node in nodes:
+        for param in node.inputs:
+            for source in output_to_sources.get(param, []):
+                get_info(source, node.name).data_values.add(param)
+
+    # Add ordering edges from wait_for (may have been suppressed in G)
+    output_to_source = {k: v[0] for k, v in output_to_sources.items()}
+    for node in nodes:
+        for name in node.wait_for:
+            producer = output_to_source.get(name)
+            if producer and producer != node.name:
+                get_info(producer, node.name).has_ordering = True
+
+    return node_names, edges
+
+
+def _is_pair_mutex(
+    a: str, b: str, expanded_groups: list[list[set[str]]]
+) -> bool:
+    """Check if two nodes are in different branches of the same exclusive gate."""
+    for branches in expanded_groups:
+        a_branch = None
+        b_branch = None
+        for i, branch in enumerate(branches):
+            if a in branch:
+                a_branch = i
+            if b in branch:
+                b_branch = i
+        if a_branch is not None and b_branch is not None and a_branch != b_branch:
+            return True
+    return False
+
+
+def _is_pair_ordered(
+    a: str,
+    b: str,
+    contested_values: set[str],
+    node_names: set[str],
+    edge_map: dict[tuple[str, str], _EdgeInfo],
+) -> bool:
+    """Check if a directed path exists between a and b after removing contested data edges.
+
+    An edge (u, v) is kept if:
+    - It has control or ordering type, OR
+    - Its data values are not ALL contested
+    """
+    sub = nx.DiGraph()
+    sub.add_nodes_from(node_names)
+
+    for (u, v), info in edge_map.items():
+        # Keep if any non-data edge type exists
+        if info.has_control or info.has_ordering:
+            sub.add_edge(u, v)
+            continue
+        # Keep data edge if it carries at least one non-contested value
+        if info.data_values and not info.data_values.issubset(contested_values):
+            sub.add_edge(u, v)
+
+    return nx.has_path(sub, a, b) or nx.has_path(sub, b, a)
 
 
 def _are_all_mutex(
@@ -79,35 +211,6 @@ def _are_all_mutex(
             return True
 
     return False
-
-
-def _are_all_in_same_cycle(
-    node_names: list[str],
-    G: nx.DiGraph,
-    nodes: list["HyperNode"],
-    output_to_sources: dict[str, list[str]],
-) -> bool:
-    """Check if all given nodes are in at least one common cycle.
-
-    Builds a temporary graph with edges from ALL producers (not just the
-    first) so that cycles involving multiple producers of the same output
-    are detected correctly.
-    """
-    if len(node_names) < 2:
-        return True
-
-    temp = nx.DiGraph()
-    temp.add_nodes_from(G.nodes())
-    for u, v, data in G.edges(data=True):
-        if data.get("edge_type") == "data":
-            temp.add_edge(u, v)
-    for node in nodes:
-        for param in node.inputs:
-            for source in output_to_sources.get(param, []):
-                temp.add_edge(source, node.name)
-
-    nodes_set = set(node_names)
-    return any(nodes_set.issubset(set(cycle)) for cycle in nx.simple_cycles(temp))
 
 
 def _compute_exclusive_reachability(

@@ -490,7 +490,7 @@ Graph([a, b])
 # GraphConfigError: Multiple nodes produce 'result'
 ```
 
-> **Exception**: Multiple nodes *can* produce the same output if they all belong to the same cycle. Cycles have deterministic execution order, so the consumer always gets the most recently produced value. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
+> **Exception**: Multiple nodes *can* produce the same output if they are **provably ordered** (via `emit`/`wait_for`) or in **mutually exclusive gate branches**. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
 
 **Invalid identifiers:**
 ```python

@@ -273,7 +273,7 @@ result = runner.run(graph, {
 
 ## Shared Outputs in a Cycle
 
-Multiple nodes can produce the same output name when they're all part of the same cycle. Nodes in a cycle execute in a deterministic order, so there's no ambiguity about which value a consumer receives — it always gets the most recently produced value. Outside of cycles, duplicate output names remain an error because execution order isn't guaranteed.
+Multiple nodes can produce the same output name when they are **provably ordered** via `emit`/`wait_for` or placed in **mutually exclusive gate branches**. Ordering ensures the consumer always receives the most recently produced value. Without ordering, two producers in the same cycle could both fire in the same superstep, creating ambiguity.
 
 ```python
 @node(output_name="query")
@@ -281,7 +281,7 @@ def generate_query(messages: list) -> str:
     """Get the next user query (e.g., from input or an LLM)."""
     return get_user_input(messages)
 
-@node(output_name="messages")
+@node(output_name="messages", emit="query_done")
 def accumulate_query(messages: list, query: str) -> list:
     return messages + [{"role": "user", "content": query}]
 
@@ -290,7 +290,7 @@ def generate_response(messages: list) -> str:
     """Generate an assistant response from the conversation so far."""
     return llm.chat(messages)
 
-@node(output_name="messages")
+@node(output_name="messages", wait_for="query_done")
 def accumulate_response(messages: list, response: str) -> list:
     return messages + [{"role": "assistant", "content": response}]
 
@@ -298,7 +298,7 @@ def accumulate_response(messages: list, response: str) -> list:
 def should_continue(messages: list) -> str:
     return END if len(messages) >= 10 else "generate_query"
 
-# Allowed: both accumulate nodes produce "messages" in the same cycle
+# Allowed: accumulate_query emits "query_done", accumulate_response waits for it
 graph = Graph([
     generate_query, accumulate_query,
     generate_response, accumulate_response,
