@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Callable, TypeVar, get_type_hints
+from typing import Any, Callable, TypeVar
 
 from hypergraph._utils import hash_definition
-from hypergraph.nodes._rename import _apply_renames, build_reverse_rename_map
+from hypergraph.nodes._callable import CallableMixin
+from hypergraph.nodes._rename import _apply_renames
 from hypergraph.nodes.base import HyperNode
 
 
@@ -74,7 +75,7 @@ def _validate_not_string_end(target: str | type[END], func_name: str) -> None:
 # =============================================================================
 
 
-class GateNode(HyperNode):
+class GateNode(CallableMixin, HyperNode):
     """Abstract base class for routing/control flow nodes.
 
     Gate nodes make routing decisions but do not produce data outputs.
@@ -110,11 +111,6 @@ class GateNode(HyperNode):
         return self._hide
 
     @property
-    def definition_hash(self) -> str:
-        """SHA256 hash of routing function source (cached at creation)."""
-        return self._definition_hash
-
-    @property
     def is_async(self) -> bool:
         """Route functions must be sync, so always False."""
         return False
@@ -140,66 +136,6 @@ class GateNode(HyperNode):
         attrs = super().nx_attrs
         attrs["branch_data"] = self.branch_data
         return attrs
-
-    def has_default_for(self, param: str) -> bool:
-        """Check if this parameter has a default value."""
-        sig = inspect.signature(self.func)
-        original_param = self._get_original_param_name(param)
-        if original_param in sig.parameters:
-            return sig.parameters[original_param].default is not inspect.Parameter.empty
-        return False
-
-    def get_default_for(self, param: str) -> Any:
-        """Get default value for a parameter."""
-        sig = inspect.signature(self.func)
-        original_param = self._get_original_param_name(param)
-        if original_param in sig.parameters:
-            default = sig.parameters[original_param].default
-            if default is not inspect.Parameter.empty:
-                return default
-        raise KeyError(f"No default for '{param}'")
-
-    def _get_original_param_name(self, current_name: str) -> str:
-        """Map a current input name back to the original function parameter."""
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        return reverse_map.get(current_name, current_name)
-
-    def get_input_type(self, param: str) -> type | None:
-        """Get expected type for an input parameter.
-
-        Args:
-            param: Input parameter name (using current/renamed name)
-
-        Returns:
-            The type annotation, or None if not annotated or param is not a valid input.
-        """
-        # Only return type for valid current input names
-        if param not in self.inputs:
-            return None
-
-        try:
-            hints = get_type_hints(self.func)
-        except Exception:
-            return None
-
-        # Map current name back to original function parameter name
-        original_param = self._get_original_param_name(param)
-        return hints.get(original_param)
-
-    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        """Map renamed input names back to original function parameter names.
-
-        Args:
-            inputs: Dict with current (potentially renamed) input names as keys
-
-        Returns:
-            Dict with original function parameter names as keys
-        """
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return inputs
-
-        return {reverse_map.get(key, key): value for key, value in inputs.items()}
 
 
 # =============================================================================
