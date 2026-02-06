@@ -155,6 +155,8 @@ def __init__(
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
     hide: bool = False,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> None: ...
 ```
 
@@ -169,6 +171,8 @@ def __init__(
 - `rename_inputs`: Optional dict `{old_param: new_param}` for input renaming
 - `cache`: Whether to cache results (default: False)
 - `hide`: Whether to hide this node from visualization (default: False)
+- `emit`: Ordering-only output name(s). Auto-produced when the node runs
+- `wait_for`: Ordering-only input name(s). Node waits until these values exist and are fresh
 
 **Returns:** FunctionNode instance
 
@@ -282,6 +286,31 @@ def log(msg: str) -> None:
     print(msg)
 
 print(log.outputs)  # ()
+```
+
+### `data_outputs: tuple[str, ...]`
+
+Output names that carry data (excludes emit outputs). Same as `outputs` when no `emit` is set.
+
+```python
+@node(output_name="result", emit="done")
+def producer(x: int) -> int:
+    return x + 1
+
+print(producer.outputs)       # ("result", "done")
+print(producer.data_outputs)  # ("result",)
+```
+
+### `wait_for: tuple[str, ...]`
+
+Ordering-only inputs. Empty tuple when not set.
+
+```python
+@node(output_name="result", wait_for="signal")
+def consumer(x: int) -> int:
+    return x
+
+print(consumer.wait_for)  # ("signal",)
 ```
 
 ### `cache: bool`
@@ -440,6 +469,8 @@ def node(
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
     hide: bool = False,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]: ...
 ```
 
@@ -449,6 +480,8 @@ def node(
 - `rename_inputs`: Optional dict to rename inputs
 - `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on InterruptNode or GraphNode
 - `hide`: Whether to hide this node from visualization (default: False)
+- `emit`: Ordering-only output name(s). Auto-produced when the node runs. Used with `wait_for` to enforce execution order without data dependency. See [Ordering](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for)
+- `wait_for`: Ordering-only input name(s). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)

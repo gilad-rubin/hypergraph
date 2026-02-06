@@ -25,6 +25,8 @@ def ifelse(
     default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> Callable[[Callable[..., bool]], IfElseNode]: ...
 ```
 
@@ -39,6 +41,8 @@ def ifelse(
 | `default_open` | `bool` | `True` | If True, targets may execute before the gate runs. If False, targets are blocked until the gate executes. |
 | `name` | `str \| None` | `None` | Node name (default: function name) |
 | `rename_inputs` | `dict \| None` | `None` | Mapping to rename inputs `{old: new}` |
+| `emit` | `str \| tuple \| None` | `None` | Ordering-only output(s). Auto-produced when the gate runs |
+| `wait_for` | `str \| tuple \| None` | `None` | Ordering-only input(s). Gate waits until these values are fresh |
 
 ### Return Value
 
@@ -203,6 +207,8 @@ def route(
     default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> Callable[[Callable], RouteNode]: ...
 ```
 
@@ -218,6 +224,8 @@ def route(
 | `default_open` | `bool` | `True` | If True, targets may execute before the gate runs. If False, targets are blocked until the gate executes. |
 | `name` | `str \| None` | `None` | Node name (default: function name) |
 | `rename_inputs` | `dict \| None` | `None` | Mapping to rename inputs `{old: new}` |
+| `emit` | `str \| tuple \| None` | `None` | Ordering-only output(s). Auto-produced when the gate runs |
+| `wait_for` | `str \| tuple \| None` | `None` | Ordering-only input(s). Gate waits until these values are fresh |
 
 ### Return Value
 
