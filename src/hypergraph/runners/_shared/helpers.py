@@ -258,15 +258,8 @@ def _is_node_ready(
 
 
 def _is_controlled_by_gate(node: HyperNode, graph: "Graph") -> bool:
-    """Check if a node is controlled by any gate."""
-    from hypergraph.nodes.gate import GateNode, END
-
-    for gate_node in graph._nodes.values():
-        if isinstance(gate_node, GateNode):
-            for target in gate_node.targets:
-                if target is not END and target == node.name:
-                    return True
-    return False
+    """Check if a node is controlled by any gate (O(1) via cached map)."""
+    return bool(graph.controlled_by.get(node.name))
 
 
 def _has_all_inputs(node: HyperNode, graph: "Graph", state: GraphState) -> bool:
