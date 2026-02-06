@@ -5,6 +5,19 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class RunStatus(Enum):
+    """Status of a graph run in event context.
+
+    Values:
+        COMPLETED: Run finished successfully.
+        FAILED: Run encountered an error.
+    """
+
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 def _generate_span_id() -> str:
@@ -57,15 +70,20 @@ class RunEndEvent(BaseEvent):
 
     Attributes:
         graph_name: Name of the graph that was executed.
-        status: Outcome of the run ("completed" or "failed").
-        error: Error message if status is "failed".
+        status: Outcome of the run (RunStatus.COMPLETED or RunStatus.FAILED).
+        error: Error message if status is FAILED.
         duration_ms: Wall-clock duration in milliseconds.
     """
 
     graph_name: str = ""
-    status: str = "completed"
+    status: RunStatus = RunStatus.COMPLETED
     error: str | None = None
     duration_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        # Coerce string status values to RunStatus enum
+        if isinstance(self.status, str):
+            object.__setattr__(self, "status", RunStatus(self.status))
 
 
 @dataclass(frozen=True)

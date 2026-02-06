@@ -13,6 +13,7 @@ from hypergraph.events.types import (
     RouteDecisionEvent,
     RunEndEvent,
     RunStartEvent,
+    RunStatus,
 )
 
 
@@ -64,7 +65,7 @@ class TestSimpleDAGEvents:
         assert len(starts) == 1
         assert len(ends) == 1
         assert starts[0].graph_name == graph.name
-        assert ends[0].status == "completed"
+        assert ends[0].status == RunStatus.COMPLETED
         assert ends[0].duration_ms > 0
 
     def test_emits_node_start_and_end(self):
@@ -184,7 +185,7 @@ class TestErrorEvents:
         runner.run(graph, {"x": 1}, event_processors=[lp])
 
         run_end = lp.of_type(RunEndEvent)[0]
-        assert run_end.status == "failed"
+        assert run_end.status == RunStatus.FAILED
         assert "boom" in run_end.error
 
     def test_processor_failure_does_not_break_execution(self):
@@ -565,7 +566,7 @@ class TestMapWithNestedError:
         assert "boom" in errors[0].error
 
         # Failed runs should have status="failed" in RunEndEvent
-        failed_ends = [e for e in lp.of_type(RunEndEvent) if e.status == "failed"]
+        failed_ends = [e for e in lp.of_type(RunEndEvent) if e.status == RunStatus.FAILED]
         assert len(failed_ends) >= 1
 
 

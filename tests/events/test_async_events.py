@@ -13,6 +13,7 @@ from hypergraph.events.types import (
     RouteDecisionEvent,
     RunEndEvent,
     RunStartEvent,
+    RunStatus,
 )
 
 
@@ -91,7 +92,7 @@ class TestSimpleDAGEvents:
         assert len(starts) == 1
         assert len(ends) == 1
         assert starts[0].graph_name == graph.name
-        assert ends[0].status == "completed"
+        assert ends[0].status == RunStatus.COMPLETED
         assert ends[0].duration_ms > 0
 
     @pytest.mark.asyncio
@@ -208,7 +209,7 @@ class TestErrorEvents:
         await runner.run(graph, {"x": 1}, event_processors=[lp])
 
         run_end = lp.of_type(RunEndEvent)[0]
-        assert run_end.status == "failed"
+        assert run_end.status == RunStatus.FAILED
         assert "boom" in run_end.error
 
     @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from hypergraph.events.types import (
     RouteDecisionEvent,
     RunEndEvent,
     RunStartEvent,
+    RunStatus,
     StopRequestedEvent,
 )
 
@@ -32,6 +33,7 @@ __all__ = [
     "RouteDecisionEvent",
     "RunEndEvent",
     "RunStartEvent",
+    "RunStatus",
     "StopRequestedEvent",
     # Processor interfaces
     "AsyncEventProcessor",
