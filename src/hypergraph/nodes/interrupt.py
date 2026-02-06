@@ -9,16 +9,15 @@ import keyword
 from typing import Any, Callable, get_type_hints
 
 from hypergraph._utils import ensure_tuple, hash_definition
-from hypergraph.nodes._callable import _build_forward_rename_map
+from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._rename import (
     RenameEntry,
     _apply_renames,
-    build_reverse_rename_map,
 )
-from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
 
 
-class InterruptNode(HyperNode):
+class InterruptNode(CallableMixin, HyperNode):
     """A declarative pause point that surfaces a value and waits for a response.
 
     InterruptNode has one or more inputs (values shown to the user) and one or
@@ -26,14 +25,18 @@ class InterruptNode(HyperNode):
 
     Can be created two ways:
 
-    1. Via the ``@interrupt`` decorator (preferred for handler-backed nodes)::
+    1. Via the ``@interrupt`` decorator or constructor with a source function
+       (preferred for handler-backed nodes)::
 
         @interrupt(output_name="decision")
         def approval(draft: str) -> str:
-            return "auto-approved"      # returns value → auto-resolve
-            # return None               # returns None → pause
+            return "auto-approved"      # returns value -> auto-resolve
+            # return None               # returns None -> pause
 
-    2. Via the class constructor (for handler-less pause points)::
+        # Or equivalently via constructor:
+        approval = InterruptNode(my_func, output_name="decision")
+
+    2. Via the legacy class constructor (for handler-less pause points)::
 
         approval = InterruptNode(
             name="approval",
@@ -41,48 +44,111 @@ class InterruptNode(HyperNode):
             output_param="decision",
         )
 
-    When created via decorator, the function IS the handler:
-    - Returning a value → auto-resolves the interrupt
-    - Returning None → pauses for human input
+    When created with a source function, the function IS the handler:
+    - Returning a value -> auto-resolves the interrupt
+    - Returning None -> pauses for human input
     - The function signature defines inputs; ``output_name`` defines outputs
     - Type annotations are used for input/output types
     - Function defaults work as node defaults
-
-    Args:
-        name: Node name
-        input_param: Name(s) of the input parameter(s). Can be a single string
-            or a tuple of strings for multiple inputs.
-        output_param: Name(s) of the output parameter(s). Can be a single string
-            or a tuple of strings for multiple outputs.
-        response_type: Optional type annotation for the response value(s).
-            For single output: a type. For multiple outputs: a dict mapping
-            output names to types. Ignored when created via decorator (uses
-            return annotation instead).
-        handler: Optional callable to auto-resolve the interrupt.
-            For single input: accepts a single positional argument (the input value).
-            For multiple inputs: accepts a dict mapping input names to values.
-            Returns the response value (single output) or dict of values (multi output).
-            May be sync or async.
     """
+
+    func: Callable | None
+    _hide: bool
+    _emit: tuple[str, ...]
+    _wait_for: tuple[str, ...]
+    _is_async: bool
+    _is_generator: bool
 
     def __init__(
         self,
-        name: str,
+        source: Callable | str | None = None,
+        name: str | None = None,
+        output_name: str | tuple[str, ...] | None = None,
         *,
-        input_param: str | tuple[str, ...],
-        output_param: str | tuple[str, ...],
+        rename_inputs: dict[str, str] | None = None,
+        emit: str | tuple[str, ...] | None = None,
+        wait_for: str | tuple[str, ...] | None = None,
+        hide: bool = False,
         response_type: type | dict[str, type] | None = None,
         handler: Callable[..., Any] | None = None,
+        # Legacy constructor params
+        input_param: str | tuple[str, ...] | None = None,
+        output_param: str | tuple[str, ...] | None = None,
     ) -> None:
-        """Create an InterruptNode via the class constructor.
+        """Create an InterruptNode.
 
-        The handler, if provided, must accept either a single value (for single
-        input) or a dict of values (for multiple inputs). It may be sync or async.
+        Two construction modes:
 
-        Raises:
-            ValueError: If any input_param or output_param is not a valid
-                Python identifier or is a reserved keyword.
+        **Source function mode** (like FunctionNode)::
+
+            InterruptNode(my_func, output_name="decision")
+            InterruptNode(my_func, name="review", output_name="decision",
+                         emit="done", wait_for="ready")
+
+        **Legacy mode** (handler-less pause points)::
+
+            InterruptNode(name="approval", input_param="draft",
+                         output_param="decision")
+
+        Args:
+            source: Function to wrap as handler, or node name (legacy).
+            name: Public node name (default: func.__name__ for source mode).
+            output_name: Name(s) for output value(s) (source mode).
+            rename_inputs: Mapping to rename inputs {old: new}.
+            emit: Ordering-only output name(s). Auto-produced with sentinel.
+            wait_for: Ordering-only input name(s). Node waits for freshness.
+            hide: Whether to hide from visualization (default: False).
+            response_type: Type annotation for response (legacy mode).
+            handler: Handler callable (legacy mode).
+            input_param: Input parameter name(s) (legacy mode).
+            output_param: Output parameter name(s) (legacy mode).
         """
+        is_legacy = input_param is not None or output_param is not None
+
+        if is_legacy:
+            self._init_legacy(
+                source if isinstance(source, str) else name or source,
+                input_param=input_param,
+                output_param=output_param,
+                response_type=response_type,
+                handler=handler,
+            )
+        else:
+            func = source if callable(source) else None
+            if func is not None:
+                self._init_from_func(
+                    func,
+                    name=name,
+                    output_name=output_name,
+                    rename_inputs=rename_inputs,
+                    emit=emit,
+                    wait_for=wait_for,
+                    hide=hide,
+                )
+            else:
+                # Called as InterruptNode(name="x", input_param=..., output_param=...)
+                # but without input_param/output_param — invalid
+                raise TypeError(
+                    "InterruptNode requires either a source function "
+                    "(e.g., InterruptNode(my_func, output_name='x')) or "
+                    "legacy params (input_param=..., output_param=...)"
+                )
+
+    def _init_legacy(
+        self,
+        name: str | None,
+        *,
+        input_param: str | tuple[str, ...] | None,
+        output_param: str | tuple[str, ...] | None,
+        response_type: type | dict[str, type] | None,
+        handler: Callable[..., Any] | None,
+    ) -> None:
+        """Initialize from legacy constructor (input_param/output_param)."""
+        if input_param is None or output_param is None:
+            raise TypeError("Legacy constructor requires both input_param and output_param")
+        if name is None:
+            raise TypeError("Legacy constructor requires name")
+
         self.inputs = ensure_tuple(input_param)
         self.outputs = ensure_tuple(output_param)
 
@@ -95,40 +161,56 @@ class InterruptNode(HyperNode):
         self.response_type = response_type
         self.func = handler
         self._rename_history: list[RenameEntry] = []
-        # Class-constructor nodes use the legacy positional calling convention
         self._use_kwargs = False
+        self._hide = False
+        self._emit = ()
+        self._wait_for = ()
+        self._is_async = False
+        self._is_generator = False
+        self._definition_hash = ""  # computed lazily for legacy
 
-    # ── Decorator-based construction ──
-
-    @classmethod
-    def _from_func(
-        cls,
+    def _init_from_func(
+        self,
         func: Callable,
-        output_name: str | tuple[str, ...],
-        rename_inputs: dict[str, str] | None = None,
-    ) -> InterruptNode:
-        """Create an InterruptNode from a decorated function.
-
-        The function IS the handler. Inputs come from the function signature,
-        outputs from ``output_name``, and types from annotations.
-        """
-        self = object.__new__(cls)
-
+        *,
+        name: str | None,
+        output_name: str | tuple[str, ...] | None,
+        rename_inputs: dict[str, str] | None,
+        emit: str | tuple[str, ...] | None,
+        wait_for: str | tuple[str, ...] | None,
+        hide: bool,
+    ) -> None:
+        """Initialize from a source function (like FunctionNode)."""
         self.func = func
         self._use_kwargs = True
+        self._hide = hide
+        self._definition_hash = hash_definition(func)
+        self._emit = ensure_tuple(emit) if emit else ()
+        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
 
-        # Derive outputs
-        self.outputs = ensure_tuple(output_name)
-        for p in self.outputs:
+        # Name
+        self.name = name or func.__name__
+
+        # Outputs = data outputs + emit outputs
+        if output_name is None:
+            raise TypeError(
+                "InterruptNode requires output_name when created with a source function"
+            )
+        data_outputs = ensure_tuple(output_name)
+        for p in data_outputs:
             _validate_param_name(p, "output_name")
+        self.outputs = data_outputs + self._emit
 
-        # Derive inputs from function signature
+        # Inputs from function signature
         sig_inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(
             sig_inputs, rename_inputs, "inputs"
         )
 
-        self.name = func.__name__
+        # Validate emit/wait_for
+        _validate_emit_wait_for(
+            self.name, self._emit, self._wait_for, data_outputs, self.inputs,
+        )
 
         # Derive response_type from return annotation
         try:
@@ -137,7 +219,13 @@ class InterruptNode(HyperNode):
         except Exception:
             self.response_type = None
 
-        return self
+        # Detect execution mode
+        self._is_async = inspect.iscoroutinefunction(
+            func
+        ) or inspect.isasyncgenfunction(func)
+        self._is_generator = inspect.isgeneratorfunction(
+            func
+        ) or inspect.isasyncgenfunction(func)
 
     # ── Backward-compat properties ──
 
@@ -158,7 +246,7 @@ class InterruptNode(HyperNode):
     @property
     def output_param(self) -> str:
         """The first output parameter name (backward compat)."""
-        return self.outputs[0]
+        return self.data_outputs[0] if self.data_outputs else self.outputs[0]
 
     @property
     def is_multi_input(self) -> bool:
@@ -167,8 +255,8 @@ class InterruptNode(HyperNode):
 
     @property
     def is_multi_output(self) -> bool:
-        """Whether this node has multiple outputs."""
-        return len(self.outputs) > 1
+        """Whether this node has multiple data outputs."""
+        return len(self.data_outputs) > 1
 
     # ── Capabilities ──
 
@@ -178,21 +266,52 @@ class InterruptNode(HyperNode):
         return False
 
     @property
+    def is_async(self) -> bool:
+        """True if handler requires await."""
+        return self._is_async
+
+    @property
+    def is_generator(self) -> bool:
+        """True if handler yields multiple values."""
+        return self._is_generator
+
+    @property
+    def hide(self) -> bool:
+        """Whether this node is hidden from visualization."""
+        return self._hide
+
+    @property
+    def wait_for(self) -> tuple[str, ...]:
+        """Ordering-only inputs this node waits for."""
+        return self._wait_for
+
+    @property
+    def data_outputs(self) -> tuple[str, ...]:
+        """Outputs that carry data (excludes emit-only outputs)."""
+        if not self._emit:
+            return self.outputs
+        return self.outputs[:len(self.outputs) - len(self._emit)]
+
+    @property
     def definition_hash(self) -> str:
-        """Hash based on function source (decorator) or metadata (class constructor)."""
+        """Hash based on function source (func mode) or metadata (legacy mode)."""
         if self._use_kwargs and self.func is not None:
-            return hash_definition(self.func)
+            return self._definition_hash
         rt = _response_type_label(self.response_type)
         content = f"InterruptNode:{self.name}:{self.inputs}:{self.outputs}:{rt}"
         return hashlib.sha256(content.encode()).hexdigest()
 
-    # ── Defaults and type introspection (for decorator-created nodes) ──
+    # ── Legacy overrides for CallableMixin ──
+    # CallableMixin assumes self.func is always a callable. For legacy nodes
+    # (func=None), we short-circuit to empty dicts.
 
     @functools.cached_property
     def defaults(self) -> dict[str, Any]:
-        """Default values for input parameters (using current/renamed names)."""
-        if self.func is None or not self._use_kwargs:
+        """Default values for input parameters."""
+        if not self._use_kwargs or self.func is None:
             return {}
+        # Delegate to CallableMixin logic
+        from hypergraph.nodes._callable import _build_forward_rename_map
         sig = inspect.signature(self.func)
         rename_map = _build_forward_rename_map(self._rename_history)
         return {
@@ -204,8 +323,10 @@ class InterruptNode(HyperNode):
     @functools.cached_property
     def parameter_annotations(self) -> dict[str, Any]:
         """Type annotations for input parameters."""
-        if self.func is None or not self._use_kwargs:
+        if not self._use_kwargs or self.func is None:
             return {}
+        # Delegate to CallableMixin logic
+        from hypergraph.nodes._callable import _build_forward_rename_map
         try:
             hints = get_type_hints(self.func)
         except Exception:
@@ -213,41 +334,34 @@ class InterruptNode(HyperNode):
         sig = inspect.signature(self.func)
         rename_map = _build_forward_rename_map(self._rename_history)
         return {
-            rename_map.get(name, name): hints[name]
-            for name in sig.parameters
-            if name in hints
+            rename_map.get(orig, orig): hints[orig]
+            for orig in sig.parameters
+            if orig in hints
         }
 
-    def has_default_for(self, param: str) -> bool:
-        """Check if this parameter has a default value."""
-        return param in self.defaults
+    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Map renamed input names back to original function parameter names."""
+        if not self._use_kwargs:
+            return inputs
+        return super().map_inputs_to_params(inputs)
 
-    def get_default_for(self, param: str) -> Any:
-        """Get default value for a parameter."""
-        defaults = self.defaults
-        if param not in defaults:
-            raise KeyError(f"No default for '{param}'")
-        return defaults[param]
-
-    def get_input_type(self, param: str) -> type | None:
-        """Get type annotation for an input parameter."""
-        return self.parameter_annotations.get(param)
+    # ── Type introspection ──
 
     def get_output_type(self, param: str) -> type | None:
         """Return the type for an output parameter.
 
-        For decorator-created nodes: uses return annotation.
-        For class-constructor nodes: uses response_type.
+        For func-based nodes: uses return annotation.
+        For legacy nodes: uses response_type.
         """
-        if param not in self.outputs:
+        if param not in self.data_outputs:
             return None
-        # Decorator-created: use return annotation
+        # Func-based: use return annotation
         if self._use_kwargs and self.func is not None:
             return self._output_annotation.get(param)
-        # Class-constructor: use response_type
+        # Legacy: use response_type
         if isinstance(self.response_type, dict):
             return self.response_type.get(param)
-        if param == self.outputs[0]:
+        if param == self.data_outputs[0]:
             return self.response_type
         return None
 
@@ -263,25 +377,17 @@ class InterruptNode(HyperNode):
         return_hint = hints.get("return")
         if return_hint is None:
             return {}
-        if len(self.outputs) == 1:
-            return {self.outputs[0]: return_hint}
+        data_outs = self.data_outputs
+        if len(data_outs) == 1:
+            return {data_outs[0]: return_hint}
         # Multi-output: try tuple element types
         from typing import get_args, get_origin
 
         if get_origin(return_hint) is tuple:
             args = get_args(return_hint)
-            if len(args) == len(self.outputs):
-                return dict(zip(self.outputs, args))
+            if len(args) == len(data_outs):
+                return dict(zip(data_outs, args))
         return {}
-
-    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        """Map renamed input names back to original function parameter names."""
-        if not self._use_kwargs:
-            return inputs
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return inputs
-        return {reverse_map.get(key, key): value for key, value in inputs.items()}
 
     # ── Calling ──
 
@@ -322,12 +428,15 @@ def interrupt(
     output_name: str | tuple[str, ...],
     *,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
+    hide: bool = False,
 ) -> Callable[[Callable], InterruptNode]:
     """Decorator to create an InterruptNode from a function.
 
     The function IS the handler:
-    - Returning a value → auto-resolves the interrupt
-    - Returning None → pauses for human input
+    - Returning a value -> auto-resolves the interrupt
+    - Returning None -> pauses for human input
 
     Inputs come from the function signature. Outputs from ``output_name``.
     Types from annotations.
@@ -335,6 +444,9 @@ def interrupt(
     Args:
         output_name: Name(s) for output value(s).
         rename_inputs: Mapping to rename inputs {old: new}
+        emit: Ordering-only output name(s).
+        wait_for: Ordering-only input name(s).
+        hide: Whether to hide from visualization (default: False).
 
     Returns:
         Decorator that creates an InterruptNode.
@@ -351,12 +463,10 @@ def interrupt(
         def approval(draft: str) -> str:
             ...
 
-        # Conditional: sometimes resolve, sometimes pause
-        @interrupt(output_name="decision")
-        def approval(draft: str) -> str | None:
-            if "LGTM" in draft:
-                return "auto-approved"
-            return None  # pause for human review
+        # With ordering
+        @interrupt(output_name="decision", emit="approved", wait_for="ready")
+        def approval(draft: str) -> str:
+            ...
 
         # Test the handler directly
         assert approval.func("my draft") == "auto-approved"
@@ -364,10 +474,13 @@ def interrupt(
     """
 
     def decorator(func: Callable) -> InterruptNode:
-        return InterruptNode._from_func(
-            func,
+        return InterruptNode(
+            source=func,
             output_name=output_name,
             rename_inputs=rename_inputs,
+            emit=emit,
+            wait_for=wait_for,
+            hide=hide,
         )
 
     return decorator
