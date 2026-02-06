@@ -12,6 +12,7 @@ from hypergraph import (
     RunResult,
     RunStatus,
     SyncRunner,
+    interrupt,
     node,
     route,
     END,
@@ -893,3 +894,425 @@ class TestInterruptNodeInCycle:
         result = await runner.run(graph, {"messages": [], "query": "hello"})
         assert result.status == RunStatus.COMPLETED
         assert result["messages"] == ["response to hello"]
+
+
+# ── @interrupt decorator ──
+
+
+class TestInterruptDecorator:
+    """Tests for the @interrupt decorator."""
+
+    def test_basic_construction(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return "approved"
+
+        assert isinstance(approval, InterruptNode)
+        assert approval.name == "approval"
+        assert approval.inputs == ("draft",)
+        assert approval.outputs == ("decision",)
+
+    def test_func_accessible(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return "approved"
+
+        assert approval.func is not None
+        assert approval.func("anything") == "approved"
+
+    def test_callable_directly(self):
+        """InterruptNode created via decorator is callable for testing."""
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return "approved"
+
+        assert approval("test") == "approved"
+
+    def test_handler_backward_compat(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return "approved"
+
+        assert approval.handler is approval.func
+
+    def test_ellipsis_body_returns_none(self):
+        """Function with ... body returns None → pause."""
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        assert approval("test") is None
+
+    def test_multi_input(self):
+        @interrupt(output_name="decision")
+        def review(draft: str, metadata: dict) -> str:
+            return "ok"
+
+        assert review.inputs == ("draft", "metadata")
+        assert review.is_multi_input is True
+
+    def test_multi_output(self):
+        @interrupt(output_name=("decision", "notes"))
+        def review(draft: str) -> tuple[str, str]:
+            return ("approved", "looks good")
+
+        assert review.outputs == ("decision", "notes")
+        assert review.is_multi_output is True
+
+    def test_type_inference_from_annotations(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> bool:
+            ...
+
+        assert approval.get_input_type("draft") is str
+        assert approval.get_output_type("decision") is bool
+
+    def test_defaults_from_signature(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str, threshold: float = 0.8) -> str:
+            ...
+
+        assert approval.has_default_for("threshold") is True
+        assert approval.get_default_for("threshold") == 0.8
+        assert approval.has_default_for("draft") is False
+
+    def test_rename_inputs(self):
+        @interrupt(output_name="decision", rename_inputs={"draft": "document"})
+        def approval(draft: str) -> str:
+            return "ok"
+
+        assert approval.inputs == ("document",)
+        assert approval.get_input_type("document") is str
+
+    def test_with_name(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        renamed = approval.with_name("review_step")
+        assert renamed.name == "review_step"
+        assert approval.name == "approval"  # original unchanged
+
+    def test_with_inputs(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        renamed = approval.with_inputs(draft="document")
+        assert renamed.inputs == ("document",)
+
+    def test_with_outputs(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        renamed = approval.with_outputs(decision="verdict")
+        assert renamed.outputs == ("verdict",)
+
+    def test_definition_hash_changes_with_code(self):
+        @interrupt(output_name="a")
+        def v1(x: str) -> str:
+            return "one"
+
+        @interrupt(output_name="a")
+        def v2(x: str) -> str:
+            return "two"
+
+        # Different function bodies → different hashes
+        assert v1.definition_hash != v2.definition_hash
+
+    def test_cache_always_false(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        assert approval.cache is False
+
+    def test_repr(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        assert "InterruptNode" in repr(approval)
+        assert "approval" in repr(approval)
+
+
+class TestInterruptDecoratorExecution:
+    """Tests for @interrupt decorator in graph execution."""
+
+    @pytest.mark.asyncio
+    async def test_auto_resolve(self):
+        """Decorator handler that returns a value auto-resolves."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return "auto-approved"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, approval, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "Final: auto-approved"
+
+    @pytest.mark.asyncio
+    async def test_pause_on_none_return(self):
+        """Decorator handler that returns None pauses."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...  # returns None → pause
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, approval, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.paused
+        assert result.pause.node_name == "approval"
+        assert result.pause.value == "Draft for: hello"
+
+    @pytest.mark.asyncio
+    async def test_pause_then_resume(self):
+        """Pause at decorator node, then resume with user value."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, approval, finalize])
+        runner = AsyncRunner()
+
+        r1 = await runner.run(graph, {"query": "hello"})
+        assert r1.paused
+
+        r2 = await runner.run(
+            graph, {"query": "hello", r1.pause.response_key: "user-approved"}
+        )
+        assert r2.status == RunStatus.COMPLETED
+        assert r2["result"] == "Final: user-approved"
+
+    @pytest.mark.asyncio
+    async def test_conditional_handler(self):
+        """Handler that conditionally returns or pauses."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return query
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str | None:
+            if "LGTM" in draft:
+                return "auto-approved"
+            return None  # pause for human review
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, approval, finalize])
+        runner = AsyncRunner()
+
+        # "LGTM" → auto-resolves
+        r1 = await runner.run(graph, {"query": "LGTM looks great"})
+        assert r1.status == RunStatus.COMPLETED
+        assert r1["result"] == "Final: auto-approved"
+
+        # No "LGTM" → pauses
+        r2 = await runner.run(graph, {"query": "needs work"})
+        assert r2.paused
+
+    @pytest.mark.asyncio
+    async def test_async_handler(self):
+        """Async decorator handler."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        @interrupt(output_name="decision")
+        async def approval(draft: str) -> str:
+            return "async-approved"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, approval, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "Final: async-approved"
+
+    @pytest.mark.asyncio
+    async def test_multi_input_kwargs(self):
+        """Decorator handler with multiple inputs receives kwargs."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "the draft"
+
+        @node(output_name="metadata")
+        def make_meta(query: str) -> dict:
+            return {"author": "test"}
+
+        @interrupt(output_name="decision")
+        def review(draft: str, metadata: dict) -> str:
+            return f"reviewed:{draft}:{metadata['author']}"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return decision
+
+        graph = Graph([make_draft, make_meta, review, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "reviewed:the draft:test"
+
+    @pytest.mark.asyncio
+    async def test_multi_output_dict_return(self):
+        """Decorator handler returning dict for multi-output."""
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        @interrupt(output_name=("decision", "notes"))
+        def review(draft: str) -> dict:
+            return {"decision": "approved", "notes": f"for: {draft}"}
+
+        @node(output_name="result")
+        def finalize(decision: str, notes: str) -> str:
+            return f"{decision}: {notes}"
+
+        graph = Graph([make_draft, review, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "approved: for: draft"
+
+    @pytest.mark.asyncio
+    async def test_with_handler_on_decorator_node(self):
+        """with_handler replaces the function on a decorator-created node."""
+
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            ...  # pause
+
+        replaced = approval.with_handler(lambda draft: "replaced-approved")
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "draft"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        graph = Graph([make_draft, replaced, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "Final: replaced-approved"
+
+    @pytest.mark.asyncio
+    async def test_rename_inputs_in_execution(self):
+        """Renamed inputs work correctly during execution."""
+
+        @node(output_name="document")
+        def produce(query: str) -> str:
+            return "the doc"
+
+        @interrupt(output_name="decision", rename_inputs={"draft": "document"})
+        def approval(draft: str) -> str:
+            return f"approved:{draft}"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return decision
+
+        graph = Graph([produce, approval, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "approved:the doc"
+
+    @pytest.mark.asyncio
+    async def test_defaults_in_execution(self):
+        """Function defaults work as node defaults in graph execution."""
+
+        @interrupt(output_name="decision")
+        def approval(draft: str, mode: str = "auto") -> str:
+            return f"{mode}:{draft}"
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return "the draft"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return decision
+
+        graph = Graph([make_draft, approval, finalize])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"query": "hello"})
+        assert result.status == RunStatus.COMPLETED
+        assert result["result"] == "auto:the draft"
+
+    @pytest.mark.asyncio
+    async def test_nested_graph_decorator_interrupt(self):
+        """Decorator interrupt in nested graph propagates with prefix."""
+
+        @interrupt(output_name="decision")
+        def approval(x: str) -> str:
+            ...
+
+        inner = Graph([approval], name="inner")
+
+        @node(output_name="x")
+        def produce(query: str) -> str:
+            return query
+
+        @node(output_name="result")
+        def consume(decision: str) -> str:
+            return f"got: {decision}"
+
+        outer = Graph([produce, inner.as_node(), consume])
+        runner = AsyncRunner()
+
+        result = await runner.run(outer, {"query": "hello"})
+        assert result.paused
+        assert result.pause.node_name == "inner/approval"
+        assert result.pause.response_key == "inner.decision"

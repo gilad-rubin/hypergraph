@@ -41,13 +41,10 @@ class AsyncInterruptNodeExecutor:
         if all_outputs_present and node.name not in state.node_executions:
             return {o: state.values[o] for o in node.outputs}
 
-        # Handler path: auto-resolve via node-attached handler
-        if node.handler is not None:
+        # Handler path: invoke the function/handler
+        if node.func is not None:
             try:
-                if is_multi_input:
-                    response = node.handler(input_values)
-                else:
-                    response = node.handler(input_values[node.inputs[0]])
+                response = _call_handler(node, input_values)
                 if isawaitable(response):
                     response = await response
             except Exception as e:
@@ -56,28 +53,11 @@ class AsyncInterruptNodeExecutor:
                     f"{type(e).__name__}: {e}"
                 ) from e
 
-            # Normalize response to dict
-            if is_multi_output:
-                if isinstance(response, dict):
-                    # Validate handler returned correct keys for multi-output
-                    expected_keys = set(node.outputs)
-                    actual_keys = set(response.keys())
-                    if actual_keys != expected_keys:
-                        missing = expected_keys - actual_keys
-                        extra = actual_keys - expected_keys
-                        raise ValueError(
-                            f"Handler for InterruptNode '{node.name}' returned dict "
-                            f"with incorrect keys. Expected: {sorted(expected_keys)}, "
-                            f"Got: {sorted(actual_keys)}. "
-                            + (f"Missing: {sorted(missing)}. " if missing else "")
-                            + (f"Extra: {sorted(extra)}." if extra else "")
-                        )
-                    return response
-                # Single value returned for multi-output: assign to first output
-                return {node.outputs[0]: response}
-            return {node.outputs[0]: response}
+            # None return means "pause" (Option E semantics)
+            if response is not None:
+                return _normalize_response(node, response, is_multi_output)
 
-        # Pause path: no handler, no resume value
+        # Pause path: no handler, or handler returned None
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
@@ -87,3 +67,40 @@ class AsyncInterruptNodeExecutor:
                 values=input_values if is_multi_input else None,
             )
         )
+
+
+def _call_handler(node: "InterruptNode", input_values: dict[str, Any]) -> Any:
+    """Call the handler with the appropriate calling convention."""
+    # Decorator-created nodes: call with keyword arguments
+    if node._use_kwargs:
+        params = node.map_inputs_to_params(input_values)
+        return node.func(**params)
+
+    # Class-constructor nodes: legacy positional calling convention
+    if node.is_multi_input:
+        return node.func(input_values)
+    return node.func(input_values[node.inputs[0]])
+
+
+def _normalize_response(
+    node: "InterruptNode", response: Any, is_multi_output: bool
+) -> dict[str, Any]:
+    """Normalize handler response to output dict."""
+    if is_multi_output:
+        if isinstance(response, dict):
+            expected_keys = set(node.outputs)
+            actual_keys = set(response.keys())
+            if actual_keys != expected_keys:
+                missing = expected_keys - actual_keys
+                extra = actual_keys - expected_keys
+                raise ValueError(
+                    f"Handler for InterruptNode '{node.name}' returned dict "
+                    f"with incorrect keys. Expected: {sorted(expected_keys)}, "
+                    f"Got: {sorted(actual_keys)}. "
+                    + (f"Missing: {sorted(missing)}. " if missing else "")
+                    + (f"Extra: {sorted(extra)}." if extra else "")
+                )
+            return response
+        # Single value returned for multi-output: assign to first output
+        return {node.outputs[0]: response}
+    return {node.outputs[0]: response}

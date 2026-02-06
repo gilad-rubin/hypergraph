@@ -5,7 +5,7 @@ from hypergraph.nodes.base import HyperNode, _EMIT_SENTINEL
 from hypergraph.nodes.function import FunctionNode, node
 from hypergraph.nodes.gate import END, GateNode, IfElseNode, RouteNode, ifelse, route
 from hypergraph.nodes.graph_node import GraphNode
-from hypergraph.nodes.interrupt import InterruptNode
+from hypergraph.nodes.interrupt import InterruptNode, interrupt
 
 __all__ = [
     "HyperNode",
@@ -21,5 +21,6 @@ __all__ = [
     "node",
     "ifelse",
     "route",
+    "interrupt",
     "END",
 ]
