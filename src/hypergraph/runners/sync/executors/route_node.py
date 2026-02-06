@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import map_inputs_to_func_params
-from hypergraph.runners._shared.routing_validation import validate_routing_decision
+from hypergraph.runners._shared.gate_execution import execute_route
 
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import RouteNode
@@ -13,12 +12,7 @@ if TYPE_CHECKING:
 
 
 class SyncRouteNodeExecutor:
-    """Executes RouteNode synchronously.
-
-    RouteNodes make routing decisions but don't produce data outputs.
-    The executor calls the routing function and stores the decision
-    in the graph state for downstream control flow.
-    """
+    """Executes RouteNode synchronously."""
 
     def __call__(
         self,
@@ -26,32 +20,4 @@ class SyncRouteNodeExecutor:
         state: "GraphState",
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute a RouteNode synchronously.
-
-        Args:
-            node: The RouteNode to execute
-            state: Current graph execution state
-            inputs: Input values for the node
-
-        Returns:
-            Empty dict (gates produce no data outputs).
-            The routing decision is stored in state.routing_decisions.
-        """
-        # Map renamed inputs back to original function parameter names
-        func_inputs = map_inputs_to_func_params(node, inputs)
-
-        # Call the routing function
-        decision = node.func(**func_inputs)
-
-        # Apply fallback if decision is None
-        if decision is None and node.fallback is not None:
-            decision = node.fallback
-
-        # Validate return type
-        validate_routing_decision(node, decision)
-
-        # Store routing decision in state
-        state.routing_decisions[node.name] = decision
-
-        # Gates produce no data outputs
-        return {}
+        return execute_route(node, state, inputs)
