@@ -1031,87 +1031,77 @@ unnamed.as_node()
 
 ## InterruptNode
 
-**InterruptNode** is a declarative pause point for human-in-the-loop workflows. It has one input (the value surfaced to the caller) and one output (where the response goes). When execution reaches an interrupt without a pre-supplied response or handler, the graph pauses.
+**InterruptNode** is a declarative pause point for human-in-the-loop workflows. When execution reaches an interrupt without a pre-supplied response or handler, the graph pauses.
 
-### Constructor
+### `@interrupt` Decorator (Preferred)
+
+The `@interrupt` decorator creates an InterruptNode from a function, just like `@node` creates a FunctionNode:
 
 ```python
-class InterruptNode(HyperNode):
-    def __init__(
-        self,
-        name: str,
-        *,
-        input_param: str | tuple[str, ...],
-        output_param: str | tuple[str, ...],
-        response_type: type | dict[str, type] | None = None,
-        handler: Callable[..., Any] | None = None,
-    ) -> None: ...
+from hypergraph import interrupt
+
+@interrupt(output_name="decision")
+def approval(draft: str) -> str:
+    return "auto-approved"    # returns value -> auto-resolve
+    # return None             # returns None -> pause
 ```
 
-**Args:**
+**Decorator args:**
 
-- `name` (required): Node name
-- `input_param` (required): Name(s) of the input parameter(s). Can be a single string or a tuple for multiple inputs.
-- `output_param` (required): Name(s) of the output parameter(s). Can be a single string or a tuple for multiple outputs.
-- `response_type`: Optional type annotation. For single output: a type. For multiple outputs: a dict mapping output names to types.
-- `handler`: Optional callable to auto-resolve the interrupt. For single input: accepts one argument. For multiple inputs: accepts a dict. May be sync or async.
+- `output_name` (required): Output name(s)
+- `rename_inputs`: Optional dict to rename inputs
+- `emit`: Ordering-only output name(s) (see [emit/wait_for](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for))
+- `wait_for`: Ordering-only input name(s)
+- `hide`: Whether to hide from visualization
 
-**Raises:**
-- `ValueError` - If `input_param` or `output_param` is not a valid Python identifier or is a reserved keyword
+### Constructor with Source Function
 
-### Creating an InterruptNode
+Like FunctionNode, InterruptNode can also be created via the constructor:
 
 ```python
 from hypergraph import InterruptNode
 
+def my_handler(draft: str) -> str:
+    return "approved"
+
+approval = InterruptNode(my_handler, output_name="decision")
+# Or with all options:
+approval = InterruptNode(
+    my_handler,
+    name="review",
+    output_name="decision",
+    emit="reviewed",
+    wait_for="ready",
+)
+```
+
+### Legacy Constructor
+
+For handler-less pause points:
+
+```python
 approval = InterruptNode(
     name="approval",
     input_param="draft",
     output_param="decision",
+    response_type=str,        # optional
+    handler=lambda draft: "auto",  # optional
 )
-
-print(approval.name)         # "approval"
-print(approval.inputs)       # ("draft",)
-print(approval.outputs)      # ("decision",)
-print(approval.input_param)  # "draft"
-print(approval.output_param) # "decision"
-print(approval.cache)        # False (always)
 ```
 
 ### Properties
 
-#### `input_param: str`
-
-The input parameter name (shorthand for `inputs[0]`).
-
-#### `output_param: str`
-
-The output parameter name (shorthand for `outputs[0]`).
-
-#### `cache: bool`
-
-Always `False`. InterruptNodes never cache.
-
-#### `response_type: type | None`
-
-Optional type annotation for the response. Included in `definition_hash`.
-
-#### `handler: Callable | None`
-
-Optional callable to auto-resolve. Excluded from `definition_hash`.
-
-#### `definition_hash: str`
-
-SHA256 hash that includes the node name, inputs, outputs, and response_type, but excludes the handler.
-
-```python
-n1 = InterruptNode(name="x", input_param="a", output_param="b")
-n2 = InterruptNode(name="x", input_param="a", output_param="b", response_type=str)
-n3 = InterruptNode(name="x", input_param="a", output_param="b", handler=lambda x: x)
-
-assert n1.definition_hash != n2.definition_hash  # response_type differs
-assert n1.definition_hash == n3.definition_hash   # handler is excluded
-```
+| Property | Type | Description |
+|----------|------|-------------|
+| `input_param` | `str` | First input parameter name |
+| `output_param` | `str` | First data output parameter name |
+| `cache` | `bool` | Always `False` |
+| `hide` | `bool` | Whether hidden from visualization |
+| `wait_for` | `tuple[str, ...]` | Ordering-only inputs |
+| `data_outputs` | `tuple[str, ...]` | Outputs excluding emit-only |
+| `is_async` | `bool` | True if handler is async |
+| `is_generator` | `bool` | True if handler yields |
+| `definition_hash` | `str` | SHA256 hash of function source (decorator/constructor) or metadata (legacy) |
 
 ### Methods
 
@@ -1129,33 +1119,20 @@ assert auto.handler is not None
 
 #### Inherited: `with_name()`, `with_inputs()`, `with_outputs()`
 
-All HyperNode rename methods work as expected:
-
-```python
-approval = InterruptNode(name="x", input_param="a", output_param="b")
-
-renamed = approval.with_name("review")
-adapted = approval.with_inputs(a="draft").with_outputs(b="decision")
-
-print(renamed.name)          # "review"
-print(adapted.input_param)   # "draft"
-print(adapted.output_param)  # "decision"
-```
+All HyperNode rename methods work as expected.
 
 ### Example: Pause and Resume
 
 ```python
-from hypergraph import Graph, node, AsyncRunner, InterruptNode
+from hypergraph import Graph, node, AsyncRunner, interrupt
 
 @node(output_name="draft")
 def make_draft(query: str) -> str:
     return f"Draft for: {query}"
 
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-)
+@interrupt(output_name="decision")
+def approval(draft: str) -> str:
+    ...  # returns None -> pause
 
 @node(output_name="result")
 def finalize(decision: str) -> str:
