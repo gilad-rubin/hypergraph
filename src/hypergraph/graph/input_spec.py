@@ -206,7 +206,7 @@ def _collect_bound_values(
     for node in nodes.values():
         if isinstance(node, GraphNode):
             # Get bound values from the inner graph
-            inner_bound = node._graph.inputs.bound
+            inner_bound = node.graph.inputs.bound
             # Merge into all_bound (current graph's values take precedence)
             for key, value in inner_bound.items():
                 if key not in all_bound:
