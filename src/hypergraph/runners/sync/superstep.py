@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
@@ -117,8 +118,7 @@ def run_superstep_sync(
             except Exception as e:
                 duration_ms = (time.time() - node_start) * 1000
                 _emit_node_error(dispatcher, run_id, node_span_id, run_span_id, node, graph)
-                e._partial_state = new_state  # type: ignore[attr-defined]
-                raise
+                raise ExecutionError(e, new_state) from e
 
         # Update state with outputs
         for name, value in outputs.items():

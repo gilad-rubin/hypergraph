@@ -7,6 +7,7 @@ import time
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
@@ -185,8 +186,13 @@ async def run_superstep_async(
         )
 
     if first_error is not None:
-        first_error._partial_state = new_state  # type: ignore[attr-defined]
-        raise first_error
+        # PauseExecution (BaseException) must propagate unwrapped for the
+        # runner's except PauseExecution handler to work
+        if isinstance(first_error, ExecutionError):
+            raise first_error
+        if not isinstance(first_error, Exception):
+            raise first_error
+        raise ExecutionError(first_error, new_state) from first_error
 
     return new_state
 
