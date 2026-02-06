@@ -115,6 +115,17 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Gate nodes (route/ifelse) cache routing decisions; `InterruptNode` and `GraphNode` are never cacheable
 - Tests in `tests/test_cache_*.py`; `Caching` dimension in `tests/capabilities/matrix.py`
 
+## Ordering (emit/wait_for)
+
+- `emit`: ordering-only outputs. Auto-produced sentinel when node runs. In `node.outputs` but NOT in `node.data_outputs`
+- `wait_for`: ordering-only inputs. Node waits until these values exist and are fresh
+- `@node(output_name="x", emit="done")` / `@route(targets=[...], wait_for="done")`
+- Validation: emit vs output_name, wait_for vs params, emit vs wait_for must not overlap
+- `_EMIT_SENTINEL` filtered from final output in `filter_outputs()`
+- Ordering edges in NetworkX: `edge_type="ordering"`, suppressed when data edge exists
+- Viz: purple dashed style (`#8b5cf6`, `strokeDasharray: "6 3"`)
+- Tests in `tests/test_emit_wait_for.py`
+
 ## Maintaining Instructions
 
 After making significant code structure changes, update the AGENTS.md and README.md markdown files
