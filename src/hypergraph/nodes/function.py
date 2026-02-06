@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import warnings
 from typing import Any, Callable, get_type_hints
@@ -221,7 +222,7 @@ class FunctionNode(HyperNode):
         """Whether this node is hidden from visualization."""
         return self._hide
 
-    @property
+    @functools.cached_property
     def defaults(self) -> dict[str, Any]:
         """Default values for input parameters (using current/renamed names).
 
@@ -239,7 +240,7 @@ class FunctionNode(HyperNode):
             if param.default is not inspect.Parameter.empty
         }
 
-    @property
+    @functools.cached_property
     def parameter_annotations(self) -> dict[str, Any]:
         """Type annotations for input parameters.
 
