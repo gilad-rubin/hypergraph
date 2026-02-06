@@ -394,3 +394,175 @@ class TestEdgeCases:
         renamed = producer.with_outputs(done="finished")
         assert "finished" in renamed.outputs
         assert renamed.data_outputs == ("result",)
+
+
+# =============================================================================
+# Overlap validation tests
+# =============================================================================
+
+
+class TestOverlapValidation:
+    """Emit/wait_for must not overlap with outputs/inputs."""
+
+    def test_emit_overlaps_output_name_raises(self):
+        """emit name same as output_name raises ValueError."""
+        with pytest.raises(ValueError, match="emit names overlap with output names"):
+
+            @node(output_name="result", emit="result")
+            def bad(x: int) -> int:
+                return x
+
+    def test_wait_for_overlaps_param_raises(self):
+        """wait_for name same as function parameter raises ValueError."""
+        with pytest.raises(ValueError, match="wait_for names overlap with input parameters"):
+
+            @node(output_name="result", wait_for="x")
+            def bad(x: int) -> int:
+                return x
+
+    def test_emit_and_wait_for_share_name_raises(self):
+        """emit and wait_for sharing a name raises ValueError."""
+        with pytest.raises(ValueError, match="emit and wait_for share names"):
+
+            @node(output_name="result", emit="signal", wait_for="signal")
+            def bad(x: int) -> int:
+                return x
+
+    def test_route_emit_overlaps_raises(self):
+        """RouteNode emit overlapping is caught."""
+        # RouteNode has no data_outputs, but emit still validated
+        with pytest.raises(ValueError, match="emit and wait_for share names"):
+
+            @route(targets=["a", END], emit="sig", wait_for="sig")
+            def bad(x: int) -> str:
+                return "a"
+
+    def test_ifelse_emit_overlaps_raises(self):
+        """IfElseNode emit overlapping is caught."""
+        with pytest.raises(ValueError, match="emit and wait_for share names"):
+
+            @ifelse(when_true="a", when_false="b", emit="sig", wait_for="sig")
+            def bad(x: int) -> bool:
+                return True
+
+    def test_multiple_emit_partial_overlap_raises(self):
+        """One of multiple emit names overlapping output raises."""
+        with pytest.raises(ValueError, match="emit names overlap with output names"):
+
+            @node(output_name="result", emit=("done", "result"))
+            def bad(x: int) -> int:
+                return x
+
+
+# =============================================================================
+# Viz ordering edge tests
+# =============================================================================
+
+
+class TestVizOrderingEdges:
+    """Ordering edges appear in visualization with correct style."""
+
+    def test_ordering_edges_in_merged_mode(self):
+        """Ordering edges appear in merged output mode."""
+        from hypergraph.viz.renderer import render_graph
+
+        @node(output_name="a", emit="a_done")
+        def step_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b", wait_for="a_done")
+        def step_b(x: int) -> int:
+            return x * 2
+
+        graph = Graph(nodes=[step_a, step_b])
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
+
+        ordering_edges = [
+            e for e in result["edges"]
+            if e.get("data", {}).get("edgeType") == "ordering"
+        ]
+        assert len(ordering_edges) >= 1
+        edge = ordering_edges[0]
+        assert edge["source"] == "step_a"
+        assert edge["target"] == "step_b"
+        assert edge["style"]["stroke"] == "#8b5cf6"
+        assert "strokeDasharray" in edge["style"]
+
+    def test_ordering_edges_in_separate_mode(self):
+        """Ordering edges appear in separate output mode."""
+        from hypergraph.viz.renderer import render_graph
+
+        @node(output_name="a", emit="a_done")
+        def step_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b", wait_for="a_done")
+        def step_b(x: int) -> int:
+            return x * 2
+
+        graph = Graph(nodes=[step_a, step_b])
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+
+        ordering_edges = [
+            e for e in result["edges"]
+            if e.get("data", {}).get("edgeType") == "ordering"
+        ]
+        assert len(ordering_edges) >= 1
+        edge = ordering_edges[0]
+        assert edge["source"] == "step_a"
+        assert edge["target"] == "step_b"
+        assert edge["style"]["stroke"] == "#8b5cf6"
+
+    def test_emit_sentinels_not_in_data_outputs_nx(self):
+        """NetworkX graph stores data_outputs separate from outputs."""
+
+        @node(output_name="result", emit="done")
+        def producer(x: int) -> int:
+            return x
+
+        graph = Graph(nodes=[producer])
+        flat = graph.to_flat_graph()
+        attrs = flat.nodes["producer"]
+        assert "done" in attrs["outputs"]
+        assert "done" not in attrs["data_outputs"]
+        assert "result" in attrs["data_outputs"]
+
+    def test_wait_for_in_nx_attrs(self):
+        """NetworkX graph includes wait_for in node attributes."""
+
+        @node(output_name="result", emit="signal")
+        def producer(x: int) -> int:
+            return x
+
+        @node(output_name="final", wait_for="signal")
+        def consumer(result: int) -> int:
+            return result
+
+        graph = Graph(nodes=[producer, consumer])
+        flat = graph.to_flat_graph()
+        attrs = flat.nodes["consumer"]
+        assert attrs["wait_for"] == ("signal",)
+
+    def test_ordering_edge_in_flat_graph(self):
+        """Flat graph contains ordering edges for wait_for dependencies."""
+
+        @node(output_name="a", emit="a_done")
+        def step_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b", wait_for="a_done")
+        def step_b(x: int) -> int:
+            return x * 2
+
+        graph = Graph(nodes=[step_a, step_b])
+        flat = graph.to_flat_graph()
+
+        ordering_edges = [
+            (u, v, d) for u, v, d in flat.edges(data=True)
+            if d.get("edge_type") == "ordering"
+        ]
+        assert len(ordering_edges) == 1
+        u, v, d = ordering_edges[0]
+        assert u == "step_a"
+        assert v == "step_b"
+        assert d["value_names"] == ["a_done"]
