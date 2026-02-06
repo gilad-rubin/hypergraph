@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Any, TYPE_CHECKING
 
 from hypergraph.nodes.base import HyperNode
+from hypergraph.graph._helpers import get_edge_produced_values, sources_of
 from hypergraph.graph.input_spec import InputSpec, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
 
@@ -184,15 +185,11 @@ class Graph:
 
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
-        result: set[str] = set()
-        for _, _, data in self._nx_graph.edges(data=True):
-            if data.get("edge_type") == "data":
-                result.update(data.get("value_names", []))
-        return result
+        return get_edge_produced_values(self._nx_graph)
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""
-        return [node.name for node in self._nodes.values() if output in node.outputs]
+        return sources_of(output, self._nodes)
 
     def _build_nodes_dict(self, nodes: list[HyperNode]) -> dict[str, HyperNode]:
         """Build nodes dict, raising immediately on duplicate names."""
