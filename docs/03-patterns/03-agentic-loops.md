@@ -196,6 +196,41 @@ def quality_gate(all_valid: bool, attempts: int = 0) -> str:
 quality_loop = Graph([generate_content, validate, check_validation, quality_gate])
 ```
 
+## Ordering with emit/wait_for
+
+In cyclic graphs, you sometimes need a node to wait for another node to finish — even when there's no direct data dependency. Use `emit` and `wait_for` to enforce execution order.
+
+**The problem**: In a chat loop, `should_continue` reads `messages`. But `accumulate` also reads `messages` and produces the updated version. Without ordering, `should_continue` might see stale messages from the previous turn.
+
+**The fix**: `accumulate` emits a signal when it finishes. `should_continue` waits for that signal.
+
+```python
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages", emit="turn_done")
+def accumulate(messages: list, response: str) -> list:
+    return messages + [{"role": "assistant", "content": response}]
+
+@route(targets=["generate", END], wait_for="turn_done")
+def should_continue(messages: list) -> str:
+    if len(messages) >= 10:
+        return END
+    return "generate"
+```
+
+**How it works**:
+- `emit="turn_done"` declares an ordering-only output. A sentinel value is auto-produced when `accumulate` runs — your function doesn't return it.
+- `wait_for="turn_done"` declares an ordering-only input. `should_continue` won't run until `turn_done` exists and is fresh (produced since `should_continue` last ran).
+- `emit` names appear in `node.outputs` but not in `node.data_outputs`. They're filtered from the final result.
+
+**When to use emit/wait_for vs data edges**:
+- If node B needs node A's output value → use a data edge (parameter matching)
+- If node B just needs to run after node A → use `emit`/`wait_for`
+
+**Validation**: emit names must not overlap with `output_name`, and wait_for names must not overlap with function parameters. Referencing a nonexistent emit/output in `wait_for` raises `GraphConfigError` at build time.
+
 ## Seed Inputs
 
 When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes a **seed** — an initial value needed to start the first iteration. Provide seeds in the `values` dict when calling `runner.run()`:

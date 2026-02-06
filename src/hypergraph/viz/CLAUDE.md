@@ -49,6 +49,12 @@ Selection happens in `app.js` via `expansionStateToKey()` and lookups in `meta.n
    - Container DATA nodes are hidden when the container is expanded
    - Reroute logic must not override DATA node sources
 
+3. **Ordering edges** (both modes)
+   - Created by `emit`/`wait_for` declarations on nodes
+   - `edge_type="ordering"` in NetworkX graph
+   - Rendered with purple dashed style (`#8b5cf6`, `strokeDasharray: "6 3"`)
+   - Suppressed when a data edge already exists between the same pair
+
 **Rename handling**
 - `with_inputs` / `with_outputs` can rename exposed parameters.
 - `_find_internal_producer_for_output()` resolves container output names to internal producers when names differ.

@@ -68,6 +68,65 @@ When paused, the `RunResult` has:
 | `result.pause.output_param` | Output parameter name |
 | `result.pause.response_key` | Key to use in the values dict when resuming |
 
+## Multi-Turn Chat with Human Input
+
+Combine InterruptNode with agentic loops for a multi-turn conversation where the user provides input each turn.
+
+```python
+from hypergraph import Graph, node, route, END, AsyncRunner, InterruptNode
+
+# Pause and wait for user input
+ask_user = InterruptNode(
+    name="ask_user",
+    input_param="messages",
+    output_param="user_input",
+)
+
+@node(output_name="messages")
+def add_user_message(messages: list, user_input: str) -> list:
+    return messages + [{"role": "user", "content": user_input}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages", emit="turn_done")
+def accumulate(messages: list, response: str) -> list:
+    return messages + [{"role": "assistant", "content": response}]
+
+@route(targets=["ask_user", END], wait_for="turn_done")
+def should_continue(messages: list) -> str:
+    if len(messages) >= 20:
+        return END
+    return "ask_user"
+
+graph = Graph([ask_user, add_user_message, generate, accumulate, should_continue])
+
+# Pre-fill messages so the first step (ask_user) can run immediately
+chat = graph.bind(messages=[])
+
+runner = AsyncRunner()
+
+# Turn 1: graph pauses at ask_user (shows empty messages)
+result = await runner.run(chat, {})
+assert result.paused
+assert result.pause.node_name == "ask_user"
+
+# Resume with user's first message
+result = await runner.run(chat, {"user_input": "Hello!"})
+# Pauses again at ask_user for the next turn
+assert result.paused
+
+# Resume with second message
+result = await runner.run(chat, {"user_input": "Tell me more"})
+```
+
+Key patterns:
+- **`.bind(messages=[])`** pre-fills the seed input so `.run({})` works with no values
+- **InterruptNode as first step**: the graph pauses immediately, asking the user for input
+- **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
+- Each resume replays the graph, providing all previous responses
+
 ## Auto-Resolve with Handlers
 
 For testing or automation, attach a handler that resolves the interrupt without human input.
