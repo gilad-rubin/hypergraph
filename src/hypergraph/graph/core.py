@@ -149,9 +149,9 @@ class Graph:
         ]
         return _unique_outputs(leaves)
 
-    @property
+    @functools.cached_property
     def inputs(self) -> InputSpec:
-        """Compute graph input specification."""
+        """Graph input specification (cached per instance)."""
         return compute_input_spec(self._nodes, self._nx_graph, self._bound)
 
     @functools.cached_property
@@ -452,11 +452,14 @@ class Graph:
 
         Preserves: name, strict_types, nodes, nx_graph, cached_hash
         Creates new: _bound dict (to allow independent modifications)
+        Clears: cached inputs (depends on _bound which may differ)
         """
         import copy
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
+        # Clear cached_property values that depend on _bound
+        new_graph.__dict__.pop("inputs", None)
         # _selected is an immutable tuple (or None), safe to share via copy.copy
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
