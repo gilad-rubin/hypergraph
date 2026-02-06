@@ -120,6 +120,10 @@ class Graph:
         """Map of node name -> node object."""
         return dict(self._nodes)  # Return copy to prevent mutation
 
+    def iter_nodes(self) -> "Iterable[HyperNode]":
+        """Iterate over all nodes without copying the internal dict."""
+        return self._nodes.values()
+
     @property
     def strict_types(self) -> bool:
         """Whether type validation is enabled for this graph.

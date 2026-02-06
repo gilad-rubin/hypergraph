@@ -164,7 +164,7 @@ class GraphNode(HyperNode):
 
         # Build mapping: output_name -> source_node
         output_to_node: dict[str, HyperNode] = {}
-        for node in self._graph._nodes.values():
+        for node in self._graph.iter_nodes():
             for output in node.outputs:
                 output_to_node[output] = node
 
@@ -224,7 +224,7 @@ class GraphNode(HyperNode):
         original_param = self._resolve_original_input_name(param)
 
         # Find which node in inner graph has this as an input
-        for inner_node in self._graph._nodes.values():
+        for inner_node in self._graph.iter_nodes():
             if original_param in inner_node.inputs:
                 return inner_node.get_input_type(original_param)
         return None
@@ -327,7 +327,7 @@ class GraphNode(HyperNode):
         if original_param in self._graph.inputs.bound:
             return True
         # Check if any inner node has a default
-        for inner_node in self._graph._nodes.values():
+        for inner_node in self._graph.iter_nodes():
             if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
                 return True
         return False
@@ -354,7 +354,7 @@ class GraphNode(HyperNode):
         if original_param in self._graph.inputs.bound:
             return self._graph.inputs.bound[original_param]
         # Check inner nodes for defaults
-        for inner_node in self._graph._nodes.values():
+        for inner_node in self._graph.iter_nodes():
             if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
                 return inner_node.get_default_for(original_param)
         raise KeyError(f"No default value for parameter '{param}'")
@@ -384,7 +384,7 @@ class GraphNode(HyperNode):
 
         # Check if ALL inner nodes using this param have signature defaults
         inner_nodes_with_param = [
-            n for n in self._graph._nodes.values() if original_param in n.inputs
+            n for n in self._graph.iter_nodes() if original_param in n.inputs
         ]
 
         if not inner_nodes_with_param:
@@ -417,7 +417,7 @@ class GraphNode(HyperNode):
             raise KeyError(f"Parameter '{param}' is bound, not a signature default")
 
         # Get signature default from inner nodes (not bound values)
-        for inner_node in self._graph._nodes.values():
+        for inner_node in self._graph.iter_nodes():
             if original_param in inner_node.inputs and inner_node.has_signature_default_for(original_param):
                 return inner_node.get_signature_default_for(original_param)
 
