@@ -18,7 +18,7 @@ from typing import Any, Callable, TypeVar
 from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._rename import _apply_renames
-from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
 
 
 # =============================================================================
@@ -282,6 +282,10 @@ class RouteNode(GateNode):
             inputs, rename_inputs, "inputs"
         )
 
+        _validate_emit_wait_for(
+            self.name, self._emit, self._wait_for, (), self.inputs,
+        )
+
     def __call__(self, *args: Any, **kwargs: Any) -> str | type[END] | list | None:
         """Call the routing function directly."""
         return self.func(*args, **kwargs)
@@ -478,6 +482,10 @@ class IfElseNode(GateNode):
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(
             inputs, rename_inputs, "inputs"
+        )
+
+        _validate_emit_wait_for(
+            self.name, self._emit, self._wait_for, (), self.inputs,
         )
 
     def __call__(self, *args: Any, **kwargs: Any) -> bool:

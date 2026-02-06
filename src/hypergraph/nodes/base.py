@@ -16,6 +16,51 @@ _EMIT_SENTINEL = object()
 _T = TypeVar("_T", bound="HyperNode")
 
 
+def _validate_emit_wait_for(
+    node_name: str,
+    emit: tuple[str, ...],
+    wait_for: tuple[str, ...],
+    data_outputs: tuple[str, ...],
+    inputs: tuple[str, ...],
+) -> None:
+    """Validate emit and wait_for don't overlap with outputs or inputs.
+
+    Raises:
+        ValueError: If emit names overlap with data output names
+        ValueError: If wait_for names overlap with function parameter names
+        ValueError: If emit and wait_for share names
+    """
+    emit_set = set(emit)
+    data_set = set(data_outputs)
+    input_set = set(inputs)
+
+    overlap = emit_set & data_set
+    if overlap:
+        raise ValueError(
+            f"Node '{node_name}': emit names overlap with output names: {sorted(overlap)}\n\n"
+            f"  -> emit and output_name must be disjoint\n\n"
+            f"How to fix: Use different names for emit and output_name"
+        )
+
+    overlap = set(wait_for) & input_set
+    if overlap:
+        raise ValueError(
+            f"Node '{node_name}': wait_for names overlap with input parameters: {sorted(overlap)}\n\n"
+            f"  -> wait_for names must not be function parameters\n"
+            f"  -> wait_for is an ordering dependency, not a data input\n\n"
+            f"How to fix: Use different names, or if ordering is implicit via\n"
+            f"  data edges, remove the parameter from wait_for"
+        )
+
+    overlap = emit_set & set(wait_for)
+    if overlap:
+        raise ValueError(
+            f"Node '{node_name}': emit and wait_for share names: {sorted(overlap)}\n\n"
+            f"  -> A node cannot both emit and wait for the same signal\n\n"
+            f"How to fix: Use different names for emit and wait_for"
+        )
+
+
 class HyperNode(ABC):
     """Abstract base class for all node types with shared rename functionality.
 
@@ -248,6 +293,8 @@ class HyperNode(ABC):
             "label": self.name,
             "inputs": self.inputs,
             "outputs": self.outputs,
+            "data_outputs": self.data_outputs,
+            "wait_for": self.wait_for,
             "input_types": {p: self.get_input_type(p) for p in self.inputs},
             "output_types": {o: self.get_output_type(o) for o in self.outputs},
             "has_defaults": {p: self.has_default_for(p) for p in self.inputs},
