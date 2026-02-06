@@ -97,6 +97,8 @@ class FunctionNode(CallableMixin, HyperNode):
     _definition_hash: str
     _is_async: bool
     _is_generator: bool
+    _wait_for: tuple[str, ...]
+    _emit: tuple[str, ...]
 
     def __init__(
         self,
@@ -107,6 +109,8 @@ class FunctionNode(CallableMixin, HyperNode):
         rename_inputs: dict[str, str] | None = None,
         cache: bool = False,
         hide: bool = False,
+        emit: str | tuple[str, ...] | None = None,
+        wait_for: str | tuple[str, ...] | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -118,6 +122,11 @@ class FunctionNode(CallableMixin, HyperNode):
             rename_inputs: Mapping to rename inputs {old: new}
             cache: Whether to cache results (default: False)
             hide: Whether to hide from visualization (default: False)
+            emit: Ordering-only output name(s). Auto-produced with sentinel value
+                  when node runs. Participates in edge inference like output_name.
+            wait_for: Ordering-only input name(s). Node won't run until these
+                      values exist and are fresh. Participates in edge inference
+                      like function parameters.
 
         Warning:
             If the function has a return type annotation but no output_name
@@ -137,10 +146,13 @@ class FunctionNode(CallableMixin, HyperNode):
         self._cache = cache
         self._hide = hide
         self._definition_hash = hash_definition(func)
+        self._emit = ensure_tuple(emit) if emit else ()
+        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
 
         # Core HyperNode attributes
         self.name = name or func.__name__
-        self.outputs = _resolve_outputs(func, output_name)
+        data_outputs = _resolve_outputs(func, output_name)
+        self.outputs = data_outputs + self._emit
 
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(
@@ -174,6 +186,19 @@ class FunctionNode(CallableMixin, HyperNode):
     def hide(self) -> bool:
         """Whether this node is hidden from visualization."""
         return self._hide
+
+    @property
+    def wait_for(self) -> tuple[str, ...]:
+        """Ordering-only inputs this node waits for."""
+        return self._wait_for
+
+    @property
+    def data_outputs(self) -> tuple[str, ...]:
+        """Outputs that carry data (excludes emit-only outputs)."""
+        if not self._emit:
+            return self.outputs
+        # outputs = data_outputs + emit, so strip the emit portion
+        return self.outputs[:len(self.outputs) - len(self._emit)]
 
     @property
     def output_annotation(self) -> dict[str, Any]:
@@ -268,6 +293,8 @@ def node(
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
     hide: bool = False,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -286,6 +313,10 @@ def node(
         rename_inputs: Mapping to rename inputs {old: new}
         cache: Whether to cache results (default: False)
         hide: Whether to hide from visualization (default: False)
+        emit: Ordering-only output name(s). Auto-produced with sentinel value
+              when node runs. Participates in edge inference like output_name.
+        wait_for: Ordering-only input name(s). Node won't run until these
+                  values exist and are fresh.
 
     Returns:
         FunctionNode if source provided, else decorator function.
@@ -308,6 +339,8 @@ def node(
             rename_inputs=rename_inputs,
             cache=cache,
             hide=hide,
+            emit=emit,
+            wait_for=wait_for,
         )
 
     if source is not None:

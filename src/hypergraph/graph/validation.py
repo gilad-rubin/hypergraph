@@ -47,6 +47,7 @@ def validate_graph(
     _validate_multi_target_output_conflicts(nodes)
     _validate_no_interrupt_in_map_over(nodes)
     _validate_no_cache_on_non_function_nodes(nodes)
+    _validate_wait_for_references(nodes)
     if strict_types:
         _validate_types(nodes, nx_graph)
 
@@ -379,6 +380,41 @@ def _validate_no_cache_on_non_function_nodes(nodes: dict[str, "HyperNode"]) -> N
                 f"How to fix:\n"
                 f"  Remove cache=True from '{node.name}'"
             )
+
+
+def _validate_wait_for_references(nodes: dict[str, "HyperNode"]) -> None:
+    """Validate that wait_for values reference existing outputs or emits.
+
+    Each wait_for name must match an output (including emit) of some node
+    in the graph. Otherwise, the node would wait forever.
+    """
+    all_outputs: set[str] = set()
+    for node in nodes.values():
+        all_outputs.update(node.outputs)
+
+    for node in nodes.values():
+        for name in node.wait_for:
+            if name not in all_outputs:
+                suggestion = _find_similar_names(name, all_outputs)
+                msg = (
+                    f"Node '{node.name}' has wait_for='{name}' but no node produces it\n\n"
+                    f"  -> '{name}' is not an output or emit of any node in the graph\n"
+                    f"  -> Available outputs: {sorted(all_outputs)}\n\n"
+                    f"How to fix:\n"
+                    f"  1. Add emit='{name}' to the producer node, OR\n"
+                    f"  2. Fix the wait_for name"
+                )
+                if suggestion:
+                    msg += f"\n\n  Did you mean '{suggestion}'?"
+                raise GraphConfigError(msg)
+
+
+def _find_similar_names(name: str, candidates: set[str]) -> str | None:
+    """Find the most similar name from candidates (for typo suggestions)."""
+    from difflib import get_close_matches
+
+    matches = get_close_matches(name, candidates, n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
 
 def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> None:

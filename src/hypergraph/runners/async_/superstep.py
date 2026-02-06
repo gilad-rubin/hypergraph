@@ -99,10 +99,11 @@ async def run_superstep_async(
 
     async def execute_one(
         node: HyperNode,
-    ) -> tuple[HyperNode, dict[str, Any], dict[str, int]]:
+    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int]]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         input_versions = {param: state.get_version(param) for param in node.inputs}
+        wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
         # Check cache before execution
         cache_key, cached_outputs = ("", None)
@@ -121,7 +122,7 @@ async def run_superstep_async(
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
                 await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
-            return node, outputs, input_versions
+            return node, outputs, input_versions, wait_for_versions
 
         # Emit NodeStartEvent
         node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
@@ -149,7 +150,7 @@ async def run_superstep_async(
                     await dispatcher.emit_async(route_evt)
                 await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms))
 
-            return node, outputs, input_versions
+            return node, outputs, input_versions, wait_for_versions
         except Exception:
             if active:
                 await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
@@ -167,13 +168,14 @@ async def run_superstep_async(
             if first_error is None:
                 first_error = result
             continue
-        node, outputs, input_versions = result
+        node, outputs, input_versions, wait_for_versions = result
         for name, value in outputs.items():
             new_state.update_value(name, value)
         new_state.node_executions[node.name] = NodeExecution(
             node_name=node.name,
             input_versions=input_versions,
             outputs=outputs,
+            wait_for_versions=wait_for_versions,
         )
 
     if first_error is not None:

@@ -15,7 +15,7 @@ import asyncio
 import inspect
 from typing import Any, Callable, TypeVar
 
-from hypergraph._utils import hash_definition
+from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._rename import _apply_renames
 from hypergraph.nodes.base import HyperNode
@@ -84,7 +84,7 @@ class GateNode(CallableMixin, HyperNode):
     Subclasses must set these attributes in __init__:
     - name: str
     - inputs: tuple[str, ...]
-    - outputs: tuple[str, ...] (always empty for gates)
+    - outputs: tuple[str, ...] (empty or emit-only for gates)
     - targets: list[str | type[END]]
     - descriptions: dict[...key..., str] (key type varies by subclass)
     - func: Callable (the routing function)
@@ -98,6 +98,8 @@ class GateNode(CallableMixin, HyperNode):
     _definition_hash: str
     _cache: bool
     _hide: bool
+    _wait_for: tuple[str, ...]
+    _emit: tuple[str, ...]
     default_open: bool
 
     @property
@@ -109,6 +111,16 @@ class GateNode(CallableMixin, HyperNode):
     def hide(self) -> bool:
         """Whether this node is hidden from visualization."""
         return self._hide
+
+    @property
+    def wait_for(self) -> tuple[str, ...]:
+        """Ordering-only inputs this gate waits for."""
+        return self._wait_for
+
+    @property
+    def data_outputs(self) -> tuple[str, ...]:
+        """Gates produce no data outputs (emit outputs are ordering-only)."""
+        return ()
 
     @property
     def is_async(self) -> bool:
@@ -184,6 +196,8 @@ class RouteNode(GateNode):
         default_open: bool = True,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
+        emit: str | tuple[str, ...] | None = None,
+        wait_for: str | tuple[str, ...] | None = None,
     ) -> None:
         """Create a RouteNode from a routing function.
 
@@ -196,6 +210,9 @@ class RouteNode(GateNode):
             hide: Whether to hide from visualization (default: False)
             name: Node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
+            emit: Ordering-only output name(s). Auto-produced when gate runs.
+            wait_for: Ordering-only input name(s). Gate won't run until these
+                      values exist and are fresh.
 
         Raises:
             TypeError: If func is async or generator
@@ -251,12 +268,14 @@ class RouteNode(GateNode):
         self.multi_target = multi_target
         self._cache = cache
         self._hide = hide
+        self._emit = ensure_tuple(emit) if emit else ()
+        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
         self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
         self.name = name or func.__name__
-        self.outputs = ()  # Gates produce no data outputs
+        self.outputs = self._emit  # Gates: only emit outputs (no data outputs)
 
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(
@@ -298,6 +317,8 @@ def route(
     default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> Callable[[Callable], RouteNode]:
     """Decorator to create a RouteNode from a routing function.
 
@@ -320,6 +341,9 @@ def route(
             and records a decision.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
+        emit: Ordering-only output name(s). Auto-produced when gate runs.
+        wait_for: Ordering-only input name(s). Gate won't run until these
+                  values exist and are fresh.
 
     Returns:
         Decorator that creates a RouteNode
@@ -345,6 +369,8 @@ def route(
             default_open=default_open,
             name=name,
             rename_inputs=rename_inputs,
+            emit=emit,
+            wait_for=wait_for,
         )
 
     return decorator
@@ -393,6 +419,8 @@ class IfElseNode(GateNode):
         default_open: bool = True,
         name: str | None = None,
         rename_inputs: dict[str, str] | None = None,
+        emit: str | tuple[str, ...] | None = None,
+        wait_for: str | tuple[str, ...] | None = None,
     ) -> None:
         """Create an IfElseNode from a boolean function.
 
@@ -407,6 +435,9 @@ class IfElseNode(GateNode):
                 executes and records a decision.
             name: Node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
+            emit: Ordering-only output name(s). Auto-produced when gate runs.
+            wait_for: Ordering-only input name(s). Gate won't run until these
+                      values exist and are fresh.
 
         Raises:
             TypeError: If func is async or generator
@@ -435,12 +466,14 @@ class IfElseNode(GateNode):
         self.descriptions = {True: "True", False: "False"}
         self._cache = cache
         self._hide = hide
+        self._emit = ensure_tuple(emit) if emit else ()
+        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
         self.default_open = default_open
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
         self.name = name or func.__name__
-        self.outputs = ()  # Gates produce no data outputs
+        self.outputs = self._emit  # Gates: only emit outputs (no data outputs)
 
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(
@@ -483,6 +516,8 @@ def ifelse(
     default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> Callable[[Callable[..., bool]], IfElseNode]:
     """Decorator to create an IfElseNode from a boolean function.
 
@@ -504,6 +539,9 @@ def ifelse(
             and records a decision.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
+        emit: Ordering-only output name(s). Auto-produced when gate runs.
+        wait_for: Ordering-only input name(s). Gate won't run until these
+                  values exist and are fresh.
 
     Returns:
         Decorator that creates an IfElseNode
@@ -528,6 +566,8 @@ def ifelse(
             default_open=default_open,
             name=name,
             rename_inputs=rename_inputs,
+            emit=emit,
+            wait_for=wait_for,
         )
 
     return decorator
