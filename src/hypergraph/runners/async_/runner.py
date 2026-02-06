@@ -19,6 +19,11 @@ from hypergraph.runners._shared.helpers import (
     initialize_state,
 )
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.event_helpers import (
+    build_run_end_event,
+    build_run_start_event,
+    create_dispatcher,
+)
 from hypergraph.runners._shared.types import (
     ErrorHandling,
     GraphState,
@@ -26,7 +31,6 @@ from hypergraph.runners._shared.types import (
     RunnerCapabilities,
     RunResult,
     RunStatus,
-    _generate_run_id,
 )
 from hypergraph.runners._shared.validation import (
     validate_inputs,
@@ -155,8 +159,10 @@ class AsyncRunner(BaseRunner):
         max_iter = max_iterations or DEFAULT_MAX_ITERATIONS
 
         # Set up event dispatcher
-        dispatcher = _create_dispatcher(event_processors)
-        run_id, run_span_id = await _emit_run_start(dispatcher, graph, _parent_span_id)
+        dispatcher = create_dispatcher(event_processors)
+        run_id, run_span_id, start_evt = build_run_start_event(graph, _parent_span_id)
+        if dispatcher.active:
+            await dispatcher.emit_async(start_evt)
         start_time = time.time()
 
         try:
@@ -173,9 +179,8 @@ class AsyncRunner(BaseRunner):
                 status=RunStatus.COMPLETED,
                 run_id=run_id,
             )
-            await _emit_run_end(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
-            )
+            if dispatcher.active:
+                await dispatcher.emit_async(build_run_end_event(run_id, run_span_id, graph, start_time, _parent_span_id))
             return result
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
@@ -192,10 +197,8 @@ class AsyncRunner(BaseRunner):
             )
         except ExecutionError as ee:
             cause = ee.__cause__ or ee
-            await _emit_run_end(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
-                error=cause,
-            )
+            if dispatcher.active:
+                await dispatcher.emit_async(build_run_end_event(run_id, run_span_id, graph, start_time, _parent_span_id, error=cause))
             partial_values = filter_outputs(ee.partial_state, graph, select)
             return RunResult(
                 values=partial_values,
@@ -369,11 +372,13 @@ class AsyncRunner(BaseRunner):
             return []
 
         # Set up event dispatcher for map-level events
-        dispatcher = _create_dispatcher(event_processors)
-        map_run_id, map_span_id = await _emit_run_start(
-            dispatcher, graph, _parent_span_id,
+        dispatcher = create_dispatcher(event_processors)
+        map_run_id, map_span_id, start_evt = build_run_start_event(
+            graph, _parent_span_id,
             is_map=True, map_size=len(input_variations),
         )
+        if dispatcher.active:
+            await dispatcher.emit_async(start_evt)
         start_time = time.time()
 
         # Set up shared concurrency limiter at map level (if not already set)
@@ -442,90 +447,15 @@ class AsyncRunner(BaseRunner):
                         if result.status == RunStatus.FAILED:
                             raise result.error  # type: ignore[misc]
 
-            await _emit_run_end(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
-            )
+            if dispatcher.active:
+                await dispatcher.emit_async(build_run_end_event(map_run_id, map_span_id, graph, start_time, _parent_span_id))
             return results
         except Exception as e:
-            await _emit_run_end(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
-                error=e,
-            )
+            if dispatcher.active:
+                await dispatcher.emit_async(build_run_end_event(map_run_id, map_span_id, graph, start_time, _parent_span_id, error=e))
             raise
         finally:
             if token is not None:
                 reset_concurrency_limiter(token)
             if _parent_span_id is None and dispatcher.active:
                 await dispatcher.shutdown_async()
-
-
-# ------------------------------------------------------------------
-# Event helpers (module-level to keep the class focused)
-# ------------------------------------------------------------------
-
-
-def _create_dispatcher(
-    processors: list[EventProcessor] | None,
-) -> "EventDispatcher":
-    """Create an EventDispatcher from processor list."""
-    from hypergraph.events.dispatcher import EventDispatcher
-
-    return EventDispatcher(processors)
-
-
-async def _emit_run_start(
-    dispatcher: "EventDispatcher",
-    graph: "Graph",
-    parent_span_id: str | None,
-    *,
-    is_map: bool = False,
-    map_size: int | None = None,
-) -> tuple[str, str]:
-    """Emit RunStartEvent and return (run_id, span_id)."""
-    from hypergraph.events.types import _generate_span_id
-
-    run_id = _generate_run_id()
-    span_id = _generate_span_id()
-
-    if not dispatcher.active:
-        return run_id, span_id
-
-    from hypergraph.events.types import RunStartEvent
-
-    await dispatcher.emit_async(RunStartEvent(
-        run_id=run_id,
-        span_id=span_id,
-        parent_span_id=parent_span_id,
-        graph_name=graph.name,
-        is_map=is_map,
-        map_size=map_size,
-    ))
-    return run_id, span_id
-
-
-async def _emit_run_end(
-    dispatcher: "EventDispatcher",
-    run_id: str,
-    span_id: str,
-    graph: "Graph",
-    start_time: float,
-    parent_span_id: str | None,
-    *,
-    error: BaseException | None = None,
-) -> None:
-    """Emit RunEndEvent."""
-    if not dispatcher.active:
-        return
-
-    from hypergraph.events.types import RunEndEvent
-
-    duration_ms = (time.time() - start_time) * 1000
-    await dispatcher.emit_async(RunEndEvent(
-        run_id=run_id,
-        span_id=span_id,
-        parent_span_id=parent_span_id,
-        graph_name=graph.name,
-        status="failed" if error else "completed",
-        error=str(error) if error else None,
-        duration_ms=duration_ms,
-    ))
