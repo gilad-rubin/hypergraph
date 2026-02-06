@@ -12,6 +12,7 @@ from hypergraph.nodes import (
     RenameError,
     RouteNode,
     ifelse,
+    interrupt,
     node,
     route,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "node",
     "ifelse",
     "route",
+    "interrupt",
     "FunctionNode",
     "GraphNode",
     "GateNode",
