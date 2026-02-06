@@ -11,6 +11,13 @@ from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
+from hypergraph.runners._shared.event_helpers import (
+    build_cache_hit_event,
+    build_node_end_event,
+    build_node_error_event,
+    build_node_start_event,
+    build_route_decision_event,
+)
 from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 if TYPE_CHECKING:
@@ -74,6 +81,7 @@ async def run_superstep_async(
         New state with updated values and versions
     """
     new_state = state.copy()
+    active = dispatcher is not None and dispatcher.active
 
     # Execute InterruptNodes alone (not concurrently with other nodes).
     # PauseExecution extends BaseException, so if raised inside asyncio.gather
@@ -107,25 +115,21 @@ async def run_superstep_async(
                         routing_decision = outputs.pop("__routing_decision__", None)
                         if routing_decision is not None:
                             new_state.routing_decisions[node.name] = routing_decision
-                    # Emit NodeStartEvent → CacheHitEvent → RouteDecision? → NodeEndEvent(cached=True)
-                    node_span_id = await _emit_node_start(
-                        dispatcher, run_id, run_span_id, node, graph,
-                    )
-                    await _emit_cache_hit(
-                        dispatcher, run_id, node_span_id, run_span_id,
-                        node, graph, cache_key,
-                    )
-                    await _emit_route_decision(
-                        dispatcher, run_id, run_span_id, node, graph, new_state,
-                    )
-                    await _emit_node_end(
-                        dispatcher, run_id, node_span_id, run_span_id,
-                        node, graph, duration_ms=0.0, cached=True,
-                    )
+                    # Emit NodeStartEvent -> CacheHitEvent -> RouteDecision? -> NodeEndEvent(cached=True)
+                    node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+                    if active:
+                        await dispatcher.emit_async(start_evt)
+                        await dispatcher.emit_async(build_cache_hit_event(run_id, node_span_id, run_span_id, node, graph, cache_key))
+                        route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                        if route_evt is not None:
+                            await dispatcher.emit_async(route_evt)
+                        await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
                     return node, outputs, input_versions
 
         # Emit NodeStartEvent
-        node_span_id = await _emit_node_start(dispatcher, run_id, run_span_id, node, graph)
+        node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+        if active:
+            await dispatcher.emit_async(start_evt)
 
         # Set node span_id on executor for nested graph propagation
         if hasattr(execute_node, "current_span_id"):
@@ -147,21 +151,16 @@ async def run_superstep_async(
                         to_cache["__routing_decision__"] = decision
                 cache.set(cache_key, to_cache)
 
-            # Emit RouteDecisionEvent if this was a routing node
-            await _emit_route_decision(
-                dispatcher, run_id, run_span_id, node, graph, new_state,
-            )
-
-            # Emit NodeEndEvent
-            await _emit_node_end(
-                dispatcher, run_id, node_span_id, run_span_id, node, graph, duration_ms,
-            )
+            if active:
+                route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                if route_evt is not None:
+                    await dispatcher.emit_async(route_evt)
+                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms))
 
             return node, outputs, input_versions
         except Exception:
-            await _emit_node_error(
-                dispatcher, run_id, node_span_id, run_span_id, node, graph,
-            )
+            if active:
+                await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
             raise
 
     # Execute all ready nodes concurrently
@@ -195,145 +194,3 @@ async def run_superstep_async(
         raise ExecutionError(first_error, new_state) from first_error
 
     return new_state
-
-
-# ------------------------------------------------------------------
-# Event emission helpers
-# ------------------------------------------------------------------
-
-
-async def _emit_node_start(
-    dispatcher: "EventDispatcher | None",
-    run_id: str,
-    run_span_id: str,
-    node: HyperNode,
-    graph: "Graph",
-) -> str:
-    """Emit NodeStartEvent. Returns the node's span_id."""
-    from hypergraph.events.types import _generate_span_id
-
-    span_id = _generate_span_id()
-
-    if dispatcher is None or not dispatcher.active:
-        return span_id
-
-    from hypergraph.events.types import NodeStartEvent
-
-    await dispatcher.emit_async(NodeStartEvent(
-        run_id=run_id,
-        span_id=span_id,
-        parent_span_id=run_span_id,
-        node_name=node.name,
-        graph_name=graph.name,
-    ))
-    return span_id
-
-
-async def _emit_node_end(
-    dispatcher: "EventDispatcher | None",
-    run_id: str,
-    node_span_id: str,
-    run_span_id: str,
-    node: HyperNode,
-    graph: "Graph",
-    duration_ms: float,
-    cached: bool = False,
-) -> None:
-    """Emit NodeEndEvent."""
-    if dispatcher is None or not dispatcher.active:
-        return
-
-    from hypergraph.events.types import NodeEndEvent
-
-    await dispatcher.emit_async(NodeEndEvent(
-        run_id=run_id,
-        span_id=node_span_id,
-        parent_span_id=run_span_id,
-        node_name=node.name,
-        graph_name=graph.name,
-        duration_ms=duration_ms,
-        cached=cached,
-    ))
-
-
-async def _emit_cache_hit(
-    dispatcher: "EventDispatcher | None",
-    run_id: str,
-    node_span_id: str,
-    run_span_id: str,
-    node: HyperNode,
-    graph: "Graph",
-    cache_key: str,
-) -> None:
-    """Emit CacheHitEvent."""
-    if dispatcher is None or not dispatcher.active:
-        return
-
-    from hypergraph.events.types import CacheHitEvent
-
-    await dispatcher.emit_async(CacheHitEvent(
-        run_id=run_id,
-        span_id=node_span_id,
-        parent_span_id=run_span_id,
-        node_name=node.name,
-        graph_name=graph.name,
-        cache_key=cache_key,
-    ))
-
-
-async def _emit_node_error(
-    dispatcher: "EventDispatcher | None",
-    run_id: str,
-    node_span_id: str,
-    run_span_id: str,
-    node: HyperNode,
-    graph: "Graph",
-) -> None:
-    """Emit NodeErrorEvent for the current exception."""
-    if dispatcher is None or not dispatcher.active:
-        return
-
-    import sys
-
-    from hypergraph.events.types import NodeErrorEvent
-
-    exc_type, exc_val, _ = sys.exc_info()
-    await dispatcher.emit_async(NodeErrorEvent(
-        run_id=run_id,
-        span_id=node_span_id,
-        parent_span_id=run_span_id,
-        node_name=node.name,
-        graph_name=graph.name,
-        error=str(exc_val) if exc_val else "",
-        error_type=f"{exc_type.__module__}.{exc_type.__qualname__}" if exc_type else "",
-    ))
-
-
-async def _emit_route_decision(
-    dispatcher: "EventDispatcher | None",
-    run_id: str,
-    run_span_id: str,
-    node: HyperNode,
-    graph: "Graph",
-    state: GraphState,
-) -> None:
-    """Emit RouteDecisionEvent if the node made a routing decision."""
-    if dispatcher is None or not dispatcher.active:
-        return
-    if not isinstance(node, (RouteNode, IfElseNode)):
-        return
-
-    # Check if this node made a routing decision
-    if node.name not in state.routing_decisions:
-        return
-
-    from hypergraph.events.types import RouteDecisionEvent
-
-    decision = state.routing_decisions[node.name]
-    await dispatcher.emit_async(RouteDecisionEvent(
-        run_id=run_id,
-        parent_span_id=run_span_id,
-        node_name=node.name,
-        graph_name=graph.name,
-        decision=decision,
-    ))
