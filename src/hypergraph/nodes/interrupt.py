@@ -106,6 +106,18 @@ class InterruptNode(CallableMixin, HyperNode):
         is_legacy = input_param is not None or output_param is not None
 
         if is_legacy:
+            # Guard against mixing callable source with legacy params
+            if callable(source):
+                raise TypeError(
+                    "Cannot mix a callable source with legacy input_param/output_param. "
+                    "Use InterruptNode(func, output_name=...) or "
+                    "InterruptNode(name=..., input_param=..., output_param=...)"
+                )
+            # Validate modern params not used with legacy mode
+            if rename_inputs or emit or wait_for or hide:
+                raise TypeError(
+                    "rename_inputs, emit, wait_for, and hide are not supported with the legacy constructor"
+                )
             self._init_legacy(
                 source if isinstance(source, str) else name or source,
                 input_param=input_param,
@@ -146,8 +158,8 @@ class InterruptNode(CallableMixin, HyperNode):
         """Initialize from legacy constructor (input_param/output_param)."""
         if input_param is None or output_param is None:
             raise TypeError("Legacy constructor requires both input_param and output_param")
-        if name is None:
-            raise TypeError("Legacy constructor requires name")
+        if not isinstance(name, str):
+            raise TypeError("Legacy constructor requires name to be a string")
 
         self.inputs = ensure_tuple(input_param)
         self.outputs = ensure_tuple(output_param)
@@ -413,6 +425,10 @@ class InterruptNode(CallableMixin, HyperNode):
         """
         clone = self._copy()
         clone.func = handler
+        # Recompute definition hash for cache key correctness
+        if clone._use_kwargs:
+            from hypergraph._utils import hash_definition
+            clone._definition_hash = hash_definition(handler)
         return clone
 
     def __repr__(self) -> str:

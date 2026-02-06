@@ -81,7 +81,7 @@ def _contested_values_for(
     return {
         output
         for output, sources in output_to_sources.items()
-        if len(sources) > 1 and producer_set & set(sources)
+        if len(sources) > 1 and len(producer_set & set(sources)) > 1
     }
 
 
@@ -134,12 +134,12 @@ def _build_full_edge_map(
                 get_info(source, node.name).data_values.add(param)
 
     # Add ordering edges from wait_for (may have been suppressed in G)
-    output_to_source = {k: v[0] for k, v in output_to_sources.items()}
     for node in nodes:
         for name in node.wait_for:
-            producer = output_to_source.get(name)
-            if producer and producer != node.name:
-                get_info(producer, node.name).has_ordering = True
+            producers = output_to_sources.get(name, [])
+            for producer in producers:
+                if producer != node.name:
+                    get_info(producer, node.name).has_ordering = True
 
     return node_names, edges
 

@@ -315,10 +315,10 @@ def build_instructions(
     param_to_consumers = build_param_to_consumer_map(flat_graph, initial_expansion_state)
 
     # Create INPUT nodes for external inputs
-    _add_input_nodes(instructions, flat_graph, input_spec, bound_params, param_to_consumers, theme, show_types)
+    _add_input_nodes(instructions, flat_graph, input_spec, theme, show_types)
 
     # Create FUNCTION and CONTAINER nodes (include ALL nodes - JS handles visibility)
-    _add_all_graph_nodes(instructions, flat_graph, initial_expansion_state, bound_params, theme, show_types)
+    _add_all_graph_nodes(instructions, flat_graph, initial_expansion_state, theme, show_types)
 
     # Create edges for initial state
     _add_edges(instructions, flat_graph, initial_expansion_state, param_to_consumers)
@@ -341,8 +341,6 @@ def _add_input_nodes(
     instructions: VizInstructions,
     flat_graph: nx.DiGraph,
     input_spec: dict,
-    bound_params: set[str],
-    param_to_consumers: dict[str, list[str]],
     theme: str,
     show_types: bool,
 ) -> None:
@@ -373,7 +371,6 @@ def _add_all_graph_nodes(
     instructions: VizInstructions,
     flat_graph: nx.DiGraph,
     initial_expansion_state: dict[str, bool],
-    bound_params: set[str],
     theme: str,
     show_types: bool,
 ) -> None:

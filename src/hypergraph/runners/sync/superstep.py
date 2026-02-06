@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from hypergraph.exceptions import ExecutionError
+from hypergraph.runners._shared.types import PauseExecution
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.caching import (
     check_cache,
@@ -112,11 +113,18 @@ def run_superstep_sync(
                         dispatcher.emit(route_evt)
                     dispatcher.emit(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms))
 
-            except Exception as e:
+            except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000
                 if active:
                     dispatcher.emit(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
-                raise ExecutionError(e, new_state) from e
+                # Re-raise PauseExecution unwrapped (needed for InterruptNode)
+                if isinstance(e, PauseExecution):
+                    raise
+                # Wrap only Exception subclasses
+                if isinstance(e, Exception):
+                    raise ExecutionError(e, new_state) from e
+                # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
+                raise
 
         # Update state with outputs
         for name, value in outputs.items():

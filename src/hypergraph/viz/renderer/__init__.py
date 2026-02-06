@@ -47,7 +47,6 @@ def render_graph(
         Dict with "nodes", "edges", and "meta" keys ready for React Flow
     """
     input_spec = flat_graph.graph.get("input_spec", {})
-    bound_params = set(input_spec.get("bound", {}).keys())
     input_consumer_mode = "all"
 
     expansion_state = build_expansion_state(flat_graph, depth)
@@ -90,8 +89,8 @@ def render_graph(
     initial_nodes = nodes_by_state.get(full_initial_key, [])
 
     # Sort for deterministic ordering (prevents layout flickering)
-    initial_nodes.sort(key=lambda n: n["id"])
-    initial_edges.sort(key=lambda e: e["id"])
+    initial_nodes = sorted(initial_nodes, key=lambda n: n["id"])
+    initial_edges = sorted(initial_edges, key=lambda e: e["id"])
 
     return {
         "nodes": initial_nodes,
