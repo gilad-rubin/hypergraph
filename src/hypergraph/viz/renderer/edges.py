@@ -131,6 +131,31 @@ def add_merged_output_edges(
             edges.append(rf_edge)
             continue
 
+        if edge_type == "ordering":
+            actual_target = target
+            if not is_node_visible(actual_target, flat_graph, expansion_state):
+                continue
+
+            edge_id = f"e_ord_{source}_{actual_target}"
+            value_name = value_names[0] if value_names else ""
+            rf_edge = {
+                "id": edge_id,
+                "source": source,
+                "target": actual_target,
+                "animated": False,
+                "style": {
+                    "stroke": "#8b5cf6",
+                    "strokeWidth": 1.5,
+                    "strokeDasharray": "6 3",
+                },
+                "data": {
+                    "edgeType": "ordering",
+                    "valueName": value_name,
+                },
+            }
+            edges.append(rf_edge)
+            continue
+
         values_to_process = value_names if value_names else [""]
 
         for value_name in values_to_process:
@@ -304,6 +329,25 @@ def add_separate_output_edges(
                         "valueName": value_name,
                     },
                 })
+        elif edge_type == "ordering":
+            value_name = value_names[0] if value_names else ""
+            edge_id = f"e_ord_{source}_{target}"
+            edges.append({
+                "id": edge_id,
+                "source": source,
+                "target": target,
+                "animated": False,
+                "style": {
+                    "stroke": "#8b5cf6",
+                    "strokeWidth": 1.5,
+                    "strokeDasharray": "6 3",
+                },
+                "data": {
+                    "edgeType": "ordering",
+                    "valueName": value_name,
+                },
+            })
+
         else:
             actual_target = target
             if edge_type == "control":

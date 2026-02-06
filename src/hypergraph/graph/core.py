@@ -243,6 +243,7 @@ class Graph:
         output_to_source = {k: v[0] for k, v in output_to_sources.items()}
         self._add_data_edges(G, nodes, output_to_source)
         self._add_control_edges(G, nodes)
+        self._add_ordering_edges(G, nodes, output_to_source)
 
         # Validate output conflicts with full graph structure
         # This allows mutex branch detection using reachability analysis
@@ -305,6 +306,32 @@ class Graph:
                     # Only add control edge if no data edge exists
                     if not G.has_edge(node.name, target):
                         G.add_edge(node.name, target, edge_type="control")
+
+    def _add_ordering_edges(
+        self,
+        G: nx.DiGraph,
+        nodes: list[HyperNode],
+        output_to_source: dict[str, str],
+    ) -> None:
+        """Add ordering edges for wait_for dependencies.
+
+        Ordering edges connect the producer of a wait_for value to the
+        consumer node. They carry no data but express execution order.
+        Only added if no data or control edge already exists between the pair.
+        """
+        for node in nodes:
+            for name in node.wait_for:
+                producer = output_to_source.get(name)
+                if producer is None:
+                    continue  # Validation catches missing producers
+                if producer == node.name:
+                    continue  # Skip self-loops
+                if not G.has_edge(producer, node.name):
+                    G.add_edge(
+                        producer, node.name,
+                        edge_type="ordering",
+                        value_names=[name],
+                    )
 
     def bind(self, **values: Any) -> "Graph":
         """Bind default values. Returns new Graph (immutable).
