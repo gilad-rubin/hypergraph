@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import map_inputs_to_func_params
+from hypergraph.runners._shared.helpers import map_inputs_to_func_params, wrap_outputs
 from hypergraph.runners._shared.routing_validation import validate_routing_decision
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ def execute_ifelse(
 
     decision = node.when_true if result else node.when_false
     state.routing_decisions[node.name] = decision
-    return {}
+    return wrap_outputs(node, None)
 
 
 def execute_route(
@@ -65,4 +65,4 @@ def execute_route(
 
     validate_routing_decision(node, decision)
     state.routing_decisions[node.name] = decision
-    return {}
+    return wrap_outputs(node, None)

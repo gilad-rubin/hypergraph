@@ -1585,7 +1585,9 @@ class TestInterruptNodeLegacyCompat:
         assert n.func is None
 
     def test_legacy_with_handler(self):
-        handler = lambda x: "yes"
+        def handler(x):
+            return "yes"
+
         n = InterruptNode(
             name="x", input_param="a", output_param="b", handler=handler
         )

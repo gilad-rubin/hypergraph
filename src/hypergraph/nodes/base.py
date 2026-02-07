@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 from abc import ABC
 from typing import Any, TypeVar
@@ -371,9 +372,11 @@ class HyperNode(ABC):
 
         Only _rename_history needs deep copy (mutable list).
         All other attributes are immutable (str, tuple, bool).
+        Cached properties are cleared so they recompute with updated state.
         """
         clone = copy.copy(self)
         clone._rename_history = list(self._rename_history)
+        _invalidate_cached_properties(clone)
         return clone
 
     def _with_renamed(self: _T, attr: str, mapping: dict[str, str]) -> _T:
@@ -452,6 +455,23 @@ class HyperNode(ABC):
                 current_name = entry.new
 
         return chain
+
+
+def _invalidate_cached_properties(obj: object) -> None:
+    """Clear any cached_property values from obj.__dict__.
+
+    functools.cached_property stores results in the instance __dict__.
+    After a shallow copy, these stale values must be cleared so the
+    property recomputes with the clone's updated state.
+    """
+    cls = type(obj)
+    stale = [
+        key
+        for key in list(obj.__dict__)
+        if isinstance(getattr(cls, key, None), functools.cached_property)
+    ]
+    for key in stale:
+        del obj.__dict__[key]
 
 
 def _check_rename_duplicates(values: tuple[str, ...], attr: str) -> None:
