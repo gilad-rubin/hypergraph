@@ -208,12 +208,12 @@ class TestNodeShapes:
 
         assert 'pipeline[["pipeline"]]' in mermaid
 
-    def test_branch_diamond_shape(self):
-        """Branch nodes use diamond syntax."""
+    def test_branch_hexagon_shape(self):
+        """Branch nodes use hexagon syntax."""
         graph = Graph(nodes=[check_cache, fast_path, slow_path])
         mermaid = graph.to_mermaid()
 
-        assert 'check_cache{"check_cache"}' in mermaid
+        assert 'check_cache{{"check_cache"}}' in mermaid
 
     def test_data_parallelogram_shape(self):
         """DATA nodes use parallelogram syntax in separate_outputs mode."""

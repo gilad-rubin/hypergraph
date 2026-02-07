@@ -224,7 +224,7 @@ def _adapt_for_beautiful_mermaid(source: str) -> str:
     s = source
     s = re.sub(r'\[\["([^"]*?)"\]\]', r'[[\1]]', s)       # double-border
     s = re.sub(r'\(\["([^"]*?)"\]\)', r'([\1])', s)        # stadium
-    s = re.sub(r'\{"([^"]*?)"\}', r'{\1}', s)              # diamond
+    s = re.sub(r'\{\{"([^"]*?)"\}\}', r'{{\1}}', s)         # hexagon
     s = re.sub(r'\[/"([^"]*?)"/\]', r'[\1]', s)            # parallelogram → rect
 
     def _escape_inner_brackets(m: re.Match[str]) -> str:
@@ -395,7 +395,7 @@ def _build_data_label(
 _SHAPE_DELIMITERS: dict[str, tuple[str, str]] = {
     "FUNCTION": ('["', '"]'),
     "GRAPH": ('[["', '"]]'),
-    "BRANCH": ('{"', '"}'),
+    "BRANCH": ('{{"', '"}}'),
     "INPUT": ('(["', '"])',),
     "INPUT_GROUP": ('(["', '"])'),
     "DATA": ('[/"', '"/]'),
