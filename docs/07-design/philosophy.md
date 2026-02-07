@@ -21,7 +21,7 @@ This enabled:
 - Visual hierarchy (expand/collapse nested pipelines)
 - "Think singular, scale with map" - write for one item, map over collections
 
-**DAGs remain a first-class citizen in hypergraph.** For ETL, batch processing, and single-pass ML inference, DAGs are the right model. Hypergraph executes them efficiently, with optional distributed execution via DaftRunner.
+**DAGs remain a first-class citizen in hypergraph.** For ETL, batch processing, and single-pass ML inference, DAGs are the right model. Hypergraph executes them efficiently.
 
 ### Where DAGs Hit the Wall
 
@@ -121,7 +121,7 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 **DAG workflows (where it started):**
 - ETL and data pipelines
 - Single-pass ML inference
-- Batch processing with distributed execution (DaftRunner)
+- Batch processing
 - Hierarchical composition - graphs as nodes
 
 **Beyond DAGs (where it evolved):**
@@ -131,7 +131,7 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 - Human-in-the-loop - pause, get user input, resume
 - Token-by-token streaming
 - Event streaming for observability
-- Checkpointing and crash recovery
+- Node result caching (in-memory and disk)
 
 ---
 
@@ -141,8 +141,8 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 - Workflow automation - ETL, data pipelines, orchestration
 - AI/ML pipelines - Multi-step LLM workflows, RAG systems
 - Business processes - Multi-turn interactions, approvals, routing
-- Observable systems - Full event stream, replay-able execution
-- Durability required - Crash recovery, pause/resume, multi-turn
+- Observable systems - Full event stream for monitoring and debugging
+- Multi-turn interactions - Pause/resume with human-in-the-loop
 
 **Less ideal for:**
 - Stateless microservices - API endpoints don't need graphs
@@ -155,6 +155,6 @@ Graphs are validated when constructed. Missing inputs, invalid routes, and type 
 
 Hypergraph started as a better DAG framework with hierarchical composition. It evolved to support cycles, runtime conditional branches, and multi-turn interactions when DAGs proved insufficient for modern AI workflows.
 
-Rather than adopting the state-object pattern of existing agent frameworks, hypergraph kept its core insight: **automatic edge inference from matching names.** Define pure functions with clear inputs and outputs. Let the framework infer edges, validate at build time, and handle persistence automatically.
+Rather than adopting the state-object pattern of existing agent frameworks, hypergraph kept its core insight: **automatic edge inference from matching names.** Define pure functions with clear inputs and outputs. Let the framework infer edges and validate at build time.
 
-The mental model is simple: Nodes are pure functions. Outputs flow between them. DAGs execute in one pass. Cycles iterate until a termination condition. When a checkpointer is present, everything is saved for crash recovery. That's the whole architecture.
+The mental model is simple: Nodes are pure functions. Outputs flow between them. DAGs execute in one pass. Cycles iterate until a termination condition. That's the whole architecture.

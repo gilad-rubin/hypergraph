@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from hypergraph.runners._shared.types import GraphState
+
 
 class MissingInputError(Exception):
     """Required input not provided to runner.
@@ -86,3 +91,19 @@ class IncompatibleRunnerError(Exception):
         self.node_name = node_name
         self.capability = capability
         super().__init__(message)
+
+
+class ExecutionError(Exception):
+    """Wraps an exception that occurred during graph execution.
+
+    Carries the partial GraphState accumulated before the error,
+    replacing the monkey-patched ``_partial_state`` attribute pattern.
+
+    Attributes:
+        partial_state: GraphState snapshot from before the failure
+    """
+
+    def __init__(self, cause: BaseException, partial_state: "GraphState") -> None:
+        self.partial_state = partial_state
+        super().__init__(str(cause))
+        self.__cause__ = cause

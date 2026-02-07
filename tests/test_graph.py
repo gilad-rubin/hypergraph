@@ -1719,10 +1719,10 @@ class TestStrictTypesWithNestedGraphNode:
 
 
 class TestCycleSameOutput:
-    """Test that multiple nodes can produce the same output when in the same cycle."""
+    """Test that duplicate outputs require ordering (emit/wait_for) or mutex (exclusive gate)."""
 
-    def test_same_cycle_same_output_allowed(self):
-        """Two nodes producing 'messages' in a cycle should not raise."""
+    def test_unordered_producers_in_cycle_rejected(self):
+        """Two unordered producers in a cycle should raise GraphConfigError."""
         from hypergraph.nodes.gate import route, END
 
         @node(output_name="messages")
@@ -1737,20 +1737,38 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        # Should NOT raise GraphConfigError
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
-        assert graph is not None
+        with pytest.raises(GraphConfigError):
+            Graph([accumulate_query, accumulate_response, should_continue])
 
-    def test_same_cycle_same_output_runs(self):
-        """Same-output cycle nodes should execute end-to-end."""
+    def test_ordered_via_emit_wait_for_allowed(self):
+        """Two producers with emit/wait_for ordering should be allowed."""
         from hypergraph.nodes.gate import route, END
-        from hypergraph.runners.sync import SyncRunner
 
-        @node(output_name="messages")
+        @node(output_name="messages", emit="query_done")
         def accumulate_query(messages: list, query: str) -> list:
             return messages + [{"role": "user", "content": query}]
 
-        @node(output_name="messages")
+        @node(output_name="messages", wait_for="query_done")
+        def accumulate_response(messages: list, response: str) -> list:
+            return messages + [{"role": "assistant", "content": response}]
+
+        @route(targets=["accumulate_query", END])
+        def should_continue(messages: list) -> str:
+            return END if len(messages) >= 4 else "accumulate_query"
+
+        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        assert graph is not None
+
+    def test_ordered_via_emit_wait_for_runs(self):
+        """Ordered producers should execute end-to-end."""
+        from hypergraph.nodes.gate import route, END
+        from hypergraph.runners.sync import SyncRunner
+
+        @node(output_name="messages", emit="query_done")
+        def accumulate_query(messages: list, query: str) -> list:
+            return messages + [{"role": "user", "content": query}]
+
+        @node(output_name="messages", wait_for="query_done")
         def accumulate_response(messages: list, response: str) -> list:
             return messages + [{"role": "assistant", "content": response}]
 
@@ -1779,14 +1797,14 @@ class TestCycleSameOutput:
             Graph([producer_a, producer_b])
 
     def test_self_producers_property(self):
-        """After the fix, graph should expose self_producers mapping output to producer sets."""
+        """graph should expose self_producers mapping output to producer sets."""
         from hypergraph.nodes.gate import route, END
 
-        @node(output_name="messages")
+        @node(output_name="messages", emit="query_done")
         def accumulate_query(messages: list, query: str) -> list:
             return messages + [{"role": "user", "content": query}]
 
-        @node(output_name="messages")
+        @node(output_name="messages", wait_for="query_done")
         def accumulate_response(messages: list, response: str) -> list:
             return messages + [{"role": "assistant", "content": response}]
 
@@ -1796,7 +1814,68 @@ class TestCycleSameOutput:
 
         graph = Graph([accumulate_query, accumulate_response, should_continue])
 
-        # self_producers should map output names to sets of producer node names
         assert hasattr(graph, "self_producers")
         producers = graph.self_producers
         assert producers["messages"] == {"accumulate_query", "accumulate_response"}
+
+    def test_mixed_mutex_and_ordered_allowed(self):
+        """3 producers: pair (A,B) mutex via exclusive gate, pairs (A,C) and (B,C) ordered."""
+        from hypergraph.nodes.gate import route, END
+
+        @node(output_name="result", emit="c_done")
+        def producer_c(x: int) -> int:
+            return x * 10
+
+        @node(output_name="result", wait_for="c_done")
+        def branch_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="result", wait_for="c_done")
+        def branch_b(x: int) -> int:
+            return x + 2
+
+        @route(targets=["branch_a", "branch_b"])
+        def decide(x: int) -> str:
+            return "branch_a" if x > 0 else "branch_b"
+
+        @node(output_name="final")
+        def consumer(result: int) -> int:
+            return result
+
+        # branch_a and branch_b are mutex (exclusive gate).
+        # producer_c is ordered before both via emit/wait_for.
+        graph = Graph([decide, branch_a, branch_b, producer_c, consumer])
+        assert graph is not None
+
+    def test_multiple_shared_outputs_checked(self):
+        """Two nodes sharing two output names: edges for both removed before checking."""
+        from hypergraph.nodes.gate import route, END
+
+        @node(output_name=("x", "y"), emit="a_done")
+        def producer_a(seed: int) -> tuple[int, int]:
+            return seed, seed + 1
+
+        @node(output_name=("x", "y"), wait_for="a_done")
+        def producer_b(seed: int) -> tuple[int, int]:
+            return seed * 2, seed * 3
+
+        @route(targets=["producer_a", END])
+        def loop(x: int, y: int) -> str:
+            return END if x > 10 else "producer_a"
+
+        graph = Graph([producer_a, producer_b, loop])
+        assert graph is not None
+
+    def test_error_message_suggests_fix(self):
+        """Error message should mention emit/wait_for and exclusive gate as fixes."""
+
+        @node(output_name="result")
+        def producer_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="result")
+        def producer_b(y: int) -> int:
+            return y + 2
+
+        with pytest.raises(GraphConfigError, match=r"emit.*wait_for|wait_for.*emit"):
+            Graph([producer_a, producer_b])

@@ -166,6 +166,22 @@ g = Graph([fetch])
 print(g.has_async_nodes)  # True
 ```
 
+### `has_interrupts: bool`
+
+True if any node in the graph is an InterruptNode.
+
+```python
+from hypergraph import InterruptNode
+
+approval = InterruptNode(name="approval", input_param="draft", output_param="decision")
+g = Graph([make_draft, approval, finalize])
+print(g.has_interrupts)  # True
+```
+
+### `interrupt_nodes: list[InterruptNode]`
+
+Ordered list of InterruptNode instances in the graph.
+
 ### `definition_hash: str`
 
 Merkle-tree style hash of graph structure. Used for cache invalidation.
@@ -474,7 +490,7 @@ Graph([a, b])
 # GraphConfigError: Multiple nodes produce 'result'
 ```
 
-> **Exception**: Multiple nodes *can* produce the same output if they all belong to the same cycle. Cycles have deterministic execution order, so the consumer always gets the most recently produced value. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
+> **Exception**: Multiple nodes *can* produce the same output if they are **provably ordered** (via `emit`/`wait_for`) or in **mutually exclusive gate branches**. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
 
 **Invalid identifiers:**
 ```python

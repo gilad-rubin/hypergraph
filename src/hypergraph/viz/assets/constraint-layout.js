@@ -52,8 +52,8 @@
     'INPUT_GROUP': 6,
     'BRANCH': 10,
   };
-  const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
-  const VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
+  const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET ?? 10;
+  const VERTICAL_GAP = VizConstants.VERTICAL_GAP ?? 60;
 
   // Get visible bottom of node (accounts for wrapper/content offset)
   const nodeVisibleBottom = (node) => {
@@ -1079,13 +1079,13 @@
         Math.abs(d3) <= eps &&
         Math.abs(d4) <= eps
       ) {
-        const ab_x_overlap =
+        const abXOverlap =
           Math.max(ax, bx) + eps >= Math.min(cx, dx) &&
           Math.max(cx, dx) + eps >= Math.min(ax, bx);
-        const ab_y_overlap =
+        const abYOverlap =
           Math.max(ay, by) + eps >= Math.min(cy, dy) &&
           Math.max(cy, dy) + eps >= Math.min(ay, by);
-        if (ab_x_overlap && ab_y_overlap) return true;
+        if (abXOverlap && abYOverlap) return true;
       }
       return false;
     };
@@ -1258,13 +1258,9 @@
       const segmentNodeHits = (ax, ay, bx, by, rowA, rowB) => {
         if (EDGE_NODE_PENALTY <= 0) return 0;
         const rects = [];
-        getRowRects(rowA).forEach((rect) => {
-          rects.push(rect);
-        });
+        rects.push(...getRowRects(rowA));
         if (rowB !== rowA) {
-          getRowRects(rowB).forEach((rect) => {
-            rects.push(rect);
-          });
+          rects.push(...getRowRects(rowB));
         }
         let hits = 0;
         for (const rect of rects) {

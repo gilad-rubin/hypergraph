@@ -4,32 +4,33 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from hypergraph.events.types import (
+    CacheHitEvent,
+    InterruptEvent,
+    NodeEndEvent,
+    NodeErrorEvent,
+    NodeStartEvent,
+    RouteDecisionEvent,
+    RunEndEvent,
+    RunStartEvent,
+    StopRequestedEvent,
+)
+
 if TYPE_CHECKING:
-    from hypergraph.events.types import (
-        CacheHitEvent,
-        Event,
-        InterruptEvent,
-        NodeEndEvent,
-        NodeErrorEvent,
-        NodeStartEvent,
-        RouteDecisionEvent,
-        RunEndEvent,
-        RunStartEvent,
-        StopRequestedEvent,
-    )
+    from hypergraph.events.types import Event
 
 
-# Mapping from event class name to handler method name.
-_EVENT_METHOD_MAP: dict[str, str] = {
-    "RunStartEvent": "on_run_start",
-    "RunEndEvent": "on_run_end",
-    "NodeStartEvent": "on_node_start",
-    "NodeEndEvent": "on_node_end",
-    "CacheHitEvent": "on_cache_hit",
-    "NodeErrorEvent": "on_node_error",
-    "RouteDecisionEvent": "on_route_decision",
-    "InterruptEvent": "on_interrupt",
-    "StopRequestedEvent": "on_stop_requested",
+# Mapping from event type to handler method name.
+_EVENT_METHOD_MAP: dict[type, str] = {
+    RunStartEvent: "on_run_start",
+    RunEndEvent: "on_run_end",
+    NodeStartEvent: "on_node_start",
+    NodeEndEvent: "on_node_end",
+    CacheHitEvent: "on_cache_hit",
+    NodeErrorEvent: "on_node_error",
+    RouteDecisionEvent: "on_route_decision",
+    InterruptEvent: "on_interrupt",
+    StopRequestedEvent: "on_stop_requested",
 }
 
 
@@ -69,7 +70,7 @@ class TypedEventProcessor(EventProcessor):
     """
 
     def on_event(self, event: Event) -> None:
-        method_name = _EVENT_METHOD_MAP.get(type(event).__name__)
+        method_name = _EVENT_METHOD_MAP.get(type(event))
         if method_name is not None:
             method = getattr(self, method_name, None)
             if method is not None:

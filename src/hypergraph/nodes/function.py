@@ -7,8 +7,9 @@ import warnings
 from typing import Any, Callable, get_type_hints
 
 from hypergraph._utils import ensure_tuple, hash_definition
-from hypergraph.nodes._rename import _apply_renames, build_reverse_rename_map
-from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes._callable import CallableMixin
+from hypergraph.nodes._rename import _apply_renames
+from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
 
 
 def _resolve_outputs(
@@ -53,49 +54,7 @@ def _warn_if_has_return_annotation(func: Callable) -> None:
     )
 
 
-def _build_forward_rename_map(rename_history: list) -> dict[str, str]:
-    """Build a forward rename map: original_param -> current_name.
-
-    Handles chained renames correctly:
-    - Sequential calls: a->x then x->z → {a: z}
-    - Parallel renames (same batch): x->y, y->z → {x: y, y: z}
-
-    Args:
-        rename_history: List of RenameEntry objects
-
-    Returns:
-        Dict mapping original names to their final current names
-    """
-    input_entries = [e for e in rename_history if e.kind == "inputs"]
-    if not input_entries:
-        return {}
-
-    # Group entries by batch_id
-    batches: dict[int | None, list] = {}
-    for entry in input_entries:
-        batches.setdefault(entry.batch_id, []).append(entry)
-
-    rename_map: dict[str, str] = {}
-
-    # Process batches in order (by first occurrence in history)
-    for batch_id in dict.fromkeys(e.batch_id for e in input_entries):
-        batch_entries = batches[batch_id]
-        # For parallel renames (same batch), compute using map state BEFORE this batch
-        batch_updates = {}
-        for entry in batch_entries:
-            # Find original: look for existing mapping where value == entry.old
-            original = next(
-                (k for k, v in rename_map.items() if v == entry.old),
-                entry.old,
-            )
-            batch_updates[original] = entry.new
-        # Apply all updates from this batch at once
-        rename_map.update(batch_updates)
-
-    return rename_map
-
-
-class FunctionNode(HyperNode):
+class FunctionNode(CallableMixin, HyperNode):
     """Wraps a Python function as a graph node.
 
     Created via the @node decorator or FunctionNode() constructor.
@@ -138,6 +97,8 @@ class FunctionNode(HyperNode):
     _definition_hash: str
     _is_async: bool
     _is_generator: bool
+    _wait_for: tuple[str, ...]
+    _emit: tuple[str, ...]
 
     def __init__(
         self,
@@ -148,6 +109,8 @@ class FunctionNode(HyperNode):
         rename_inputs: dict[str, str] | None = None,
         cache: bool = False,
         hide: bool = False,
+        emit: str | tuple[str, ...] | None = None,
+        wait_for: str | tuple[str, ...] | None = None,
     ) -> None:
         """Wrap a function as a node.
 
@@ -159,6 +122,11 @@ class FunctionNode(HyperNode):
             rename_inputs: Mapping to rename inputs {old: new}
             cache: Whether to cache results (default: False)
             hide: Whether to hide from visualization (default: False)
+            emit: Ordering-only output name(s). Auto-produced with sentinel value
+                  when node runs. Participates in edge inference like output_name.
+            wait_for: Ordering-only input name(s). Node won't run until these
+                      values exist and are fresh. Participates in edge inference
+                      like function parameters.
 
         Warning:
             If the function has a return type annotation but no output_name
@@ -178,14 +146,21 @@ class FunctionNode(HyperNode):
         self._cache = cache
         self._hide = hide
         self._definition_hash = hash_definition(func)
+        self._emit = ensure_tuple(emit) if emit else ()
+        self._wait_for = ensure_tuple(wait_for) if wait_for else ()
 
         # Core HyperNode attributes
         self.name = name or func.__name__
-        self.outputs = _resolve_outputs(func, output_name)
+        data_outputs = _resolve_outputs(func, output_name)
+        self.outputs = data_outputs + self._emit
 
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(
             inputs, rename_inputs, "inputs"
+        )
+
+        _validate_emit_wait_for(
+            self.name, self._emit, self._wait_for, data_outputs, self.inputs,
         )
 
         # Auto-detect execution mode
@@ -195,11 +170,6 @@ class FunctionNode(HyperNode):
         self._is_generator = inspect.isgeneratorfunction(
             func
         ) or inspect.isasyncgenfunction(func)
-
-    @property
-    def definition_hash(self) -> str:
-        """SHA256 hash of function source (cached at creation)."""
-        return self._definition_hash
 
     @property
     def is_async(self) -> bool:
@@ -222,59 +192,17 @@ class FunctionNode(HyperNode):
         return self._hide
 
     @property
-    def defaults(self) -> dict[str, Any]:
-        """Default values for input parameters (using current/renamed names).
-
-        Returns dict mapping current input names to their default values.
-        If inputs have been renamed, uses the renamed names as keys.
-        """
-        sig = inspect.signature(self.func)
-
-        # Build rename map with batch-aware chaining
-        rename_map = _build_forward_rename_map(self._rename_history)
-
-        return {
-            rename_map.get(name, name): param.default
-            for name, param in sig.parameters.items()
-            if param.default is not inspect.Parameter.empty
-        }
+    def wait_for(self) -> tuple[str, ...]:
+        """Ordering-only inputs this node waits for."""
+        return self._wait_for
 
     @property
-    def parameter_annotations(self) -> dict[str, Any]:
-        """Type annotations for input parameters.
-
-        Returns:
-            dict mapping parameter names (using current/renamed input names) to their
-            type annotations. Only includes parameters that have annotations.
-            Returns empty dict if get_type_hints fails (e.g., forward references).
-
-        Example:
-            >>> @node(output_name="result")
-            ... def add(x: int, y: str) -> float: return 0.0
-            >>> add.parameter_annotations
-            {'x': int, 'y': str}
-        """
-        try:
-            hints = get_type_hints(self.func)
-        except Exception:
-            # get_type_hints can fail on forward references, etc.
-            return {}
-
-        # Get original parameter names from function signature
-        sig = inspect.signature(self.func)
-        original_params = list(sig.parameters.keys())
-
-        # Build transitive rename mapping with batch-aware chaining
-        rename_map = _build_forward_rename_map(self._rename_history)
-
-        result: dict[str, Any] = {}
-        for orig_param in original_params:
-            if orig_param in hints:
-                # Use renamed name if it exists, otherwise original
-                final_name = rename_map.get(orig_param, orig_param)
-                result[final_name] = hints[orig_param]
-
-        return result
+    def data_outputs(self) -> tuple[str, ...]:
+        """Outputs that carry data (excludes emit-only outputs)."""
+        if not self._emit:
+            return self.outputs
+        # outputs = data_outputs + emit, so strip the emit portion
+        return self.outputs[:len(self.outputs) - len(self._emit)]
 
     @property
     def output_annotation(self) -> dict[str, Any]:
@@ -298,7 +226,7 @@ class FunctionNode(HyperNode):
             >>> split.output_annotation
             {'a': int, 'b': str}
         """
-        if not self.outputs:
+        if not self.data_outputs:
             return {}
 
         try:
@@ -311,8 +239,8 @@ class FunctionNode(HyperNode):
             return {}
 
         # Single output case
-        if len(self.outputs) == 1:
-            return {self.outputs[0]: return_hint}
+        if len(self.data_outputs) == 1:
+            return {self.data_outputs[0]: return_hint}
 
         # Multiple outputs - try to extract tuple element types
         from typing import get_args, get_origin
@@ -320,52 +248,11 @@ class FunctionNode(HyperNode):
         origin = get_origin(return_hint)
         if origin is tuple:
             args = get_args(return_hint)
-            if len(args) == len(self.outputs):
-                return dict(zip(self.outputs, args))
+            if len(args) == len(self.data_outputs):
+                return dict(zip(self.data_outputs, args, strict=True))
 
         # Can't map tuple elements to outputs - return empty
         return {}
-
-    # === Override base class capability methods ===
-
-    def has_default_for(self, param: str) -> bool:
-        """Check if this parameter has a default value.
-
-        Args:
-            param: Input parameter name (using current/renamed name)
-
-        Returns:
-            True if parameter has a default value.
-        """
-        return param in self.defaults
-
-    def get_default_for(self, param: str) -> Any:
-        """Get default value for a parameter.
-
-        Args:
-            param: Input parameter name (using current/renamed name)
-
-        Returns:
-            The default value.
-
-        Raises:
-            KeyError: If parameter has no default.
-        """
-        defaults = self.defaults
-        if param not in defaults:
-            raise KeyError(f"No default for '{param}'")
-        return defaults[param]
-
-    def get_input_type(self, param: str) -> type | None:
-        """Get type annotation for an input parameter.
-
-        Args:
-            param: Input parameter name (using current/renamed name)
-
-        Returns:
-            The type annotation, or None if not annotated.
-        """
-        return self.parameter_annotations.get(param)
 
     def get_output_type(self, output: str) -> type | None:
         """Get type annotation for an output.
@@ -377,24 +264,6 @@ class FunctionNode(HyperNode):
             The type annotation, or None if not annotated.
         """
         return self.output_annotation.get(output)
-
-    def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        """Map renamed input names back to original function parameter names.
-
-        Handles chained renames: if a->x->z (via separate calls), z maps to a.
-        Handles parallel renames: if x->y, y->z (same call), they don't chain.
-
-        Args:
-            inputs: Dict with current (potentially renamed) input names as keys
-
-        Returns:
-            Dict with original function parameter names as keys
-        """
-        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return inputs
-
-        return {reverse_map.get(key, key): value for key, value in inputs.items()}
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped function directly.
@@ -428,6 +297,8 @@ def node(
     rename_inputs: dict[str, str] | None = None,
     cache: bool = False,
     hide: bool = False,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -446,6 +317,10 @@ def node(
         rename_inputs: Mapping to rename inputs {old: new}
         cache: Whether to cache results (default: False)
         hide: Whether to hide from visualization (default: False)
+        emit: Ordering-only output name(s). Auto-produced with sentinel value
+              when node runs. Participates in edge inference like output_name.
+        wait_for: Ordering-only input name(s). Node won't run until these
+                  values exist and are fresh.
 
     Returns:
         FunctionNode if source provided, else decorator function.
@@ -468,6 +343,8 @@ def node(
             rename_inputs=rename_inputs,
             cache=cache,
             hide=hide,
+            emit=emit,
+            wait_for=wait_for,
         )
 
     if source is not None:

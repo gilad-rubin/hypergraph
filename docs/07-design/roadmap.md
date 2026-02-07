@@ -34,10 +34,17 @@ Core features are working and stable. API may still change before 1.0.
 - Resume with user-provided data
 - Auto-resolve with handler functions
 
+### Caching
+- `@node(cache=True)` opt-in caching per node
+- `InMemoryCache` (LRU, ephemeral) and `DiskCache` (persistent via diskcache)
+- `CacheBackend` protocol for custom backends
+- Automatic cache invalidation on code changes (`definition_hash`)
+- `CacheHitEvent` for observability
+
 ### Events & Observability
 - Event system with `EventProcessor`, `AsyncEventProcessor`, `TypedEventProcessor`
 - `RichProgressProcessor` for hierarchical Rich progress bars
-- Event types: `RunStartEvent`, `RunEndEvent`, `NodeStartEvent`, `NodeEndEvent`, `NodeErrorEvent`, `RouteDecisionEvent`, `InterruptEvent`
+- Event types: `RunStartEvent`, `RunEndEvent`, `NodeStartEvent`, `NodeEndEvent`, `NodeErrorEvent`, `RouteDecisionEvent`, `InterruptEvent`, `CacheHitEvent`, `StopRequestedEvent`
 
 ### Visualization
 - `graph.visualize()` for interactive graph rendering in notebooks
@@ -70,11 +77,6 @@ Core features are working and stable. API may still change before 1.0.
 - Integration with Daft for distributed processing
 - Parallel execution across machines
 - Automatic data partitioning
-
-### Caching
-- Content-addressable cache (hash inputs + function definition)
-- Skip re-execution for unchanged nodes
-- Cache invalidation strategies
 
 ### Execution Trace Visualization
 - Overlay execution traces on graph visualization

@@ -11,6 +11,8 @@ from typing import Any, Iterator, TYPE_CHECKING
 
 import networkx as nx
 
+from hypergraph.graph._helpers import get_edge_produced_values, sources_of
+
 if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
 
@@ -51,7 +53,7 @@ def compute_input_spec(
     Returns:
         InputSpec with categorized parameters
     """
-    edge_produced = _get_edge_produced_values(nx_graph)
+    edge_produced = get_edge_produced_values(nx_graph)
     cycle_params = _get_cycle_params(nodes, nx_graph, edge_produced)
 
     required, optional, seeds = [], [], []
@@ -85,18 +87,6 @@ def _unique_params(nodes: dict[str, "HyperNode"]) -> Iterator[str]:
                 seen.add(param)
                 yield param
 
-
-def _get_edge_produced_values(nx_graph: nx.DiGraph) -> set[str]:
-    """Get all value names that are produced by data edges.
-
-    Only data edges carry values. Control edges (from gates) define
-    routing relationships but don't produce values.
-    """
-    result: set[str] = set()
-    for _, _, data in nx_graph.edges(data=True):
-        if data.get("edge_type") == "data":
-            result.update(data.get("value_names", []))
-    return result
 
 
 def _categorize_param(
@@ -172,13 +162,9 @@ def _params_flowing_in_cycle(
         for param in nodes[node_name].inputs:
             if param not in edge_produced:
                 continue
-            if any(p in cycle_nodes for p in _sources_of(param, nodes)):
+            if any(p in cycle_nodes for p in sources_of(param, nodes)):
                 yield param
 
-
-def _sources_of(output: str, nodes: dict[str, "HyperNode"]) -> list[str]:
-    """Get all nodes that produce the given output."""
-    return [node.name for node in nodes.values() if output in node.outputs]
 
 
 def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
@@ -220,7 +206,7 @@ def _collect_bound_values(
     for node in nodes.values():
         if isinstance(node, GraphNode):
             # Get bound values from the inner graph
-            inner_bound = node._graph.inputs.bound
+            inner_bound = node.graph.inputs.bound
             # Merge into all_bound (current graph's values take precedence)
             for key, value in inner_bound.items():
                 if key not in all_bound:

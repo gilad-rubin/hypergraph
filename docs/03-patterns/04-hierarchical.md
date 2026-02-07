@@ -317,7 +317,7 @@ analysis = Graph([
 # Use in batch processing
 batch_pipeline = Graph([
     load_documents,
-    analysis.as_node(map_over="document"),  # Fan out over documents
+    analysis.as_node().map_over("document"),  # Fan out over documents
     aggregate_results,
 ])
 ```
@@ -339,7 +339,7 @@ graph_node = my_graph.as_node(name="custom_name")
 graph_node = my_graph.as_node().with_inputs(old="new")
 
 # With map_over for fan-out
-graph_node = my_graph.as_node(map_over="items")
+graph_node = my_graph.as_node().map_over("items")
 ```
 
 **Key properties:**
@@ -358,7 +358,7 @@ graph_node = my_graph.as_node(map_over="items")
 | Evaluation harnesses | Wrap production graph in test DAG |
 | Multi-agent systems | Each agent is a graph, orchestrator composes them |
 | Prompt optimization | Nested loops for run → evaluate → improve |
-| Batch processing | `.as_node(map_over=...)` for fan-out |
+| Batch processing | `.as_node().map_over(...)` for fan-out |
 
 ## What's Next?
 

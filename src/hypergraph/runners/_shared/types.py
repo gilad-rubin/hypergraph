@@ -162,11 +162,13 @@ class NodeExecution:
         node_name: Name of the executed node
         input_versions: Version numbers of inputs at execution time
         outputs: Output values produced
+        wait_for_versions: Version numbers of wait_for names at execution time
     """
 
     node_name: str
     input_versions: dict[str, int]
     outputs: dict[str, Any]
+    wait_for_versions: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -228,7 +230,12 @@ class GraphState:
             values=dict(self.values),
             versions=dict(self.versions),
             node_executions={
-                k: replace(v, input_versions=dict(v.input_versions), outputs=dict(v.outputs))
+                k: replace(
+                    v,
+                    input_versions=dict(v.input_versions),
+                    outputs=dict(v.outputs),
+                    wait_for_versions=dict(v.wait_for_versions),
+                )
                 for k, v in self.node_executions.items()
             },
             routing_decisions=dict(self.routing_decisions),

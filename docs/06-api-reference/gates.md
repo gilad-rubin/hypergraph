@@ -21,8 +21,12 @@ def ifelse(
     when_false: str | type[END],
     *,
     cache: bool = False,
+    hide: bool = False,
+    default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> Callable[[Callable[..., bool]], IfElseNode]: ...
 ```
 
@@ -33,8 +37,12 @@ def ifelse(
 | `when_true` | `str \| END` | required | Target when function returns `True` |
 | `when_false` | `str \| END` | required | Target when function returns `False` |
 | `cache` | `bool` | `False` | Whether to cache routing decisions |
+| `hide` | `bool` | `False` | Whether to hide from visualization |
+| `default_open` | `bool` | `True` | If True, targets may execute before the gate runs. If False, targets are blocked until the gate executes. |
 | `name` | `str \| None` | `None` | Node name (default: function name) |
 | `rename_inputs` | `dict \| None` | `None` | Mapping to rename inputs `{old: new}` |
+| `emit` | `str \| tuple \| None` | `None` | Ordering-only output(s). Auto-produced when the gate runs |
+| `wait_for` | `str \| tuple \| None` | `None` | Ordering-only input(s). Gate waits until these values are fresh |
 
 ### Return Value
 
@@ -84,6 +92,8 @@ def __init__(
     when_false: str | type[END],
     *,
     cache: bool = False,
+    hide: bool = False,
+    default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
 ) -> None: ...
@@ -193,8 +203,12 @@ def route(
     fallback: str | type[END] | None = None,
     multi_target: bool = False,
     cache: bool = False,
+    hide: bool = False,
+    default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
+    emit: str | tuple[str, ...] | None = None,
+    wait_for: str | tuple[str, ...] | None = None,
 ) -> Callable[[Callable], RouteNode]: ...
 ```
 
@@ -206,8 +220,12 @@ def route(
 | `fallback` | `str \| END \| None` | `None` | Default target if function returns `None` |
 | `multi_target` | `bool` | `False` | If `True`, function returns list of targets |
 | `cache` | `bool` | `False` | Whether to cache routing decisions |
+| `hide` | `bool` | `False` | Whether to hide from visualization |
+| `default_open` | `bool` | `True` | If True, targets may execute before the gate runs. If False, targets are blocked until the gate executes. |
 | `name` | `str \| None` | `None` | Node name (default: function name) |
 | `rename_inputs` | `dict \| None` | `None` | Mapping to rename inputs `{old: new}` |
+| `emit` | `str \| tuple \| None` | `None` | Ordering-only output(s). Auto-produced when the gate runs |
+| `wait_for` | `str \| tuple \| None` | `None` | Ordering-only input(s). Gate waits until these values are fresh |
 
 ### Return Value
 
@@ -281,6 +299,8 @@ def __init__(
     fallback: str | type[END] | None = None,
     multi_target: bool = False,
     cache: bool = False,
+    hide: bool = False,
+    default_open: bool = True,
     name: str | None = None,
     rename_inputs: dict[str, str] | None = None,
 ) -> None: ...
