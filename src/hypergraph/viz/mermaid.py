@@ -150,9 +150,17 @@ class MermaidDiagram:
 (async () => {{
   try {{
     const src = {_js_string_literal(self.source)};
-    let svg = await beautifulMermaid.renderMermaid(src, {{ font: 'system-ui' }});
+    let svg = await beautifulMermaid.renderMermaid(src, {{
+      font: 'system-ui',
+      fg: '#1a1a1a',
+      muted: '#555555',
+      layerSpacing: 60,
+    }});
     svg = svg.replace(/@import url\\([^)]*fonts\\.googleapis[^)]*\\);?/g, '');
     document.getElementById('diagram').innerHTML = svg;
+    // Resize iframe to fit content
+    const h = document.getElementById('diagram').scrollHeight + 40;
+    window.parent.postMessage({{ type: 'resize', height: h }}, '*');
   }} catch (e) {{
     document.getElementById('diagram').textContent = e.message;
   }}
