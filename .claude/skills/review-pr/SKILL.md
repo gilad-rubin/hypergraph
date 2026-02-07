@@ -58,11 +58,21 @@ Classify every finding:
 
 Create a task checklist ordered by severity (critical first). Group related findings that touch the same file/area.
 
-### 4. FIX — Address Each Finding
+### 4. FIX — TDD for Each Finding
+For each true-positive finding:
+
+1. **Write a failing test first** that reproduces the issue (or proves the missing behavior)
+2. **Run the test** — confirm it fails for the right reason
+3. **Apply the fix** — minimal change to make the test pass
+4. **Run the test again** — confirm it passes
+
+If the test can't use the public API (e.g. framework validation rejects the setup), test the internal function directly with a synthetic fixture.
+
 For each finding (or group of related findings), spawn a general-purpose Task sub-agent with:
 - The specific file(s) and line(s)
 - The reviewer's comment(s)
 - The fix approach
+- **Explicit instruction to write a failing test before fixing**
 - Instruction to run relevant tests before reporting back
 
 Work through findings from critical to low priority. Spawn agents in parallel for independent findings.
@@ -88,10 +98,19 @@ git push
 ```
 Return to step 2 for the next review cycle.
 
-### 7. STOP CONDITION
+### 7. RE-POLL — Wait for New Reviews
+After pushing fixes, automated reviewers need time to re-analyze:
+
+1. **Wait 2 minutes** after push for reviewers to trigger
+2. **Re-poll** using step 2 commands — check for new or updated comments
+3. If new findings appear, return to step 3 (TRIAGE)
+4. If no new findings after polling, wait 5 minutes and poll once more
+
+### 8. STOP CONDITION
 Stop when:
 - All reviewers approve, OR
-- 3 review cycles complete (report remaining items to user)
+- No new findings after 2 consecutive polls (5 min apart), OR
+- 3 fix-poll cycles complete (report remaining items to user)
 
 Report final status: what was fixed, what remains, PR URL.
 
@@ -100,6 +119,7 @@ Report final status: what was fixed, what remains, PR URL.
 - **Never** commit to main/master directly
 - **Never** force-push unless explicitly asked
 - **Always** merge latest master and resolve conflicts before pushing
+- **Always** write a failing test before applying a fix (TDD)
 - Parse **all** comment sources — inline, issue-level, review summaries, and Greptile
 - Skip resolved/outdated comment threads
 - Run tests before every push
