@@ -237,6 +237,14 @@ class TestSyncRunnerRun:
 
         assert result["result"] == "fast"
 
+    def test_run_reserved_option_name_in_kwargs_raises(self):
+        """Reserved option names cannot be passed via kwargs shorthand."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="reserved runner options"):
+            runner.run(graph, x=1, max_concurrency=1)
+
     def test_uses_bound_values(self):
         """Bound values are used when input not provided."""
         graph = Graph([add]).bind(a=5)
@@ -534,6 +542,14 @@ class TestSyncRunnerMap:
         )
 
         assert [r["sum"] for r in results] == [11, 12]
+
+    def test_map_reserved_option_name_in_kwargs_raises(self):
+        """Reserved map option names cannot be passed via kwargs shorthand."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="reserved runner options"):
+            runner.map(graph, map_over="x", x=[1, 2], max_concurrency=1)
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""

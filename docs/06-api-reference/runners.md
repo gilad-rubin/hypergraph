@@ -336,6 +336,10 @@ results = await runner.map(
 )
 ```
 
+For very large batches, prefer setting `max_concurrency` explicitly. If `max_concurrency=None`
+and the fan-out is extremely large, `AsyncRunner.map()` raises `ValueError` to avoid unbounded
+task creation.
+
 ### capabilities
 
 ```python
@@ -522,6 +526,7 @@ Rules:
 - `values` + kwargs are merged
 - duplicate keys raise `ValueError`
 - option names like `select`, `map_over`, `max_concurrency` are reserved for runner options
+- reserved option names in kwargs raise `ValueError`
 - if an input name matches an option name, pass that input through `values={...}`
 
 ```python

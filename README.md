@@ -91,6 +91,7 @@ Rules:
 - `values` + kwargs are merged.
 - Duplicate keys across both raise `ValueError`.
 - Runner option names (`select`, `map_over`, `max_concurrency`, etc.) stay reserved.
+- Passing reserved runner option names via kwargs raises `ValueError`.
 - If an input name matches an option name, pass it in `values={...}`.
 
 ## Examples

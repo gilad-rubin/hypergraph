@@ -144,6 +144,15 @@ class TestNormalizeInputs:
         with pytest.raises(ValueError, match="both values and kwargs"):
             normalize_inputs({"x": 1}, {"x": 2})
 
+    def test_reserved_option_names_raise(self):
+        """Reserved option names in kwargs raise ValueError."""
+        with pytest.raises(ValueError, match="reserved runner options"):
+            normalize_inputs(
+                {"x": 1},
+                {"select": "bad"},
+                reserved_option_names=frozenset({"select"}),
+            )
+
 
 class TestValidateRunnerCompatibility:
     """Tests for validate_runner_compatibility function."""

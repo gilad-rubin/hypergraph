@@ -9,6 +9,7 @@ from hypergraph import Graph, node
 from hypergraph.exceptions import InfiniteLoopError, MissingInputError
 from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, AsyncRunner
+from hypergraph.runners._shared import template_async as template_async_module
 
 
 # === Test Fixtures ===
@@ -560,37 +561,70 @@ class TestAsyncRunnerMap:
         sums = sorted(r["sum"] for r in results)
         assert sums == [11, 12, 21, 22]
 
+    async def test_map_continue_handles_item_exceptions(self):
+        """continue mode returns FAILED results when per-item run raises."""
+
+        @node(output_name="sum")
+        def needs_two_inputs(x: int, y: int) -> int:
+            return x + y
+
+        graph = Graph([needs_two_inputs])
+        runner = AsyncRunner()
+
+        results = await runner.map(
+            graph,
+            {"x": [1, 2, 3]},
+            map_over="x",
+            error_handling="continue",
+        )
+
+        assert len(results) == 3
+        assert all(r.status == RunStatus.FAILED for r in results)
+        assert all(isinstance(r.error, MissingInputError) for r in results)
+
+    async def test_map_unbounded_task_guard_raises(self, monkeypatch):
+        """Protect against large unbounded fan-out without max_concurrency."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        monkeypatch.setattr(template_async_module, "MAX_UNBOUNDED_MAP_TASKS", 2)
+
+        with pytest.raises(ValueError, match="Too many map tasks"):
+            await runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+
 
 class TestDisconnectedSubgraphs:
     """Tests for disconnected graphs with AsyncRunner (GAP-09)."""
 
     async def test_disconnected_subgraphs_run_concurrently(self):
         """Independent subgraphs execute in parallel with AsyncRunner."""
-        import time
+        timestamps: dict[str, float] = {}
 
         @node(output_name="a")
         async def slow_a(x: int) -> int:
+            timestamps["a_start"] = time.monotonic()
             await asyncio.sleep(0.03)
+            timestamps["a_end"] = time.monotonic()
             return x * 2
 
         @node(output_name="b")
         async def slow_b(y: int) -> int:
+            timestamps["b_start"] = time.monotonic()
             await asyncio.sleep(0.03)
+            timestamps["b_end"] = time.monotonic()
             return y * 3
 
         # Two disconnected subgraphs - no edges between them
         graph = Graph([slow_a, slow_b])
         runner = AsyncRunner()
 
-        start = time.time()
         result = await runner.run(graph, {"x": 5, "y": 10})
-        elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
         assert result["a"] == 10
         assert result["b"] == 30
-        # Should be ~0.03s (concurrent), not ~0.06s (sequential)
-        assert elapsed < 0.05
+        assert timestamps["a_start"] < timestamps["b_end"]
+        assert timestamps["b_start"] < timestamps["a_end"]
 
     async def test_select_from_disconnected_subgraph(self):
         """select= works correctly with disconnected graphs."""

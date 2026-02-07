@@ -198,6 +198,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             state: GraphState,
             inputs: dict[str, Any],
         ) -> dict[str, Any]:
+            """Execute one node with optional nested-graph context."""
             node_type = type(node)
             executor = self._executors.get(node_type)
 
@@ -228,6 +229,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         self,
         processors: list[EventProcessor] | None,
     ) -> "EventDispatcher":
+        """Create event dispatcher for this runner."""
         return _create_dispatcher(processors)
 
     async def _emit_run_start_async(
@@ -239,6 +241,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         is_map: bool = False,
         map_size: int | None = None,
     ) -> tuple[str, str]:
+        """Emit run-start event via async helper."""
         return await _emit_run_start(
             dispatcher,
             graph,
@@ -258,6 +261,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         *,
         error: BaseException | None = None,
     ) -> None:
+        """Emit run-end event via async helper."""
         await _emit_run_end(
             dispatcher,
             run_id,
@@ -269,16 +273,20 @@ class AsyncRunner(AsyncRunnerTemplate):
         )
 
     async def _shutdown_dispatcher_async(self, dispatcher: "EventDispatcher") -> None:
+        """Shut down dispatcher for top-level async runs."""
         await dispatcher.shutdown_async()
 
     def _get_concurrency_limiter(self) -> Any:
+        """Return currently active shared concurrency limiter, if any."""
         return get_concurrency_limiter()
 
     def _set_concurrency_limiter(self, max_concurrency: int) -> Any:
+        """Create and register a shared semaphore for nested async execution."""
         semaphore = asyncio.Semaphore(max_concurrency)
         return set_concurrency_limiter(semaphore)
 
     def _reset_concurrency_limiter(self, token: Any) -> None:
+        """Reset shared concurrency limiter using context token."""
         reset_concurrency_limiter(token)
 
 

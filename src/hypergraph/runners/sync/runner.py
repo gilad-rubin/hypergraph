@@ -159,6 +159,7 @@ class SyncRunner(SyncRunnerTemplate):
             state: GraphState,
             inputs: dict[str, Any],
         ) -> dict[str, Any]:
+            """Execute one node with optional nested-graph context."""
             node_type = type(node)
             executor = self._executors.get(node_type)
 
@@ -189,6 +190,7 @@ class SyncRunner(SyncRunnerTemplate):
         self,
         processors: list[EventProcessor] | None,
     ) -> "EventDispatcher":
+        """Create event dispatcher for this runner."""
         return _create_dispatcher(processors)
 
     def _emit_run_start_sync(
@@ -200,6 +202,7 @@ class SyncRunner(SyncRunnerTemplate):
         is_map: bool = False,
         map_size: int | None = None,
     ) -> tuple[str, str]:
+        """Emit run-start event via sync helper."""
         return _emit_run_start(
             dispatcher,
             graph,
@@ -219,6 +222,7 @@ class SyncRunner(SyncRunnerTemplate):
         *,
         error: BaseException | None = None,
     ) -> None:
+        """Emit run-end event via sync helper."""
         _emit_run_end(
             dispatcher,
             run_id,
@@ -230,6 +234,7 @@ class SyncRunner(SyncRunnerTemplate):
         )
 
     def _shutdown_dispatcher_sync(self, dispatcher: "EventDispatcher") -> None:
+        """Shut down dispatcher for top-level sync runs."""
         dispatcher.shutdown()
 
 

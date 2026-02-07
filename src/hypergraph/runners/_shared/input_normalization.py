@@ -53,9 +53,21 @@ def merge_with_duplicate_check(
 def normalize_inputs(
     values: dict[str, Any] | None,
     input_kwargs: dict[str, Any],
+    *,
+    reserved_option_names: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Normalize inputs from values dict + kwargs shorthand."""
     base_values = dict(values) if values is not None else {}
+
+    if reserved_option_names:
+        conflicts = sorted(set(input_kwargs) & reserved_option_names)
+        if conflicts:
+            conflicts_str = ", ".join(repr(name) for name in conflicts)
+            raise ValueError(
+                f"Input keys are reserved runner options: {conflicts_str}. "
+                "Pass these keys via values={...}."
+            )
+
     if not input_kwargs:
         return base_values
     return merge_with_duplicate_check(base_values, input_kwargs)

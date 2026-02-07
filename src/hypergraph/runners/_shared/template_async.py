@@ -8,13 +8,18 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.runners._shared.helpers import filter_outputs, generate_map_inputs
-from hypergraph.runners._shared.input_normalization import normalize_inputs
+from hypergraph.runners._shared.input_normalization import (
+    ASYNC_MAP_RESERVED_OPTION_NAMES,
+    ASYNC_RUN_RESERVED_OPTION_NAMES,
+    normalize_inputs,
+)
 from hypergraph.runners._shared.types import (
     ErrorHandling,
     GraphState,
     PauseExecution,
     RunResult,
     RunStatus,
+    _generate_run_id,
 )
 from hypergraph.runners._shared.validation import (
     validate_inputs,
@@ -29,6 +34,9 @@ if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
     from hypergraph.nodes.base import HyperNode
+
+
+MAX_UNBOUNDED_MAP_TASKS = 10_000
 
 
 class AsyncRunnerTemplate(BaseRunner, ABC):
@@ -134,7 +142,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
-        normalized_values = normalize_inputs(values, input_values)
+        normalized_values = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
+        )
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
@@ -217,7 +229,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> list[RunResult]:
         """Execute a graph multiple times with different inputs."""
-        normalized_values = normalize_inputs(values, input_values)
+        normalized_values = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
+        )
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
@@ -227,6 +243,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode))
         if not input_variations:
             return []
+        if max_concurrency is None and len(input_variations) > MAX_UNBOUNDED_MAP_TASKS:
+            raise ValueError(
+                f"Too many map tasks without a concurrency limit: {len(input_variations)}. "
+                f"Set max_concurrency or keep inputs at <= {MAX_UNBOUNDED_MAP_TASKS}."
+            )
 
         dispatcher = self._create_dispatcher(event_processors)
         map_run_id, map_span_id = await self._emit_run_start_async(
@@ -244,20 +265,37 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         else:
             token = None
 
+        async def _run_map_item(variation_inputs: dict[str, Any]) -> RunResult:
+            """Execute one map variation and normalize failures to RunResult."""
+            try:
+                return await self.run(
+                    graph,
+                    variation_inputs,
+                    select=select,
+                    max_concurrency=max_concurrency,
+                    event_processors=event_processors,
+                    _parent_span_id=map_span_id,
+                )
+            except Exception as e:
+                return RunResult(
+                    values={},
+                    status=RunStatus.FAILED,
+                    run_id=_generate_run_id(),
+                    error=e,
+                )
+
         try:
             if max_concurrency is None:
                 tasks = [
-                    self.run(
-                        graph,
-                        v,
-                        select=select,
-                        max_concurrency=max_concurrency,
-                        event_processors=event_processors,
-                        _parent_span_id=map_span_id,
-                    )
+                    _run_map_item(v)
                     for v in input_variations
                 ]
-                results = list(await asyncio.gather(*tasks))
+                gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                results: list[RunResult] = []
+                for item in gathered:
+                    if isinstance(item, BaseException):
+                        raise item
+                    results.append(item)
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:
@@ -272,19 +310,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 stop_event = asyncio.Event()
 
                 async def _worker() -> None:
+                    """Consume queue items and execute map variations."""
                     while not stop_event.is_set():
                         try:
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
                             return
-                        result = await self.run(
-                            graph,
-                            v,
-                            select=select,
-                            max_concurrency=max_concurrency,
-                            event_processors=event_processors,
-                            _parent_span_id=map_span_id,
-                        )
+                        result = await _run_map_item(v)
                         results_list.append(result)
                         order.append(idx)
                         if (
@@ -295,7 +327,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
                 num_workers = min(max_concurrency, len(input_variations))
                 workers = [asyncio.create_task(_worker()) for _ in range(num_workers)]
-                await asyncio.gather(*workers)
+                try:
+                    await asyncio.gather(*workers)
+                except Exception:
+                    # Let the outer error handler emit map-level failure events.
+                    raise
                 results = [r for _, r in sorted(zip(order, results_list))]
                 if error_handling == "raise":
                     for result in results:

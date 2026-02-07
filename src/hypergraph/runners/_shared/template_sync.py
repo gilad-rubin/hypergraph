@@ -7,7 +7,11 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.runners._shared.helpers import filter_outputs, generate_map_inputs
-from hypergraph.runners._shared.input_normalization import normalize_inputs
+from hypergraph.runners._shared.input_normalization import (
+    ASYNC_MAP_RESERVED_OPTION_NAMES,
+    ASYNC_RUN_RESERVED_OPTION_NAMES,
+    normalize_inputs,
+)
 from hypergraph.runners._shared.types import ErrorHandling, GraphState, RunResult, RunStatus
 from hypergraph.runners._shared.validation import (
     validate_inputs,
@@ -110,7 +114,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
-        normalized_values = normalize_inputs(values, input_values)
+        normalized_values = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
+        )
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
@@ -176,7 +184,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> list[RunResult]:
         """Execute a graph multiple times with different inputs."""
-        normalized_values = normalize_inputs(values, input_values)
+        normalized_values = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
+        )
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
