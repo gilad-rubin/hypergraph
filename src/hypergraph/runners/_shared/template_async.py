@@ -22,11 +22,6 @@ from hypergraph.runners._shared.validation import (
     validate_node_types,
     validate_runner_compatibility,
 )
-from hypergraph.runners.async_.superstep import (
-    get_concurrency_limiter,
-    reset_concurrency_limiter,
-    set_concurrency_limiter,
-)
 from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
@@ -109,6 +104,21 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         dispatcher: "EventDispatcher",
     ) -> None:
         """Shut down dispatcher."""
+        ...
+
+    @abstractmethod
+    def _get_concurrency_limiter(self) -> Any:
+        """Get current shared concurrency limiter."""
+        ...
+
+    @abstractmethod
+    def _set_concurrency_limiter(self, max_concurrency: int) -> Any:
+        """Set shared concurrency limiter and return reset token."""
+        ...
+
+    @abstractmethod
+    def _reset_concurrency_limiter(self, token: Any) -> None:
+        """Reset shared concurrency limiter using token."""
         ...
 
     async def run(
@@ -228,10 +238,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         )
         start_time = time.time()
 
-        existing_limiter = get_concurrency_limiter()
+        existing_limiter = self._get_concurrency_limiter()
         if existing_limiter is None and max_concurrency is not None:
-            semaphore = asyncio.Semaphore(max_concurrency)
-            token = set_concurrency_limiter(semaphore)
+            token = self._set_concurrency_limiter(max_concurrency)
         else:
             token = None
 
@@ -305,6 +314,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             raise
         finally:
             if token is not None:
-                reset_concurrency_limiter(token)
+                self._reset_concurrency_limiter(token)
             if _parent_span_id is None and dispatcher.active:
                 await self._shutdown_dispatcher_async(dispatcher)

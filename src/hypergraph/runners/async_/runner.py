@@ -271,6 +271,16 @@ class AsyncRunner(AsyncRunnerTemplate):
     async def _shutdown_dispatcher_async(self, dispatcher: "EventDispatcher") -> None:
         await dispatcher.shutdown_async()
 
+    def _get_concurrency_limiter(self) -> Any:
+        return get_concurrency_limiter()
+
+    def _set_concurrency_limiter(self, max_concurrency: int) -> Any:
+        semaphore = asyncio.Semaphore(max_concurrency)
+        return set_concurrency_limiter(semaphore)
+
+    def _reset_concurrency_limiter(self, token: Any) -> None:
+        reset_concurrency_limiter(token)
+
 
 # ------------------------------------------------------------------
 # Event helpers (module-level to keep the class focused)
