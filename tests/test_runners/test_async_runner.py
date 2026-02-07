@@ -9,6 +9,7 @@ from hypergraph import Graph, node
 from hypergraph.exceptions import InfiniteLoopError, MissingInputError
 from hypergraph.nodes.gate import route, END
 from hypergraph.runners import RunStatus, AsyncRunner
+from hypergraph.runners._shared import template_async as template_async_module
 
 
 # === Test Fixtures ===
@@ -107,6 +108,60 @@ class TestAsyncRunnerRun:
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == 10
         assert result["sum"] == 13
+
+    async def test_run_accepts_kwargs_inputs(self):
+        """kwargs can be used instead of values dict."""
+        graph = Graph([add])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, a=10, b=20)
+
+        assert result["sum"] == 30
+
+    async def test_run_merges_values_and_kwargs(self):
+        """values and kwargs are merged when keys are disjoint."""
+        graph = Graph([add])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, {"a": 10}, b=20)
+
+        assert result["sum"] == 30
+
+    async def test_run_duplicate_values_and_kwargs_raises(self):
+        """Duplicate keys across values and kwargs are rejected."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="both values and kwargs"):
+            await runner.run(graph, {"x": 1}, x=2)
+
+    async def test_run_nested_dict_input_with_kwargs(self):
+        """Nested dict values pass through unchanged."""
+
+        @node(output_name="top_k")
+        def pick_top_k(processor: dict[str, int]) -> int:
+            return processor["top_k"]
+
+        graph = Graph([pick_top_k])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, processor={"top_k": 5})
+
+        assert result["top_k"] == 5
+
+    async def test_run_input_named_select_requires_values_dict(self):
+        """Input names matching options are only accepted via values dict."""
+
+        @node(output_name="result")
+        def echo_select(select: str) -> str:
+            return select
+
+        graph = Graph([echo_select])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, values={"select": "fast"}, select=["result"])
+
+        assert result["result"] == "fast"
 
     async def test_fan_out_graph(self):
         """Multiple nodes consume same input."""
@@ -381,6 +436,55 @@ class TestAsyncRunnerMap:
         assert results[1]["doubled"] == 4
         assert results[2]["doubled"] == 6
 
+    async def test_map_accepts_kwargs_inputs(self):
+        """map supports kwargs shorthand for input values."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        results = await runner.map(graph, map_over="x", x=[1, 2, 3])
+
+        assert [r["doubled"] for r in results] == [2, 4, 6]
+
+    async def test_map_merges_values_and_kwargs(self):
+        """map merges values dict with kwargs when keys are disjoint."""
+        graph = Graph([add])
+        runner = AsyncRunner()
+
+        results = await runner.map(
+            graph,
+            {"a": [1, 2]},
+            map_over=["a", "b"],
+            b=[10, 20],
+        )
+
+        assert [r["sum"] for r in results] == [11, 22]
+
+    async def test_map_duplicate_values_and_kwargs_raises(self):
+        """map rejects duplicate keys across values and kwargs."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="both values and kwargs"):
+            await runner.map(graph, {"x": [1, 2]}, map_over="x", x=[3, 4])
+
+    async def test_map_input_named_map_over_requires_values_dict(self):
+        """Input names matching map options must be passed via values dict."""
+
+        @node(output_name="sum")
+        def add_with_reserved_name(x: int, map_over: int) -> int:
+            return x + map_over
+
+        graph = Graph([add_with_reserved_name])
+        runner = AsyncRunner()
+
+        results = await runner.map(
+            graph,
+            values={"x": [1, 2], "map_over": 10},
+            map_over="x",
+        )
+
+        assert [r["sum"] for r in results] == [11, 12]
+
     async def test_map_runs_concurrently(self):
         """Map executions run concurrently."""
         graph = Graph([slow_node])
@@ -457,37 +561,70 @@ class TestAsyncRunnerMap:
         sums = sorted(r["sum"] for r in results)
         assert sums == [11, 12, 21, 22]
 
+    async def test_map_continue_handles_item_exceptions(self):
+        """continue mode returns FAILED results when per-item run raises."""
+
+        @node(output_name="sum")
+        def needs_two_inputs(x: int, y: int) -> int:
+            return x + y
+
+        graph = Graph([needs_two_inputs])
+        runner = AsyncRunner()
+
+        results = await runner.map(
+            graph,
+            {"x": [1, 2, 3]},
+            map_over="x",
+            error_handling="continue",
+        )
+
+        assert len(results) == 3
+        assert all(r.status == RunStatus.FAILED for r in results)
+        assert all(isinstance(r.error, MissingInputError) for r in results)
+
+    async def test_map_unbounded_task_guard_raises(self, monkeypatch):
+        """Protect against large unbounded fan-out without max_concurrency."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        monkeypatch.setattr(template_async_module, "MAX_UNBOUNDED_MAP_TASKS", 2)
+
+        with pytest.raises(ValueError, match="Too many map tasks"):
+            await runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+
 
 class TestDisconnectedSubgraphs:
     """Tests for disconnected graphs with AsyncRunner (GAP-09)."""
 
     async def test_disconnected_subgraphs_run_concurrently(self):
         """Independent subgraphs execute in parallel with AsyncRunner."""
-        import time
+        timestamps: dict[str, float] = {}
 
         @node(output_name="a")
         async def slow_a(x: int) -> int:
+            timestamps["a_start"] = time.monotonic()
             await asyncio.sleep(0.03)
+            timestamps["a_end"] = time.monotonic()
             return x * 2
 
         @node(output_name="b")
         async def slow_b(y: int) -> int:
+            timestamps["b_start"] = time.monotonic()
             await asyncio.sleep(0.03)
+            timestamps["b_end"] = time.monotonic()
             return y * 3
 
         # Two disconnected subgraphs - no edges between them
         graph = Graph([slow_a, slow_b])
         runner = AsyncRunner()
 
-        start = time.time()
         result = await runner.run(graph, {"x": 5, "y": 10})
-        elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
         assert result["a"] == 10
         assert result["b"] == 30
-        # Should be ~0.03s (concurrent), not ~0.06s (sequential)
-        assert elapsed < 0.05
+        assert timestamps["a_start"] < timestamps["b_end"]
+        assert timestamps["b_start"] < timestamps["a_end"]
 
     async def test_select_from_disconnected_subgraph(self):
         """select= works correctly with disconnected graphs."""

@@ -5,6 +5,7 @@ import pytest
 from hypergraph import Graph, node
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
 from hypergraph.runners import RunnerCapabilities
+from hypergraph.runners._shared.input_normalization import normalize_inputs
 from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_map_compatible,
@@ -121,6 +122,36 @@ class TestValidateInputs:
             validate_inputs(graph, {})
         assert len(exc_info.value.missing) == 2
         assert set(exc_info.value.missing) == {"a", "b"}
+
+
+class TestNormalizeInputs:
+    """Tests for values + kwargs input normalization."""
+
+    def test_values_only(self):
+        """values dict is returned unchanged when kwargs are empty."""
+        assert normalize_inputs({"x": 1}, {}) == {"x": 1}
+
+    def test_kwargs_only(self):
+        """kwargs shorthand works without values dict."""
+        assert normalize_inputs(None, {"x": 1}) == {"x": 1}
+
+    def test_values_and_kwargs_merge(self):
+        """values and kwargs merge when keys do not overlap."""
+        assert normalize_inputs({"x": 1}, {"y": 2}) == {"x": 1, "y": 2}
+
+    def test_values_and_kwargs_overlap_raises(self):
+        """Duplicate keys across values and kwargs raise ValueError."""
+        with pytest.raises(ValueError, match="both values and kwargs"):
+            normalize_inputs({"x": 1}, {"x": 2})
+
+    def test_reserved_option_names_raise(self):
+        """Reserved option names in kwargs raise ValueError."""
+        with pytest.raises(ValueError, match="reserved runner options"):
+            normalize_inputs(
+                {"x": 1},
+                {"select": "bad"},
+                reserved_option_names=frozenset({"select"}),
+            )
 
 
 class TestValidateRunnerCompatibility:

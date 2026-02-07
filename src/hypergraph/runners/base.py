@@ -38,22 +38,22 @@ class BaseRunner(ABC):
     def run(
         self,
         graph: "Graph",
-        values: dict[str, Any],
+        values: dict[str, Any] | None = None,
         *,
         select: list[str] | None = None,
         max_iterations: int | None = None,
         event_processors: list[EventProcessor] | None = None,
-        **kwargs: Any,
+        **input_values: Any,
     ) -> RunResult:
         """Execute a graph.
 
         Args:
             graph: The graph to execute
-            values: Input values
+            values: Optional input values dict
             select: Optional list of outputs to return (None = all)
             max_iterations: Max iterations for cyclic graphs (None = default)
             event_processors: Optional list of event processors to receive execution events
-            **kwargs: Runner-specific options
+            **input_values: Input values shorthand (merged with values)
 
         Returns:
             RunResult with output values and status
@@ -64,24 +64,24 @@ class BaseRunner(ABC):
     def map(
         self,
         graph: "Graph",
-        values: dict[str, Any],
+        values: dict[str, Any] | None = None,
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
         select: list[str] | None = None,
         event_processors: list[EventProcessor] | None = None,
-        **kwargs: Any,
+        **input_values: Any,
     ) -> list[RunResult]:
         """Execute a graph multiple times with different inputs.
 
         Args:
             graph: The graph to execute
-            values: Input values (some should be lists for map_over)
+            values: Optional input values dict (some should be lists for map_over)
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
             select: Optional list of outputs to return
             event_processors: Optional list of event processors to receive execution events
-            **kwargs: Runner-specific options
+            **input_values: Input values shorthand (merged with values)
 
         Returns:
             List of RunResult, one per iteration
