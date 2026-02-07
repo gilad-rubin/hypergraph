@@ -241,47 +241,33 @@ def _adapt_for_beautiful_mermaid(source: str) -> str:
         return f"[{label}]"
 
     s = re.sub(r'\["([^"]*?)"\]', _escape_inner_brackets, s)  # rectangle
-    s = s.replace("<br/>", " \u00b7 ")                         # line breaks
+    s = s.replace("<br/>", "\\n")                               # multi-line labels
     return s
-
-
-def _get_global_npm_root() -> str | None:
-    """Get the global npm root directory, or None if unavailable."""
-    try:
-        result = subprocess.run(
-            ["npm", "root", "-g"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return None
 
 
 def _render_ascii(source: str) -> str:
     """Render Mermaid source as Unicode box-drawing art via Node.js.
 
-    Uses ``renderMermaidAscii`` from the ``beautiful-mermaid`` npm package.
-    Searches both local and global node_modules.
+    Uses the bundled ``beautiful-mermaid`` browser JS loaded via ``vm``.
+    Falls back to the npm-installed package if the bundled file is unavailable.
     """
     adapted = _adapt_for_beautiful_mermaid(source)
+    js_path = Path(__file__).parent / "assets" / "beautiful-mermaid.browser.global.js"
     script = (
-        "const bm = require('beautiful-mermaid');"
-        "try { const r = bm.renderMermaidAscii(" + json.dumps(adapted) + ");"
-        "process.stdout.write(typeof r === 'string' ? r : '');"
-        "} catch(e) { process.stderr.write(e.message); process.exit(1); }"
+        "const vm=require('vm'),fs=require('fs');"
+        f"const code=fs.readFileSync({json.dumps(str(js_path))},'utf8');"
+        "const ctx={require,console,process,module:{exports:{}}};"
+        "vm.createContext(ctx);vm.runInContext(code,ctx);"
+        "const bm=ctx.beautifulMermaid;"
+        "try{const r=bm.renderMermaidAscii(" + json.dumps(adapted) + ");"
+        "process.stdout.write(typeof r==='string'?r:'');}"
+        "catch(e){process.stderr.write(e.message);process.exit(1);}"
     )
-    env = dict(os.environ)
-    global_root = _get_global_npm_root()
-    if global_root:
-        existing = env.get("NODE_PATH", "")
-        env["NODE_PATH"] = f"{global_root}:{existing}" if existing else global_root
 
     try:
         result = subprocess.run(
             ["node", "-e", script],
-            capture_output=True, text=True, timeout=30, env=env,
+            capture_output=True, text=True, timeout=30,
         )
     except FileNotFoundError:
         msg = (
@@ -294,12 +280,6 @@ def _render_ascii(source: str) -> str:
 
     if result.returncode != 0:
         error = result.stderr.strip() or "unknown error"
-        if "beautiful-mermaid" in error or "Cannot find" in error:
-            msg = (
-                "beautiful-mermaid npm package not found. "
-                "Install with: npm install -g beautiful-mermaid"
-            )
-            raise RuntimeError(msg)
         raise RuntimeError(f"ASCII rendering failed: {error}")
     return result.stdout
 
