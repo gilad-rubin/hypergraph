@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import html as html_module
 import re
 from typing import Any
 
@@ -80,10 +79,6 @@ _NODE_TYPE_TO_CLASS = {
     "END": "end",
 }
 
-# Mermaid.js CDN URL
-_MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
-
-
 # =============================================================================
 # MermaidDiagram (notebook-renderable result)
 # =============================================================================
@@ -92,7 +87,11 @@ _MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
 class MermaidDiagram:
     """A Mermaid diagram that renders in Jupyter notebooks.
 
-    - Displays as a rendered SVG in notebooks (via ``_repr_html_``)
+    Uses the native ``text/vnd.mermaid`` MIME type supported by JupyterLab 4.1+
+    and Notebook 7.1+. No external services or CDN required — all rendering
+    happens locally in the browser.
+
+    - Displays as a rendered diagram in notebooks
     - ``str()`` / ``print()`` returns raw Mermaid source
     - ``.source`` gives direct access to the Mermaid markup
 
@@ -121,43 +120,11 @@ class MermaidDiagram:
         """Delegate to source string."""
         return self.source.startswith(prefix)
 
-    def _repr_html_(self) -> str:
-        """Render as interactive Mermaid diagram in Jupyter/VS Code."""
-        escaped = html_module.escape(self.source, quote=True)
-
-        inner_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<script src="{_MERMAID_CDN}"></script>
-<style>
-  body {{ margin: 0; display: flex; justify-content: center; padding: 16px; }}
-  .mermaid {{ max-width: 100%; }}
-</style>
-</head>
-<body>
-<div class="mermaid">
-{self.source}
-</div>
-<script>mermaid.initialize({{startOnLoad: true, theme: "default", securityLevel: "loose"}});</script>
-</body>
-</html>"""
-
-        escaped_inner = html_module.escape(inner_html, quote=True)
-
-        return (
-            '<iframe srcdoc="' + escaped_inner + '" '
-            'frameborder="0" width="100%" height="400" '
-            'style="border: none; max-width: 100%; background: white; '
-            'border-radius: 8px;" '
-            'sandbox="allow-scripts">'
-            '</iframe>'
-        )
-
     def _repr_mimebundle_(self, **kwargs: Any) -> dict[str, str]:
-        """Support JupyterLab native Mermaid rendering if available."""
+        """Render using native Mermaid MIME type (JupyterLab 4.1+, Notebook 7.1+)."""
         return {
-            "text/plain": repr(self),
-            "text/html": self._repr_html_(),
+            "text/vnd.mermaid": self.source,
+            "text/plain": str(self),
         }
 
 

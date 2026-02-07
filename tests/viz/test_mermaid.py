@@ -443,15 +443,18 @@ class TestMermaidDiagram:
         assert "double" in diagram
         assert "nonexistent_xyz" not in diagram
 
-    def test_repr_html_returns_iframe(self):
-        """_repr_html_ returns an iframe with mermaid.js."""
+    def test_repr_mimebundle_uses_native_mermaid(self):
+        """_repr_mimebundle_ returns text/vnd.mermaid for local rendering."""
         graph = Graph(nodes=[double])
         diagram = graph.to_mermaid()
-        html = diagram._repr_html_()
+        bundle = diagram._repr_mimebundle_()
 
-        assert "iframe" in html
-        assert "mermaid" in html
-        assert "srcdoc" in html
+        assert "text/vnd.mermaid" in bundle
+        assert "flowchart" in bundle["text/vnd.mermaid"]
+        assert "text/plain" in bundle
+        # No CDN or external service references
+        assert "cdn" not in str(bundle).lower()
+        assert "http" not in str(bundle).lower()
 
     def test_repr_shows_summary(self):
         """repr() shows a summary of the diagram."""
