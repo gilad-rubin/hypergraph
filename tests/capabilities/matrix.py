@@ -104,6 +104,14 @@ class Caching(Enum):
     IN_MEMORY = auto()  # InMemoryCache on runner
 
 
+class OutputConflict(Enum):
+    """How duplicate output names are resolved (if at all)."""
+
+    NONE = auto()  # No duplicate outputs
+    MUTEX = auto()  # Duplicate outputs behind exclusive gate
+    ORDERED = auto()  # Duplicate outputs with emit/wait_for ordering
+
+
 # =============================================================================
 # Capability dataclass
 # =============================================================================
@@ -128,6 +136,7 @@ class Capability:
     renaming: Renaming
     binding: Binding
     caching: Caching
+    output_conflict: OutputConflict
 
     def is_valid(self) -> bool:
         """Check if this capability combination is valid."""
@@ -171,6 +180,8 @@ class Capability:
             parts.append("bound")
         if self.caching != Caching.NONE:
             parts.append("cached")
+        if self.output_conflict != OutputConflict.NONE:
+            parts.append(f"conflict_{self.output_conflict.name.lower()}")
         return "-".join(parts)
 
 
@@ -218,11 +229,21 @@ def _nesting_requires_graph_node(cap: Capability) -> bool:
     return True
 
 
+def _output_conflict_requires_topology(cap: Capability) -> bool:
+    """ORDERED requires CYCLIC; MUTEX requires BRANCHING or DIAMOND."""
+    if cap.output_conflict == OutputConflict.ORDERED:
+        return cap.topology == Topology.CYCLIC
+    if cap.output_conflict == OutputConflict.MUTEX:
+        return cap.topology in {Topology.BRANCHING, Topology.DIAMOND}
+    return True
+
+
 _CONSTRAINT_CHECKS = [
     _sync_runner_no_async_nodes,
     _concurrency_only_for_async,
     _graph_node_requires_nesting,
     _nesting_requires_graph_node,
+    _output_conflict_requires_topology,
 ]
 
 
@@ -271,6 +292,7 @@ def all_valid_combinations() -> Iterator[Capability]:
         renaming,
         binding,
         caching,
+        output_conflict,
     ) in itertools.product(
         Runner,
         _all_node_type_combinations(),
@@ -282,6 +304,7 @@ def all_valid_combinations() -> Iterator[Capability]:
         Renaming,
         Binding,
         Caching,
+        OutputConflict,
     ):
         cap = Capability(
             runner=runner,
@@ -294,6 +317,7 @@ def all_valid_combinations() -> Iterator[Capability]:
             renaming=renaming,
             binding=binding,
             caching=caching,
+            output_conflict=output_conflict,
         )
         if cap.is_valid():
             yield cap
@@ -324,6 +348,7 @@ def pairwise_combinations() -> Iterator[Capability]:
         list(Renaming),
         list(Binding),
         list(Caching),
+        list(OutputConflict),
     ]
 
     def is_valid_combo(row: list) -> bool:
@@ -354,6 +379,17 @@ def pairwise_combinations() -> Iterator[Capability]:
             if nesting == NestingDepth.FLAT and NodeType.GRAPH_NODE in node_types:
                 return False
 
+        # Check output_conflict/topology constraint
+        if len(row) > 10:
+            topology = row[2]
+            output_conflict = row[10]
+            if output_conflict == OutputConflict.ORDERED:
+                if topology != Topology.CYCLIC:
+                    return False
+            if output_conflict == OutputConflict.MUTEX:
+                if topology not in {Topology.BRANCHING, Topology.DIAMOND}:
+                    return False
+
         return True
 
     for combo in AllPairs(parameters, filter_func=is_valid_combo):
@@ -368,6 +404,7 @@ def pairwise_combinations() -> Iterator[Capability]:
             renaming=combo[7],
             binding=combo[8],
             caching=combo[9],
+            output_conflict=combo[10],
         )
         # Final validation (in case filter missed something)
         if cap.is_valid():

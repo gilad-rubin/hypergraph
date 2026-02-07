@@ -179,6 +179,7 @@ caps.supports_cycles       # True
 caps.supports_async_nodes  # False
 caps.supports_streaming    # False
 caps.returns_coroutine     # False
+caps.supports_interrupts   # False
 ```
 
 ---
@@ -355,6 +356,7 @@ caps.supports_cycles       # True
 caps.supports_async_nodes  # True
 caps.supports_streaming    # False (Phase 2)
 caps.returns_coroutine     # True
+caps.supports_interrupts   # True
 ```
 
 ---
@@ -386,10 +388,18 @@ else:
 @dataclass
 class RunResult:
     values: dict[str, Any]      # Output values
-    status: RunStatus           # COMPLETED or FAILED
+    status: RunStatus           # COMPLETED, FAILED, or PAUSED
     run_id: str                 # Unique identifier (auto-generated)
     workflow_id: str | None     # Optional workflow tracking
     error: BaseException | None # Exception if FAILED
+    pause: PauseInfo | None     # Pause info if PAUSED (InterruptNode)
+```
+
+### Convenience Properties
+
+```python
+result.paused     # True if status == PAUSED
+result.completed  # True if status == COMPLETED
 ```
 
 ### Dict-like Access
@@ -433,6 +443,7 @@ from hypergraph import RunStatus
 class RunStatus(Enum):
     COMPLETED = "completed"  # Success
     FAILED = "failed"        # Error occurred
+    PAUSED = "paused"        # Waiting for human input (InterruptNode)
 ```
 
 **Usage:**
@@ -443,6 +454,8 @@ result = runner.run(graph, values)
 match result.status:
     case RunStatus.COMPLETED:
         return result["output"]
+    case RunStatus.PAUSED:
+        print(result.pause.value)  # Value from InterruptNode
     case RunStatus.FAILED:
         raise result.error
 ```

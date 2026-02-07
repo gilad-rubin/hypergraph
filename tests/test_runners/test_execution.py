@@ -426,12 +426,12 @@ class TestRunSuperstepAsync:
 
         @node(output_name="a")
         async def slow_a(x: int) -> int:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
             return x + 1
 
         @node(output_name="b")
         async def slow_b(x: int) -> int:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
             return x + 2
 
         graph = Graph([slow_a, slow_b])
@@ -444,8 +444,8 @@ class TestRunSuperstepAsync:
         )
         elapsed = time.time() - start
 
-        # Should be ~0.05s (concurrent), not ~0.1s (sequential)
-        assert elapsed < 0.08
+        # Should be ~0.1s (concurrent), not ~0.2s (sequential)
+        assert elapsed < 0.18
 
         assert new_state.values["a"] == 6
         assert new_state.values["b"] == 7

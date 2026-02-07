@@ -7,6 +7,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
+from hypergraph.exceptions import ExecutionError
 from hypergraph.runners._shared.helpers import filter_outputs, generate_map_inputs
 from hypergraph.runners._shared.input_normalization import (
     ASYNC_MAP_RESERVED_OPTION_NAMES,
@@ -194,11 +195,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 pause=pause.pause_info,
             )
         except Exception as e:
+            error = e
+            partial_state = getattr(e, "_partial_state", None)
+            if isinstance(e, ExecutionError):
+                error = e.__cause__ or e
+                partial_state = e.partial_state
+
             await self._emit_run_end_async(
                 dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
-                error=e,
+                error=error,
             )
-            partial_state = getattr(e, "_partial_state", None)
             partial_values = (
                 filter_outputs(partial_state, graph, select)
                 if partial_state is not None
@@ -208,7 +214,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
-                error=e,
+                error=error,
             )
         finally:
             if _parent_span_id is None and dispatcher.active:

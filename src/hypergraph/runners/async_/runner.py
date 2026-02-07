@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import InfiniteLoopError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -123,8 +123,7 @@ class AsyncRunner(AsyncRunnerTemplate):
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
-        On failure, attaches partial state to the exception as ``_partial_state``
-        so the caller can extract values accumulated before the error.
+        On failure, raises ExecutionError wrapping the cause and partial state.
         """
         state = initialize_state(graph, values)
 
@@ -144,32 +143,36 @@ class AsyncRunner(AsyncRunnerTemplate):
                 if not ready_nodes:
                     break  # No more nodes to execute
 
-                # Execute all ready nodes concurrently
-                # Concurrency controlled by shared semaphore in ContextVar
-                state = await run_superstep_async(
-                    graph,
-                    state,
-                    ready_nodes,
-                    values,
-                    self._make_execute_node(event_processors),
-                    max_concurrency,
-                    cache=self._cache,
-                    dispatcher=dispatcher,
-                    run_id=run_id,
-                    run_span_id=run_span_id,
-                )
+                try:
+                    # Execute all ready nodes concurrently
+                    # Concurrency controlled by shared semaphore in ContextVar
+                    state = await run_superstep_async(
+                        graph,
+                        state,
+                        ready_nodes,
+                        values,
+                        self._make_execute_node(event_processors),
+                        max_concurrency,
+                        cache=self._cache,
+                        dispatcher=dispatcher,
+                        run_id=run_id,
+                        run_span_id=run_span_id,
+                    )
+                except ExecutionError:
+                    raise
+                except Exception as e:
+                    raise ExecutionError(e, state) from e
 
             else:
                 # Loop completed without break = hit max_iterations
                 if get_ready_nodes(graph, state):
-                    raise InfiniteLoopError(max_iterations)
+                    raise ExecutionError(
+                        InfiniteLoopError(max_iterations),
+                        state,
+                    )
 
         except PauseExecution as pause:
             pause._partial_state = state  # type: ignore[attr-defined]
-            raise
-        except Exception as e:
-            if not hasattr(e, "_partial_state"):
-                e._partial_state = state  # type: ignore[attr-defined]
             raise
         finally:
             # Reset concurrency limiter only if we set it

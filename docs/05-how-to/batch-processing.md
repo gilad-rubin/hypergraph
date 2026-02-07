@@ -146,7 +146,7 @@ def summarize(results: list[dict]) -> dict:
 
 batch_pipeline = Graph([
     load_items,
-    item_processor.as_node(map_over="item"),  # Fan out
+    item_processor.as_node().map_over("item"),  # Fan out
     summarize,
 ])
 ```

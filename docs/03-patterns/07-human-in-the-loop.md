@@ -68,6 +68,65 @@ When paused, the `RunResult` has:
 | `result.pause.output_param` | Output parameter name |
 | `result.pause.response_key` | Key to use in the values dict when resuming |
 
+## Multi-Turn Chat with Human Input
+
+Combine InterruptNode with agentic loops for a multi-turn conversation where the user provides input each turn.
+
+```python
+from hypergraph import Graph, node, route, END, AsyncRunner, InterruptNode
+
+# Pause and wait for user input
+ask_user = InterruptNode(
+    name="ask_user",
+    input_param="messages",
+    output_param="user_input",
+)
+
+@node(output_name="messages")
+def add_user_message(messages: list, user_input: str) -> list:
+    return messages + [{"role": "user", "content": user_input}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)  # your LLM client
+
+@node(output_name="messages", emit="turn_done")
+def accumulate(messages: list, response: str) -> list:
+    return messages + [{"role": "assistant", "content": response}]
+
+@route(targets=["ask_user", END], wait_for="turn_done")
+def should_continue(messages: list) -> str:
+    if len(messages) >= 20:
+        return END
+    return "ask_user"
+
+graph = Graph([ask_user, add_user_message, generate, accumulate, should_continue])
+
+# Pre-fill messages so the first step (ask_user) can run immediately
+chat = graph.bind(messages=[])
+
+runner = AsyncRunner()
+
+# Turn 1: graph pauses at ask_user (shows empty messages)
+result = await runner.run(chat, {})
+assert result.paused
+assert result.pause.node_name == "ask_user"
+
+# Resume with user's first message
+result = await runner.run(chat, {"user_input": "Hello!"})
+# Pauses again at ask_user for the next turn
+assert result.paused
+
+# Resume with second message
+result = await runner.run(chat, {"user_input": "Tell me more"})
+```
+
+Key patterns:
+- **`.bind(messages=[])`** pre-fills the seed input so `.run({})` works with no values
+- **InterruptNode as first step**: the graph pauses immediately, asking the user for input
+- **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
+- Each resume replays the graph, providing all previous responses
+
 ## Auto-Resolve with Handlers
 
 For testing or automation, attach a handler that resolves the interrupt without human input.
@@ -224,41 +283,93 @@ runner.run(graph_with_interrupt, {"query": "hello"})
 
 Similarly, `AsyncRunner.map()` does not support interrupts — a graph with interrupts cannot be used with `map()`.
 
+## The `@interrupt` Decorator
+
+The `@interrupt` decorator is the preferred way to create an InterruptNode. Like `@node`, inputs come from the function signature, outputs from `output_name`, and types from annotations.
+
+```python
+from hypergraph import interrupt
+
+@interrupt(output_name="decision")
+def approval(draft: str) -> str:
+    return "auto-approved"      # returns value -> auto-resolve
+    # return None               # returns None -> pause
+
+# Inputs from signature, outputs from output_name
+assert approval.inputs == ("draft",)
+assert approval.outputs == ("decision",)
+
+# Test the handler directly
+assert approval("my draft") == "auto-approved"
+```
+
+### Conditional Pause
+
+Return `None` to pause, return a value to auto-resolve:
+
+```python
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    if "LGTM" in draft:
+        return "auto-approved"
+    return None  # pause for human review
+```
+
+### With emit/wait_for
+
+InterruptNode supports ordering signals like FunctionNode:
+
+```python
+@interrupt(output_name="decision", emit="reviewed")
+def approval(draft: str) -> str:
+    ...
+
+@node(output_name="result", wait_for="reviewed")
+def finalize(decision: str) -> str:
+    return f"Final: {decision}"
+```
+
+### Decorator Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `output_name` | `str \| tuple[str, ...]` | Name(s) for output value(s) |
+| `rename_inputs` | `dict[str, str] \| None` | Mapping to rename inputs {old: new} |
+| `emit` | `str \| tuple[str, ...] \| None` | Ordering-only output name(s) |
+| `wait_for` | `str \| tuple[str, ...] \| None` | Ordering-only input name(s) |
+| `hide` | `bool` | Whether to hide from visualization |
+
 ## API Reference
 
 ### InterruptNode
 
+InterruptNode can be created two ways:
+
+**With a source function** (like FunctionNode):
+
 ```python
-class InterruptNode(HyperNode):
-    def __init__(
-        self,
-        name: str,
-        *,
-        input_param: str,
-        output_param: str,
-        response_type: type | None = None,
-        handler: Callable[..., Any] | None = None,
-    ) -> None: ...
+InterruptNode(my_func, output_name="decision")
+InterruptNode(my_func, name="review", output_name="decision",
+             emit="done", wait_for="ready")
 ```
 
-**Args:**
+**Legacy constructor** (handler-less pause points):
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `str` | Node name |
-| `input_param` | `str` | Name of the input parameter (value surfaced to caller) |
-| `output_param` | `str` | Name of the output parameter (where response goes) |
-| `response_type` | `type \| None` | Optional type annotation for the response |
-| `handler` | `Callable \| None` | Optional callable to auto-resolve (sync or async) |
+```python
+InterruptNode(name="approval", input_param="draft", output_param="decision")
+```
 
 **Properties:**
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `input_param` | `str` | The input parameter name |
-| `output_param` | `str` | The output parameter name |
+| `input_param` | `str` | The first input parameter name |
+| `output_param` | `str` | The first output parameter name |
 | `cache` | `bool` | Always `False` |
-| `definition_hash` | `str` | SHA256 hash (includes response_type, excludes handler) |
+| `hide` | `bool` | Whether hidden from visualization |
+| `wait_for` | `tuple[str, ...]` | Ordering-only inputs |
+| `data_outputs` | `tuple[str, ...]` | Outputs excluding emit-only |
+| `definition_hash` | `str` | SHA256 hash of function source or metadata |
 
 **Methods:**
 
@@ -271,7 +382,8 @@ class InterruptNode(HyperNode):
 
 **Raises:**
 
-- `ValueError` if `input_param` or `output_param` is not a valid Python identifier or is a reserved keyword.
+- `ValueError` if parameter names are not valid Python identifiers or are reserved keywords.
+- `ValueError` if emit names overlap with output names, or wait_for names overlap with input parameters.
 
 ### PauseInfo
 

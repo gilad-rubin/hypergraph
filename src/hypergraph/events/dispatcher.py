@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TYPE_CHECKING
 
 from hypergraph.events.processor import AsyncEventProcessor, EventProcessor
@@ -16,11 +17,18 @@ logger = logging.getLogger(__name__)
 class EventDispatcher:
     """Manages a list of event processors and dispatches events to them.
 
-    All dispatch is best-effort: a failing processor never breaks execution.
+    By default, dispatch is best-effort: a failing processor never breaks
+    execution. With ``strict=True``, exceptions propagate immediately.
     """
 
-    def __init__(self, processors: list[EventProcessor] | None = None) -> None:
+    def __init__(
+        self,
+        processors: list[EventProcessor] | None = None,
+        *,
+        strict: bool = False,
+    ) -> None:
         self._processors: list[EventProcessor] = list(processors) if processors else []
+        self._strict = strict
 
     @property
     def active(self) -> bool:
@@ -33,6 +41,8 @@ class EventDispatcher:
             try:
                 processor.on_event(event)
             except Exception:
+                if self._strict:
+                    raise
                 logger.warning(
                     "EventProcessor %s failed on %s",
                     processor,
@@ -49,6 +59,8 @@ class EventDispatcher:
                 else:
                     processor.on_event(event)
             except Exception:
+                if self._strict:
+                    raise
                 logger.warning(
                     "EventProcessor %s failed on %s",
                     processor,
@@ -57,19 +69,26 @@ class EventDispatcher:
                 )
 
     def shutdown(self) -> None:
-        """Shut down all processors. Best-effort."""
+        """Shut down all processors. Best-effort unless strict."""
+        first_error = None
         for processor in self._processors:
             try:
                 processor.shutdown()
             except Exception:
-                logger.warning(
-                    "EventProcessor %s failed during shutdown",
-                    processor,
-                    exc_info=True,
-                )
+                if self._strict:
+                    if first_error is None:
+                        first_error = sys.exc_info()
+                else:
+                    logger.warning(
+                        "EventProcessor %s failed during shutdown",
+                        processor,
+                        exc_info=True,
+                    )
+        if first_error is not None:
+            raise first_error[1].with_traceback(first_error[2])
 
     async def shutdown_async(self) -> None:
-        """Shut down all processors, using async when available. Best-effort."""
+        """Shut down all processors, using async when available. Best-effort unless strict."""
         for processor in self._processors:
             try:
                 if isinstance(processor, AsyncEventProcessor):
@@ -77,6 +96,8 @@ class EventDispatcher:
                 else:
                     processor.shutdown()
             except Exception:
+                if self._strict:
+                    raise
                 logger.warning(
                     "EventProcessor %s failed during shutdown",
                     processor,

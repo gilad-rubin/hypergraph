@@ -10,10 +10,10 @@ How hypergraph compares to other Python workflow frameworks.
 
 | Feature | hypergraph | LangGraph | Hamilton | Pipefunc | Pydantic-Graph |
 |---------|:---:|:---:|:---:|:---:|:---:|
-| DAG Pipelines | ✓ | Awkward | ✓ | ✓ | Awkward |
-| Agentic Loops | ✓ | ✓ | ✗ | ✗ | ✓ |
-| Hierarchical | First-class | Possible | Possible | Possible | Possible |
-| Human-in-the-Loop | ✓ | ✓ | ✗ | ✗ | ✓ |
+| DAG Pipelines | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Agentic Loops | ✓ | ✓ | — | — | ✓ |
+| Hierarchical | First-class | ✓ | ✓ | ✓ | ✓ |
+| Human-in-the-Loop | ✓ | ✓ | — | — | ✓ |
 
 ## The Design Space
 
@@ -209,7 +209,7 @@ compiled = graph.compile()
 
 ### Hamilton / Pipefunc
 
-**Not possible.** These frameworks don't support cycles.
+Hamilton and pipefunc are DAG frameworks — cycles are outside their scope. For iterative patterns, you'd handle the loop externally (e.g., a `while` loop calling the pipeline repeatedly).
 
 ## Key Differences
 
@@ -262,15 +262,17 @@ Can you test functions without the framework?
 
 ### Choose Hamilton when
 
-- Pure DAG pipelines are sufficient
-- You're doing data engineering / feature engineering
-- You want a proven framework with years of production use
+- You're doing data engineering, feature engineering, or ML pipelines
+- Lineage tracking and observability matter (Hamilton UI)
+- You want a mature framework with years of production use at scale
+- You need portability across execution environments (notebooks, Airflow, Spark)
 
 ### Choose Pipefunc when
 
-- Pure DAG pipelines are sufficient
-- You want scientific computing features (parameter sweeps)
-- You need parallel execution across parameter spaces
+- You're doing scientific computing, simulations, or parameter sweeps
+- You need HPC/SLURM integration for cluster execution
+- Low orchestration overhead matters for compute-intensive workloads
+- You want n-dimensional map operations with adaptive scheduling
 
 ### Choose Pydantic-Graph when
 
@@ -289,7 +291,7 @@ Hypergraph is younger than these alternatives. Tradeoffs to consider:
 | Ecosystem | Smaller community |
 | Integrations | Fewer pre-built connectors |
 | Routing | ✓ (`@route`, `END`) |
-| Checkpointing | Coming soon |
+| Caching | ✓ (in-memory and disk) |
 
 If you need a battle-tested solution today, LangGraph or Hamilton may be safer choices. If you value the unified model and cleaner API, hypergraph is worth evaluating.
 

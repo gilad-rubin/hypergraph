@@ -3,14 +3,63 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 from abc import ABC
 from typing import Any, TypeVar
 
 from hypergraph.nodes._rename import RenameEntry, RenameError, get_next_batch_id
 
+# Sentinel value auto-produced for emit outputs when a node runs.
+_EMIT_SENTINEL = object()
+
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _T = TypeVar("_T", bound="HyperNode")
+
+
+def _validate_emit_wait_for(
+    node_name: str,
+    emit: tuple[str, ...],
+    wait_for: tuple[str, ...],
+    data_outputs: tuple[str, ...],
+    inputs: tuple[str, ...],
+) -> None:
+    """Validate emit and wait_for don't overlap with outputs or inputs.
+
+    Raises:
+        ValueError: If emit names overlap with data output names
+        ValueError: If wait_for names overlap with function parameter names
+        ValueError: If emit and wait_for share names
+    """
+    emit_set = set(emit)
+    data_set = set(data_outputs)
+    input_set = set(inputs)
+
+    overlap = emit_set & data_set
+    if overlap:
+        raise ValueError(
+            f"Node '{node_name}': emit names overlap with output names: {sorted(overlap)}\n\n"
+            f"  -> emit and output_name must be disjoint\n\n"
+            f"How to fix: Use different names for emit and output_name"
+        )
+
+    overlap = set(wait_for) & input_set
+    if overlap:
+        raise ValueError(
+            f"Node '{node_name}': wait_for names overlap with input parameters: {sorted(overlap)}\n\n"
+            f"  -> wait_for names must not be function parameters\n"
+            f"  -> wait_for is an ordering dependency, not a data input\n\n"
+            f"How to fix: Use different names, or if ordering is implicit via\n"
+            f"  data edges, remove the parameter from wait_for"
+        )
+
+    overlap = emit_set & set(wait_for)
+    if overlap:
+        raise ValueError(
+            f"Node '{node_name}': emit and wait_for share names: {sorted(overlap)}\n\n"
+            f"  -> A node cannot both emit and wait for the same signal\n\n"
+            f"How to fix: Use different names for emit and wait_for"
+        )
 
 
 class HyperNode(ABC):
@@ -96,6 +145,22 @@ class HyperNode(ABC):
         Default: False. Override in subclasses that support hiding.
         """
         return False
+
+    @property
+    def wait_for(self) -> tuple[str, ...]:
+        """Ordering-only inputs: node won't run until these values exist and are fresh.
+
+        Default: empty tuple. Override in subclasses that support wait_for.
+        """
+        return ()
+
+    @property
+    def data_outputs(self) -> tuple[str, ...]:
+        """Outputs that carry data (excludes emit-only outputs).
+
+        Default: same as outputs. Override in subclasses that support emit.
+        """
+        return self.outputs
 
     def has_default_for(self, param: str) -> bool:
         """Does this node have a fallback value for this input?
@@ -229,6 +294,8 @@ class HyperNode(ABC):
             "label": self.name,
             "inputs": self.inputs,
             "outputs": self.outputs,
+            "data_outputs": self.data_outputs,
+            "wait_for": self.wait_for,
             "input_types": {p: self.get_input_type(p) for p in self.inputs},
             "output_types": {o: self.get_output_type(o) for o in self.outputs},
             "has_defaults": {p: self.has_default_for(p) for p in self.inputs},
@@ -305,9 +372,11 @@ class HyperNode(ABC):
 
         Only _rename_history needs deep copy (mutable list).
         All other attributes are immutable (str, tuple, bool).
+        Cached properties are cleared so they recompute with updated state.
         """
         clone = copy.copy(self)
         clone._rename_history = list(self._rename_history)
+        _invalidate_cached_properties(clone)
         return clone
 
     def _with_renamed(self: _T, attr: str, mapping: dict[str, str]) -> _T:
@@ -386,6 +455,23 @@ class HyperNode(ABC):
                 current_name = entry.new
 
         return chain
+
+
+def _invalidate_cached_properties(obj: object) -> None:
+    """Clear any cached_property values from obj.__dict__.
+
+    functools.cached_property stores results in the instance __dict__.
+    After a shallow copy, these stale values must be cleared so the
+    property recomputes with the clone's updated state.
+    """
+    cls = type(obj)
+    stale = [
+        key
+        for key in list(obj.__dict__)
+        if isinstance(getattr(cls, key, None), functools.cached_property)
+    ]
+    for key in stale:
+        del obj.__dict__[key]
 
 
 def _check_rename_duplicates(values: tuple[str, ...], attr: str) -> None:

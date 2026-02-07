@@ -347,7 +347,6 @@
           var x = last.x;
           for (var i = pts.length - 2; i >= 0; i -= 1) {
             if (Math.abs(pts[i].x - x) > eps) return i + 1;
-            if (i === 0) return 1;
           }
           return 0;
         }
@@ -355,7 +354,6 @@
           var y = last.y;
           for (var j = pts.length - 2; j >= 0; j -= 1) {
             if (Math.abs(pts[j].y - y) > eps) return j + 1;
-            if (j === 0) return 1;
           }
           return 0;
         }

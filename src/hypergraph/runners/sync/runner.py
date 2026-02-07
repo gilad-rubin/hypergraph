@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
-from hypergraph.exceptions import InfiniteLoopError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -103,18 +103,17 @@ class SyncRunner(SyncRunnerTemplate):
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
-        On failure, attaches partial state to the exception as ``_partial_state``
-        so the caller can extract values accumulated before the error.
+        On failure, raises ExecutionError wrapping the cause and partial state.
         """
         state = initialize_state(graph, values)
 
-        try:
-            for _ in range(max_iterations):
-                ready_nodes = get_ready_nodes(graph, state)
+        for _ in range(max_iterations):
+            ready_nodes = get_ready_nodes(graph, state)
 
-                if not ready_nodes:
-                    break  # No more nodes to execute
+            if not ready_nodes:
+                break  # No more nodes to execute
 
+            try:
                 # Execute all ready nodes
                 state = run_superstep_sync(
                     graph,
@@ -127,15 +126,18 @@ class SyncRunner(SyncRunnerTemplate):
                     run_id=run_id,
                     run_span_id=run_span_id,
                 )
+            except ExecutionError:
+                raise
+            except Exception as e:
+                raise ExecutionError(e, state) from e
 
-            else:
-                # Loop completed without break = hit max_iterations
-                if get_ready_nodes(graph, state):
-                    raise InfiniteLoopError(max_iterations)
-        except Exception as e:
-            if not hasattr(e, "_partial_state"):
-                e._partial_state = state  # type: ignore[attr-defined]
-            raise
+        else:
+            # Loop completed without break = hit max_iterations
+            if get_ready_nodes(graph, state):
+                raise ExecutionError(
+                    InfiniteLoopError(max_iterations),
+                    state,
+                )
 
         return state
 

@@ -58,7 +58,7 @@ print(result["result"])   # 20
 from hypergraph import Graph, node, SyncRunner
 
 @node(output_name="embedding")
-def embed(query: str) -> list[float]:
+def embed(text: str) -> list[float]:
     # Your embedding model here
     return [0.1, 0.2, 0.3]
 

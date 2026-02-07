@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.events.processor import TypedEventProcessor
+from hypergraph.events.types import RunStatus
 
 if TYPE_CHECKING:
     from hypergraph.events.types import (
@@ -252,7 +253,7 @@ class RichProgressProcessor(TypedEventProcessor):
                 self._progress.advance(map_info.rich_task_id, 1)
 
                 # Track failures and update map bar description
-                if event.status == "failed":
+                if event.status == RunStatus.FAILED:
                     map_info.failures += 1
                     base_desc = self._make_description(
                         f"{event.graph_name or 'Map'} Progress",
@@ -266,7 +267,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
         # If this is a root run (no parent), show completion
         if span_info.parent_span_id is None:
-            if event.status == "completed":
+            if event.status == RunStatus.COMPLETED:
                 self._progress.console.print(
                     f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]"
                 )
