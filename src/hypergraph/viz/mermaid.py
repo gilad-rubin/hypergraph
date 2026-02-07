@@ -149,7 +149,18 @@ class MermaidDiagram:
 <script>
 (async () => {{
   try {{
-    const src = {_js_string_literal(self.source)};
+    let src = {_js_string_literal(self.source)};
+    // Adapt standard Mermaid syntax for beautiful-mermaid's parser:
+    src = src
+      .replace(/\\[\\["([^"]*?)"\\]\\]/g, '[[$1]]')
+      .replace(/\\(\\["([^"]*?)"\\]\\)/g, '([$1])')
+      .replace(/\\{{"([^"]*?)"\\}}/g, '{{$1}}')
+      .replace(/\\[\\/\\"([^"]*?)"\\/\\]/g, '[$1]')
+      .replace(/\\["([^"]*?)"\\]/g, (_, label) => {{
+        const clean = label.replace(/\\[/g, '\u27e8').replace(/\\]/g, '\u27e9');
+        return '[' + clean + ']';
+      }})
+      .replace(/<br\\/>/g, ' \u00b7 ');
     let svg = await beautifulMermaid.renderMermaid(src, {{
       font: 'system-ui',
       fg: '#1a1a1a',
