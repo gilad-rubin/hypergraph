@@ -142,9 +142,9 @@ def _sanitize_id(node_id: str) -> str:
     """
     safe = node_id.replace("/", "__")
     safe = _UNSAFE_ID_RE.sub("_", safe)
-    if safe.lower() in _RESERVED_WORDS or safe[0:1].isdigit():
+    if safe and (safe.lower() in _RESERVED_WORDS or safe[0:1].isdigit()):
         safe = f"n_{safe}"
-    return safe
+    return safe or "n_empty"
 
 
 # =============================================================================
@@ -334,7 +334,10 @@ def _render_separate_edges(
     Mirrors add_separate_output_edges() from renderer/edges.py.
     """
     lines: list[str] = []
-    seen_edges: set[tuple[str, str]] = set()
+    output_to_producer = build_output_to_producer_map(
+        flat_graph, expansion_state, use_deepest=True,
+    )
+    seen_edges: set[tuple[str, ...]] = set()
 
     # Function → DATA edges
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -363,7 +366,14 @@ def _render_separate_edges(
             for value_name in (value_names or [""]):
                 if not value_name:
                     continue
-                data_id = f"data_{source}_{value_name}"
+                # Resolve source to internal producer for expanded graphs
+                actual_source = _resolve_data_source(
+                    source, value_name, flat_graph, expansion_state,
+                    output_to_producer,
+                )
+                if actual_source is None:
+                    continue
+                data_id = f"data_{actual_source}_{value_name}"
                 edge_key = (_sanitize_id(data_id), _sanitize_id(target))
                 if edge_key not in seen_edges:
                     seen_edges.add(edge_key)
@@ -371,7 +381,7 @@ def _render_separate_edges(
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
-            edge_key = (_sanitize_id(source), _sanitize_id(target))
+            edge_key = (_sanitize_id(source), _sanitize_id(target), f"ord_{value_name}")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
                 lines.append(_format_ordering_edge(source, target, value_name))
@@ -383,7 +393,7 @@ def _render_separate_edges(
             if actual_target is None:
                 continue
             label = _get_control_label(source, target, flat_graph)
-            edge_key = (_sanitize_id(source), _sanitize_id(actual_target))
+            edge_key = (_sanitize_id(source), _sanitize_id(actual_target), label or "")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
                 lines.append(_format_edge(source, actual_target, label))
@@ -568,7 +578,7 @@ def _build_style_section(
     ordering_edge_indices: list[int],
 ) -> list[str]:
     """Build classDef, class assignments, and linkStyle lines."""
-    effective = dict(DEFAULT_COLORS)
+    effective = {cls: props.copy() for cls, props in DEFAULT_COLORS.items()}
     if colors:
         for key, val in colors.items():
             effective.setdefault(key, {}).update(val)
@@ -737,7 +747,7 @@ def to_mermaid(
         else:
             input_node_id = f"input_group_{'_'.join(params)}"
 
-        targets = _get_input_targets(params, flat_graph, param_to_consumers)
+        targets = _get_input_targets(params, flat_graph, param_to_consumers, expansion_state)
         for tgt in targets:
             lines.append(_format_edge(input_node_id, tgt, None))
 
@@ -778,40 +788,31 @@ def _get_param_type(param: str, flat_graph: nx.DiGraph) -> type | None:
     return None
 
 
-def _find_gated_targets(flat_graph: nx.DiGraph) -> set[str]:
-    """Find nodes that are control-edge targets of gate nodes.
+def _build_gated_target_to_gate(flat_graph: nx.DiGraph) -> dict[str, str]:
+    """Map each gated target to the gate node that controls it.
 
-    These nodes are only reachable via a gate's routing decision,
-    so input edges directly to them are redundant.
+    Returns {target_id: gate_id} for all control edges.
     """
-    gated: set[str] = set()
-    for _, target, edge_data in flat_graph.edges(data=True):
+    mapping: dict[str, str] = {}
+    for source, target, edge_data in flat_graph.edges(data=True):
         if edge_data.get("edge_type") == "control":
-            gated.add(target)
-    return gated
-
-
-def _find_gate_inputs(flat_graph: nx.DiGraph) -> set[str]:
-    """Find input parameter names consumed by gate (BRANCH) nodes."""
-    gate_params: set[str] = set()
-    for _, attrs in flat_graph.nodes(data=True):
-        if attrs.get("node_type") == "BRANCH":
-            gate_params.update(attrs.get("inputs", ()))
-    return gate_params
+            mapping[target] = source
+    return mapping
 
 
 def _get_input_targets(
     params: list[str],
     flat_graph: nx.DiGraph,
     param_to_consumers: dict[str, list[str]],
+    expansion_state: dict[str, bool],
 ) -> list[str]:
     """Get unique target nodes for input parameters.
 
     Skips redundant edges to gated targets — nodes only reachable via
-    a gate's control edge when the gate itself consumes the same input.
+    a gate's control edge when that specific gate also consumes the param.
+    Falls back to the collapsed container when consumers are hidden.
     """
-    gated_targets = _find_gated_targets(flat_graph)
-    gate_inputs = _find_gate_inputs(flat_graph)
+    gated_target_to_gate = _build_gated_target_to_gate(flat_graph)
 
     targets: list[str] = []
     seen: set[str] = set()
@@ -819,8 +820,21 @@ def _get_input_targets(
         for target in param_to_consumers.get(param, []):
             if target in seen:
                 continue
-            # Skip if target is gated AND a gate consumes this same param
-            if target in gated_targets and param in gate_inputs:
+            # Skip only if the specific gate controlling this target
+            # also consumes this same param
+            gate = gated_target_to_gate.get(target)
+            if gate is not None:
+                gate_inputs = set(flat_graph.nodes[gate].get("inputs", ()))
+                if param in gate_inputs:
+                    continue
+            # If consumer is hidden (inside collapsed container), target the container
+            if not is_node_visible(target, flat_graph, expansion_state):
+                parent = flat_graph.nodes[target].get("parent")
+                if parent and not expansion_state.get(parent, False):
+                    target = parent
+                else:
+                    continue
+            if target in seen:
                 continue
             seen.add(target)
             targets.append(target)
