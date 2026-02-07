@@ -201,7 +201,8 @@ class TestNodeShapes:
         graph = Graph(nodes=[double])
         mermaid = graph.to_mermaid()
 
-        assert 'double["double<br/>doubled"]' in mermaid
+        assert 'double["double<br/>' in mermaid
+        assert "doubled" in mermaid
 
     def test_graph_collapsed_shape(self):
         """Collapsed GraphNode uses subroutine (double-border) syntax."""
