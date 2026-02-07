@@ -345,7 +345,7 @@ def _build_label(
         else:
             type_parts.append(out)
 
-    separator = "\u2500" * max(len(label), max(len(p) for p in type_parts))
+    separator = "-" * max(len(label), max(len(p) for p in type_parts))
     return label + "<br/>" + separator + "<br/>" + "<br/>".join(type_parts)
 
 
