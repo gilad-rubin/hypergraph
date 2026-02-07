@@ -99,9 +99,12 @@ class TestBasicMermaid:
         mermaid = graph.to_mermaid()
 
         assert mermaid.startswith("flowchart TD")
-        assert 'double["double"]' in mermaid
-        assert 'add_one["add_one"]' in mermaid
-        assert "-->|doubled|" in mermaid
+        # Output names shown inside the node label (below the name)
+        assert "double" in mermaid
+        assert "doubled" in mermaid
+        assert "add_one" in mermaid
+        # Data edges are unlabeled (outputs shown in node, not on edge)
+        assert "-->|doubled|" not in mermaid
 
     def test_direction_parameter(self):
         """Direction parameter changes flowchart header."""
@@ -194,11 +197,11 @@ class TestNodeShapes:
     """Tests for correct Mermaid shape syntax."""
 
     def test_function_shape(self):
-        """FUNCTION nodes use rectangle syntax."""
+        """FUNCTION nodes use rectangle syntax with output below name."""
         graph = Graph(nodes=[double])
         mermaid = graph.to_mermaid()
 
-        assert 'double["double"]' in mermaid
+        assert 'double["double<br/>doubled"]' in mermaid
 
     def test_graph_collapsed_shape(self):
         """Collapsed GraphNode uses subroutine (double-border) syntax."""
@@ -206,7 +209,8 @@ class TestNodeShapes:
         graph = Graph(nodes=[inner.as_node(), add_one])
         mermaid = graph.to_mermaid(depth=0)
 
-        assert 'pipeline[["pipeline"]]' in mermaid
+        assert 'pipeline[["pipeline' in mermaid
+        assert '"]]' in mermaid
 
     def test_branch_hexagon_shape(self):
         """Branch nodes use hexagon syntax."""
@@ -231,12 +235,13 @@ class TestNodeShapes:
 class TestEdgeTypes:
     """Tests for different edge type rendering."""
 
-    def test_data_edge_label(self):
-        """Data edges show the output name as label."""
+    def test_data_edge_unlabeled(self):
+        """Data edges are unlabeled (output names shown in node instead)."""
         graph = Graph(nodes=[double, add_one])
         mermaid = graph.to_mermaid()
 
-        assert "-->|doubled|" in mermaid
+        assert "-->|doubled|" not in mermaid
+        assert "double --> add_one" in mermaid
 
     def test_control_edge_true_false(self):
         """IfElse control edges show True/False labels."""
@@ -276,7 +281,7 @@ class TestSubgraphs:
         graph = Graph(nodes=[inner.as_node(), add_one])
         mermaid = graph.to_mermaid(depth=0)
 
-        assert 'pipeline[["pipeline"]]' in mermaid
+        assert 'pipeline[["pipeline' in mermaid
         assert "subgraph" not in mermaid
 
     def test_expanded_nested(self):

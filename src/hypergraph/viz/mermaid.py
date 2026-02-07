@@ -339,24 +339,29 @@ def _build_label(
 ) -> str:
     """Build the display label for a node.
 
-    When show_types is True and separate_outputs is False, appends output
-    type annotations below the node name.
+    Output names are always shown below the node name (matching the
+    interactive JS viz style). When show_types is True, type annotations
+    are appended to each output. Skipped in separate_outputs mode since
+    outputs are rendered as dedicated DATA nodes.
     """
     label = _escape_label(attrs.get("label", ""))
 
-    if not show_types or separate_outputs:
+    if separate_outputs:
         return label
 
-    output_types = attrs.get("output_types", {})
     outputs = attrs.get("outputs", ())
     if not outputs:
         return label
 
+    output_types = attrs.get("output_types", {})
     type_parts = []
     for out in outputs:
-        formatted = format_type(output_types.get(out))
-        if formatted:
-            type_parts.append(f"{out}: {_escape_label(formatted)}")
+        if show_types:
+            formatted = format_type(output_types.get(out))
+            if formatted:
+                type_parts.append(f"{out}: {_escape_label(formatted)}")
+            else:
+                type_parts.append(out)
         else:
             type_parts.append(out)
 
@@ -492,7 +497,7 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            lines.append(_format_edge(actual_source, actual_target, value_name))
+            lines.append(_format_edge(actual_source, actual_target, None))
 
     return lines
 
