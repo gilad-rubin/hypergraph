@@ -88,7 +88,7 @@ def add_user_message(messages: list, user_input: str) -> list:
 
 @node(output_name="response")
 def generate(messages: list) -> str:
-    return llm.chat(messages)
+    return llm.chat(messages)  # your LLM client
 
 @node(output_name="messages", emit="turn_done")
 def accumulate(messages: list, response: str) -> list:

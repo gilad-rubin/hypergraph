@@ -102,7 +102,7 @@ def compute_nodes_for_state(
 
         nodes.append(rf_node)
 
-    create_data_nodes(nodes, [], flat_graph, theme, show_types, graph_output_visibility)
+    create_data_nodes(nodes, flat_graph, theme, show_types, graph_output_visibility)
 
     create_end_node(nodes, flat_graph, theme, show_types, expansion_state)
 

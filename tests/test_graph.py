@@ -1877,5 +1877,5 @@ class TestCycleSameOutput:
         def producer_b(y: int) -> int:
             return y + 2
 
-        with pytest.raises(GraphConfigError, match="emit.*wait_for|wait_for.*emit"):
+        with pytest.raises(GraphConfigError, match=r"emit.*wait_for|wait_for.*emit"):
             Graph([producer_a, producer_b])

@@ -32,7 +32,6 @@ def add_end_node_edges(
     edges: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
-    separate_outputs: bool,
 ) -> None:
     """Add edges from gates that route to END."""
     if not has_end_routing(flat_graph, expansion_state):
@@ -453,6 +452,6 @@ def compute_edges_for_state(
         add_merged_output_edges(edges, flat_graph, expansion_state)
 
     # 3. Add edges to END node
-    add_end_node_edges(edges, flat_graph, expansion_state, separate_outputs)
+    add_end_node_edges(edges, flat_graph, expansion_state)
 
     return edges

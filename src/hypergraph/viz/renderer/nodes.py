@@ -87,7 +87,7 @@ def build_classic_input_groups(
 
 def get_param_type(param: str, flat_graph: nx.DiGraph) -> type | None:
     """Find the type annotation for a parameter from the graph."""
-    for node_id, attrs in flat_graph.nodes(data=True):
+    for _, attrs in flat_graph.nodes(data=True):
         if param in attrs.get("inputs", ()):
             param_type = attrs.get("input_types", {}).get(param)
             if param_type is not None:
@@ -322,7 +322,6 @@ def create_end_node(
 
 def create_data_nodes(
     nodes: list[dict[str, Any]],
-    edges: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     theme: str,
     show_types: bool,

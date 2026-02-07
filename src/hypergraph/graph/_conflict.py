@@ -189,29 +189,6 @@ def _is_pair_ordered(
     return nx.has_path(sub, a, b) or nx.has_path(sub, b, a)
 
 
-def _are_all_mutex(
-    node_names: list[str], mutex_groups: list[list[set[str]]]
-) -> bool:
-    """Check if all given nodes are mutually exclusive.
-
-    Two nodes are mutex if they're in different branches of the same gate.
-    All given nodes are mutex if each is in a different branch of the same gate.
-    """
-    if len(node_names) < 2:
-        return True
-
-    for branches in mutex_groups:
-        nodes_by_branch = []
-        for branch in branches:
-            branch_nodes = [n for n in node_names if n in branch]
-            if branch_nodes:
-                nodes_by_branch.append(branch_nodes)
-
-        if len(nodes_by_branch) == len(node_names):
-            return True
-
-    return False
-
 
 def _compute_exclusive_reachability(
     G: nx.DiGraph, targets: list[str]

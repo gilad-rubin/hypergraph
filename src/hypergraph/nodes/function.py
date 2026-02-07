@@ -226,7 +226,7 @@ class FunctionNode(CallableMixin, HyperNode):
             >>> split.output_annotation
             {'a': int, 'b': str}
         """
-        if not self.outputs:
+        if not self.data_outputs:
             return {}
 
         try:
@@ -239,8 +239,8 @@ class FunctionNode(CallableMixin, HyperNode):
             return {}
 
         # Single output case
-        if len(self.outputs) == 1:
-            return {self.outputs[0]: return_hint}
+        if len(self.data_outputs) == 1:
+            return {self.data_outputs[0]: return_hint}
 
         # Multiple outputs - try to extract tuple element types
         from typing import get_args, get_origin
@@ -248,8 +248,8 @@ class FunctionNode(CallableMixin, HyperNode):
         origin = get_origin(return_hint)
         if origin is tuple:
             args = get_args(return_hint)
-            if len(args) == len(self.outputs):
-                return dict(zip(self.outputs, args))
+            if len(args) == len(self.data_outputs):
+                return dict(zip(self.data_outputs, args, strict=True))
 
         # Can't map tuple elements to outputs - return empty
         return {}

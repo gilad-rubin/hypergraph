@@ -186,7 +186,7 @@ def build_run_end_event(
     error: BaseException | None = None,
 ) -> Any:
     """Build a RunEndEvent."""
-    from hypergraph.events.types import RunEndEvent
+    from hypergraph.events.types import RunEndEvent, RunStatus
 
     duration_ms = (time.time() - start_time) * 1000
     return RunEndEvent(
@@ -194,7 +194,7 @@ def build_run_end_event(
         span_id=span_id,
         parent_span_id=parent_span_id,
         graph_name=graph.name,
-        status="failed" if error else "completed",
+        status=RunStatus.FAILED if error else RunStatus.COMPLETED,
         error=str(error) if error else None,
         duration_ms=duration_ms,
     )

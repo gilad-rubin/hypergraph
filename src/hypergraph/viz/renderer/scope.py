@@ -6,7 +6,7 @@ and which outputs are externally consumed (visible outside their container).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from hypergraph.viz._common import (
     get_parent,
@@ -106,7 +106,7 @@ def compute_input_scope(
 
     common_container = next(iter(consumer_containers))
 
-    chain = [common_container] + get_ancestor_chain(common_container, flat_graph)
+    chain = [common_container, *get_ancestor_chain(common_container, flat_graph)]
     for container in chain:
         if expansion_state.get(container, False):
             return container
@@ -256,6 +256,8 @@ def find_internal_producer_for_output(
         if is_node_visible(producer, flat_graph, expansion_state):
             return producer
 
+    # Fuzzy fallback: with_outputs renames can differ slightly (e.g. pluralization).
+    # Substring matching is intentionally loose to maximize recall in visualization.
     for internal_out, producer in terminal_outputs.items():
         if internal_out in output_name or output_name in internal_out:
             if is_node_visible(producer, flat_graph, expansion_state):

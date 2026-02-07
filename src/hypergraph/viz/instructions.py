@@ -308,7 +308,6 @@ def build_instructions(
     instructions = VizInstructions(depth=depth, theme=theme, show_types=show_types)
 
     input_spec = flat_graph.graph.get("input_spec", {})
-    bound_params = set(input_spec.get("bound", {}).keys())
 
     initial_expansion_state = build_expansion_state(flat_graph, depth)
 
@@ -432,7 +431,6 @@ def _add_edges(
         if not is_node_visible(target, flat_graph, expansion_state):
             continue
 
-        edge_type = edge_data.get("edge_type", "data")
         value_names = edge_data.get("value_names", [])
 
         if value_names:

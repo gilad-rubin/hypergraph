@@ -1665,5 +1665,5 @@ class TestInterruptNodeStrictTypes:
 
         consumer_node = InterruptNode(approval, output_name="decision")
 
-        with pytest.raises(GraphConfigError, match="[Tt]ype mismatch"):
+        with pytest.raises(GraphConfigError, match=r"[Tt]ype mismatch"):
             Graph([produce, consumer_node], strict_types=True)

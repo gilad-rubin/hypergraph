@@ -20,7 +20,6 @@ def format_type(t: type | None) -> str | None:
         return None
 
     type_str = str(t)
-    type_str = type_str.replace("typing.", "")
     type_str = type_str.replace("<class '", "").replace("'>", "")
 
     return _simplify_type_string(type_str)

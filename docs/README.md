@@ -125,6 +125,7 @@ Test pieces independently. Reuse across workflows.
 - [InputSpec](06-api-reference/inputspec.md) - Input categorization and requirements
 
 ### Design
+- [Guiding Principles](07-design/guiding-principles.md) - Design rubric and invariants
 - [Philosophy](07-design/philosophy.md) - Why hypergraph exists and design principles
 - [Inspiration](07-design/inspiration.md) - Frameworks that influenced hypergraph's design
 - [Roadmap](07-design/roadmap.md) - What's implemented, what's coming next

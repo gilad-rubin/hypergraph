@@ -167,7 +167,7 @@ def enumerate_valid_expansion_states(
     valid_states = []
 
     for bits in product([False, True], repeat=len(expandable_nodes)):
-        state = dict(zip(expandable_nodes, bits))
+        state = dict(zip(expandable_nodes, bits, strict=True))
 
         is_valid = True
         for node_id, is_expanded in state.items():

@@ -490,7 +490,7 @@ def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
                 f"Node '{node.name}' has {len(data_outputs)} data outputs but returned "
                 f"{len(result)} values"
             )
-        wrapped = dict(zip(data_outputs, result))
+        wrapped = dict(zip(data_outputs, result, strict=True))
 
     # Auto-produce sentinel for each emit output
     for name in emit_outputs:

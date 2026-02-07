@@ -199,7 +199,7 @@ class SyncRunner(BaseRunner):
         """
         state = initialize_state(graph, values)
 
-        for iteration in range(max_iterations):
+        for _iteration in range(max_iterations):
             ready_nodes = get_ready_nodes(graph, state)
 
             if not ready_nodes:
