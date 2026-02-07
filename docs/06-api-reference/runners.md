@@ -48,11 +48,12 @@ class SyncRunner:
 def run(
     self,
     graph: Graph,
-    values: dict[str, Any],
+    values: dict[str, Any] | None = None,
     *,
     select: list[str] | None = None,
     max_iterations: int | None = None,
     event_processors: list[EventProcessor] | None = None,
+    **input_values: Any,
 ) -> RunResult: ...
 ```
 
@@ -60,10 +61,11 @@ Execute a graph once.
 
 **Args:**
 - `graph` - The graph to execute
-- `values` - Input values as `{param_name: value}`
+- `values` - Optional input values as `{param_name: value}`
 - `select` - Optional list of output names to return (default: all outputs)
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
 
@@ -76,6 +78,9 @@ Execute a graph once.
 ```python
 # Basic execution
 result = runner.run(graph, {"query": "What is RAG?"})
+
+# kwargs shorthand
+result = runner.run(graph, query="What is RAG?")
 
 # Select specific outputs
 result = runner.run(graph, values, select=["final_answer"])
@@ -94,13 +99,14 @@ result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
 def map(
     self,
     graph: Graph,
-    values: dict[str, Any],
+    values: dict[str, Any] | None = None,
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     select: list[str] | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    **input_values: Any,
 ) -> list[RunResult]: ...
 ```
 
@@ -108,7 +114,7 @@ Execute a graph multiple times with different inputs.
 
 **Args:**
 - `graph` - The graph to execute
-- `values` - Input values. Parameters in `map_over` should be lists
+- `values` - Optional input values. Parameters in `map_over` should be lists
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `select` - Optional list of outputs to return
@@ -116,6 +122,7 @@ Execute a graph multiple times with different inputs.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** List of `RunResult`, one per iteration
 
@@ -124,6 +131,9 @@ Execute a graph multiple times with different inputs.
 ```python
 # Single parameter
 results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+
+# kwargs shorthand
+results = runner.map(graph, map_over="x", x=[1, 2, 3])
 
 # Multiple parameters with zip
 results = runner.map(
@@ -208,12 +218,13 @@ class AsyncRunner:
 async def run(
     self,
     graph: Graph,
-    values: dict[str, Any],
+    values: dict[str, Any] | None = None,
     *,
     select: list[str] | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
     event_processors: list[EventProcessor] | None = None,
+    **input_values: Any,
 ) -> RunResult: ...
 ```
 
@@ -221,11 +232,12 @@ Execute a graph asynchronously.
 
 **Args:**
 - `graph` - The graph to execute
-- `values` - Input values
+- `values` - Optional input values
 - `select` - Optional list of output names to return
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
+- `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
 
@@ -234,6 +246,9 @@ Execute a graph asynchronously.
 ```python
 # Basic async execution
 result = await runner.run(graph, {"query": "What is RAG?"})
+
+# kwargs shorthand
+result = await runner.run(graph, query="What is RAG?")
 
 # Limit concurrency (important for rate-limited APIs)
 result = await runner.run(
@@ -270,7 +285,7 @@ This prevents overwhelming external services when processing large batches.
 async def map(
     self,
     graph: Graph,
-    values: dict[str, Any],
+    values: dict[str, Any] | None = None,
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
@@ -278,6 +293,7 @@ async def map(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    **input_values: Any,
 ) -> list[RunResult]: ...
 ```
 
@@ -285,7 +301,7 @@ Execute graph multiple times concurrently.
 
 **Args:**
 - `graph` - The graph to execute
-- `values` - Input values
+- `values` - Optional input values
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` or `"product"`
 - `select` - Optional list of outputs to return
@@ -294,6 +310,7 @@ Execute graph multiple times concurrently.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `**input_values` - Input shorthand (merged with `values`)
 
 **Example:**
 
@@ -305,6 +322,9 @@ results = await runner.map(
     map_over="doc",
     max_concurrency=20,  # Limit total concurrent operations
 )
+
+# kwargs shorthand
+results = await runner.map(graph, map_over="doc", doc=documents)
 
 # Continue on errors with async
 results = await runner.map(
@@ -486,6 +506,29 @@ except InfiniteLoopError as e:
 
 ## Execution Model
 
+### Input Normalization
+
+Runners accept inputs in two equivalent ways:
+
+```python
+# explicit dict
+runner.run(graph, values={"query": "hello", "llm": llm})
+
+# kwargs shorthand
+runner.run(graph, query="hello", llm=llm)
+```
+
+Rules:
+- `values` + kwargs are merged
+- duplicate keys raise `ValueError`
+- option names like `select`, `map_over`, `max_concurrency` are reserved for runner options
+- if an input name matches an option name, pass that input through `values={...}`
+
+```python
+# input named "select" must go through values
+runner.run(graph, values={"select": "fast"}, select=["answer"])
+```
+
 ### Supersteps
 
 Runners execute graphs in **supersteps**. Each superstep:
@@ -506,7 +549,7 @@ Superstep 3: [generate]        → produces "answer"
 When collecting inputs for a node, values are resolved in this order:
 
 1. **Edge value** - Output from upstream node
-2. **Input value** - Provided in `values` dict
+2. **Input value** - Provided via `values` or kwargs shorthand
 3. **Bound value** - From `graph.bind()`
 4. **Function default** - From function signature
 

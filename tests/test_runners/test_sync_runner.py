@@ -183,6 +183,60 @@ class TestSyncRunnerRun:
 
         assert result["sum"] == 30
 
+    def test_run_accepts_kwargs_inputs(self):
+        """kwargs can be used instead of values dict."""
+        graph = Graph([add])
+        runner = SyncRunner()
+
+        result = runner.run(graph, a=10, b=20)
+
+        assert result["sum"] == 30
+
+    def test_run_merges_values_and_kwargs(self):
+        """values and kwargs are merged when keys are disjoint."""
+        graph = Graph([add])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"a": 10}, b=20)
+
+        assert result["sum"] == 30
+
+    def test_run_duplicate_values_and_kwargs_raises(self):
+        """Duplicate keys across values and kwargs are rejected."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="both values and kwargs"):
+            runner.run(graph, {"x": 1}, x=2)
+
+    def test_run_nested_dict_input_with_kwargs(self):
+        """Nested dict values pass through unchanged."""
+
+        @node(output_name="top_k")
+        def pick_top_k(processor: dict[str, int]) -> int:
+            return processor["top_k"]
+
+        graph = Graph([pick_top_k])
+        runner = SyncRunner()
+
+        result = runner.run(graph, processor={"top_k": 5})
+
+        assert result["top_k"] == 5
+
+    def test_run_input_named_select_requires_values_dict(self):
+        """Input names matching options are only accepted via values dict."""
+
+        @node(output_name="result")
+        def echo_select(select: str) -> str:
+            return select
+
+        graph = Graph([echo_select])
+        runner = SyncRunner()
+
+        result = runner.run(graph, values={"select": "fast"}, select=["result"])
+
+        assert result["result"] == "fast"
+
     def test_uses_bound_values(self):
         """Bound values are used when input not provided."""
         graph = Graph([add]).bind(a=5)
@@ -431,6 +485,55 @@ class TestSyncRunnerMap:
         assert results[0]["doubled"] == 2
         assert results[1]["doubled"] == 4
         assert results[2]["doubled"] == 6
+
+    def test_map_accepts_kwargs_inputs(self):
+        """map supports kwargs shorthand for input values."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        results = runner.map(graph, map_over="x", x=[1, 2, 3])
+
+        assert [r["doubled"] for r in results] == [2, 4, 6]
+
+    def test_map_merges_values_and_kwargs(self):
+        """map merges values dict with kwargs when keys are disjoint."""
+        graph = Graph([add])
+        runner = SyncRunner()
+
+        results = runner.map(
+            graph,
+            {"a": [1, 2]},
+            map_over=["a", "b"],
+            b=[10, 20],
+        )
+
+        assert [r["sum"] for r in results] == [11, 22]
+
+    def test_map_duplicate_values_and_kwargs_raises(self):
+        """map rejects duplicate keys across values and kwargs."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="both values and kwargs"):
+            runner.map(graph, {"x": [1, 2]}, map_over="x", x=[3, 4])
+
+    def test_map_input_named_map_over_requires_values_dict(self):
+        """Input names matching map options must be passed via values dict."""
+
+        @node(output_name="sum")
+        def add_with_reserved_name(x: int, map_over: int) -> int:
+            return x + map_over
+
+        graph = Graph([add_with_reserved_name])
+        runner = SyncRunner()
+
+        results = runner.map(
+            graph,
+            values={"x": [1, 2], "map_over": 10},
+            map_over="x",
+        )
+
+        assert [r["sum"] for r in results] == [11, 12]
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""

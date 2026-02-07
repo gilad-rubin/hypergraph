@@ -22,6 +22,14 @@ from hypergraph.runners._shared.helpers import (
     generate_map_inputs,
     get_ready_nodes,
 )
+from hypergraph.runners._shared.input_normalization import (
+    ASYNC_MAP_RESERVED_OPTION_NAMES,
+    ASYNC_RUN_RESERVED_OPTION_NAMES,
+    MAP_RESERVED_OPTION_NAMES,
+    RUN_RESERVED_OPTION_NAMES,
+    merge_with_duplicate_check,
+    normalize_inputs,
+)
 from hypergraph.runners._shared.validation import (
     validate_inputs,
     validate_runner_compatibility,
@@ -54,4 +62,11 @@ __all__ = [
     "validate_runner_compatibility",
     "validate_map_compatible",
     "validate_node_types",
+    # Input normalization
+    "RUN_RESERVED_OPTION_NAMES",
+    "ASYNC_RUN_RESERVED_OPTION_NAMES",
+    "MAP_RESERVED_OPTION_NAMES",
+    "ASYNC_MAP_RESERVED_OPTION_NAMES",
+    "merge_with_duplicate_check",
+    "normalize_inputs",
 ]

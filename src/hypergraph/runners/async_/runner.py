@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
@@ -12,27 +12,14 @@ from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.nodes.graph_node import GraphNode
-from hypergraph.runners._shared.helpers import (
-    filter_outputs,
-    generate_map_inputs,
-    get_ready_nodes,
-    initialize_state,
-)
+from hypergraph.runners._shared.helpers import get_ready_nodes, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
-    ErrorHandling,
     GraphState,
     PauseExecution,
     RunnerCapabilities,
-    RunResult,
-    RunStatus,
     _generate_run_id,
-)
-from hypergraph.runners._shared.validation import (
-    validate_inputs,
-    validate_map_compatible,
-    validate_node_types,
-    validate_runner_compatibility,
 )
 from hypergraph.runners.async_.executors import (
     AsyncFunctionNodeExecutor,
@@ -47,7 +34,6 @@ from hypergraph.runners.async_.superstep import (
     run_superstep_async,
     set_concurrency_limiter,
 )
-from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
@@ -59,7 +45,7 @@ if TYPE_CHECKING:
 DEFAULT_MAX_ITERATIONS = 1000
 
 
-class AsyncRunner(BaseRunner):
+class AsyncRunner(AsyncRunnerTemplate):
     """Asynchronous runner for graph execution.
 
     Executes graphs asynchronously with support for:
@@ -114,105 +100,16 @@ class AsyncRunner(BaseRunner):
         )
 
     @property
+    def default_max_iterations(self) -> int:
+        """Default iteration cap for cyclic graphs."""
+        return DEFAULT_MAX_ITERATIONS
+
+    @property
     def supported_node_types(self) -> set[type[HyperNode]]:
         """Node types this runner can execute."""
         return set(self._executors.keys())
 
-    async def run(
-        self,
-        graph: "Graph",
-        values: dict[str, Any],
-        *,
-        select: list[str] | None = None,
-        max_iterations: int | None = None,
-        max_concurrency: int | None = None,
-        event_processors: list[EventProcessor] | None = None,
-        _parent_span_id: str | None = None,
-    ) -> RunResult:
-        """Execute a graph asynchronously.
-
-        Args:
-            graph: The graph to execute
-            values: Input values for graph parameters
-            select: Optional list of output names to include in result
-            max_iterations: Max supersteps for cyclic graphs (default: 1000)
-            max_concurrency: Max parallel node executions (None = unlimited)
-            event_processors: Optional list of event processors for execution events
-            _parent_span_id: Internal. Span ID of parent scope for nested runs.
-
-        Returns:
-            RunResult containing output values and execution status
-
-        Raises:
-            MissingInputError: If required inputs not provided
-            InfiniteLoopError: If max_iterations exceeded
-        """
-        # Validate
-        validate_runner_compatibility(graph, self.capabilities)
-        validate_node_types(graph, self.supported_node_types)
-        validate_inputs(graph, values)
-
-        max_iter = max_iterations or DEFAULT_MAX_ITERATIONS
-
-        # Set up event dispatcher
-        dispatcher = _create_dispatcher(event_processors)
-        run_id, run_span_id = await _emit_run_start(dispatcher, graph, _parent_span_id)
-        start_time = time.time()
-
-        try:
-            state = await self._execute_graph(
-                graph, values, max_iter, max_concurrency,
-                dispatcher=dispatcher,
-                run_id=run_id,
-                run_span_id=run_span_id,
-                event_processors=event_processors,
-            )
-            output_values = filter_outputs(state, graph, select)
-            result = RunResult(
-                values=output_values,
-                status=RunStatus.COMPLETED,
-                run_id=run_id,
-            )
-            await _emit_run_end(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
-            )
-            return result
-        except PauseExecution as pause:
-            partial_state = getattr(pause, "_partial_state", None)
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
-            return RunResult(
-                values=partial_values,
-                status=RunStatus.PAUSED,
-                run_id=run_id,
-                pause=pause.pause_info,
-            )
-        except Exception as e:
-            await _emit_run_end(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
-                error=e,
-            )
-            partial_state = getattr(e, "_partial_state", None)
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
-            return RunResult(
-                values=partial_values,
-                status=RunStatus.FAILED,
-                run_id=run_id,
-                error=e,
-            )
-        finally:
-            # Only shut down dispatcher if we own it (top-level call)
-            if _parent_span_id is None and dispatcher.active:
-                await dispatcher.shutdown_async()
-
-    async def _execute_graph(
+    async def _execute_graph_impl_async(
         self,
         graph: "Graph",
         values: dict[str, Any],
@@ -241,7 +138,7 @@ class AsyncRunner(BaseRunner):
             token = None
 
         try:
-            for iteration in range(max_iterations):
+            for _ in range(max_iterations):
                 ready_nodes = get_ready_nodes(graph, state)
 
                 if not ready_nodes:
@@ -282,7 +179,8 @@ class AsyncRunner(BaseRunner):
         return state
 
     def _make_execute_node(
-        self, event_processors: list[EventProcessor] | None
+        self,
+        event_processors: list[EventProcessor] | None,
     ) -> AsyncNodeExecutor:
         """Create an async node executor closure that carries event context.
 
@@ -311,7 +209,9 @@ class AsyncRunner(BaseRunner):
             # For GraphNodeExecutor, pass context as params (not mutable state)
             if isinstance(executor, AsyncGraphNodeExecutor):
                 return await executor(
-                    node, state, inputs,
+                    node,
+                    state,
+                    inputs,
                     event_processors=event_processors,
                     parent_span_id=current_span_id[0],
                 )
@@ -322,143 +222,54 @@ class AsyncRunner(BaseRunner):
         execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
         return execute_node
 
-    async def map(
+    # Template hook implementations
+
+    def _create_dispatcher(
         self,
+        processors: list[EventProcessor] | None,
+    ) -> "EventDispatcher":
+        return _create_dispatcher(processors)
+
+    async def _emit_run_start_async(
+        self,
+        dispatcher: "EventDispatcher",
         graph: "Graph",
-        values: dict[str, Any],
+        parent_span_id: str | None,
         *,
-        map_over: str | list[str],
-        map_mode: Literal["zip", "product"] = "zip",
-        select: list[str] | None = None,
-        max_concurrency: int | None = None,
-        error_handling: ErrorHandling = "raise",
-        event_processors: list[EventProcessor] | None = None,
-        _parent_span_id: str | None = None,
-    ) -> list[RunResult]:
-        """Execute graph multiple times with different inputs.
-
-        Args:
-            graph: The graph to execute
-            values: Input values (map_over params should be lists)
-            map_over: Parameter name(s) to iterate over
-            map_mode: "zip" for parallel iteration, "product" for cartesian
-            select: Optional list of outputs to return
-            max_concurrency: Max concurrent operations (shared across all items)
-            error_handling: "raise" to stop on first failure, "continue" to
-                collect all results including failures
-            event_processors: Optional list of event processors for execution events
-            _parent_span_id: Internal. Span ID of parent scope for nested map runs.
-
-        Returns:
-            List of RunResult, one per iteration
-
-        Raises:
-            Exception: The underlying error from the first failed item
-                when ``error_handling="raise"``
-        """
-        # Validate
-        validate_runner_compatibility(graph, self.capabilities)
-        validate_node_types(graph, self.supported_node_types)
-        validate_map_compatible(graph)
-
-        # Normalize map_over to list
-        map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
-
-        # Generate input variations
-        input_variations = list(generate_map_inputs(values, map_over_list, map_mode))
-
-        if not input_variations:
-            return []
-
-        # Set up event dispatcher for map-level events
-        dispatcher = _create_dispatcher(event_processors)
-        map_run_id, map_span_id = await _emit_run_start(
-            dispatcher, graph, _parent_span_id,
-            is_map=True, map_size=len(input_variations),
+        is_map: bool = False,
+        map_size: int | None = None,
+    ) -> tuple[str, str]:
+        return await _emit_run_start(
+            dispatcher,
+            graph,
+            parent_span_id,
+            is_map=is_map,
+            map_size=map_size,
         )
-        start_time = time.time()
 
-        # Set up shared concurrency limiter at map level (if not already set)
-        # All run() calls and their nested operations share this semaphore
-        existing_limiter = get_concurrency_limiter()
-        if existing_limiter is None and max_concurrency is not None:
-            semaphore = asyncio.Semaphore(max_concurrency)
-            token = set_concurrency_limiter(semaphore)
-        else:
-            token = None
+    async def _emit_run_end_async(
+        self,
+        dispatcher: "EventDispatcher",
+        run_id: str,
+        span_id: str,
+        graph: "Graph",
+        start_time: float,
+        parent_span_id: str | None,
+        *,
+        error: BaseException | None = None,
+    ) -> None:
+        await _emit_run_end(
+            dispatcher,
+            run_id,
+            span_id,
+            graph,
+            start_time,
+            parent_span_id,
+            error=error,
+        )
 
-        try:
-            if max_concurrency is None:
-                # Execute all variations concurrently
-                tasks = [
-                    self.run(
-                        graph, v, select=select, max_concurrency=max_concurrency,
-                        event_processors=event_processors,
-                        _parent_span_id=map_span_id,
-                    )
-                    for v in input_variations
-                ]
-                results = list(await asyncio.gather(*tasks))
-                # Check for failures after all tasks complete
-                if error_handling == "raise":
-                    for result in results:
-                        if result.status == RunStatus.FAILED:
-                            raise result.error  # type: ignore[misc]
-            else:
-                # Worker pool: fixed number of workers pull from a queue
-                results_list: list[RunResult] = []
-                queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
-                for idx, v in enumerate(input_variations):
-                    queue.put_nowait((idx, v))
-
-                order: list[int] = []
-                stop_event = asyncio.Event()
-
-                async def _worker() -> None:
-                    while not stop_event.is_set():
-                        try:
-                            idx, v = queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            return
-                        result = await self.run(
-                            graph, v, select=select, max_concurrency=max_concurrency,
-                            event_processors=event_processors,
-                            _parent_span_id=map_span_id,
-                        )
-                        results_list.append(result)
-                        order.append(idx)
-                        if (
-                            error_handling == "raise"
-                            and result.status == RunStatus.FAILED
-                        ):
-                            stop_event.set()
-
-                num_workers = min(max_concurrency, len(input_variations))
-                workers = [asyncio.create_task(_worker()) for _ in range(num_workers)]
-                await asyncio.gather(*workers)
-                # Restore original input order
-                results = [r for _, r in sorted(zip(order, results_list))]
-                # Raise first failure (by original order) if fail-fast
-                if error_handling == "raise":
-                    for result in results:
-                        if result.status == RunStatus.FAILED:
-                            raise result.error  # type: ignore[misc]
-
-            await _emit_run_end(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
-            )
-            return results
-        except Exception as e:
-            await _emit_run_end(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
-                error=e,
-            )
-            raise
-        finally:
-            if token is not None:
-                reset_concurrency_limiter(token)
-            if _parent_span_id is None and dispatcher.active:
-                await dispatcher.shutdown_async()
+    async def _shutdown_dispatcher_async(self, dispatcher: "EventDispatcher") -> None:
+        await dispatcher.shutdown_async()
 
 
 # ------------------------------------------------------------------

@@ -70,9 +70,28 @@ graph = Graph(nodes=[embed, retrieve, generate])
 runner = SyncRunner()
 result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"})
 print(result["answer"])
+
+# kwargs shorthand (equivalent)
+result = runner.run(graph, text="RAG tutorial", query="What is RAG?")
 ```
 
 `embed` produces `embedding`. `retrieve` takes `embedding`. Connected automatically.
+
+### Runner Input Shorthand
+
+Runners accept inputs either via `values={...}` or kwargs shorthand.
+
+```python
+# Same effect
+runner.run(graph, values={"query": "hello", "llm": llm})
+runner.run(graph, query="hello", llm=llm)
+```
+
+Rules:
+- `values` + kwargs are merged.
+- Duplicate keys across both raise `ValueError`.
+- Runner option names (`select`, `map_over`, `max_concurrency`, etc.) stay reserved.
+- If an input name matches an option name, pass it in `values={...}`.
 
 ## Examples
 
@@ -233,6 +252,15 @@ Hypergraph spans the full spectrum — from batch data pipelines to multi-turn A
 3. **Unified execution** - Same algorithm for DAGs, branches, and loops
 4. **Fail fast** - Validate at build time, not runtime
 5. **Explicit dependencies** - All inputs visible in function signatures
+
+## Architecture Notes
+
+- Runner entrypoints (`run`/`map`) use shared lifecycle templates:
+  - `SyncRunnerTemplate` for sync orchestration
+  - `AsyncRunnerTemplate` for async orchestration
+- Shared input parsing for `values + kwargs` lives in:
+  - `src/hypergraph/runners/_shared/input_normalization.py`
+- Future runner-level `.iter()` should reuse the same normalization rules.
 
 ## Beyond AI/ML
 

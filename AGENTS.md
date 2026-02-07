@@ -115,6 +115,14 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Gate nodes (route/ifelse) cache routing decisions; `InterruptNode` and `GraphNode` are never cacheable
 - Tests in `tests/test_cache_*.py`; `Caching` dimension in `tests/capabilities/matrix.py`
 
+## Runner Architecture
+
+- Runner input normalization for `values` + kwargs lives in `src/hypergraph/runners/_shared/input_normalization.py`
+- Sync runner lifecycle template is `src/hypergraph/runners/_shared/template_sync.py`
+- Async runner lifecycle template is `src/hypergraph/runners/_shared/template_async.py`
+- `SyncRunner` and `AsyncRunner` should keep execution internals (superstep/executors) in concrete runner files, while shared `run/map` orchestration stays in templates
+- Reserved runner option names (like `select`, `map_over`, `max_concurrency`) are control args; colliding input names must be passed via `values={...}`
+
 ## Maintaining Instructions
 
 After making significant code structure changes, update the AGENTS.md and README.md markdown files
