@@ -391,14 +391,11 @@ _SHAPE_DELIMITERS: dict[str, tuple[str, str]] = {
     "FUNCTION": ('["', '"]'),
     "GRAPH": ('[["', '"]]'),
     "BRANCH": ('{{"', '"}}'),
-    "INPUT": ('(["', '"])',),
+    "INPUT": ('(["', '"])'),
     "INPUT_GROUP": ('(["', '"])'),
     "DATA": ('[/"', '"/]'),
     "END": ('(["', '"])'),
 }
-
-# Fix INPUT — tuple above was accidentally 1-element
-_SHAPE_DELIMITERS["INPUT"] = ('(["', '"])') # type: ignore[assignment]
 
 
 def _format_node(safe_id: str, label: str, node_type: str) -> str:
