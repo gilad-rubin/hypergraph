@@ -857,22 +857,18 @@ def _render_end_edges(
         if not is_node_visible(node_id, flat_graph, expansion_state):
             continue
 
-        label = None
-        has_end = False
+        emitted = False
+        if branch_data.get("when_true") == "END":
+            lines.append(_format_edge(node_id, "__end__", "True"))
+            emitted = True
         if branch_data.get("when_false") == "END":
-            label = "False"
-            has_end = True
-        elif branch_data.get("when_true") == "END":
-            label = "True"
-            has_end = True
-        elif "targets" in branch_data:
+            lines.append(_format_edge(node_id, "__end__", "False"))
+            emitted = True
+        if not emitted and "targets" in branch_data:
             targets = branch_data["targets"]
             target_values = targets.values() if isinstance(targets, dict) else targets
             if "END" in target_values:
-                has_end = True
-
-        if has_end:
-            lines.append(_format_edge(node_id, "__end__", label))
+                lines.append(_format_edge(node_id, "__end__", None))
 
     return lines
 
