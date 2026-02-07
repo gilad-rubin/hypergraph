@@ -54,22 +54,22 @@ _RESERVED_WORDS = frozenset({
 
 DEFAULT_COLORS: dict[str, dict[str, str]] = {
     "function": {
-        "fill": "#E8EAF6", "stroke": "#5C6BC0", "stroke-width": "2px", "color": "#283593",
+        "fill": "#E8F5E8", "stroke": "#388E3C", "stroke-width": "2px", "color": "#1B5E20",
     },
     "graph": {
-        "fill": "#FFF8E1", "stroke": "#FFB300", "stroke-width": "2px", "color": "#E65100",
+        "fill": "#FFF3E0", "stroke": "#F57C00", "stroke-width": "2px", "color": "#E65100",
     },
     "branch": {
-        "fill": "#E0F7FA", "stroke": "#00ACC1", "stroke-width": "2px", "color": "#006064",
+        "fill": "#FFF8E1", "stroke": "#FBC02D", "stroke-width": "2px", "color": "#F57F17",
     },
     "input": {
-        "fill": "#E0F7FA", "stroke": "#0097A7", "stroke-width": "2px", "color": "#004D40",
+        "fill": "#E3F2FD", "stroke": "#1976D2", "stroke-width": "2px", "color": "#0D47A1",
     },
     "data": {
-        "fill": "#ECEFF1", "stroke": "#78909C", "stroke-width": "2px", "color": "#37474F",
+        "fill": "#F3E5F5", "stroke": "#7B1FA2", "stroke-width": "2px", "color": "#4A148C",
     },
     "end": {
-        "fill": "#E8F5E9", "stroke": "#43A047", "stroke-width": "2px", "color": "#1B5E20",
+        "fill": "#ECEFF1", "stroke": "#546E7A", "stroke-width": "2px", "color": "#263238",
     },
 }
 
@@ -941,19 +941,52 @@ def _get_param_type(param: str, flat_graph: nx.DiGraph) -> type | None:
     return None
 
 
+def _find_gated_targets(flat_graph: nx.DiGraph) -> set[str]:
+    """Find nodes that are control-edge targets of gate nodes.
+
+    These nodes are only reachable via a gate's routing decision,
+    so input edges directly to them are redundant.
+    """
+    gated: set[str] = set()
+    for _, target, edge_data in flat_graph.edges(data=True):
+        if edge_data.get("edge_type") == "control":
+            gated.add(target)
+    return gated
+
+
+def _find_gate_inputs(flat_graph: nx.DiGraph) -> set[str]:
+    """Find input parameter names consumed by gate (BRANCH) nodes."""
+    gate_params: set[str] = set()
+    for _, attrs in flat_graph.nodes(data=True):
+        if attrs.get("node_type") == "BRANCH":
+            gate_params.update(attrs.get("inputs", ()))
+    return gate_params
+
+
 def _get_input_targets(
     params: list[str],
     flat_graph: nx.DiGraph,
     param_to_consumers: dict[str, list[str]],
 ) -> list[str]:
-    """Get unique target nodes for input parameters."""
+    """Get unique target nodes for input parameters.
+
+    Skips redundant edges to gated targets — nodes only reachable via
+    a gate's control edge when the gate itself consumes the same input.
+    """
+    gated_targets = _find_gated_targets(flat_graph)
+    gate_inputs = _find_gate_inputs(flat_graph)
+
     targets: list[str] = []
     seen: set[str] = set()
     for param in params:
         for target in param_to_consumers.get(param, []):
-            if target not in seen:
-                seen.add(target)
-                targets.append(target)
+            if target in seen:
+                continue
+            # Skip if target is gated AND a gate consumes this same param
+            if target in gated_targets and param in gate_inputs:
+                continue
+            seen.add(target)
+            targets.append(target)
     return targets
 
 

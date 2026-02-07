@@ -340,7 +340,7 @@ class TestCustomColors:
 
         assert "classDef function" in mermaid
         assert "classDef input" in mermaid
-        assert "#E8EAF6" in mermaid  # default function fill
+        assert "#E8F5E8" in mermaid  # default function fill
 
     def test_custom_color_override(self):
         """Custom colors override defaults."""
@@ -489,7 +489,7 @@ class TestMermaidDiagram:
         graph = Graph(nodes=[double])
         diagram = graph.to_mermaid()
 
-        assert "color:#283593" in diagram  # function text color
+        assert "color:#1B5E20" in diagram  # function text color
 
     def test_to_ascii_renders_box_drawing(self):
         """to_ascii() produces Unicode box-drawing output via Node.js."""
