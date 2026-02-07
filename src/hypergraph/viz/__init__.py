@@ -12,7 +12,7 @@ Debug:
     debugger.find_issues()  # comprehensive diagnostics
 """
 
-from hypergraph.viz.mermaid import to_mermaid
+from hypergraph.viz.mermaid import MermaidDiagram, to_mermaid
 from hypergraph.viz.widget import visualize, ScrollablePipelineWidget
 from hypergraph.viz.debug import (
     VizDebugger,
@@ -24,6 +24,7 @@ from hypergraph.viz.debug import (
 )
 
 __all__ = [
+    "MermaidDiagram",
     "RenderedDebugData",
     "RenderedEdge",
     "ScrollablePipelineWidget",

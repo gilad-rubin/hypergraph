@@ -566,12 +566,12 @@ class Graph:
         separate_outputs: bool = False,
         direction: str = "TD",
         colors: dict[str, dict[str, str]] | None = None,
-    ) -> str:
-        """Generate Mermaid flowchart syntax for this graph.
+    ) -> Any:
+        """Generate a Mermaid flowchart diagram for this graph.
 
-        Produces valid Mermaid that renders on GitHub, GitLab, and
-        documentation platforms. Uses the same expansion/visibility
-        logic as ``visualize()``.
+        Returns a ``MermaidDiagram`` that auto-renders in Jupyter/VS Code
+        notebooks and converts to raw Mermaid source via ``str()`` or
+        ``print()``.
 
         Args:
             depth: How many levels of nested graphs to expand (default: 0)
@@ -582,11 +582,12 @@ class Graph:
                 ``{"function": {"fill": "#fff", "stroke": "#000"}}``
 
         Returns:
-            Mermaid flowchart markup as a string.
+            MermaidDiagram — renders in notebooks, ``str()`` gives raw source.
 
         Example:
-            >>> graph = Graph(nodes=[embed, retrieve, generate])
-            >>> print(graph.to_mermaid(show_types=True))
+            >>> graph.to_mermaid()            # renders in notebook
+            >>> print(graph.to_mermaid())      # raw Mermaid source
+            >>> graph.to_mermaid().source       # access source directly
         """
         from hypergraph.viz.mermaid import to_mermaid
 

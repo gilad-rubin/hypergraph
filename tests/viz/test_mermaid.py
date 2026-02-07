@@ -151,7 +151,7 @@ class TestBasicMermaid:
             "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
             "\U00002702-\U000027B0\U0001F900-\U0001F9FF]"
         )
-        assert not emoji_pattern.search(mermaid)
+        assert not emoji_pattern.search(str(mermaid))
 
 
 # =============================================================================
@@ -410,3 +410,70 @@ class TestToMermaidFunction:
         )
 
         assert mermaid.startswith("flowchart LR")
+
+
+# =============================================================================
+# MermaidDiagram object
+# =============================================================================
+
+
+class TestMermaidDiagram:
+    """Tests for the MermaidDiagram result object."""
+
+    def test_str_returns_source(self):
+        """str() returns the raw Mermaid source."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+
+        assert str(diagram).startswith("flowchart TD")
+
+    def test_source_property(self):
+        """.source gives direct access to Mermaid markup."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+
+        assert isinstance(diagram.source, str)
+        assert "flowchart" in diagram.source
+
+    def test_contains_delegates_to_source(self):
+        """'in' operator works on MermaidDiagram."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+
+        assert "double" in diagram
+        assert "nonexistent_xyz" not in diagram
+
+    def test_repr_html_returns_iframe(self):
+        """_repr_html_ returns an iframe with mermaid.js."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+        html = diagram._repr_html_()
+
+        assert "iframe" in html
+        assert "mermaid" in html
+        assert "srcdoc" in html
+
+    def test_repr_shows_summary(self):
+        """repr() shows a summary of the diagram."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+
+        assert "MermaidDiagram" in repr(diagram)
+        assert "flowchart" in repr(diagram)
+
+    def test_section_comments(self):
+        """Output includes section comments for readability."""
+        graph = Graph(nodes=[double, add_one])
+        diagram = graph.to_mermaid()
+
+        assert "%% Inputs" in diagram
+        assert "%% Nodes" in diagram
+        assert "%% Edges" in diagram
+        assert "%% Styling" in diagram
+
+    def test_text_color_in_classdef(self):
+        """classDef includes color property for text."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+
+        assert "color:#283593" in diagram  # function text color

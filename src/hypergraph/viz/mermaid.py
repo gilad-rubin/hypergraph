@@ -5,13 +5,15 @@ Mermaid flowchart syntax. Reuses the same visibility, expansion, and
 edge-routing logic as the interactive JS visualization.
 
 Usage:
-    graph.to_mermaid()                         # Default top-down
+    graph.to_mermaid()                         # Renders in notebooks
     graph.to_mermaid(show_types=True)          # With type annotations
-    graph.to_mermaid(direction="LR", depth=1)  # Left-to-right, expand nested
+    print(graph.to_mermaid())                  # Raw Mermaid source
+    graph.to_mermaid().source                  # Access source directly
 """
 
 from __future__ import annotations
 
+import html as html_module
 import re
 from typing import Any
 
@@ -47,12 +49,24 @@ _RESERVED_WORDS = frozenset({
 })
 
 DEFAULT_COLORS: dict[str, dict[str, str]] = {
-    "function": {"fill": "#E8EAF6", "stroke": "#5C6BC0", "stroke-width": "2px"},
-    "graph": {"fill": "#FFF8E1", "stroke": "#FFB300", "stroke-width": "2px"},
-    "branch": {"fill": "#E0F7FA", "stroke": "#00ACC1", "stroke-width": "2px"},
-    "input": {"fill": "#E0F7FA", "stroke": "#0097A7", "stroke-width": "2px"},
-    "data": {"fill": "#ECEFF1", "stroke": "#78909C", "stroke-width": "2px"},
-    "end": {"fill": "#E8F5E9", "stroke": "#43A047", "stroke-width": "2px"},
+    "function": {
+        "fill": "#E8EAF6", "stroke": "#5C6BC0", "stroke-width": "2px", "color": "#283593",
+    },
+    "graph": {
+        "fill": "#FFF8E1", "stroke": "#FFB300", "stroke-width": "2px", "color": "#E65100",
+    },
+    "branch": {
+        "fill": "#E0F7FA", "stroke": "#00ACC1", "stroke-width": "2px", "color": "#006064",
+    },
+    "input": {
+        "fill": "#E0F7FA", "stroke": "#0097A7", "stroke-width": "2px", "color": "#004D40",
+    },
+    "data": {
+        "fill": "#ECEFF1", "stroke": "#78909C", "stroke-width": "2px", "color": "#37474F",
+    },
+    "end": {
+        "fill": "#E8F5E9", "stroke": "#43A047", "stroke-width": "2px", "color": "#1B5E20",
+    },
 }
 
 # Maps HyperGraph node_type to Mermaid classDef name
@@ -65,6 +79,86 @@ _NODE_TYPE_TO_CLASS = {
     "DATA": "data",
     "END": "end",
 }
+
+# Mermaid.js CDN URL
+_MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+
+
+# =============================================================================
+# MermaidDiagram (notebook-renderable result)
+# =============================================================================
+
+
+class MermaidDiagram:
+    """A Mermaid diagram that renders in Jupyter notebooks.
+
+    - Displays as a rendered SVG in notebooks (via ``_repr_html_``)
+    - ``str()`` / ``print()`` returns raw Mermaid source
+    - ``.source`` gives direct access to the Mermaid markup
+
+    Example:
+        >>> diagram = graph.to_mermaid()
+        >>> diagram                  # renders in notebook
+        >>> print(diagram)           # prints raw Mermaid source
+        >>> diagram.source           # raw string
+    """
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+
+    def __str__(self) -> str:
+        return self.source
+
+    def __repr__(self) -> str:
+        lines = self.source.split("\n")
+        preview = lines[0] if lines else ""
+        return f"MermaidDiagram({preview!r}, {len(lines)} lines)"
+
+    def __contains__(self, item: str) -> bool:
+        return item in self.source
+
+    def startswith(self, prefix: str) -> bool:
+        """Delegate to source string."""
+        return self.source.startswith(prefix)
+
+    def _repr_html_(self) -> str:
+        """Render as interactive Mermaid diagram in Jupyter/VS Code."""
+        escaped = html_module.escape(self.source, quote=True)
+
+        inner_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<script src="{_MERMAID_CDN}"></script>
+<style>
+  body {{ margin: 0; display: flex; justify-content: center; padding: 16px; }}
+  .mermaid {{ max-width: 100%; }}
+</style>
+</head>
+<body>
+<div class="mermaid">
+{self.source}
+</div>
+<script>mermaid.initialize({{startOnLoad: true, theme: "default", securityLevel: "loose"}});</script>
+</body>
+</html>"""
+
+        escaped_inner = html_module.escape(inner_html, quote=True)
+
+        return (
+            '<iframe srcdoc="' + escaped_inner + '" '
+            'frameborder="0" width="100%" height="400" '
+            'style="border: none; max-width: 100%; background: white; '
+            'border-radius: 8px;" '
+            'sandbox="allow-scripts">'
+            '</iframe>'
+        )
+
+    def _repr_mimebundle_(self, **kwargs: Any) -> dict[str, str]:
+        """Support JupyterLab native Mermaid rendering if available."""
+        return {
+            "text/plain": repr(self),
+            "text/html": self._repr_html_(),
+        }
 
 
 # =============================================================================
@@ -123,7 +217,7 @@ def _build_label(
         else:
             type_parts.append(out)
 
-    return label + "<br/>" + "<br/>".join(f"<small>{p}</small>" for p in type_parts)
+    return label + "<br/>" + "<br/>".join(type_parts)
 
 
 def _build_input_label(
@@ -547,8 +641,8 @@ def to_mermaid(
     separate_outputs: bool = False,
     direction: str = "TD",
     colors: dict[str, dict[str, str]] | None = None,
-) -> str:
-    """Convert a flat NetworkX graph to Mermaid flowchart syntax.
+) -> MermaidDiagram:
+    """Convert a flat NetworkX graph to a Mermaid flowchart diagram.
 
     Operates on the same flat DiGraph produced by Graph.to_flat_graph(),
     reusing the same visibility/expansion logic as the JS visualization.
@@ -563,11 +657,12 @@ def to_mermaid(
             {"function": {"fill": "#fff", "stroke": "#000"}}
 
     Returns:
-        Valid Mermaid flowchart syntax as a string.
+        MermaidDiagram that renders in notebooks and converts to string.
 
     Example:
-        >>> graph = Graph(nodes=[embed, retrieve, generate])
-        >>> print(graph.to_mermaid(show_types=True, direction="LR"))
+        >>> diagram = graph.to_mermaid(show_types=True)
+        >>> diagram          # renders in notebook
+        >>> print(diagram)   # raw Mermaid source
     """
     if direction not in _VALID_DIRECTIONS:
         msg = f"Invalid direction {direction!r}. Must be one of {sorted(_VALID_DIRECTIONS)}"
@@ -583,6 +678,8 @@ def to_mermaid(
 
     # --- Input nodes ---
     input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
+    if input_groups:
+        lines.append("    %% Inputs")
     for group in input_groups:
         params = group["params"]
         param_types = [
@@ -602,6 +699,7 @@ def to_mermaid(
         node_class_map[node_id] = "input"
 
     # --- Function / Graph / Branch nodes ---
+    lines.append("    %% Nodes")
     # Track which containers are expanded so we skip their children
     # (they're rendered inside the subgraph block, not at top level)
     expanded_containers = {
@@ -660,6 +758,7 @@ def to_mermaid(
         node_class_map[end_id] = "end"
 
     # --- Input → consumer edges ---
+    lines.append("    %% Edges")
     for group in input_groups:
         params = group["params"]
         if len(params) == 1:
@@ -687,9 +786,10 @@ def to_mermaid(
 
     # --- Styling ---
     lines.append("")
+    lines.append("    %% Styling")
     lines.extend(_build_style_section(colors, node_class_map, ordering_indices))
 
-    return "\n".join(lines)
+    return MermaidDiagram("\n".join(lines))
 
 
 # =============================================================================
