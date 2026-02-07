@@ -124,6 +124,25 @@ class TestRunResult:
         assert "values={'x': 1, 'y': 'hello'}" in text
         assert "status=completed" in text
 
+    def test_repr_preserves_short_container_types(self):
+        result = RunResult(
+            values={
+                "tuple_value": (1, 2),
+                "single_tuple": (1,),
+                "set_value": {1, 2},
+                "frozenset_value": frozenset({1, 2}),
+            },
+            status=RunStatus.COMPLETED,
+        )
+        text = repr(result)
+
+        assert "'tuple_value': (1, 2)" in text
+        assert "'single_tuple': (1,)" in text
+        assert "'set_value': {" in text
+        assert "'frozenset_value': frozenset({" in text
+        assert "'tuple_value': [1, 2]" not in text
+        assert "'set_value': [1, 2]" not in text
+
     def test_repr_compacts_failed_and_paused_runs(self):
         error = ValueError("x" * 500)
         pause = PauseInfo(

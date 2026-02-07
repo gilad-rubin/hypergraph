@@ -75,7 +75,20 @@ def _compact_mapping(mapping: dict[Any, Any], depth: int, seen: set[int]) -> str
 def _compact_sequence(values: list[Any], sequence_type: str, depth: int, seen: set[int]) -> str:
     """Return a compact representation for long sequence-like values."""
     if len(values) <= _MAX_SEQUENCE_PREVIEW:
-        return "[" + ", ".join(_compact_value(v, depth + 1, seen) for v in values) + "]"
+        compact_items = [_compact_value(v, depth + 1, seen) for v in values]
+        if sequence_type == "tuple":
+            if len(compact_items) == 1:
+                return f"({compact_items[0]},)"
+            return "(" + ", ".join(compact_items) + ")"
+        if sequence_type == "set":
+            if not compact_items:
+                return "set()"
+            return "{" + ", ".join(compact_items) + "}"
+        if sequence_type == "frozenset":
+            if not compact_items:
+                return "frozenset()"
+            return "frozenset({" + ", ".join(compact_items) + "})"
+        return "[" + ", ".join(compact_items) + "]"
     preview = ", ".join(_compact_value(v, depth + 1, seen) for v in values[:_MAX_SEQUENCE_PREVIEW])
     return f"<{sequence_type} len={len(values)} preview=[{preview}, ...]>"
 
