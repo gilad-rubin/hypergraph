@@ -444,17 +444,27 @@ class TestMermaidDiagram:
         assert "nonexistent_xyz" not in diagram
 
     def test_repr_mimebundle_uses_native_mermaid(self):
-        """_repr_mimebundle_ returns text/vnd.mermaid for local rendering."""
+        """_repr_mimebundle_ returns text/vnd.mermaid for native rendering."""
         graph = Graph(nodes=[double])
         diagram = graph.to_mermaid()
         bundle = diagram._repr_mimebundle_()
 
         assert "text/vnd.mermaid" in bundle
         assert "flowchart" in bundle["text/vnd.mermaid"]
+        assert "text/html" in bundle
         assert "text/plain" in bundle
-        # No CDN or external service references
-        assert "cdn" not in str(bundle).lower()
-        assert "http" not in str(bundle).lower()
+
+    def test_repr_html_uses_bundled_renderer(self):
+        """_repr_html_ uses bundled beautiful-mermaid, no CDN."""
+        graph = Graph(nodes=[double])
+        diagram = graph.to_mermaid()
+        html = diagram._repr_html_()
+
+        assert "iframe" in html
+        assert "beautifulMermaid" in html
+        # No CDN URLs — the JS is inlined
+        assert "cdn.jsdelivr" not in html
+        assert "mermaid.ink" not in html
 
     def test_repr_shows_summary(self):
         """repr() shows a summary of the diagram."""

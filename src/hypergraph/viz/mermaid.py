@@ -13,7 +13,9 @@ Usage:
 
 from __future__ import annotations
 
+import html as html_module
 import re
+from pathlib import Path
 from typing import Any
 
 import networkx as nx
@@ -84,16 +86,24 @@ _NODE_TYPE_TO_CLASS = {
 # =============================================================================
 
 
+def _load_beautiful_mermaid_js() -> str:
+    """Load the bundled beautiful-mermaid browser JS (cached after first call)."""
+    js_path = Path(__file__).parent / "assets" / "beautiful-mermaid.browser.global.js"
+    return js_path.read_text(encoding="utf-8")
+
+
 class MermaidDiagram:
     """A Mermaid diagram that renders in Jupyter notebooks.
 
-    Uses the native ``text/vnd.mermaid`` MIME type supported by JupyterLab 4.1+
-    and Notebook 7.1+. No external services or CDN required — all rendering
-    happens locally in the browser.
+    Rendering priority:
 
-    - Displays as a rendered diagram in notebooks
-    - ``str()`` / ``print()`` returns raw Mermaid source
-    - ``.source`` gives direct access to the Mermaid markup
+    1. **JupyterLab 4.1+ / Notebook 7.1+**: native ``text/vnd.mermaid`` MIME
+       type — fully local, zero network requests.
+    2. **VSCode / older Jupyter**: ``text/html`` fallback using a bundled copy
+       of beautiful-mermaid (renders Mermaid → SVG locally in an iframe).
+    3. **Terminal / plain**: raw Mermaid source via ``text/plain``.
+
+    No data is sent to external services. No CDN. No internet required.
 
     Example:
         >>> diagram = graph.to_mermaid()
@@ -120,12 +130,64 @@ class MermaidDiagram:
         """Delegate to source string."""
         return self.source.startswith(prefix)
 
+    def _repr_html_(self) -> str:
+        """Render via bundled beautiful-mermaid (VSCode / older Jupyter fallback)."""
+        js = _load_beautiful_mermaid_js()
+        escaped_source = html_module.escape(self.source, quote=True)
+
+        inner_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {{ margin: 0; display: flex; justify-content: center; padding: 16px;
+         background: white; }}
+</style>
+</head>
+<body>
+<div id="diagram"></div>
+<script>{js}</script>
+<script>
+(async () => {{
+  try {{
+    const src = {_js_string_literal(self.source)};
+    let svg = await beautifulMermaid.renderMermaid(src, {{ font: 'system-ui' }});
+    svg = svg.replace(/@import url\\([^)]*fonts\\.googleapis[^)]*\\);?/g, '');
+    document.getElementById('diagram').innerHTML = svg;
+  }} catch (e) {{
+    document.getElementById('diagram').textContent = e.message;
+  }}
+}})();
+</script>
+</body>
+</html>"""
+
+        escaped_inner = html_module.escape(inner_html, quote=True)
+        return (
+            '<iframe srcdoc="' + escaped_inner + '" '
+            'frameborder="0" width="100%" height="400" '
+            'style="border: none; max-width: 100%; background: white; '
+            'border-radius: 8px;" '
+            'sandbox="allow-scripts">'
+            "</iframe>"
+        )
+
     def _repr_mimebundle_(self, **kwargs: Any) -> dict[str, str]:
-        """Render using native Mermaid MIME type (JupyterLab 4.1+, Notebook 7.1+)."""
+        """Provide multiple MIME types; notebook picks the best one.
+
+        JupyterLab 4.1+ uses text/vnd.mermaid (native, no JS).
+        VSCode / older Jupyter uses text/html (bundled beautiful-mermaid).
+        """
         return {
             "text/vnd.mermaid": self.source,
+            "text/html": self._repr_html_(),
             "text/plain": str(self),
         }
+
+
+def _js_string_literal(source: str) -> str:
+    """Encode a Python string as a safe JS template literal."""
+    escaped = source.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    return f"`{escaped}`"
 
 
 # =============================================================================
