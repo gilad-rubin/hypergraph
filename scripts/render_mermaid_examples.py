@@ -190,6 +190,7 @@ def main() -> None:
 
     if args.output:
         path = Path(args.output)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         print(f"Wrote {path}")
         if args.open:
