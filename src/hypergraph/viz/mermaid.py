@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +138,7 @@ class MermaidDiagram:
         """Render via bundled beautiful-mermaid (VSCode / older Jupyter fallback)."""
         js = _load_beautiful_mermaid_js()
         adapted = _adapt_for_beautiful_mermaid(self.source)
+        iframe_id = f"mermaid-{uuid.uuid4().hex[:8]}"
 
         inner_html = f"""<!DOCTYPE html>
 <html>
@@ -161,7 +163,7 @@ class MermaidDiagram:
     svg = svg.replace(/@import url\\([^)]*fonts\\.googleapis[^)]*\\);?/g, '');
     document.getElementById('diagram').innerHTML = svg;
     const h = document.getElementById('diagram').scrollHeight + 40;
-    window.parent.postMessage({{ type: 'resize', height: h }}, '*');
+    window.parent.postMessage({{ type: 'mermaid-resize', id: '{iframe_id}', height: h }}, '*');
   }} catch (e) {{
     document.getElementById('diagram').textContent = e.message;
   }}
@@ -172,12 +174,19 @@ class MermaidDiagram:
 
         escaped_inner = html_module.escape(inner_html, quote=True)
         return (
-            '<iframe srcdoc="' + escaped_inner + '" '
-            'frameborder="0" width="100%" height="400" '
+            f'<iframe id="{iframe_id}" srcdoc="' + escaped_inner + '" '
+            'frameborder="0" width="100%" height="100" '
             'style="border: none; max-width: 100%; '
             'border-radius: 8px;" '
             'sandbox="allow-scripts">'
             "</iframe>"
+            "<script>"
+            "window.addEventListener('message', function(e) {"
+            f"  if (e.data && e.data.type === 'mermaid-resize' && e.data.id === '{iframe_id}') {{"
+            f"    document.getElementById('{iframe_id}').style.height = e.data.height + 'px';"
+            "  }"
+            "});"
+            "</script>"
         )
 
     def _repr_mimebundle_(self, **kwargs: Any) -> dict[str, str]:
