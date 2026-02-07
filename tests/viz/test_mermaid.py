@@ -274,6 +274,27 @@ class TestEdgeTypes:
 
         assert "should_continue --> retrieve" in mermaid
 
+    def test_both_ifelse_branches_to_end(self):
+        """Both True and False END edges emitted when both branches route to END.
+
+        Tests _render_end_edges directly because Graph validation rejects
+        @ifelse(when_true=END, when_false=END) as a degenerate case.
+        """
+        import networkx as nx
+        from hypergraph.viz.mermaid import _render_end_edges
+
+        fg = nx.DiGraph()
+        fg.add_node(
+            "gate",
+            branch_data={"when_true": "END", "when_false": "END"},
+        )
+        lines = _render_end_edges(fg, expansion_state={})
+
+        true_edges = [l for l in lines if "True" in l]
+        false_edges = [l for l in lines if "False" in l]
+        assert len(true_edges) == 1, f"Expected 1 True→END edge, got {true_edges}"
+        assert len(false_edges) == 1, f"Expected 1 False→END edge, got {false_edges}"
+
 
 # =============================================================================
 # ID Sanitization
