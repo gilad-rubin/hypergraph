@@ -490,3 +490,31 @@ class TestMermaidDiagram:
         diagram = graph.to_mermaid()
 
         assert "color:#283593" in diagram  # function text color
+
+    def test_to_ascii_renders_box_drawing(self):
+        """to_ascii() produces Unicode box-drawing output via Node.js."""
+        graph = Graph(nodes=[double, add_one])
+        diagram = graph.to_mermaid()
+
+        try:
+            ascii_art = diagram.to_ascii()
+        except RuntimeError:
+            pytest.skip("Node.js or beautiful-mermaid not available")
+
+        assert "double" in ascii_art
+        assert "add_one" in ascii_art
+        # Box-drawing characters
+        assert "\u250c" in ascii_art  # ┌
+        assert "\u2500" in ascii_art  # ─
+
+    def test_to_ascii_with_types(self):
+        """to_ascii() renders type annotations."""
+        graph = Graph(nodes=[double, add_one])
+        diagram = graph.to_mermaid(show_types=True)
+
+        try:
+            ascii_art = diagram.to_ascii()
+        except RuntimeError:
+            pytest.skip("Node.js or beautiful-mermaid not available")
+
+        assert "doubled: int" in ascii_art

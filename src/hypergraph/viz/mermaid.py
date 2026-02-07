@@ -14,7 +14,10 @@ Usage:
 from __future__ import annotations
 
 import html as html_module
+import json
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -133,14 +136,13 @@ class MermaidDiagram:
     def _repr_html_(self) -> str:
         """Render via bundled beautiful-mermaid (VSCode / older Jupyter fallback)."""
         js = _load_beautiful_mermaid_js()
-        escaped_source = html_module.escape(self.source, quote=True)
+        adapted = _adapt_for_beautiful_mermaid(self.source)
 
         inner_html = f"""<!DOCTYPE html>
 <html>
 <head>
 <style>
-  body {{ margin: 0; display: flex; justify-content: center; padding: 16px;
-         background: white; }}
+  body {{ margin: 0; display: flex; justify-content: center; padding: 16px; }}
 </style>
 </head>
 <body>
@@ -149,27 +151,15 @@ class MermaidDiagram:
 <script>
 (async () => {{
   try {{
-    let src = {_js_string_literal(self.source)};
-    // Adapt standard Mermaid syntax for beautiful-mermaid's parser:
-    src = src
-      .replace(/\\[\\["([^"]*?)"\\]\\]/g, '[[$1]]')
-      .replace(/\\(\\["([^"]*?)"\\]\\)/g, '([$1])')
-      .replace(/\\{{"([^"]*?)"\\}}/g, '{{$1}}')
-      .replace(/\\[\\/\\"([^"]*?)"\\/\\]/g, '[$1]')
-      .replace(/\\["([^"]*?)"\\]/g, (_, label) => {{
-        const clean = label.replace(/\\[/g, '\u27e8').replace(/\\]/g, '\u27e9');
-        return '[' + clean + ']';
-      }})
-      .replace(/<br\\/>/g, ' \u00b7 ');
-    let svg = await beautifulMermaid.renderMermaid(src, {{
-      font: 'system-ui',
-      fg: '#1a1a1a',
-      muted: '#555555',
-      layerSpacing: 60,
-    }});
+    const src = {_js_string_literal(adapted)};
+    const T = beautifulMermaid.THEMES || {{}};
+    const isDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+    const base = isDark ? (T['github-dark'] || {{}}) : (T['github-light'] || {{}});
+    const opts = {{ ...base, font: 'system-ui', layerSpacing: 60 }};
+    document.body.style.background = isDark ? (opts.bg || '#0d1117') : 'white';
+    let svg = await beautifulMermaid.renderMermaid(src, opts);
     svg = svg.replace(/@import url\\([^)]*fonts\\.googleapis[^)]*\\);?/g, '');
     document.getElementById('diagram').innerHTML = svg;
-    // Resize iframe to fit content
     const h = document.getElementById('diagram').scrollHeight + 40;
     window.parent.postMessage({{ type: 'resize', height: h }}, '*');
   }} catch (e) {{
@@ -184,7 +174,7 @@ class MermaidDiagram:
         return (
             '<iframe srcdoc="' + escaped_inner + '" '
             'frameborder="0" width="100%" height="400" '
-            'style="border: none; max-width: 100%; background: white; '
+            'style="border: none; max-width: 100%; '
             'border-radius: 8px;" '
             'sandbox="allow-scripts">'
             "</iframe>"
@@ -202,11 +192,107 @@ class MermaidDiagram:
             "text/plain": str(self),
         }
 
+    def to_ascii(self) -> str:
+        """Render the diagram as Unicode box-drawing art for terminal display.
+
+        Requires Node.js and the ``beautiful-mermaid`` npm package::
+
+            npm install -g beautiful-mermaid
+
+        Returns:
+            Unicode string with the rendered diagram.
+
+        Raises:
+            RuntimeError: If Node.js or beautiful-mermaid is not available.
+        """
+        return _render_ascii(self.source)
+
 
 def _js_string_literal(source: str) -> str:
     """Encode a Python string as a safe JS template literal."""
     escaped = source.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     return f"`{escaped}`"
+
+
+def _adapt_for_beautiful_mermaid(source: str) -> str:
+    """Adapt standard Mermaid syntax for beautiful-mermaid's parser.
+
+    beautiful-mermaid doesn't accept quoted labels inside shape delimiters
+    (e.g. ``["label"]`` must become ``[label]``). It also doesn't support
+    ``<br/>`` or the parallelogram ``[/"label"/]`` shape.
+    """
+    s = source
+    s = re.sub(r'\[\["([^"]*?)"\]\]', r'[[\1]]', s)       # double-border
+    s = re.sub(r'\(\["([^"]*?)"\]\)', r'([\1])', s)        # stadium
+    s = re.sub(r'\{"([^"]*?)"\}', r'{\1}', s)              # diamond
+    s = re.sub(r'\[/"([^"]*?)"/\]', r'[\1]', s)            # parallelogram → rect
+
+    def _escape_inner_brackets(m: re.Match[str]) -> str:
+        label = m.group(1).replace("[", "\u27e8").replace("]", "\u27e9")
+        return f"[{label}]"
+
+    s = re.sub(r'\["([^"]*?)"\]', _escape_inner_brackets, s)  # rectangle
+    s = s.replace("<br/>", " \u00b7 ")                         # line breaks
+    return s
+
+
+def _get_global_npm_root() -> str | None:
+    """Get the global npm root directory, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["npm", "root", "-g"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _render_ascii(source: str) -> str:
+    """Render Mermaid source as Unicode box-drawing art via Node.js.
+
+    Uses ``renderMermaidAscii`` from the ``beautiful-mermaid`` npm package.
+    Searches both local and global node_modules.
+    """
+    adapted = _adapt_for_beautiful_mermaid(source)
+    script = (
+        "const bm = require('beautiful-mermaid');"
+        "try { const r = bm.renderMermaidAscii(" + json.dumps(adapted) + ");"
+        "process.stdout.write(typeof r === 'string' ? r : '');"
+        "} catch(e) { process.stderr.write(e.message); process.exit(1); }"
+    )
+    env = dict(os.environ)
+    global_root = _get_global_npm_root()
+    if global_root:
+        existing = env.get("NODE_PATH", "")
+        env["NODE_PATH"] = f"{global_root}:{existing}" if existing else global_root
+
+    try:
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+    except FileNotFoundError:
+        msg = (
+            "Node.js is required for ASCII rendering. "
+            "Install it from https://nodejs.org"
+        )
+        raise RuntimeError(msg) from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("ASCII rendering timed out") from None
+
+    if result.returncode != 0:
+        error = result.stderr.strip() or "unknown error"
+        if "beautiful-mermaid" in error or "Cannot find" in error:
+            msg = (
+                "beautiful-mermaid npm package not found. "
+                "Install with: npm install -g beautiful-mermaid"
+            )
+            raise RuntimeError(msg)
+        raise RuntimeError(f"ASCII rendering failed: {error}")
+    return result.stdout
 
 
 # =============================================================================
