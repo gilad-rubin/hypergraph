@@ -5,6 +5,7 @@ import pytest
 from hypergraph.runners import (
     GraphState,
     NodeExecution,
+    PauseInfo,
     RunnerCapabilities,
     RunResult,
     RunStatus,
@@ -98,6 +99,71 @@ class TestRunResult:
             error=error,
         )
         assert result.error is error
+
+    def test_repr_is_compact_for_large_embedding(self):
+        result = RunResult(
+            values={"embedding": [0.1] * 5000, "label": "ok"},
+            status=RunStatus.COMPLETED,
+            run_id="run-fixed-id",
+        )
+        text = repr(result)
+
+        assert "embedding" in text
+        assert "len=5000" in text
+        assert "status=completed" in text
+        assert "run_id='run-fixed-id'" in text
+        assert len(text) <= 4000
+
+    def test_repr_keeps_small_payloads_readable(self):
+        result = RunResult(
+            values={"x": 1, "y": "hello"},
+            status=RunStatus.COMPLETED,
+        )
+        text = repr(result)
+
+        assert "values={'x': 1, 'y': 'hello'}" in text
+        assert "status=completed" in text
+
+    def test_repr_compacts_failed_and_paused_runs(self):
+        error = ValueError("x" * 500)
+        pause = PauseInfo(
+            node_name="review/interrupt",
+            output_param="decision",
+            value=[1] * 100,
+            output_params=("decision", "notes"),
+            values={"decision": "approve", "notes": "x" * 300},
+        )
+        result = RunResult(
+            values={"result": "partial"},
+            status=RunStatus.PAUSED,
+            error=error,
+            pause=pause,
+        )
+        text = repr(result)
+
+        assert "ValueError" in text
+        assert "PauseInfo" in text
+        assert "review/interrupt" in text
+        assert "len=100" in text
+        assert len(text) <= 4000
+
+    def test_repr_pretty_uses_compact_repr(self):
+        result = RunResult(values={"embedding": [0.1] * 5000}, status=RunStatus.COMPLETED)
+
+        class _PrettyPrinter:
+            def __init__(self):
+                self.output = ""
+
+            def text(self, value):
+                self.output += value
+
+        pretty = _PrettyPrinter()
+        result._repr_pretty_(pretty, cycle=False)
+        assert pretty.output == repr(result)
+
+        cycle_pretty = _PrettyPrinter()
+        result._repr_pretty_(cycle_pretty, cycle=True)
+        assert cycle_pretty.output == "RunResult(...)"
 
 
 class TestRunnerCapabilities:
