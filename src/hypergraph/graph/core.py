@@ -558,6 +558,48 @@ class Graph:
             filepath=filepath,
         )
 
+    def to_mermaid(
+        self,
+        *,
+        depth: int = 0,
+        show_types: bool = False,
+        separate_outputs: bool = False,
+        direction: str = "TD",
+        colors: dict[str, dict[str, str]] | None = None,
+    ) -> Any:
+        """Generate a Mermaid flowchart diagram for this graph.
+
+        Returns a ``MermaidDiagram`` that auto-renders in Jupyter/VS Code
+        notebooks and converts to raw Mermaid source via ``str()`` or
+        ``print()``.
+
+        Args:
+            depth: How many levels of nested graphs to expand (default: 0)
+            show_types: Whether to show type annotations in labels
+            separate_outputs: Whether to render outputs as separate DATA nodes
+            direction: Flowchart direction — "TD", "TB", "LR", "RL", "BT"
+            colors: Custom color overrides per node class, e.g.
+                ``{"function": {"fill": "#fff", "stroke": "#000"}}``
+
+        Returns:
+            MermaidDiagram — renders in notebooks, ``str()`` gives raw source.
+
+        Example:
+            >>> graph.to_mermaid()            # renders in notebook
+            >>> print(graph.to_mermaid())      # raw Mermaid source
+            >>> graph.to_mermaid().source       # access source directly
+        """
+        from hypergraph.viz.mermaid import to_mermaid
+
+        return to_mermaid(
+            self.to_flat_graph(),
+            depth=depth,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            direction=direction,
+            colors=colors,
+        )
+
     def to_flat_graph(self) -> nx.DiGraph:
         """Create a flattened NetworkX graph with all nested nodes.
 
