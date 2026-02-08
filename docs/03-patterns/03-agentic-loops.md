@@ -271,40 +271,41 @@ result = runner.run(graph, {
 })
 ```
 
-## Shared Outputs in a Cycle
+## Multiple Accumulators in a Cycle
 
-Multiple nodes can produce the same output name when they are **provably ordered** via `emit`/`wait_for` or placed in **mutually exclusive gate branches**. Ordering ensures the consumer always receives the most recently produced value. Without ordering, two producers in the same cycle could both fire in the same superstep, creating ambiguity.
+When multiple nodes accumulate state in a cycle (e.g., one appends user messages, another appends assistant responses), give each a **different output name**. Auto-wiring connects them naturally — no extra concepts needed.
 
 ```python
 @node(output_name="query")
-def generate_query(messages: list) -> str:
+def generate_query(messages_with_response: list) -> str:
     """Get the next user query (e.g., from input or an LLM)."""
-    return get_user_input(messages)
+    return get_user_input(messages_with_response)
 
-@node(output_name="messages", emit="query_done")
-def accumulate_query(messages: list, query: str) -> list:
-    return messages + [{"role": "user", "content": query}]
+@node(output_name="messages_with_user")
+def accumulate_query(messages_with_response: list, query: str) -> list:
+    return messages_with_response + [{"role": "user", "content": query}]
 
 @node(output_name="response")
-def generate_response(messages: list) -> str:
+def generate_response(messages_with_user: list) -> str:
     """Generate an assistant response from the conversation so far."""
-    return llm.chat(messages)
+    return llm.chat(messages_with_user)
 
-@node(output_name="messages", wait_for="query_done")
-def accumulate_response(messages: list, response: str) -> list:
-    return messages + [{"role": "assistant", "content": response}]
+@node(output_name="messages_with_response")
+def accumulate_response(messages_with_user: list, response: str) -> list:
+    return messages_with_user + [{"role": "assistant", "content": response}]
 
 @route(targets=["generate_query", END])
-def should_continue(messages: list) -> str:
-    return END if len(messages) >= 10 else "generate_query"
+def should_continue(messages_with_response: list) -> str:
+    return END if len(messages_with_response) >= 10 else "generate_query"
 
-# Allowed: accumulate_query emits "query_done", accumulate_response waits for it
 graph = Graph([
     generate_query, accumulate_query,
     generate_response, accumulate_response,
     should_continue,
 ])
 ```
+
+Each output name has exactly one producer, so auto-wiring creates proper data edges. For cases where you need pure execution ordering (node B must run after node A, but doesn't need its data), see [Ordering with emit/wait_for](#ordering-with-emitwait_for) above.
 
 ## Preventing Infinite Loops
 

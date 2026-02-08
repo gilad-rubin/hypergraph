@@ -78,32 +78,32 @@ from hypergraph import Graph, node, route, END, AsyncRunner, InterruptNode
 # Pause and wait for user input
 ask_user = InterruptNode(
     name="ask_user",
-    input_param="messages",
+    input_param="messages_with_response",
     output_param="user_input",
 )
 
-@node(output_name="messages")
-def add_user_message(messages: list, user_input: str) -> list:
-    return messages + [{"role": "user", "content": user_input}]
+@node(output_name="messages_with_user")
+def add_user_message(messages_with_response: list, user_input: str) -> list:
+    return messages_with_response + [{"role": "user", "content": user_input}]
 
 @node(output_name="response")
-def generate(messages: list) -> str:
-    return llm.chat(messages)  # your LLM client
+def generate(messages_with_user: list) -> str:
+    return llm.chat(messages_with_user)  # your LLM client
 
-@node(output_name="messages", emit="turn_done")
-def accumulate(messages: list, response: str) -> list:
-    return messages + [{"role": "assistant", "content": response}]
+@node(output_name="messages_with_response")
+def accumulate(messages_with_user: list, response: str) -> list:
+    return messages_with_user + [{"role": "assistant", "content": response}]
 
-@route(targets=["ask_user", END], wait_for="turn_done")
-def should_continue(messages: list) -> str:
-    if len(messages) >= 20:
+@route(targets=["ask_user", END])
+def should_continue(messages_with_response: list) -> str:
+    if len(messages_with_response) >= 20:
         return END
     return "ask_user"
 
 graph = Graph([ask_user, add_user_message, generate, accumulate, should_continue])
 
 # Pre-fill messages so the first step (ask_user) can run immediately
-chat = graph.bind(messages=[])
+chat = graph.bind(messages_with_response=[])
 
 runner = AsyncRunner()
 
@@ -122,9 +122,9 @@ result = await runner.run(chat, {"user_input": "Tell me more"})
 ```
 
 Key patterns:
-- **`.bind(messages=[])`** pre-fills the seed input so `.run({})` works with no values
+- **`.bind(messages_with_response=[])`** pre-fills the seed input so `.run({})` works with no values
 - **InterruptNode as first step**: the graph pauses immediately, asking the user for input
-- **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
+- **Different output names** (`messages_with_user`, `messages_with_response`) give each accumulator its own name, so auto-wiring creates proper data edges with no `emit`/`wait_for` needed
 - Each resume replays the graph, providing all previous responses
 
 ## Auto-Resolve with Handlers
