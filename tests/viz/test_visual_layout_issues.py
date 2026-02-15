@@ -17,6 +17,7 @@ from tests.viz.conftest import (
     make_outer,
     render_to_page,
 )
+from tests.viz.test_cross_boundary_edge import build_triple_nested_graph
 
 
 @node(output_name="validated")
@@ -309,6 +310,96 @@ class TestEdgeGaps:
                 f"Path ends at Y: {result['pathEndY']}px\n"
                 f"Gap: {result['endGap']}px (max allowed: {max_gap}px)"
             )
+
+    def test_cross_boundary_edges_do_not_cross_visible_nodes(self, page, temp_html_file):
+        """Cross-boundary rerouted edges must avoid crossing unrelated visible nodes."""
+        graph = build_triple_nested_graph()
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const nodes = debug.nodes || [];
+            const edges = debug.layoutedEdges || [];
+            const nodeById = {};
+            for (const n of nodes) nodeById[n.id] = n;
+
+            const segmentIntersectsRect = (ax, ay, bx, by, rect) => {
+                if (ax === bx && ay === by) {
+                    return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+                }
+                let t0 = 0;
+                let t1 = 1;
+                const dx = bx - ax;
+                const dy = by - ay;
+                const p = [-dx, dx, -dy, dy];
+                const q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
+                for (let i = 0; i < 4; i += 1) {
+                    const pi = p[i];
+                    const qi = q[i];
+                    if (pi === 0) {
+                        if (qi < 0) return false;
+                        continue;
+                    }
+                    const r = qi / pi;
+                    if (pi < 0) {
+                        if (r > t1) return false;
+                        if (r > t0) t0 = r;
+                    } else {
+                        if (r < t0) return false;
+                        if (r < t1) t1 = r;
+                    }
+                }
+                return true;
+            };
+
+            const issues = [];
+            for (const edge of edges) {
+                const points = (edge.data && edge.data.points) || [];
+                if (points.length < 2) continue;
+                const actualSrc = (edge.data && edge.data.actualSource) || edge.source;
+                const actualTgt = (edge.data && edge.data.actualTarget) || edge.target;
+
+                for (const node of nodes) {
+                    if (node.id === actualSrc || node.id === actualTgt) continue;
+                    // Ignore container ancestors of source/target; edges are expected
+                    // to live inside their owner container bounds.
+                    const nodeIsSrcAncestor = actualSrc.startsWith(node.id + '/');
+                    const nodeIsTgtAncestor = actualTgt.startsWith(node.id + '/');
+                    if (nodeIsSrcAncestor || nodeIsTgtAncestor) continue;
+                    const rect = {
+                        left: node.x + 1,
+                        right: node.x + node.width - 1,
+                        top: node.y + 1,
+                        bottom: node.y + node.height - 1,
+                    };
+                    if (rect.left >= rect.right || rect.top >= rect.bottom) continue;
+
+                    for (let i = 0; i < points.length - 1; i += 1) {
+                        const a = points[i];
+                        const b = points[i + 1];
+                        if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) {
+                            issues.push({
+                                edge: edge.id,
+                                source: actualSrc,
+                                target: actualTgt,
+                                node: node.id,
+                                segment: [a, b],
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+            return { issues };
+        }""")
+
+        assert not result["issues"], (
+            "Found edges crossing visible nodes:\n" +
+            "\n".join(
+                f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}"
+                for i in result["issues"][:10]
+            )
+        )
 
 
     def test_workflow_depth1_all_edges_no_gap(self, page, temp_html_file):

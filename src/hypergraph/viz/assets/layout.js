@@ -1420,7 +1420,18 @@
 
     return allPositionedEdges.map(function(e) {
       if (e.data && e.data.actualTarget && e.data.actualTarget !== e.target) {
-        return e;
+        var actualSrcId = (e.data && e.data.actualSource) || e.source;
+        var actualTgtId = (e.data && e.data.actualTarget) || e.target;
+        var existingPoints = (e.data && e.data.points) ? e.data.points.slice() : [];
+        if (!existingPoints.length) return e;
+        var cleanedPoints = rerouteAroundCrossedNodes(existingPoints, actualSrcId, actualTgtId);
+        return {
+          ...e,
+          data: {
+            ...(e.data || {}),
+            points: cleanedPoints,
+          },
+        };
       }
 
       var valueName = e.data && e.data.valueName;
