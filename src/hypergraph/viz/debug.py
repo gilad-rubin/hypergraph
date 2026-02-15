@@ -483,6 +483,88 @@ class VizDebugger:
             _debug_overlays=True,
         )
 
+    def debug_visualize(
+        self,
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        show_types: bool = False,
+        separate_outputs: bool = False,
+        headless: bool = True,
+        timeout: int = 5000,
+    ) -> "RenderedVizInspector":
+        """Create a render-debug inspector with preset visualization options.
+
+        This enables one-command debugging flows such as:
+            graph.debug_visualize(depth=1).get_crossings()
+        """
+        return RenderedVizInspector(
+            self.graph,
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            headless=headless,
+            timeout=timeout,
+        )
+
+    def get_render_issues(
+        self,
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        separate_outputs: bool = False,
+        checks: tuple[str, ...] = ("edge_node_crossings", "node_overlaps"),
+        limit_per_check: int = 25,
+        sample_count: int = 220,
+        include_containers: bool = False,
+        headless: bool = True,
+        timeout: int = 5000,
+    ) -> "RenderIssueData":
+        """Extract render-time geometry issues from the browser with filtering."""
+        return extract_render_issues(
+            self.graph,
+            depth=depth,
+            theme=theme,
+            separate_outputs=separate_outputs,
+            checks=checks,
+            limit_per_check=limit_per_check,
+            sample_count=sample_count,
+            include_containers=include_containers,
+            headless=headless,
+            timeout=timeout,
+        )
+
+    def get_crossings(
+        self,
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        separate_outputs: bool = False,
+        limit: int = 25,
+        sample_count: int = 220,
+        include_containers: bool = False,
+        headless: bool = True,
+        timeout: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return edge→node crossing records from rendered geometry."""
+        data = self.get_render_issues(
+            depth=depth,
+            theme=theme,
+            separate_outputs=separate_outputs,
+            checks=("edge_node_crossings",),
+            limit_per_check=limit,
+            sample_count=sample_count,
+            include_containers=include_containers,
+            headless=headless,
+            timeout=timeout,
+        )
+        return data.get("edge_node_crossings")
+
+    def get_crossing(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Alias for get_crossings()."""
+        return self.get_crossings(**kwargs)
+
 
 def validate_graph(graph: "Graph") -> ValidationResult:
     """Quick validation of a graph.
@@ -598,6 +680,122 @@ class RenderedDebugData:
             print("✓ All edges valid")
         else:
             print(f"✗ {issue_count} edge(s) have issues")
+
+
+@dataclass
+class RenderIssueData:
+    """Filtered render-time issue snapshot.
+
+    Designed to stay compact by default so debugging output does not flood context.
+    """
+
+    summary: dict[str, int]
+    checks: dict[str, list[dict[str, Any]]]
+    options: dict[str, Any]
+
+    def get(self, check: str, *, limit: Optional[int] = None) -> list[dict[str, Any]]:
+        """Get issue records for a specific check, optionally capped."""
+        items = self.checks.get(check, [])
+        if limit is None:
+            return items
+        return items[: max(0, limit)]
+
+    def print_report(self) -> None:
+        """Print a concise issue summary."""
+        print("=== Render Issue Summary ===")
+        for check, count in self.summary.items():
+            print(f"{check}: {count}")
+        print()
+        for check in self.checks:
+            items = self.checks[check]
+            if not items:
+                continue
+            print(f"{check} (showing {len(items)}):")
+            for item in items:
+                print(f"  - {item}")
+            print()
+
+
+class RenderedVizInspector:
+    """High-level render-debug entry point with preset options.
+
+    Typical usage:
+        graph.debug_visualize(depth=1).get_crossings()
+    """
+
+    def __init__(
+        self,
+        graph: "Graph",
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        show_types: bool = False,
+        separate_outputs: bool = False,
+        headless: bool = True,
+        timeout: int = 5000,
+    ):
+        self.graph = graph
+        self.depth = depth
+        self.theme = theme
+        self.show_types = show_types
+        self.separate_outputs = separate_outputs
+        self.headless = headless
+        self.timeout = timeout
+
+    def visualize(self, *, filepath: Optional[str] = None) -> Any:
+        """Render the graph with debug overlays using the preset options."""
+        from hypergraph.viz.widget import visualize as viz_func
+
+        return viz_func(
+            self.graph,
+            depth=self.depth,
+            theme=self.theme,
+            show_types=self.show_types,
+            separate_outputs=self.separate_outputs,
+            filepath=filepath,
+            _debug_overlays=True,
+        )
+
+    def get_issues(
+        self,
+        *,
+        checks: tuple[str, ...] = ("edge_node_crossings", "node_overlaps"),
+        limit_per_check: int = 25,
+        sample_count: int = 220,
+        include_containers: bool = False,
+    ) -> RenderIssueData:
+        """Collect selected render checks with compact, capped payloads."""
+        return extract_render_issues(
+            self.graph,
+            depth=self.depth,
+            theme=self.theme,
+            separate_outputs=self.separate_outputs,
+            checks=checks,
+            limit_per_check=limit_per_check,
+            sample_count=sample_count,
+            include_containers=include_containers,
+            headless=self.headless,
+            timeout=self.timeout,
+        )
+
+    def get_crossings(
+        self,
+        *,
+        limit: int = 25,
+        sample_count: int = 220,
+        include_containers: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Convenience accessor for edge→node crossings."""
+        return self.get_issues(
+            checks=("edge_node_crossings",),
+            limit_per_check=limit,
+            sample_count=sample_count,
+            include_containers=include_containers,
+        ).get("edge_node_crossings")
+
+    def get_crossing(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Alias for get_crossings()."""
+        return self.get_crossings(**kwargs)
 
 
 async def _extract_debug_data_async(
@@ -727,6 +925,546 @@ def _parse_debug_data(debug_data: dict) -> RenderedDebugData:
     )
 
 
+async def _extract_render_issues_async(
+    graph: "Graph",
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    separate_outputs: bool = False,
+    checks: tuple[str, ...] = ("edge_node_crossings", "node_overlaps"),
+    limit_per_check: int = 25,
+    sample_count: int = 220,
+    include_containers: bool = False,
+    headless: bool = True,
+    timeout: int = 5000,
+) -> RenderIssueData:
+    """Async implementation of extract_render_issues."""
+    from playwright.async_api import async_playwright
+
+    import os
+    import tempfile
+    from hypergraph.viz.widget import visualize
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        temp_path = f.name
+
+    visualize(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        filepath=temp_path,
+        _debug_overlays=True,
+    )
+
+    options = {
+        "checks": list(checks),
+        "limitPerCheck": max(1, limit_per_check),
+        "sampleCount": max(40, sample_count),
+        "includeContainers": bool(include_containers),
+    }
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            page = await browser.new_page()
+            await page.goto(f"file://{temp_path}")
+            await page.wait_for_function(
+                "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
+                timeout=timeout,
+            )
+            payload = await page.evaluate(
+                """(opts) => {
+                    const debug = window.__hypergraphVizDebug || {};
+                    const checks = new Set(opts.checks || []);
+                    const limitPerCheck = Math.max(1, Number(opts.limitPerCheck) || 25);
+                    const sampleCount = Math.max(40, Number(opts.sampleCount) || 220);
+                    const includeContainers = !!opts.includeContainers;
+
+                    const result = {
+                      summary: {
+                        edge_node_crossings: 0,
+                        node_overlaps: 0,
+                        edge_edge_crossings: 0,
+                      },
+                      checks: {
+                        edge_node_crossings: [],
+                        node_overlaps: [],
+                        edge_edge_crossings: [],
+                      },
+                      options: {
+                        checks: Array.from(checks),
+                        limit_per_check: limitPerCheck,
+                        sample_count: sampleCount,
+                        include_containers: includeContainers,
+                      },
+                    };
+
+                    const nodes = debug.nodes || [];
+                    const rawEdges = debug.layoutedEdges || debug.edges || [];
+                    const nodeRects = nodes.map((n) => {
+                      const nodeType = n.nodeType || "FUNCTION";
+                      return {
+                        id: n.id,
+                        nodeType: nodeType,
+                        left: n.x,
+                        top: n.y,
+                        right: n.x + n.width,
+                        bottom: n.y + n.height,
+                      };
+                    });
+
+                    const isContainer = (nodeType) => nodeType === "PIPELINE" || nodeType === "GRAPH";
+                    const candidateRects = includeContainers
+                      ? nodeRects
+                      : nodeRects.filter((r) => !isContainer(r.nodeType));
+
+                    const insideRect = (x, y, rect) =>
+                      x > rect.left && x < rect.right && y > rect.top && y < rect.bottom;
+
+                    const segmentIntersects = (a, b, c, d) => {
+                      const orient = (p, q, r) => (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+                      const onSegment = (p, q, r) =>
+                        q.x <= Math.max(p.x, r.x) + 1e-6 &&
+                        q.x + 1e-6 >= Math.min(p.x, r.x) &&
+                        q.y <= Math.max(p.y, r.y) + 1e-6 &&
+                        q.y + 1e-6 >= Math.min(p.y, r.y);
+                      const o1 = orient(a, b, c);
+                      const o2 = orient(a, b, d);
+                      const o3 = orient(c, d, a);
+                      const o4 = orient(c, d, b);
+                      if ((o1 > 0 && o2 < 0 || o1 < 0 && o2 > 0) && (o3 > 0 && o4 < 0 || o3 < 0 && o4 > 0)) return true;
+                      if (Math.abs(o1) < 1e-9 && onSegment(a, c, b)) return true;
+                      if (Math.abs(o2) < 1e-9 && onSegment(a, d, b)) return true;
+                      if (Math.abs(o3) < 1e-9 && onSegment(c, a, d)) return true;
+                      if (Math.abs(o4) < 1e-9 && onSegment(c, b, d)) return true;
+                      return false;
+                    };
+
+                    const edgeMetaById = new Map();
+                    rawEdges.forEach((edge) => {
+                      const cleanId = (edge.id || "").replace(/_exp_.*/, "");
+                      const actualSource = (edge.data && edge.data.actualSource) || edge.source;
+                      const actualTarget = (edge.data && edge.data.actualTarget) || edge.target;
+                      edgeMetaById.set(cleanId, {
+                        id: cleanId,
+                        source: actualSource,
+                        target: actualTarget,
+                        originalSource: edge.source,
+                        originalTarget: edge.target,
+                      });
+                    });
+
+                    const edgeElements = [];
+                    const edgeGroups = Array.from(document.querySelectorAll(".react-flow__edge"));
+                    edgeGroups.forEach((group) => {
+                      const pathEl = group.querySelector("path.react-flow__edge-path");
+                      if (!pathEl) return;
+                      const testId = group.getAttribute("data-testid") || "";
+                      const rawId = testId.replace("rf__edge-", "");
+                      const cleanId = rawId.replace(/_exp_.*/, "");
+                      const meta = edgeMetaById.get(cleanId);
+                      if (!meta) return;
+                      edgeElements.push({
+                        ...meta,
+                        pathEl,
+                      });
+                    });
+
+                    const samplePath = (pathEl, pointsTarget) => {
+                      const total = pathEl.getTotalLength();
+                      if (!Number.isFinite(total) || total <= 0) return [];
+                      const step = Math.max(1, total / pointsTarget);
+                      const points = [];
+                      for (let d = 0; d <= total; d += step) {
+                        const p = pathEl.getPointAtLength(d);
+                        points.push({ x: p.x, y: p.y });
+                      }
+                      if (points.length === 0 || points[points.length - 1].x !== pathEl.getPointAtLength(total).x || points[points.length - 1].y !== pathEl.getPointAtLength(total).y) {
+                        const pLast = pathEl.getPointAtLength(total);
+                        points.push({ x: pLast.x, y: pLast.y });
+                      }
+                      return points;
+                    };
+
+                    if (checks.has("node_overlaps")) {
+                      for (let i = 0; i < candidateRects.length; i += 1) {
+                        for (let j = i + 1; j < candidateRects.length; j += 1) {
+                          const a = candidateRects[i];
+                          const b = candidateRects[j];
+                          const overlapX = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                          const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                          if (overlapX > 0.5 && overlapY > 0.5) {
+                            result.summary.node_overlaps += 1;
+                            if (result.checks.node_overlaps.length < limitPerCheck) {
+                              result.checks.node_overlaps.push({
+                                node_a: a.id,
+                                node_b: b.id,
+                                overlap_x: overlapX,
+                                overlap_y: overlapY,
+                              });
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    if (checks.has("edge_node_crossings")) {
+                      edgeElements.forEach((edge) => {
+                        const pts = samplePath(edge.pathEl, sampleCount);
+                        if (pts.length < 2) return;
+                        let found = false;
+                        for (let p = 1; p < pts.length - 1 && !found; p += 1) {
+                          const point = pts[p];
+                          for (let r = 0; r < candidateRects.length; r += 1) {
+                            const rect = candidateRects[r];
+                            if (rect.id === edge.source || rect.id === edge.target) continue;
+                            if (insideRect(point.x, point.y, rect)) {
+                              result.summary.edge_node_crossings += 1;
+                              if (result.checks.edge_node_crossings.length < limitPerCheck) {
+                                result.checks.edge_node_crossings.push({
+                                  edge_id: edge.id,
+                                  edge: `${edge.originalSource} -> ${edge.originalTarget}`,
+                                  actual_edge: `${edge.source} -> ${edge.target}`,
+                                  crossed_node: rect.id,
+                                  at: { x: point.x, y: point.y },
+                                });
+                              }
+                              found = true;
+                              break;
+                            }
+                          }
+                        }
+                      });
+                    }
+
+                    if (checks.has("edge_edge_crossings")) {
+                      const edgePolylines = edgeElements.map((edge) => ({
+                        edge,
+                        pts: samplePath(edge.pathEl, Math.max(40, Math.floor(sampleCount * 0.35))),
+                      }));
+
+                      for (let i = 0; i < edgePolylines.length; i += 1) {
+                        for (let j = i + 1; j < edgePolylines.length; j += 1) {
+                          const a = edgePolylines[i];
+                          const b = edgePolylines[j];
+                          if (
+                            a.edge.source === b.edge.source ||
+                            a.edge.source === b.edge.target ||
+                            a.edge.target === b.edge.source ||
+                            a.edge.target === b.edge.target
+                          ) {
+                            continue;
+                          }
+                          let foundCross = false;
+                          for (let ai = 0; ai < a.pts.length - 1 && !foundCross; ai += 1) {
+                            const a1 = a.pts[ai];
+                            const a2 = a.pts[ai + 1];
+                            for (let bi = 0; bi < b.pts.length - 1; bi += 1) {
+                              const b1 = b.pts[bi];
+                              const b2 = b.pts[bi + 1];
+                              if (segmentIntersects(a1, a2, b1, b2)) {
+                                result.summary.edge_edge_crossings += 1;
+                                if (result.checks.edge_edge_crossings.length < limitPerCheck) {
+                                  result.checks.edge_edge_crossings.push({
+                                    edge_a: `${a.edge.originalSource} -> ${a.edge.originalTarget}`,
+                                    edge_b: `${b.edge.originalSource} -> ${b.edge.originalTarget}`,
+                                  });
+                                }
+                                foundCross = true;
+                                break;
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    return result;
+                }""",
+                options,
+            )
+            await browser.close()
+    finally:
+        os.unlink(temp_path)
+
+    return RenderIssueData(
+        summary=payload.get("summary", {}),
+        checks=payload.get("checks", {}),
+        options=payload.get("options", {}),
+    )
+
+
+def _extract_render_issues_sync(
+    graph: "Graph",
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    separate_outputs: bool = False,
+    checks: tuple[str, ...] = ("edge_node_crossings", "node_overlaps"),
+    limit_per_check: int = 25,
+    sample_count: int = 220,
+    include_containers: bool = False,
+    headless: bool = True,
+    timeout: int = 5000,
+) -> RenderIssueData:
+    """Sync implementation of extract_render_issues."""
+    from playwright.sync_api import sync_playwright
+
+    import os
+    import tempfile
+    from hypergraph.viz.widget import visualize
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        temp_path = f.name
+
+    visualize(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        filepath=temp_path,
+        _debug_overlays=True,
+    )
+
+    options = {
+        "checks": list(checks),
+        "limitPerCheck": max(1, limit_per_check),
+        "sampleCount": max(40, sample_count),
+        "includeContainers": bool(include_containers),
+    }
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            page = browser.new_page()
+            page.goto(f"file://{temp_path}")
+            page.wait_for_function(
+                "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0 && window.__hypergraphVizReady === true",
+                timeout=timeout,
+            )
+            payload = page.evaluate(
+                """(opts) => {
+                    const debug = window.__hypergraphVizDebug || {};
+                    const checks = new Set(opts.checks || []);
+                    const limitPerCheck = Math.max(1, Number(opts.limitPerCheck) || 25);
+                    const sampleCount = Math.max(40, Number(opts.sampleCount) || 220);
+                    const includeContainers = !!opts.includeContainers;
+
+                    const result = {
+                      summary: {
+                        edge_node_crossings: 0,
+                        node_overlaps: 0,
+                        edge_edge_crossings: 0,
+                      },
+                      checks: {
+                        edge_node_crossings: [],
+                        node_overlaps: [],
+                        edge_edge_crossings: [],
+                      },
+                      options: {
+                        checks: Array.from(checks),
+                        limit_per_check: limitPerCheck,
+                        sample_count: sampleCount,
+                        include_containers: includeContainers,
+                      },
+                    };
+
+                    const nodes = debug.nodes || [];
+                    const rawEdges = debug.layoutedEdges || debug.edges || [];
+                    const nodeRects = nodes.map((n) => {
+                      const nodeType = n.nodeType || "FUNCTION";
+                      return {
+                        id: n.id,
+                        nodeType: nodeType,
+                        left: n.x,
+                        top: n.y,
+                        right: n.x + n.width,
+                        bottom: n.y + n.height,
+                      };
+                    });
+
+                    const isContainer = (nodeType) => nodeType === "PIPELINE" || nodeType === "GRAPH";
+                    const candidateRects = includeContainers
+                      ? nodeRects
+                      : nodeRects.filter((r) => !isContainer(r.nodeType));
+
+                    const insideRect = (x, y, rect) =>
+                      x > rect.left && x < rect.right && y > rect.top && y < rect.bottom;
+
+                    const segmentIntersects = (a, b, c, d) => {
+                      const orient = (p, q, r) => (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+                      const onSegment = (p, q, r) =>
+                        q.x <= Math.max(p.x, r.x) + 1e-6 &&
+                        q.x + 1e-6 >= Math.min(p.x, r.x) &&
+                        q.y <= Math.max(p.y, r.y) + 1e-6 &&
+                        q.y + 1e-6 >= Math.min(p.y, r.y);
+                      const o1 = orient(a, b, c);
+                      const o2 = orient(a, b, d);
+                      const o3 = orient(c, d, a);
+                      const o4 = orient(c, d, b);
+                      if ((o1 > 0 && o2 < 0 || o1 < 0 && o2 > 0) && (o3 > 0 && o4 < 0 || o3 < 0 && o4 > 0)) return true;
+                      if (Math.abs(o1) < 1e-9 && onSegment(a, c, b)) return true;
+                      if (Math.abs(o2) < 1e-9 && onSegment(a, d, b)) return true;
+                      if (Math.abs(o3) < 1e-9 && onSegment(c, a, d)) return true;
+                      if (Math.abs(o4) < 1e-9 && onSegment(c, b, d)) return true;
+                      return false;
+                    };
+
+                    const edgeMetaById = new Map();
+                    rawEdges.forEach((edge) => {
+                      const cleanId = (edge.id || "").replace(/_exp_.*/, "");
+                      const actualSource = (edge.data && edge.data.actualSource) || edge.source;
+                      const actualTarget = (edge.data && edge.data.actualTarget) || edge.target;
+                      edgeMetaById.set(cleanId, {
+                        id: cleanId,
+                        source: actualSource,
+                        target: actualTarget,
+                        originalSource: edge.source,
+                        originalTarget: edge.target,
+                      });
+                    });
+
+                    const edgeElements = [];
+                    const edgeGroups = Array.from(document.querySelectorAll(".react-flow__edge"));
+                    edgeGroups.forEach((group) => {
+                      const pathEl = group.querySelector("path.react-flow__edge-path");
+                      if (!pathEl) return;
+                      const testId = group.getAttribute("data-testid") || "";
+                      const rawId = testId.replace("rf__edge-", "");
+                      const cleanId = rawId.replace(/_exp_.*/, "");
+                      const meta = edgeMetaById.get(cleanId);
+                      if (!meta) return;
+                      edgeElements.push({
+                        ...meta,
+                        pathEl,
+                      });
+                    });
+
+                    const samplePath = (pathEl, pointsTarget) => {
+                      const total = pathEl.getTotalLength();
+                      if (!Number.isFinite(total) || total <= 0) return [];
+                      const step = Math.max(1, total / pointsTarget);
+                      const points = [];
+                      for (let d = 0; d <= total; d += step) {
+                        const p = pathEl.getPointAtLength(d);
+                        points.push({ x: p.x, y: p.y });
+                      }
+                      if (points.length === 0 || points[points.length - 1].x !== pathEl.getPointAtLength(total).x || points[points.length - 1].y !== pathEl.getPointAtLength(total).y) {
+                        const pLast = pathEl.getPointAtLength(total);
+                        points.push({ x: pLast.x, y: pLast.y });
+                      }
+                      return points;
+                    };
+
+                    if (checks.has("node_overlaps")) {
+                      for (let i = 0; i < candidateRects.length; i += 1) {
+                        for (let j = i + 1; j < candidateRects.length; j += 1) {
+                          const a = candidateRects[i];
+                          const b = candidateRects[j];
+                          const overlapX = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+                          const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+                          if (overlapX > 0.5 && overlapY > 0.5) {
+                            result.summary.node_overlaps += 1;
+                            if (result.checks.node_overlaps.length < limitPerCheck) {
+                              result.checks.node_overlaps.push({
+                                node_a: a.id,
+                                node_b: b.id,
+                                overlap_x: overlapX,
+                                overlap_y: overlapY,
+                              });
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    if (checks.has("edge_node_crossings")) {
+                      edgeElements.forEach((edge) => {
+                        const pts = samplePath(edge.pathEl, sampleCount);
+                        if (pts.length < 2) return;
+                        let found = false;
+                        for (let p = 1; p < pts.length - 1 && !found; p += 1) {
+                          const point = pts[p];
+                          for (let r = 0; r < candidateRects.length; r += 1) {
+                            const rect = candidateRects[r];
+                            if (rect.id === edge.source || rect.id === edge.target) continue;
+                            if (insideRect(point.x, point.y, rect)) {
+                              result.summary.edge_node_crossings += 1;
+                              if (result.checks.edge_node_crossings.length < limitPerCheck) {
+                                result.checks.edge_node_crossings.push({
+                                  edge_id: edge.id,
+                                  edge: `${edge.originalSource} -> ${edge.originalTarget}`,
+                                  actual_edge: `${edge.source} -> ${edge.target}`,
+                                  crossed_node: rect.id,
+                                  at: { x: point.x, y: point.y },
+                                });
+                              }
+                              found = true;
+                              break;
+                            }
+                          }
+                        }
+                      });
+                    }
+
+                    if (checks.has("edge_edge_crossings")) {
+                      const edgePolylines = edgeElements.map((edge) => ({
+                        edge,
+                        pts: samplePath(edge.pathEl, Math.max(40, Math.floor(sampleCount * 0.35))),
+                      }));
+
+                      for (let i = 0; i < edgePolylines.length; i += 1) {
+                        for (let j = i + 1; j < edgePolylines.length; j += 1) {
+                          const a = edgePolylines[i];
+                          const b = edgePolylines[j];
+                          if (
+                            a.edge.source === b.edge.source ||
+                            a.edge.source === b.edge.target ||
+                            a.edge.target === b.edge.source ||
+                            a.edge.target === b.edge.target
+                          ) {
+                            continue;
+                          }
+                          let foundCross = false;
+                          for (let ai = 0; ai < a.pts.length - 1 && !foundCross; ai += 1) {
+                            const a1 = a.pts[ai];
+                            const a2 = a.pts[ai + 1];
+                            for (let bi = 0; bi < b.pts.length - 1; bi += 1) {
+                              const b1 = b.pts[bi];
+                              const b2 = b.pts[bi + 1];
+                              if (segmentIntersects(a1, a2, b1, b2)) {
+                                result.summary.edge_edge_crossings += 1;
+                                if (result.checks.edge_edge_crossings.length < limitPerCheck) {
+                                  result.checks.edge_edge_crossings.push({
+                                    edge_a: `${a.edge.originalSource} -> ${a.edge.originalTarget}`,
+                                    edge_b: `${b.edge.originalSource} -> ${b.edge.originalTarget}`,
+                                  });
+                                }
+                                foundCross = true;
+                                break;
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    return result;
+                }""",
+                options,
+            )
+            browser.close()
+    finally:
+        os.unlink(temp_path)
+
+    return RenderIssueData(
+        summary=payload.get("summary", {}),
+        checks=payload.get("checks", {}),
+        options=payload.get("options", {}),
+    )
+
+
 def _is_in_async_context() -> bool:
     """Check if we're running inside an async event loop."""
     import asyncio
@@ -815,3 +1553,97 @@ def extract_debug_data(
             headless=headless,
             timeout=timeout,
         )
+
+
+def extract_render_issues(
+    graph: "Graph",
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    separate_outputs: bool = False,
+    checks: tuple[str, ...] = ("edge_node_crossings", "node_overlaps"),
+    limit_per_check: int = 25,
+    sample_count: int = 220,
+    include_containers: bool = False,
+    headless: bool = True,
+    timeout: int = 5000,
+) -> RenderIssueData:
+    """Extract render-time geometry issues from a browser-rendered graph.
+
+    This is a compact debug surface intended for iterative investigation without
+    flooding output: checks are selectable and each check is capped by
+    ``limit_per_check`` records.
+
+    Args:
+        graph: Graph to render and inspect
+        depth: How many nested levels to expand
+        theme: "dark", "light", or "auto"
+        separate_outputs: Whether outputs are rendered as separate DATA nodes
+        checks: Checks to run. Supported values:
+            - "edge_node_crossings"
+            - "node_overlaps"
+            - "edge_edge_crossings"
+        limit_per_check: Max records returned for each check
+        sample_count: Path sampling resolution for edge checks
+        include_containers: Whether PIPELINE/GRAPH containers count as node bodies
+        headless: Run browser in headless mode
+        timeout: Max wait (ms) for layout/debug readiness
+
+    Returns:
+        RenderIssueData with summary counts and capped issue samples.
+
+    Raises:
+        ImportError: If playwright is not installed
+    """
+    try:
+        import playwright
+    except ImportError:
+        raise ImportError(
+            "playwright is required for extract_render_issues. "
+            "Install with: pip install playwright && playwright install chromium"
+        )
+
+    allowed = {"edge_node_crossings", "node_overlaps", "edge_edge_crossings"}
+    normalized = tuple(check for check in checks if check in allowed)
+    if not normalized:
+        normalized = ("edge_node_crossings", "node_overlaps")
+
+    if _is_in_async_context():
+        import asyncio
+        try:
+            import nest_asyncio
+            nest_asyncio.apply()
+        except ImportError:
+            pass
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _extract_render_issues_async(
+                    graph,
+                    depth=depth,
+                    theme=theme,
+                    separate_outputs=separate_outputs,
+                    checks=normalized,
+                    limit_per_check=limit_per_check,
+                    sample_count=sample_count,
+                    include_containers=include_containers,
+                    headless=headless,
+                    timeout=timeout,
+                )
+            )
+        finally:
+            loop.close()
+
+    return _extract_render_issues_sync(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        checks=normalized,
+        limit_per_check=limit_per_check,
+        sample_count=sample_count,
+        include_containers=include_containers,
+        headless=headless,
+        timeout=timeout,
+    )

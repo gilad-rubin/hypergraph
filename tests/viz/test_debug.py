@@ -10,6 +10,8 @@ from hypergraph.viz.debug import (
     NodeTrace,
     EdgeTrace,
     IssueReport,
+    RenderIssueData,
+    RenderedVizInspector,
 )
 
 
@@ -319,6 +321,17 @@ class TestGraphDebugViz:
         info = debugger.trace_node("double")
         assert info.status == "FOUND"
 
+    def test_debug_visualize_returns_inspector(self):
+        """Test that debug_visualize() returns a RenderedVizInspector."""
+        graph = Graph(nodes=[double, add_one])
+        inspector = graph.debug_visualize(depth=1, separate_outputs=True, timeout=1234)
+
+        assert isinstance(inspector, RenderedVizInspector)
+        assert inspector.graph is graph
+        assert inspector.depth == 1
+        assert inspector.separate_outputs is True
+        assert inspector.timeout == 1234
+
 
 class TestDebugVisualize:
     """Tests for VizDebugger.visualize() method."""
@@ -419,3 +432,50 @@ class TestExtractDebugData:
         captured = capsys.readouterr()
         assert "Edge Validation Report" in captured.out
         assert "Nodes:" in captured.out
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestExtractRenderIssues:
+    """Tests for compact, selectable render-issue extraction."""
+
+    def test_extract_render_issues_returns_compact_payload(self):
+        """Should return summary/checks/options with capped lists."""
+        from hypergraph.viz.debug import extract_render_issues
+
+        graph = Graph(nodes=[double, add_one])
+        data = extract_render_issues(
+            graph,
+            checks=("edge_node_crossings", "node_overlaps"),
+            limit_per_check=3,
+            sample_count=80,
+        )
+
+        assert isinstance(data, RenderIssueData)
+        assert "edge_node_crossings" in data.summary
+        assert "node_overlaps" in data.summary
+        assert isinstance(data.checks.get("edge_node_crossings"), list)
+        assert isinstance(data.checks.get("node_overlaps"), list)
+        assert data.options["limit_per_check"] == 3
+        assert data.options["sample_count"] == 80
+
+    def test_extract_render_issues_honors_selected_checks(self):
+        """When selecting one check, only that check should contain records."""
+        from hypergraph.viz.debug import extract_render_issues
+
+        graph = Graph(nodes=[double, add_one])
+        data = extract_render_issues(
+            graph,
+            checks=("edge_node_crossings",),
+            limit_per_check=2,
+        )
+
+        assert "edge_node_crossings" in data.checks
+        assert data.options["checks"] == ["edge_node_crossings"]
+        assert len(data.get("edge_node_crossings", limit=1)) <= 1
+
+    def test_debug_visualize_get_crossings_runs(self):
+        """The one-liner graph.debug_visualize(...).get_crossings() should work."""
+        graph = Graph(nodes=[double, add_one])
+        crossings = graph.debug_visualize(depth=1).get_crossings(limit=5, sample_count=80)
+
+        assert isinstance(crossings, list)

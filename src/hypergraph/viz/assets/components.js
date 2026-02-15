@@ -364,6 +364,7 @@
       var curveStyle = Math.max(0, Math.min(1, EDGE_CURVE_STYLE));
       var sharpTurnsEnabled = EDGE_SHARP_TURN_ANGLE > 0 && curveStyle < 1;
       var usePolyline = curveStyle <= 0 || (sharpTurnsEnabled && maxTurnAngle >= EDGE_SHARP_TURN_ANGLE);
+      var cornerRadius = (data && data.disableCornerRounding) ? 0 : EDGE_ELBOW_RADIUS;
       var tailStartIdx = findTailStartIndex(points);
       var headPoints = tailStartIdx > 0 ? points.slice(0, tailStartIdx + 1) : points;
       var tailPoints = tailStartIdx > 0 ? points.slice(tailStartIdx) : [];
@@ -423,7 +424,7 @@
       };
 
       if (usePolyline || curveStyle <= 0) {
-        edgePath = buildRoundedPolyline(points, EDGE_ELBOW_RADIUS);
+        edgePath = buildRoundedPolyline(points, cornerRadius);
       } else if (isNearlyVertical && curveStyle >= 1 && !hasIntermediatePoints && !isFeedbackEdge) {
         // Use actual points for nearly-vertical edges (including re-routed ones)
         var midY = (startPt.y + endPt.y) / 2;

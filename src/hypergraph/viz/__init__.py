@@ -19,17 +19,23 @@ from hypergraph.viz.debug import (
     validate_graph,
     find_issues,
     extract_debug_data,
+    extract_render_issues,
     RenderedDebugData,
     RenderedEdge,
+    RenderIssueData,
+    RenderedVizInspector,
 )
 
 __all__ = [
     "MermaidDiagram",
     "RenderedDebugData",
     "RenderedEdge",
+    "RenderIssueData",
+    "RenderedVizInspector",
     "ScrollablePipelineWidget",
     "VizDebugger",
     "extract_debug_data",
+    "extract_render_issues",
     "find_issues",
     "to_mermaid",
     "validate_graph",

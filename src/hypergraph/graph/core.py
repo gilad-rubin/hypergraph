@@ -16,7 +16,7 @@ from hypergraph.graph.validation import GraphConfigError, validate_graph
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.viz.debug import VizDebugger
+    from hypergraph.viz.debug import RenderedVizInspector, VizDebugger
 
 
 def _build_hierarchical_id(node_name: str, parent_id: str | None) -> str:
@@ -749,3 +749,27 @@ class Graph:
         from hypergraph.viz.debug import VizDebugger
 
         return VizDebugger(self)
+
+    def debug_visualize(
+        self,
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        show_types: bool = False,
+        separate_outputs: bool = False,
+        headless: bool = True,
+        timeout: int = 5000,
+    ) -> "RenderedVizInspector":
+        """Create a render-debug inspector with preset visualization options.
+
+        Example:
+            >>> graph.debug_visualize(depth=1).get_crossings()
+        """
+        return self.debug_viz().debug_visualize(
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            headless=headless,
+            timeout=timeout,
+        )

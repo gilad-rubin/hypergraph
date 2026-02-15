@@ -38,6 +38,7 @@
   var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
   var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
+  var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS || 0;
 
 
   /**
@@ -1301,6 +1302,9 @@
     var minTop = originalCrossed.reduce(function(best, rect) {
       return Math.min(best, rect.top);
     }, Infinity);
+    var maxBottom = originalCrossed.reduce(function(best, rect) {
+      return Math.max(best, rect.bottom);
+    }, -Infinity);
     var minLeft = originalCrossed.reduce(function(best, rect) {
       return Math.min(best, rect.left);
     }, Infinity);
@@ -1308,53 +1312,133 @@
       return Math.max(best, rect.right);
     }, -Infinity);
 
-    var yCandidates = [
-      Math.min(end.y - 20, Math.max(start.y + 20, minTop - 18)),
-      Math.min(end.y - 28, Math.max(start.y + 28, minTop - 30)),
+    var cornerClearance = Math.max(20, EDGE_ELBOW_RADIUS + 12);
+    var startStemY = Math.min(end.y - 6, start.y + Math.max(10, cornerClearance - 4));
+    var endStemY = Math.max(start.y + 6, end.y - Math.max(12, cornerClearance - 2));
+
+    var rawYCandidates = [
+      Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, minTop - cornerClearance)),
+      Math.min(end.y - (cornerClearance + 10), Math.max(start.y + (cornerClearance + 10), minTop - (cornerClearance + 18))),
+      Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, maxBottom + cornerClearance)),
+      Math.max(start.y + cornerClearance, Math.min(end.y - cornerClearance, (start.y + end.y) / 2)),
+      endStemY,
     ];
 
-    var buildDetourPath = function(laneX, detourY) {
+    var yCandidates = [];
+    rawYCandidates.forEach(function(y) {
+      if (!Number.isFinite(y)) return;
+      if (y <= start.y + 4 || y >= end.y - 4) return;
+      var rounded = Math.round(y);
+      if (yCandidates.indexOf(rounded) === -1) yCandidates.push(rounded);
+    });
+
+    var sanitizePath = function(path) {
+      if (!path || !path.length) return null;
+      var cleaned = [];
+      path.forEach(function(pt) {
+        if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return;
+        var normalized = { x: pt.x, y: pt.y };
+        var prev = cleaned.length ? cleaned[cleaned.length - 1] : null;
+        if (!prev || Math.abs(prev.x - normalized.x) > 1e-6 || Math.abs(prev.y - normalized.y) > 1e-6) {
+          cleaned.push(normalized);
+        }
+      });
+      return cleaned.length >= 2 ? cleaned : null;
+    };
+
+    var buildViaYPath = function(detourY) {
       if (!Number.isFinite(detourY) || detourY <= start.y + 4 || detourY >= end.y - 4) {
         return null;
       }
-      if (!Number.isFinite(laneX) || Math.abs(laneX - start.x) < 1) {
-        return [
-          { x: start.x, y: start.y },
-          { x: start.x, y: detourY },
-          { x: end.x, y: detourY },
-          { x: end.x, y: end.y },
-        ];
-      }
-      return [
+      return sanitizePath([
         { x: start.x, y: start.y },
-        { x: laneX, y: start.y + 12 },
+        { x: start.x, y: detourY },
+        { x: end.x, y: detourY },
+        { x: end.x, y: end.y },
+      ]);
+    };
+
+    var buildLaneThenYPath = function(laneX, detourY) {
+      if (!Number.isFinite(laneX) || !Number.isFinite(detourY)) return null;
+      return sanitizePath([
+        { x: start.x, y: start.y },
+        { x: laneX, y: startStemY },
         { x: laneX, y: detourY },
         { x: end.x, y: detourY },
         { x: end.x, y: end.y },
-      ];
+      ]);
     };
 
-    var laneCandidates = [start.x, end.x, minLeft - 20, maxRight + 20];
+    var buildLaneDownPath = function(laneX) {
+      if (!Number.isFinite(laneX)) return null;
+      return sanitizePath([
+        { x: start.x, y: start.y },
+        { x: laneX, y: startStemY },
+        { x: laneX, y: endStemY },
+        { x: end.x, y: endStemY },
+        { x: end.x, y: end.y },
+      ]);
+    };
+
+    var pathLength = function(path) {
+      var total = 0;
+      for (var i = 0; i < path.length - 1; i += 1) {
+        var dx = path[i + 1].x - path[i].x;
+        var dy = path[i + 1].y - path[i].y;
+        total += Math.sqrt(dx * dx + dy * dy);
+      }
+      return total;
+    };
+
+    var lanePad = cornerClearance + 8;
+    var laneCandidates = [
+      start.x,
+      end.x,
+      minLeft - lanePad,
+      maxRight + lanePad,
+      Math.min(start.x, end.x) - lanePad,
+      Math.max(start.x, end.x) + lanePad,
+    ];
+    var uniqueLanes = [];
+    laneCandidates.forEach(function(x) {
+      if (!Number.isFinite(x)) return;
+      var rounded = Math.round(x);
+      if (uniqueLanes.indexOf(rounded) === -1) uniqueLanes.push(rounded);
+    });
+
     var candidates = [];
     yCandidates.forEach(function(detourY) {
-      laneCandidates.forEach(function(laneX) {
-        var candidate = buildDetourPath(laneX, detourY);
+      var direct = buildViaYPath(detourY);
+      if (direct) candidates.push(direct);
+      uniqueLanes.forEach(function(laneX) {
+        var candidate = buildLaneThenYPath(laneX, detourY);
         if (candidate) candidates.push(candidate);
       });
+    });
+    uniqueLanes.forEach(function(laneX) {
+      var downPath = buildLaneDownPath(laneX);
+      if (downPath) candidates.push(downPath);
     });
     if (!candidates.length) return points;
 
     var bestPath = points;
     var bestScore = originalCrossed.length;
-    var bestLaneShift = Infinity;
+    var bestBendCount = Infinity;
+    var bestLength = Infinity;
 
     candidates.forEach(function(candidate) {
       var score = findCrossedNodes(candidate, sourceId, targetId).length;
-      var laneShift = Math.abs((candidate[1] && candidate[1].x) - start.x);
-      if (score < bestScore || (score === bestScore && laneShift < bestLaneShift)) {
+      var bendCount = Math.max(0, candidate.length - 2);
+      var length = pathLength(candidate);
+      if (
+        score < bestScore ||
+        (score === bestScore && bendCount < bestBendCount) ||
+        (score === bestScore && bendCount === bestBendCount && length < bestLength)
+      ) {
         bestPath = candidate;
         bestScore = score;
-        bestLaneShift = laneShift;
+        bestBendCount = bendCount;
+        bestLength = length;
       }
     });
 
@@ -1362,7 +1446,7 @@
   }
 
   function avoidVisibleNodeCrossingsPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, debugMode, label) {
-    var EDGE_REROUTE_CLEARANCE = 10;
+    var EDGE_REROUTE_CLEARANCE = Math.max(12, EDGE_ELBOW_RADIUS + 12);
     var findCrossedNodes = makeNodeCrossingFinder(
       nodePositions,
       nodeDimensions,
@@ -1375,6 +1459,7 @@
       if (!points || points.length < 2) return e;
       var actualSource = (e.data && e.data.actualSource) || e.source;
       var actualTarget = (e.data && e.data.actualTarget) || e.target;
+      var originalPoints = points;
       var newPoints = rerouteEdgeAroundCrossedNodes(points, actualSource, actualTarget, findCrossedNodes);
       if (newPoints === points) return e;
       if (debugMode) {
@@ -1385,6 +1470,7 @@
         data: {
           ...e.data,
           points: newPoints,
+          disableCornerRounding: (e.data && e.data.disableCornerRounding) || (newPoints !== originalPoints),
         },
       };
     });
@@ -1394,7 +1480,7 @@
     var inputNodeActualTargets = routingLookups.inputNodeActualTargets;
     var outputToProducer = routingLookups.outputToProducer;
     var nodeToParent = routingLookups.nodeToParent;
-    var EDGE_REROUTE_CLEARANCE = 10;
+    var EDGE_REROUTE_CLEARANCE = Math.max(12, EDGE_ELBOW_RADIUS + 12);
     var findCrossedNodes = makeNodeCrossingFinder(
       nodePositions,
       nodeDimensions,
@@ -1495,7 +1581,9 @@
           'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
       }
 
+      var preCrossingPoints = newPoints;
       newPoints = rerouteEdgeAroundCrossedNodes(newPoints, actualSrc, actualTgt, findCrossedNodes);
+      var reroutedAroundNodes = newPoints !== preCrossingPoints;
 
       return {
         ...e,
@@ -1504,6 +1592,7 @@
           points: newPoints,
           actualSource: actualSrc,
           actualTarget: actualTgt,
+          disableCornerRounding: (e.data && e.data.disableCornerRounding) || reroutedAroundNodes,
         },
       };
     });
