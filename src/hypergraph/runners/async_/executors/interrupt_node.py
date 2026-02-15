@@ -23,8 +23,6 @@ class AsyncInterruptNodeExecutor:
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
-        is_multi_output = len(data_outputs) > 1
-        is_multi_input = node.is_multi_input
 
         # Collect all input values with validation
         input_values = {}
@@ -44,56 +42,42 @@ class AsyncInterruptNodeExecutor:
             result = {o: state.values[o] for o in data_outputs}
             return _add_emit_sentinels(result, node)
 
-        # Handler path: invoke the function/handler
-        if node.func is not None:
-            try:
-                response = _call_handler(node, input_values)
-                if isawaitable(response):
-                    response = await response
-            except Exception as e:
-                raise RuntimeError(
-                    f"Handler for InterruptNode '{node.name}' failed: "
-                    f"{type(e).__name__}: {e}"
-                ) from e
+        # Handler path: invoke the function
+        try:
+            params = node.map_inputs_to_params(input_values)
+            response = node.func(**params)
+            if isawaitable(response):
+                response = await response
+        except Exception as e:
+            raise RuntimeError(
+                f"Handler for InterruptNode '{node.name}' failed: "
+                f"{type(e).__name__}: {e}"
+            ) from e
 
-            # None return means "pause" (Option E semantics)
-            if response is not None:
-                result = _normalize_response(node, response, data_outputs, is_multi_output)
-                return _add_emit_sentinels(result, node)
+        # None return means "pause"
+        if response is not None:
+            result = _normalize_response(node, response, data_outputs)
+            return _add_emit_sentinels(result, node)
 
-        # Pause path: no handler, or handler returned None
+        # Pause path: handler returned None
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
                 output_param=data_outputs[0],
                 value=input_values[node.inputs[0]],
-                output_params=data_outputs if is_multi_output else None,
-                values=input_values if is_multi_input else None,
+                output_params=data_outputs if len(data_outputs) > 1 else None,
+                values=input_values if len(node.inputs) > 1 else None,
             )
         )
-
-
-def _call_handler(node: "InterruptNode", input_values: dict[str, Any]) -> Any:
-    """Call the handler with the appropriate calling convention."""
-    # Func-based nodes: call with keyword arguments
-    if node._use_kwargs:
-        params = node.map_inputs_to_params(input_values)
-        return node.func(**params)
-
-    # Legacy class-constructor nodes: positional calling convention
-    if node.is_multi_input:
-        return node.func(input_values)
-    return node.func(input_values[node.inputs[0]])
 
 
 def _normalize_response(
     node: "InterruptNode",
     response: Any,
     data_outputs: tuple[str, ...],
-    is_multi_output: bool,
 ) -> dict[str, Any]:
     """Normalize handler response to output dict (data outputs only)."""
-    if is_multi_output:
+    if len(data_outputs) > 1:
         if isinstance(response, dict):
             expected_keys = set(data_outputs)
             actual_keys = set(response.keys())
