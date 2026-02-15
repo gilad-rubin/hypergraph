@@ -54,6 +54,61 @@ def make_branch_anchor_graph() -> Graph:
     )
 
 
+@node(output_name="doc_exists")
+def sep_outputs_check_document_exists(doc_id: str, vector_store: str) -> bool:
+    return False
+
+
+@ifelse(when_true="sep_outputs_process_document", when_false="sep_outputs_skip_document")
+def sep_outputs_should_process(doc_exists: bool, overwrite: bool) -> bool:
+    return (not doc_exists) or overwrite
+
+
+@node(output_name="index_result")
+def sep_outputs_skip_document(doc_id: str) -> str:
+    return "skip"
+
+
+@node(output_name="pdf_path")
+def sep_outputs_load_pdf_path(doc_id: str) -> str:
+    return "/tmp/doc.pdf"
+
+
+@node(output_name="pages")
+def sep_outputs_convert_document(pdf_path: str) -> list[str]:
+    return [pdf_path]
+
+
+@node(output_name="enrichment")
+def sep_outputs_enrich_document(pages: list[str]) -> str:
+    return "|".join(pages)
+
+
+@node(output_name="index_result")
+def sep_outputs_index_document(enrichment: str) -> str:
+    return enrichment
+
+
+def make_sep_outputs_crossing_graph() -> Graph:
+    process_document = Graph(
+        nodes=[
+            sep_outputs_load_pdf_path,
+            sep_outputs_convert_document,
+            sep_outputs_enrich_document,
+            sep_outputs_index_document,
+        ],
+        name="sep_outputs_process_document",
+    )
+    return Graph(
+        nodes=[
+            sep_outputs_check_document_exists,
+            sep_outputs_should_process,
+            process_document.as_node(),
+            sep_outputs_skip_document,
+        ]
+    )
+
+
 # =============================================================================
 # Test: Input nodes should be ABOVE their targets (edges flow downward)
 # =============================================================================
@@ -596,6 +651,112 @@ class TestEdgeGaps:
         self._assert_branch_labels_centered(
             self._branch_label_reports(page),
             stage="after collapse retrieval",
+        )
+
+    def test_separate_outputs_toggle_does_not_route_edges_through_nodes(self, page, temp_html_file):
+        """Switching to separate outputs must keep edges off unrelated visible node bodies."""
+        graph = make_sep_outputs_crossing_graph()
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
+
+        def _edge_node_crossings() -> dict:
+            return page.evaluate("""() => {
+                const debug = window.__hypergraphVizDebug;
+                const nodes = debug.nodes || [];
+                const edges = debug.layoutedEdges || [];
+
+                const segmentIntersectsRect = (ax, ay, bx, by, rect) => {
+                    if (ax === bx && ay === by) {
+                        return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+                    }
+                    let t0 = 0;
+                    let t1 = 1;
+                    const dx = bx - ax;
+                    const dy = by - ay;
+                    const p = [-dx, dx, -dy, dy];
+                    const q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
+                    for (let i = 0; i < 4; i += 1) {
+                        const pi = p[i];
+                        const qi = q[i];
+                        if (pi === 0) {
+                            if (qi < 0) return false;
+                            continue;
+                        }
+                        const r = qi / pi;
+                        if (pi < 0) {
+                            if (r > t1) return false;
+                            if (r > t0) t0 = r;
+                        } else {
+                            if (r < t0) return false;
+                            if (r < t1) t1 = r;
+                        }
+                    }
+                    return true;
+                };
+
+                const issues = [];
+                for (const edge of edges) {
+                    const points = (edge.data && edge.data.points) || [];
+                    if (points.length < 2) continue;
+
+                    const actualSrc = (edge.data && edge.data.actualSource) || edge.source;
+                    const actualTgt = (edge.data && edge.data.actualTarget) || edge.target;
+
+                    for (const node of nodes) {
+                        if (node.nodeType === "PIPELINE") continue;
+                        if (node.id === actualSrc || node.id === actualTgt) continue;
+
+                        const rect = {
+                            left: node.x + 1,
+                            right: node.x + node.width - 1,
+                            top: node.y + 1,
+                            bottom: node.y + node.height - 1,
+                        };
+                        if (rect.left >= rect.right || rect.top >= rect.bottom) continue;
+
+                        for (let i = 0; i < points.length - 1; i += 1) {
+                            const a = points[i];
+                            const b = points[i + 1];
+                            if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) {
+                                issues.push({
+                                    edge: edge.id,
+                                    source: actualSrc,
+                                    target: actualTgt,
+                                    node: node.id,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                return { issues };
+            }""")
+
+        before_toggle = _edge_node_crossings()
+        assert not before_toggle["issues"], (
+            "Found edge/node crossings before separate outputs toggle:\n" +
+            "\n".join(
+                f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}"
+                for i in before_toggle["issues"][:10]
+            )
+        )
+
+        version_before_toggle = page.evaluate("window.__hypergraphVizDebug.version")
+        page.evaluate("""() => {
+            window.__hypergraphVizSetRenderOptions({ separateOutputs: true });
+        }""")
+        page.wait_for_function(
+            f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {version_before_toggle} && window.__hypergraphVizReady === true",
+            timeout=10000,
+        )
+
+        after_toggle = _edge_node_crossings()
+        assert not after_toggle["issues"], (
+            "Found edge/node crossings after separate outputs toggle:\n" +
+            "\n".join(
+                f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}"
+                for i in after_toggle["issues"][:10]
+            )
         )
 
 

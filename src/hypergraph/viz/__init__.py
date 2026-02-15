@@ -19,6 +19,8 @@ from hypergraph.viz.debug import (
     validate_graph,
     find_issues,
     extract_debug_data,
+    extract_layout_issues,
+    LayoutIssueData,
     RenderedDebugData,
     RenderedEdge,
 )
@@ -26,10 +28,12 @@ from hypergraph.viz.debug import (
 __all__ = [
     "MermaidDiagram",
     "RenderedDebugData",
+    "LayoutIssueData",
     "RenderedEdge",
     "ScrollablePipelineWidget",
     "VizDebugger",
     "extract_debug_data",
+    "extract_layout_issues",
     "find_issues",
     "to_mermaid",
     "validate_graph",

@@ -1195,11 +1195,22 @@
     });
   }
 
-  function applyEdgeReroutesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, debugMode) {
+  function applyEdgeReroutesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, nodeParents, debugMode) {
     var inputNodeActualTargets = routingLookups.inputNodeActualTargets;
     var outputToProducer = routingLookups.outputToProducer;
     var nodeToParent = routingLookups.nodeToParent;
     var EDGE_REROUTE_CLEARANCE = Math.max(12, EDGE_ELBOW_RADIUS + 12);
+    var parentLookup = nodeParents || new Map();
+
+    var isAncestor = function(ancestorId, nodeId) {
+      if (!ancestorId || !nodeId) return false;
+      var current = nodeId;
+      while (parentLookup.has(current)) {
+        current = parentLookup.get(current);
+        if (current === ancestorId) return true;
+      }
+      return false;
+    };
 
     var segmentIntersectsRect = function(ax, ay, bx, by, rect) {
       if (ax === bx && ay === by) {
@@ -1232,12 +1243,28 @@
       return true;
     };
 
+    var isContainerType = function(nodeType) {
+      return nodeType === 'PIPELINE' || nodeType === 'GRAPH';
+    };
+
+    var crossingScore = function(crossedItems) {
+      if (!crossedItems || !crossedItems.length) return 0;
+      return crossedItems.reduce(function(total, item) {
+        return total + (isContainerType(item.nodeType) ? 1 : 100);
+      }, 0);
+    };
+
     var findCrossedNodes = function(points, sourceId, targetId) {
       var crossed = [];
       if (!points || points.length < 2) return crossed;
 
       nodePositions.forEach(function(pos, nodeId) {
         if (nodeId === sourceId || nodeId === targetId) return;
+        var nodeType = nodeTypes.get(nodeId) || 'FUNCTION';
+        var isContainer = nodeType === 'PIPELINE' || nodeType === 'GRAPH';
+        if (isContainer && (isAncestor(nodeId, sourceId) || isAncestor(nodeId, targetId))) {
+          return;
+        }
         var dims = nodeDimensions.get(nodeId);
         if (!dims) return;
 
@@ -1252,7 +1279,7 @@
           var a = points[i];
           var b = points[i + 1];
           if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) {
-            crossed.push(rect);
+            crossed.push({ rect: rect, nodeType: nodeType });
             return;
           }
         }
@@ -1270,16 +1297,20 @@
       var end = points[points.length - 1];
       if (!(end.y > start.y + 24)) return points;
 
-      var minTop = originalCrossed.reduce(function(best, rect) {
+      var minTop = originalCrossed.reduce(function(best, crossedItem) {
+        var rect = crossedItem.rect;
         return Math.min(best, rect.top);
       }, Infinity);
-      var maxBottom = originalCrossed.reduce(function(best, rect) {
+      var maxBottom = originalCrossed.reduce(function(best, crossedItem) {
+        var rect = crossedItem.rect;
         return Math.max(best, rect.bottom);
       }, -Infinity);
-      var minLeft = originalCrossed.reduce(function(best, rect) {
+      var minLeft = originalCrossed.reduce(function(best, crossedItem) {
+        var rect = crossedItem.rect;
         return Math.min(best, rect.left);
       }, Infinity);
-      var maxRight = originalCrossed.reduce(function(best, rect) {
+      var maxRight = originalCrossed.reduce(function(best, crossedItem) {
+        var rect = crossedItem.rect;
         return Math.max(best, rect.right);
       }, -Infinity);
 
@@ -1291,6 +1322,8 @@
         Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, minTop - cornerClearance)),
         Math.min(end.y - (cornerClearance + 10), Math.max(start.y + (cornerClearance + 10), minTop - (cornerClearance + 18))),
         Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, maxBottom + cornerClearance)),
+        Math.min(end.y - 5, Math.max(start.y + cornerClearance, maxBottom + 2)),
+        end.y - 5,
         Math.max(start.y + cornerClearance, Math.min(end.y - cornerClearance, (start.y + end.y) / 2)),
         endStemY,
       ];
@@ -1333,6 +1366,7 @@
         if (!Number.isFinite(laneX) || !Number.isFinite(detourY)) return null;
         return sanitizePath([
           { x: start.x, y: start.y },
+          { x: start.x, y: startStemY },
           { x: laneX, y: startStemY },
           { x: laneX, y: detourY },
           { x: end.x, y: detourY },
@@ -1344,6 +1378,7 @@
         if (!Number.isFinite(laneX)) return null;
         return sanitizePath([
           { x: start.x, y: start.y },
+          { x: start.x, y: startStemY },
           { x: laneX, y: startStemY },
           { x: laneX, y: endStemY },
           { x: end.x, y: endStemY },
@@ -1395,12 +1430,12 @@
       if (!candidates.length) return points;
 
       var bestPath = points;
-      var bestScore = originalCrossed.length;
+      var bestScore = crossingScore(originalCrossed);
       var bestBendCount = Infinity;
       var bestLength = Infinity;
 
       candidates.forEach(function(candidate) {
-        var score = findCrossedNodes(candidate, sourceId, targetId).length;
+        var score = crossingScore(findCrossedNodes(candidate, sourceId, targetId));
         var bendCount = Math.max(0, candidate.length - 2);
         var length = pathLength(candidate);
         if (
@@ -1518,7 +1553,23 @@
           'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
       }
 
-      newPoints = rerouteAroundCrossedNodes(newPoints, actualSrc, actualTgt);
+      var edgeType = (e.data && e.data.edgeType) || '';
+      if (edgeType === 'output' && newPoints.length >= 2) {
+        var startPt = newPoints[0];
+        var endPt = newPoints[newPoints.length - 1];
+        var midY = Math.max(startPt.y + 6, endPt.y - 5);
+        if (midY >= endPt.y - 1) midY = endPt.y - 2;
+        if (midY > startPt.y + 1) {
+          newPoints = [
+            { x: startPt.x, y: startPt.y },
+            { x: startPt.x, y: midY },
+            { x: endPt.x, y: midY },
+            { x: endPt.x, y: endPt.y },
+          ];
+        }
+      } else {
+        newPoints = rerouteAroundCrossedNodes(newPoints, actualSrc, actualTgt);
+      }
 
       return {
         ...e,
@@ -1708,6 +1759,9 @@
       nodeDimensions,
       nodeTypes,
       routingLookups,
+      new Map(allPositionedNodes
+        .filter(function(n) { return n.parentNode; })
+        .map(function(n) { return [n.id, n.parentNode]; })),
       debugMode
     );
 

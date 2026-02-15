@@ -483,6 +483,65 @@ class VizDebugger:
             _debug_overlays=True,
         )
 
+    def get_layout_issues(
+        self,
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        separate_outputs: bool = False,
+        include_containers: bool = False,
+        check_edge_node: bool = True,
+        check_node_overlap: bool = True,
+        check_edge_edge: bool = False,
+        max_items: int = 200,
+        headless: bool = True,
+        timeout: int = 5000,
+    ) -> "LayoutIssueData":
+        """Extract rendered layout issues (crossings/overlaps) via Playwright."""
+        return extract_layout_issues(
+            self.graph,
+            depth=depth,
+            theme=theme,
+            separate_outputs=separate_outputs,
+            include_containers=include_containers,
+            check_edge_node=check_edge_node,
+            check_node_overlap=check_node_overlap,
+            check_edge_edge=check_edge_edge,
+            max_items=max_items,
+            headless=headless,
+            timeout=timeout,
+        )
+
+    def get_crossings(
+        self,
+        *,
+        depth: int = 0,
+        theme: str = "auto",
+        separate_outputs: bool = False,
+        include_containers: bool = False,
+        max_items: int = 200,
+        headless: bool = True,
+        timeout: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Convenience helper: edge/node crossings only."""
+        data = self.get_layout_issues(
+            depth=depth,
+            theme=theme,
+            separate_outputs=separate_outputs,
+            include_containers=include_containers,
+            check_edge_node=True,
+            check_node_overlap=False,
+            check_edge_edge=False,
+            max_items=max_items,
+            headless=headless,
+            timeout=timeout,
+        )
+        return data.edge_node_crossings
+
+    def get_crossing(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Alias for get_crossings()."""
+        return self.get_crossings(**kwargs)
+
 
 def validate_graph(graph: "Graph") -> ValidationResult:
     """Quick validation of a graph.
@@ -598,6 +657,197 @@ class RenderedDebugData:
             print("✓ All edges valid")
         else:
             print(f"✗ {issue_count} edge(s) have issues")
+
+
+@dataclass
+class LayoutIssueData:
+    """Layout geometry issues extracted from rendered visualization."""
+
+    edge_node_crossings: list[dict[str, Any]] = field(default_factory=list)
+    node_overlaps: list[dict[str, Any]] = field(default_factory=list)
+    edge_edge_crossings: list[dict[str, Any]] = field(default_factory=list)
+    total_nodes: int = 0
+    total_edges: int = 0
+
+    @property
+    def has_issues(self) -> bool:
+        return bool(
+            self.edge_node_crossings
+            or self.node_overlaps
+            or self.edge_edge_crossings
+        )
+
+
+_LAYOUT_ISSUES_EVAL = """(opts) => {
+    const debug = window.__hypergraphVizDebug || {};
+    const nodes = debug.nodes || [];
+    const edges = debug.layoutedEdges || [];
+    const includeContainers = !!(opts && opts.includeContainers);
+    const checkEdgeNode = opts && opts.checkEdgeNode !== false;
+    const checkNodeOverlap = !!(opts && opts.checkNodeOverlap);
+    const checkEdgeEdge = !!(opts && opts.checkEdgeEdge);
+    const maxItems = Math.max(1, (opts && opts.maxItems) || 200);
+
+    const isContainer = (nodeType) => nodeType === 'PIPELINE' || nodeType === 'GRAPH';
+
+    const segmentIntersectsRect = (ax, ay, bx, by, rect) => {
+        if (ax === bx && ay === by) {
+            return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+        }
+        let t0 = 0;
+        let t1 = 1;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const p = [-dx, dx, -dy, dy];
+        const q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
+        for (let i = 0; i < 4; i += 1) {
+            const pi = p[i];
+            const qi = q[i];
+            if (pi === 0) {
+                if (qi < 0) return false;
+                continue;
+            }
+            const r = qi / pi;
+            if (pi < 0) {
+                if (r > t1) return false;
+                if (r > t0) t0 = r;
+            } else {
+                if (r < t0) return false;
+                if (r < t1) t1 = r;
+            }
+        }
+        return true;
+    };
+
+    const edgeNodeCrossings = [];
+    if (checkEdgeNode) {
+        for (const edge of edges) {
+            const points = (edge.data && edge.data.points) || [];
+            if (points.length < 2) continue;
+            const actualSrc = (edge.data && edge.data.actualSource) || edge.source;
+            const actualTgt = (edge.data && edge.data.actualTarget) || edge.target;
+
+            for (const node of nodes) {
+                if (!includeContainers && isContainer(node.nodeType)) continue;
+                if (node.id === actualSrc || node.id === actualTgt) continue;
+
+                const rect = {
+                    left: node.x + 1,
+                    right: node.x + node.width - 1,
+                    top: node.y + 1,
+                    bottom: node.y + node.height - 1,
+                };
+                if (rect.left >= rect.right || rect.top >= rect.bottom) continue;
+
+                let crossed = false;
+                for (let i = 0; i < points.length - 1; i += 1) {
+                    const a = points[i];
+                    const b = points[i + 1];
+                    if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) {
+                        crossed = true;
+                        break;
+                    }
+                }
+                if (crossed) {
+                    edgeNodeCrossings.push({
+                        edge: edge.id,
+                        source: actualSrc,
+                        target: actualTgt,
+                        node: node.id,
+                    });
+                    if (edgeNodeCrossings.length >= maxItems) break;
+                }
+            }
+            if (edgeNodeCrossings.length >= maxItems) break;
+        }
+    }
+
+    const nodeOverlaps = [];
+    if (checkNodeOverlap) {
+        for (let i = 0; i < nodes.length; i += 1) {
+            const a = nodes[i];
+            if (!includeContainers && isContainer(a.nodeType)) continue;
+            for (let j = i + 1; j < nodes.length; j += 1) {
+                const b = nodes[j];
+                if (!includeContainers && isContainer(b.nodeType)) continue;
+                const noOverlap =
+                    a.x + a.width <= b.x + 1 ||
+                    b.x + b.width <= a.x + 1 ||
+                    a.y + a.height <= b.y + 1 ||
+                    b.y + b.height <= a.y + 1;
+                if (!noOverlap) {
+                    nodeOverlaps.push({ nodeA: a.id, nodeB: b.id });
+                    if (nodeOverlaps.length >= maxItems) break;
+                }
+            }
+            if (nodeOverlaps.length >= maxItems) break;
+        }
+    }
+
+    const edgeEdgeCrossings = [];
+    if (checkEdgeEdge) {
+        const orient = (p, q, r) =>
+            (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y);
+        const onSeg = (p, q, r) =>
+            q.x <= Math.max(p.x, r.x) + 1e-6 &&
+            q.x + 1e-6 >= Math.min(p.x, r.x) &&
+            q.y <= Math.max(p.y, r.y) + 1e-6 &&
+            q.y + 1e-6 >= Math.min(p.y, r.y);
+        const segSeg = (a, b, c, d) => {
+            const o1 = orient(a, b, c);
+            const o2 = orient(a, b, d);
+            const o3 = orient(c, d, a);
+            const o4 = orient(c, d, b);
+            if ((o1 > 0 && o2 < 0 || o1 < 0 && o2 > 0) &&
+                (o3 > 0 && o4 < 0 || o3 < 0 && o4 > 0)) return true;
+            if (Math.abs(o1) <= 1e-6 && onSeg(a, c, b)) return true;
+            if (Math.abs(o2) <= 1e-6 && onSeg(a, d, b)) return true;
+            if (Math.abs(o3) <= 1e-6 && onSeg(c, a, d)) return true;
+            if (Math.abs(o4) <= 1e-6 && onSeg(c, b, d)) return true;
+            return false;
+        };
+
+        for (let i = 0; i < edges.length; i += 1) {
+            const e1 = edges[i];
+            const p1 = (e1.data && e1.data.points) || [];
+            if (p1.length < 2) continue;
+            const e1Src = (e1.data && e1.data.actualSource) || e1.source;
+            const e1Tgt = (e1.data && e1.data.actualTarget) || e1.target;
+            for (let j = i + 1; j < edges.length; j += 1) {
+                const e2 = edges[j];
+                const p2 = (e2.data && e2.data.points) || [];
+                if (p2.length < 2) continue;
+                const e2Src = (e2.data && e2.data.actualSource) || e2.source;
+                const e2Tgt = (e2.data && e2.data.actualTarget) || e2.target;
+                const shared =
+                    e1Src === e2Src || e1Src === e2Tgt || e1Tgt === e2Src || e1Tgt === e2Tgt;
+                if (shared) continue;
+
+                let crossed = false;
+                for (let a = 0; a < p1.length - 1 && !crossed; a += 1) {
+                    for (let b = 0; b < p2.length - 1 && !crossed; b += 1) {
+                        if (segSeg(p1[a], p1[a + 1], p2[b], p2[b + 1])) {
+                            crossed = true;
+                        }
+                    }
+                }
+                if (crossed) {
+                    edgeEdgeCrossings.push({ edgeA: e1.id, edgeB: e2.id });
+                    if (edgeEdgeCrossings.length >= maxItems) break;
+                }
+            }
+            if (edgeEdgeCrossings.length >= maxItems) break;
+        }
+    }
+
+    return {
+        totalNodes: nodes.length,
+        totalEdges: edges.length,
+        edgeNodeCrossings: edgeNodeCrossings,
+        nodeOverlaps: nodeOverlaps,
+        edgeEdgeCrossings: edgeEdgeCrossings,
+    };
+}"""
 
 
 async def _extract_debug_data_async(
@@ -815,3 +1065,199 @@ def extract_debug_data(
             headless=headless,
             timeout=timeout,
         )
+
+
+async def _extract_layout_issues_async(
+    graph: "Graph",
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    separate_outputs: bool = False,
+    include_containers: bool = False,
+    check_edge_node: bool = True,
+    check_node_overlap: bool = True,
+    check_edge_edge: bool = False,
+    max_items: int = 200,
+    headless: bool = True,
+    timeout: int = 5000,
+) -> LayoutIssueData:
+    """Async implementation of extract_layout_issues."""
+    from playwright.async_api import async_playwright
+
+    import tempfile
+    import os
+    from hypergraph.viz.widget import visualize
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        temp_path = f.name
+
+    visualize(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        filepath=temp_path,
+        _debug_overlays=True,
+    )
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            page = await browser.new_page()
+            await page.goto(f"file://{temp_path}")
+            await page.wait_for_function(
+                "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                timeout=timeout,
+            )
+            raw = await page.evaluate(
+                _LAYOUT_ISSUES_EVAL,
+                {
+                    "includeContainers": include_containers,
+                    "checkEdgeNode": check_edge_node,
+                    "checkNodeOverlap": check_node_overlap,
+                    "checkEdgeEdge": check_edge_edge,
+                    "maxItems": max_items,
+                },
+            )
+            await browser.close()
+    finally:
+        os.unlink(temp_path)
+
+    return LayoutIssueData(
+        edge_node_crossings=raw.get("edgeNodeCrossings", []),
+        node_overlaps=raw.get("nodeOverlaps", []),
+        edge_edge_crossings=raw.get("edgeEdgeCrossings", []),
+        total_nodes=raw.get("totalNodes", 0),
+        total_edges=raw.get("totalEdges", 0),
+    )
+
+
+def _extract_layout_issues_sync(
+    graph: "Graph",
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    separate_outputs: bool = False,
+    include_containers: bool = False,
+    check_edge_node: bool = True,
+    check_node_overlap: bool = True,
+    check_edge_edge: bool = False,
+    max_items: int = 200,
+    headless: bool = True,
+    timeout: int = 5000,
+) -> LayoutIssueData:
+    """Sync implementation of extract_layout_issues."""
+    from playwright.sync_api import sync_playwright
+
+    import tempfile
+    import os
+    from hypergraph.viz.widget import visualize
+
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+        temp_path = f.name
+
+    visualize(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        filepath=temp_path,
+        _debug_overlays=True,
+    )
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            page = browser.new_page()
+            page.goto(f"file://{temp_path}")
+            page.wait_for_function(
+                "window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > 0",
+                timeout=timeout,
+            )
+            raw = page.evaluate(
+                _LAYOUT_ISSUES_EVAL,
+                {
+                    "includeContainers": include_containers,
+                    "checkEdgeNode": check_edge_node,
+                    "checkNodeOverlap": check_node_overlap,
+                    "checkEdgeEdge": check_edge_edge,
+                    "maxItems": max_items,
+                },
+            )
+            browser.close()
+    finally:
+        os.unlink(temp_path)
+
+    return LayoutIssueData(
+        edge_node_crossings=raw.get("edgeNodeCrossings", []),
+        node_overlaps=raw.get("nodeOverlaps", []),
+        edge_edge_crossings=raw.get("edgeEdgeCrossings", []),
+        total_nodes=raw.get("totalNodes", 0),
+        total_edges=raw.get("totalEdges", 0),
+    )
+
+
+def extract_layout_issues(
+    graph: "Graph",
+    *,
+    depth: int = 0,
+    theme: str = "auto",
+    separate_outputs: bool = False,
+    include_containers: bool = False,
+    check_edge_node: bool = True,
+    check_node_overlap: bool = True,
+    check_edge_edge: bool = False,
+    max_items: int = 200,
+    headless: bool = True,
+    timeout: int = 5000,
+) -> LayoutIssueData:
+    """Extract rendered layout issues (crossings/overlaps) via Playwright."""
+    try:
+        import playwright
+    except ImportError:
+        raise ImportError(
+            "playwright is required for extract_layout_issues. "
+            "Install with: pip install playwright && playwright install chromium"
+        )
+
+    if _is_in_async_context():
+        import asyncio
+        try:
+            import nest_asyncio
+            nest_asyncio.apply()
+        except ImportError:
+            pass
+
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                _extract_layout_issues_async(
+                    graph,
+                    depth=depth,
+                    theme=theme,
+                    separate_outputs=separate_outputs,
+                    include_containers=include_containers,
+                    check_edge_node=check_edge_node,
+                    check_node_overlap=check_node_overlap,
+                    check_edge_edge=check_edge_edge,
+                    max_items=max_items,
+                    headless=headless,
+                    timeout=timeout,
+                )
+            )
+        finally:
+            loop.close()
+
+    return _extract_layout_issues_sync(
+        graph,
+        depth=depth,
+        theme=theme,
+        separate_outputs=separate_outputs,
+        include_containers=include_containers,
+        check_edge_node=check_edge_node,
+        check_node_overlap=check_node_overlap,
+        check_edge_edge=check_edge_edge,
+        max_items=max_items,
+        headless=headless,
+        timeout=timeout,
+    )

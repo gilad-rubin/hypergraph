@@ -780,3 +780,7 @@ class Graph:
         from hypergraph.viz.debug import VizDebugger
 
         return VizDebugger(self)
+
+    def debug_visualize(self) -> "VizDebugger":
+        """Alias for debug_viz(), for discoverable debug-first workflows."""
+        return self.debug_viz()

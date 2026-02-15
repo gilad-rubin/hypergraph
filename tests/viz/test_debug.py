@@ -6,10 +6,12 @@ from hypergraph.viz.debug import (
     VizDebugger,
     validate_graph,
     find_issues,
+    extract_layout_issues,
     ValidationResult,
     NodeTrace,
     EdgeTrace,
     IssueReport,
+    LayoutIssueData,
 )
 
 
@@ -319,6 +321,14 @@ class TestGraphDebugViz:
         info = debugger.trace_node("double")
         assert info.status == "FOUND"
 
+    def test_debug_visualize_alias_returns_debugger(self):
+        """debug_visualize() should be an alias of debug_viz()."""
+        graph = Graph(nodes=[double])
+        debugger = graph.debug_visualize()
+
+        assert isinstance(debugger, VizDebugger)
+        assert debugger.graph is graph
+
 
 class TestDebugVisualize:
     """Tests for VizDebugger.visualize() method."""
@@ -419,3 +429,34 @@ class TestExtractDebugData:
         captured = capsys.readouterr()
         assert "Edge Validation Report" in captured.out
         assert "Nodes:" in captured.out
+
+    def test_extract_layout_issues(self):
+        """Layout issue extraction should return structured diagnostics."""
+        graph = Graph(nodes=[double, add_one])
+        issues = extract_layout_issues(
+            graph,
+            depth=1,
+            check_edge_node=True,
+            check_node_overlap=True,
+            check_edge_edge=True,
+        )
+
+        assert isinstance(issues, LayoutIssueData)
+        assert issues.total_nodes >= 2
+        assert issues.total_edges >= 1
+
+    def test_debugger_get_crossings(self):
+        """Debugger helper should expose edge/node crossings list."""
+        graph = Graph(nodes=[double, add_one])
+        debugger = VizDebugger(graph)
+
+        crossings = debugger.get_crossings(depth=1)
+
+        assert isinstance(crossings, list)
+
+    def test_debugger_get_crossing_alias(self):
+        """get_crossing() alias should match get_crossings()."""
+        graph = Graph(nodes=[double, add_one])
+        debugger = VizDebugger(graph)
+
+        assert debugger.get_crossing(depth=1) == debugger.get_crossings(depth=1)
