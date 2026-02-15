@@ -51,7 +51,18 @@
     INPUT_GROUP: 6,
     BRANCH: 10,
   };
+  var NODE_TYPE_TOP_INSETS = VizConstants.NODE_TYPE_TOP_INSETS || {
+    PIPELINE: 0,
+    GRAPH: 0,
+    FUNCTION: 0,
+    DATA: 0,
+    INPUT: 0,
+    INPUT_GROUP: 0,
+    BRANCH: 3,
+    END: 0,
+  };
   var DEFAULT_BOTTOM_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
+  var DEFAULT_TOP_INSET = VizConstants.DEFAULT_TOP_INSET || 0;
 
   var HANDLE_ALIGN_NUDGE_PX = 0;
 
@@ -61,9 +72,10 @@
     return { bottom: (offset - HANDLE_ALIGN_NUDGE_PX) + 'px' };
   };
 
-  var getTargetHandleStyle = function() {
+  var getTargetHandleStyle = function(nodeType) {
     // React Flow anchors top handles at the handle's top edge.
-    return { top: HANDLE_ALIGN_NUDGE_PX + 'px' };
+    var topInset = NODE_TYPE_TOP_INSETS[nodeType] || DEFAULT_TOP_INSET;
+    return { top: (topInset + HANDLE_ALIGN_NUDGE_PX) + 'px' };
   };
 
   // Helper to truncate type hints consistently
@@ -243,7 +255,44 @@
       // Build SVG path using B-spline (curveBasis) - same algorithm as kedro-viz
       // Use constraint layout points directly - they already have correct coordinates
       // from either the constraint solver (internal edges) or Step 4 (cross-boundary)
-      var points = data.points.slice();
+      var normalizePolylinePoints = function(pts) {
+        if (!pts || pts.length < 2) return pts || [];
+
+        var deduped = [pts[0]];
+        for (var i = 1; i < pts.length; i += 1) {
+          var prev = deduped[deduped.length - 1];
+          var curr = pts[i];
+          var dx = curr.x - prev.x;
+          var dy = curr.y - prev.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 0.75) {
+            deduped.push(curr);
+          }
+        }
+
+        if (deduped.length < 3) return deduped;
+
+        var cleaned = [deduped[0]];
+        for (var j = 1; j < deduped.length - 1; j += 1) {
+          var a = cleaned[cleaned.length - 1];
+          var b = deduped[j];
+          var c = deduped[j + 1];
+          var l1x = b.x - a.x;
+          var l1y = b.y - a.y;
+          var l2x = c.x - b.x;
+          var l2y = c.y - b.y;
+          var len1 = Math.sqrt(l1x * l1x + l1y * l1y);
+          var len2 = Math.sqrt(l2x * l2x + l2y * l2y);
+
+          // Drop micro-segments that cause visibly sharp "collapsed" corners.
+          if (len1 < 2 || len2 < 2) continue;
+          cleaned.push(b);
+        }
+        cleaned.push(deduped[deduped.length - 1]);
+        return cleaned.length >= 2 ? cleaned : deduped;
+      };
+
+      var points = normalizePolylinePoints(data.points.slice());
       var isFeedbackEdge = data && data.isFeedbackEdge;
 
       var renderPoints = points;
@@ -598,7 +647,7 @@
     var nodeType = data.nodeType || 'FUNCTION';
     var visualNodeType = (nodeType === 'PIPELINE' && !isExpanded) ? 'FUNCTION' : nodeType;
     var sourceHandleStyle = getSourceHandleStyle(visualNodeType);
-    var targetHandleStyle = getTargetHandleStyle();
+    var targetHandleStyle = getTargetHandleStyle(visualNodeType);
     var nodeBottomOffset = NODE_TYPE_BOTTOM_OFFSETS[visualNodeType] || DEFAULT_BOTTOM_OFFSET;
     var wrapVisualNode = nodeType !== 'BRANCH' && !(nodeType === 'PIPELINE' && isExpanded);
     var outerWrapperStyle = wrapVisualNode ? { paddingBottom: nodeBottomOffset + 'px' } : null;

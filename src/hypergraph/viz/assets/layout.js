@@ -35,6 +35,7 @@
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
   var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
   var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
+  var EDGE_MIN_PARALLEL_GAP = VizConstants.EDGE_MIN_PARALLEL_GAP || 12;
   var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
   var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
@@ -460,10 +461,29 @@
     'INPUT_GROUP': 6,
     'BRANCH': 10,
   };
+  var NODE_TYPE_TOP_INSETS = VizConstants.NODE_TYPE_TOP_INSETS || {
+    'PIPELINE': 0,
+    'GRAPH': 0,
+    'FUNCTION': 0,
+    'DATA': 0,
+    'INPUT': 0,
+    'INPUT_GROUP': 0,
+    'BRANCH': 3,
+    'END': 0,
+  };
   var DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
+  var DEFAULT_TOP_INSET = VizConstants.DEFAULT_TOP_INSET || 0;
 
   function getNodeTypeOffset(nodeType) {
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+  }
+
+  function getNodeTypeTopInset(nodeType) {
+    return NODE_TYPE_TOP_INSETS[nodeType] ?? DEFAULT_TOP_INSET;
+  }
+
+  function getNodeVisibleTop(pos, nodeType) {
+    return pos.y + getNodeTypeTopInset(nodeType);
   }
 
   function buildFeedbackEdgePoints(edge, nodePositions, nodeDimensions, nodeTypes) {
@@ -478,7 +498,8 @@
     var srcNodeType = nodeTypes.get(edge.source) || 'FUNCTION';
     var srcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcNodeType);
     var tgtCenterX = tgtPos.x + tgtDims.width / 2;
-    var tgtTopY = tgtPos.y;
+    var tgtNodeType = nodeTypes.get(edge.target) || 'FUNCTION';
+    var tgtTopY = getNodeVisibleTop(tgtPos, tgtNodeType);
 
     var srcLeft = srcPos.x;
     var tgtLeft = tgtPos.x;
@@ -1133,7 +1154,8 @@
       var srcNodeType = nodeTypes.get(actualSrc) || 'FUNCTION';
       var srcBottomY = actualSrcPos.y + actualSrcDims.height - getNodeTypeOffset(srcNodeType);
       var tgtCenterX = actualTgtPos.x + actualTgtDims.width / 2;
-      var tgtTopY = actualTgtPos.y;
+      var tgtNodeType = nodeTypes.get(actualTgt) || 'FUNCTION';
+      var tgtTopY = getNodeVisibleTop(actualTgtPos, tgtNodeType);
 
       var isFeedbackEdge = feedbackEdgeKeys && feedbackEdgeKeys.has(edgeKey);
       var points = null;
@@ -1463,7 +1485,8 @@
         var consumerPos = nodePositions.get(actualConsumer);
         var consumerDims = nodeDimensions.get(actualConsumer);
         var newEndX = consumerPos.x + consumerDims.width / 2;
-        var newEndY = consumerPos.y;
+        var consumerNodeType = nodeTypes.get(actualConsumer) || 'FUNCTION';
+        var newEndY = getNodeVisibleTop(consumerPos, consumerNodeType);
         if (newPoints.length > 0) {
           newPoints[newPoints.length - 1] = { x: newEndX, y: newEndY };
         }
@@ -1472,7 +1495,8 @@
         var targetPos = nodePositions.get(e.target);
         var targetDims = nodeDimensions.get(e.target);
         var newEndX = targetPos.x + targetDims.width / 2;
-        var newEndY = targetPos.y;
+        var targetNodeType = nodeTypes.get(e.target) || 'FUNCTION';
+        var newEndY = getNodeVisibleTop(targetPos, targetNodeType);
         if (newPoints.length > 0) {
           newPoints[newPoints.length - 1] = { x: newEndX, y: newEndY };
         }
@@ -1498,7 +1522,7 @@
     });
   }
 
-  function mergeSharedTargetEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, debugMode) {
+  function mergeSharedTargetEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, debugMode) {
     var edgesByTarget = new Map();
 
     allPositionedEdges.forEach(function(e) {
@@ -1524,24 +1548,52 @@
       if (!targetPos || !targetDims) return;
 
       var targetX = targetPos.x + targetDims.width / 2;
-      var targetTopY = targetPos.y;
+      var targetNodeType = nodeTypes.get(targetId) || 'FUNCTION';
+      var targetTopY = getNodeVisibleTop(targetPos, targetNodeType);
       var convergeY = targetTopY - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
+      var mergeY = targetTopY - stemMinTarget;
+      var distinctSources = new Set(targetEdges.map(function(edge) {
+        return (edge.data && edge.data.actualSource) || edge.source;
+      }));
+      var applyLaneSpacing = distinctSources.size > 1;
+      var laneSpacing = applyLaneSpacing ? Math.max(8, EDGE_MIN_PARALLEL_GAP) : 0;
 
-      targetEdges.forEach(function(e) {
+      var sortedEdges = targetEdges.slice().sort(function(a, b) {
+        var ap = (a.data && a.data.points) || [];
+        var bp = (b.data && b.data.points) || [];
+        var ax = ap.length ? ap[0].x : targetX;
+        var bx = bp.length ? bp[0].x : targetX;
+        return ax - bx;
+      });
+      var laneCenter = (sortedEdges.length - 1) / 2;
+
+      sortedEdges.forEach(function(e, idx) {
         var points = (e.data && e.data.points) ? e.data.points.slice() : [];
         if (points.length < 2) return;
 
-        points[points.length - 1] = { x: targetX, y: targetTopY };
+        var laneX = targetX + ((idx - laneCenter) * laneSpacing);
+        var nextPoints = points.slice(0, -1);
+        var pushUnique = function(arr, pt) {
+          var prev = arr.length ? arr[arr.length - 1] : null;
+          if (!prev || Math.abs(prev.x - pt.x) > 0.5 || Math.abs(prev.y - pt.y) > 0.5) {
+            arr.push(pt);
+          }
+        };
 
-        var convergePoint = { x: targetX, y: convergeY };
-        var insertIndex = points.length - 1;
-        var prev = points[insertIndex - 1];
-        var alreadyConverged = prev &&
-          Math.abs(prev.x - convergePoint.x) < 0.5 &&
-          Math.abs(prev.y - convergePoint.y) < 0.5;
+        pushUnique(nextPoints, { x: laneX, y: convergeY });
+        pushUnique(nextPoints, { x: laneX, y: mergeY });
+        pushUnique(nextPoints, { x: targetX, y: mergeY });
+        pushUnique(nextPoints, { x: targetX, y: targetTopY });
 
-        if (!alreadyConverged) {
-          points.splice(insertIndex, 0, convergePoint);
+        var compact = [];
+        nextPoints.forEach(function(pt) {
+          var prev = compact.length ? compact[compact.length - 1] : null;
+          if (!prev || Math.abs(prev.x - pt.x) > 0.5 || Math.abs(prev.y - pt.y) > 0.5) {
+            compact.push(pt);
+          }
+        });
+        if (compact.length >= 2) {
+          points = compact;
         }
 
         e.data = { ...(e.data || {}), points: points };
@@ -1590,7 +1642,8 @@
         console.error('[EDGE VALIDATION] Target node not found:', actualTgt,
           'for edge', e.id, '| original target:', e.target);
       } else {
-        var expectedTgtTopY = tgtPos.y;
+        var tgtType = nodeTypes.get(actualTgt) || 'FUNCTION';
+        var expectedTgtTopY = getNodeVisibleTop(tgtPos, tgtType);
         var actualEndY = points[points.length - 1].y;
         var tgtYDiff = Math.abs(actualEndY - expectedTgtTopY);
         if (tgtYDiff > 20) {
@@ -1680,6 +1733,7 @@
       allPositionedEdges,
       nodePositions,
       nodeDimensions,
+      nodeTypes,
       debugMode
     );
 

@@ -8,6 +8,7 @@ These tests verify:
 """
 
 import pytest
+from hypergraph import Graph, ifelse, node
 
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
@@ -16,6 +17,37 @@ from tests.viz.conftest import (
     make_outer,
     render_to_page,
 )
+
+
+@node(output_name="validated")
+def branch_anchor_validate(value: str) -> bool:
+    return bool(value)
+
+
+@ifelse(when_true="branch_anchor_accept", when_false="branch_anchor_reject")
+def branch_anchor_gate(validated: bool) -> bool:
+    return validated
+
+
+@node(output_name="accepted")
+def branch_anchor_accept() -> str:
+    return "ok"
+
+
+@node(output_name="rejected")
+def branch_anchor_reject() -> str:
+    return "nope"
+
+
+def make_branch_anchor_graph() -> Graph:
+    return Graph(
+        nodes=[
+            branch_anchor_validate,
+            branch_anchor_gate,
+            branch_anchor_accept,
+            branch_anchor_reject,
+        ]
+    )
 
 
 # =============================================================================
@@ -129,6 +161,62 @@ class TestInputNodePosition:
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeGaps:
     """Tests that edges connect to nodes without visible gaps."""
+
+    def test_branch_incoming_edge_touches_diamond_top(self, page, temp_html_file):
+        """Incoming edge should terminate on the BRANCH diamond top boundary."""
+        graph = make_branch_anchor_graph()
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const branch = debug.nodes.find(n => n.id === 'branch_anchor_gate' && n.nodeType === 'BRANCH');
+            if (!branch) {
+                return { error: 'Branch node not found', nodes: debug.nodes.map(n => [n.id, n.nodeType]) };
+            }
+
+            const incoming = (debug.layoutedEdges || []).find(e => {
+                const actualTarget = (e.data && e.data.actualTarget) || e.target;
+                return actualTarget === branch.id;
+            });
+            if (!incoming || !incoming.data || !incoming.data.points || incoming.data.points.length < 2) {
+                return { error: 'Incoming branch edge not found', edge: incoming || null };
+            }
+
+            const endPoint = incoming.data.points[incoming.data.points.length - 1];
+
+            const viewport = document.querySelector('.react-flow__viewport');
+            if (!viewport) return { error: 'Viewport not found' };
+            const match = viewport.style.transform.match(/translate\\(([\\d.-]+)px,\\s*([\\d.-]+)px\\)\\s*scale\\(([\\d.-]+)\\)/);
+            if (!match) return { error: 'Viewport transform not found', transform: viewport.style.transform };
+            const translateY = parseFloat(match[2]);
+            const zoom = parseFloat(match[3]);
+            const endYScreen = endPoint.y * zoom + translateY;
+
+            const wrapper = document.querySelector(`.react-flow__node[data-id="${branch.id}"]`);
+            if (!wrapper) return { error: 'Branch wrapper not found' };
+            const diamond = wrapper.querySelector('div[style*="rotate(45deg)"]');
+            if (!diamond) return { error: 'Diamond element not found' };
+            const diamondRect = diamond.getBoundingClientRect();
+
+            return {
+                edgeId: incoming.id,
+                endYLayout: endPoint.y,
+                endYScreen: endYScreen,
+                diamondTop: diamondRect.top,
+                deltaPx: endYScreen - diamondRect.top,
+            };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert abs(result["deltaPx"]) <= 1.5, (
+            "Incoming edge does not touch BRANCH top boundary.\n"
+            f"Edge: {result['edgeId']}\n"
+            f"Edge end (screen Y): {result['endYScreen']:.2f}px\n"
+            f"Diamond top (screen Y): {result['diamondTop']:.2f}px\n"
+            f"Delta: {result['deltaPx']:.2f}px"
+        )
 
     def test_outer_depth2_input_edge_no_gap(self, page, temp_html_file):
         """Edge from input to step1 should have no gap at start or end."""

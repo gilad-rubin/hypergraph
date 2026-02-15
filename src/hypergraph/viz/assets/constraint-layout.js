@@ -52,7 +52,18 @@
     'INPUT_GROUP': 6,
     'BRANCH': 10,
   };
+  const NODE_TYPE_TOP_INSETS = VizConstants.NODE_TYPE_TOP_INSETS || {
+    'PIPELINE': 0,
+    'GRAPH': 0,
+    'FUNCTION': 0,
+    'DATA': 0,
+    'INPUT': 0,
+    'INPUT_GROUP': 0,
+    'BRANCH': 3,
+    'END': 0,
+  };
   const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET ?? 10;
+  const DEFAULT_TOP_INSET = VizConstants.DEFAULT_TOP_INSET ?? 0;
   const VERTICAL_GAP = VizConstants.VERTICAL_GAP ?? 60;
 
   // Get visible bottom of node (accounts for wrapper/content offset)
@@ -63,6 +74,15 @@
     }
     const offset = NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
     return nodeBottom(node) - offset;
+  };
+
+  const nodeVisibleTop = (node) => {
+    let nodeType = node.data?.nodeType || 'FUNCTION';
+    if (nodeType === 'PIPELINE' && !node.data?.isExpanded) {
+      nodeType = 'FUNCTION';
+    }
+    const topInset = NODE_TYPE_TOP_INSETS[nodeType] ?? DEFAULT_TOP_INSET;
+    return nodeTop(node) + topInset;
   };
 
   const groupByRow = (nodes, orientation, rowSnap = null) => {
@@ -897,7 +917,7 @@
    * @returns {number} Y coordinate for convergence point
    */
   const calculateConvergenceY = (target, stemMinTarget) => {
-    return nodeTop(target) - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
+    return nodeVisibleTop(target) - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
   };
 
   const expandDenseRows = (
@@ -1580,7 +1600,7 @@
         }
       } else {
         const horizontalDist = Math.abs(target.x - source.x);
-        const verticalDist = nodeTop(target) - nodeBottom(source);
+        const verticalDist = nodeVisibleTop(target) - nodeVisibleBottom(source);
 
         const needsIntermediatePoint = horizontalDist > 100 && verticalDist > MIN_VERTICAL_DIST_FOR_WAYPOINT;
         if (needsIntermediatePoint) {
@@ -1661,15 +1681,15 @@
         targetStem = [
           {
             x: target.x,
-            y: nodeTop(target) - stemMinTarget - Math.min(targetOffsetY, stemMax),
+            y: nodeVisibleTop(target) - stemMinTarget - Math.min(targetOffsetY, stemMax),
           },
           {
             x: target.x,
-            y: nodeTop(target) - stemMinTarget,
+            y: nodeVisibleTop(target) - stemMinTarget,
           },
           {
             x: target.x,
-            y: nodeTop(target),
+            y: nodeVisibleTop(target),
           },
         ];
       } else {
