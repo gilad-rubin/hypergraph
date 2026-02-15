@@ -35,7 +35,6 @@
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
   var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
   var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
-  var EDGE_MIN_PARALLEL_GAP = VizConstants.EDGE_MIN_PARALLEL_GAP || 12;
   var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
   var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
@@ -1551,49 +1550,21 @@
       var targetNodeType = nodeTypes.get(targetId) || 'FUNCTION';
       var targetTopY = getNodeVisibleTop(targetPos, targetNodeType);
       var convergeY = targetTopY - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
-      var mergeY = targetTopY - stemMinTarget;
-      var distinctSources = new Set(targetEdges.map(function(edge) {
-        return (edge.data && edge.data.actualSource) || edge.source;
-      }));
-      var applyLaneSpacing = distinctSources.size > 1;
-      var laneSpacing = applyLaneSpacing ? Math.max(8, EDGE_MIN_PARALLEL_GAP) : 0;
-
-      var sortedEdges = targetEdges.slice().sort(function(a, b) {
-        var ap = (a.data && a.data.points) || [];
-        var bp = (b.data && b.data.points) || [];
-        var ax = ap.length ? ap[0].x : targetX;
-        var bx = bp.length ? bp[0].x : targetX;
-        return ax - bx;
-      });
-      var laneCenter = (sortedEdges.length - 1) / 2;
-
-      sortedEdges.forEach(function(e, idx) {
+      targetEdges.forEach(function(e) {
         var points = (e.data && e.data.points) ? e.data.points.slice() : [];
         if (points.length < 2) return;
 
-        var laneX = targetX + ((idx - laneCenter) * laneSpacing);
-        var nextPoints = points.slice(0, -1);
-        var pushUnique = function(arr, pt) {
-          var prev = arr.length ? arr[arr.length - 1] : null;
-          if (!prev || Math.abs(prev.x - pt.x) > 0.5 || Math.abs(prev.y - pt.y) > 0.5) {
-            arr.push(pt);
-          }
-        };
+        points[points.length - 1] = { x: targetX, y: targetTopY };
 
-        pushUnique(nextPoints, { x: laneX, y: convergeY });
-        pushUnique(nextPoints, { x: laneX, y: mergeY });
-        pushUnique(nextPoints, { x: targetX, y: mergeY });
-        pushUnique(nextPoints, { x: targetX, y: targetTopY });
+        var convergePoint = { x: targetX, y: convergeY };
+        var insertIndex = points.length - 1;
+        var prev = points[insertIndex - 1];
+        var alreadyConverged = prev &&
+          Math.abs(prev.x - convergePoint.x) < 0.5 &&
+          Math.abs(prev.y - convergePoint.y) < 0.5;
 
-        var compact = [];
-        nextPoints.forEach(function(pt) {
-          var prev = compact.length ? compact[compact.length - 1] : null;
-          if (!prev || Math.abs(prev.x - pt.x) > 0.5 || Math.abs(prev.y - pt.y) > 0.5) {
-            compact.push(pt);
-          }
-        });
-        if (compact.length >= 2) {
-          points = compact;
+        if (!alreadyConverged) {
+          points.splice(insertIndex, 0, convergePoint);
         }
 
         e.data = { ...(e.data || {}), points: points };

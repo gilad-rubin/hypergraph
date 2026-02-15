@@ -72,7 +72,6 @@
     EDGE_EDGE_PENALTY: 20,                // Penalize corridor segments crossing other edges
     EDGE_EDGE_CLEARANCE: 10,              // Ignore edge crossings near shared endpoints
     EDGE_SHARED_TARGET_SPACING_SCALE: 1.15, // Scale separation for shared-target source spacing
-    EDGE_MIN_PARALLEL_GAP: 12,            // Minimum lateral gap between distinct incoming lanes
     EDGE_SHARP_TURN_ANGLE: 35,            // Above this angle, force straight segments (if curveStyle < 1)
     EDGE_CURVE_STYLE: 0,                  // Rounded orthogonal routes (use elbow radius below)
     EDGE_ELBOW_RADIUS: 16,                // Rounded corner radius for orthogonal polylines
