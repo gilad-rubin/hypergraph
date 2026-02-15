@@ -69,7 +69,9 @@
       maxContentLen = Math.max(maxContentLen, 6);
       width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + 32);
       var numParams = Math.max(1, params.length);
-      height = 16 + (numParams * 20) + ((numParams - 1) * 4);
+      // Keep wrapper height aligned with INPUT_GROUP visual rows plus bottom handle offset.
+      var inputGroupBottomOffset = (VizConstants.NODE_TYPE_OFFSETS && VizConstants.NODE_TYPE_OFFSETS.INPUT_GROUP) || 6;
+      height = 16 + (numParams * 16) + ((numParams - 1) * 4) + inputGroupBottomOffset;
     } else if (n.data && n.data.nodeType === 'BRANCH') {
       width = 140;
       height = 140;
@@ -91,7 +93,10 @@
       width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
       height = 56;
       if (n.data && !n.data.separateOutputs && outputs.length > 0) {
-        height = 48 + 42 + ((outputs.length - 1) * 28);
+        // Keep dimension model aligned with OutputsSection rendering.
+        var rowCount = outputs.length;
+        var outputSectionHeight = 16 + (rowCount * 16) + (Math.max(0, rowCount - 1) * 6) + 6;
+        height = 56 + outputSectionHeight;
       }
     }
 
@@ -651,6 +656,80 @@
     });
   }
 
+  function snapInputsTowardTargets(layoutNodes, layoutEdges, debugMode) {
+    if (!layoutNodes || !layoutEdges || layoutNodes.length === 0) return;
+    var nodeById = new Map(layoutNodes.map(function(n) { return [n.id, n]; }));
+    var inputTargets = new Map();
+
+    layoutEdges.forEach(function(e) {
+      var src = nodeById.get(e.source);
+      var tgt = nodeById.get(e.target);
+      if (!src || !tgt) return;
+      var srcType = src.data && src.data.nodeType;
+      if (srcType !== 'INPUT' && srcType !== 'INPUT_GROUP') return;
+      var xs = inputTargets.get(src.id) || [];
+      xs.push(tgt.x);
+      inputTargets.set(src.id, xs);
+    });
+
+    inputTargets.forEach(function(targetXs, inputId) {
+      var inputNode = nodeById.get(inputId);
+      if (!inputNode || targetXs.length === 0) return;
+      if (targetXs.length > 2) return;
+      var desiredX = targetXs.reduce(function(sum, x) { return sum + x; }, 0) / targetXs.length;
+      var before = inputNode.x;
+      inputNode.x = before + (desiredX - before) * 0.95;
+      if (debugMode) {
+        console.log('[recursive layout] input-align', inputId, 'x', before, '->', inputNode.x, '(target avg', desiredX + ')');
+      }
+    });
+  }
+
+  function resolveNodeOverlaps(layoutNodes, debugMode, label) {
+    if (!layoutNodes || layoutNodes.length < 2) return;
+
+    var MIN_GAP_X = 24;
+    var OVERLAP_CLEARANCE = 8;
+    var MAX_PASSES = layoutNodes.length + 2;
+
+    var rect = function(n) {
+      return {
+        left: n.x - n.width / 2 - OVERLAP_CLEARANCE,
+        right: n.x + n.width / 2 + OVERLAP_CLEARANCE,
+        top: n.y - n.height / 2 - OVERLAP_CLEARANCE,
+        bottom: n.y + n.height / 2 + OVERLAP_CLEARANCE,
+      };
+    };
+
+    for (var pass = 0; pass < MAX_PASSES; pass += 1) {
+      var changed = false;
+      layoutNodes.sort(function(a, b) { return a.x - b.x; });
+
+      for (var i = 0; i < layoutNodes.length - 1; i += 1) {
+        for (var j = i + 1; j < layoutNodes.length; j += 1) {
+          var a = layoutNodes[i];
+          var b = layoutNodes[j];
+          var ra = rect(a);
+          var rb = rect(b);
+
+          var overlapsY = !(ra.bottom <= rb.top || rb.bottom <= ra.top);
+          if (!overlapsY) continue;
+
+          var neededShift = (ra.right + MIN_GAP_X) - rb.left;
+          if (neededShift > 0) {
+            b.x += neededShift;
+            changed = true;
+            if (debugMode) {
+              console.log('[recursive layout] overlap-fix shifting', label || 'nodes', b.id, 'right by', neededShift, '(vs', a.id + ')');
+            }
+          }
+        }
+      }
+
+      if (!changed) break;
+    }
+  }
+
   function layoutChildrenPhase(visibleNodes, edges, layoutOrder, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode) {
     var childLayoutResults = new Map();
     var CHILD_EDGE_GAP = VERTICAL_GAP;
@@ -687,6 +766,8 @@
       );
 
       applyVerticalGapFix(childResult.nodes, childLayoutEdges, CHILD_EDGE_GAP, debugMode, graphNode.id);
+      snapInputsTowardTargets(childResult.nodes, childLayoutEdges, debugMode);
+      resolveNodeOverlaps(childResult.nodes, debugMode, graphNode.id);
 
       childResult.size = recalculateBounds(childResult.nodes, GRAPH_PADDING);
       childLayoutResults.set(graphNode.id, childResult);
@@ -803,6 +884,8 @@
     }
 
     applyVerticalGapFix(rootResult.nodes, filteredRootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
+    snapInputsTowardTargets(rootResult.nodes, filteredRootLayoutEdges, debugMode);
+    resolveNodeOverlaps(rootResult.nodes, debugMode, 'root');
     rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
 
     return {
@@ -1094,6 +1177,139 @@
     var inputNodeActualTargets = routingLookups.inputNodeActualTargets;
     var outputToProducer = routingLookups.outputToProducer;
     var nodeToParent = routingLookups.nodeToParent;
+    var EDGE_REROUTE_CLEARANCE = 10;
+
+    var segmentIntersectsRect = function(ax, ay, bx, by, rect) {
+      if (ax === bx && ay === by) {
+        return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+      }
+
+      var t0 = 0;
+      var t1 = 1;
+      var dx = bx - ax;
+      var dy = by - ay;
+      var p = [-dx, dx, -dy, dy];
+      var q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
+
+      for (var i = 0; i < 4; i += 1) {
+        var pi = p[i];
+        var qi = q[i];
+        if (pi === 0) {
+          if (qi < 0) return false;
+          continue;
+        }
+        var r = qi / pi;
+        if (pi < 0) {
+          if (r > t1) return false;
+          if (r > t0) t0 = r;
+        } else {
+          if (r < t0) return false;
+          if (r < t1) t1 = r;
+        }
+      }
+      return true;
+    };
+
+    var findCrossedNodes = function(points, sourceId, targetId) {
+      var crossed = [];
+      if (!points || points.length < 2) return crossed;
+
+      nodePositions.forEach(function(pos, nodeId) {
+        if (nodeId === sourceId || nodeId === targetId) return;
+        var dims = nodeDimensions.get(nodeId);
+        if (!dims) return;
+
+        var rect = {
+          left: pos.x - EDGE_REROUTE_CLEARANCE,
+          right: pos.x + dims.width + EDGE_REROUTE_CLEARANCE,
+          top: pos.y - EDGE_REROUTE_CLEARANCE,
+          bottom: pos.y + dims.height + EDGE_REROUTE_CLEARANCE,
+        };
+
+        for (var i = 0; i < points.length - 1; i += 1) {
+          var a = points[i];
+          var b = points[i + 1];
+          if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) {
+            crossed.push(rect);
+            return;
+          }
+        }
+      });
+
+      return crossed;
+    };
+
+    var rerouteAroundCrossedNodes = function(points, sourceId, targetId) {
+      if (!points || points.length < 2) return points;
+      var originalCrossed = findCrossedNodes(points, sourceId, targetId);
+      if (!originalCrossed.length) return points;
+
+      var start = points[0];
+      var end = points[points.length - 1];
+      if (!(end.y > start.y + 24)) return points;
+
+      var minTop = originalCrossed.reduce(function(best, rect) {
+        return Math.min(best, rect.top);
+      }, Infinity);
+      var minLeft = originalCrossed.reduce(function(best, rect) {
+        return Math.min(best, rect.left);
+      }, Infinity);
+      var maxRight = originalCrossed.reduce(function(best, rect) {
+        return Math.max(best, rect.right);
+      }, -Infinity);
+
+      var yCandidates = [
+        Math.min(end.y - 20, Math.max(start.y + 20, minTop - 18)),
+        Math.min(end.y - 28, Math.max(start.y + 28, minTop - 30)),
+      ];
+
+      var buildDetourPath = function(laneX, detourY) {
+        if (!Number.isFinite(detourY) || detourY <= start.y + 4 || detourY >= end.y - 4) {
+          return null;
+        }
+        if (!Number.isFinite(laneX) || Math.abs(laneX - start.x) < 1) {
+          return [
+            { x: start.x, y: start.y },
+            { x: start.x, y: detourY },
+            { x: end.x, y: detourY },
+            { x: end.x, y: end.y },
+          ];
+        }
+        return [
+          { x: start.x, y: start.y },
+          { x: laneX, y: start.y + 12 },
+          { x: laneX, y: detourY },
+          { x: end.x, y: detourY },
+          { x: end.x, y: end.y },
+        ];
+      };
+
+      var laneCandidates = [start.x, minLeft - 20, maxRight + 20];
+      var candidates = [];
+      yCandidates.forEach(function(detourY) {
+        laneCandidates.forEach(function(laneX) {
+          var candidate = buildDetourPath(laneX, detourY);
+          if (candidate) candidates.push(candidate);
+        });
+      });
+      if (!candidates.length) return points;
+
+      var bestPath = points;
+      var bestScore = originalCrossed.length;
+      var bestLaneShift = Infinity;
+
+      candidates.forEach(function(candidate) {
+        var score = findCrossedNodes(candidate, sourceId, targetId).length;
+        var laneShift = Math.abs((candidate[1] && candidate[1].x) - start.x);
+        if (score < bestScore || (score === bestScore && laneShift < bestLaneShift)) {
+          bestPath = candidate;
+          bestScore = score;
+          bestLaneShift = laneShift;
+        }
+      });
+
+      return bestPath;
+    };
 
     return allPositionedEdges.map(function(e) {
       if (e.data && e.data.actualTarget && e.data.actualTarget !== e.target) {
@@ -1181,6 +1397,8 @@
         console.log('[recursive layout] Step 5: re-routed', e.source, '->', e.target,
           'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
       }
+
+      newPoints = rerouteAroundCrossedNodes(newPoints, actualSrc, actualTgt);
 
       return {
         ...e,
