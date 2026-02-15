@@ -651,6 +651,79 @@
     });
   }
 
+  function resolveRootNodeOverlaps(layoutNodes, debugMode) {
+    if (!layoutNodes || layoutNodes.length < 2) return;
+
+    var MIN_GAP_X = 24;
+    var MAX_PASSES = layoutNodes.length + 2;
+
+    var rect = function(n) {
+      return {
+        left: n.x - n.width / 2,
+        right: n.x + n.width / 2,
+        top: n.y - n.height / 2,
+        bottom: n.y + n.height / 2,
+      };
+    };
+
+    for (var pass = 0; pass < MAX_PASSES; pass += 1) {
+      var changed = false;
+      layoutNodes.sort(function(a, b) { return a.x - b.x; });
+
+      for (var i = 0; i < layoutNodes.length - 1; i += 1) {
+        for (var j = i + 1; j < layoutNodes.length; j += 1) {
+          var a = layoutNodes[i];
+          var b = layoutNodes[j];
+          var ra = rect(a);
+          var rb = rect(b);
+
+          var overlapsY = !(ra.bottom <= rb.top || rb.bottom <= ra.top);
+          if (!overlapsY) continue;
+
+          var neededShift = (ra.right + MIN_GAP_X) - rb.left;
+          if (neededShift > 0) {
+            b.x += neededShift;
+            changed = true;
+            if (debugMode) {
+              console.log('[recursive layout] overlap-fix shifting', b.id, 'right by', neededShift, '(vs', a.id + ')');
+            }
+          }
+        }
+      }
+
+      if (!changed) break;
+    }
+  }
+
+  function snapInputsTowardTargets(layoutNodes, layoutEdges, debugMode) {
+    if (!layoutNodes || !layoutEdges || layoutNodes.length === 0) return;
+    var nodeById = new Map(layoutNodes.map(function(n) { return [n.id, n]; }));
+    var inputTargets = new Map();
+
+    layoutEdges.forEach(function(e) {
+      var src = nodeById.get(e.source);
+      var tgt = nodeById.get(e.target);
+      if (!src || !tgt) return;
+      var srcType = src.data && src.data.nodeType;
+      if (srcType !== 'INPUT' && srcType !== 'INPUT_GROUP') return;
+      var current = inputTargets.get(src.id) || [];
+      current.push(tgt.x);
+      inputTargets.set(src.id, current);
+    });
+
+    inputTargets.forEach(function(targetXs, inputId) {
+      var inputNode = nodeById.get(inputId);
+      if (!inputNode || targetXs.length === 0) return;
+      if (targetXs.length > 2) return;
+      var desiredX = targetXs.reduce(function(sum, x) { return sum + x; }, 0) / targetXs.length;
+      var before = inputNode.x;
+      inputNode.x = before + (desiredX - before) * 0.95;
+      if (debugMode) {
+        console.log('[recursive layout] input-align', inputId, 'x', before, '->', inputNode.x, '(target avg', desiredX + ')');
+      }
+    });
+  }
+
   function layoutChildrenPhase(visibleNodes, edges, layoutOrder, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode) {
     var childLayoutResults = new Map();
     var CHILD_EDGE_GAP = VERTICAL_GAP;
@@ -803,6 +876,8 @@
     }
 
     applyVerticalGapFix(rootResult.nodes, filteredRootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
+    snapInputsTowardTargets(rootResult.nodes, filteredRootLayoutEdges, debugMode);
+    resolveRootNodeOverlaps(rootResult.nodes, debugMode);
     rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
 
     return {
@@ -850,6 +925,26 @@
           { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
           { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
         ],
+      });
+    });
+
+    rootResult.edges.forEach(function(e) {
+      var edgeBase = e._original || {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        data: {},
+      };
+      var offsetPoints = (e.points || []).map(function(pt) {
+        return {
+          x: pt.x - rootResult.size.min.x,
+          y: pt.y - rootResult.size.min.y,
+        };
+      });
+
+      allPositionedEdges.push({
+        ...edgeBase,
+        data: { ...(edgeBase.data || {}), points: offsetPoints },
       });
     });
 
@@ -1091,9 +1186,169 @@
   }
 
   function applyEdgeReroutesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, debugMode) {
+    var inputGroupActualTargets = routingLookups.inputGroupActualTargets;
     var inputNodeActualTargets = routingLookups.inputNodeActualTargets;
     var outputToProducer = routingLookups.outputToProducer;
     var nodeToParent = routingLookups.nodeToParent;
+    var inputSourceCounts = new Map();
+
+    allPositionedEdges.forEach(function(edge) {
+      var sourceId = edge && edge.source;
+      if (!sourceId || sourceId.indexOf('input_') !== 0) return;
+      inputSourceCounts.set(sourceId, (inputSourceCounts.get(sourceId) || 0) + 1);
+    });
+
+    var segmentIntersectsRect = function(ax, ay, bx, by, rect) {
+      if (ax === bx && ay === by) {
+        return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+      }
+
+      var t0 = 0;
+      var t1 = 1;
+      var dx = bx - ax;
+      var dy = by - ay;
+      var p = [-dx, dx, -dy, dy];
+      var q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
+
+      for (var i = 0; i < 4; i += 1) {
+        var pi = p[i];
+        var qi = q[i];
+        if (pi === 0) {
+          if (qi < 0) return false;
+          continue;
+        }
+        var r = qi / pi;
+        if (pi < 0) {
+          if (r > t1) return false;
+          if (r > t0) t0 = r;
+        } else {
+          if (r < t0) return false;
+          if (r < t1) t1 = r;
+        }
+      }
+      return true;
+    };
+
+    var findCrossedNodes = function(points, sourceId, targetId) {
+      var crossed = [];
+      if (!points || points.length < 2) return crossed;
+
+      nodePositions.forEach(function(pos, nodeId) {
+        if (nodeId === sourceId || nodeId === targetId) return;
+        var dims = nodeDimensions.get(nodeId);
+        if (!dims) return;
+
+        var rect = {
+          left: pos.x,
+          right: pos.x + dims.width,
+          top: pos.y,
+          bottom: pos.y + dims.height,
+        };
+
+        for (var i = 0; i < points.length - 1; i += 1) {
+          var a = points[i];
+          var b = points[i + 1];
+          if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) {
+            crossed.push(rect);
+            return;
+          }
+        }
+      });
+
+      return crossed;
+    };
+
+    var rerouteAroundCrossedNodes = function(points, sourceId, targetId) {
+      if (!points || points.length < 2) return points;
+      var crossed = findCrossedNodes(points, sourceId, targetId);
+      if (!crossed.length) return points;
+
+      var start = points[0];
+      var end = points[points.length - 1];
+      if (!(end.y > start.y + 24)) return points;
+
+      var minTop = crossed.reduce(function(best, rect) {
+        return Math.min(best, rect.top);
+      }, Infinity);
+
+      var detourY = Math.min(end.y - 20, Math.max(start.y + 20, minTop - 16));
+      if (detourY <= start.y + 4 || detourY >= end.y - 4) return points;
+
+      return [
+        { x: start.x, y: start.y },
+        { x: start.x, y: detourY },
+        { x: end.x, y: detourY },
+        { x: end.x, y: end.y },
+      ];
+    };
+
+    var fanoutInputEdge = function(points, sourceId, targetId) {
+      if (!points || points.length < 2) return points;
+      if (!sourceId || sourceId.indexOf('input_') !== 0) return points;
+      if ((inputSourceCounts.get(sourceId) || 0) <= 1) return points;
+
+      var start = points[0];
+      var end = points[points.length - 1];
+      if (!(end.y > start.y + 40)) return points;
+
+      var minTop = Infinity;
+      nodePositions.forEach(function(pos, nodeId) {
+        if (nodeId === sourceId || nodeId === targetId) return;
+        var dims = nodeDimensions.get(nodeId);
+        if (!dims) return;
+        if (pos.y > start.y && pos.y < minTop) {
+          minTop = pos.y;
+        }
+      });
+
+      var shoulderY = Math.min(end.y - 24, start.y + 84);
+      if (minTop < Infinity) {
+        shoulderY = Math.min(shoulderY, minTop - 16);
+      }
+      shoulderY = Math.max(start.y + 20, shoulderY);
+      if (shoulderY >= end.y - 8) return points;
+
+      var blockingRects = [];
+      nodePositions.forEach(function(pos, nodeId) {
+        if (nodeId === sourceId || nodeId === targetId) return;
+        var dims = nodeDimensions.get(nodeId);
+        if (!dims) return;
+        var rectTop = pos.y;
+        var rectBottom = pos.y + dims.height;
+        if (rectBottom < start.y || rectTop > shoulderY) return;
+        var rectLeft = pos.x;
+        var rectRight = pos.x + dims.width;
+        if (start.x >= rectLeft && start.x <= rectRight) {
+          blockingRects.push({ left: rectLeft, right: rectRight });
+        }
+      });
+
+      var laneX = start.x;
+      if (blockingRects.length > 0) {
+        var leftMost = blockingRects.reduce(function(best, rect) { return Math.min(best, rect.left); }, Infinity);
+        var rightMost = blockingRects.reduce(function(best, rect) { return Math.max(best, rect.right); }, -Infinity);
+        var leftLane = leftMost - 24;
+        var rightLane = rightMost + 24;
+        laneX = Math.abs(rightLane - end.x) < Math.abs(leftLane - end.x) ? rightLane : leftLane;
+      }
+
+      if (Math.abs(laneX - start.x) < 1) {
+        return [
+          { x: start.x, y: start.y },
+          { x: start.x, y: shoulderY },
+          { x: end.x, y: shoulderY },
+          { x: end.x, y: end.y },
+        ];
+      }
+
+      return [
+        { x: start.x, y: start.y },
+        { x: laneX, y: start.y + 12 },
+        { x: laneX, y: shoulderY },
+        { x: end.x, y: shoulderY },
+        { x: end.x, y: end.y },
+      ];
+    };
 
     return allPositionedEdges.map(function(e) {
       if (e.data && e.data.actualTarget && e.data.actualTarget !== e.target) {
@@ -1122,6 +1377,16 @@
         nodePositions.has(actualProducer) && nodeDimensions.has(actualProducer);
 
       var actualConsumer = inputNodeActualTargets.get(e.source);
+      if (!actualConsumer && inputGroupActualTargets.has(e.source)) {
+        var groupTargets = inputGroupActualTargets.get(e.source) || [];
+        for (var i = 0; i < groupTargets.length; i += 1) {
+          var candidate = groupTargets[i];
+          if (nodePositions.has(candidate) && nodeDimensions.has(candidate)) {
+            actualConsumer = candidate;
+            break;
+          }
+        }
+      }
       var needsTargetReroute = actualConsumer && actualConsumer !== e.target &&
         nodePositions.has(actualConsumer) && nodeDimensions.has(actualConsumer);
 
@@ -1181,6 +1446,9 @@
         console.log('[recursive layout] Step 5: re-routed', e.source, '->', e.target,
           'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
       }
+
+      newPoints = fanoutInputEdge(newPoints, actualSrc, actualTgt);
+      newPoints = rerouteAroundCrossedNodes(newPoints, actualSrc, actualTgt);
 
       return {
         ...e,

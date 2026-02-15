@@ -562,8 +562,10 @@
     // Keep edge-to-edge spacing uniform by disabling density-based row expansion.
     expandDenseRows(edges, rows, coordSecondary, spaceY, orientation, 0);
 
-    // After layout settles, nudge DATA nodes toward their producer X (within row constraints).
+    // After layout settles, nudge DATA nodes toward producers and INPUT nodes
+    // toward consumers (within row constraints).
     alignDataNodesToSources(rows, edges, layoutConfig);
+    alignInputNodesToTargets(rows, edges, layoutConfig);
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
@@ -672,6 +674,11 @@
 
   const isDataNode = (node) =>
     (node && (node.data?.nodeType || node.nodeType)) === 'DATA';
+
+  const isInputNode = (node) => {
+    const nodeType = node && (node.data?.nodeType || node.nodeType);
+    return nodeType === 'INPUT' || nodeType === 'INPUT_GROUP';
+  };
 
   const createParallelConstraints = (edges, layoutConfig) =>
     edges.map(({ sourceNode, targetNode }) => ({
@@ -830,6 +837,71 @@
     });
   };
 
+  const alignInputNodesToTargets = (rows, edges, layoutConfig) => {
+    if (!INPUT_NODE_ALIGN_WEIGHT) return;
+    const alignWeight = Math.max(0, Math.min(1, INPUT_NODE_ALIGN_WEIGHT));
+    const coordPrimary = layoutConfig.coordPrimary;
+
+    const inputTargets = new Map();
+    edges.forEach((edge) => {
+      const src = edge.sourceNode;
+      const tgt = edge.targetNode;
+      if (!src || !tgt || !isInputNode(src)) return;
+      if (!inputTargets.has(src.id)) inputTargets.set(src.id, []);
+      inputTargets.get(src.id).push(tgt);
+    });
+
+    const degreeOf = (node) =>
+      Math.max(1, node.targets.length + node.sources.length - 2);
+
+    const computeSpace = (nodeA, nodeB) => {
+      const degreeA = degreeOf(nodeA);
+      const degreeB = degreeOf(nodeB);
+      const spread = Math.min(10, degreeA * degreeB * layoutConfig.spreadX);
+      return snap(spread * layoutConfig.spaceX, layoutConfig.spaceX);
+    };
+
+    rows.forEach((row) => {
+      row.sort((a, b) =>
+        compare(a[coordPrimary], b[coordPrimary], a.id, b.id)
+      );
+
+      for (let i = 0; i < row.length; i += 1) {
+        const node = row[i];
+        if (!isInputNode(node)) continue;
+        const targets = inputTargets.get(node.id);
+        if (!targets || targets.length === 0) continue;
+
+        const desiredX = targets.reduce((sum, targetNode) => sum + targetNode[coordPrimary], 0) / targets.length;
+
+        let minX = -Infinity;
+        let maxX = Infinity;
+        if (i > 0) {
+          const left = row[i - 1];
+          const space = computeSpace(left, node);
+          minX =
+            left[coordPrimary] +
+            left.width * 0.5 +
+            space +
+            node.width * 0.5;
+        }
+        if (i < row.length - 1) {
+          const right = row[i + 1];
+          const space = computeSpace(node, right);
+          maxX =
+            right[coordPrimary] -
+            (node.width * 0.5 + space + right.width * 0.5);
+        }
+
+        if (minX > maxX) continue;
+        const clampedX = clamp(desiredX, minX, maxX);
+        node[coordPrimary] =
+          node[coordPrimary] +
+          (clampedX - node[coordPrimary]) * alignWeight;
+      }
+    });
+  };
+
   const createSharedTargetConstraints = (edges, layoutConfig) => {
     const { spaceX, coordPrimary } = layoutConfig;
     const sourcesByTarget = {};
@@ -885,6 +957,7 @@
   const EDGE_EDGE_CLEARANCE = VizConstants.EDGE_EDGE_CLEARANCE ?? 0;
   const EDGE_SHARED_TARGET_SPACING_SCALE = VizConstants.EDGE_SHARED_TARGET_SPACING_SCALE ?? 1;
   const DATA_NODE_ALIGN_WEIGHT = VizConstants.DATA_NODE_ALIGN_WEIGHT ?? 0;
+  const INPUT_NODE_ALIGN_WEIGHT = VizConstants.INPUT_NODE_ALIGN_WEIGHT ?? 0;
   const MIN_HORIZONTAL_DIST_FOR_WAYPOINT = 20;
   const MIN_VERTICAL_DIST_FOR_WAYPOINT = 50;
   const SHOULDER_VERTICAL_RATIO = 0.4;

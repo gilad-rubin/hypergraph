@@ -164,6 +164,11 @@ def build_graph_output_visibility(flat_graph: nx.DiGraph) -> dict[str, set[str]]
             for output_name in attrs.get("outputs", ())
             if is_output_externally_consumed(output_name, node_id, flat_graph)
         }
+        # Leaf GRAPH nodes are still end-user visible branch outcomes.
+        # If none of their outputs are externally consumed, keep terminal outputs
+        # visible so collapsed containers don't appear output-less.
+        if not visible_outputs and flat_graph.out_degree(node_id) == 0:
+            visible_outputs = set(attrs.get("outputs", ()))
         visibility[node_id] = visible_outputs
     return visibility
 

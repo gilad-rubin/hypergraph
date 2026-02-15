@@ -58,10 +58,11 @@
     EDGE_NONSTRAIGHT_WEIGHT: 0.6,         // Penalize cumulative bend angles (many small bends)
     EDGE_EDGE_PENALTY: 8,                 // Penalize corridor segments crossing other edges
     EDGE_EDGE_CLEARANCE: 6,               // Ignore edge crossings near shared endpoints
-    EDGE_SHARED_TARGET_SPACING_SCALE: 1,  // Scale separation for shared-target source spacing
+    EDGE_SHARED_TARGET_SPACING_SCALE: 0.45, // Scale separation for shared-target source spacing
     EDGE_SHARP_TURN_ANGLE: 35,            // Above this angle, force straight segments (if curveStyle < 1)
     EDGE_CURVE_STYLE: 0.9,                // 0 = straight polyline, 1 = smooth curve, in-between = subtle
-    EDGE_ELBOW_RADIUS: 20,                // Rounded corner radius for straight polylines
+    EDGE_ELBOW_RADIUS: 0,                 // Rounded corner radius for straight polylines
     DATA_NODE_ALIGN_WEIGHT: 1,            // Pull DATA nodes toward their producer X (0..1)
+    INPUT_NODE_ALIGN_WEIGHT: 0.9,         // Pull INPUT nodes toward downstream consumer X (0..1)
   };
 });
