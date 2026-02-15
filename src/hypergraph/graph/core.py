@@ -50,7 +50,7 @@ class Graph:
         nodes: Map of node name → HyperNode
         outputs: All output names produced by nodes
         leaf_outputs: Outputs from terminal nodes (no downstream destinations)
-        inputs: InputSpec describing required/optional/seed parameters
+        inputs: InputSpec describing required/optional/entry point parameters
         has_cycles: True if graph contains cycles
         has_async_nodes: True if any FunctionNode is async
         strict_types: If True, type validation between nodes is enabled

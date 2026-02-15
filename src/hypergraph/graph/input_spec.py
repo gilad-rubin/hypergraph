@@ -98,7 +98,6 @@ def _unique_params(nodes: dict[str, "HyperNode"]) -> Iterator[str]:
                 yield param
 
 
-
 def _categorize_param(
     param: str,
     edge_produced: set[str],
@@ -169,12 +168,14 @@ def _compute_entry_points(
             if isinstance(node, GateNode):
                 continue  # Gates control cycles, not start them
 
-            # Params this node needs that are cycle-produced (minus bound, minus interrupt-produced)
+            # Params this node needs that are cycle-produced
+            # (minus bound, minus interrupt-produced, minus defaulted)
             needed = tuple(
                 p for p in node.inputs
                 if p in cycle_params
                 and p not in bound
                 and not _is_interrupt_produced(p, nodes)
+                and not node.has_default_for(p)
             )
             if needed:  # Only include if node needs user-provided cycle params
                 entry_points[node_name] = needed

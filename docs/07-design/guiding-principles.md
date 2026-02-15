@@ -210,7 +210,7 @@ result = runner.run(graph, {"messages": [], "query": "..."})
 
 ### Break example
 
-- Running cyclic flows without initializing seed inputs.
+- Running cyclic flows without initializing entry point values.
 
 ---
 

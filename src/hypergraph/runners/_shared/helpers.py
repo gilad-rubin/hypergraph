@@ -550,6 +550,12 @@ def filter_outputs(
     Returns:
         Dict of output values
     """
+    if on_missing not in _VALID_ON_MISSING:
+        raise ValueError(
+            f"Invalid on_missing={on_missing!r}. "
+            f"Expected one of: {', '.join(_VALID_ON_MISSING)}"
+        )
+
     from hypergraph.nodes.base import _EMIT_SENTINEL
 
     effective = _resolve_select(select, graph)
@@ -603,6 +609,15 @@ def _collect_selected_outputs(
 _VALID_ON_MISSING = ("ignore", "warn", "error")
 
 
+def _validate_on_missing(on_missing: str) -> None:
+    """Validate on_missing parameter eagerly (before execution)."""
+    if on_missing not in _VALID_ON_MISSING:
+        raise ValueError(
+            f"Invalid on_missing={on_missing!r}. "
+            f"Expected one of: {', '.join(_VALID_ON_MISSING)}"
+        )
+
+
 def _handle_missing_outputs(
     missing: list[str],
     state: GraphState,
@@ -626,6 +641,7 @@ def _handle_missing_outputs(
 
     if on_missing == "warn":
         import warnings
+        # stacklevel=6: _handle → _collect_selected → filter_outputs → run → user
         warnings.warn(msg, UserWarning, stacklevel=6)
     elif on_missing == "error":
         raise ValueError(msg)

@@ -205,7 +205,7 @@ class TestMultiNodeCycle:
         assert g.inputs.required == ()
 
     def test_cycle_with_external_input(self):
-        """Cycle with external input: x is required, cycle params are seeds."""
+        """Cycle with external input: x is required, cycle params are entry points."""
 
         @node(output_name="a")
         def node_a(c: int, x: int) -> int:
@@ -264,8 +264,8 @@ class TestMultipleCycles:
 
         assert g.has_cycles is True
 
-    def test_two_independent_cycles_seeds(self):
-        """Seeds from both cycles are detected."""
+    def test_two_independent_cycles_entry_points(self):
+        """Entry points from both cycles are detected."""
 
         @node(output_name="x")
         def x_node(y: int) -> int:

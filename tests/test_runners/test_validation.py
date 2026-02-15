@@ -84,8 +84,8 @@ class TestValidateInputs:
         with pytest.raises(MissingInputError):
             validate_inputs(graph, {})
 
-    def test_seed_input_provided_passes(self):
-        """No error when seed input is provided."""
+    def test_entry_point_input_provided_passes(self):
+        """No error when entry point input is provided."""
         graph = Graph([counter])
         validate_inputs(graph, {"count": 0})
 

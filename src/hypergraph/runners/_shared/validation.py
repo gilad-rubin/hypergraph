@@ -103,7 +103,7 @@ def _validate_cycle_entry(
     """
     ep = graph.inputs.entry_points
 
-    # If explicit entry_point, validate it
+    # If explicit entry_point, validate it then check remaining cycles
     if entry_point is not None:
         if entry_point not in ep:
             valid = sorted(ep.keys())
@@ -118,6 +118,13 @@ def _validate_cycle_entry(
                 f"Entry point '{entry_point}' needs: {', '.join(sorted(ep[entry_point]))}. "
                 f"Missing: {', '.join(missing)}"
             )
+        # Still validate other independent cycles
+        scc_groups = _group_entry_points_by_scc(graph, ep)
+        ep_scc = _find_scc_for_node(entry_point, scc_groups)
+        for scc_idx, scc_entries in scc_groups.items():
+            if scc_idx == ep_scc:
+                continue  # Already validated via explicit entry_point
+            _check_cycle_entry(scc_entries, ep, provided, bypassed)
         return
 
     # Implicit: group entry points by SCC and check each cycle
@@ -159,6 +166,16 @@ def _group_entry_points_by_scc(
             groups.setdefault(scc_idx, []).append(node_name)
 
     return groups
+
+
+def _find_scc_for_node(
+    node_name: str, scc_groups: dict[int, list[str]],
+) -> int | None:
+    """Find which SCC group a node belongs to."""
+    for scc_idx, members in scc_groups.items():
+        if node_name in members:
+            return scc_idx
+    return None
 
 
 def _check_cycle_entry(
@@ -374,7 +391,11 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
     if not bypassed_nodes:
         return set()
 
-    # Also mark nodes as bypassed if ALL their non-cycle outputs are provided
+    # Also mark nodes as bypassed if ALL their non-cycle outputs are provided.
+    # Unlike the first pass (consumed only), this catches nodes whose outputs
+    # aren't consumed downstream but are still fully overridden by user values.
+    # Cycle entry point params are excluded: providing them means bootstrapping
+    # the cycle, NOT bypassing the producer.
     for node in graph._nodes.values():
         non_cycle_outputs = set(node.outputs) - cycle_ep_params
         if non_cycle_outputs and non_cycle_outputs <= provided:

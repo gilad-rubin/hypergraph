@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError
-from hypergraph.runners._shared.helpers import _UNSET_SELECT, filter_outputs, generate_map_inputs
+from hypergraph.runners._shared.helpers import _UNSET_SELECT, _validate_on_missing, filter_outputs, generate_map_inputs
 from hypergraph.runners._shared.input_normalization import (
     ASYNC_MAP_RESERVED_OPTION_NAMES,
     ASYNC_RUN_RESERVED_OPTION_NAMES,
@@ -126,6 +126,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
         validate_inputs(graph, normalized_values, entry_point=entry_point)
+        _validate_on_missing(on_missing)
 
         max_iter = max_iterations or self.default_max_iterations
         dispatcher = self._create_dispatcher(event_processors)
@@ -187,6 +188,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         map_mode: Literal["zip", "product"] = "zip",
         select: "str | list[str]" = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entry_point: str | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list["EventProcessor"] | None = None,
         _parent_span_id: str | None = None,
@@ -226,6 +228,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
+                    entry_point=entry_point,
                     event_processors=event_processors,
                     _parent_span_id=map_span_id,
                 )
