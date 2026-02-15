@@ -63,8 +63,8 @@ class AsyncInterruptNodeExecutor:
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
-                output_param=data_outputs[0],
-                value=input_values[node.inputs[0]],
+                output_param=data_outputs[0] if data_outputs else "",
+                value=input_values[node.inputs[0]] if node.inputs else None,
                 output_params=data_outputs if len(data_outputs) > 1 else None,
                 values=input_values if len(node.inputs) > 1 else None,
             )
@@ -77,23 +77,23 @@ def _normalize_response(
     data_outputs: tuple[str, ...],
 ) -> dict[str, Any]:
     """Normalize handler response to output dict (data outputs only)."""
-    if len(data_outputs) > 1:
-        if isinstance(response, dict):
-            expected_keys = set(data_outputs)
-            actual_keys = set(response.keys())
-            if actual_keys != expected_keys:
-                missing = expected_keys - actual_keys
-                extra = actual_keys - expected_keys
-                raise ValueError(
-                    f"Handler for InterruptNode '{node.name}' returned dict "
-                    f"with incorrect keys. Expected: {sorted(expected_keys)}, "
-                    f"Got: {sorted(actual_keys)}. "
-                    + (f"Missing: {sorted(missing)}. " if missing else "")
-                    + (f"Extra: {sorted(extra)}." if extra else "")
-                )
-            return response
-        # Single value returned for multi-output: assign to first data output
-        return {data_outputs[0]: response}
+    if not data_outputs:
+        return {}
+    if len(data_outputs) > 1 and isinstance(response, dict):
+        expected_keys = set(data_outputs)
+        actual_keys = set(response.keys())
+        if actual_keys != expected_keys:
+            missing = expected_keys - actual_keys
+            extra = actual_keys - expected_keys
+            raise ValueError(
+                f"Handler for InterruptNode '{node.name}' returned dict "
+                f"with incorrect keys. Expected: {sorted(expected_keys)}, "
+                f"Got: {sorted(actual_keys)}. "
+                + (f"Missing: {sorted(missing)}. " if missing else "")
+                + (f"Extra: {sorted(extra)}." if extra else "")
+            )
+        return response
+    # Single value (or single value for multi-output): assign to first output
     return {data_outputs[0]: response}
 
 

@@ -336,13 +336,16 @@ InterruptNode(my_func, name="review", output_name="decision",
 ```python
 @dataclass
 class PauseInfo:
-    node_name: str      # Name of the interrupt node (uses "/" for nesting)
-    output_param: str   # Output parameter name
-    value: Any          # Input value surfaced to the caller
+    node_name: str                          # Name of the interrupt node (uses "/" for nesting)
+    output_param: str                       # First output parameter name
+    value: Any                              # First input value surfaced to the caller
+    output_params: tuple[str, ...] | None   # All output names (multi-output), else None
+    values: dict[str, Any] | None           # All input values (multi-input), else None
 ```
 
 **Properties:**
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `response_key` | `str` | Key to use when resuming. Top-level: `output_param`. Nested: dot-separated path (e.g., `"inner.decision"`) |
+| `response_key` | `str` | Key to use when resuming (first output). Top-level: `output_param`. Nested: dot-separated path (e.g., `"inner.decision"`) |
+| `response_keys` | `dict[str, str]` | Map of all output names to resume keys (for multi-output interrupts) |

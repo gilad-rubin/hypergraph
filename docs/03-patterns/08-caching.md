@@ -163,6 +163,8 @@ These node types reject `cache=True` at build time:
 
 - **GraphNode** — nested graphs have their own execution flow; cache individual nodes inside them instead
 
+### InterruptNode
+
 InterruptNode supports `cache=True` (defaults to `False`). When cached, a previously auto-resolved response is replayed without re-running the handler.
 
 ## Real-World Example: Cached RAG Pipeline
