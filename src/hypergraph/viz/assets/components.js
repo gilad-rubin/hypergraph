@@ -567,7 +567,6 @@
 
         var MIN_SIGNIFICANT_SEGMENT = 6;
         var TURN_THRESHOLD_DEG = 38;
-        var MIN_OUTGOING_SPAN = 80;
 
         var segments = [];
         var cumulative = 0;
@@ -609,7 +608,7 @@
           var dot = Math.max(-1, Math.min(1, baseX * segX + baseY * segY));
           var angleDeg = Math.acos(dot) * 180 / Math.PI;
           var distanceBeforeTurn = segments[k - 1].endDistance;
-          if (angleDeg >= TURN_THRESHOLD_DEG && distanceBeforeTurn >= MIN_OUTGOING_SPAN) {
+          if (angleDeg >= TURN_THRESHOLD_DEG) {
             outgoingLength = distanceBeforeTurn;
             break;
           }

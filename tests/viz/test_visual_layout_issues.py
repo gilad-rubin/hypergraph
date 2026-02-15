@@ -13,10 +13,13 @@ from hypergraph import Graph, ifelse, node
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
+    click_to_collapse_container,
+    click_to_expand_container,
     make_workflow,
     make_outer,
     render_to_page,
 )
+from tests.viz.test_complex_nested_graphs import make_rag_style_graph
 from tests.viz.test_cross_boundary_edge import build_triple_nested_graph
 
 
@@ -162,6 +165,153 @@ class TestInputNodePosition:
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeGaps:
     """Tests that edges connect to nodes without visible gaps."""
+
+    @staticmethod
+    def _branch_label_reports(page) -> dict:
+        return page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const edges = debug.layoutedEdges || [];
+
+            const transformToPoint = (style) => {
+                if (!style) return null;
+                const match = style.match(
+                    /translate\\(-50%,\\s*-50%\\)\\s*translate\\(\\s*([\\d.-]+)px\\s*,\\s*([\\d.-]+)px\\s*\\)/
+                );
+                if (!match) return null;
+                return { x: parseFloat(match[1]), y: parseFloat(match[2]) };
+            };
+
+            const labelNodes = Array.from(document.querySelectorAll('.react-flow__edgelabel-renderer div'))
+                .map((el) => {
+                    const text = (el.textContent || '').trim();
+                    const point = transformToPoint(el.getAttribute('style') || '');
+                    if (!point) return null;
+                    return { text: text, x: point.x, y: point.y };
+                })
+                .filter(Boolean)
+                .filter((l) => l.text.includes('True') || l.text.includes('False'));
+
+            const midpointOnOutgoingLeg = (pts) => {
+                if (!pts || pts.length < 2) return null;
+                const MIN_SIGNIFICANT_SEGMENT = 6;
+                const TURN_THRESHOLD_DEG = 38;
+
+                const segments = [];
+                let cumulative = 0;
+                for (let i = 0; i < pts.length - 1; i += 1) {
+                    const a = pts[i];
+                    const b = pts[i + 1];
+                    const dx = b.x - a.x;
+                    const dy = b.y - a.y;
+                    const len = Math.hypot(dx, dy);
+                    cumulative += len;
+                    segments.push({ x: dx, y: dy, len: len, endDistance: cumulative });
+                }
+                if (!segments.length) return null;
+
+                let firstSig = -1;
+                for (let i = 0; i < segments.length; i += 1) {
+                    if (segments[i].len >= MIN_SIGNIFICANT_SEGMENT) {
+                        firstSig = i;
+                        break;
+                    }
+                }
+                if (firstSig < 0) return null;
+
+                const base = segments[firstSig];
+                const baseLen = base.len || 1;
+                const baseX = base.x / baseLen;
+                const baseY = base.y / baseLen;
+                let outgoingLength = cumulative;
+
+                for (let i = firstSig + 1; i < segments.length; i += 1) {
+                    const seg = segments[i];
+                    if (seg.len < MIN_SIGNIFICANT_SEGMENT) continue;
+                    const segX = seg.x / seg.len;
+                    const segY = seg.y / seg.len;
+                    const dot = Math.max(-1, Math.min(1, baseX * segX + baseY * segY));
+                    const angleDeg = Math.acos(dot) * 180 / Math.PI;
+                    if (angleDeg >= TURN_THRESHOLD_DEG) {
+                        outgoingLength = segments[i - 1].endDistance;
+                        break;
+                    }
+                }
+
+                const target = outgoingLength * 0.5;
+                let walked = 0;
+                for (let i = 0; i < pts.length - 1; i += 1) {
+                    const p0 = pts[i];
+                    const p1 = pts[i + 1];
+                    const dx = p1.x - p0.x;
+                    const dy = p1.y - p0.y;
+                    const segLen = Math.hypot(dx, dy);
+                    if (segLen <= 1e-6) continue;
+                    if (walked + segLen >= target) {
+                        const t = (target - walked) / segLen;
+                        return { x: p0.x + dx * t, y: p0.y + dy * t };
+                    }
+                    walked += segLen;
+                }
+                return { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
+            };
+
+            const reports = [];
+            for (const edge of edges) {
+                const label = (edge.data && edge.data.label) || '';
+                if (label !== 'True' && label !== 'False') continue;
+                const pts = (edge.data && edge.data.points) || [];
+                const expected = midpointOnOutgoingLeg(pts);
+                if (!expected) continue;
+
+                let best = null;
+                let bestDist = Infinity;
+                for (const ln of labelNodes) {
+                    if (!ln.text.includes(label)) continue;
+                    const d = Math.hypot(ln.x - expected.x, ln.y - expected.y);
+                    if (d < bestDist) {
+                        best = ln;
+                        bestDist = d;
+                    }
+                }
+
+                reports.push({
+                    edge: edge.id,
+                    label: label,
+                    expected: expected,
+                    actual: best,
+                    distance: bestDist,
+                });
+            }
+
+            return {
+                reports: reports,
+                parsedLabels: labelNodes,
+                edgesWithBranchLabel: edges
+                    .filter((e) => {
+                        const label = (e.data && e.data.label) || '';
+                        return label === 'True' || label === 'False';
+                    })
+                    .map((e) => e.id),
+            };
+        }""")
+
+    @staticmethod
+    def _assert_branch_labels_centered(result: dict, stage: str) -> None:
+        assert result["reports"], (
+            f"No True/False edge labels found ({stage}). "
+            f"Parsed labels: {result['parsedLabels']}, branch edges: {result['edgesWithBranchLabel']}"
+        )
+        for report in result["reports"]:
+            assert report["actual"] is not None, (
+                f"Label not found for edge {report['edge']} ({stage}). "
+                f"Parsed labels: {result['parsedLabels']}"
+            )
+            assert report["distance"] <= 2.5, (
+                f"Branch label not centered on outgoing leg for {report['edge']} ({report['label']}) [{stage}].\n"
+                f"Expected: ({report['expected']['x']:.2f}, {report['expected']['y']:.2f})\n"
+                f"Actual: ({report['actual']['x']:.2f}, {report['actual']['y']:.2f})\n"
+                f"Distance: {report['distance']:.2f}px"
+            )
 
     def test_branch_incoming_edge_touches_diamond_top(self, page, temp_html_file):
         """Incoming edge should terminate on the BRANCH diamond top boundary."""
@@ -399,6 +549,53 @@ class TestEdgeGaps:
                 f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}"
                 for i in result["issues"][:10]
             )
+        )
+
+    def test_branch_labels_center_on_outgoing_leg(self, page, temp_html_file):
+        """True/False labels should be centered on the outgoing branch leg."""
+        graph = make_branch_anchor_graph()
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+        self._assert_branch_labels_centered(
+            self._branch_label_reports(page),
+            stage="baseline",
+        )
+
+    def test_branch_labels_recalculate_after_expand_and_mode_changes(self, page, temp_html_file):
+        """True/False label centering should update after expand/collapse and mode toggles."""
+        graph = make_rag_style_graph()
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
+
+        self._assert_branch_labels_centered(
+            self._branch_label_reports(page),
+            stage="initial collapsed",
+        )
+
+        click_to_expand_container(page, "retrieval")
+        self._assert_branch_labels_centered(
+            self._branch_label_reports(page),
+            stage="after expand retrieval",
+        )
+
+        version_before_modes = page.evaluate("window.__hypergraphVizDebug.version")
+        page.evaluate("""() => {
+            window.__hypergraphVizSetRenderOptions({
+                separateOutputs: true,
+                showTypes: true,
+            });
+        }""")
+        page.wait_for_function(
+            f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {version_before_modes} && window.__hypergraphVizReady === true",
+            timeout=10000,
+        )
+        self._assert_branch_labels_centered(
+            self._branch_label_reports(page),
+            stage="after separate outputs + show types",
+        )
+
+        click_to_collapse_container(page, "retrieval")
+        self._assert_branch_labels_centered(
+            self._branch_label_reports(page),
+            stage="after collapse retrieval",
         )
 
 

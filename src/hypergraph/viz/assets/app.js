@@ -664,6 +664,36 @@
       root.__hypergraph_debug_overlays = debugOverlays;
     }, [debugOverlays]);
 
+    var onToggleSeparateOutputs = useCallback(function(nextValue) {
+      root.__hypergraphVizReady = false;
+      setSeparateOutputs(function(prev) {
+        return typeof nextValue === 'boolean' ? nextValue : !prev;
+      });
+    }, [setSeparateOutputs]);
+
+    var onToggleShowTypes = useCallback(function(nextValue) {
+      root.__hypergraphVizReady = false;
+      setShowTypes(function(prev) {
+        return typeof nextValue === 'boolean' ? nextValue : !prev;
+      });
+    }, [setShowTypes]);
+
+    // Debug/test hook to toggle render options without UI interaction.
+    useEffect(function() {
+      root.__hypergraphVizSetRenderOptions = function(options) {
+        if (!options || typeof options !== 'object') return;
+        if (Object.prototype.hasOwnProperty.call(options, 'separateOutputs')) {
+          onToggleSeparateOutputs(!!options.separateOutputs);
+        }
+        if (Object.prototype.hasOwnProperty.call(options, 'showTypes')) {
+          onToggleShowTypes(!!options.showTypes);
+        }
+      };
+      return function() {
+        delete root.__hypergraphVizSetRenderOptions;
+      };
+    }, [onToggleSeparateOutputs, onToggleShowTypes]);
+
     var detectedThemeState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detectedThemeState[0];
     var setDetectedTheme = detectedThemeState[1];
@@ -1130,8 +1160,8 @@
       });
     }, [rawLayoutedNodes, layoutedEdges, setViewport, getViewport]);
 
-    // Force edge recalculation after expansion changes
-    var prevExpansionRef = useRef(null);
+    // Force edge/handle recalculation after expansion or render-mode changes.
+    var prevLayoutRefreshRef = useRef(null);
     var expansionKey = useMemo(function() {
       return Array.from(expansionState.entries())
         .filter(function(entry) { return !entry[1]; })
@@ -1139,15 +1169,21 @@
         .sort()
         .join(',');
     }, [expansionState]);
+    var renderModeKey = useMemo(function() {
+      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0');
+    }, [separateOutputs, showTypes]);
+    var layoutRefreshKey = useMemo(function() {
+      return expansionKey + '|' + renderModeKey;
+    }, [expansionKey, renderModeKey]);
 
     useEffect(function() {
-      if (prevExpansionRef.current === null) {
-        prevExpansionRef.current = expansionKey;
+      if (prevLayoutRefreshRef.current === null) {
+        prevLayoutRefreshRef.current = layoutRefreshKey;
         return;
       }
 
-      if (prevExpansionRef.current === expansionKey) return;
-      prevExpansionRef.current = expansionKey;
+      if (prevLayoutRefreshRef.current === layoutRefreshKey) return;
+      prevLayoutRefreshRef.current = layoutRefreshKey;
 
       var timer = setTimeout(function() {
         requestAnimationFrame(function() {
@@ -1164,7 +1200,7 @@
       }, 500);
 
       return function() { clearTimeout(timer); };
-    }, [expansionKey, rawLayoutedNodes, updateNodeInternals]);
+    }, [layoutRefreshKey, rawLayoutedNodes, updateNodeInternals]);
 
     // Add debug mode to layouted nodes
     var layoutedNodes = useMemo(function() {
@@ -1481,14 +1517,16 @@
         }
         return {
           ...e,
-          id: expansionKey ? (e.id + '_exp_' + expansionKey.replace(/,/g, '_')) : e.id,
+          id: e.id +
+            '_exp_' + (expansionKey ? expansionKey.replace(/,/g, '_') : 'none') +
+            '_mode_' + renderModeKey,
           ...edgeOptions,
           style: edgeStyle,
           markerEnd: edgeOptions.markerEnd,
           data: { ...e.data, debugMode: debugOverlays }
         };
       });
-    }, [layoutedEdges, theme, isLayouting, debugOverlays, expansionKey]);
+    }, [layoutedEdges, theme, isLayouting, debugOverlays, expansionKey, renderModeKey]);
 
     // Notify parent of click
     var notifyParentClick = useCallback(function() {
@@ -1532,9 +1570,9 @@
             theme=${theme}
             onToggleTheme=${toggleTheme}
             separateOutputs=${separateOutputs}
-            onToggleSeparate=${function() { setSeparateOutputs(function(s) { return !s; }); }}
+            onToggleSeparate=${function() { onToggleSeparateOutputs(); }}
             showTypes=${showTypes}
-            onToggleTypes=${function() { setShowTypes(function(t) { return !t; }); }}
+            onToggleTypes=${function() { onToggleShowTypes(); }}
             onFitView=${fitWithFixedPadding}
           />
           ${(showThemeDebug || debugOverlays) ? html`
