@@ -521,10 +521,15 @@ def initialize_state(
     return state
 
 
+_UNSET_SELECT: Any = object()
+"""Sentinel distinguishing 'user didn't pass select' from explicit '**'."""
+
+
 def filter_outputs(
     state: GraphState,
     graph: "Graph",
-    select: list[str] | None,
+    select: "str | list[str] | Any" = _UNSET_SELECT,
+    on_missing: str = "ignore",
 ) -> dict[str, Any]:
     """Filter state values to only include requested outputs.
 
@@ -534,49 +539,88 @@ def filter_outputs(
     Args:
         state: Final execution state
         graph: The executed graph
-        select: Optional list of output names to include (None = all outputs)
+        select: Which outputs to return. ``"**"`` = all outputs (default).
+            A list of exact names returns only those. Unset = check
+            ``graph.selected`` first, then fall back to ``"**"``.
+        on_missing: How to handle missing selected outputs.
+            ``"ignore"`` (default) = silently omit.
+            ``"warn"`` = warn and return available.
+            ``"error"`` = raise ValueError.
 
     Returns:
         Dict of output values
-
-    Warns:
-        UserWarning: If select contains names not found in state values
     """
     from hypergraph.nodes.base import _EMIT_SENTINEL
 
-    # Runtime select= overrides graph-level default
-    effective_select = select if select is not None else graph.selected
+    effective = _resolve_select(select, graph)
 
-    if effective_select is not None:
-        result = {}
-        missing = []
-        for k in effective_select:
-            if k in state.values and state.values[k] is not _EMIT_SENTINEL:
-                result[k] = state.values[k]
-            elif k not in state.values:
-                missing.append(k)
+    if effective == "**":
+        return _collect_all_outputs(state, graph, _EMIT_SENTINEL)
 
-        if missing:
-            import warnings
-            available = [
-                k for k in state.values.keys()
-                if state.values[k] is not _EMIT_SENTINEL
-            ]
-            warnings.warn(
-                f"Requested outputs not found: {missing}. "
-                f"Available outputs: {available}",
-                UserWarning,
-                stacklevel=4,  # Point to caller's caller (run method)
-            )
+    names = [effective] if isinstance(effective, str) else effective
+    return _collect_selected_outputs(state, names, _EMIT_SENTINEL, on_missing)
 
-        return result
 
-    # Default: return all graph outputs, excluding emit sentinels
+def _resolve_select(select: Any, graph: "Graph") -> "str | list[str]":
+    """Resolve effective select: unset → graph.selected → '**'."""
+    if select is _UNSET_SELECT:
+        return list(graph.selected) if graph.selected is not None else "**"
+    return select
+
+
+def _collect_all_outputs(
+    state: GraphState, graph: "Graph", sentinel: Any,
+) -> dict[str, Any]:
+    """Return all graph outputs present in state, excluding emit sentinels."""
     return {
         k: state.values[k]
         for k in graph.outputs
-        if k in state.values and state.values[k] is not _EMIT_SENTINEL
+        if k in state.values and state.values[k] is not sentinel
     }
+
+
+def _collect_selected_outputs(
+    state: GraphState,
+    names: list[str],
+    sentinel: Any,
+    on_missing: str,
+) -> dict[str, Any]:
+    """Return selected outputs, handling missing per on_missing policy."""
+    result = {}
+    missing = []
+    for k in names:
+        if k in state.values and state.values[k] is not sentinel:
+            result[k] = state.values[k]
+        elif k not in state.values:
+            missing.append(k)
+
+    if missing:
+        _handle_missing_outputs(missing, state, sentinel, on_missing)
+
+    return result
+
+
+def _handle_missing_outputs(
+    missing: list[str],
+    state: GraphState,
+    sentinel: Any,
+    on_missing: str,
+) -> None:
+    """Handle missing outputs per policy: ignore, warn, or error."""
+    if on_missing == "ignore":
+        return
+
+    available = [k for k in state.values if state.values[k] is not sentinel]
+    msg = (
+        f"Requested outputs not found: {missing}. "
+        f"Available outputs: {available}"
+    )
+
+    if on_missing == "warn":
+        import warnings
+        warnings.warn(msg, UserWarning, stacklevel=6)
+    elif on_missing == "error":
+        raise ValueError(msg)
 
 
 def generate_map_inputs(

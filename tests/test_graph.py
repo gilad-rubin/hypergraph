@@ -14,13 +14,13 @@ class TestInputSpec:
         spec = InputSpec(
             required=("param1", "param2"),
             optional=("param3",),
-            seeds=("param4",),
+            entry_points={"node_a": ("param4",)},
             bound={"param5": 42},
         )
 
         assert spec.required == ("param1", "param2")
         assert spec.optional == ("param3",)
-        assert spec.seeds == ("param4",)
+        assert spec.entry_points == {"node_a": ("param4",)}
         assert spec.bound == {"param5": 42}
 
     def test_input_spec_all_property(self):
@@ -28,7 +28,7 @@ class TestInputSpec:
         spec = InputSpec(
             required=("a", "b"),
             optional=("c",),
-            seeds=("d",),
+            entry_points={"node_a": ("d",)},
             bound={},
         )
 
@@ -39,13 +39,13 @@ class TestInputSpec:
         spec = InputSpec(
             required=(),
             optional=(),
-            seeds=(),
+            entry_points={},
             bound={},
         )
 
         assert spec.required == ()
         assert spec.optional == ()
-        assert spec.seeds == ()
+        assert spec.entry_points == {}
         assert spec.bound == {}
         assert spec.all == ()
 
@@ -54,7 +54,7 @@ class TestInputSpec:
         spec = InputSpec(
             required=("param1",),
             optional=(),
-            seeds=(),
+            entry_points={},
             bound={},
         )
 
@@ -62,11 +62,11 @@ class TestInputSpec:
             spec.required = ("param2",)
 
     def test_input_spec_all_preserves_order(self):
-        """Test .all property preserves order: required + optional + seeds."""
+        """Test .all property preserves order: required + optional + entry point params."""
         spec = InputSpec(
             required=("r1", "r2"),
             optional=("o1", "o2"),
-            seeds=("s1", "s2"),
+            entry_points={"node_a": ("s1",), "node_b": ("s2",)},
             bound={},
         )
 
@@ -313,7 +313,7 @@ class TestGraphInputs:
 
         assert g.inputs.required == ("a", "b", "c")
         assert g.inputs.optional == ()
-        assert g.inputs.seeds == ()
+        assert g.inputs.entry_points == {}
         assert g.inputs.bound == {}
 
     def test_with_defaults_become_optional(self):
@@ -327,7 +327,7 @@ class TestGraphInputs:
 
         assert g.inputs.required == ("a",)
         assert g.inputs.optional == ("b", "c")
-        assert g.inputs.seeds == ()
+        assert g.inputs.entry_points == {}
         assert g.inputs.bound == {}
 
     def test_edge_connected_not_in_inputs(self):
@@ -348,8 +348,8 @@ class TestGraphInputs:
         assert "a" in g.inputs.all
         assert "b" in g.inputs.all
 
-    def test_cycle_creates_seed(self):
-        """Test parameter in cycle becomes a seed."""
+    def test_cycle_creates_entry_point(self):
+        """Test parameter in cycle becomes an entry point."""
 
         @node(output_name="count")
         def counter(count):
@@ -357,8 +357,9 @@ class TestGraphInputs:
 
         g = Graph([counter])
 
-        # 'count' is both consumed and produced by same node -> cycle -> seed
-        assert g.inputs.seeds == ("count",)
+        # 'count' is both consumed and produced by same node -> cycle -> entry point
+        assert "counter" in g.inputs.entry_points
+        assert "count" in g.inputs.entry_points["counter"]
         assert g.inputs.required == ()
         assert g.inputs.optional == ()
 
@@ -476,8 +477,8 @@ class TestGraphBind:
 
         assert g2.inputs.bound == {"x": 2}
 
-    def test_bind_edge_produced_raises(self):
-        """Test binding an edge-produced value raises ValueError."""
+    def test_bind_edge_produced_accepted(self):
+        """Test binding an edge-produced value is accepted (bypass if producer doesn't run)."""
 
         @node(output_name="x")
         def source(a):
@@ -489,12 +490,12 @@ class TestGraphBind:
 
         g = Graph([source, destination])
 
-        # 'x' is produced by source node, cannot bind it
-        with pytest.raises(ValueError, match="Cannot bind 'x': output of node 'source'"):
-            g.bind(x=10)
+        # 'x' is produced by source node — binding is now allowed
+        configured = g.bind(x=10)
+        assert configured.inputs.bound["x"] == 10
 
     def test_bind_unknown_key_raises(self):
-        """Test binding a key not in graph.inputs.all raises ValueError."""
+        """Test binding a key not in graph.inputs.all or graph.outputs raises ValueError."""
 
         @node(output_name="result")
         def foo(x):
@@ -502,8 +503,8 @@ class TestGraphBind:
 
         g = Graph([foo])
 
-        # 'unknown' is not a graph input
-        with pytest.raises(ValueError, match="Cannot bind 'unknown': not a graph input"):
+        # 'unknown' is not a graph input or output
+        with pytest.raises(ValueError, match="not a graph input or output"):
             g.bind(unknown=42)
 
     def test_original_unchanged_after_bind(self):

@@ -16,29 +16,33 @@ if TYPE_CHECKING:
 def validate_inputs(
     graph: "Graph",
     values: dict[str, Any],
+    *,
+    entry_point: str | None = None,
 ) -> None:
     """Validate that all required inputs are provided.
 
-    Checks:
-    - All required inputs must be provided
-    - All seed inputs (for cycles) must be provided
-    - Warns if values are provided for edge-produced outputs (internal values)
+    Follows a 5-step pipeline:
+    1. Merge bound + provided (provided overwrites bound)
+    2. Warn about internal parameters
+    3. Bypass detection (considering merged values)
+    4. Cycle entry point matching
+    5. Completeness check
 
     Args:
         graph: The graph to validate against
         values: The input values provided
+        entry_point: Optional explicit entry point node name for cycle
 
     Raises:
-        MissingInputError: If required or seed inputs are missing
-
-    Warns:
-        UserWarning: If values are provided for internal edge-produced parameters
+        MissingInputError: If required inputs or cycle entry points are missing
+        ValueError: If entry_point is invalid or cycle entry is ambiguous
     """
     inputs_spec = graph.inputs
-    provided = set(values.keys())
+    # Step 1: Merge bound + provided
+    merged = {**inputs_spec.bound, **values}
+    provided = set(merged.keys())
 
-    # Warn about providing values for internal edge-produced outputs
-    # These bypass normal graph execution flow (similar to graph.bind() restriction)
+    # Step 2: Warn about internal edge-produced outputs
     expected_inputs = set(inputs_spec.all)
     interrupt_outputs = _get_interrupt_outputs(graph)
     unexpected = provided - expected_inputs - interrupt_outputs
@@ -49,44 +53,148 @@ def validate_inputs(
             f"These are produced by graph edges and will override node outputs. "
             f"Expected inputs: {sorted(expected_inputs)}",
             UserWarning,
-            stacklevel=3,  # Point to caller's caller (run method)
+            stacklevel=3,
         )
 
-    # If the user provided intermediate values (internal outputs),
-    # upstream nodes that produce those values don't need to run,
-    # so their inputs shouldn't be required.
-    required = set(inputs_spec.required)
-    seeds = set(inputs_spec.seeds)
-
-    # Remove inputs that belong to nodes bypassed by intermediate injection
+    # Step 3: Bypass detection (considering merged values)
     bypassed_inputs = _find_bypassed_inputs(graph, provided)
-    required -= bypassed_inputs
-    seeds -= bypassed_inputs
 
+    # Step 4: Cycle entry point matching
+    if inputs_spec.entry_points:
+        _validate_cycle_entry(graph, provided, bypassed_inputs, entry_point)
+
+    # Step 5: Completeness check for required (acyclic) inputs
+    required = set(inputs_spec.required) - bypassed_inputs
     missing_required = required - provided
-    missing_seeds = seeds - provided
 
-    missing = sorted(missing_required | missing_seeds)
-    if not missing:
+    if not missing_required:
         return
 
-    # Build helpful error message with suggestions
     all_inputs = set(inputs_spec.all)
-    suggestions = _get_suggestions(missing, all_inputs, provided)
-
+    suggestions = _get_suggestions(sorted(missing_required), all_inputs, provided)
     message = _build_missing_input_message(
-        missing=missing,
+        missing=sorted(missing_required),
         provided=list(provided),
         suggestions=suggestions,
-        required=list(required),
-        seeds=list(seeds),
+        entry_points=inputs_spec.entry_points,
     )
 
     raise MissingInputError(
-        missing=missing,
+        missing=sorted(missing_required),
         provided=list(provided),
         message=message,
     )
+
+
+def _validate_cycle_entry(
+    graph: "Graph",
+    provided: set[str],
+    bypassed: set[str],
+    entry_point: str | None,
+) -> None:
+    """Validate cycle entry points.
+
+    For each cycle, exactly one entry point must be satisfied by provided values.
+    If entry_point is explicit, validate that it matches.
+
+    Raises:
+        ValueError: If entry_point is invalid, ambiguous, or mismatched.
+        MissingInputError: If no entry point is satisfied for a cycle.
+    """
+    ep = graph.inputs.entry_points
+
+    # If explicit entry_point, validate it
+    if entry_point is not None:
+        if entry_point not in ep:
+            valid = sorted(ep.keys())
+            raise ValueError(
+                f"'{entry_point}' is not a valid entry point. "
+                f"Valid entry points: {valid}"
+            )
+        needed = set(ep[entry_point]) - bypassed
+        if not needed <= provided:
+            missing = sorted(needed - provided)
+            raise ValueError(
+                f"Entry point '{entry_point}' needs: {', '.join(sorted(ep[entry_point]))}. "
+                f"Missing: {', '.join(missing)}"
+            )
+        return
+
+    # Implicit: group entry points by SCC and check each cycle
+    scc_groups = _group_entry_points_by_scc(graph, ep)
+    for scc_entries in scc_groups.values():
+        _check_cycle_entry(scc_entries, ep, provided, bypassed)
+
+
+def _group_entry_points_by_scc(
+    graph: "Graph",
+    entry_points: dict[str, tuple[str, ...]],
+) -> dict[int, list[str]]:
+    """Group entry point node names by which cycle (SCC) they belong to.
+
+    Uses the graph's data-only subgraph to compute SCCs. Entry points
+    from independent cycles get separate groups — ambiguity is checked
+    per cycle, not across cycles.
+    """
+    if not entry_points:
+        return {}
+
+    import networkx as nx
+    from hypergraph.graph.input_spec import _data_only_subgraph
+
+    data_graph = _data_only_subgraph(graph.nx_graph)
+    sccs = list(nx.strongly_connected_components(data_graph))
+
+    # Map node_name → scc_index
+    node_to_scc: dict[str, int] = {}
+    for idx, scc in enumerate(sccs):
+        for node_name in scc:
+            node_to_scc[node_name] = idx
+
+    # Group entry points by SCC
+    groups: dict[int, list[str]] = {}
+    for node_name in entry_points:
+        scc_idx = node_to_scc.get(node_name)
+        if scc_idx is not None:
+            groups.setdefault(scc_idx, []).append(node_name)
+
+    return groups
+
+
+def _check_cycle_entry(
+    node_names: list[str],
+    entry_points: dict[str, tuple[str, ...]],
+    provided: set[str],
+    bypassed: set[str],
+) -> None:
+    """Check that exactly one entry point in a cycle is satisfied."""
+    satisfied = []
+    for name in node_names:
+        needed = set(entry_points[name]) - bypassed
+        if needed <= provided:
+            satisfied.append(name)
+
+    if len(satisfied) == 0:
+        # No entry point matched — build helpful error
+        lines = ["No entry point for cycle. Provide values for one of:"]
+        for name in sorted(node_names):
+            params = ", ".join(entry_points[name]) if entry_points[name] else "(no params needed)"
+            lines.append(f"  {name} → {params}")
+        raise MissingInputError(
+            missing=[],
+            provided=list(provided),
+            message="\n".join(lines),
+        )
+
+    if len(satisfied) > 1:
+        lines = [
+            "Ambiguous cycle entry — provided values match multiple entry points:"
+        ]
+        for name in satisfied:
+            params = ", ".join(entry_points[name])
+            lines.append(f"  {name} (needs: {params})")
+        lines.append("Provide values for exactly one entry point.")
+        raise ValueError("\n".join(lines))
 
 
 def _get_suggestions(
@@ -116,30 +224,26 @@ def _build_missing_input_message(
     missing: list[str],
     provided: list[str],
     suggestions: dict[str, list[str]],
-    required: list[str],
-    seeds: list[str],
+    entry_points: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     """Build a helpful error message for missing inputs."""
     missing_str = ", ".join(f"'{m}'" for m in sorted(missing))
     msg = f"Missing required inputs: {missing_str}"
 
-    # Separate which are required vs seeds
-    missing_required = [m for m in missing if m in required]
-    missing_seeds = [m for m in missing if m in seeds]
-
-    if missing_required and missing_seeds:
-        msg += f"\n  - Required: {', '.join(sorted(missing_required))}"
-        msg += f"\n  - Seeds (for cycles): {', '.join(sorted(missing_seeds))}"
-
     if provided:
         msg += f"\n\nProvided: {', '.join(f'{p!r}' for p in sorted(provided))}"
+
+    if entry_points:
+        msg += "\n\nCycle entry points:"
+        for name, params in sorted(entry_points.items()):
+            params_str = ", ".join(params) if params else "(no params needed)"
+            msg += f"\n  {name} → {params_str}"
 
     if suggestions:
         msg += "\n\nDid you mean:"
         for m, sugg in suggestions.items():
             msg += f"\n  - '{m}' -> '{sugg[0]}'?"
 
-    # Add helpful hint about common .bind() mistake
     msg += "\n\nHint: If you used graph.bind(), remember it returns a NEW graph."
     msg += "\n  ❌ graph.bind(x=10)           # Result discarded!"
     msg += "\n  ✅ graph = graph.bind(x=10)   # Correct"
@@ -249,10 +353,16 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
     for node in graph._nodes.values():
         consumed_outputs.update(node.inputs)
 
-    # A node is bypassed only if ALL its consumed outputs are provided
+    # Cycle entry point params: providing these means bootstrapping a cycle,
+    # NOT bypassing the producer node. Exclude from bypass check.
+    cycle_ep_params = {
+        p for params in graph.inputs.entry_points.values() for p in params
+    }
+
+    # A node is bypassed only if ALL its non-cycle consumed outputs are provided
     bypassed_nodes: set[str] = set()
     for node in graph._nodes.values():
-        node_consumed_outputs = set(node.outputs) & consumed_outputs
+        node_consumed_outputs = (set(node.outputs) & consumed_outputs) - cycle_ep_params
         if node_consumed_outputs and node_consumed_outputs <= provided:
             # All consumed outputs are provided — node is bypassed
             bypassed_nodes.add(node.name)
@@ -260,10 +370,10 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
     if not bypassed_nodes:
         return set()
 
-    # Also mark nodes as bypassed if ALL their outputs (consumed or not) are provided
-    # This handles the case where user provides all outputs even if some aren't consumed
+    # Also mark nodes as bypassed if ALL their non-cycle outputs are provided
     for node in graph._nodes.values():
-        if set(node.outputs) <= provided:
+        non_cycle_outputs = set(node.outputs) - cycle_ep_params
+        if non_cycle_outputs and non_cycle_outputs <= provided:
             bypassed_nodes.add(node.name)
 
     # Collect inputs exclusively needed by bypassed nodes

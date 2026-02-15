@@ -270,13 +270,26 @@ class TestGraphNodeInputTypeConsistency:
 
 
 class TestSelectParameterValidation:
-    """Edge 2: Invalid select parameter silently ignored.
+    """Edge 2: Invalid select parameter handling.
 
-    Runner.run() with select=["typo_output"] silently returns empty.
+    Runner.run() with select=["typo_output"] silently returns empty by default,
+    warns with on_missing="warn", errors with on_missing="error".
     """
 
-    def test_invalid_select_warns(self):
-        """Invalid select parameter should warn about missing outputs."""
+    def test_invalid_select_ignored_by_default(self):
+        """Invalid select parameter silently omitted with default on_missing='ignore'."""
+        @node(output_name="result")
+        def identity(x: int) -> int:
+            return x
+
+        graph = Graph([identity])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 10}, select=["typo_result"])
+        assert result.values == {}
+
+    def test_invalid_select_warns_with_on_missing(self):
+        """Invalid select parameter warns with on_missing='warn'."""
         @node(output_name="result")
         def identity(x: int) -> int:
             return x
@@ -286,9 +299,8 @@ class TestSelectParameterValidation:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = runner.run(graph, {"x": 10}, select=["typo_result"])
+            result = runner.run(graph, {"x": 10}, select=["typo_result"], on_missing="warn")
 
-            # Should warn about missing output
             assert len(w) >= 1
             assert any("typo_result" in str(warning.message) for warning in w)
 

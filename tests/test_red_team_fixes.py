@@ -339,8 +339,10 @@ class TestControlOnlyCycles:
         assert "data" in graph.inputs.required, (
             f"'data' should be required, got: {graph.inputs.required}"
         )
-        assert "data" not in graph.inputs.seeds, (
-            f"'data' should NOT be a seed: {graph.inputs.seeds}"
+        # 'data' should not be an entry point param (it's required, not a cycle param)
+        all_ep_params = {p for params in graph.inputs.entry_points.values() for p in params}
+        assert "data" not in all_ep_params, (
+            f"'data' should NOT be an entry point param: {graph.inputs.entry_points}"
         )
 
 

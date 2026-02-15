@@ -141,7 +141,7 @@ def _viz_cache_key(
         graph.name,
         input_spec.required,
         input_spec.optional,
-        input_spec.seeds,
+        tuple(sorted(input_spec.entry_points.keys())),
         bound_items,
         depth,
         theme,
