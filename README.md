@@ -160,13 +160,11 @@ Each nested graph runs to completion before the outer graph continues. Test the 
 Pause execution for user input. Resume with a response.
 
 ```python
-from hypergraph import AsyncRunner, Graph, InterruptNode, node
+from hypergraph import AsyncRunner, Graph, interrupt, node
 
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-)
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    return None  # pause for human review
 
 graph = Graph(nodes=[generate_draft, approval, finalize])
 runner = AsyncRunner()
@@ -278,7 +276,7 @@ Hypergraph spans the full spectrum — from batch data pipelines to multi-turn A
 - [API Reference: Graph](https://gilad-rubin.gitbook.io/hypergraph/api-reference/graph) - Graph construction and validation
 - [API Reference: Gates](https://gilad-rubin.gitbook.io/hypergraph/api-reference/gates) - RouteNode, @route decorator, and END sentinel
 - [Observe Execution](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/observe-execution) - Progress bars and custom event processors
-- [Human-in-the-Loop](docs/03-patterns/07-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
+- [Human-in-the-Loop](docs/03-patterns/07-human-in-the-loop.md) - `@interrupt` decorator, pause/resume, and handler patterns
 - [Caching](docs/03-patterns/08-caching.md) - In-memory and disk caching for node results
 - [Visualize Graphs](docs/05-how-to/visualize-graphs.md) - Interactive graph visualization in notebooks and HTML
 

@@ -161,8 +161,11 @@ On cache hit, the runner replays the cached routing decision without calling the
 
 These node types reject `cache=True` at build time:
 
-- **InterruptNode** — human-in-the-loop pauses can't be cached
 - **GraphNode** — nested graphs have their own execution flow; cache individual nodes inside them instead
+
+### InterruptNode
+
+InterruptNode supports `cache=True` (defaults to `False`). When cached, a previously auto-resolved response is replayed without re-running the handler.
 
 ## Real-World Example: Cached RAG Pipeline
 

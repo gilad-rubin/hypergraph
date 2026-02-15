@@ -336,7 +336,7 @@ def node(
 
     def decorator(func: Callable) -> FunctionNode:
         # Delegates to FunctionNode - warning logic is in FunctionNode.__init__
-        return FunctionNode(
+        fn_node = FunctionNode(
             source=func,
             name=None,  # Always use func.__name__ (handled by FunctionNode)
             output_name=output_name,
@@ -346,6 +346,8 @@ def node(
             emit=emit,
             wait_for=wait_for,
         )
+        fn_node.__wrapped__ = func
+        return fn_node
 
     if source is not None:
         # Used without parentheses: @node

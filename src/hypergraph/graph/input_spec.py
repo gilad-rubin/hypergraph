@@ -115,11 +115,9 @@ def _categorize_param(
 
 
 def _is_interrupt_produced(param: str, nodes: dict[str, "HyperNode"]) -> bool:
-    """Check if param is produced by an InterruptNode."""
-    from hypergraph.nodes.interrupt import InterruptNode
-
+    """Check if param is produced by an interrupt node."""
     return any(
-        isinstance(n, InterruptNode) and param in n.outputs
+        n.is_interrupt and param in n.outputs
         for n in nodes.values()
     )
 

@@ -2,7 +2,7 @@
 
 Pause execution for human input. Resume when ready.
 
-- **InterruptNode** - Declarative pause point with one input and one output
+- **`@interrupt`** - Decorator to create a pause point (like `@node` but pauses on `None`)
 - **PauseInfo** - Metadata about the pause (what value is surfaced, where to resume)
 - **Handlers** - Auto-resolve interrupts programmatically (testing, automation)
 
@@ -12,20 +12,18 @@ Many workflows need human judgment at key points: approving a draft, confirming 
 
 ## Basic Pause and Resume
 
-An `InterruptNode` takes one input (the value shown to the user) and produces one output (the user's response). When execution reaches an interrupt without a response, it pauses.
+The `@interrupt` decorator creates a pause point. Inputs come from the function signature, outputs from `output_name`. When the handler returns `None`, execution pauses.
 
 ```python
-from hypergraph import Graph, node, AsyncRunner, InterruptNode
+from hypergraph import Graph, node, AsyncRunner, interrupt
 
 @node(output_name="draft")
 def generate_draft(prompt: str) -> str:
     return f"Blog post about: {prompt}"
 
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-)
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    return None  # pause for human review
 
 @node(output_name="result")
 def finalize(decision: str) -> str:
@@ -52,7 +50,7 @@ assert result["result"] == "Published: Looks great, publish it!"
 
 The key flow:
 
-1. **Run** the graph. Execution pauses at the `InterruptNode`.
+1. **Run** the graph. Execution pauses at the interrupt.
 2. **Inspect** `result.pause.value` to see what the user needs to review.
 3. **Resume** by passing the response via `result.pause.response_key`.
 
@@ -64,23 +62,21 @@ When paused, the `RunResult` has:
 |----------|-------------|
 | `result.paused` | `True` when execution is paused |
 | `result.pause.value` | The input value surfaced to the caller |
-| `result.pause.node_name` | Name of the InterruptNode that paused |
+| `result.pause.node_name` | Name of the interrupt node that paused |
 | `result.pause.output_param` | Output parameter name |
 | `result.pause.response_key` | Key to use in the values dict when resuming |
 
 ## Multi-Turn Chat with Human Input
 
-Combine InterruptNode with agentic loops for a multi-turn conversation where the user provides input each turn.
+Combine `@interrupt` with agentic loops for a multi-turn conversation where the user provides input each turn.
 
 ```python
-from hypergraph import Graph, node, route, END, AsyncRunner, InterruptNode
+from hypergraph import Graph, node, route, END, AsyncRunner, interrupt
 
 # Pause and wait for user input
-ask_user = InterruptNode(
-    name="ask_user",
-    input_param="messages",
-    output_param="user_input",
-)
+@interrupt(output_name="user_input")
+def ask_user(messages: list) -> str | None:
+    return None  # always pause for human input
 
 @node(output_name="messages")
 def add_user_message(messages: list, user_input: str) -> list:
@@ -123,23 +119,18 @@ result = await runner.run(chat, {"user_input": "Tell me more"})
 
 Key patterns:
 - **`.bind(messages=[])`** pre-fills the seed input so `.run({})` works with no values
-- **InterruptNode as first step**: the graph pauses immediately, asking the user for input
+- **Interrupt as first step**: the graph pauses immediately, asking the user for input
 - **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
 - Each resume replays the graph, providing all previous responses
 
 ## Auto-Resolve with Handlers
 
-For testing or automation, attach a handler that resolves the interrupt without human input.
-
-### Handler in Constructor
+For testing or automation, the handler function resolves the interrupt without human input. Return a value to auto-resolve, return `None` to pause.
 
 ```python
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-    handler=lambda draft: "auto-approved",
-)
+@interrupt(output_name="decision")
+def approval(draft: str) -> str:
+    return "auto-approved"  # always resolves, never pauses
 
 graph = Graph([generate_draft, approval, finalize])
 result = await runner.run(graph, {"prompt": "Python async"})
@@ -148,43 +139,27 @@ result = await runner.run(graph, {"prompt": "Python async"})
 assert result["result"] == "Published: auto-approved"
 ```
 
-### Handler via with_handler()
+### Conditional Pause
 
-Use `with_handler()` to attach a handler after construction. This returns a new instance (immutable pattern).
+Return `None` to pause, return a value to auto-resolve:
 
 ```python
-# Define the interrupt without a handler
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-)
-
-# For testing: attach a handler
-test_approval = approval.with_handler(lambda draft: "test-approved")
-
-# Original unchanged
-assert approval.handler is None
-assert test_approval.handler is not None
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    if "LGTM" in draft:
+        return "auto-approved"
+    return None  # pause for human review
 ```
-
-This is useful when the same interrupt needs human input in production but auto-resolution in tests.
 
 ### Async Handlers
 
 Handlers can be async:
 
 ```python
-async def llm_review(draft: str) -> str:
+@interrupt(output_name="decision")
+async def approval(draft: str) -> str:
     """Use an LLM to auto-review the draft."""
     return await call_llm(f"Review this draft: {draft}")
-
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-    handler=llm_review,
-)
 ```
 
 ## Multiple Sequential Interrupts
@@ -196,17 +171,13 @@ A graph can have multiple interrupts. Execution pauses at each one in topologica
 def generate(prompt: str) -> str:
     return f"Draft: {prompt}"
 
-review = InterruptNode(
-    name="review",
-    input_param="draft",
-    output_param="feedback",
-)
+@interrupt(output_name="feedback")
+def review(draft: str) -> str | None:
+    return None  # pause for reviewer
 
-edit = InterruptNode(
-    name="edit",
-    input_param="feedback",
-    output_param="final_draft",
-)
+@interrupt(output_name="final_draft")
+def edit(feedback: str) -> str | None:
+    return None  # pause for editor
 
 @node(output_name="result")
 def publish(final_draft: str) -> str:
@@ -240,11 +211,14 @@ Each resume call replays the graph from the start, providing previously-collecte
 
 ## Nested Graph Interrupts
 
-InterruptNodes inside nested graphs propagate the pause to the outer graph. The `node_name` is prefixed with the nested graph's name.
+Interrupts inside nested graphs propagate the pause to the outer graph. The `node_name` is prefixed with the nested graph's name.
 
 ```python
 # Inner graph with an interrupt
-approval = InterruptNode(name="approval", input_param="x", output_param="y")
+@interrupt(output_name="y")
+def approval(x: str) -> str | None:
+    return None
+
 inner = Graph([approval], name="inner")
 
 @node(output_name="x")
@@ -269,7 +243,7 @@ The `response_key` uses dot-separated paths for nested interrupts: `"inner.y"` m
 
 ## Runner Compatibility
 
-Only `AsyncRunner` supports interrupts. `SyncRunner` raises `IncompatibleRunnerError` at runtime if the graph contains InterruptNodes.
+Only `AsyncRunner` supports interrupts. `SyncRunner` raises `IncompatibleRunnerError` at runtime if the graph contains interrupt nodes.
 
 ```python
 from hypergraph import SyncRunner
@@ -283,39 +257,7 @@ runner.run(graph_with_interrupt, {"query": "hello"})
 
 Similarly, `AsyncRunner.map()` does not support interrupts — a graph with interrupts cannot be used with `map()`.
 
-## The `@interrupt` Decorator
-
-The `@interrupt` decorator is the preferred way to create an InterruptNode. Like `@node`, inputs come from the function signature, outputs from `output_name`, and types from annotations.
-
-```python
-from hypergraph import interrupt
-
-@interrupt(output_name="decision")
-def approval(draft: str) -> str:
-    return "auto-approved"      # returns value -> auto-resolve
-    # return None               # returns None -> pause
-
-# Inputs from signature, outputs from output_name
-assert approval.inputs == ("draft",)
-assert approval.outputs == ("decision",)
-
-# Test the handler directly
-assert approval("my draft") == "auto-approved"
-```
-
-### Conditional Pause
-
-Return `None` to pause, return a value to auto-resolve:
-
-```python
-@interrupt(output_name="decision")
-def approval(draft: str) -> str | None:
-    if "LGTM" in draft:
-        return "auto-approved"
-    return None  # pause for human review
-```
-
-### With emit/wait_for
+## With emit/wait_for
 
 InterruptNode supports ordering signals like FunctionNode:
 
@@ -329,74 +271,81 @@ def finalize(decision: str) -> str:
     return f"Final: {decision}"
 ```
 
-### Decorator Parameters
+## API Reference
+
+### `@interrupt` Decorator
+
+The `@interrupt` decorator is the preferred way to create an interrupt node. Like `@node`, inputs come from the function signature, outputs from `output_name`, and types from annotations.
+
+```python
+from hypergraph import interrupt
+
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    return None  # pause for human review
+```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `output_name` | `str \| tuple[str, ...]` | Name(s) for output value(s) |
+| `output_name` | `str \| tuple[str, ...]` | Name(s) for output value(s) — **required** |
 | `rename_inputs` | `dict[str, str] \| None` | Mapping to rename inputs {old: new} |
+| `cache` | `bool` | Enable result caching (default: `False`) |
 | `emit` | `str \| tuple[str, ...] \| None` | Ordering-only output name(s) |
 | `wait_for` | `str \| tuple[str, ...] \| None` | Ordering-only input name(s) |
 | `hide` | `bool` | Whether to hide from visualization |
 
-## API Reference
+### InterruptNode Constructor
 
-### InterruptNode
-
-InterruptNode can be created two ways:
-
-**With a source function** (like FunctionNode):
+InterruptNode can also be created directly (like `FunctionNode`):
 
 ```python
+from hypergraph import InterruptNode
+
 InterruptNode(my_func, output_name="decision")
 InterruptNode(my_func, name="review", output_name="decision",
              emit="done", wait_for="ready")
 ```
 
-**Legacy constructor** (handler-less pause points):
-
-```python
-InterruptNode(name="approval", input_param="draft", output_param="decision")
-```
+`output_name` is required — `InterruptNode(func)` without it raises `TypeError`.
 
 **Properties:**
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `input_param` | `str` | The first input parameter name |
-| `output_param` | `str` | The first output parameter name |
-| `cache` | `bool` | Always `False` |
+| `inputs` | `tuple[str, ...]` | Input parameter names (from function signature) |
+| `outputs` | `tuple[str, ...]` | All output names (data + emit) |
+| `data_outputs` | `tuple[str, ...]` | Data-only outputs (excluding emit) |
+| `is_interrupt` | `bool` | Always `True` |
+| `cache` | `bool` | Whether caching is enabled (default: `False`) |
 | `hide` | `bool` | Whether hidden from visualization |
 | `wait_for` | `tuple[str, ...]` | Ordering-only inputs |
-| `data_outputs` | `tuple[str, ...]` | Outputs excluding emit-only |
-| `definition_hash` | `str` | SHA256 hash of function source or metadata |
+| `is_async` | `bool` | True if handler is async |
+| `is_generator` | `bool` | True if handler yields |
+| `definition_hash` | `str` | SHA256 hash of function source |
 
 **Methods:**
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `with_handler(handler)` | `InterruptNode` | New instance with the given handler attached |
 | `with_name(name)` | `InterruptNode` | New instance with a different name |
 | `with_inputs(**kwargs)` | `InterruptNode` | New instance with renamed inputs |
 | `with_outputs(**kwargs)` | `InterruptNode` | New instance with renamed outputs |
-
-**Raises:**
-
-- `ValueError` if parameter names are not valid Python identifiers or are reserved keywords.
-- `ValueError` if emit names overlap with output names, or wait_for names overlap with input parameters.
 
 ### PauseInfo
 
 ```python
 @dataclass
 class PauseInfo:
-    node_name: str      # Name of the InterruptNode (uses "/" for nesting)
-    output_param: str   # Output parameter name
-    value: Any          # Input value surfaced to the caller
+    node_name: str                          # Name of the interrupt node (uses "/" for nesting)
+    output_param: str                       # First output parameter name
+    value: Any                              # First input value surfaced to the caller
+    output_params: tuple[str, ...] | None   # All output names (multi-output), else None
+    values: dict[str, Any] | None           # All input values (multi-input), else None
 ```
 
 **Properties:**
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `response_key` | `str` | Key to use when resuming. Top-level: `output_param`. Nested: dot-separated path (e.g., `"inner.decision"`) |
+| `response_key` | `str` | Key to use when resuming (first output). Top-level: `output_param`. Nested: dot-separated path (e.g., `"inner.decision"`) |
+| `response_keys` | `dict[str, str]` | Map of all output names to resume keys (for multi-output interrupts) |

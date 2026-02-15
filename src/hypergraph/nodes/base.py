@@ -131,6 +131,14 @@ class HyperNode(ABC):
         return False
 
     @property
+    def is_interrupt(self) -> bool:
+        """Is this a pause point for human-in-the-loop?
+
+        Default: False. Override in InterruptNode.
+        """
+        return False
+
+    @property
     def cache(self) -> bool:
         """Should results be cached?
 

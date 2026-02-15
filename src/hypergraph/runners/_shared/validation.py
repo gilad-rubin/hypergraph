@@ -309,10 +309,9 @@ def validate_runner_compatibility(
 
     # Check interrupts
     if graph.has_interrupts and not capabilities.supports_interrupts:
-        from hypergraph.nodes.interrupt import InterruptNode
         interrupt_names = [
             node.name for node in graph._nodes.values()
-            if isinstance(node, InterruptNode)
+            if node.is_interrupt
         ]
         raise IncompatibleRunnerError(
             f"Graph contains InterruptNode(s) but runner doesn't support interrupts: "
@@ -342,13 +341,11 @@ def validate_map_compatible(graph: "Graph") -> None:
 
 
 def _get_interrupt_outputs(graph: "Graph") -> set[str]:
-    """Get all output names produced by InterruptNodes in the graph."""
-    from hypergraph.nodes.interrupt import InterruptNode
-
+    """Get all output names produced by interrupt nodes in the graph."""
     return {
         output
         for n in graph._nodes.values()
-        if isinstance(n, InterruptNode)
+        if n.is_interrupt
         for output in n.outputs
     }
 
