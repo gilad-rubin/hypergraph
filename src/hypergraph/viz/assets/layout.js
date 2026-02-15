@@ -740,108 +740,16 @@
 
           var neededShift = (ra.right + MIN_GAP_X) - rb.left;
           if (neededShift > 0) {
-            var leftShift = neededShift / 2;
-            var rightShift = neededShift - leftShift;
-            a.x -= leftShift;
-            b.x += rightShift;
+            b.x += neededShift;
             changed = true;
             if (debugMode) {
-              console.log(
-                '[recursive layout] overlap-fix shifting',
-                label || 'nodes',
-                a.id,
-                'left by',
-                leftShift,
-                'and',
-                b.id,
-                'right by',
-                rightShift
-              );
+              console.log('[recursive layout] overlap-fix shifting', label || 'nodes', b.id, 'right by', neededShift, '(vs', a.id + ')');
             }
           }
         }
       }
 
       if (!changed) break;
-    }
-  }
-
-  function compactRowsTowardConnections(layoutNodes, layoutEdges, debugMode, label) {
-    if (!layoutNodes || layoutNodes.length < 2) return;
-    var layoutOptions = getLayoutOptions();
-    var rowSnap = (layoutOptions && layoutOptions.layout && layoutOptions.layout.spaceY) || 140;
-    var minGap = Math.max(20, Math.floor(((layoutOptions && layoutOptions.layout && layoutOptions.layout.spaceX) || 42) * 0.7));
-    var pullStrength = 0.85;
-
-    var rowsByKey = new Map();
-    layoutNodes.forEach(function(n) {
-      var key = Math.round(n.y / rowSnap);
-      if (!rowsByKey.has(key)) rowsByKey.set(key, []);
-      rowsByKey.get(key).push(n);
-    });
-
-    var neighborsById = new Map();
-    layoutNodes.forEach(function(n) { neighborsById.set(n.id, []); });
-    (layoutEdges || []).forEach(function(e) {
-      if (neighborsById.has(e.source) && neighborsById.has(e.target)) {
-        neighborsById.get(e.source).push(e.target);
-        neighborsById.get(e.target).push(e.source);
-      }
-    });
-
-    var rowKeys = Array.from(rowsByKey.keys()).sort(function(a, b) { return a - b; });
-
-    for (var pass = 0; pass < 3; pass += 1) {
-      rowKeys.forEach(function(key) {
-        var row = rowsByKey.get(key);
-        if (!row || row.length < 2) return;
-
-        row.forEach(function(n) {
-          var neighborIds = neighborsById.get(n.id) || [];
-          if (!neighborIds.length) {
-            n._desiredX = n.x;
-            return;
-          }
-          var sum = 0;
-          var count = 0;
-          for (var i = 0; i < neighborIds.length; i += 1) {
-            var neighborId = neighborIds[i];
-            for (var j = 0; j < layoutNodes.length; j += 1) {
-              if (layoutNodes[j].id === neighborId) {
-                sum += layoutNodes[j].x;
-                count += 1;
-                break;
-              }
-            }
-          }
-          n._desiredX = count > 0 ? sum / count : n.x;
-        });
-
-        row.sort(function(a, b) {
-          return (a._desiredX - b._desiredX) || a.id.localeCompare(b.id);
-        });
-
-        var desiredCenter = row.reduce(function(sum, n) { return sum + n._desiredX; }, 0) / row.length;
-        var currentCenter = row.reduce(function(sum, n) { return sum + n.x; }, 0) / row.length;
-        var center = desiredCenter * 0.7 + currentCenter * 0.3;
-
-        var totalWidth = row.reduce(function(sum, n) { return sum + n.width; }, 0) + (row.length - 1) * minGap;
-        var cursor = center - totalWidth / 2;
-        row.forEach(function(n) {
-          var targetX = cursor + n.width / 2;
-          n.x = n.x + (targetX - n.x) * pullStrength;
-          cursor += n.width + minGap;
-        });
-      });
-    }
-
-    rowKeys.forEach(function(key) {
-      var row = rowsByKey.get(key) || [];
-      row.forEach(function(n) { delete n._desiredX; });
-    });
-
-    if (debugMode) {
-      console.log('[recursive layout] compacted rows for', label || 'graph');
     }
   }
 
@@ -882,8 +790,6 @@
 
       applyVerticalGapFix(childResult.nodes, childLayoutEdges, CHILD_EDGE_GAP, debugMode, graphNode.id);
       snapInputsTowardTargets(childResult.nodes, childLayoutEdges, debugMode);
-      resolveNodeOverlaps(childResult.nodes, debugMode, graphNode.id);
-      compactRowsTowardConnections(childResult.nodes, childLayoutEdges, debugMode, graphNode.id);
       resolveNodeOverlaps(childResult.nodes, debugMode, graphNode.id);
 
       childResult.size = recalculateBounds(childResult.nodes, GRAPH_PADDING);
@@ -1002,8 +908,6 @@
 
     applyVerticalGapFix(rootResult.nodes, filteredRootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
     snapInputsTowardTargets(rootResult.nodes, filteredRootLayoutEdges, debugMode);
-    resolveNodeOverlaps(rootResult.nodes, debugMode, 'root');
-    compactRowsTowardConnections(rootResult.nodes, filteredRootLayoutEdges, debugMode, 'root');
     resolveNodeOverlaps(rootResult.nodes, debugMode, 'root');
     rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
 
@@ -1330,10 +1234,7 @@
       return true;
     };
 
-    var findCrossedNodes = function(points, sourceId, targetId, opts) {
-      opts = opts || {};
-      var clearance = Number.isFinite(opts.clearance) ? opts.clearance : EDGE_REROUTE_CLEARANCE;
-      var inset = Number.isFinite(opts.inset) ? opts.inset : 0;
+    var findCrossedNodes = function(points, sourceId, targetId) {
       var crossed = [];
       if (!points || points.length < 2) return crossed;
 
@@ -1343,12 +1244,11 @@
         if (!dims) return;
 
         var rect = {
-          left: pos.x - clearance + inset,
-          right: pos.x + dims.width + clearance - inset,
-          top: pos.y - clearance + inset,
-          bottom: pos.y + dims.height + clearance - inset,
+          left: pos.x - EDGE_REROUTE_CLEARANCE,
+          right: pos.x + dims.width + EDGE_REROUTE_CLEARANCE,
+          top: pos.y - EDGE_REROUTE_CLEARANCE,
+          bottom: pos.y + dims.height + EDGE_REROUTE_CLEARANCE,
         };
-        if (rect.left >= rect.right || rect.top >= rect.bottom) return;
 
         for (var i = 0; i < points.length - 1; i += 1) {
           var a = points[i];
@@ -1376,56 +1276,6 @@
       return cleaned.length >= 2 ? cleaned : null;
     };
 
-    var simplifyPath = function(path) {
-      var cleaned = sanitizePath(path);
-      if (!cleaned || cleaned.length < 3) return cleaned || path;
-
-      var EPS = 0.5;
-      var changed = true;
-      while (changed && cleaned.length >= 3) {
-        changed = false;
-        for (var i = 1; i < cleaned.length - 1; i += 1) {
-          var a = cleaned[i - 1];
-          var b = cleaned[i];
-          var c = cleaned[i + 1];
-          var cross = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
-          if (cross <= EPS) {
-            cleaned.splice(i, 1);
-            changed = true;
-            break;
-          }
-
-          var abx = b.x - a.x;
-          var aby = b.y - a.y;
-          var bcx = c.x - b.x;
-          var bcy = c.y - b.y;
-          var oppositeHorizontal =
-            Math.abs(aby) <= EPS &&
-            Math.abs(bcy) <= EPS &&
-            (abx * bcx < 0);
-          var oppositeVertical =
-            Math.abs(abx) <= EPS &&
-            Math.abs(bcx) <= EPS &&
-            (aby * bcy < 0);
-          if (oppositeHorizontal || oppositeVertical) {
-            cleaned.splice(i, 1);
-            changed = true;
-            break;
-          }
-
-          var abLen = Math.hypot(abx, aby);
-          var bcLen = Math.hypot(bcx, bcy);
-          if (abLen <= 1.0 || bcLen <= 1.0) {
-            cleaned.splice(i, 1);
-            changed = true;
-            break;
-          }
-        }
-      }
-
-      return sanitizePath(cleaned) || cleaned;
-    };
-
     var orthogonalizePath = function(path) {
       if (!path || path.length < 2) return path;
       var orth = [{ x: path[0].x, y: path[0].y }];
@@ -1442,7 +1292,7 @@
         }
         orth.push({ x: curr.x, y: curr.y });
       }
-      return simplifyPath(orth) || path;
+      return sanitizePath(orth) || path;
     };
 
     var normalizeControlPath = function(path, edgeData) {
@@ -1458,7 +1308,7 @@
       if (!Number.isFinite(stemY) || stemY <= start.y + 1) {
         stemY = (start.y + end.y) / 2;
       }
-      return simplifyPath([
+      return sanitizePath([
         { x: start.x, y: start.y },
         { x: start.x, y: stemY },
         { x: end.x, y: stemY },
@@ -1534,18 +1384,9 @@
 
     var rerouteAroundCrossedNodes = function(points, sourceId, targetId, routedEdges) {
       if (!points || points.length < 2) return points;
-      points = simplifyPath(orthogonalizePath(points));
-      var originalCrossedNodesStrict = findCrossedNodes(points, sourceId, targetId, {
-        clearance: 0,
-        inset: 1,
-      });
-      var originalCrossedNodesSoft = findCrossedNodes(points, sourceId, targetId);
+      points = orthogonalizePath(points);
+      var originalCrossedNodes = findCrossedNodes(points, sourceId, targetId);
       var originalCrossedEdges = findCrossedEdgeObstacles(points, sourceId, targetId, routedEdges);
-      if (!originalCrossedNodesStrict.length && !originalCrossedEdges.length) return points;
-
-      var originalCrossedNodes = originalCrossedNodesStrict.length
-        ? originalCrossedNodesStrict
-        : originalCrossedNodesSoft;
       var originalCrossed = originalCrossedNodes.concat(originalCrossedEdges);
       if (!originalCrossed.length) return points;
 
@@ -1571,9 +1412,9 @@
       var endStemY = Math.max(start.y + 6, end.y - Math.max(12, cornerClearance - 2));
 
       var rawYCandidates = [
-        Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, minTop - cornerClearance - 2)),
-        Math.min(end.y - (cornerClearance + 10), Math.max(start.y + (cornerClearance + 10), minTop - (cornerClearance + 18) - 2)),
-        Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, maxBottom + cornerClearance + 2)),
+        Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, minTop - cornerClearance)),
+        Math.min(end.y - (cornerClearance + 10), Math.max(start.y + (cornerClearance + 10), minTop - (cornerClearance + 18))),
+        Math.min(end.y - cornerClearance, Math.max(start.y + cornerClearance, maxBottom + cornerClearance)),
         Math.max(start.y + cornerClearance, Math.min(end.y - cornerClearance, (start.y + end.y) / 2)),
         endStemY,
       ];
@@ -1666,42 +1507,42 @@
       });
       if (!candidates.length) return points;
 
-      var scorePath = function(candidate) {
-        return {
-          strictNode: findCrossedNodes(candidate, sourceId, targetId, { clearance: 0, inset: 1 }).length,
-          softNode: findCrossedNodes(candidate, sourceId, targetId).length,
-          edge: findCrossedEdgeObstacles(candidate, sourceId, targetId, routedEdges).length,
-          bends: Math.max(0, candidate.length - 2),
-          length: pathLength(candidate),
-        };
-      };
-
-      var isBetterScore = function(a, b) {
-        if (a.strictNode !== b.strictNode) return a.strictNode < b.strictNode;
-        if (a.edge !== b.edge) return a.edge < b.edge;
-        if (a.softNode !== b.softNode) return a.softNode < b.softNode;
-        if (a.bends !== b.bends) return a.bends < b.bends;
-        return a.length < b.length;
-      };
-
       var bestPath = points;
-      var bestScore = {
-        strictNode: originalCrossedNodesStrict.length,
-        softNode: originalCrossedNodesSoft.length,
-        edge: originalCrossedEdges.length,
-        bends: Math.max(0, bestPath.length - 2),
-        length: pathLength(bestPath),
-      };
+      var bestNodeScore = originalCrossedNodes.length;
+      var bestEdgeScore = originalCrossedEdges.length;
+      var bestCombinedScore = bestNodeScore + bestEdgeScore;
+      var bestBendCount = Math.max(0, bestPath.length - 2);
+      var bestLength = pathLength(bestPath);
+      var originalCombinedScore = bestCombinedScore;
 
       candidates.forEach(function(candidate) {
-        var candidateScore = scorePath(candidate);
-        if (isBetterScore(candidateScore, bestScore)) {
+        var nodeScore = findCrossedNodes(candidate, sourceId, targetId).length;
+        var edgeScore = findCrossedEdgeObstacles(candidate, sourceId, targetId, routedEdges).length;
+        var combinedScore = nodeScore + edgeScore;
+        var bendCount = Math.max(0, candidate.length - 2);
+        var length = pathLength(candidate);
+        var improvesScore =
+          combinedScore < bestCombinedScore ||
+          (combinedScore === bestCombinedScore && edgeScore < bestEdgeScore) ||
+          (combinedScore === bestCombinedScore && edgeScore === bestEdgeScore && nodeScore < bestNodeScore);
+        var sameScore = combinedScore === bestCombinedScore && edgeScore === bestEdgeScore && nodeScore === bestNodeScore;
+        var allowTieBreak = bestCombinedScore < originalCombinedScore;
+
+        if (
+          improvesScore ||
+          (sameScore && allowTieBreak && bendCount < bestBendCount) ||
+          (sameScore && allowTieBreak && bendCount === bestBendCount && length < bestLength)
+        ) {
           bestPath = candidate;
-          bestScore = candidateScore;
+          bestNodeScore = nodeScore;
+          bestEdgeScore = edgeScore;
+          bestCombinedScore = combinedScore;
+          bestBendCount = bendCount;
+          bestLength = length;
         }
       });
 
-      return simplifyPath(bestPath) || bestPath;
+      return bestPath;
     };
 
     var routedEdges = [];
@@ -1714,7 +1555,6 @@
         existingPoints = normalizeControlPath(existingPoints, e.data);
         if (!existingPoints.length) return e;
         var cleanedPoints = rerouteAroundCrossedNodes(existingPoints, actualSrcId, actualTgtId, routedEdges);
-        cleanedPoints = simplifyPath(cleanedPoints) || cleanedPoints;
         var updatedCrossBoundary = {
           ...e,
           data: {
@@ -1765,7 +1605,6 @@
       if (!needsStartReroute && !needsStartFix && !needsTargetReroute && !needsEndFix) {
         if (!existingPoints.length) return e;
         var passthroughPoints = rerouteAroundCrossedNodes(existingPoints, actualSrc, actualTgt, routedEdges);
-        passthroughPoints = simplifyPath(passthroughPoints) || passthroughPoints;
         var passthroughEdge = {
           ...e,
           data: {
@@ -1835,7 +1674,6 @@
 
       newPoints = normalizeControlPath(newPoints, e.data);
       newPoints = rerouteAroundCrossedNodes(newPoints, actualSrc, actualTgt, routedEdges);
-      newPoints = simplifyPath(newPoints) || newPoints;
 
       var updatedEdge = {
         ...e,

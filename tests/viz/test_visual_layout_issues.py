@@ -68,26 +68,6 @@ def skip_document() -> dict:
     return {"status": "skipped"}
 
 
-@node(output_name="doc_exists")
-def check_document_exists_compact(doc_id: str, vector_store: str) -> bool:
-    return bool(doc_id and vector_store)
-
-
-@ifelse(when_true="process_document", when_false="skip_document_compact")
-def should_process_compact(doc_exists: bool, overwrite: bool) -> bool:
-    return (not doc_exists) or overwrite
-
-
-@node(output_name="index_result")
-def load_pdf_file_compact(doc_id: str) -> dict:
-    return {"status": "processed", "doc_id": doc_id}
-
-
-@node(output_name="index_result")
-def skip_document_compact(doc_id: str) -> dict:
-    return {"status": "skipped", "doc_id": doc_id}
-
-
 def make_separate_outputs_crossing_graph() -> Graph:
     return Graph(
         nodes=[
@@ -96,18 +76,6 @@ def make_separate_outputs_crossing_graph() -> Graph:
             prepare_document,
             process_document,
             skip_document,
-        ]
-    )
-
-
-def make_nested_branch_compaction_graph() -> Graph:
-    process_document = Graph(nodes=[load_pdf_file_compact], name="process_document")
-    return Graph(
-        nodes=[
-            check_document_exists_compact,
-            should_process_compact,
-            process_document.as_node(),
-            skip_document_compact,
         ]
     )
 
@@ -850,81 +818,6 @@ class TestEdgeGaps:
                 f"  - target {m['target']} edges {[e['edge'] for e in m['edges']]}"
                 for m in result["mergeIssues"][:10]
             )
-        )
-
-    def test_branch_targets_remain_horizontally_compact_with_nested_true_path(self, page, temp_html_file):
-        """Branch targets should stay near their branch source even with a nested true target."""
-        graph = make_nested_branch_compaction_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file)
-
-        version_before = page.evaluate("window.__hypergraphVizDebug.version")
-        page.evaluate("""() => {
-            window.__hypergraphVizSetRenderOptions({
-                separateOutputs: true,
-                showTypes: true,
-            });
-        }""")
-        page.wait_for_function(
-            f"window.__hypergraphVizDebug && window.__hypergraphVizDebug.version > {version_before} && window.__hypergraphVizReady === true",
-            timeout=10000,
-        )
-
-        result = page.evaluate("""() => {
-            const debug = window.__hypergraphVizDebug;
-            const byId = new Map((debug.nodes || []).map((n) => [n.id, n]));
-            const branch = byId.get('should_process_compact');
-            const process = byId.get('process_document');
-            const skip = byId.get('skip_document_compact');
-
-            if (!branch || !process || !skip) {
-                return {
-                    error: 'Expected nodes missing',
-                    ids: Array.from(byId.keys()),
-                };
-            }
-
-            const centerX = (n) => n.x + n.width / 2;
-            const branchX = centerX(branch);
-            const processX = centerX(process);
-            const skipX = centerX(skip);
-
-            return {
-                branchX,
-                processX,
-                skipX,
-                processDistance: Math.abs(processX - branchX),
-                skipDistance: Math.abs(skipX - branchX),
-                branchTargetSpread: Math.abs(processX - skipX),
-                branchBottom: branch.y + branch.height,
-                processTop: process.y,
-                skipTop: skip.y,
-            };
-        }""")
-
-        if "error" in result:
-            pytest.fail(f"Setup error: {result}")
-
-        assert result["processTop"] >= result["branchBottom"], (
-            "Nested true target should remain below the branch source.\n"
-            f"Branch bottom: {result['branchBottom']}\n"
-            f"process_document top: {result['processTop']}"
-        )
-        assert result["skipTop"] >= result["branchBottom"], (
-            "False target should remain below the branch source.\n"
-            f"Branch bottom: {result['branchBottom']}\n"
-            f"skip_document_compact top: {result['skipTop']}"
-        )
-        assert result["processDistance"] <= 300, (
-            "process_document drifted too far horizontally from branch source.\n"
-            f"Distance: {result['processDistance']:.2f}px"
-        )
-        assert result["skipDistance"] <= 300, (
-            "skip_document_compact drifted too far horizontally from branch source.\n"
-            f"Distance: {result['skipDistance']:.2f}px"
-        )
-        assert result["branchTargetSpread"] <= 330, (
-            "Branch targets are too spread apart horizontally.\n"
-            f"Spread: {result['branchTargetSpread']:.2f}px"
         )
 
 
