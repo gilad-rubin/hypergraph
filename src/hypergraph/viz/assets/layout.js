@@ -1470,7 +1470,6 @@
         data: {
           ...e.data,
           points: newPoints,
-          disableCornerRounding: (e.data && e.data.disableCornerRounding) || (newPoints !== originalPoints),
         },
       };
     });
@@ -1581,9 +1580,7 @@
           'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
       }
 
-      var preCrossingPoints = newPoints;
       newPoints = rerouteEdgeAroundCrossedNodes(newPoints, actualSrc, actualTgt, findCrossedNodes);
-      var reroutedAroundNodes = newPoints !== preCrossingPoints;
 
       return {
         ...e,
@@ -1592,7 +1589,6 @@
           points: newPoints,
           actualSource: actualSrc,
           actualTarget: actualTgt,
-          disableCornerRounding: (e.data && e.data.disableCornerRounding) || reroutedAroundNodes,
         },
       };
     });
