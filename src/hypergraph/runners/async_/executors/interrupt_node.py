@@ -60,10 +60,15 @@ class AsyncInterruptNodeExecutor:
             return _add_emit_sentinels(result, node)
 
         # Pause path: handler returned None
+        if not data_outputs:
+            raise RuntimeError(
+                f"InterruptNode '{node.name}' returned None (pause) "
+                f"but has no data outputs to resume into"
+            )
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
-                output_param=data_outputs[0] if data_outputs else "",
+                output_param=data_outputs[0],
                 value=input_values[node.inputs[0]] if node.inputs else None,
                 output_params=data_outputs if len(data_outputs) > 1 else None,
                 values=input_values if len(node.inputs) > 1 else None,

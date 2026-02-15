@@ -107,7 +107,7 @@ def interrupt(
     """
 
     def decorator(func: Callable) -> InterruptNode:
-        return InterruptNode(
+        int_node = InterruptNode(
             source=func,
             output_name=output_name,
             rename_inputs=rename_inputs,
@@ -116,5 +116,7 @@ def interrupt(
             wait_for=wait_for,
             hide=hide,
         )
+        int_node.__wrapped__ = func
+        return int_node
 
     return decorator
