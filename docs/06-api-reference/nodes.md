@@ -478,7 +478,7 @@ def node(
 - `source`: The function (when used without parens like `@node`)
 - `output_name`: Output name(s). If None, side-effect only (outputs = ())
 - `rename_inputs`: Optional dict to rename inputs
-- `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on InterruptNode or GraphNode
+- `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on GraphNode
 - `hide`: Whether to hide this node from visualization (default: False)
 - `emit`: Ordering-only output name(s). Auto-produced when the node runs. Used with `wait_for` to enforce execution order without data dependency. See [Ordering](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for)
 - `wait_for`: Ordering-only input name(s). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node
@@ -1031,9 +1031,9 @@ unnamed.as_node()
 
 ## InterruptNode
 
-**InterruptNode** is a declarative pause point for human-in-the-loop workflows. When execution reaches an interrupt without a pre-supplied response or handler, the graph pauses.
+**InterruptNode** is a thin FunctionNode subclass that acts as a declarative pause point for human-in-the-loop workflows. When the handler returns `None`, execution pauses. When it returns a value, the interrupt auto-resolves.
 
-### `@interrupt` Decorator (Preferred)
+### `@interrupt` Decorator
 
 The `@interrupt` decorator creates an InterruptNode from a function, just like `@node` creates a FunctionNode:
 
@@ -1041,22 +1041,23 @@ The `@interrupt` decorator creates an InterruptNode from a function, just like `
 from hypergraph import interrupt
 
 @interrupt(output_name="decision")
-def approval(draft: str) -> str:
-    return "auto-approved"    # returns value -> auto-resolve
-    # return None             # returns None -> pause
+def approval(draft: str) -> str | None:
+    return None  # pause for human review
+    # return "auto-approved"  # returns value -> auto-resolve
 ```
 
 **Decorator args:**
 
 - `output_name` (required): Output name(s)
 - `rename_inputs`: Optional dict to rename inputs
+- `cache`: Enable result caching (default: `False`)
 - `emit`: Ordering-only output name(s) (see [emit/wait_for](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for))
 - `wait_for`: Ordering-only input name(s)
 - `hide`: Whether to hide from visualization
 
-### Constructor with Source Function
+### Constructor
 
-Like FunctionNode, InterruptNode can also be created via the constructor:
+Like FunctionNode, InterruptNode can also be created via the constructor. `output_name` is required.
 
 ```python
 from hypergraph import InterruptNode
@@ -1075,47 +1076,22 @@ approval = InterruptNode(
 )
 ```
 
-### Legacy Constructor
-
-For handler-less pause points:
-
-```python
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    output_param="decision",
-    response_type=str,        # optional
-    handler=lambda draft: "auto",  # optional
-)
-```
-
 ### Properties
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `input_param` | `str` | First input parameter name |
-| `output_param` | `str` | First data output parameter name |
-| `cache` | `bool` | Always `False` |
+| `inputs` | `tuple[str, ...]` | Input parameter names (from function signature) |
+| `outputs` | `tuple[str, ...]` | All output names (data + emit) |
+| `data_outputs` | `tuple[str, ...]` | Data-only outputs (excluding emit) |
+| `is_interrupt` | `bool` | Always `True` |
+| `cache` | `bool` | Whether caching is enabled (default: `False`) |
 | `hide` | `bool` | Whether hidden from visualization |
 | `wait_for` | `tuple[str, ...]` | Ordering-only inputs |
-| `data_outputs` | `tuple[str, ...]` | Outputs excluding emit-only |
 | `is_async` | `bool` | True if handler is async |
 | `is_generator` | `bool` | True if handler yields |
-| `definition_hash` | `str` | SHA256 hash of function source (decorator/constructor) or metadata (legacy) |
+| `definition_hash` | `str` | SHA256 hash of function source |
 
 ### Methods
-
-#### `with_handler(handler) -> InterruptNode`
-
-Return a new InterruptNode with the given handler attached. The original is unchanged.
-
-```python
-approval = InterruptNode(name="x", input_param="a", output_param="b")
-auto = approval.with_handler(lambda val: "approved")
-
-assert approval.handler is None   # original unchanged
-assert auto.handler is not None
-```
 
 #### Inherited: `with_name()`, `with_inputs()`, `with_outputs()`
 
@@ -1131,8 +1107,8 @@ def make_draft(query: str) -> str:
     return f"Draft for: {query}"
 
 @interrupt(output_name="decision")
-def approval(draft: str) -> str:
-    ...  # returns None -> pause
+def approval(draft: str) -> str | None:
+    return None  # pause for human review
 
 @node(output_name="result")
 def finalize(decision: str) -> str:

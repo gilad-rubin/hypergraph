@@ -168,19 +168,22 @@ print(g.has_async_nodes)  # True
 
 ### `has_interrupts: bool`
 
-True if any node in the graph is an InterruptNode.
+True if any node in the graph is an interrupt node.
 
 ```python
-from hypergraph import InterruptNode
+from hypergraph import interrupt
 
-approval = InterruptNode(name="approval", input_param="draft", output_param="decision")
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    return None
+
 g = Graph([make_draft, approval, finalize])
 print(g.has_interrupts)  # True
 ```
 
-### `interrupt_nodes: list[InterruptNode]`
+### `interrupt_nodes: list[HyperNode]`
 
-Ordered list of InterruptNode instances in the graph.
+Ordered list of interrupt node instances in the graph.
 
 ### `definition_hash: str`
 

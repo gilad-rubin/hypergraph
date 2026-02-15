@@ -98,7 +98,7 @@ Test pieces independently. Reuse across workflows.
 - [Hierarchical Composition](03-patterns/04-hierarchical.md) - Nest graphs, Think Singular Scale with Map
 - [Multi-Agent](03-patterns/05-multi-agent.md) - Agent teams, orchestration patterns
 - [Streaming](03-patterns/06-streaming.md) - Stream LLM responses token-by-token
-- [Human-in-the-Loop](03-patterns/07-human-in-the-loop.md) - InterruptNode, pause/resume, and handler patterns
+- [Human-in-the-Loop](03-patterns/07-human-in-the-loop.md) - `@interrupt` decorator, pause/resume, and handler patterns
 - [Caching](03-patterns/08-caching.md) - Skip redundant computation with in-memory or disk caching
 
 ### Real-World Examples

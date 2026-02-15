@@ -309,7 +309,7 @@ Caching should depend on stable node definition + input values.
 
 - Cache key includes `definition_hash` and resolved inputs.
 - Code changes invalidate cache naturally via definition hash changes.
-- `InterruptNode` and `GraphNode` caching is disallowed.
+- `GraphNode` caching is disallowed. `InterruptNode` defaults to `cache=False` but is configurable.
 - Gate routing decisions can be cached and replayed safely.
 
 ### Good example
