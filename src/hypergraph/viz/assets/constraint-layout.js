@@ -1277,6 +1277,8 @@
 
       const compareState = (a, b) => {
         if (!b) return -1;
+        if (a.nodeHits !== b.nodeHits) return a.nodeHits - b.nodeHits;
+        if (a.edgeHits !== b.edgeHits) return a.edgeHits - b.edgeHits;
         if (a.cost !== b.cost) return a.cost - b.cost;
         return 0;
       };
@@ -1768,7 +1770,7 @@
   // Configuration matching standard defaults
   const defaultOptions = {
     layout: {
-      spaceX: 30,       // Increased to match Kedro-viz horizontal spacing
+      spaceX: 42,       // Wider horizontal spacing reduces node overlap and edge clutter
       spaceY: 140,      // Vertical spacing between nodes (matches Kedro-viz)
       layerSpaceY: 120, // Vertical spacing between layers (matches Kedro-viz)
       spreadX: 2.0,     // Reduced to tighten horizontal spacing
@@ -1776,9 +1778,9 @@
       iterations: 30,   // More iterations for better convergence
     },
     routing: {
-      spaceX: 50,       // Increased for more generous edge clearance
-      spaceY: 40,       // Increased for smoother edge routing
-      minPassageGap: 70, // Wider passages between nodes
+      spaceX: 66,       // More lateral room for clean corridors
+      spaceY: 44,       // Extra row spacing for cleaner vertical detours
+      minPassageGap: 90, // Wider passages between nodes
       stemUnit: 5,      // Moderate stem spread
       stemMinSource: 0,
       stemMinTarget: 15, // Better arrowhead visibility
