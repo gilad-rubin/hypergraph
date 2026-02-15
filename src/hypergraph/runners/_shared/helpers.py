@@ -600,6 +600,9 @@ def _collect_selected_outputs(
     return result
 
 
+_VALID_ON_MISSING = ("ignore", "warn", "error")
+
+
 def _handle_missing_outputs(
     missing: list[str],
     state: GraphState,
@@ -607,6 +610,11 @@ def _handle_missing_outputs(
     on_missing: str,
 ) -> None:
     """Handle missing outputs per policy: ignore, warn, or error."""
+    if on_missing not in _VALID_ON_MISSING:
+        raise ValueError(
+            f"Invalid on_missing={on_missing!r}. "
+            f"Expected one of: {', '.join(_VALID_ON_MISSING)}"
+        )
     if on_missing == "ignore":
         return
 

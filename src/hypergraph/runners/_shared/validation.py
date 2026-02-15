@@ -187,14 +187,18 @@ def _check_cycle_entry(
         )
 
     if len(satisfied) > 1:
-        lines = [
-            "Ambiguous cycle entry — provided values match multiple entry points:"
-        ]
-        for name in satisfied:
-            params = ", ".join(entry_points[name])
-            lines.append(f"  {name} (needs: {params})")
-        lines.append("Provide values for exactly one entry point.")
-        raise ValueError("\n".join(lines))
+        # If all satisfied entry points need the same params, it's not ambiguous —
+        # the user is seeding the cycle regardless of which node runs first.
+        distinct_param_sets = {entry_points[name] for name in satisfied}
+        if len(distinct_param_sets) > 1:
+            lines = [
+                "Ambiguous cycle entry — provided values match multiple entry points:"
+            ]
+            for name in satisfied:
+                params = ", ".join(entry_points[name])
+                lines.append(f"  {name} (needs: {params})")
+            lines.append("Provide values for exactly one entry point.")
+            raise ValueError("\n".join(lines))
 
 
 def _get_suggestions(

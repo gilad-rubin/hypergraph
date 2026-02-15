@@ -1,7 +1,7 @@
 """Input specification calculation for graphs.
 
 This module contains the InputSpec dataclass and logic for computing
-which parameters are required, optional, or seed values.
+which parameters are required, optional, or cycle entry points.
 """
 
 from __future__ import annotations

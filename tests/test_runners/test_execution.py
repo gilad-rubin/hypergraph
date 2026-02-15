@@ -635,6 +635,22 @@ class TestFilterOutputs:
         result = filter_outputs(state, graph)
         assert result == {"doubled": 10}
 
+    def test_single_string_select(self):
+        """select="name" (single string) works as shorthand for select=["name"]."""
+        graph = Graph([double, add.with_inputs(a="doubled")])
+        state = GraphState(values={"doubled": 10, "sum": 15, "x": 5, "b": 5})
+
+        result = filter_outputs(state, graph, select="sum")
+        assert result == {"sum": 15}
+
+    def test_invalid_on_missing_raises(self):
+        """Invalid on_missing value raises ValueError."""
+        graph = Graph([double])
+        state = GraphState(values={"doubled": 10})
+
+        with pytest.raises(ValueError, match="Invalid on_missing"):
+            filter_outputs(state, graph, select=["nonexistent"], on_missing="raise")
+
     def test_missing_select_key_ignored_by_default(self):
         """Missing select keys silently omitted with on_missing='ignore' (default)."""
         graph = Graph([double])
