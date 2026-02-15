@@ -289,7 +289,42 @@
           cleaned.push(b);
         }
         cleaned.push(deduped[deduped.length - 1]);
-        return cleaned.length >= 2 ? cleaned : deduped;
+        if (cleaned.length < 3) return cleaned.length >= 2 ? cleaned : deduped;
+
+        // Remove tiny intermediate stubs that create harsh corners even when
+        // we render with rounded elbows.
+        var MIN_SEG = 8;
+        var COLLINEAR_DEG = 8;
+        var SHARP_DEG = 45;
+        var simplified = [cleaned[0]];
+
+        for (var k = 1; k < cleaned.length - 1; k += 1) {
+          var pPrev = simplified[simplified.length - 1];
+          var pCurr = cleaned[k];
+          var pNext = cleaned[k + 1];
+
+          var s1x = pCurr.x - pPrev.x;
+          var s1y = pCurr.y - pPrev.y;
+          var s2x = pNext.x - pCurr.x;
+          var s2y = pNext.y - pCurr.y;
+          var seg1 = Math.sqrt(s1x * s1x + s1y * s1y);
+          var seg2 = Math.sqrt(s2x * s2x + s2y * s2y);
+
+          if (seg1 <= 1e-6 || seg2 <= 1e-6) continue;
+
+          var cos = (s1x * s2x + s1y * s2y) / (seg1 * seg2);
+          cos = Math.max(-1, Math.min(1, cos));
+          var angle = Math.acos(cos) * 180 / Math.PI;
+          var isTiny = seg1 < MIN_SEG || seg2 < MIN_SEG;
+          var isAlmostStraight = angle <= COLLINEAR_DEG;
+          var isTinySharp = angle >= SHARP_DEG;
+
+          if (isTiny && (isAlmostStraight || isTinySharp)) continue;
+          simplified.push(pCurr);
+        }
+
+        simplified.push(cleaned[cleaned.length - 1]);
+        return simplified.length >= 2 ? simplified : (cleaned.length >= 2 ? cleaned : deduped);
       };
 
       var points = normalizePolylinePoints(data.points.slice());

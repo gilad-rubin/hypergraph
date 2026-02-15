@@ -39,6 +39,7 @@
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
   var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
   var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS || 0;
+  var EDGE_STRAIGHTEN_MAX_SHIFT = VizConstants.EDGE_STRAIGHTEN_MAX_SHIFT || 180;
 
 
   /**
@@ -1397,6 +1398,8 @@
       };
 
       var lanePad = cornerClearance + 8;
+      var minLaneX = Math.min(start.x, end.x) - EDGE_STRAIGHTEN_MAX_SHIFT;
+      var maxLaneX = Math.max(start.x, end.x) + EDGE_STRAIGHTEN_MAX_SHIFT;
       var laneCandidates = [
         start.x,
         end.x,
@@ -1409,6 +1412,7 @@
       var uniqueLanes = [];
       laneCandidates.forEach(function(x) {
         if (!Number.isFinite(x)) return;
+        x = Math.max(minLaneX, Math.min(maxLaneX, x));
         if (!uniqueLanes.some(function(existing) { return Math.abs(existing - x) < 0.5; })) {
           uniqueLanes.push(x);
         }
