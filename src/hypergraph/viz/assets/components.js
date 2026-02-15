@@ -216,7 +216,11 @@
     var targetY = props.targetY;
     var sourcePosition = props.sourcePosition;
     var targetPosition = props.targetPosition;
-    var style = props.style || {};
+    var style = {
+      strokeLinejoin: 'round',
+      strokeLinecap: 'round',
+      ...(props.style || {}),
+    };
     var markerEnd = props.markerEnd;
     var label = props.label;
     var data = props.data;
