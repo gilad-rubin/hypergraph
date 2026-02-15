@@ -68,11 +68,6 @@ class TestHashDefinition:
 
         assert hash_definition(foo) != hash_definition(bar)
 
-    def test_builtin_function_raises_value_error(self):
-        """Built-in functions raise ValueError."""
-        with pytest.raises(ValueError, match="Cannot hash function"):
-            hash_definition(len)
-
     def test_nested_function(self):
         """Nested functions can be hashed."""
 
@@ -114,3 +109,45 @@ class TestHashDefinition:
         fn = lambda x: x * 2  # noqa: E731
         result = hash_definition(fn)
         assert len(result) == 64
+
+    # --- Bytecode fallback tests ---
+
+    def test_exec_created_function_returns_hash(self):
+        """Functions created via exec() should fall back to bytecode hashing."""
+        namespace = {}
+        exec("def dynamic(x): return x + 1", namespace)
+        fn = namespace["dynamic"]
+
+        result = hash_definition(fn)
+        assert len(result) == 64
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_exec_created_function_is_deterministic(self):
+        """Same exec'd function hashed twice gives the same result."""
+        namespace = {}
+        exec("def dynamic(x): return x + 1", namespace)
+        fn = namespace["dynamic"]
+
+        assert hash_definition(fn) == hash_definition(fn)
+
+    def test_exec_different_body_different_hash(self):
+        """exec'd functions with different bodies produce different hashes."""
+        ns1, ns2 = {}, {}
+        exec("def f(x): return x + 1", ns1)
+        exec("def f(x): return x * 2", ns2)
+
+        assert hash_definition(ns1["f"]) != hash_definition(ns2["f"])
+
+    def test_builtin_function_returns_hash(self):
+        """Built-in functions should produce a stable hash, not raise."""
+        result = hash_definition(len)
+        assert len(result) == 64
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_builtin_is_deterministic(self):
+        """Same built-in hashed twice gives the same result."""
+        assert hash_definition(len) == hash_definition(len)
+
+    def test_different_builtins_different_hash(self):
+        """Different built-ins produce different hashes."""
+        assert hash_definition(len) != hash_definition(print)

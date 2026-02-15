@@ -26,7 +26,11 @@ def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
 
 
 def hash_definition(func: Callable) -> str:
-    """Compute SHA256 hash of function source code.
+    """Compute SHA256 hash of a function's definition.
+
+    Uses source code when available (file-defined functions), falls back to
+    bytecode for dynamically created functions (exec/eval), and finally to
+    qualified name for builtins/C extensions.
 
     Args:
         func: Function to hash
@@ -34,17 +38,28 @@ def hash_definition(func: Callable) -> str:
     Returns:
         64-character hex string (SHA256 hash)
 
-    Raises:
-        ValueError: If function source cannot be retrieved
-                    (built-ins, C extensions, dynamically created)
-
     Examples:
         >>> def foo(): pass
         >>> len(hash_definition(foo))
         64
     """
+    # Prefer source code — most precise, captures comments and formatting
     try:
         source = inspect.getsource(func)
-    except (OSError, TypeError) as e:
-        raise ValueError(f"Cannot hash function {func.__name__}: {e}")
-    return hashlib.sha256(source.encode()).hexdigest()
+        return hashlib.sha256(source.encode()).hexdigest()
+    except (OSError, TypeError):
+        pass
+
+    # Bytecode fallback — for exec/eval/Jupyter-defined functions
+    code = getattr(func, "__code__", None)
+    if code is not None:
+        h = hashlib.sha256()
+        h.update(code.co_code)
+        h.update(repr(code.co_consts).encode())
+        return h.hexdigest()
+
+    # Name-based fallback — for builtins/C extensions
+    module = getattr(func, "__module__", "") or ""
+    qualname = getattr(func, "__qualname__", func.__name__)
+    identity = f"{module}:{qualname}"
+    return hashlib.sha256(identity.encode()).hexdigest()
