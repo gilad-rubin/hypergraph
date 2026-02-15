@@ -422,6 +422,39 @@ class Graph:
         new_graph._selected = names
         return new_graph
 
+    def add_nodes(self, *nodes: HyperNode) -> "Graph":
+        """Add nodes to graph. Returns new Graph (immutable).
+
+        Equivalent to rebuilding the graph with the combined node list,
+        then replaying bind/select.
+
+        Raises ValueError if existing bindings become invalid after
+        adding nodes (e.g., a bound key becomes emit-only).
+        Fix: call unbind() before add_nodes().
+        """
+        if not nodes:
+            return self
+
+        all_nodes = list(self._nodes.values()) + list(nodes)
+        new_graph = Graph(all_nodes, name=self.name, strict_types=self._strict_types)
+
+        if self._bound:
+            valid_names = set(new_graph.inputs.all) | set(new_graph.outputs)
+            valid_names -= new_graph._get_emit_only_outputs()
+            invalid = [k for k in self._bound if k not in valid_names]
+            if invalid:
+                raise ValueError(
+                    f"Cannot replay bind after add_nodes: {invalid} no longer valid. "
+                    f"Call unbind({', '.join(repr(k) for k in invalid)}) first."
+                )
+            new_graph._bound = dict(self._bound)
+            new_graph.__dict__.pop("inputs", None)
+
+        if self._selected is not None:
+            new_graph = new_graph.select(*self._selected)
+
+        return new_graph
+
     @property
     def selected(self) -> tuple[str, ...] | None:
         """Default output selection, or None if all outputs are returned."""

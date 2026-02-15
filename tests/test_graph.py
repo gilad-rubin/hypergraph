@@ -1880,3 +1880,238 @@ class TestCycleSameOutput:
 
         with pytest.raises(GraphConfigError, match=r"emit.*wait_for|wait_for.*emit"):
             Graph([producer_a, producer_b])
+
+
+class TestAddNodes:
+    """Test Graph.add_nodes() for incremental graph construction."""
+
+    def test_basic_add_creates_edges(self):
+        """Adding a node that produces a needed input creates auto-edges."""
+
+        @node(output_name="x")
+        def source(a: int) -> int:
+            return a * 2
+
+        @node(output_name="result")
+        def consumer(x: int) -> int:
+            return x + 1
+
+        g = Graph([consumer])
+        assert "x" in g.inputs.required
+
+        g2 = g.add_nodes(source)
+        assert "x" not in g2.inputs.all
+        assert "a" in g2.inputs.required
+        assert g2.nx_graph.has_edge("source", "consumer")
+
+    def test_multiple_nodes(self):
+        """Adding several nodes at once."""
+
+        @node(output_name="x")
+        def step1(a: int) -> int:
+            return a + 1
+
+        @node(output_name="y")
+        def step2(x: int) -> int:
+            return x * 2
+
+        @node(output_name="result")
+        def step3(y: int) -> int:
+            return y + 3
+
+        g = Graph([step3])
+        g2 = g.add_nodes(step1, step2)
+
+        assert g2.nx_graph.has_edge("step1", "step2")
+        assert g2.nx_graph.has_edge("step2", "step3")
+        assert g2.inputs.required == ("a",)
+
+    def test_duplicate_name_raises(self):
+        """Adding a node with same name as existing raises GraphConfigError."""
+
+        @node(output_name="x")
+        def foo(a: int) -> int:
+            return a
+
+        g = Graph([foo])
+
+        @node(output_name="y")
+        def foo(a: int) -> int:  # noqa: F811
+            return a * 2
+
+        with pytest.raises(GraphConfigError, match="Duplicate node name"):
+            g.add_nodes(foo)
+
+    def test_output_conflict_raises(self):
+        """Adding a node with conflicting output raises GraphConfigError."""
+
+        @node(output_name="result")
+        def existing(x: int) -> int:
+            return x
+
+        @node(output_name="result")
+        def conflicting(y: int) -> int:
+            return y
+
+        g = Graph([existing])
+
+        with pytest.raises(GraphConfigError, match="Multiple nodes produce"):
+            g.add_nodes(conflicting)
+
+    def test_bind_preserved(self):
+        """Bindings that remain valid are preserved."""
+
+        @node(output_name="result")
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        g = Graph([foo]).bind(x=10)
+
+        @node(output_name="extra")
+        def bar(result: int) -> int:
+            return result * 2
+
+        g2 = g.add_nodes(bar)
+        assert g2.inputs.bound == {"x": 10}
+
+    def test_bind_edge_produced_still_valid(self):
+        """Bound key that becomes edge-produced stays valid (can override at runtime)."""
+
+        @node(output_name="result")
+        def consumer(x: int) -> int:
+            return x + 1
+
+        g = Graph([consumer]).bind(x=10)
+
+        @node(output_name="x")
+        def producer(a: int) -> int:
+            return a * 2
+
+        # x is still a valid output, so binding is preserved
+        g2 = g.add_nodes(producer)
+        assert g2.inputs.bound == {"x": 10}
+
+    def test_bind_becomes_emit_only_raises(self):
+        """Bound key that becomes emit-only after add_nodes raises ValueError."""
+
+        @node(output_name="result")
+        def consumer(done: int) -> int:
+            return done
+
+        g = Graph([consumer]).bind(done=42)
+
+        @node(output_name="x", emit="done")
+        def producer(a: int) -> int:
+            return a
+
+        with pytest.raises(ValueError, match=r"no longer valid.*unbind"):
+            g.add_nodes(producer)
+
+    def test_unbind_then_add_works(self):
+        """unbind() before add_nodes() resolves bind conflicts."""
+
+        @node(output_name="result")
+        def consumer(x: int) -> int:
+            return x + 1
+
+        g = Graph([consumer]).bind(x=10)
+
+        @node(output_name="x")
+        def producer(a: int) -> int:
+            return a * 2
+
+        g2 = g.unbind("x").add_nodes(producer)
+        assert "x" not in g2.inputs.all
+        assert g2.nx_graph.has_edge("producer", "consumer")
+
+    def test_select_preserved(self):
+        """Selected outputs are preserved."""
+
+        @node(output_name="x")
+        def step1(a: int) -> int:
+            return a
+
+        @node(output_name="y")
+        def step2(x: int) -> int:
+            return x * 2
+
+        g = Graph([step1, step2]).select("y")
+
+        @node(output_name="z")
+        def step3(y: int) -> int:
+            return y + 1
+
+        g2 = g.add_nodes(step3)
+        assert g2.selected == ("y",)
+
+    def test_name_and_strict_types_preserved(self):
+        """Graph name and strict_types carry over."""
+
+        @node(output_name="x")
+        def step1(a: int) -> int:
+            return a
+
+        g = Graph([step1], name="my_graph", strict_types=True)
+
+        @node(output_name="y")
+        def step2(x: int) -> int:
+            return x * 2
+
+        g2 = g.add_nodes(step2)
+        assert g2.name == "my_graph"
+        assert g2.strict_types is True
+
+    def test_gate_target_filled(self):
+        """Adding a node that a gate targets resolves the route."""
+        from hypergraph.nodes.gate import route, END
+
+        @route(targets=["process", END])
+        def decide(x: int) -> str:
+            return "process" if x > 0 else END
+
+        @node(output_name="result")
+        def process(x: int) -> int:
+            return x * 2
+
+        # Build incrementally via add_nodes
+        g_base = Graph([process])
+        g_added = g_base.add_nodes(decide)
+
+        # Build with both nodes at once
+        g_direct = Graph([decide, process])
+
+        # Both should have the control edge
+        assert g_added.nx_graph.has_edge("decide", "process")
+        assert g_direct.nx_graph.has_edge("decide", "process")
+
+    def test_empty_call(self):
+        """add_nodes() with no arguments returns equivalent graph."""
+
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x
+
+        g = Graph([foo])
+        g2 = g.add_nodes()
+
+        assert set(g2.nodes.keys()) == set(g.nodes.keys())
+        assert g2.outputs == g.outputs
+        assert g2.inputs.required == g.inputs.required
+
+    def test_original_unchanged(self):
+        """Original graph is not mutated."""
+
+        @node(output_name="x")
+        def step1(a: int) -> int:
+            return a
+
+        g = Graph([step1])
+        original_nodes = set(g.nodes.keys())
+
+        @node(output_name="y")
+        def step2(x: int) -> int:
+            return x * 2
+
+        g.add_nodes(step2)
+
+        assert set(g.nodes.keys()) == original_nodes
