@@ -537,8 +537,93 @@
         return { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
       };
 
-      var labelPos = isBranchLabel ? 0.5 : 0.35;
-      var labelPoint = pointAlongPolyline(renderPoints, labelPos);
+      var pointAtDistanceOnPolyline = function(pts, distance) {
+        if (!pts || pts.length === 0) return { x: sourceX, y: sourceY };
+        if (pts.length === 1) return { x: pts[0].x, y: pts[0].y };
+
+        var targetDist = Math.max(0, distance || 0);
+        var walked = 0;
+        for (var i = 0; i < pts.length - 1; i += 1) {
+          var p0 = pts[i];
+          var p1 = pts[i + 1];
+          var dx = p1.x - p0.x;
+          var dy = p1.y - p0.y;
+          var segLen = Math.sqrt(dx * dx + dy * dy);
+          if (segLen <= 1e-6) continue;
+          if (walked + segLen >= targetDist) {
+            var localT = (targetDist - walked) / segLen;
+            return {
+              x: p0.x + dx * localT,
+              y: p0.y + dy * localT,
+            };
+          }
+          walked += segLen;
+        }
+        return { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
+      };
+
+      var outgoingMidpointDistance = function(pts) {
+        if (!pts || pts.length < 2) return 0;
+
+        var MIN_SIGNIFICANT_SEGMENT = 6;
+        var TURN_THRESHOLD_DEG = 38;
+        var MIN_OUTGOING_SPAN = 80;
+
+        var segments = [];
+        var cumulative = 0;
+        for (var i = 0; i < pts.length - 1; i += 1) {
+          var a = pts[i];
+          var b = pts[i + 1];
+          var sx = b.x - a.x;
+          var sy = b.y - a.y;
+          var len = Math.sqrt(sx * sx + sy * sy);
+          cumulative += len;
+          segments.push({
+            x: sx,
+            y: sy,
+            len: len,
+            endDistance: cumulative,
+          });
+        }
+
+        var firstSig = -1;
+        for (var j = 0; j < segments.length; j += 1) {
+          if (segments[j].len >= MIN_SIGNIFICANT_SEGMENT) {
+            firstSig = j;
+            break;
+          }
+        }
+        if (firstSig < 0) return cumulative * 0.5;
+
+        var base = segments[firstSig];
+        var baseLen = base.len || 1;
+        var baseX = base.x / baseLen;
+        var baseY = base.y / baseLen;
+        var outgoingLength = cumulative;
+
+        for (var k = firstSig + 1; k < segments.length; k += 1) {
+          var seg = segments[k];
+          if (seg.len < MIN_SIGNIFICANT_SEGMENT) continue;
+          var segX = seg.x / seg.len;
+          var segY = seg.y / seg.len;
+          var dot = Math.max(-1, Math.min(1, baseX * segX + baseY * segY));
+          var angleDeg = Math.acos(dot) * 180 / Math.PI;
+          var distanceBeforeTurn = segments[k - 1].endDistance;
+          if (angleDeg >= TURN_THRESHOLD_DEG && distanceBeforeTurn >= MIN_OUTGOING_SPAN) {
+            outgoingLength = distanceBeforeTurn;
+            break;
+          }
+        }
+
+        return outgoingLength * 0.5;
+      };
+
+      var labelPoint;
+      if (isBranchLabel) {
+        labelPoint = pointAtDistanceOnPolyline(renderPoints, outgoingMidpointDistance(renderPoints));
+      } else {
+        labelPoint = pointAlongPolyline(renderPoints, 0.35);
+      }
       labelX = labelPoint.x;
       labelY = labelPoint.y;
     } else {
