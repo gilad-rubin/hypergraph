@@ -119,6 +119,7 @@ def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entry_point: str | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
@@ -134,6 +135,7 @@ Execute a graph multiple times with different inputs.
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `entry_point` - Optional explicit cycle entry point (passed to each `run()` call)
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -312,6 +314,7 @@ async def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entry_point: str | None = None,
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -328,6 +331,7 @@ Execute graph multiple times concurrently.
 - `map_mode` - `"zip"` or `"product"`
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `entry_point` - Optional explicit cycle entry point (passed to each `run()` call)
 - `max_concurrency` - Shared limit across all executions
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception

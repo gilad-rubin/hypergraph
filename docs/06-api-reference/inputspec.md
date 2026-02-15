@@ -279,6 +279,44 @@ Graph([a, b])
 # GraphConfigError: Inconsistent defaults for 'value'
 ```
 
+## Design Decisions
+
+### bind() accepts outputs — intentional bypass
+
+`bind()` accepts both input parameter names and node output names. When you bind an output, you're providing a value that the producing node *would* have computed. If the producer can't run (because its own inputs are missing), your bound value is used instead.
+
+This enables "run from anywhere" — provide an intermediate value and skip all upstream nodes:
+
+```python
+# embed(text) → embedding → retrieve(embedding) → docs
+graph = Graph([embed, retrieve])
+
+# Skip embed entirely — start from embedding
+result = runner.run(graph, {"embedding": [1, 2, 3]})
+```
+
+Emit-only outputs (ordering signals from `emit=`) cannot be bound — they are internal coordination, not data.
+
+### Value resolution order
+
+When multiple sources provide the same value, the runner uses: **EDGE > PROVIDED > BOUND > DEFAULT**
+
+- A node that CAN run WILL run, and its output overwrites any provided/bound value
+- Providing an output AND its producer's inputs triggers a warning (the producer will overwrite your value)
+- Bound values bootstrap cycles: on the first iteration the bound value is used, then the cycle produces subsequent values
+
+### Cycle entry points exclude certain parameters
+
+Entry point computation intentionally excludes:
+
+- **Bound parameters**: Already available, not needed from the user
+- **Interrupt-produced parameters**: Produced by InterruptNode at runtime, not user-provided
+- **Defaulted parameters**: Have fallback values, so the node can start without them
+
+### Bypass preserves cycle semantics
+
+When you provide a node's output, that node may be "bypassed" (its exclusive inputs aren't required). But cycle entry point parameters are excluded from bypass checks — providing a cycle entry point value means *bootstrapping the cycle*, not bypassing the producer node.
+
 ## Complete Example
 
 ```python
