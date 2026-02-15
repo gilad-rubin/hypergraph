@@ -8,6 +8,7 @@ These tests verify:
 """
 
 import pytest
+from hypergraph import Graph, ifelse, node
 
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
@@ -16,6 +17,43 @@ from tests.viz.conftest import (
     make_outer,
     render_to_page,
 )
+
+
+@node(output_name="doc_exists")
+def check_document_exists(doc_id: str, vector_store: object, overwrite: bool) -> bool:
+    return False
+
+
+@ifelse(when_true="skip_document", when_false="process_document")
+def should_process(doc_exists: bool, overwrite: bool) -> bool:
+    return doc_exists and not overwrite
+
+
+@node(output_name="processed_document")
+def process_document(doc_id: str) -> dict:
+    return {"status": "processed", "doc_id": doc_id}
+
+
+@node(output_name="skipped_document")
+def skip_document(doc_id: str) -> dict:
+    return {"status": "skipped", "doc_id": doc_id}
+
+
+@node(output_name="next_query")
+def generate_query_from_doc(doc_id: str) -> str:
+    return doc_id
+
+
+def make_indexing_like_graph() -> Graph:
+    """Nested topology used for visual routing regressions."""
+    indexing_inner = Graph(
+        nodes=[check_document_exists, should_process, process_document, skip_document],
+        name="indexing",
+    )
+    return Graph(nodes=[indexing_inner.as_node(name="indexing_graph"), generate_query_from_doc]).bind(
+        vector_store="mock_vector_store",
+        overwrite=False,
+    )
 
 
 # =============================================================================
@@ -490,6 +528,121 @@ class TestEdgeValidation:
                 f"  - {e.source} -> {e.target}: {e.issue}"
                 for e in data.edge_issues
             )
+        )
+
+
+# =============================================================================
+# Test: Edge anchors + spacing regressions on indexing-like graph
+# =============================================================================
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestIndexingLikeAnchorAndSpacing:
+    """Regression tests from user-reported indexing visualization issues."""
+
+    def test_ifelse_target_anchor_touches_visible_diamond_top(self, page, temp_html_file):
+        """Edges targeting should_process must terminate exactly on visible top boundary."""
+        graph = make_indexing_like_graph()
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            if (!debug || !debug.nodes || !debug.layoutedEdges) return { error: 'debug data unavailable' };
+
+            const targetId = 'indexing_graph/should_process';
+            const target = debug.nodes.find((n) => n.id === targetId);
+            if (!target) return { error: 'target node not found' };
+
+            const targetTop = target.y;
+            const incoming = (debug.layoutedEdges || [])
+                .filter((e) => (((e.data && e.data.actualTarget) || e.target) === targetId))
+                .map((e) => {
+                    const pts = (e.data && e.data.points) || [];
+                    const end = pts.length ? pts[pts.length - 1] : null;
+                    return {
+                        edge: `${e.source} -> ${e.target}`,
+                        actualEdge: `${(e.data && e.data.actualSource) || e.source} -> ${((e.data && e.data.actualTarget) || e.target)}`,
+                        end,
+                        dy: end ? Math.abs(end.y - targetTop) : null,
+                    };
+                });
+
+            return { targetTop, incoming };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        bad = [e for e in result["incoming"] if (e["end"] is None) or (e["dy"] is None) or (e["dy"] > 0.75)]
+        assert not bad, (
+            "Edges to if-else node do not touch visible top boundary:\n" +
+            "\n".join(
+                f"  - {e['edge']} (actual {e['actualEdge']}), end={e['end']}, dy={e['dy']}"
+                for e in bad
+            ) +
+            f"\nTarget top: {result['targetTop']}"
+        )
+
+    def test_distinct_source_lanes_have_min_horizontal_gap(self, page, temp_html_file):
+        """Incoming edges from different sources should keep minimum lane separation."""
+        graph = make_indexing_like_graph()
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            if (!debug || !debug.layoutedEdges) return { error: 'debug data unavailable' };
+
+            const targetId = 'indexing_graph/check_document_exists';
+            const incoming = (debug.layoutedEdges || [])
+                .filter((e) => (((e.data && e.data.actualTarget) || e.target) === targetId))
+                .map((e) => {
+                    const points = (e.data && e.data.points) || [];
+                    if (points.length < 2) return null;
+                    const penultimate = points[points.length - 2];
+                    return {
+                        source: (e.data && e.data.actualSource) || e.source,
+                        edge: `${e.source} -> ${e.target}`,
+                        laneX: penultimate.x,
+                    };
+                })
+                .filter(Boolean);
+
+            const minGap = 12;
+            const violations = [];
+            for (let i = 0; i < incoming.length; i += 1) {
+                for (let j = i + 1; j < incoming.length; j += 1) {
+                    const a = incoming[i];
+                    const b = incoming[j];
+                    if (a.source === b.source) continue;
+                    const dx = Math.abs(a.laneX - b.laneX);
+                    if (dx < minGap) {
+                        violations.push({
+                            edgeA: a.edge,
+                            edgeB: b.edge,
+                            sourceA: a.source,
+                            sourceB: b.source,
+                            laneXA: a.laneX,
+                            laneXB: b.laneX,
+                            dx,
+                            minGap,
+                        });
+                    }
+                }
+            }
+
+            return { incoming, violations };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert not result["violations"], (
+            "Incoming lanes are too close for distinct sources:\n" +
+            "\n".join(
+                f"  - {v['edgeA']} vs {v['edgeB']} ({v['sourceA']} / {v['sourceB']}), "
+                f"laneX={v['laneXA']:.2f}/{v['laneXB']:.2f}, dx={v['dx']:.2f} < {v['minGap']}"
+                for v in result["violations"]
+            ) +
+            f"\nIncoming: {result['incoming']}"
         )
 
 

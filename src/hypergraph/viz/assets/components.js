@@ -51,7 +51,18 @@
     INPUT_GROUP: 6,
     BRANCH: 10,
   };
+  var NODE_TYPE_TOP_INSETS = VizConstants.NODE_TYPE_TOP_INSETS || {
+    PIPELINE: 0,
+    GRAPH: 0,
+    FUNCTION: 0,
+    DATA: 0,
+    INPUT: 0,
+    INPUT_GROUP: 0,
+    BRANCH: 22,
+    END: 0,
+  };
   var DEFAULT_BOTTOM_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
+  var DEFAULT_TOP_INSET = VizConstants.DEFAULT_TOP_INSET || 0;
 
   var HANDLE_ALIGN_NUDGE_PX = 0;
 
@@ -61,9 +72,10 @@
     return { bottom: (offset - HANDLE_ALIGN_NUDGE_PX) + 'px' };
   };
 
-  var getTargetHandleStyle = function() {
+  var getTargetHandleStyle = function(nodeType) {
     // React Flow anchors top handles at the handle's top edge.
-    return { top: HANDLE_ALIGN_NUDGE_PX + 'px' };
+    var topInset = NODE_TYPE_TOP_INSETS[nodeType] || DEFAULT_TOP_INSET;
+    return { top: (topInset + HANDLE_ALIGN_NUDGE_PX) + 'px' };
   };
 
   // Helper to truncate type hints consistently
@@ -573,7 +585,7 @@
     var nodeType = data.nodeType || 'FUNCTION';
     var visualNodeType = (nodeType === 'PIPELINE' && !isExpanded) ? 'FUNCTION' : nodeType;
     var sourceHandleStyle = getSourceHandleStyle(visualNodeType);
-    var targetHandleStyle = getTargetHandleStyle();
+    var targetHandleStyle = getTargetHandleStyle(visualNodeType);
     var nodeBottomOffset = NODE_TYPE_BOTTOM_OFFSETS[visualNodeType] || DEFAULT_BOTTOM_OFFSET;
     var wrapVisualNode = nodeType !== 'BRANCH' && !(nodeType === 'PIPELINE' && isExpanded);
     var outerWrapperStyle = wrapVisualNode ? { paddingBottom: nodeBottomOffset + 'px' } : null;
