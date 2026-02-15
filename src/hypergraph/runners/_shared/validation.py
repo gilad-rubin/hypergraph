@@ -17,7 +17,7 @@ def validate_inputs(
     graph: "Graph",
     values: dict[str, Any],
     *,
-    entry_point: str | None = None,
+    entrypoint: str | None = None,
 ) -> None:
     """Validate that all required inputs are provided.
 
@@ -31,11 +31,11 @@ def validate_inputs(
     Args:
         graph: The graph to validate against
         values: The input values provided
-        entry_point: Optional explicit entry point node name for cycle
+        entrypoint: Optional explicit entry point node name for cycle
 
     Raises:
         MissingInputError: If required inputs or cycle entry points are missing
-        ValueError: If entry_point is invalid or cycle entry is ambiguous
+        ValueError: If entrypoint is invalid or cycle entry is ambiguous
     """
     inputs_spec = graph.inputs
     # Step 1: Merge bound + provided
@@ -60,8 +60,8 @@ def validate_inputs(
     bypassed_inputs = _find_bypassed_inputs(graph, provided)
 
     # Step 4: Cycle entry point matching
-    if inputs_spec.entry_points:
-        _validate_cycle_entry(graph, provided, bypassed_inputs, entry_point)
+    if inputs_spec.entrypoints:
+        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint)
 
     # Step 5: Completeness check for required (acyclic) inputs
     required = set(inputs_spec.required) - bypassed_inputs
@@ -76,7 +76,7 @@ def validate_inputs(
         missing=sorted(missing_required),
         provided=list(provided),
         suggestions=suggestions,
-        entry_points=inputs_spec.entry_points,
+        entrypoints=inputs_spec.entrypoints,
     )
 
     raise MissingInputError(
@@ -90,52 +90,52 @@ def _validate_cycle_entry(
     graph: "Graph",
     provided: set[str],
     bypassed: set[str],
-    entry_point: str | None,
+    entrypoint: str | None,
 ) -> None:
     """Validate cycle entry points.
 
     For each cycle, exactly one entry point must be satisfied by provided values.
-    If entry_point is explicit, validate that it matches.
+    If entrypoint is explicit, validate that it matches.
 
     Raises:
-        ValueError: If entry_point is invalid, ambiguous, or mismatched.
+        ValueError: If entrypoint is invalid, ambiguous, or mismatched.
         MissingInputError: If no entry point is satisfied for a cycle.
     """
-    ep = graph.inputs.entry_points
+    ep = graph.inputs.entrypoints
 
-    # If explicit entry_point, validate it then check remaining cycles
-    if entry_point is not None:
-        if entry_point not in ep:
+    # If explicit entrypoint, validate it then check remaining cycles
+    if entrypoint is not None:
+        if entrypoint not in ep:
             valid = sorted(ep.keys())
             raise ValueError(
-                f"'{entry_point}' is not a valid entry point. "
+                f"'{entrypoint}' is not a valid entry point. "
                 f"Valid entry points: {valid}"
             )
-        needed = set(ep[entry_point]) - bypassed
+        needed = set(ep[entrypoint]) - bypassed
         if not needed <= provided:
             missing = sorted(needed - provided)
             raise ValueError(
-                f"Entry point '{entry_point}' needs: {', '.join(sorted(ep[entry_point]))}. "
+                f"Entry point '{entrypoint}' needs: {', '.join(sorted(ep[entrypoint]))}. "
                 f"Missing: {', '.join(missing)}"
             )
         # Still validate other independent cycles
-        scc_groups = _group_entry_points_by_scc(graph, ep)
-        ep_scc = _find_scc_for_node(entry_point, scc_groups)
+        scc_groups = _group_entrypoints_by_scc(graph, ep)
+        ep_scc = _find_scc_for_node(entrypoint, scc_groups)
         for scc_idx, scc_entries in scc_groups.items():
             if scc_idx == ep_scc:
-                continue  # Already validated via explicit entry_point
+                continue  # Already validated via explicit entrypoint
             _check_cycle_entry(scc_entries, ep, provided, bypassed)
         return
 
     # Implicit: group entry points by SCC and check each cycle
-    scc_groups = _group_entry_points_by_scc(graph, ep)
+    scc_groups = _group_entrypoints_by_scc(graph, ep)
     for scc_entries in scc_groups.values():
         _check_cycle_entry(scc_entries, ep, provided, bypassed)
 
 
-def _group_entry_points_by_scc(
+def _group_entrypoints_by_scc(
     graph: "Graph",
-    entry_points: dict[str, tuple[str, ...]],
+    entrypoints: dict[str, tuple[str, ...]],
 ) -> dict[int, list[str]]:
     """Group entry point node names by which cycle (SCC) they belong to.
 
@@ -143,7 +143,7 @@ def _group_entry_points_by_scc(
     from independent cycles get separate groups — ambiguity is checked
     per cycle, not across cycles.
     """
-    if not entry_points:
+    if not entrypoints:
         return {}
 
     import networkx as nx
@@ -160,7 +160,7 @@ def _group_entry_points_by_scc(
 
     # Group entry points by SCC
     groups: dict[int, list[str]] = {}
-    for node_name in entry_points:
+    for node_name in entrypoints:
         scc_idx = node_to_scc.get(node_name)
         if scc_idx is not None:
             groups.setdefault(scc_idx, []).append(node_name)
@@ -180,14 +180,14 @@ def _find_scc_for_node(
 
 def _check_cycle_entry(
     node_names: list[str],
-    entry_points: dict[str, tuple[str, ...]],
+    entrypoints: dict[str, tuple[str, ...]],
     provided: set[str],
     bypassed: set[str],
 ) -> None:
     """Check that exactly one entry point in a cycle is satisfied."""
     satisfied = []
     for name in node_names:
-        needed = set(entry_points[name]) - bypassed
+        needed = set(entrypoints[name]) - bypassed
         if needed <= provided:
             satisfied.append(name)
 
@@ -195,7 +195,7 @@ def _check_cycle_entry(
         # No entry point matched — build helpful error
         lines = ["No entry point for cycle. Provide values for one of:"]
         for name in sorted(node_names):
-            params = ", ".join(entry_points[name]) if entry_points[name] else "(no params needed)"
+            params = ", ".join(entrypoints[name]) if entrypoints[name] else "(no params needed)"
             lines.append(f"  {name} → {params}")
         raise MissingInputError(
             missing=[],
@@ -206,13 +206,13 @@ def _check_cycle_entry(
     if len(satisfied) > 1:
         # If all satisfied entry points need the same params, it's not ambiguous —
         # the user is seeding the cycle regardless of which node runs first.
-        distinct_param_sets = {entry_points[name] for name in satisfied}
+        distinct_param_sets = {entrypoints[name] for name in satisfied}
         if len(distinct_param_sets) > 1:
             lines = [
                 "Ambiguous cycle entry — provided values match multiple entry points:"
             ]
             for name in satisfied:
-                params = ", ".join(entry_points[name])
+                params = ", ".join(entrypoints[name])
                 lines.append(f"  {name} (needs: {params})")
             lines.append("Provide values for exactly one entry point.")
             raise ValueError("\n".join(lines))
@@ -245,7 +245,7 @@ def _build_missing_input_message(
     missing: list[str],
     provided: list[str],
     suggestions: dict[str, list[str]],
-    entry_points: dict[str, tuple[str, ...]] | None = None,
+    entrypoints: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     """Build a helpful error message for missing inputs."""
     missing_str = ", ".join(f"'{m}'" for m in sorted(missing))
@@ -254,9 +254,9 @@ def _build_missing_input_message(
     if provided:
         msg += f"\n\nProvided: {', '.join(f'{p!r}' for p in sorted(provided))}"
 
-    if entry_points:
+    if entrypoints:
         msg += "\n\nCycle entry points:"
-        for name, params in sorted(entry_points.items()):
+        for name, params in sorted(entrypoints.items()):
             params_str = ", ".join(params) if params else "(no params needed)"
             msg += f"\n  {name} → {params_str}"
 
@@ -377,7 +377,7 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
     # Cycle entry point params: providing these means bootstrapping a cycle,
     # NOT bypassing the producer node. Exclude from bypass check.
     cycle_ep_params = {
-        p for params in graph.inputs.entry_points.values() for p in params
+        p for params in graph.inputs.entrypoints.values() for p in params
     }
 
     # A node is bypassed only if ALL its non-cycle consumed outputs are provided

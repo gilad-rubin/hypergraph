@@ -14,13 +14,13 @@ class TestInputSpec:
         spec = InputSpec(
             required=("param1", "param2"),
             optional=("param3",),
-            entry_points={"node_a": ("param4",)},
+            entrypoints={"node_a": ("param4",)},
             bound={"param5": 42},
         )
 
         assert spec.required == ("param1", "param2")
         assert spec.optional == ("param3",)
-        assert spec.entry_points == {"node_a": ("param4",)}
+        assert spec.entrypoints == {"node_a": ("param4",)}
         assert spec.bound == {"param5": 42}
 
     def test_input_spec_all_property(self):
@@ -28,7 +28,7 @@ class TestInputSpec:
         spec = InputSpec(
             required=("a", "b"),
             optional=("c",),
-            entry_points={"node_a": ("d",)},
+            entrypoints={"node_a": ("d",)},
             bound={},
         )
 
@@ -39,13 +39,13 @@ class TestInputSpec:
         spec = InputSpec(
             required=(),
             optional=(),
-            entry_points={},
+            entrypoints={},
             bound={},
         )
 
         assert spec.required == ()
         assert spec.optional == ()
-        assert spec.entry_points == {}
+        assert spec.entrypoints == {}
         assert spec.bound == {}
         assert spec.all == ()
 
@@ -54,7 +54,7 @@ class TestInputSpec:
         spec = InputSpec(
             required=("param1",),
             optional=(),
-            entry_points={},
+            entrypoints={},
             bound={},
         )
 
@@ -62,11 +62,11 @@ class TestInputSpec:
             spec.required = ("param2",)
 
     def test_input_spec_all_preserves_order(self):
-        """Test .all property preserves order: required + optional + entry point params."""
+        """Test .all property preserves order: required + optional + entrypoint params."""
         spec = InputSpec(
             required=("r1", "r2"),
             optional=("o1", "o2"),
-            entry_points={"node_a": ("s1",), "node_b": ("s2",)},
+            entrypoints={"node_a": ("s1",), "node_b": ("s2",)},
             bound={},
         )
 
@@ -313,7 +313,7 @@ class TestGraphInputs:
 
         assert g.inputs.required == ("a", "b", "c")
         assert g.inputs.optional == ()
-        assert g.inputs.entry_points == {}
+        assert g.inputs.entrypoints == {}
         assert g.inputs.bound == {}
 
     def test_with_defaults_become_optional(self):
@@ -327,7 +327,7 @@ class TestGraphInputs:
 
         assert g.inputs.required == ("a",)
         assert g.inputs.optional == ("b", "c")
-        assert g.inputs.entry_points == {}
+        assert g.inputs.entrypoints == {}
         assert g.inputs.bound == {}
 
     def test_edge_connected_not_in_inputs(self):
@@ -348,8 +348,8 @@ class TestGraphInputs:
         assert "a" in g.inputs.all
         assert "b" in g.inputs.all
 
-    def test_cycle_creates_entry_point(self):
-        """Test parameter in cycle becomes an entry point."""
+    def test_cycle_creates_entrypoint(self):
+        """Test parameter in cycle becomes an entrypoint."""
 
         @node(output_name="count")
         def counter(count):
@@ -357,9 +357,9 @@ class TestGraphInputs:
 
         g = Graph([counter])
 
-        # 'count' is both consumed and produced by same node -> cycle -> entry point
-        assert "counter" in g.inputs.entry_points
-        assert "count" in g.inputs.entry_points["counter"]
+        # 'count' is both consumed and produced by same node -> cycle -> entrypoint
+        assert "counter" in g.inputs.entrypoints
+        assert "count" in g.inputs.entrypoints["counter"]
         assert g.inputs.required == ()
         assert g.inputs.optional == ()
 

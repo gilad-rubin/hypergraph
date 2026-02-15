@@ -158,14 +158,14 @@ class TestBindMultiple:
 
 
 class TestBindCycleEntryPoints:
-    """Test bind() interaction with cycle entry points (BIND-03).
+    """Test bind() interaction with cycle entrypoints (BIND-03).
 
-    Cycle params (entry points) CAN be bound — they act as initial values
+    Cycle params (entrypoints) CAN be bound — they act as initial values
     for the first iteration, then the cycle produces subsequent values.
     """
 
-    def test_bind_entry_point_param_accepted(self):
-        """Binding an entry point param is accepted (bootstraps the cycle)."""
+    def test_bind_entrypoint_param_accepted(self):
+        """Binding an entrypoint param is accepted (bootstraps the cycle)."""
 
         @node(output_name="count")
         def counter(count: int) -> int:
@@ -173,8 +173,8 @@ class TestBindCycleEntryPoints:
 
         g = Graph([counter])
 
-        # count is an entry point param (self-loop cycle)
-        assert "counter" in g.inputs.entry_points
+        # count is an entrypoint param (self-loop cycle)
+        assert "counter" in g.inputs.entrypoints
 
         # Binding is allowed — acts as first-iteration bootstrap
         configured = g.bind(count=0)

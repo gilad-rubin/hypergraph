@@ -194,12 +194,12 @@ When a value participates in a cycle, the first iteration needs an initial value
 
 ### Explicit signals
 
-- InputSpec docs define `entry_points` for cyclic inputs, grouped by node name.
+- InputSpec docs define `entrypoints` for cyclic inputs, grouped by node name.
 
 ### Implicit invariants
 
-- Cycle parameters are classified as entry point parameters.
-- Missing entry point values fail input validation.
+- Cycle parameters are classified as entrypoint parameters.
+- Missing entrypoint values fail input validation.
 - Entry point values can be bound with `bind()` or provided at `runner.run()` time.
 
 ### Good example
@@ -210,7 +210,7 @@ result = runner.run(graph, {"messages": [], "query": "..."})
 
 ### Break example
 
-- Running cyclic flows without initializing entry point values.
+- Running cyclic flows without initializing entrypoint values.
 
 ---
 

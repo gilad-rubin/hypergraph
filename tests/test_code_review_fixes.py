@@ -431,10 +431,10 @@ class TestInputValidationOverrides:
 
 
 class TestMultiCycleEntryPointValidation:
-    """Explicit entry_point must still validate other independent cycles."""
+    """Explicit entrypoint must still validate other independent cycles."""
 
-    def test_explicit_entry_point_validates_other_cycles(self):
-        """Providing entry_point for cycle A must still check cycle B."""
+    def test_explicit_entrypoint_validates_other_cycles(self):
+        """Providing entrypoint for cycle A must still check cycle B."""
 
         @node(output_name="a")
         def node_a(b: int) -> int:
@@ -463,12 +463,12 @@ class TestMultiCycleEntryPointValidation:
         graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy])
         runner = SyncRunner()
 
-        # Cycle A entry point satisfied (b=1 for node_a), but cycle B has no entry
+        # Cycle A entrypoint satisfied (b=1 for node_a), but cycle B has no entry
         from hypergraph.exceptions import MissingInputError
         with pytest.raises((ValueError, MissingInputError)):
-            runner.run(graph, {"b": 1}, entry_point="node_a")
+            runner.run(graph, {"b": 1}, entrypoint="node_a")
 
-    def test_explicit_entry_point_passes_with_both_cycles_satisfied(self):
+    def test_explicit_entrypoint_passes_with_both_cycles_satisfied(self):
         """Both cycles satisfied: explicit on A, implicit on B."""
 
         @node(output_name="a")
@@ -499,14 +499,14 @@ class TestMultiCycleEntryPointValidation:
         runner = SyncRunner()
 
         # Both cycles satisfied (node_a needs b, node_x needs y)
-        result = runner.run(graph, {"b": 1, "y": 1}, entry_point="node_a")
+        result = runner.run(graph, {"b": 1, "y": 1}, entrypoint="node_a")
         assert result.status.value == "completed"
 
 
 class TestDefaultedCycleParams:
-    """Cycle params with defaults should not require entry point values."""
+    """Cycle params with defaults should not require entrypoint values."""
 
-    def test_defaulted_cycle_param_excluded_from_entry_point(self):
+    def test_defaulted_cycle_param_excluded_from_entrypoint(self):
         """If a cycle param has a default, it's not required for entry."""
 
         @node(output_name="b")
@@ -523,9 +523,9 @@ class TestDefaultedCycleParams:
 
         graph = Graph([node_a, node_b, gate])
 
-        # extra has a default, so node_b's entry point should only need 'b'
+        # extra has a default, so node_b's entrypoint should only need 'b'
         # (not 'b' AND 'extra')
-        ep = graph.inputs.entry_points
+        ep = graph.inputs.entrypoints
         if "node_b" in ep:
             assert "extra" not in ep["node_b"]
 

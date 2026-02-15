@@ -137,7 +137,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         *,
         select: "str | list[str]" = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        entry_point: str | None = None,
+        entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
         event_processors: list["EventProcessor"] | None = None,
@@ -153,7 +153,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
-        validate_inputs(graph, normalized_values, entry_point=entry_point)
+        validate_inputs(graph, normalized_values, entrypoint=entrypoint)
         _validate_on_missing(on_missing)
 
         max_iter = max_iterations or self.default_max_iterations
@@ -232,7 +232,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         map_mode: Literal["zip", "product"] = "zip",
         select: "str | list[str]" = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        entry_point: str | None = None,
+        entrypoint: str | None = None,
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list["EventProcessor"] | None = None,
@@ -284,7 +284,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
-                    entry_point=entry_point,
+                    entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
                     event_processors=event_processors,
                     _parent_span_id=map_span_id,

@@ -233,7 +233,7 @@ def should_continue(messages: list) -> str:
 
 ## Entry Points
 
-When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes an **entry point parameter** — an initial value needed to start the first iteration. Provide these in the `values` dict when calling `runner.run()`:
+When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes an **entrypoint parameter** — an initial value needed to start the first iteration. Provide these in the `values` dict when calling `runner.run()`:
 
 ```python
 result = runner.run(graph, {
@@ -243,14 +243,14 @@ result = runner.run(graph, {
 })
 ```
 
-You can check what entry points a graph has via `graph.inputs.entry_points`. This returns a dict mapping node names to the cycle parameters they need:
+You can check what entrypoints a graph has via `graph.inputs.entrypoints`. This returns a dict mapping node names to the cycle parameters they need:
 
 ```python
-print(graph.inputs.entry_points)
+print(graph.inputs.entrypoints)
 # {'accumulate_history': ('history',), 'increment': ('iteration',)}
 ```
 
-Pick ONE entry point per cycle and provide its parameters. For full details, see [InputSpec](../06-api-reference/inputspec.md).
+Pick ONE entrypoint per cycle and provide its parameters. For full details, see [InputSpec](../06-api-reference/inputspec.md).
 
 ## Tracking State Across Iterations
 

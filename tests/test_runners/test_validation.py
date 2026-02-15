@@ -72,20 +72,20 @@ class TestValidateInputs:
         # a is bound, only b is required
         validate_inputs(graph, {"b": 10})
 
-    def test_entry_point_required_for_cycles(self):
+    def test_entrypoint_required_for_cycles(self):
         """Entry point params must be provided for cyclic graphs."""
         # Create a cycle: counter -> counter
         # count is both input and output
         graph = Graph([counter])
-        # count should be an entry point param
-        assert "counter" in graph.inputs.entry_points
-        assert "count" in graph.inputs.entry_points["counter"]
+        # count should be an entrypoint param
+        assert "counter" in graph.inputs.entrypoints
+        assert "count" in graph.inputs.entrypoints["counter"]
 
         with pytest.raises(MissingInputError):
             validate_inputs(graph, {})
 
-    def test_entry_point_input_provided_passes(self):
-        """No error when entry point input is provided."""
+    def test_entrypoint_input_provided_passes(self):
+        """No error when entrypoint input is provided."""
         graph = Graph([counter])
         validate_inputs(graph, {"count": 0})
 

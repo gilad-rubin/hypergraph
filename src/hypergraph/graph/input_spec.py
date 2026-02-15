@@ -1,7 +1,7 @@
 """Input specification calculation for graphs.
 
 This module contains the InputSpec dataclass and logic for computing
-which parameters are required, optional, or cycle entry points.
+which parameters are required, optional, or cycle entrypoints.
 """
 
 from __future__ import annotations
@@ -24,21 +24,21 @@ class InputSpec:
     Categories follow the "edge cancels default" rule:
     - required: No edge, no default, not bound -> must always provide
     - optional: No edge, has default OR bound -> can omit (fallback exists)
-    - entry_points: dict mapping cycle node name -> tuple of params needed
-      to enter the cycle at that node. Pick ONE entry point per cycle.
+    - entrypoints: dict mapping cycle node name -> tuple of params needed
+      to enter the cycle at that node. Pick ONE entrypoint per cycle.
     """
 
     required: tuple[str, ...]
     optional: tuple[str, ...]
-    entry_points: dict[str, tuple[str, ...]]
+    entrypoints: dict[str, tuple[str, ...]]
     bound: dict[str, Any]
 
     @property
     def all(self) -> tuple[str, ...]:
-        """All input names (required + optional + entry point params)."""
+        """All input names (required + optional + entrypoint params)."""
         seen = set(self.required + self.optional)
         entry_params: list[str] = []
-        for params in self.entry_points.values():
+        for params in self.entrypoints.values():
             for p in params:
                 if p not in seen:
                     seen.add(p)
@@ -62,15 +62,15 @@ def compute_input_spec(
         InputSpec with categorized parameters
     """
     edge_produced = get_edge_produced_values(nx_graph)
-    entry_points = _compute_entry_points(nodes, nx_graph, edge_produced, bound)
-    # Flat set of all entry point params (for categorization)
-    all_entry_params = {p for params in entry_points.values() for p in params}
+    entrypoints = _compute_entrypoints(nodes, nx_graph, edge_produced, bound)
+    # Flat set of all entrypoint params (for categorization)
+    all_entry_params = {p for params in entrypoints.values() for p in params}
 
     required, optional = [], []
 
     for param in _unique_params(nodes):
         if param in all_entry_params:
-            continue  # Handled by entry_points
+            continue  # Handled by entrypoints
         category = _categorize_param(param, edge_produced, bound, nodes)
         if category == "required":
             required.append(param)
@@ -83,7 +83,7 @@ def compute_input_spec(
     return InputSpec(
         required=tuple(required),
         optional=tuple(optional),
-        entry_points=entry_points,
+        entrypoints=entrypoints,
         bound=all_bound,
     )
 
@@ -132,17 +132,17 @@ def _any_node_has_default(param: str, nodes: dict[str, "HyperNode"]) -> bool:
     return False
 
 
-def _compute_entry_points(
+def _compute_entrypoints(
     nodes: dict[str, "HyperNode"],
     nx_graph: nx.DiGraph,
     edge_produced: set[str],
     bound: dict[str, Any],
 ) -> dict[str, tuple[str, ...]]:
-    """Compute entry points for each cycle in the graph.
+    """Compute entrypoints for each cycle in the graph.
 
     For each SCC (strongly connected component) with >1 node or a self-loop,
     find non-gate nodes and compute which cycle-params they need as inputs.
-    Each such node is an entry point — the user picks one per cycle.
+    Each such node is an entrypoint — the user picks one per cycle.
 
     Returns:
         Dict mapping node name -> tuple of cycle params needed to enter there.
@@ -157,7 +157,7 @@ def _compute_entry_points(
         return {}
 
     sccs = list(nx.strongly_connected_components(data_graph))
-    entry_points: dict[str, tuple[str, ...]] = {}
+    entrypoints: dict[str, tuple[str, ...]] = {}
 
     for scc in sccs:
         if not _is_cyclic_scc(scc, data_graph):
@@ -178,9 +178,9 @@ def _compute_entry_points(
                 and not node.has_default_for(p)
             )
             if needed:  # Only include if node needs user-provided cycle params
-                entry_points[node_name] = needed
+                entrypoints[node_name] = needed
 
-    return entry_points
+    return entrypoints
 
 
 def _is_cyclic_scc(scc: set[str], graph: nx.DiGraph) -> bool:

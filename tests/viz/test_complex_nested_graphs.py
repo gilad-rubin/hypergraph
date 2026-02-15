@@ -130,7 +130,7 @@ def test_rag_style_retrieval_output_routes_from_internal_producer() -> None:
     assert sources == {"retrieval/rag_limit_docs"}
 
 
-def test_rag_style_control_edge_routes_to_entry_point_when_expanded() -> None:
+def test_rag_style_control_edge_routes_to_entrypoint_when_expanded() -> None:
     graph = make_rag_style_graph()
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)

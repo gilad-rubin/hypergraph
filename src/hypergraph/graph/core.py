@@ -50,7 +50,7 @@ class Graph:
         nodes: Map of node name → HyperNode
         outputs: All output names produced by nodes
         leaf_outputs: Outputs from terminal nodes (no downstream destinations)
-        inputs: InputSpec describing required/optional/entry point parameters
+        inputs: InputSpec describing required/optional/entrypoint parameters
         has_cycles: True if graph contains cycles
         has_async_nodes: True if any FunctionNode is async
         strict_types: If True, type validation between nodes is enabled
@@ -637,7 +637,7 @@ class Graph:
             "required": input_spec.required,
             "optional": input_spec.optional,
             "bound": dict(input_spec.bound),
-            "entry_points": {k: list(v) for k, v in input_spec.entry_points.items()},
+            "entrypoints": {k: list(v) for k, v in input_spec.entrypoints.items()},
         }
         G.graph["output_to_sources"] = output_to_sources
         return G

@@ -43,7 +43,7 @@ class BaseRunner(ABC):
         *,
         select: "str | list[str]" = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        entry_point: str | None = None,
+        entrypoint: str | None = None,
         max_iterations: int | None = None,
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
@@ -55,7 +55,7 @@ class BaseRunner(ABC):
             values: Optional input values dict
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
-            entry_point: Optional explicit cycle entry point node name.
+            entrypoint: Optional explicit cycle entry point node name.
             max_iterations: Max iterations for cyclic graphs (None = default)
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)

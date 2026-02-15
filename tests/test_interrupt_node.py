@@ -804,8 +804,8 @@ class TestInterruptNodeInCycle:
             return END if len(messages) > 2 else "ask_user"
 
         graph = Graph([ask_user, process, accumulate, decide])
-        # query should NOT be an entry point param since it's produced by an InterruptNode
-        all_ep_params = {p for params in graph.inputs.entry_points.values() for p in params}
+        # query should NOT be an entrypoint param since it's produced by an InterruptNode
+        all_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
         assert "query" not in all_ep_params
         assert "messages" in all_ep_params
 

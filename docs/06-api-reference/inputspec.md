@@ -4,7 +4,7 @@
 
 - **required** - Must provide at runtime (no default, not bound)
 - **optional** - Can omit (has default value)
-- **entry_points** - Cycle entry points grouped by node
+- **entrypoints** - Cycle entrypoints grouped by node
 - **bound** - Pre-filled via `graph.bind()`
 
 ```python
@@ -23,7 +23,7 @@ g = Graph([double, add])
 # InputSpec categorizes parameters
 print(g.inputs.required)      # ('x',) - must provide
 print(g.inputs.optional)      # ('offset',) - has default
-print(g.inputs.entry_points)  # {} - no cycles in this graph
+print(g.inputs.entrypoints)  # {} - no cycles in this graph
 print(g.inputs.bound)         # {} - none bound
 ```
 
@@ -36,7 +36,7 @@ InputSpec is a frozen dataclass with four fields:
 class InputSpec:
     required: tuple[str, ...]
     optional: tuple[str, ...]
-    entry_points: dict[str, tuple[str, ...]]
+    entrypoints: dict[str, tuple[str, ...]]
     bound: dict[str, Any]
 ```
 
@@ -67,11 +67,11 @@ print(g.inputs.required)  # ('x',)
 print(g.inputs.optional)  # ('scale',)
 ```
 
-### `entry_points: dict[str, tuple[str, ...]]`
+### `entrypoints: dict[str, tuple[str, ...]]`
 
-For cyclic graphs, entry points group cycle parameters by the node where execution can start. Each key is a node name, and the value is a tuple of parameters needed to enter the cycle at that node.
+For cyclic graphs, entrypoints group cycle parameters by the node where execution can start. Each key is a node name, and the value is a tuple of parameters needed to enter the cycle at that node.
 
-**Pick ONE entry point per cycle** — provide the parameters it needs, and the runner starts execution from there.
+**Pick ONE entrypoint per cycle** — provide the parameters it needs, and the runner starts execution from there.
 
 ```python
 @node(output_name="messages", emit="turn_done")
@@ -88,14 +88,14 @@ def should_continue(messages: list) -> str:
 
 g = Graph([generate, accumulate, should_continue])
 
-print(g.inputs.entry_points)
+print(g.inputs.entrypoints)
 # {'accumulate': ('messages',), 'generate': ('messages',)}
 # Pick ONE: provide messages to start at either node
 ```
 
-For DAGs (no cycles), `entry_points` is an empty dict `{}`.
+For DAGs (no cycles), `entrypoints` is an empty dict `{}`.
 
-**Ambiguity detection**: If your provided values match multiple entry points in the same cycle, the runner raises `ValueError`. Use `entry_point=` on `runner.run()` to disambiguate.
+**Ambiguity detection**: If your provided values match multiple entrypoints in the same cycle, the runner raises `ValueError`. Use `entrypoint=` on `runner.run()` to disambiguate.
 
 ### `bound: dict[str, Any]`
 
@@ -118,7 +118,7 @@ The categorization follows the "edge cancels default" rule:
 |-----------|----------|
 | No incoming edge, no default, not bound | **required** |
 | No incoming edge, has default OR is bound | **optional** |
-| Has incoming edge from cycle | **entry_point** (grouped by node) |
+| Has incoming edge from cycle | **entrypoint** (grouped by node) |
 | Has incoming edge from another node | Not in InputSpec |
 | Is bound via `bind()` | In `bound` dict, moves from required to optional |
 
@@ -142,7 +142,7 @@ print(g.inputs.required)  # ('x',) - only x
 
 ### Cycles Create Entry Points
 
-When parameters participate in a cycle, they become entry point parameters grouped by which node consumes them:
+When parameters participate in a cycle, they become entrypoint parameters grouped by which node consumes them:
 
 ```python
 @node(output_name="state")
@@ -151,7 +151,7 @@ def update(state: dict, input: int) -> dict:
 
 g = Graph([update])
 print(g.inputs.required)      # ('input',)
-print(g.inputs.entry_points)  # {'update': ('state',)}
+print(g.inputs.entrypoints)  # {'update': ('state',)}
 ```
 
 ## Accessing InputSpec
@@ -164,7 +164,7 @@ spec = g.inputs  # Returns InputSpec
 
 print(spec.required)      # tuple of required param names
 print(spec.optional)      # tuple of optional param names
-print(spec.entry_points)  # dict of cycle entry points
+print(spec.entrypoints)  # dict of cycle entrypoints
 print(spec.bound)         # dict of bound values
 ```
 
@@ -174,7 +174,7 @@ Use the `all` property to get all input names:
 
 ```python
 spec = g.inputs
-print(spec.all)  # ('x', 'offset') - required + optional + entry point params
+print(spec.all)  # ('x', 'offset') - required + optional + entrypoint params
 ```
 
 ### Iteration
@@ -208,7 +208,7 @@ g = Graph([embed, retrieve])
 
 print(g.inputs.required)      # ('text',)
 print(g.inputs.optional)      # ('top_k',)
-print(g.inputs.entry_points)  # {}
+print(g.inputs.entrypoints)  # {}
 print(g.inputs.bound)         # {}
 ```
 
@@ -239,10 +239,10 @@ def chat(messages: list[str], user_input: str) -> list[str]:
 g = Graph([chat])
 
 print(g.inputs.required)      # ('user_input',)
-print(g.inputs.entry_points)  # {'chat': ('messages',)}
+print(g.inputs.entrypoints)  # {'chat': ('messages',)}
 ```
 
-The `messages` parameter appears as an entry point because:
+The `messages` parameter appears as an entrypoint because:
 1. `chat` outputs `messages`
 2. `chat` takes `messages` as input
 3. This creates a cycle — provide `messages` to start at the `chat` node
@@ -305,7 +305,7 @@ When multiple sources provide the same value, the runner uses: **EDGE > PROVIDED
 - Providing an output AND its producer's inputs triggers a warning (the producer will overwrite your value)
 - Bound values bootstrap cycles: on the first iteration the bound value is used, then the cycle produces subsequent values
 
-### Cycle entry points exclude certain parameters
+### Cycle entrypoints exclude certain parameters
 
 Entry point computation intentionally excludes:
 
@@ -315,7 +315,7 @@ Entry point computation intentionally excludes:
 
 ### Bypass preserves cycle semantics
 
-When you provide a node's output, that node may be "bypassed" (its exclusive inputs aren't required). But cycle entry point parameters are excluded from bypass checks — providing a cycle entry point value means *bootstrapping the cycle*, not bypassing the producer node.
+When you provide a node's output, that node may be "bypassed" (its exclusive inputs aren't required). But cycle entrypoint parameters are excluded from bypass checks — providing a cycle entrypoint value means *bootstrapping the cycle*, not bypassing the producer node.
 
 ## Complete Example
 
@@ -344,7 +344,7 @@ g = Graph([embed, search, update_history])
 # Inspect InputSpec
 print("Required:", g.inputs.required)        # ('text',)
 print("Optional:", g.inputs.optional)        # ('top_k', 'threshold')
-print("Entry points:", g.inputs.entry_points)  # {'update_history': ('history',)}
+print("Entry points:", g.inputs.entrypoints)  # {'update_history': ('history',)}
 print("Bound:", g.inputs.bound)              # {}
 print("All:", g.inputs.all)                  # ('text', 'top_k', 'threshold', 'history')
 
@@ -353,6 +353,6 @@ configured = g.bind(top_k=10, threshold=0.9)
 print("\nAfter bind:")
 print("Required:", configured.inputs.required)        # ('text',)
 print("Optional:", configured.inputs.optional)        # ('top_k', 'threshold') - still have fallback
-print("Entry points:", configured.inputs.entry_points)  # {'update_history': ('history',)}
+print("Entry points:", configured.inputs.entrypoints)  # {'update_history': ('history',)}
 print("Bound:", configured.inputs.bound)              # {'top_k': 10, 'threshold': 0.9}
 ```

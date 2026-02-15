@@ -168,7 +168,7 @@ def build_graph_output_visibility(flat_graph: nx.DiGraph) -> dict[str, set[str]]
     return visibility
 
 
-def find_container_entry_points(
+def find_container_entrypoints(
     container_id: str,
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -186,7 +186,7 @@ def find_container_entry_points(
         for output in attrs.get("outputs", ()):
             internal_outputs.add(output)
 
-    entry_points = []
+    entrypoints = []
     for node_id in direct_children:
         attrs = flat_graph.nodes.get(node_id, {})
         inputs = set(attrs.get("inputs", ()))
@@ -195,9 +195,9 @@ def find_container_entry_points(
 
         if not consumes_internal:
             if is_node_visible(node_id, flat_graph, expansion_state):
-                entry_points.append(node_id)
+                entrypoints.append(node_id)
 
-    return entry_points
+    return entrypoints
 
 
 def find_container_exit_points(
