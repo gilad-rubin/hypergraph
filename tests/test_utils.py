@@ -151,3 +151,24 @@ class TestHashDefinition:
     def test_different_builtins_different_hash(self):
         """Different built-ins produce different hashes."""
         assert hash_definition(len) != hash_definition(print)
+
+    def test_exec_different_defaults_different_hash(self):
+        """exec'd functions with different default values produce different hashes."""
+        ns1, ns2 = {}, {}
+        exec("def f(x=1): return x", ns1)  # noqa: S102
+        exec("def f(x=2): return x", ns2)  # noqa: S102
+
+        assert hash_definition(ns1["f"]) != hash_definition(ns2["f"])
+
+    # Note: Closure/global variable changes are not captured by hash_definition.
+    # This is a known limitation shared by all DAG frameworks (see Hamilton docs).
+    # The hash captures the function's *code*, not the values in its environment.
+
+    def test_functools_partial_returns_hash(self):
+        """functools.partial objects should produce a stable hash."""
+        from functools import partial
+
+        fn = partial(int, base=16)
+        result = hash_definition(fn)
+        assert len(result) == 64
+        assert all(c in "0123456789abcdef" for c in result)

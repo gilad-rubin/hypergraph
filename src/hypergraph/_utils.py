@@ -55,11 +55,29 @@ def hash_definition(func: Callable) -> str:
     if code is not None:
         h = hashlib.sha256()
         h.update(code.co_code)
-        h.update(repr(code.co_consts).encode())
+
+        # Serialize co_consts deterministically (replace nested code objects with names)
+        consts_serialized = tuple(
+            c if not hasattr(c, "co_name") else c.co_name for c in code.co_consts
+        )
+        h.update(repr(consts_serialized).encode())
+
+        # Include function defaults to distinguish f(x=1) from f(x=2)
+        h.update(repr(getattr(func, "__defaults__", None)).encode())
+        h.update(repr(getattr(func, "__kwdefaults__", None)).encode())
+
+        # Include closure values to distinguish functions with different captured variables
+        closure = getattr(func, "__closure__", None)
+        if closure:
+            for cell in closure:
+                h.update(repr(cell.cell_contents).encode())
+
         return h.hexdigest()
 
-    # Name-based fallback — for builtins/C extensions
+    # Name-based fallback — for builtins/C extensions/functools.partial
     module = getattr(func, "__module__", "") or ""
-    qualname = getattr(func, "__qualname__", func.__name__)
+    qualname = getattr(func, "__qualname__", None) or getattr(
+        func, "__name__", repr(func)
+    )
     identity = f"{module}:{qualname}"
     return hashlib.sha256(identity.encode()).hexdigest()
