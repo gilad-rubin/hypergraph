@@ -15,18 +15,8 @@
     'DATA': 6,         // Data nodes (shadow-sm)
     'INPUT': 6,        // Input nodes (shadow-sm)
     'INPUT_GROUP': 6,  // Input group nodes (shadow-sm)
-    'BRANCH': 22,      // Diamond visual tip sits inside wrapper; exclude wrapper padding
+    'BRANCH': 10,      // Diamond nodes (drop-shadow filter)
     'END': 6,          // End node (shadow-sm, similar to DATA)
-  };
-  var NODE_TYPE_TOP_INSETS = {
-    'PIPELINE': 0,
-    'GRAPH': 0,
-    'FUNCTION': 0,
-    'DATA': 0,
-    'INPUT': 0,
-    'INPUT_GROUP': 0,
-    'BRANCH': 22,      // Diamond top tip is inset from wrapper top
-    'END': 0,
   };
 
   return {
@@ -49,9 +39,7 @@
 
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS, // Shadow/inner content offset by node type
-    NODE_TYPE_TOP_INSETS: NODE_TYPE_TOP_INSETS, // Top inset from wrapper to visible boundary
     DEFAULT_OFFSET: 10,                   // Fallback offset if type missing
-    DEFAULT_TOP_INSET: 0,                 // Fallback top inset if type missing
 
     // Edge routing
     EDGE_CONVERGENCE_OFFSET: 20,          // Extra Y offset before merging into target stem
@@ -71,7 +59,6 @@
     EDGE_EDGE_PENALTY: 20,                // Penalize corridor segments crossing other edges
     EDGE_EDGE_CLEARANCE: 10,              // Ignore edge crossings near shared endpoints
     EDGE_SHARED_TARGET_SPACING_SCALE: 1.15, // Scale separation for shared-target source spacing
-    EDGE_MIN_PARALLEL_GAP: 18,            // Minimum X gap between distinct source approaches
     EDGE_SHARP_TURN_ANGLE: 35,            // Above this angle, force straight segments (if curveStyle < 1)
     EDGE_CURVE_STYLE: 0,                  // Rounded orthogonal routes (use elbow radius below)
     EDGE_ELBOW_RADIUS: 16,                // Rounded corner radius for orthogonal polylines

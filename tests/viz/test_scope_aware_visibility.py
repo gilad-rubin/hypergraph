@@ -849,34 +849,6 @@ def make_container_output_graph() -> Graph:
     return Graph(nodes=[inner.as_node(), consume_external], name="outer")
 
 
-@node(output_name="pages")
-def split_document(document: str) -> list[str]:
-    return [document]
-
-
-@node(output_name="index_result")
-def index_single_page(page: str) -> str:
-    return page
-
-
-@node(output_name="summary")
-def summarize_index(index_results: list[str]) -> str:
-    return ",".join(index_results)
-
-
-def make_mapped_process_document_graph() -> Graph:
-    """Graph-node map_over flow that should still show collapsed outputs."""
-    process_single = Graph(nodes=[index_single_page], name="process_single")
-    process_document = (
-        process_single
-        .as_node(name="process_document")
-        .with_inputs(page="pages")
-        .with_outputs(index_result="index_results")
-        .map_over("pages")
-    )
-    return Graph(nodes=[split_document, process_document, summarize_index], name="outer")
-
-
 # =============================================================================
 # Test: Container outputs only shown when externally consumed
 # =============================================================================
@@ -911,18 +883,3 @@ class TestContainerOutputVisibility:
 
         assert "data_inner_external" in data_node_ids
         assert "data_inner_internal_only" not in data_node_ids
-
-    def test_collapsed_mapped_graph_node_keeps_visible_outputs(self):
-        """Collapsed mapped subgraph should show externally consumed renamed outputs."""
-        from hypergraph.viz.renderer import render_graph
-
-        graph = make_mapped_process_document_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
-
-        process_node = next(n for n in result["nodes"] if n["id"] == "process_document")
-        output_names = {o["name"] for o in process_node["data"].get("outputs", [])}
-
-        assert "index_results" in output_names, (
-            "Collapsed process_document node should expose externally consumed output "
-            "'index_results' in merged-output mode."
-        )

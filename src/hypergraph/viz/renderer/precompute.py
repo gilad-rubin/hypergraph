@@ -28,18 +28,6 @@ from hypergraph.viz.renderer.nodes import (
 )
 
 
-def _externally_routed_graph_outputs(flat_graph: nx.DiGraph, node_id: str) -> set[str]:
-    """Infer externally-routed outputs from graph-level outgoing data edges."""
-    outputs: set[str] = set()
-    for _, _, edge_data in flat_graph.out_edges(node_id, data=True):
-        if edge_data.get("edge_type") != "data":
-            continue
-        value_name = edge_data.get("value")
-        if isinstance(value_name, str):
-            outputs.add(value_name)
-    return outputs
-
-
 def compute_nodes_for_state(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -107,10 +95,6 @@ def compute_nodes_for_state(
         if node_type == "GRAPH" and not separate_outputs:
             allowed_outputs = graph_output_visibility.get(node_id) if graph_output_visibility else None
             if allowed_outputs is not None and "outputs" in rf_node["data"]:
-                if not allowed_outputs:
-                    inferred_outputs = _externally_routed_graph_outputs(flat_graph, node_id)
-                    if inferred_outputs:
-                        allowed_outputs = inferred_outputs
                 rf_node["data"]["outputs"] = [
                     out for out in rf_node["data"]["outputs"]
                     if out["name"] in allowed_outputs

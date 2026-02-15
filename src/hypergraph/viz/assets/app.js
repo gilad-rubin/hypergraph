@@ -70,20 +70,9 @@
     'DATA': 6,
     'INPUT': 6,
     'INPUT_GROUP': 6,
-    'BRANCH': 22,
-  };
-  var NODE_TYPE_TOP_INSETS = VizConstants.NODE_TYPE_TOP_INSETS || {
-    'PIPELINE': 0,
-    'GRAPH': 0,
-    'FUNCTION': 0,
-    'DATA': 0,
-    'INPUT': 0,
-    'INPUT_GROUP': 0,
-    'BRANCH': 22,
-    'END': 0,
+    'BRANCH': 10,
   };
   var DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
-  var DEFAULT_TOP_INSET = VizConstants.DEFAULT_TOP_INSET || 0;
 
   function getNodeTypeOffset(nodeType, isExpanded) {
     if (nodeType === 'PIPELINE' && !isExpanded) {
@@ -92,21 +81,9 @@
     return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
   }
 
-  function getNodeTypeTopInset(nodeType, isExpanded) {
-    if (nodeType === 'PIPELINE' && !isExpanded) {
-      nodeType = 'FUNCTION';
-    }
-    return NODE_TYPE_TOP_INSETS[nodeType] ?? DEFAULT_TOP_INSET;
-  }
-
   function getVisibleBottom(y, height, nodeType, isExpanded) {
     var offset = getNodeTypeOffset(nodeType, isExpanded);
     return y + height - offset;
-  }
-
-  function getVisibleTop(y, nodeType, isExpanded) {
-    var topInset = getNodeTypeTopInset(nodeType, isExpanded);
-    return y + topInset;
   }
 
   // === DEBUG OVERLAY COMPONENT ===
@@ -1395,23 +1372,19 @@
           var n = nodePositionMap[id];
           // Default to FUNCTION when nodeType is undefined (matches constraint-layout.js)
           var offset = getNodeTypeOffset(n.nodeType || 'FUNCTION', n.isExpanded);
-          var topInset = getNodeTypeTopInset(n.nodeType || 'FUNCTION', n.isExpanded);
-          var visibleTop = n.y + topInset;
-          var visibleBottom = n.y + n.height - offset;
-          var visibleHeight = Math.max(0, visibleBottom - visibleTop);
+          var visibleHeight = n.height - offset;
           return {
             id: id,
             label: n.label,
             x: n.x,
-            y: visibleTop,
+            y: n.y,
             width: n.width,
             height: visibleHeight,  // Visible height (excludes wrapper offset)
-            bottom: visibleBottom,  // Visible bottom
+            bottom: n.y + visibleHeight,  // Visible bottom
             nodeType: n.nodeType,
             // Also expose raw wrapper bounds for debugging
             wrapperHeight: n.height,
             wrapperBottom: n.y + n.height,
-            topInset: topInset,
             offset: offset,
           };
         }),

@@ -50,41 +50,19 @@
     'DATA': 6,
     'INPUT': 6,
     'INPUT_GROUP': 6,
-    'BRANCH': 22,
-  };
-  const NODE_TYPE_TOP_INSETS = VizConstants.NODE_TYPE_TOP_INSETS || {
-    'PIPELINE': 0,
-    'GRAPH': 0,
-    'FUNCTION': 0,
-    'DATA': 0,
-    'INPUT': 0,
-    'INPUT_GROUP': 0,
-    'BRANCH': 22,
-    'END': 0,
+    'BRANCH': 10,
   };
   const DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET ?? 10;
-  const DEFAULT_TOP_INSET = VizConstants.DEFAULT_TOP_INSET ?? 0;
   const VERTICAL_GAP = VizConstants.VERTICAL_GAP ?? 60;
 
-  const normalizedNodeType = (node) => {
+  // Get visible bottom of node (accounts for wrapper/content offset)
+  const nodeVisibleBottom = (node) => {
     let nodeType = node.data?.nodeType || 'FUNCTION';
     if (nodeType === 'PIPELINE' && !node.data?.isExpanded) {
       nodeType = 'FUNCTION';
     }
-    return nodeType;
-  };
-
-  // Get visible bottom of node (accounts for wrapper/content offset)
-  const nodeVisibleBottom = (node) => {
-    const nodeType = normalizedNodeType(node);
     const offset = NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
     return nodeBottom(node) - offset;
-  };
-
-  const nodeVisibleTop = (node) => {
-    const nodeType = normalizedNodeType(node);
-    const topInset = NODE_TYPE_TOP_INSETS[nodeType] ?? DEFAULT_TOP_INSET;
-    return nodeTop(node) + topInset;
   };
 
   const groupByRow = (nodes, orientation, rowSnap = null) => {
@@ -919,7 +897,7 @@
    * @returns {number} Y coordinate for convergence point
    */
   const calculateConvergenceY = (target, stemMinTarget) => {
-    return nodeVisibleTop(target) - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
+    return nodeTop(target) - stemMinTarget - EDGE_CONVERGENCE_OFFSET;
   };
 
   const expandDenseRows = (
@@ -1227,8 +1205,8 @@
         return {
           left: nodeLeft(node) - clearance,
           right: nodeRight(node) + clearance,
-          top: nodeVisibleTop(node) - clearance,
-          bottom: nodeVisibleBottom(node) + clearance,
+          top: nodeTop(node) - clearance,
+          bottom: nodeBottom(node) + clearance,
         };
       };
 
@@ -1602,11 +1580,11 @@
         }
       } else {
         const horizontalDist = Math.abs(target.x - source.x);
-        const verticalDist = nodeVisibleTop(target) - nodeVisibleBottom(source);
+        const verticalDist = nodeTop(target) - nodeBottom(source);
 
         const needsIntermediatePoint = horizontalDist > 100 && verticalDist > MIN_VERTICAL_DIST_FOR_WAYPOINT;
         if (needsIntermediatePoint) {
-          const shoulderY = nodeVisibleBottom(source) + verticalDist * 0.3;
+          const shoulderY = nodeBottom(source) + verticalDist * 0.3;
           const shoulderX = source.x + (target.x - source.x) * 0.7;
           edge.points.push({ x: shoulderX, y: shoulderY });
         }
@@ -1683,15 +1661,15 @@
         targetStem = [
           {
             x: target.x,
-            y: nodeVisibleTop(target) - stemMinTarget - Math.min(targetOffsetY, stemMax),
+            y: nodeTop(target) - stemMinTarget - Math.min(targetOffsetY, stemMax),
           },
           {
             x: target.x,
-            y: nodeVisibleTop(target) - stemMinTarget,
+            y: nodeTop(target) - stemMinTarget,
           },
           {
             x: target.x,
-            y: nodeVisibleTop(target),
+            y: nodeTop(target),
           },
         ];
       } else {
