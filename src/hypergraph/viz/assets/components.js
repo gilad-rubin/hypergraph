@@ -444,33 +444,54 @@
         }
       }
 
-      // Position label along the edge path
+      // Position label along the actual routed polyline (not endpoint interpolation).
       var edgeLabel = label || (data && data.label);
       var isBranchLabel = (edgeLabel === 'True' || edgeLabel === 'False');
+      var pointAlongPolyline = function(pts, t) {
+        if (!pts || pts.length === 0) return { x: sourceX, y: sourceY };
+        if (pts.length === 1) return { x: pts[0].x, y: pts[0].y };
 
-      if (isBranchLabel) {
-        // True/False labels: use geometric vertical center between start and end
-        labelY = (startPt.y + endPt.y) / 2;
-        // Find X by interpolating based on Y position
-        var yFrac = (labelY - startPt.y) / (endPt.y - startPt.y || 1);
-        labelX = startPt.x + (endPt.x - startPt.x) * yFrac;
-      } else {
-        // Other labels: position at 35% along path points (away from arrow)
-        var labelPos = 0.35;
-        var totalLength = renderPoints.length - 1;
-        var labelIdx = Math.floor(totalLength * labelPos);
-        var labelFrac = (totalLength * labelPos) - labelIdx;
-        if (renderPoints.length > 1 && labelIdx < renderPoints.length - 1) {
-          labelX = renderPoints[labelIdx].x + (renderPoints[labelIdx + 1].x - renderPoints[labelIdx].x) * labelFrac;
-          labelY = renderPoints[labelIdx].y + (renderPoints[labelIdx + 1].y - renderPoints[labelIdx].y) * labelFrac;
-        } else if (renderPoints.length > 1) {
-          labelX = (renderPoints[0].x + renderPoints[1].x) / 2;
-          labelY = (renderPoints[0].y + renderPoints[1].y) / 2;
-        } else {
-          labelX = renderPoints[0].x;
-          labelY = renderPoints[0].y;
+        var clampedT = Math.max(0, Math.min(1, t));
+        var total = 0;
+        for (var i = 0; i < pts.length - 1; i += 1) {
+          var dx = pts[i + 1].x - pts[i].x;
+          var dy = pts[i + 1].y - pts[i].y;
+          total += Math.sqrt(dx * dx + dy * dy);
         }
-      }
+
+        if (total <= 1e-6) {
+          return {
+            x: (pts[0].x + pts[pts.length - 1].x) / 2,
+            y: (pts[0].y + pts[pts.length - 1].y) / 2,
+          };
+        }
+
+        var targetDist = total * clampedT;
+        var walked = 0;
+        for (var j = 0; j < pts.length - 1; j += 1) {
+          var p0 = pts[j];
+          var p1 = pts[j + 1];
+          var sdx = p1.x - p0.x;
+          var sdy = p1.y - p0.y;
+          var segLen = Math.sqrt(sdx * sdx + sdy * sdy);
+          if (segLen <= 1e-6) continue;
+          if (walked + segLen >= targetDist) {
+            var localT = (targetDist - walked) / segLen;
+            return {
+              x: p0.x + sdx * localT,
+              y: p0.y + sdy * localT,
+            };
+          }
+          walked += segLen;
+        }
+
+        return { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
+      };
+
+      var labelPos = isBranchLabel ? 0.5 : 0.35;
+      var labelPoint = pointAlongPolyline(renderPoints, labelPos);
+      labelX = labelPoint.x;
+      labelY = labelPoint.y;
     } else {
       var result = getBezierPath({
         sourceX: sourceX, sourceY: sourceY, sourcePosition: sourcePosition,
