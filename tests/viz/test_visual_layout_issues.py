@@ -8,6 +8,7 @@ These tests verify:
 """
 
 import pytest
+from hypergraph import Graph, ifelse, node
 
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
@@ -16,6 +17,41 @@ from tests.viz.conftest import (
     make_outer,
     render_to_page,
 )
+
+
+@node(output_name="doc_exists")
+def check_document_exists(doc_id: str, vector_store: object, overwrite: bool) -> bool:
+    return False
+
+
+@ifelse(when_true="skip_document", when_false="process_document")
+def should_process(doc_exists: bool, overwrite: bool) -> bool:
+    return doc_exists and not overwrite
+
+
+@node(output_name="processed_document")
+def process_document(doc_id: str) -> dict:
+    return {"status": "processed", "doc_id": doc_id}
+
+
+@node(output_name="skipped_document")
+def skip_document(doc_id: str) -> dict:
+    return {"status": "skipped", "doc_id": doc_id}
+
+
+@node(output_name="next_query")
+def generate_query_from_doc(doc_id: str) -> str:
+    return doc_id
+
+
+def make_indexing_like_graph() -> Graph:
+    """Nested topology that reproduces the reported edge-over-node issue."""
+    indexing_inner = Graph(
+        nodes=[check_document_exists, should_process, process_document, skip_document],
+        name="indexing",
+    )
+    outer = Graph(nodes=[indexing_inner.as_node(name="indexing_graph"), generate_query_from_doc])
+    return outer.bind(vector_store="mock_vector_store", overwrite=False)
 
 
 # =============================================================================
@@ -475,6 +511,126 @@ class TestEdgeValidation:
                 f"  - {e.source} -> {e.target}: {e.issue}"
                 for e in data.edge_issues
             )
+        )
+
+
+# =============================================================================
+# Test: Rendered edges must not pass through non-endpoint nodes
+# =============================================================================
+
+
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
+class TestEdgeDoesNotCrossNodeBodies:
+    """Regression test for edges visually passing over INPUT/BRANCH/function nodes."""
+
+    def test_indexing_like_graph_has_no_edge_path_inside_other_nodes(self, page, temp_html_file):
+        graph = make_indexing_like_graph()
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file)
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            if (!debug || !debug.nodes || !debug.edges) {
+                return { error: 'debug data unavailable' };
+            }
+
+            const NODE_TYPE_OFFSETS = {
+                PIPELINE: 26,
+                GRAPH: 26,
+                FUNCTION: 14,
+                DATA: 6,
+                INPUT: 6,
+                INPUT_GROUP: 6,
+                BRANCH: 10,
+                END: 6,
+            };
+            const DEFAULT_OFFSET = 10;
+
+            const visibleRect = (node) => {
+                const nodeType = node.nodeType || (node.data && node.data.nodeType) || 'FUNCTION';
+                const offset = NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+                return {
+                    id: node.id,
+                    nodeType,
+                    left: node.x,
+                    top: node.y,
+                    right: node.x + node.width,
+                    bottom: node.y + node.height - offset,
+                };
+            };
+
+            const rects = (debug.nodes || []).map(visibleRect);
+
+            const edgeById = new Map((debug.edges || []).map((e) => [e.id, e]));
+            const groups = Array.from(document.querySelectorAll('.react-flow__edge'));
+
+            const insideRect = (x, y, rect) =>
+                x > rect.left && x < rect.right && y > rect.top && y < rect.bottom;
+
+            const crossings = [];
+            for (const group of groups) {
+                const testId = group.getAttribute('data-testid') || '';
+                const pathEl = group.querySelector('path.react-flow__edge-path');
+                if (!pathEl) continue;
+
+                let edge = null;
+                for (const [edgeId, candidate] of edgeById.entries()) {
+                    if (testId.includes(edgeId)) {
+                        edge = candidate;
+                        break;
+                    }
+                }
+                if (!edge) continue;
+
+                const actualSource = (edge.data && edge.data.actualSource) || edge.source;
+                const actualTarget = (edge.data && edge.data.actualTarget) || edge.target;
+
+                const total = pathEl.getTotalLength();
+                if (!Number.isFinite(total) || total <= 0) continue;
+
+                const sampleStep = Math.max(2, total / 220);
+                for (let d = 4; d < total - 4; d += sampleStep) {
+                    const pt = pathEl.getPointAtLength(d);
+                    for (const rect of rects) {
+                        if (rect.id === actualSource || rect.id === actualTarget) continue;
+                        if (rect.nodeType === 'PIPELINE' || rect.nodeType === 'GRAPH') continue;
+                        if (insideRect(pt.x, pt.y, rect)) {
+                            crossings.push({
+                                edge: edge.source + ' -> ' + edge.target,
+                                actualEdge: actualSource + ' -> ' + actualTarget,
+                                crossedNode: rect.id,
+                                at: { x: pt.x, y: pt.y },
+                            });
+                            d = total + 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return {
+                crossings,
+                nodes: debug.nodes.map((n) => ({ id: n.id, nodeType: n.nodeType || (n.data && n.data.nodeType) })),
+                edges: debug.edges.map((e) => ({
+                    id: e.id,
+                    source: e.source,
+                    target: e.target,
+                    actualSource: (e.data && e.data.actualSource) || e.source,
+                    actualTarget: (e.data && e.data.actualTarget) || e.target,
+                })),
+            };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert len(result["crossings"]) == 0, (
+            "Found rendered edge path points inside non-endpoint node bodies:\n" +
+            "\n".join(
+                f"  - {x['edge']} (actual {x['actualEdge']}) crosses {x['crossedNode']} "
+                f"at ({x['at']['x']:.1f}, {x['at']['y']:.1f})"
+                for x in result["crossings"]
+            ) +
+            f"\nNodes: {result['nodes']}\nEdges: {result['edges']}"
         )
 
     def test_workflow_depth1_no_edge_issues(self):
