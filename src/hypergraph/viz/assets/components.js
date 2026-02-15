@@ -870,8 +870,7 @@
              (isLight
                ? ' bg-white/90 border-' + colors.border + '-300 shadow-slate-200 hover:border-' + colors.border + '-400 hover:shadow-' + colors.border + '-200 hover:shadow-lg'
                : ' bg-slate-950/90 border-' + colors.border + '-500/40 shadow-black/50 hover:border-' + colors.border + '-500/70 hover:shadow-' + colors.border + '-500/20 hover:shadow-lg')
-             }
-             onClick=${data.nodeType === 'PIPELINE' ? function(e) { e.stopPropagation(); if(data.onToggleExpand) data.onToggleExpand(); } : undefined}>
+             }>
 
           <div className=${'px-3 py-2.5 flex flex-col items-center justify-center overflow-hidden' +
                (showCombined ? (isLight ? ' border-b border-slate-100' : ' border-b border-slate-800/50') : '')}>

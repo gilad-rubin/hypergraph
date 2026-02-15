@@ -91,7 +91,11 @@
       width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
       height = 56;
       if (n.data && !n.data.separateOutputs && outputs.length > 0) {
-        height = 48 + 42 + ((outputs.length - 1) * 28);
+        // Keep dimension model aligned with OutputsSection rendering:
+        // container py-2 + (rows + gap-1.5) + border + compact safety margin.
+        var rowCount = outputs.length;
+        var outputSectionHeight = 16 + (rowCount * 16) + (Math.max(0, rowCount - 1) * 6) + 6;
+        height = 56 + outputSectionHeight;
       }
     }
 
@@ -1229,6 +1233,8 @@
       return true;
     };
 
+    var EDGE_REROUTE_CLEARANCE = 10;
+
     var findCrossedNodes = function(points, sourceId, targetId) {
       var crossed = [];
       if (!points || points.length < 2) return crossed;
@@ -1239,10 +1245,10 @@
         if (!dims) return;
 
         var rect = {
-          left: pos.x,
-          right: pos.x + dims.width,
-          top: pos.y,
-          bottom: pos.y + dims.height,
+          left: pos.x - EDGE_REROUTE_CLEARANCE,
+          right: pos.x + dims.width + EDGE_REROUTE_CLEARANCE,
+          top: pos.y - EDGE_REROUTE_CLEARANCE,
+          bottom: pos.y + dims.height + EDGE_REROUTE_CLEARANCE,
         };
 
         for (var i = 0; i < points.length - 1; i += 1) {
@@ -1260,26 +1266,65 @@
 
     var rerouteAroundCrossedNodes = function(points, sourceId, targetId) {
       if (!points || points.length < 2) return points;
-      var crossed = findCrossedNodes(points, sourceId, targetId);
-      if (!crossed.length) return points;
+      var originalCrossed = findCrossedNodes(points, sourceId, targetId);
+      if (!originalCrossed.length) return points;
 
       var start = points[0];
       var end = points[points.length - 1];
       if (!(end.y > start.y + 24)) return points;
 
-      var minTop = crossed.reduce(function(best, rect) {
+      var minTop = originalCrossed.reduce(function(best, rect) {
         return Math.min(best, rect.top);
       }, Infinity);
+      var minLeft = originalCrossed.reduce(function(best, rect) {
+        return Math.min(best, rect.left);
+      }, Infinity);
+      var maxRight = originalCrossed.reduce(function(best, rect) {
+        return Math.max(best, rect.right);
+      }, -Infinity);
 
-      var detourY = Math.min(end.y - 20, Math.max(start.y + 20, minTop - 16));
+      var detourY = Math.min(end.y - 20, Math.max(start.y + 20, minTop - 18));
       if (detourY <= start.y + 4 || detourY >= end.y - 4) return points;
 
-      return [
-        { x: start.x, y: start.y },
-        { x: start.x, y: detourY },
-        { x: end.x, y: detourY },
-        { x: end.x, y: end.y },
+      var buildDetourPath = function(laneX) {
+        if (!Number.isFinite(laneX) || Math.abs(laneX - start.x) < 1) {
+          return [
+            { x: start.x, y: start.y },
+            { x: start.x, y: detourY },
+            { x: end.x, y: detourY },
+            { x: end.x, y: end.y },
+          ];
+        }
+        return [
+          { x: start.x, y: start.y },
+          { x: laneX, y: start.y + 12 },
+          { x: laneX, y: detourY },
+          { x: end.x, y: detourY },
+          { x: end.x, y: end.y },
+        ];
+      };
+
+      var candidates = [
+        buildDetourPath(start.x),
+        buildDetourPath(minLeft - 20),
+        buildDetourPath(maxRight + 20),
       ];
+
+      var bestPath = points;
+      var bestScore = originalCrossed.length;
+      var bestLaneShift = Infinity;
+
+      candidates.forEach(function(candidate) {
+        var score = findCrossedNodes(candidate, sourceId, targetId).length;
+        var laneShift = Math.abs((candidate[1] && candidate[1].x) - start.x);
+        if (score < bestScore || (score === bestScore && laneShift < bestLaneShift)) {
+          bestPath = candidate;
+          bestScore = score;
+          bestLaneShift = laneShift;
+        }
+      });
+
+      return bestPath;
     };
 
     var fanoutInputEdge = function(points, sourceId, targetId) {
