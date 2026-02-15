@@ -50,7 +50,7 @@ class Graph:
         nodes: Map of node name → HyperNode
         outputs: All output names produced by nodes
         leaf_outputs: Outputs from terminal nodes (no downstream destinations)
-        inputs: InputSpec describing required/optional/seed parameters
+        inputs: InputSpec describing required/optional/entrypoint parameters
         has_cycles: True if graph contains cycles
         has_async_nodes: True if any FunctionNode is async
         strict_types: If True, type validation between nodes is enabled
@@ -190,6 +190,15 @@ class Graph:
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
         return get_edge_produced_values(self._nx_graph)
+
+    def _get_emit_only_outputs(self) -> set[str]:
+        """Get outputs that are only emitted (ordering signals, not data)."""
+        data_outputs: set[str] = set()
+        all_outputs: set[str] = set()
+        for node in self._nodes.values():
+            data_outputs.update(node.data_outputs)
+            all_outputs.update(node.outputs)
+        return all_outputs - data_outputs
 
     def _sources_of(self, output: str) -> list[str]:
         """Get all nodes that produce the given output."""
@@ -336,30 +345,28 @@ class Graph:
     def bind(self, **values: Any) -> "Graph":
         """Bind default values. Returns new Graph (immutable).
 
+        Accepts any graph input or output name. Bound values act as
+        pre-filled run() values — overridable at run time.
+
         Raises:
-            ValueError: If attempting to bind an output of another node
-            ValueError: If attempting to bind a key not in graph.inputs.all
+            ValueError: If key is not a valid graph input or output
+            ValueError: If key is an emit-only output (ordering signal)
         """
-        # Validate: no bound key is edge-produced
-        edge_produced = self._get_edge_produced_values()
+        valid_names = set(self.inputs.all) | set(self.outputs)
+        emit_only = self._get_emit_only_outputs()
+        valid_names -= emit_only
+
         for key in values:
-            if key in edge_produced:
-                # Find which node produces it
-                sources = self._sources_of(key)
+            if key in emit_only:
                 raise ValueError(
-                    f"Cannot bind '{key}': output of node '{sources[0]}'"
+                    f"Cannot bind '{key}': emit-only output (ordering signal, not data)"
+                )
+            if key not in valid_names:
+                raise ValueError(
+                    f"Cannot bind '{key}': not a graph input or output. "
+                    f"Valid names: {sorted(valid_names)}"
                 )
 
-        # Validate: all keys must be valid graph inputs
-        all_inputs = set(self.inputs.all)
-        for key in values:
-            if key not in all_inputs:
-                raise ValueError(
-                    f"Cannot bind '{key}': not a graph input. "
-                    f"Valid inputs: {self.inputs.all}"
-                )
-
-        # Create new graph with merged bindings
         new_graph = self._shallow_copy()
         new_graph._bound = {**self._bound, **values}
         return new_graph
@@ -630,7 +637,7 @@ class Graph:
             "required": input_spec.required,
             "optional": input_spec.optional,
             "bound": dict(input_spec.bound),
-            "seeds": input_spec.seeds,
+            "entrypoints": {k: list(v) for k, v in input_spec.entrypoints.items()},
         }
         G.graph["output_to_sources"] = output_to_sources
         return G

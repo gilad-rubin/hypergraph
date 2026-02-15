@@ -28,7 +28,7 @@ from hypergraph.viz._common import (
 from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.nodes import build_input_groups, has_end_routing
 from hypergraph.viz.renderer.scope import (
-    find_container_entry_points,
+    find_container_entrypoints,
     find_internal_producer_for_output,
 )
 
@@ -436,9 +436,9 @@ def _resolve_control_target(
     actual_target = target
     target_attrs = flat_graph.nodes.get(target, {})
     if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False):
-        entry_points = find_container_entry_points(target, flat_graph, expansion_state)
-        if entry_points:
-            actual_target = entry_points[0]
+        entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
+        if entrypoints:
+            actual_target = entrypoints[0]
     if not is_node_visible(actual_target, flat_graph, expansion_state):
         return None
     return actual_target
@@ -490,7 +490,7 @@ def _resolve_data_target(
             if internal:
                 actual_target = internal[0]
             else:
-                entry = find_container_entry_points(target, flat_graph, expansion_state)
+                entry = find_container_entrypoints(target, flat_graph, expansion_state)
                 if entry:
                     actual_target = entry[0]
     if not is_node_visible(actual_target, flat_graph, expansion_state):

@@ -30,7 +30,7 @@ class GraphNode(HyperNode):
 
     Attributes:
         name: Node name (from graph.name or explicit override)
-        inputs: All graph inputs (required + optional + seeds)
+        inputs: All graph inputs (required + optional + entry point params)
         outputs: All graph outputs
         graph: The wrapped Graph instance
 

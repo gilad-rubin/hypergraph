@@ -157,15 +157,15 @@ class TestBindMultiple:
         assert "x" in g2.inputs.required
 
 
-class TestBindCycleSeeds:
-    """Test bind() interaction with cycle seeds (BIND-03).
+class TestBindCycleEntryPoints:
+    """Test bind() interaction with cycle entrypoints (BIND-03).
 
-    Edge-produced values (including cycle seeds) cannot be bound because
-    they are outputs of nodes, not external inputs.
+    Cycle params (entrypoints) CAN be bound — they act as initial values
+    for the first iteration, then the cycle produces subsequent values.
     """
 
-    def test_bind_seed_param_rejected(self):
-        """Binding a seed param raises ValueError because it's edge-produced."""
+    def test_bind_entrypoint_param_accepted(self):
+        """Binding an entrypoint param is accepted (bootstraps the cycle)."""
 
         @node(output_name="count")
         def counter(count: int) -> int:
@@ -173,17 +173,15 @@ class TestBindCycleSeeds:
 
         g = Graph([counter])
 
-        # count is a seed (self-loop cycle)
-        assert "count" in g.inputs.seeds
+        # count is an entrypoint param (self-loop cycle)
+        assert "counter" in g.inputs.entrypoints
 
-        # Attempting to bind raises ValueError
-        with pytest.raises(ValueError) as exc_info:
-            g.bind(count=0)
+        # Binding is allowed — acts as first-iteration bootstrap
+        configured = g.bind(count=0)
+        assert configured.inputs.bound["count"] == 0
 
-        assert "output of node" in str(exc_info.value)
-
-    def test_seed_not_bindable_multi_node_cycle(self):
-        """Multi-node cycle seed also not bindable."""
+    def test_bind_multi_node_cycle_param(self):
+        """Multi-node cycle params are bindable."""
 
         @node(output_name="a")
         def node_a(b: int) -> int:
@@ -195,18 +193,17 @@ class TestBindCycleSeeds:
 
         g = Graph([node_a, node_b])
 
-        # Both a and b are cycle-related
         assert g.has_cycles
 
-        # Attempting to bind either should fail (they're edge-produced)
-        with pytest.raises(ValueError):
-            g.bind(a=0)
+        # Both a and b are cycle params — binding is allowed
+        configured = g.bind(a=0)
+        assert configured.inputs.bound["a"] == 0
 
-        with pytest.raises(ValueError):
-            g.bind(b=0)
+        configured = g.bind(b=0)
+        assert configured.inputs.bound["b"] == 0
 
-    def test_non_seed_edge_produced_not_bindable(self):
-        """Regular edge-produced values (not seeds) also not bindable."""
+    def test_bind_node_output_accepted(self):
+        """Node outputs can be bound (bypass if producer doesn't run)."""
 
         @node(output_name="x")
         def producer(input_val: int) -> int:
@@ -218,14 +215,11 @@ class TestBindCycleSeeds:
 
         g = Graph([producer, consumer])
 
-        # x is produced by producer, consumed by consumer
-        # Only input_val is a valid input
         assert "input_val" in g.inputs.required
-        assert "x" not in g.inputs.all
 
-        # Can't bind x (it's an output)
-        with pytest.raises(ValueError):
-            g.bind(x=10)
+        # Binding an output is allowed — acts as fallback when producer can't run
+        configured = g.bind(x=10)
+        assert configured.inputs.bound["x"] == 10
 
 
 class TestUnbindRestoresStatus:

@@ -188,19 +188,19 @@ def should_continue(score: float) -> str:
 
 ---
 
-## 7. Cycles Require Seeds
+## 7. Cycles Require Entry Points
 
-When a value participates in a cycle, the first iteration needs an initial seed value.
+When a value participates in a cycle, the first iteration needs an initial value. Entry points group these by the node where execution starts.
 
 ### Explicit signals
 
-- InputSpec docs define `seeds` for cyclic inputs.
+- InputSpec docs define `entrypoints` for cyclic inputs, grouped by node name.
 
 ### Implicit invariants
 
-- Cycle parameters are classified as seeds.
-- Missing seeds fail input validation.
-- Edge-produced values (including seeds) cannot be bound with `bind()`.
+- Cycle parameters are classified as entrypoint parameters.
+- Missing entrypoint values fail input validation.
+- Entry point values can be bound with `bind()` or provided at `runner.run()` time.
 
 ### Good example
 
@@ -210,7 +210,7 @@ result = runner.run(graph, {"messages": [], "query": "..."})
 
 ### Break example
 
-- Running cyclic flows without initializing seed inputs.
+- Running cyclic flows without initializing entrypoint values.
 
 ---
 

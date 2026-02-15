@@ -223,8 +223,8 @@ print(g.inputs.required)  # ('x',)
 **Returns:** New Graph with bindings applied
 
 **Raises:**
-- `ValueError` - If binding a name that is an output of another node
-- `ValueError` - If binding a name not in `graph.inputs.all`
+- `ValueError` - If binding a name not recognized as a graph input or output
+- `ValueError` - If binding an emit-only output (ordering signal, not data)
 
 #### Shared State and Non-Copyable Objects
 

@@ -15,8 +15,9 @@ TDD tests for issues identified in the code review:
 import warnings
 import pytest
 
-from hypergraph import Graph
+from hypergraph import END, Graph
 from hypergraph.nodes.function import FunctionNode, node
+from hypergraph.nodes.gate import route
 from hypergraph.runners.sync import SyncRunner
 
 
@@ -270,13 +271,26 @@ class TestGraphNodeInputTypeConsistency:
 
 
 class TestSelectParameterValidation:
-    """Edge 2: Invalid select parameter silently ignored.
+    """Edge 2: Invalid select parameter handling.
 
-    Runner.run() with select=["typo_output"] silently returns empty.
+    Runner.run() with select=["typo_output"] silently returns empty by default,
+    warns with on_missing="warn", errors with on_missing="error".
     """
 
-    def test_invalid_select_warns(self):
-        """Invalid select parameter should warn about missing outputs."""
+    def test_invalid_select_ignored_by_default(self):
+        """Invalid select parameter silently omitted with default on_missing='ignore'."""
+        @node(output_name="result")
+        def identity(x: int) -> int:
+            return x
+
+        graph = Graph([identity])
+        runner = SyncRunner()
+
+        result = runner.run(graph, {"x": 10}, select=["typo_result"])
+        assert result.values == {}
+
+    def test_invalid_select_warns_with_on_missing(self):
+        """Invalid select parameter warns with on_missing='warn'."""
         @node(output_name="result")
         def identity(x: int) -> int:
             return x
@@ -286,9 +300,8 @@ class TestSelectParameterValidation:
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = runner.run(graph, {"x": 10}, select=["typo_result"])
+            runner.run(graph, {"x": 10}, select=["typo_result"], on_missing="warn")
 
-            # Should warn about missing output
             assert len(w) >= 1
             assert any("typo_result" in str(warning.message) for warning in w)
 
@@ -415,3 +428,121 @@ class TestInputValidationOverrides:
             # Should at least warn about overriding internal value
             assert len(w) >= 1
             assert any("intermediate" in str(warning.message) for warning in w)
+
+
+class TestMultiCycleEntryPointValidation:
+    """Explicit entrypoint must still validate other independent cycles."""
+
+    def test_explicit_entrypoint_validates_other_cycles(self):
+        """Providing entrypoint for cycle A must still check cycle B."""
+
+        @node(output_name="a")
+        def node_a(b: int) -> int:
+            return b + 1
+
+        @node(output_name="b")
+        def node_b(a: int) -> int:
+            return a + 1
+
+        @route(targets=["node_a", END])
+        def gate_ab(a: int) -> str:
+            return END if a > 3 else "node_a"
+
+        @node(output_name="x")
+        def node_x(y: int) -> int:
+            return y + 1
+
+        @node(output_name="y")
+        def node_y(x: int) -> int:
+            return x + 1
+
+        @route(targets=["node_x", END])
+        def gate_xy(x: int) -> str:
+            return END if x > 3 else "node_x"
+
+        graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy])
+        runner = SyncRunner()
+
+        # Cycle A entrypoint satisfied (b=1 for node_a), but cycle B has no entry
+        from hypergraph.exceptions import MissingInputError
+        with pytest.raises((ValueError, MissingInputError)):
+            runner.run(graph, {"b": 1}, entrypoint="node_a")
+
+    def test_explicit_entrypoint_passes_with_both_cycles_satisfied(self):
+        """Both cycles satisfied: explicit on A, implicit on B."""
+
+        @node(output_name="a")
+        def node_a(b: int) -> int:
+            return b + 1
+
+        @node(output_name="b")
+        def node_b(a: int) -> int:
+            return a + 1
+
+        @route(targets=["node_a", END])
+        def gate_ab(a: int) -> str:
+            return END if a > 3 else "node_a"
+
+        @node(output_name="x")
+        def node_x(y: int) -> int:
+            return y + 1
+
+        @node(output_name="y")
+        def node_y(x: int) -> int:
+            return x + 1
+
+        @route(targets=["node_x", END])
+        def gate_xy(x: int) -> str:
+            return END if x > 3 else "node_x"
+
+        graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy])
+        runner = SyncRunner()
+
+        # Both cycles satisfied (node_a needs b, node_x needs y)
+        result = runner.run(graph, {"b": 1, "y": 1}, entrypoint="node_a")
+        assert result.status.value == "completed"
+
+
+class TestDefaultedCycleParams:
+    """Cycle params with defaults should not require entrypoint values."""
+
+    def test_defaulted_cycle_param_excluded_from_entrypoint(self):
+        """If a cycle param has a default, it's not required for entry."""
+
+        @node(output_name="b")
+        def node_a(a: int) -> int:
+            return a + 1
+
+        @node(output_name="a")
+        def node_b(b: int, extra: int = 0) -> int:
+            return b + extra
+
+        @route(targets=["node_a", END])
+        def gate(a: int) -> str:
+            return END if a > 3 else "node_a"
+
+        graph = Graph([node_a, node_b, gate])
+
+        # extra has a default, so node_b's entrypoint should only need 'b'
+        # (not 'b' AND 'extra')
+        ep = graph.inputs.entrypoints
+        if "node_b" in ep:
+            assert "extra" not in ep["node_b"]
+
+
+class TestEarlyOnMissingValidation:
+    """on_missing should be validated eagerly, even when no outputs are missing."""
+
+    def test_invalid_on_missing_fails_even_when_all_outputs_present(self):
+        """Invalid on_missing raises immediately, not only when outputs miss."""
+        from hypergraph.runners._shared.helpers import filter_outputs
+
+        @node(output_name="result")
+        def identity(x: int) -> int:
+            return x
+
+        graph = Graph([identity])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="Invalid on_missing"):
+            runner.run(graph, {"x": 10}, select=["result"], on_missing="raise")

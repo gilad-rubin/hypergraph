@@ -23,7 +23,7 @@ from hypergraph.viz.renderer.nodes import (
     is_data_node_visible,
 )
 from hypergraph.viz.renderer.scope import (
-    find_container_entry_points,
+    find_container_entrypoints,
     find_internal_producer_for_output,
 )
 
@@ -97,11 +97,11 @@ def add_merged_output_edges(
             is_target_expanded = expansion_state.get(target, False)
 
             if is_target_container and is_target_expanded:
-                entry_points = find_container_entry_points(
+                entrypoints = find_container_entrypoints(
                     target, flat_graph, expansion_state
                 )
-                if entry_points:
-                    actual_target = entry_points[0]
+                if entrypoints:
+                    actual_target = entrypoints[0]
 
             if not is_node_visible(actual_target, flat_graph, expansion_state):
                 continue
@@ -190,11 +190,11 @@ def add_merged_output_edges(
                     if internal_consumers:
                         actual_target = internal_consumers[0]
                     else:
-                        entry_points = find_container_entry_points(
+                        entrypoints = find_container_entrypoints(
                             target, flat_graph, expansion_state
                         )
-                        if entry_points:
-                            actual_target = entry_points[0]
+                        if entrypoints:
+                            actual_target = entrypoints[0]
 
             if not is_node_visible(actual_source, flat_graph, expansion_state):
                 continue
@@ -355,11 +355,11 @@ def add_separate_output_edges(
                 is_target_expanded = expansion_state.get(target, False)
 
                 if is_target_container and is_target_expanded:
-                    entry_points = find_container_entry_points(
+                    entrypoints = find_container_entrypoints(
                         target, flat_graph, expansion_state
                     )
-                    if entry_points:
-                        actual_target = entry_points[0]
+                    if entrypoints:
+                        actual_target = entrypoints[0]
 
             if source == actual_target:
                 continue

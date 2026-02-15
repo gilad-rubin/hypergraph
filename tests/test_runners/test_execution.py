@@ -618,20 +618,60 @@ class TestFilterOutputs:
         result = filter_outputs(state, graph, select=["sum"])
         assert result == {"sum": 15}
 
-    def test_select_none_returns_all_outputs(self):
-        """No select returns all graph outputs."""
+    def test_select_all_returns_all_outputs(self):
+        """select="**" returns all graph outputs."""
         graph = Graph([double])
         state = GraphState(values={"doubled": 10, "x": 5})
 
-        result = filter_outputs(state, graph, select=None)
+        result = filter_outputs(state, graph, select="**")
         # Only graph outputs, not inputs
         assert result == {"doubled": 10}
 
-    def test_missing_select_key_ignored(self):
-        """Select keys not in state are ignored with warning."""
+    def test_default_select_returns_all_outputs(self):
+        """No select argument returns all graph outputs."""
+        graph = Graph([double])
+        state = GraphState(values={"doubled": 10, "x": 5})
+
+        result = filter_outputs(state, graph)
+        assert result == {"doubled": 10}
+
+    def test_single_string_select(self):
+        """select="name" (single string) works as shorthand for select=["name"]."""
+        graph = Graph([double, add.with_inputs(a="doubled")])
+        state = GraphState(values={"doubled": 10, "sum": 15, "x": 5, "b": 5})
+
+        result = filter_outputs(state, graph, select="sum")
+        assert result == {"sum": 15}
+
+    def test_invalid_on_missing_raises(self):
+        """Invalid on_missing value raises ValueError."""
+        graph = Graph([double])
+        state = GraphState(values={"doubled": 10})
+
+        with pytest.raises(ValueError, match="Invalid on_missing"):
+            filter_outputs(state, graph, select=["nonexistent"], on_missing="raise")
+
+    def test_missing_select_key_ignored_by_default(self):
+        """Missing select keys silently omitted with on_missing='ignore' (default)."""
+        graph = Graph([double])
+        state = GraphState(values={"doubled": 10})
+
+        result = filter_outputs(state, graph, select=["doubled", "nonexistent"])
+        assert result == {"doubled": 10}
+
+    def test_missing_select_key_warns(self):
+        """on_missing='warn' emits warning for missing select keys."""
         graph = Graph([double])
         state = GraphState(values={"doubled": 10})
 
         with pytest.warns(UserWarning, match="Requested outputs not found"):
-            result = filter_outputs(state, graph, select=["doubled", "nonexistent"])
+            result = filter_outputs(state, graph, select=["doubled", "nonexistent"], on_missing="warn")
         assert result == {"doubled": 10}
+
+    def test_missing_select_key_errors(self):
+        """on_missing='error' raises ValueError for missing select keys."""
+        graph = Graph([double])
+        state = GraphState(values={"doubled": 10})
+
+        with pytest.raises(ValueError, match="Requested outputs not found"):
+            filter_outputs(state, graph, select=["doubled", "nonexistent"], on_missing="error")

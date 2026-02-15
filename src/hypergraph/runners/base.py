@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
+from hypergraph.runners._shared.helpers import _UNSET_SELECT
 from hypergraph.runners._shared.types import RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
@@ -40,7 +41,9 @@ class BaseRunner(ABC):
         graph: "Graph",
         values: dict[str, Any] | None = None,
         *,
-        select: list[str] | None = None,
+        select: "str | list[str]" = _UNSET_SELECT,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
         max_iterations: int | None = None,
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
@@ -50,7 +53,9 @@ class BaseRunner(ABC):
         Args:
             graph: The graph to execute
             values: Optional input values dict
-            select: Optional list of outputs to return (None = all)
+            select: Which outputs to return. "**" (default) = all outputs.
+            on_missing: How to handle missing selected outputs.
+            entrypoint: Optional explicit cycle entry point node name.
             max_iterations: Max iterations for cyclic graphs (None = default)
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)
@@ -68,7 +73,8 @@ class BaseRunner(ABC):
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
-        select: list[str] | None = None,
+        select: "str | list[str]" = _UNSET_SELECT,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
@@ -79,7 +85,8 @@ class BaseRunner(ABC):
             values: Optional input values dict (some should be lists for map_over)
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
-            select: Optional list of outputs to return
+            select: Which outputs to return. "**" (default) = all outputs.
+            on_missing: How to handle missing selected outputs.
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)
 
