@@ -48,14 +48,22 @@
   function calculateDimensions(n) {
     var width = 80;
     var height = 90;
+    var nodeType = (n.data && n.data.nodeType) || 'FUNCTION';
+    var outputs = (n.data && n.data.outputs) || [];
+    var hasCombinedOutputs = !!(n.data && !n.data.separateOutputs && outputs.length > 0);
 
-    if (n.data && (n.data.nodeType === 'DATA' || n.data.nodeType === 'INPUT')) {
+    var getCombinedOutputsHeight = function(rowCount) {
+      // Must mirror OutputsSection CSS (py/gap/text + top border) so wrapper heights stay accurate.
+      return 16 + (rowCount * 16) + (Math.max(0, rowCount - 1) * 6) + 1;
+    };
+
+    if (nodeType === 'DATA' || nodeType === 'INPUT') {
       // DATA and INPUT nodes use the same compact pill styling
       height = 36;
       var labelLen = Math.min((n.data.label && n.data.label.length) || 0, NODE_LABEL_MAX_CHARS);
       var typeLen = (n.data.showTypes && n.data.typeHint) ? Math.min(n.data.typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
       width = Math.min(MAX_NODE_WIDTH, (labelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-    } else if (n.data && n.data.nodeType === 'INPUT_GROUP') {
+    } else if (nodeType === 'INPUT_GROUP') {
       // INPUT_GROUP shows params as rows
       var params = n.data.params || [];
       var paramTypes = n.data.paramTypes || [];
@@ -72,15 +80,14 @@
       // Keep wrapper height aligned with INPUT_GROUP visual rows plus bottom handle offset.
       var inputGroupBottomOffset = (VizConstants.NODE_TYPE_OFFSETS && VizConstants.NODE_TYPE_OFFSETS.INPUT_GROUP) || 6;
       height = 16 + (numParams * 16) + ((numParams - 1) * 4) + inputGroupBottomOffset;
-    } else if (n.data && n.data.nodeType === 'BRANCH') {
+    } else if (nodeType === 'BRANCH') {
       width = 140;
       height = 140;
     } else {
-      // Function/Pipeline node
+      // Standard function-like nodes (FUNCTION/PIPELINE/ROUTE/IFELSE/etc.) share sizing logic.
       var labelLen = Math.min((n.data && n.data.label && n.data.label.length) || 0, NODE_LABEL_MAX_CHARS);
       var maxContentLen = labelLen;
-      var outputs = (n.data && n.data.outputs) || [];
-      if (n.data && !n.data.separateOutputs && outputs.length > 0) {
+      if (hasCombinedOutputs) {
         outputs.forEach(function(o) {
           var outName = o.name || o.label || '';
           var outType = o.type || o.typeHint || '';
@@ -92,11 +99,8 @@
       }
       width = Math.min(MAX_NODE_WIDTH, maxContentLen * CHAR_WIDTH_PX + FUNCTION_NODE_BASE_PADDING);
       height = 56;
-      if (n.data && !n.data.separateOutputs && outputs.length > 0) {
-        // Keep dimension model aligned with OutputsSection rendering.
-        var rowCount = outputs.length;
-        var outputSectionHeight = 16 + (rowCount * 16) + (Math.max(0, rowCount - 1) * 6) + 6;
-        height = 56 + outputSectionHeight;
+      if (hasCombinedOutputs) {
+        height = 56 + getCombinedOutputsHeight(outputs.length);
       }
     }
 
@@ -339,10 +343,10 @@
         positionedNodes.forEach(function(n) {
           nodePositions.set(n.id, n.position);
           nodeDimensions.set(n.id, { width: n.width, height: n.height });
-          var nodeType = n.data && n.data.nodeType ? n.data.nodeType : 'FUNCTION';
-          if (nodeType === 'PIPELINE' && !(n.data && n.data.isExpanded)) {
-            nodeType = 'FUNCTION';
-          }
+          var nodeType = normalizeNodeType(
+            n.data && n.data.nodeType ? n.data.nodeType : 'FUNCTION',
+            !!(n.data && n.data.isExpanded)
+          );
           nodeTypes.set(n.id, nodeType);
         });
 
@@ -362,8 +366,18 @@
           })
           .filter(function(e) { return e; });
 
+        var positionedAllEdges = positionedEdges.concat(feedbackEdges);
+        positionedAllEdges = avoidVisibleNodeCrossingsPhase(
+          positionedAllEdges,
+          nodePositions,
+          nodeDimensions,
+          nodeTypes,
+          debugMode,
+          'flat'
+        );
+
         setLayoutedNodes(positionedNodes);
-        setLayoutedEdges(positionedEdges.concat(feedbackEdges));
+        setLayoutedEdges(positionedAllEdges);
         setLayoutVersion(function(v) { return v + 1; });
         setIsLayouting(false);
         setLayoutError(null);
@@ -461,8 +475,35 @@
   };
   var DEFAULT_OFFSET = VizConstants.DEFAULT_OFFSET || 10;
 
-  function getNodeTypeOffset(nodeType) {
-    return NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
+  function normalizeNodeType(nodeType, isExpanded) {
+    var normalized = nodeType || 'FUNCTION';
+    if ((normalized === 'PIPELINE' || normalized === 'GRAPH') && !isExpanded) {
+      return 'FUNCTION';
+    }
+    return normalized;
+  }
+
+  function getNodeTypeOffset(nodeType, isExpanded) {
+    var normalized = normalizeNodeType(nodeType, isExpanded);
+    return NODE_TYPE_OFFSETS[normalized] ?? DEFAULT_OFFSET;
+  }
+
+  function getVisibleBounds(pos, dims, nodeType) {
+    var top = pos.y;
+    var left = pos.x;
+    var right = pos.x + dims.width;
+    var bottom = pos.y + dims.height - getNodeTypeOffset(nodeType);
+    return { left: left, right: right, top: top, bottom: bottom };
+  }
+
+  function getTopCenter(pos, dims, nodeType) {
+    var b = getVisibleBounds(pos, dims, nodeType);
+    return { x: (b.left + b.right) / 2, y: b.top };
+  }
+
+  function getBottomCenter(pos, dims, nodeType) {
+    var b = getVisibleBounds(pos, dims, nodeType);
+    return { x: (b.left + b.right) / 2, y: b.bottom };
   }
 
   function buildFeedbackEdgePoints(edge, nodePositions, nodeDimensions, nodeTypes) {
@@ -473,11 +514,14 @@
 
     if (!srcPos || !tgtPos || !srcDims || !tgtDims) return null;
 
-    var srcCenterX = srcPos.x + srcDims.width / 2;
     var srcNodeType = nodeTypes.get(edge.source) || 'FUNCTION';
-    var srcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcNodeType);
-    var tgtCenterX = tgtPos.x + tgtDims.width / 2;
-    var tgtTopY = tgtPos.y;
+    var tgtNodeType = nodeTypes.get(edge.target) || 'FUNCTION';
+    var srcBottom = getBottomCenter(srcPos, srcDims, srcNodeType);
+    var tgtTop = getTopCenter(tgtPos, tgtDims, tgtNodeType);
+    var srcCenterX = srcBottom.x;
+    var srcBottomY = srcBottom.y;
+    var tgtCenterX = tgtTop.x;
+    var tgtTopY = tgtTop.y;
 
     var srcLeft = srcPos.x;
     var tgtLeft = tgtPos.x;
@@ -511,10 +555,7 @@
     var nodeTypes = new Map();
     visibleNodes.forEach(function(n) {
       nodeDimensions.set(n.id, calculateDimensions(n));
-      var nodeType = n.data?.nodeType || 'FUNCTION';
-      if (nodeType === 'PIPELINE' && !n.data?.isExpanded) {
-        nodeType = 'FUNCTION';
-      }
+      var nodeType = normalizeNodeType(n.data?.nodeType, !!n.data?.isExpanded);
       nodeTypes.set(n.id, nodeType);
     });
     return { nodeDimensions: nodeDimensions, nodeTypes: nodeTypes };
@@ -636,9 +677,12 @@
       var tgtNode = nodeById.get(e.target);
       if (!srcNode || !tgtNode) return;
 
-      var srcOffset = getNodeTypeOffset(srcNode.data && srcNode.data.nodeType, srcNode.data && srcNode.data.isExpanded);
-      var srcBottom = srcNode.y + srcNode.height / 2 - srcOffset;
-      var tgtTop = tgtNode.y - tgtNode.height / 2;
+      var srcType = (srcNode.data && srcNode.data.nodeType) || 'FUNCTION';
+      var tgtType = (tgtNode.data && tgtNode.data.nodeType) || 'FUNCTION';
+      var srcPos = { x: srcNode.x - srcNode.width / 2, y: srcNode.y - srcNode.height / 2 };
+      var tgtPos = { x: tgtNode.x - tgtNode.width / 2, y: tgtNode.y - tgtNode.height / 2 };
+      var srcBottom = getVisibleBounds(srcPos, { width: srcNode.width, height: srcNode.height }, srcType).bottom;
+      var tgtTop = getVisibleBounds(tgtPos, { width: tgtNode.width, height: tgtNode.height }, tgtType).top;
       var gap = tgtTop - srcBottom;
 
       if (gap < gapSize) {
@@ -693,11 +737,17 @@
     var MAX_PASSES = layoutNodes.length + 2;
 
     var rect = function(n) {
+      var nodeType = normalizeNodeType(
+        (n.data && n.data.nodeType) || 'FUNCTION',
+        !!(n.data && n.data.isExpanded)
+      );
+      var pos = { x: n.x - n.width / 2, y: n.y - n.height / 2 };
+      var visible = getVisibleBounds(pos, { width: n.width, height: n.height }, nodeType);
       return {
-        left: n.x - n.width / 2 - OVERLAP_CLEARANCE,
-        right: n.x + n.width / 2 + OVERLAP_CLEARANCE,
-        top: n.y - n.height / 2 - OVERLAP_CLEARANCE,
-        bottom: n.y + n.height / 2 + OVERLAP_CLEARANCE,
+        left: visible.left - OVERLAP_CLEARANCE,
+        right: visible.right + OVERLAP_CLEARANCE,
+        top: visible.top - OVERLAP_CLEARANCE,
+        bottom: visible.bottom + OVERLAP_CLEARANCE,
       };
     };
 
@@ -1128,11 +1178,14 @@
         return;
       }
 
-      var srcCenterX = actualSrcPos.x + actualSrcDims.width / 2;
       var srcNodeType = nodeTypes.get(actualSrc) || 'FUNCTION';
-      var srcBottomY = actualSrcPos.y + actualSrcDims.height - getNodeTypeOffset(srcNodeType);
-      var tgtCenterX = actualTgtPos.x + actualTgtDims.width / 2;
-      var tgtTopY = actualTgtPos.y;
+      var tgtNodeType = nodeTypes.get(actualTgt) || 'FUNCTION';
+      var srcBottom = getBottomCenter(actualSrcPos, actualSrcDims, srcNodeType);
+      var tgtTop = getTopCenter(actualTgtPos, actualTgtDims, tgtNodeType);
+      var srcCenterX = srcBottom.x;
+      var srcBottomY = srcBottom.y;
+      var tgtCenterX = tgtTop.x;
+      var tgtTopY = tgtTop.y;
 
       var isFeedbackEdge = feedbackEdgeKeys && feedbackEdgeKeys.has(edgeKey);
       var points = null;
@@ -1173,44 +1226,39 @@
     });
   }
 
-  function applyEdgeReroutesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, debugMode) {
-    var inputNodeActualTargets = routingLookups.inputNodeActualTargets;
-    var outputToProducer = routingLookups.outputToProducer;
-    var nodeToParent = routingLookups.nodeToParent;
-    var EDGE_REROUTE_CLEARANCE = 10;
+  function segmentIntersectsRect(ax, ay, bx, by, rect) {
+    if (ax === bx && ay === by) {
+      return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+    }
 
-    var segmentIntersectsRect = function(ax, ay, bx, by, rect) {
-      if (ax === bx && ay === by) {
-        return ax >= rect.left && ax <= rect.right && ay >= rect.top && ay <= rect.bottom;
+    var t0 = 0;
+    var t1 = 1;
+    var dx = bx - ax;
+    var dy = by - ay;
+    var p = [-dx, dx, -dy, dy];
+    var q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
+
+    for (var i = 0; i < 4; i += 1) {
+      var pi = p[i];
+      var qi = q[i];
+      if (pi === 0) {
+        if (qi < 0) return false;
+        continue;
       }
-
-      var t0 = 0;
-      var t1 = 1;
-      var dx = bx - ax;
-      var dy = by - ay;
-      var p = [-dx, dx, -dy, dy];
-      var q = [ax - rect.left, rect.right - ax, ay - rect.top, rect.bottom - ay];
-
-      for (var i = 0; i < 4; i += 1) {
-        var pi = p[i];
-        var qi = q[i];
-        if (pi === 0) {
-          if (qi < 0) return false;
-          continue;
-        }
-        var r = qi / pi;
-        if (pi < 0) {
-          if (r > t1) return false;
-          if (r > t0) t0 = r;
-        } else {
-          if (r < t0) return false;
-          if (r < t1) t1 = r;
-        }
+      var r = qi / pi;
+      if (pi < 0) {
+        if (r > t1) return false;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return false;
+        if (r < t1) t1 = r;
       }
-      return true;
-    };
+    }
+    return true;
+  }
 
-    var findCrossedNodes = function(points, sourceId, targetId) {
+  function makeNodeCrossingFinder(nodePositions, nodeDimensions, nodeTypes, clearance) {
+    return function(points, sourceId, targetId) {
       var crossed = [];
       if (!points || points.length < 2) return crossed;
 
@@ -1218,12 +1266,13 @@
         if (nodeId === sourceId || nodeId === targetId) return;
         var dims = nodeDimensions.get(nodeId);
         if (!dims) return;
-
+        var nodeType = nodeTypes.get(nodeId) || 'FUNCTION';
+        var visible = getVisibleBounds(pos, dims, nodeType);
         var rect = {
-          left: pos.x - EDGE_REROUTE_CLEARANCE,
-          right: pos.x + dims.width + EDGE_REROUTE_CLEARANCE,
-          top: pos.y - EDGE_REROUTE_CLEARANCE,
-          bottom: pos.y + dims.height + EDGE_REROUTE_CLEARANCE,
+          left: visible.left - clearance,
+          right: visible.right + clearance,
+          top: visible.top - clearance,
+          bottom: visible.bottom + clearance,
         };
 
         for (var i = 0; i < points.length - 1; i += 1) {
@@ -1238,78 +1287,120 @@
 
       return crossed;
     };
+  }
 
-    var rerouteAroundCrossedNodes = function(points, sourceId, targetId) {
-      if (!points || points.length < 2) return points;
-      var originalCrossed = findCrossedNodes(points, sourceId, targetId);
-      if (!originalCrossed.length) return points;
+  function rerouteEdgeAroundCrossedNodes(points, sourceId, targetId, findCrossedNodes) {
+    if (!points || points.length < 2) return points;
+    var originalCrossed = findCrossedNodes(points, sourceId, targetId);
+    if (!originalCrossed.length) return points;
 
-      var start = points[0];
-      var end = points[points.length - 1];
-      if (!(end.y > start.y + 24)) return points;
+    var start = points[0];
+    var end = points[points.length - 1];
+    if (!(end.y > start.y + 24)) return points;
 
-      var minTop = originalCrossed.reduce(function(best, rect) {
-        return Math.min(best, rect.top);
-      }, Infinity);
-      var minLeft = originalCrossed.reduce(function(best, rect) {
-        return Math.min(best, rect.left);
-      }, Infinity);
-      var maxRight = originalCrossed.reduce(function(best, rect) {
-        return Math.max(best, rect.right);
-      }, -Infinity);
+    var minTop = originalCrossed.reduce(function(best, rect) {
+      return Math.min(best, rect.top);
+    }, Infinity);
+    var minLeft = originalCrossed.reduce(function(best, rect) {
+      return Math.min(best, rect.left);
+    }, Infinity);
+    var maxRight = originalCrossed.reduce(function(best, rect) {
+      return Math.max(best, rect.right);
+    }, -Infinity);
 
-      var yCandidates = [
-        Math.min(end.y - 20, Math.max(start.y + 20, minTop - 18)),
-        Math.min(end.y - 28, Math.max(start.y + 28, minTop - 30)),
-      ];
+    var yCandidates = [
+      Math.min(end.y - 20, Math.max(start.y + 20, minTop - 18)),
+      Math.min(end.y - 28, Math.max(start.y + 28, minTop - 30)),
+    ];
 
-      var buildDetourPath = function(laneX, detourY) {
-        if (!Number.isFinite(detourY) || detourY <= start.y + 4 || detourY >= end.y - 4) {
-          return null;
-        }
-        if (!Number.isFinite(laneX) || Math.abs(laneX - start.x) < 1) {
-          return [
-            { x: start.x, y: start.y },
-            { x: start.x, y: detourY },
-            { x: end.x, y: detourY },
-            { x: end.x, y: end.y },
-          ];
-        }
+    var buildDetourPath = function(laneX, detourY) {
+      if (!Number.isFinite(detourY) || detourY <= start.y + 4 || detourY >= end.y - 4) {
+        return null;
+      }
+      if (!Number.isFinite(laneX) || Math.abs(laneX - start.x) < 1) {
         return [
           { x: start.x, y: start.y },
-          { x: laneX, y: start.y + 12 },
-          { x: laneX, y: detourY },
+          { x: start.x, y: detourY },
           { x: end.x, y: detourY },
           { x: end.x, y: end.y },
         ];
-      };
-
-      var laneCandidates = [start.x, minLeft - 20, maxRight + 20];
-      var candidates = [];
-      yCandidates.forEach(function(detourY) {
-        laneCandidates.forEach(function(laneX) {
-          var candidate = buildDetourPath(laneX, detourY);
-          if (candidate) candidates.push(candidate);
-        });
-      });
-      if (!candidates.length) return points;
-
-      var bestPath = points;
-      var bestScore = originalCrossed.length;
-      var bestLaneShift = Infinity;
-
-      candidates.forEach(function(candidate) {
-        var score = findCrossedNodes(candidate, sourceId, targetId).length;
-        var laneShift = Math.abs((candidate[1] && candidate[1].x) - start.x);
-        if (score < bestScore || (score === bestScore && laneShift < bestLaneShift)) {
-          bestPath = candidate;
-          bestScore = score;
-          bestLaneShift = laneShift;
-        }
-      });
-
-      return bestPath;
+      }
+      return [
+        { x: start.x, y: start.y },
+        { x: laneX, y: start.y + 12 },
+        { x: laneX, y: detourY },
+        { x: end.x, y: detourY },
+        { x: end.x, y: end.y },
+      ];
     };
+
+    var laneCandidates = [start.x, end.x, minLeft - 20, maxRight + 20];
+    var candidates = [];
+    yCandidates.forEach(function(detourY) {
+      laneCandidates.forEach(function(laneX) {
+        var candidate = buildDetourPath(laneX, detourY);
+        if (candidate) candidates.push(candidate);
+      });
+    });
+    if (!candidates.length) return points;
+
+    var bestPath = points;
+    var bestScore = originalCrossed.length;
+    var bestLaneShift = Infinity;
+
+    candidates.forEach(function(candidate) {
+      var score = findCrossedNodes(candidate, sourceId, targetId).length;
+      var laneShift = Math.abs((candidate[1] && candidate[1].x) - start.x);
+      if (score < bestScore || (score === bestScore && laneShift < bestLaneShift)) {
+        bestPath = candidate;
+        bestScore = score;
+        bestLaneShift = laneShift;
+      }
+    });
+
+    return bestPath;
+  }
+
+  function avoidVisibleNodeCrossingsPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, debugMode, label) {
+    var EDGE_REROUTE_CLEARANCE = 10;
+    var findCrossedNodes = makeNodeCrossingFinder(
+      nodePositions,
+      nodeDimensions,
+      nodeTypes,
+      EDGE_REROUTE_CLEARANCE
+    );
+
+    return allPositionedEdges.map(function(e) {
+      var points = e.data && e.data.points;
+      if (!points || points.length < 2) return e;
+      var actualSource = (e.data && e.data.actualSource) || e.source;
+      var actualTarget = (e.data && e.data.actualTarget) || e.target;
+      var newPoints = rerouteEdgeAroundCrossedNodes(points, actualSource, actualTarget, findCrossedNodes);
+      if (newPoints === points) return e;
+      if (debugMode) {
+        console.log('[recursive layout] avoid-crossing', label || 'global', e.source, '->', e.target);
+      }
+      return {
+        ...e,
+        data: {
+          ...e.data,
+          points: newPoints,
+        },
+      };
+    });
+  }
+
+  function applyEdgeReroutesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, routingLookups, debugMode) {
+    var inputNodeActualTargets = routingLookups.inputNodeActualTargets;
+    var outputToProducer = routingLookups.outputToProducer;
+    var nodeToParent = routingLookups.nodeToParent;
+    var EDGE_REROUTE_CLEARANCE = 10;
+    var findCrossedNodes = makeNodeCrossingFinder(
+      nodePositions,
+      nodeDimensions,
+      nodeTypes,
+      EDGE_REROUTE_CLEARANCE
+    );
 
     return allPositionedEdges.map(function(e) {
       if (e.data && e.data.actualTarget && e.data.actualTarget !== e.target) {
@@ -1355,9 +1446,10 @@
       if (needsStartReroute) {
         var producerPos = nodePositions.get(actualProducer);
         var producerDims = nodeDimensions.get(actualProducer);
-        var newStartX = producerPos.x + producerDims.width / 2;
         var producerNodeType = nodeTypes.get(actualProducer) || 'FUNCTION';
-        var newStartY = producerPos.y + producerDims.height - getNodeTypeOffset(producerNodeType);
+        var producerBottom = getBottomCenter(producerPos, producerDims, producerNodeType);
+        var newStartX = producerBottom.x;
+        var newStartY = producerBottom.y;
         if (newPoints.length > 0) {
           newPoints[0] = { x: newStartX, y: newStartY };
         }
@@ -1365,9 +1457,10 @@
       } else if (needsStartFix) {
         var sourcePos = nodePositions.get(e.source);
         var sourceDims = nodeDimensions.get(e.source);
-        var newStartX = sourcePos.x + sourceDims.width / 2;
         var sourceNodeType = nodeTypes.get(e.source) || 'FUNCTION';
-        var newStartY = sourcePos.y + sourceDims.height - getNodeTypeOffset(sourceNodeType);
+        var sourceBottom = getBottomCenter(sourcePos, sourceDims, sourceNodeType);
+        var newStartX = sourceBottom.x;
+        var newStartY = sourceBottom.y;
         if (newPoints.length > 0) {
           newPoints[0] = { x: newStartX, y: newStartY };
         }
@@ -1376,8 +1469,10 @@
       if (needsTargetReroute) {
         var consumerPos = nodePositions.get(actualConsumer);
         var consumerDims = nodeDimensions.get(actualConsumer);
-        var newEndX = consumerPos.x + consumerDims.width / 2;
-        var newEndY = consumerPos.y;
+        var consumerType = nodeTypes.get(actualConsumer) || 'FUNCTION';
+        var consumerTop = getTopCenter(consumerPos, consumerDims, consumerType);
+        var newEndX = consumerTop.x;
+        var newEndY = consumerTop.y;
         if (newPoints.length > 0) {
           newPoints[newPoints.length - 1] = { x: newEndX, y: newEndY };
         }
@@ -1385,8 +1480,10 @@
       } else if (needsEndFix) {
         var targetPos = nodePositions.get(e.target);
         var targetDims = nodeDimensions.get(e.target);
-        var newEndX = targetPos.x + targetDims.width / 2;
-        var newEndY = targetPos.y;
+        var targetType = nodeTypes.get(e.target) || 'FUNCTION';
+        var targetTop = getTopCenter(targetPos, targetDims, targetType);
+        var newEndX = targetTop.x;
+        var newEndY = targetTop.y;
         if (newPoints.length > 0) {
           newPoints[newPoints.length - 1] = { x: newEndX, y: newEndY };
         }
@@ -1398,7 +1495,7 @@
           'to actualSource:', actualSrc, 'actualTarget:', actualTgt);
       }
 
-      newPoints = rerouteAroundCrossedNodes(newPoints, actualSrc, actualTgt);
+      newPoints = rerouteEdgeAroundCrossedNodes(newPoints, actualSrc, actualTgt, findCrossedNodes);
 
       return {
         ...e,
@@ -1487,7 +1584,7 @@
           'for edge', e.id, '| original source:', e.source);
       } else {
         var srcType = nodeTypes.get(actualSrc) || 'FUNCTION';
-        var expectedSrcBottomY = srcPos.y + srcDims.height - getNodeTypeOffset(srcType);
+        var expectedSrcBottomY = getBottomCenter(srcPos, srcDims, srcType).y;
         var actualStartY = points[0].y;
         var srcYDiff = Math.abs(actualStartY - expectedSrcBottomY);
         if (srcYDiff > 20) {
@@ -1504,7 +1601,8 @@
         console.error('[EDGE VALIDATION] Target node not found:', actualTgt,
           'for edge', e.id, '| original target:', e.target);
       } else {
-        var expectedTgtTopY = tgtPos.y;
+        var tgtType = nodeTypes.get(actualTgt) || 'FUNCTION';
+        var expectedTgtTopY = getTopCenter(tgtPos, tgtDims, tgtType).y;
         var actualEndY = points[points.length - 1].y;
         var tgtYDiff = Math.abs(actualEndY - expectedTgtTopY);
         if (tgtYDiff > 20) {
@@ -1595,6 +1693,15 @@
       nodePositions,
       nodeDimensions,
       debugMode
+    );
+
+    allPositionedEdges = avoidVisibleNodeCrossingsPhase(
+      allPositionedEdges,
+      nodePositions,
+      nodeDimensions,
+      nodeTypes,
+      debugMode,
+      'post-merge'
     );
 
     if (debugMode) {

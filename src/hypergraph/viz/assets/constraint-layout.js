@@ -58,7 +58,7 @@
   // Get visible bottom of node (accounts for wrapper/content offset)
   const nodeVisibleBottom = (node) => {
     let nodeType = node.data?.nodeType || 'FUNCTION';
-    if (nodeType === 'PIPELINE' && !node.data?.isExpanded) {
+    if ((nodeType === 'PIPELINE' || nodeType === 'GRAPH') && !node.data?.isExpanded) {
       nodeType = 'FUNCTION';
     }
     const offset = NODE_TYPE_OFFSETS[nodeType] ?? DEFAULT_OFFSET;
@@ -1194,19 +1194,13 @@
         return nodeTop(firstNode) - spaceY + firstNode.height + spaceY;
       });
 
-      const isExpandedContainer = (node) => {
-        const nodeType = node.data?.nodeType;
-        const isContainer = nodeType === 'PIPELINE' || nodeType === 'GRAPH';
-        return isContainer && node.data?.isExpanded;
-      };
-
       const buildRect = (node) => {
         const clearance = EDGE_NODE_CLEARANCE;
         return {
           left: nodeLeft(node) - clearance,
           right: nodeRight(node) + clearance,
           top: nodeTop(node) - clearance,
-          bottom: nodeBottom(node) + clearance,
+          bottom: nodeVisibleBottom(node) + clearance,
         };
       };
 
@@ -1248,7 +1242,6 @@
         const rects = [];
         rowNodes.forEach((node) => {
           if (node.id === sourceNode?.id || node.id === targetNode?.id) return;
-          if (isExpandedContainer(node)) return;
           rects.push(buildRect(node));
         });
         rectsByRow.set(rowIndex, rects);
