@@ -50,7 +50,9 @@ def run(
     graph: Graph,
     values: dict[str, Any] | None = None,
     *,
-    select: list[str] | None = None,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entry_point: str | None = None,
     max_iterations: int | None = None,
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
@@ -62,7 +64,12 @@ Execute a graph once.
 **Args:**
 - `graph` - The graph to execute
 - `values` - Optional input values as `{param_name: value}`
-- `select` - Optional list of output names to return (default: all outputs)
+- `select` - Which outputs to return. `"**"` (default) returns all outputs. Pass a list of names for specific outputs.
+- `on_missing` - How to handle missing selected outputs:
+  - `"ignore"` (default): silently omit missing outputs
+  - `"warn"`: warn about missing outputs, return what's available
+  - `"error"`: raise error if any selected output is missing
+- `entry_point` - Optional explicit cycle entry point node name. Disambiguates when multiple entry points match.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 - `**input_values` - Input shorthand (merged with `values`)
@@ -72,6 +79,7 @@ Execute a graph once.
 **Raises:**
 - `MissingInputError` - Required input not provided
 - `IncompatibleRunnerError` - Graph contains async nodes
+- `ValueError` - If `entry_point` is invalid or ambiguous
 
 **Example:**
 
@@ -88,6 +96,12 @@ result = runner.run(graph, values, select=["final_answer"])
 # Limit iterations for cyclic graphs
 result = runner.run(cyclic_graph, values, max_iterations=50)
 
+# Strict output checking
+result = runner.run(graph, values, select=["answer"], on_missing="error")
+
+# Explicit cycle entry point
+result = runner.run(cyclic_graph, {"messages": []}, entry_point="generate")
+
 # With progress bars
 from hypergraph import RichProgressProcessor
 result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
@@ -103,7 +117,8 @@ def map(
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
-    select: list[str] | None = None,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
@@ -117,7 +132,8 @@ Execute a graph multiple times with different inputs.
 - `values` - Optional input values. Parameters in `map_over` should be lists
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
-- `select` - Optional list of outputs to return
+- `select` - Which outputs to return. `"**"` (default) returns all outputs.
+- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -221,7 +237,9 @@ async def run(
     graph: Graph,
     values: dict[str, Any] | None = None,
     *,
-    select: list[str] | None = None,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entry_point: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
     event_processors: list[EventProcessor] | None = None,
@@ -234,7 +252,9 @@ Execute a graph asynchronously.
 **Args:**
 - `graph` - The graph to execute
 - `values` - Optional input values
-- `select` - Optional list of output names to return
+- `select` - Which outputs to return. `"**"` (default) returns all outputs.
+- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `entry_point` - Optional explicit cycle entry point node name
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
@@ -290,7 +310,8 @@ async def map(
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
-    select: list[str] | None = None,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -305,7 +326,8 @@ Execute graph multiple times concurrently.
 - `values` - Optional input values
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` or `"product"`
-- `select` - Optional list of outputs to return
+- `select` - Which outputs to return. `"**"` (default) returns all outputs.
+- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `max_concurrency` - Shared limit across all executions
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception

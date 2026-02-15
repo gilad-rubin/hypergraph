@@ -4,7 +4,7 @@
 
 - **required** - Must provide at runtime (no default, not bound)
 - **optional** - Can omit (has default value)
-- **seeds** - Initial values for cyclic graphs
+- **entry_points** - Cycle entry points grouped by node
 - **bound** - Pre-filled via `graph.bind()`
 
 ```python
@@ -21,10 +21,10 @@ def add(doubled: int, offset: int = 10) -> int:
 g = Graph([double, add])
 
 # InputSpec categorizes parameters
-print(g.inputs.required)  # ('x',) - must provide
-print(g.inputs.optional)  # ('offset',) - has default
-print(g.inputs.seeds)     # () - none in this graph
-print(g.inputs.bound)     # {} - none bound
+print(g.inputs.required)      # ('x',) - must provide
+print(g.inputs.optional)      # ('offset',) - has default
+print(g.inputs.entry_points)  # {} - no cycles in this graph
+print(g.inputs.bound)         # {} - none bound
 ```
 
 ## The InputSpec Dataclass
@@ -36,7 +36,7 @@ InputSpec is a frozen dataclass with four fields:
 class InputSpec:
     required: tuple[str, ...]
     optional: tuple[str, ...]
-    seeds: tuple[str, ...]
+    entry_points: dict[str, tuple[str, ...]]
     bound: dict[str, Any]
 ```
 
@@ -67,20 +67,35 @@ print(g.inputs.required)  # ('x',)
 print(g.inputs.optional)  # ('scale',)
 ```
 
-### `seeds: tuple[str, ...]`
+### `entry_points: dict[str, tuple[str, ...]]`
 
-Parameters that are part of a **cycle** and need initial values for the first iteration.
+For cyclic graphs, entry points group cycle parameters by the node where execution can start. Each key is a node name, and the value is a tuple of parameters needed to enter the cycle at that node.
+
+**Pick ONE entry point per cycle** — provide the parameters it needs, and the runner starts execution from there.
 
 ```python
-@node(output_name="count")
-def counter(count: int) -> int:  # count feeds back to itself
-    return count + 1
+@node(output_name="messages", emit="turn_done")
+def accumulate(messages: list, response: str) -> list:
+    return messages + [{"role": "assistant", "content": response}]
 
-g = Graph([counter])
-print(g.inputs.seeds)  # ('count',) - cycle requires seed value
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@route(targets=["generate", END], wait_for="turn_done")
+def should_continue(messages: list) -> str:
+    return END if len(messages) >= 10 else "generate"
+
+g = Graph([generate, accumulate, should_continue])
+
+print(g.inputs.entry_points)
+# {'accumulate': ('messages',), 'generate': ('messages',)}
+# Pick ONE: provide messages to start at either node
 ```
 
-Seed parameters appear when a node's input is also its own output (or part of a multi-node cycle).
+For DAGs (no cycles), `entry_points` is an empty dict `{}`.
+
+**Ambiguity detection**: If your provided values match multiple entry points in the same cycle, the runner raises `ValueError`. Use `entry_point=` on `runner.run()` to disambiguate.
 
 ### `bound: dict[str, Any]`
 
@@ -103,7 +118,7 @@ The categorization follows the "edge cancels default" rule:
 |-----------|----------|
 | No incoming edge, no default, not bound | **required** |
 | No incoming edge, has default OR is bound | **optional** |
-| Has incoming edge from cycle | **seed** |
+| Has incoming edge from cycle | **entry_point** (grouped by node) |
 | Has incoming edge from another node | Not in InputSpec |
 | Is bound via `bind()` | In `bound` dict, moves from required to optional |
 
@@ -125,9 +140,9 @@ print(g.inputs.required)  # ('x',) - only x
 # 'doubled' is not in inputs - it comes from the double node
 ```
 
-### Cycles Create Seeds
+### Cycles Create Entry Points
 
-When a parameter is part of a cycle, it becomes a seed:
+When parameters participate in a cycle, they become entry point parameters grouped by which node consumes them:
 
 ```python
 @node(output_name="state")
@@ -135,8 +150,8 @@ def update(state: dict, input: int) -> dict:
     return {**state, "value": input}
 
 g = Graph([update])
-print(g.inputs.required)  # ('input',)
-print(g.inputs.seeds)     # ('state',) - state feeds back
+print(g.inputs.required)      # ('input',)
+print(g.inputs.entry_points)  # {'update': ('state',)}
 ```
 
 ## Accessing InputSpec
@@ -147,10 +162,10 @@ print(g.inputs.seeds)     # ('state',) - state feeds back
 g = Graph([double, add])
 spec = g.inputs  # Returns InputSpec
 
-print(spec.required)  # tuple of required param names
-print(spec.optional)  # tuple of optional param names
-print(spec.seeds)     # tuple of seed param names
-print(spec.bound)     # dict of bound values
+print(spec.required)      # tuple of required param names
+print(spec.optional)      # tuple of optional param names
+print(spec.entry_points)  # dict of cycle entry points
+print(spec.bound)         # dict of bound values
 ```
 
 ### Getting All Input Names
@@ -159,13 +174,7 @@ Use the `all` property to get all input names:
 
 ```python
 spec = g.inputs
-print(spec.all)  # ('x', 'offset') - required + optional + seeds
-```
-
-Or combine tuples manually:
-
-```python
-all_inputs = spec.required + spec.optional + spec.seeds
+print(spec.all)  # ('x', 'offset') - required + optional + entry point params
 ```
 
 ### Iteration
@@ -197,10 +206,10 @@ def retrieve(embedding: list[float], top_k: int = 5) -> list[str]:
 
 g = Graph([embed, retrieve])
 
-print(g.inputs.required)  # ('text',)
-print(g.inputs.optional)  # ('top_k',)
-print(g.inputs.seeds)     # ()
-print(g.inputs.bound)     # {}
+print(g.inputs.required)      # ('text',)
+print(g.inputs.optional)      # ('top_k',)
+print(g.inputs.entry_points)  # {}
+print(g.inputs.bound)         # {}
 ```
 
 ### Bound Values
@@ -220,7 +229,7 @@ print(fully_bound.inputs.required)  # ()
 print(fully_bound.inputs.bound)     # {'top_k': 10, 'text': 'hello'}
 ```
 
-### Graph with Cycles (Seeds)
+### Graph with Cycles (Entry Points)
 
 ```python
 @node(output_name="messages")
@@ -229,14 +238,14 @@ def chat(messages: list[str], user_input: str) -> list[str]:
 
 g = Graph([chat])
 
-print(g.inputs.required)  # ('user_input',)
-print(g.inputs.seeds)     # ('messages',) - cycle: messages → chat → messages
+print(g.inputs.required)      # ('user_input',)
+print(g.inputs.entry_points)  # {'chat': ('messages',)}
 ```
 
-The `messages` parameter is a seed because:
+The `messages` parameter appears as an entry point because:
 1. `chat` outputs `messages`
 2. `chat` takes `messages` as input
-3. This creates a cycle, requiring an initial value
+3. This creates a cycle — provide `messages` to start at the `chat` node
 
 ### Multiple Nodes Sharing a Parameter
 
@@ -288,24 +297,24 @@ def search(embedding: list[float], top_k: int = 5, threshold: float = 0.8) -> li
 
 @node(output_name="history")
 def update_history(history: list[str], results: list[str]) -> list[str]:
-    """Seed input: history (forms cycle)"""
+    """Entry point input: history (forms cycle)"""
     return history + results
 
 # Build graph
 g = Graph([embed, search, update_history])
 
 # Inspect InputSpec
-print("Required:", g.inputs.required)   # ('text',)
-print("Optional:", g.inputs.optional)   # ('top_k', 'threshold')
-print("Seeds:", g.inputs.seeds)         # ('history',)
-print("Bound:", g.inputs.bound)         # {}
-print("All:", g.inputs.all)             # ('text', 'top_k', 'threshold', 'history')
+print("Required:", g.inputs.required)        # ('text',)
+print("Optional:", g.inputs.optional)        # ('top_k', 'threshold')
+print("Entry points:", g.inputs.entry_points)  # {'update_history': ('history',)}
+print("Bound:", g.inputs.bound)              # {}
+print("All:", g.inputs.all)                  # ('text', 'top_k', 'threshold', 'history')
 
 # Bind some values
 configured = g.bind(top_k=10, threshold=0.9)
 print("\nAfter bind:")
-print("Required:", configured.inputs.required)  # ('text',)
-print("Optional:", configured.inputs.optional)  # ('top_k', 'threshold') - still have fallback
-print("Seeds:", configured.inputs.seeds)        # ('history',)
-print("Bound:", configured.inputs.bound)        # {'top_k': 10, 'threshold': 0.9}
+print("Required:", configured.inputs.required)        # ('text',)
+print("Optional:", configured.inputs.optional)        # ('top_k', 'threshold') - still have fallback
+print("Entry points:", configured.inputs.entry_points)  # {'update_history': ('history',)}
+print("Bound:", configured.inputs.bound)              # {'top_k': 10, 'threshold': 0.9}
 ```

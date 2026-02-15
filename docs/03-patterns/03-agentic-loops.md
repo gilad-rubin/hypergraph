@@ -231,19 +231,26 @@ def should_continue(messages: list) -> str:
 
 **Validation**: emit names must not overlap with `output_name`, and wait_for names must not overlap with function parameters. Referencing a nonexistent emit/output in `wait_for` raises `GraphConfigError` at build time.
 
-## Seed Inputs
+## Entry Points
 
-When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes a **seed** — an initial value needed to start the first iteration. Provide seeds in the `values` dict when calling `runner.run()`:
+When a parameter is both an input and output of a cycle (like `history` or `iteration`), it becomes an **entry point parameter** — an initial value needed to start the first iteration. Provide these in the `values` dict when calling `runner.run()`:
 
 ```python
 result = runner.run(graph, {
     "prompt": "...",
-    "history": [],       # Seed: initial value before first iteration
-    "iteration": 0,      # Seed: starting counter
+    "history": [],       # Entry point: initial value before first iteration
+    "iteration": 0,      # Entry point: starting counter
 })
 ```
 
-You can check what seeds a graph needs via `graph.inputs.seeds`. For full details, see [InputSpec](../06-api-reference/inputspec.md).
+You can check what entry points a graph has via `graph.inputs.entry_points`. This returns a dict mapping node names to the cycle parameters they need:
+
+```python
+print(graph.inputs.entry_points)
+# {'accumulate_history': ('history',), 'increment': ('iteration',)}
+```
+
+Pick ONE entry point per cycle and provide its parameters. For full details, see [InputSpec](../06-api-reference/inputspec.md).
 
 ## Tracking State Across Iterations
 

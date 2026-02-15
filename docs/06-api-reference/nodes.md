@@ -749,7 +749,7 @@ The node name. Either from `graph.name` or explicitly provided to `as_node()`.
 
 #### `inputs: tuple[str, ...]`
 
-All inputs of the wrapped graph (required + optional + seeds).
+All inputs of the wrapped graph (required + optional + entry point params).
 
 ```python
 gn = inner.as_node()
