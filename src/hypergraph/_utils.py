@@ -70,7 +70,10 @@ def hash_definition(func: Callable) -> str:
         closure = getattr(func, "__closure__", None)
         if closure:
             for cell in closure:
-                h.update(repr(cell.cell_contents).encode())
+                try:
+                    h.update(repr(cell.cell_contents).encode())
+                except ValueError:
+                    h.update(b"<empty_cell>")
 
         return h.hexdigest()
 
