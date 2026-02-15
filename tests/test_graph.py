@@ -2004,7 +2004,7 @@ class TestAddNodes:
         def producer(a: int) -> int:
             return a
 
-        with pytest.raises(ValueError, match="no longer valid.*unbind"):
+        with pytest.raises(ValueError, match=r"no longer valid.*unbind"):
             g.add_nodes(producer)
 
     def test_unbind_then_add_works(self):
@@ -2073,17 +2073,16 @@ class TestAddNodes:
         def process(x: int) -> int:
             return x * 2
 
-        # Can't build without the target
-        with pytest.raises(GraphConfigError):
-            Graph([decide])
+        # Build incrementally via add_nodes
+        g_base = Graph([process])
+        g_added = g_base.add_nodes(decide)
 
-        # But can add it after
-        g = Graph([decide, process])
-        g_alt = Graph([decide, process])
+        # Build with both nodes at once
+        g_direct = Graph([decide, process])
 
-        # Verify same structure whether built at once or via add_nodes
-        assert g.nx_graph.has_edge("decide", "process")
-        assert g_alt.nx_graph.has_edge("decide", "process")
+        # Both should have the control edge
+        assert g_added.nx_graph.has_edge("decide", "process")
+        assert g_direct.nx_graph.has_edge("decide", "process")
 
     def test_empty_call(self):
         """add_nodes() with no arguments returns equivalent graph."""

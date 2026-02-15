@@ -429,9 +429,12 @@ class Graph:
         then replaying bind/select.
 
         Raises ValueError if existing bindings become invalid after
-        adding nodes (e.g., a bound input is now edge-produced).
+        adding nodes (e.g., a bound key becomes emit-only).
         Fix: call unbind() before add_nodes().
         """
+        if not nodes:
+            return self
+
         all_nodes = list(self._nodes.values()) + list(nodes)
         new_graph = Graph(all_nodes, name=self.name, strict_types=self._strict_types)
 
@@ -441,15 +444,14 @@ class Graph:
             invalid = [k for k in self._bound if k not in valid_names]
             if invalid:
                 raise ValueError(
-                    f"Cannot replay bind after add_nodes: {invalid} "
-                    f"no longer valid. Call unbind("
-                    f"{', '.join(repr(k) for k in invalid)}) first."
+                    f"Cannot replay bind after add_nodes: {invalid} no longer valid. "
+                    f"Call unbind({', '.join(repr(k) for k in invalid)}) first."
                 )
             new_graph._bound = dict(self._bound)
             new_graph.__dict__.pop("inputs", None)
 
         if self._selected is not None:
-            new_graph._selected = self._selected
+            new_graph = new_graph.select(*self._selected)
 
         return new_graph
 
