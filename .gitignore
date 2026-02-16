@@ -48,3 +48,8 @@ logs/security/
 .env
 
 .codex/
+
+# Viz dev environment
+viz-dev/node_modules/
+viz-dev/public/data/
+viz-dev/public/assets

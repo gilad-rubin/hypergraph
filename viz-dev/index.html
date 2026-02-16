@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Hypergraph Viz Dev</title>
+  <!-- CSS from production assets (served via symlink) -->
+  <link rel="stylesheet" href="/assets/tailwind.min.css">
+  <link rel="stylesheet" href="/assets/reactflow.css">
+  <style>
+    /* Match production inline styles from html_generator.py */
+    body { margin: 0; overflow: hidden; background: transparent; color: #e5e7eb; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    .react-flow__attribution { display: none; }
+    #root { height: 100vh; width: 100vw; background: transparent; display: flex; align-items: center; justify-content: center; }
+    #fallback { font-size: 13px; letter-spacing: 0.4px; color: #94a3b8; }
+
+    .canvas-outline {
+      outline: 1px dashed rgba(148, 163, 184, 0.2);
+      margin: 2px;
+      height: calc(100vh - 4px);
+      width: calc(100vw - 4px);
+      border-radius: 8px;
+      pointer-events: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 50;
+    }
+
+    .node-function-light {
+      border-bottom-width: 1px !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="fallback">Loading viz dev environment...</div>
+  </div>
+  <div class="canvas-outline"></div>
+  <div id="dev-root"></div>
+  <script id="graph-data" type="application/json">{}</script>
+  <script>
+    window.onerror = function(message, source, lineno, colno, error) {
+      var el = document.getElementById("fallback");
+      if (el) {
+        el.textContent = "Viz error: " + message + (source ? " (" + source + ":" + lineno + ")" : "");
+        el.style.color = "#f87171";
+        el.style.fontFamily = "monospace";
+      }
+    };
+  </script>
+  <!-- No IIFE script tags here - loaded dynamically by main.jsx -->
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
