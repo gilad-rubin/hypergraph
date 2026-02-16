@@ -5,6 +5,7 @@
  * Mounts as a floating panel over the viz canvas.
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Agentation } from 'agentation';
 import { loadManifest, loadGraphData } from './graph-loader';
 import ConstantsPanel, { DEFAULTS } from './ConstantsPanel';
 import { reloadDependentScripts } from './main';
@@ -252,6 +253,11 @@ export default function DevApp() {
           </div>
         </div>
       )}
+
+      {/* Agentation overlay — annotate visual issues directly on the canvas.
+          Start the MCP server with: npx agentation-mcp server
+          Then Claude picks up annotations via agentation_watch_annotations */}
+      <Agentation endpoint="http://localhost:4747" />
     </div>
   );
 }
