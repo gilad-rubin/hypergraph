@@ -1538,7 +1538,6 @@
     allPositionedEdges.forEach(function(e) {
       var points = e.data && e.data.points;
       if (!points || points.length < 2) return;
-      if (points.length > 2) return;
 
       var actualTarget = (e.data && e.data.actualTarget) || e.target;
       if (!nodePositions.has(actualTarget) || !nodeDimensions.has(actualTarget)) return;

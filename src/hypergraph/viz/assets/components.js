@@ -40,6 +40,8 @@
   var EDGE_SHARP_TURN_ANGLE = VizConstants.EDGE_SHARP_TURN_ANGLE ?? 0;
   var EDGE_CURVE_STYLE = VizConstants.EDGE_CURVE_STYLE ?? 1;
   var EDGE_ELBOW_RADIUS = VizConstants.EDGE_ELBOW_RADIUS ?? 0;
+  var EDGE_MICRO_MERGE_ANGLE = VizConstants.EDGE_MICRO_MERGE_ANGLE ?? 60;
+  var EDGE_TURN_SOFTENING = VizConstants.EDGE_TURN_SOFTENING ?? 0;
 
   // Keep RF handle anchors aligned with layout edge points.
   var NODE_TYPE_BOTTOM_OFFSETS = VizConstants.NODE_TYPE_OFFSETS || {
@@ -284,8 +286,16 @@
           var len1 = Math.sqrt(l1x * l1x + l1y * l1y);
           var len2 = Math.sqrt(l2x * l2x + l2y * l2y);
 
-          // Drop micro-segments that cause visibly sharp "collapsed" corners.
-          if (len1 < 2 || len2 < 2) continue;
+          // Drop intermediate points that are nearly collinear AND have a short
+          // segment — these produce sharp corners with no real direction change.
+          // But keep points at real turns (even with short segments) because
+          // removing a turn is worse than a slightly sharp corner.
+          var minSeg = Math.max(2, EDGE_ELBOW_RADIUS);
+          if (len1 < minSeg || len2 < minSeg) {
+            var dot = (l1x * l2x + l1y * l2y) / (len1 * len2);
+            var mergeThreshold = Math.cos(EDGE_MICRO_MERGE_ANGLE * Math.PI / 180);
+            if (dot > mergeThreshold) continue;  // direction change below threshold — safe to drop
+          }
           cleaned.push(b);
         }
         cleaned.push(deduped[deduped.length - 1]);
@@ -293,6 +303,7 @@
       };
 
       var points = normalizePolylinePoints(data.points.slice());
+
       var isFeedbackEdge = data && data.isFeedbackEdge;
 
       var renderPoints = points;
@@ -467,8 +478,17 @@
           var endX = p1.x + u2x * cornerRadius;
           var endY = p1.y + u2y * cornerRadius;
 
+          // Soften the turn by pulling the control point toward the chord midpoint.
+          var cpX = p1.x;
+          var cpY = p1.y;
+          if (EDGE_TURN_SOFTENING > 0) {
+            var midX = (startX + endX) / 2;
+            var midY = (startY + endY) / 2;
+            cpX = p1.x + (midX - p1.x) * EDGE_TURN_SOFTENING;
+            cpY = p1.y + (midY - p1.y) * EDGE_TURN_SOFTENING;
+          }
           path += ' L ' + startX + ' ' + startY;
-          path += ' Q ' + p1.x + ' ' + p1.y + ' ' + endX + ' ' + endY;
+          path += ' Q ' + cpX + ' ' + cpY + ' ' + endX + ' ' + endY;
         }
 
         path += ' L ' + pts[pts.length - 1].x + ' ' + pts[pts.length - 1].y;

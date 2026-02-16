@@ -135,7 +135,7 @@ export default function DevApp() {
       top: 0,
       right: 0,
       height: '100vh',
-      width: panelOpen ? 360 : 40,
+      width: panelOpen ? 460 : 40,
       zIndex: 100,
       display: 'flex',
       flexDirection: 'column',

@@ -74,7 +74,10 @@
     EDGE_SHARED_TARGET_SPACING_SCALE: 1.15, // Scale separation for shared-target source spacing
     EDGE_SHARP_TURN_ANGLE: 35,            // Above this angle, force straight segments (if curveStyle < 1)
     EDGE_CURVE_STYLE: 0,                  // Rounded orthogonal routes (use elbow radius below)
-    EDGE_ELBOW_RADIUS: 16,                // Rounded corner radius for orthogonal polylines
+    EDGE_ELBOW_RADIUS: 28,                // How big the rounded corner is (bigger = curve starts earlier)
+    EDGE_MICRO_MERGE_ANGLE: 60,           // Max direction change (degrees) to drop short-segment waypoints
+    EDGE_TURN_SOFTENING: 0.15,            // How much to soften corner angles (0=sharp 90°, higher=gentler)
+    EDGE_SHOULDER_RATIO: 0.3,             // Where the horizontal run starts (0=at source, 1=at target)
     DATA_NODE_ALIGN_WEIGHT: 1,            // Pull DATA nodes toward their producer X (0..1)
     INPUT_NODE_ALIGN_WEIGHT: 0.9,         // Pull INPUT nodes toward downstream consumer X (0..1)
   };

@@ -907,7 +907,7 @@
   const DATA_NODE_ALIGN_WEIGHT = VizConstants.DATA_NODE_ALIGN_WEIGHT ?? 0;
   const MIN_HORIZONTAL_DIST_FOR_WAYPOINT = 20;
   const MIN_VERTICAL_DIST_FOR_WAYPOINT = 50;
-  const SHOULDER_VERTICAL_RATIO = 0.4;
+  const SHOULDER_VERTICAL_RATIO = VizConstants.EDGE_SHOULDER_RATIO ?? 0.3;
   const SHOULDER_HORIZONTAL_RATIO = 0.5;
 
   /**
@@ -1604,7 +1604,7 @@
 
         const needsIntermediatePoint = horizontalDist > 100 && verticalDist > MIN_VERTICAL_DIST_FOR_WAYPOINT;
         if (needsIntermediatePoint) {
-          const shoulderY = nodeBottom(source) + verticalDist * 0.3;
+          const shoulderY = nodeBottom(source) + verticalDist * SHOULDER_VERTICAL_RATIO;
           const shoulderX = source.x + (target.x - source.x) * 0.7;
           edge.points.push({ x: shoulderX, y: shoulderY });
         }

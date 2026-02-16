@@ -10,7 +10,10 @@ import React, { useState, useCallback } from 'react';
 const CONSTANT_GROUPS = {
   'Edge Shape': {
     EDGE_CURVE_STYLE:               [0, 0, 1, 0.01],
-    EDGE_ELBOW_RADIUS:              [16, 0, 40, 1],
+    EDGE_ELBOW_RADIUS:              [28, 0, 60, 1],
+    EDGE_MICRO_MERGE_ANGLE:         [60, 0, 90, 1],
+    EDGE_TURN_SOFTENING:            [0.15, 0, 0.5, 0.01],
+    EDGE_SHOULDER_RATIO:            [0.3, 0, 1, 0.05],
     EDGE_SHARP_TURN_ANGLE:          [35, 0, 90, 1],
     EDGE_CONVERGENCE_OFFSET:        [20, 0, 60, 1],
     EDGE_STRAIGHTEN_MAX_SHIFT:      [180, 0, 400, 5],
