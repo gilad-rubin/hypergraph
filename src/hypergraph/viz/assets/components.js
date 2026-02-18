@@ -997,7 +997,7 @@
             (isLight
                 ? ' border-amber-300 bg-amber-50/30'
                 : ' border-amber-500/30 bg-amber-500/5')
-        }>
+        } style=${{ pointerEvents: 'none' }}>
           <button
                type="button"
                className=${'absolute -top-3 left-4 px-3 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-2 cursor-pointer transition-colors z-10 whitespace-nowrap' +
@@ -1005,6 +1005,7 @@
                         ? ' bg-amber-100 text-amber-700 hover:bg-amber-200 border border-amber-200'
                         : ' bg-slate-950 text-amber-400 hover:text-amber-300 border border-amber-500/50')
                }
+               style=${{ pointerEvents: 'auto' }}
                onClick=${handleCollapseClick}
                title=${data.label}>
             <${Icon} />

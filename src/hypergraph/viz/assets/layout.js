@@ -35,6 +35,7 @@
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
   var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
   var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
+  var EDGE_SOURCE_DIVERGE_OFFSET = VizConstants.EDGE_SOURCE_DIVERGE_OFFSET ?? 20;
   var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
   var FEEDBACK_EDGE_STEM = VizConstants.FEEDBACK_EDGE_STEM || 10;
@@ -1588,6 +1589,64 @@
     return allPositionedEdges;
   }
 
+  function mergeSharedSourceEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, debugMode) {
+    if (!EDGE_SOURCE_DIVERGE_OFFSET) return allPositionedEdges;
+
+    var edgesBySource = new Map();
+
+    allPositionedEdges.forEach(function(e) {
+      var points = e.data && e.data.points;
+      if (!points || points.length < 2) return;
+      if (e.data && e.data.isFeedbackEdge) return;
+
+      var actualSource = (e.data && e.data.actualSource) || e.source;
+      if (!nodePositions.has(actualSource) || !nodeDimensions.has(actualSource)) return;
+
+      if (!edgesBySource.has(actualSource)) edgesBySource.set(actualSource, []);
+      edgesBySource.get(actualSource).push(e);
+    });
+
+    edgesBySource.forEach(function(sourceEdges, sourceId) {
+      if (sourceEdges.length < 2) return;
+
+      var sourcePos = nodePositions.get(sourceId);
+      var sourceDims = nodeDimensions.get(sourceId);
+      if (!sourcePos || !sourceDims) return;
+
+      var sourceX = sourcePos.x + sourceDims.width / 2;
+      var sourceNodeType = nodeTypes.get(sourceId) || 'FUNCTION';
+      var sourceBottomY = sourcePos.y + sourceDims.height - getNodeTypeOffset(sourceNodeType);
+      var divergeY = sourceBottomY + EDGE_SOURCE_DIVERGE_OFFSET;
+
+      sourceEdges.forEach(function(e) {
+        var points = (e.data && e.data.points) ? e.data.points.slice() : [];
+        if (points.length < 2) return;
+
+        // Snap the first point to the source center bottom
+        points[0] = { x: sourceX, y: sourceBottomY };
+
+        // Insert a divergence point right after the start
+        var divergePoint = { x: sourceX, y: divergeY };
+        var next = points[1];
+        var alreadyDiverged = next &&
+          Math.abs(next.x - divergePoint.x) < 0.5 &&
+          Math.abs(next.y - divergePoint.y) < 0.5;
+
+        if (!alreadyDiverged) {
+          points.splice(1, 0, divergePoint);
+        }
+
+        e.data = { ...(e.data || {}), points: points };
+      });
+
+      if (debugMode) {
+        console.log('[recursive layout] source-merged', sourceEdges.length, 'edges from source', sourceId);
+      }
+    });
+
+    return allPositionedEdges;
+  }
+
   function validateEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes) {
     allPositionedEdges.forEach(function(e) {
       var points = e.data && e.data.points;
@@ -1707,6 +1766,14 @@
       nodeDimensions,
       nodeTypes,
       routingLookups,
+      debugMode
+    );
+
+    allPositionedEdges = mergeSharedSourceEdgesPhase(
+      allPositionedEdges,
+      nodePositions,
+      nodeDimensions,
+      nodeTypes,
       debugMode
     );
 
