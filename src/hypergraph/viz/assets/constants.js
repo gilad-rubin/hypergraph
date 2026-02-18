@@ -65,7 +65,7 @@
     EDGE_STRAIGHTEN_MAX_SHIFT: 0,         // Max X shift to keep a straight corridor path
     EDGE_MICRO_X_SNAP: 20,               // Snap tiny X deviations to kill wiggles
     EDGE_ANGLE_WEIGHT: 0.1,               // Penalize max angle in corridor routing
-    EDGE_CURVE_WEIGHT: 0,                 // Penalize number of corridor X changes
+    EDGE_CURVE_WEIGHT: 0.5,               // Penalize number of corridor X changes
     EDGE_TURN_WEIGHT: 0,                  // Penalize left/right sign flips
     EDGE_LATERAL_WEIGHT: 0,               // Penalize total sideways travel
     EDGE_NODE_PENALTY: 0,                 // Penalize corridor segments that pass over nodes

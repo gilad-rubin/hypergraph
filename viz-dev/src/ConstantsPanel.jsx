@@ -22,7 +22,7 @@ const CONSTANT_GROUPS = {
   },
   'Edge Penalties': {
     EDGE_ANGLE_WEIGHT:              [0.1, 0, 10, 0.1],
-    EDGE_CURVE_WEIGHT:              [0, 0, 20, 0.5],
+    EDGE_CURVE_WEIGHT:              [0.5, 0, 20, 0.5],
     EDGE_TURN_WEIGHT:               [0, 0, 10, 0.1],
     EDGE_LATERAL_WEIGHT:            [0, 0, 0.05, 0.001],
     EDGE_NONSTRAIGHT_WEIGHT:        [0, 0, 5, 0.1],
