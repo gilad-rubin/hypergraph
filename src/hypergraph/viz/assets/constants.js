@@ -56,7 +56,7 @@
     DEFAULT_TOP_INSET: 0,                 // Fallback top inset if type missing
 
     // Edge routing
-    EDGE_CONVERGENCE_OFFSET: 2,           // Extra Y offset before merging into target stem
+    EDGE_CONVERGENCE_OFFSET: 15,          // Extra Y offset before merging into target stem
     EDGE_SOURCE_DIVERGE_OFFSET: 20,       // Shared vertical stem below source before edges split
     FEEDBACK_EDGE_GUTTER: 65,             // Horizontal gutter for feedback edge routing
     FEEDBACK_EDGE_HEADROOM: 100,          // Extra headroom above feedback edge target

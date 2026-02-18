@@ -15,7 +15,7 @@ const CONSTANT_GROUPS = {
     EDGE_TURN_SOFTENING:            [0, 0, 0.5, 0.01],
     EDGE_SHOULDER_RATIO:            [0, 0, 1, 0.05],
     EDGE_SHARP_TURN_ANGLE:          [0, 0, 90, 1],
-    EDGE_CONVERGENCE_OFFSET:        [2, 0, 60, 1],
+    EDGE_CONVERGENCE_OFFSET:        [15, 0, 60, 1],
     EDGE_SOURCE_DIVERGE_OFFSET:     [20, 0, 60, 1],
     EDGE_STRAIGHTEN_MAX_SHIFT:      [0, 0, 400, 5],
     EDGE_MICRO_X_SNAP:              [20, 0, 40, 1],

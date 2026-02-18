@@ -1762,6 +1762,17 @@
         ];
       }
 
+      // Add convergence point so edges sharing a target merge into a single vertical stem
+      if (orientation === 'vertical' && targetStem.length > 0) {
+        const convergeY = targetStem[0].y - EDGE_CONVERGENCE_OFFSET;
+        const lastWaypoint = edge.points.length > 0
+          ? edge.points[edge.points.length - 1]
+          : sourceStem[sourceStem.length - 1];
+        if (convergeY > lastWaypoint.y + 1) {
+          edge.points.push({ x: target.x, y: convergeY });
+        }
+      }
+
       const points = [...sourceStem, ...edge.points, ...targetStem];
       for (let i = 1; i < points.length; i += 1) {
         if (Math.abs(points[i].x - points[i - 1].x) <= EDGE_MICRO_X_SNAP) {
