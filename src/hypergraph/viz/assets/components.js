@@ -639,7 +639,7 @@
 
       var labelPoint;
       if (isBranchLabel) {
-        labelPoint = pointAtDistanceOnPolyline(renderPoints, outgoingMidpointDistance(renderPoints));
+        labelPoint = pointAlongPolyline(renderPoints, 0.5);
       } else {
         labelPoint = pointAlongPolyline(renderPoints, 0.35);
       }
