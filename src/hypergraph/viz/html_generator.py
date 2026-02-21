@@ -83,7 +83,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     htm_js = _read_asset("htm.min.js", "js")
     kiwi_js = _read_asset("kiwi.bundled.js", "js")
     constants_js = _read_asset("constants.js", "js")
-    constraint_layout_js = _read_asset("constraint-layout.js", "js")
+    constraint_layout_js = _read_asset("layout-engine.js", "js")
     rf_js = _read_asset("reactflow.umd.js", "js")
     rf_css = _read_asset("reactflow.css", "css")
     tailwind_css = _read_asset("tailwind.min.css", "css")
@@ -108,7 +108,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         missing = []
         asset_names = [
             "react", "react-dom", "htm", "kiwi", "constants",
-            "constraint-layout", "reactflow.js", "reactflow.css", "tailwind.css"
+            "layout-engine", "reactflow.js", "reactflow.css", "tailwind.css"
         ]
         for asset, name in zip(required_library_assets, asset_names):
             if not asset:

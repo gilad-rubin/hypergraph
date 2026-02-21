@@ -39,7 +39,7 @@ async function loadAllScripts() {
     '/assets/htm.min.js',
     '/assets/kiwi.bundled.js',
     '/assets/constants.js',
-    '/assets/constraint-layout.js',
+    '/assets/layout-engine.js',
     '/assets/reactflow.umd.js',
     '/assets/theme_utils.js',
     '/assets/layout.js',
@@ -58,7 +58,7 @@ async function loadAllScripts() {
  */
 export async function reloadDependentScripts() {
   const dependentScripts = [
-    'constraint-layout.js',
+    'layout-engine.js',
     'layout.js',
     'components.js',
     'app.js',

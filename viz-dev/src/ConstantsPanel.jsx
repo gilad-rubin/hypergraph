@@ -7,46 +7,45 @@
 import React, { useState, useCallback } from 'react';
 
 // [default, min, max, step]
+// Grouped by the 4 layout rules: Centering, Convergence, Routing, Layout
 const CONSTANT_GROUPS = {
+  'Centering': {
+    BRANCH_CENTER_WEIGHT:           [1, 0, 1, 0.05],
+    FAN_CENTER_WEIGHT:              [0.8, 0, 1, 0.05],
+    INPUT_FAN_CENTER_WEIGHT:        [0.7, 0, 1, 0.05],
+    DATA_NODE_ALIGN_WEIGHT:         [1, 0, 1, 0.05],
+    INPUT_NODE_ALIGN_WEIGHT:        [0.9, 0, 1, 0.05],
+    EDGE_SHARED_TARGET_SPACING_SCALE: [0.5, 0, 2, 0.05],
+  },
+  'Convergence': {
+    EDGE_CONVERGENCE_OFFSET:        [15, 0, 60, 1],
+    EDGE_SOURCE_DIVERGE_OFFSET:     [20, 0, 60, 1],
+  },
+  'Routing': {
+    EDGE_STRAIGHTEN_MAX_SHIFT:      [0, 0, 400, 5],
+    EDGE_MICRO_X_SNAP:              [20, 0, 40, 1],
+    EDGE_ANGLE_WEIGHT:              [0.1, 0, 10, 0.1],
+    EDGE_CURVE_WEIGHT:              [0.5, 0, 20, 0.5],
+    EDGE_NODE_PENALTY:              [0, 0, 100, 1],
+    EDGE_NODE_CLEARANCE:            [0, 0, 40, 1],
+  },
+  'Layout': {
+    VERTICAL_GAP:                   [95, 40, 200, 5],
+    GRAPH_PADDING:                  [26, 8, 48, 2],
+    HEADER_HEIGHT:                  [20, 10, 60, 2],
+  },
   'Edge Shape': {
     EDGE_CURVE_STYLE:               [0, 0, 1, 0.01],
     EDGE_ELBOW_RADIUS:              [28, 0, 60, 1],
     EDGE_MICRO_MERGE_ANGLE:         [60, 0, 90, 1],
     EDGE_TURN_SOFTENING:            [0, 0, 0.5, 0.01],
-    EDGE_SHOULDER_RATIO:            [0, 0, 1, 0.05],
     EDGE_SHARP_TURN_ANGLE:          [0, 0, 90, 1],
-    EDGE_CONVERGENCE_OFFSET:        [15, 0, 60, 1],
-    EDGE_SOURCE_DIVERGE_OFFSET:     [20, 0, 60, 1],
-    EDGE_STRAIGHTEN_MAX_SHIFT:      [0, 0, 400, 5],
-    EDGE_MICRO_X_SNAP:              [20, 0, 40, 1],
-  },
-  'Edge Penalties': {
-    EDGE_ANGLE_WEIGHT:              [0.1, 0, 10, 0.1],
-    EDGE_CURVE_WEIGHT:              [0.5, 0, 20, 0.5],
-    EDGE_TURN_WEIGHT:               [0, 0, 10, 0.1],
-    EDGE_LATERAL_WEIGHT:            [0, 0, 0.05, 0.001],
-    EDGE_NONSTRAIGHT_WEIGHT:        [0, 0, 5, 0.1],
-    EDGE_NODE_PENALTY:              [0, 0, 100, 1],
-    EDGE_NODE_CLEARANCE:            [0, 0, 40, 1],
-    EDGE_EDGE_PENALTY:              [0, 0, 100, 1],
-    EDGE_EDGE_CLEARANCE:            [0, 0, 40, 1],
-    EDGE_SHARED_TARGET_SPACING_SCALE: [0.5, 0, 2, 0.05],
   },
   'Feedback Edges': {
     FEEDBACK_EDGE_GUTTER:           [65, 20, 150, 5],
     FEEDBACK_EDGE_HEADROOM:         [100, 10, 200, 5],
     FEEDBACK_EDGE_STEM:             [32, 10, 80, 2],
     FEEDBACK_EDGE_STUB:             [24, 8, 60, 2],
-  },
-  'Layout': {
-    VERTICAL_GAP:                   [95, 40, 200, 5],
-    GRAPH_PADDING:                  [26, 8, 48, 2],
-    HEADER_HEIGHT:                  [20, 10, 60, 2],
-    DATA_NODE_ALIGN_WEIGHT:         [1, 0, 1, 0.05],
-    INPUT_NODE_ALIGN_WEIGHT:        [0.9, 0, 1, 0.05],
-    BRANCH_CENTER_WEIGHT:           [1, 0, 1, 0.05],
-    FAN_CENTER_WEIGHT:              [0.8, 0, 1, 0.05],
-    INPUT_FAN_CENTER_WEIGHT:        [0.7, 0, 1, 0.05],
   },
   'Node Sizing': {
     NODE_BASE_PADDING:              [60, 20, 100, 2],
