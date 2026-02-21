@@ -588,6 +588,8 @@
     centerBranchNodes(rows, edges, layoutConfig);
     // Center FUNCTION/GRAPH nodes over their fan of targets for symmetric fan-out.
     centerFunctionOverTargets(rows, edges, layoutConfig);
+    // Center INPUT/INPUT_GROUP nodes over their targets (lower priority, respects row neighbors).
+    centerInputOverTargets(rows, edges, layoutConfig);
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
@@ -894,11 +896,7 @@
     return false;
   };
 
-  const centerFunctionOverTargets = (rows, edges, layoutConfig) => {
-    if (!FAN_CENTER_WEIGHT) return;
-    const weight = Math.max(0, Math.min(1, FAN_CENTER_WEIGHT));
-    const coordPrimary = layoutConfig.coordPrimary;
-
+  const buildTargetsBySource = (edges) => {
     const targetsBySource = {};
     for (const edge of edges) {
       const srcId = edge.sourceNode.id;
@@ -907,6 +905,14 @@
         targetsBySource[srcId].push(edge.targetNode);
       }
     }
+    return targetsBySource;
+  };
+
+  const centerFunctionOverTargets = (rows, edges, layoutConfig) => {
+    if (!FAN_CENTER_WEIGHT) return;
+    const weight = Math.max(0, Math.min(1, FAN_CENTER_WEIGHT));
+    const coordPrimary = layoutConfig.coordPrimary;
+    const targetsBySource = buildTargetsBySource(edges);
 
     for (const row of rows) {
       for (const node of row) {
@@ -918,6 +924,63 @@
         for (const t of targets) sum += t[coordPrimary];
         const midpoint = sum / targets.length;
         node[coordPrimary] += (midpoint - node[coordPrimary]) * weight;
+      }
+    }
+  };
+
+  const isInputNode = (node) => {
+    const nodeType = node.data?.nodeType || node.nodeType;
+    return nodeType === 'INPUT' || nodeType === 'INPUT_GROUP';
+  };
+
+  const centerInputOverTargets = (rows, edges, layoutConfig) => {
+    if (!INPUT_FAN_CENTER_WEIGHT) return;
+    const weight = Math.max(0, Math.min(1, INPUT_FAN_CENTER_WEIGHT));
+    const coordPrimary = layoutConfig.coordPrimary;
+    const targetsBySource = buildTargetsBySource(edges);
+
+    const degreeOf = (node) =>
+      Math.max(1, node.targets.length + node.sources.length - 2);
+
+    const computeSpace = (nodeA, nodeB) => {
+      const degreeA = degreeOf(nodeA);
+      const degreeB = degreeOf(nodeB);
+      const spread = Math.min(10, degreeA * degreeB * layoutConfig.spreadX);
+      return snap(spread * layoutConfig.spaceX, layoutConfig.spaceX);
+    };
+
+    for (const row of rows) {
+      row.sort((a, b) =>
+        compare(a[coordPrimary], b[coordPrimary], a.id, b.id)
+      );
+
+      for (let i = 0; i < row.length; i += 1) {
+        const node = row[i];
+        if (!isInputNode(node)) continue;
+        const targets = targetsBySource[node.id];
+        if (!targets || targets.length < 1) continue;
+
+        let sum = 0;
+        for (const t of targets) sum += t[coordPrimary];
+        const midpoint = sum / targets.length;
+
+        // Clamp to respect row neighbors (don't overlap FUNCTION nodes)
+        let minX = -Infinity;
+        let maxX = Infinity;
+        if (i > 0) {
+          const left = row[i - 1];
+          const space = computeSpace(left, node);
+          minX = left[coordPrimary] + left.width * 0.5 + space + node.width * 0.5;
+        }
+        if (i < row.length - 1) {
+          const right = row[i + 1];
+          const space = computeSpace(node, right);
+          maxX = right[coordPrimary] - (node.width * 0.5 + space + right.width * 0.5);
+        }
+
+        if (minX > maxX) continue;
+        const clampedX = clamp(midpoint, minX, maxX);
+        node[coordPrimary] += (clampedX - node[coordPrimary]) * weight;
       }
     }
   };
@@ -981,6 +1044,7 @@
   const MIN_VERTICAL_DIST_FOR_WAYPOINT = 50;
   const BRANCH_CENTER_WEIGHT = VizConstants.BRANCH_CENTER_WEIGHT ?? 1;
   const FAN_CENTER_WEIGHT = VizConstants.FAN_CENTER_WEIGHT ?? 0.8;
+  const INPUT_FAN_CENTER_WEIGHT = VizConstants.INPUT_FAN_CENTER_WEIGHT ?? 0.7;
   const SHOULDER_VERTICAL_RATIO = VizConstants.EDGE_SHOULDER_RATIO ?? 0.3;
   const SHOULDER_HORIZONTAL_RATIO = 0.5;
 

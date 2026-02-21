@@ -49,6 +49,7 @@
     VERTICAL_GAP: 95,                     // Vertical gap between connected nodes
     BRANCH_CENTER_WEIGHT: 1,              // Pull BRANCH nodes to midpoint of targets (0=off, 1=fully centered)
     FAN_CENTER_WEIGHT: 0.8,               // Pull FUNCTION/GRAPH nodes to center over their targets (0=off, 1=fully centered)
+    INPUT_FAN_CENTER_WEIGHT: 0.7,         // Pull INPUT nodes to center over their targets (0=off, 1=fully centered)
 
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS, // Shadow/inner content offset by node type
