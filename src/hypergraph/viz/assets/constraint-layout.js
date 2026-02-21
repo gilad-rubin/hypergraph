@@ -586,6 +586,8 @@
     alignDataNodesToSources(rows, edges, layoutConfig);
     // Center BRANCH nodes over their downstream targets.
     centerBranchNodes(rows, edges, layoutConfig);
+    // Center FUNCTION/GRAPH nodes over their fan of targets for symmetric fan-out.
+    centerFunctionOverTargets(rows, edges, layoutConfig);
   };
 
   const createRowConstraints = (edges, layoutConfig) =>
@@ -884,6 +886,42 @@
     }
   };
 
+  const isFunctionLikeNode = (node) => {
+    const nodeType = node.data?.nodeType || node.nodeType;
+    if (nodeType === 'FUNCTION') return true;
+    if (nodeType === 'PIPELINE' && !node.data?.isExpanded) return true;
+    if (nodeType === 'GRAPH') return true;
+    return false;
+  };
+
+  const centerFunctionOverTargets = (rows, edges, layoutConfig) => {
+    if (!FAN_CENTER_WEIGHT) return;
+    const weight = Math.max(0, Math.min(1, FAN_CENTER_WEIGHT));
+    const coordPrimary = layoutConfig.coordPrimary;
+
+    const targetsBySource = {};
+    for (const edge of edges) {
+      const srcId = edge.sourceNode.id;
+      if (!targetsBySource[srcId]) targetsBySource[srcId] = [];
+      if (!targetsBySource[srcId].includes(edge.targetNode)) {
+        targetsBySource[srcId].push(edge.targetNode);
+      }
+    }
+
+    for (const row of rows) {
+      for (const node of row) {
+        if (!isFunctionLikeNode(node)) continue;
+        const targets = targetsBySource[node.id];
+        if (!targets || targets.length < 2) continue;
+
+        let sum = 0;
+        for (const t of targets) sum += t[coordPrimary];
+        const midpoint = sum / targets.length;
+        node[coordPrimary] += (midpoint - node[coordPrimary]) * weight;
+      }
+    }
+  };
+
   const createSharedTargetConstraints = (edges, layoutConfig) => {
     const { spaceX, coordPrimary } = layoutConfig;
     const sourcesByTarget = {};
@@ -942,6 +980,7 @@
   const MIN_HORIZONTAL_DIST_FOR_WAYPOINT = 20;
   const MIN_VERTICAL_DIST_FOR_WAYPOINT = 50;
   const BRANCH_CENTER_WEIGHT = VizConstants.BRANCH_CENTER_WEIGHT ?? 1;
+  const FAN_CENTER_WEIGHT = VizConstants.FAN_CENTER_WEIGHT ?? 0.8;
   const SHOULDER_VERTICAL_RATIO = VizConstants.EDGE_SHOULDER_RATIO ?? 0.3;
   const SHOULDER_HORIZONTAL_RATIO = 0.5;
 

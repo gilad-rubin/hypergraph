@@ -45,6 +45,7 @@ const CONSTANT_GROUPS = {
     DATA_NODE_ALIGN_WEIGHT:         [1, 0, 1, 0.05],
     INPUT_NODE_ALIGN_WEIGHT:        [0.9, 0, 1, 0.05],
     BRANCH_CENTER_WEIGHT:           [1, 0, 1, 0.05],
+    FAN_CENTER_WEIGHT:              [0.8, 0, 1, 0.05],
   },
   'Node Sizing': {
     NODE_BASE_PADDING:              [60, 20, 100, 2],
