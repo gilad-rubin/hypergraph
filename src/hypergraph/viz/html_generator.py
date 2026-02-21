@@ -82,6 +82,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     react_dom_js = _read_asset("react-dom.production.min.js", "js")
     htm_js = _read_asset("htm.min.js", "js")
     kiwi_js = _read_asset("kiwi.bundled.js", "js")
+    dagre_js = _read_asset("dagre.min.js", "js")
     constants_js = _read_asset("constants.js", "js")
     constraint_layout_js = _read_asset("layout-engine.js", "js")
     rf_js = _read_asset("reactflow.umd.js", "js")
@@ -91,23 +92,22 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
     # Load our visualization modules
     theme_utils_js = _read_asset("theme_utils.js", "js")
-    layout_js = _read_asset("layout.js", "js")
     components_js = _read_asset("components.js", "js")
     app_js = _read_asset("app.js", "js")
 
     # Check that all required assets are available
     required_library_assets = [
-        react_js, react_dom_js, htm_js, kiwi_js, constants_js,
+        react_js, react_dom_js, htm_js, kiwi_js, dagre_js, constants_js,
         constraint_layout_js, rf_js, rf_css, tailwind_css
     ]
     required_app_assets = [
-        theme_utils_js, layout_js, components_js, app_js
+        theme_utils_js, components_js, app_js
     ]
 
     if not all(required_library_assets):
         missing = []
         asset_names = [
-            "react", "react-dom", "htm", "kiwi", "constants",
+            "react", "react-dom", "htm", "kiwi", "dagre", "constants",
             "layout-engine", "reactflow.js", "reactflow.css", "tailwind.css"
         ]
         for asset, name in zip(required_library_assets, asset_names):
@@ -122,7 +122,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     if not all(required_app_assets):
         missing = []
         asset_names = [
-            "theme_utils.js", "layout.js", "components.js", "app.js"
+            "theme_utils.js", "components.js", "app.js"
         ]
         for asset, name in zip(required_app_assets, asset_names):
             if not asset:
@@ -172,12 +172,12 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     {react_dom_js}
     {htm_js}
     {kiwi_js}
+    {dagre_js}
     {constants_js}
-    {constraint_layout_js}
     {rf_js}
     <!-- Hypergraph visualization modules -->
     {theme_utils_js}
-    {layout_js}
+    {constraint_layout_js}
     {components_js}
     {app_js}
 </head>

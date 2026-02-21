@@ -38,11 +38,11 @@ async function loadAllScripts() {
   const scripts = [
     '/assets/htm.min.js',
     '/assets/kiwi.bundled.js',
+    '/assets/dagre.min.js',
     '/assets/constants.js',
-    '/assets/layout-engine.js',
     '/assets/reactflow.umd.js',
     '/assets/theme_utils.js',
-    '/assets/layout.js',
+    '/assets/layout-engine.js',
     '/assets/components.js',
     '/assets/app.js',
   ];
@@ -59,7 +59,6 @@ async function loadAllScripts() {
 export async function reloadDependentScripts() {
   const dependentScripts = [
     'layout-engine.js',
-    'layout.js',
     'components.js',
     'app.js',
   ];

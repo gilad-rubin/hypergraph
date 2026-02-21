@@ -74,6 +74,7 @@
     EDGE_SHARP_TURN_ANGLE: 0,             // Above this angle, force straight segments (if curveStyle < 1)
     EDGE_CURVE_STYLE: 0,                  // Rounded orthogonal routes (use elbow radius below)
     EDGE_ELBOW_RADIUS: 28,                // How big the rounded corner is (bigger = curve starts earlier)
+    EDGE_TARGET_INSET: 12,                 // Horizontal padding from node edge for incoming arrows
     EDGE_MICRO_MERGE_ANGLE: 60,           // Max direction change (degrees) to drop short-segment waypoints
     EDGE_TURN_SOFTENING: 0,               // How much to soften corner angles (0=sharp 90°, higher=gentler)
     DATA_NODE_ALIGN_WEIGHT: 1,            // Pull DATA nodes toward their producer X (0..1)
