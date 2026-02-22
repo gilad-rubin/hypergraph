@@ -1308,15 +1308,23 @@
       setShowTypes(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
 
-    // Render options hook for tests
+    // Render options hook for tests and dev gallery
     useEffect(function() {
       root.__hypergraphVizSetRenderOptions = function(opts) {
         if (!opts) return;
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
+        if (Object.prototype.hasOwnProperty.call(opts, 'convergeToCenter')) {
+          root.__hypergraphVizReady = false;
+          setConvergeToCenter(!!opts.convergeToCenter);
+        }
+        if (Object.prototype.hasOwnProperty.call(opts, 'convergenceOffset')) {
+          root.__hypergraphVizReady = false;
+          setConvergenceOffset(Number(opts.convergenceOffset));
+        }
       };
       return function() { delete root.__hypergraphVizSetRenderOptions; };
-    }, [onToggleSep, onToggleTyp]);
+    }, [onToggleSep, onToggleTyp, setConvergeToCenter, setConvergenceOffset]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
