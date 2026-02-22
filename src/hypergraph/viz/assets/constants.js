@@ -45,37 +45,22 @@
     GRAPH_PADDING: 24,                    // Padding inside graph containers
     HEADER_HEIGHT: 32,                    // Height reserved for graph header
 
-    // Layout spacing (visible edge-to-edge gap)
-    VERTICAL_GAP: 100,                    // Vertical gap between connected nodes
-
     // Wrapper offsets
     NODE_TYPE_OFFSETS: NODE_TYPE_OFFSETS, // Shadow/inner content offset by node type
     NODE_TYPE_TOP_INSETS: NODE_TYPE_TOP_INSETS, // Inset from wrapper top to visible top boundary
     DEFAULT_OFFSET: 10,                   // Fallback offset if type missing
     DEFAULT_TOP_INSET: 0,                 // Fallback top inset if type missing
 
-    // Edge routing
+    // Edge routing (used by layout.js merge phases)
     EDGE_CONVERGENCE_OFFSET: 20,          // Extra Y offset before merging into target stem
     FEEDBACK_EDGE_GUTTER: 70,             // Horizontal gutter for feedback edge routing
     FEEDBACK_EDGE_HEADROOM: 40,           // Extra headroom above feedback edge target
     FEEDBACK_EDGE_STEM: 32,               // Vertical stem size for feedback edges
     FEEDBACK_EDGE_STUB: 24,               // Stub length for feedback edge elbows
-    EDGE_STRAIGHTEN_MAX_SHIFT: 180,       // Max X shift to keep a straight corridor path
-    EDGE_MICRO_X_SNAP: 6,                 // Snap tiny X deviations to kill wiggles
-    EDGE_ANGLE_WEIGHT: 1,                 // Penalize max angle in corridor routing
-    EDGE_CURVE_WEIGHT: 6,                 // Penalize number of corridor X changes
-    EDGE_TURN_WEIGHT: 1,                  // Penalize left/right sign flips
-    EDGE_LATERAL_WEIGHT: 0.004,           // Penalize total sideways travel
-    EDGE_NODE_PENALTY: 30,                // Penalize corridor segments that pass over nodes
-    EDGE_NODE_CLEARANCE: 12,              // Extra buffer around nodes when checking overlap
-    EDGE_NONSTRAIGHT_WEIGHT: 0.6,         // Penalize cumulative bend angles (many small bends)
-    EDGE_EDGE_PENALTY: 20,                // Penalize corridor segments crossing other edges
-    EDGE_EDGE_CLEARANCE: 10,              // Ignore edge crossings near shared endpoints
-    EDGE_SHARED_TARGET_SPACING_SCALE: 1.15, // Scale separation for shared-target source spacing
+
+    // Edge rendering (used by components.js)
     EDGE_SHARP_TURN_ANGLE: 35,            // Above this angle, force straight segments (if curveStyle < 1)
-    EDGE_CURVE_STYLE: 0,                  // Rounded orthogonal routes (use elbow radius below)
-    EDGE_ELBOW_RADIUS: 16,                // Rounded corner radius for orthogonal polylines
-    DATA_NODE_ALIGN_WEIGHT: 1,            // Pull DATA nodes toward their producer X (0..1)
-    INPUT_NODE_ALIGN_WEIGHT: 0.9,         // Pull INPUT nodes toward downstream consumer X (0..1)
+    EDGE_CURVE_STYLE: 0,                  // 0 = polyline, 1 = smooth curve, 0..1 = Catmull-Rom
+    EDGE_ELBOW_RADIUS: 16,               // Rounded corner radius for orthogonal polylines
   };
 });
