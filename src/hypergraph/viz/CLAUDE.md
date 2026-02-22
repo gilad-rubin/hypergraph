@@ -29,7 +29,7 @@ All JS is in one file (`assets/viz.js`) organized in 7 sections:
 
 ## Edge Routing Modes
 
-Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `true`):
+Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `false`):
 
 **Center mode** (`convergeToCenter=true`):
 - All edge endpoints forced to node center-x
@@ -38,7 +38,7 @@ Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `true`):
 
 **Dagre mode** (`convergeToCenter=false`):
 - Edge endpoints use dagre's native x-positions (spread across node width)
-- Endpoints clamped within padded region: `EDGE_ENDPOINT_PADDING` (default: 16px)
+- Endpoints clamped within padded region: `EDGE_ENDPOINT_PADDING` (default: 0.25, fraction of node width)
 - No convergence stems needed
 
 **BRANCH/END exception**: Always use center-x regardless of mode (diamond has single exit point at bottom vertex).
@@ -98,7 +98,7 @@ Offsets defined in viz.js Section 1:
 Dev-only controls visible when `window.__hypergraph_debug_viz = true`:
 - Toggle: "Converge to center" (switches edge routing mode)
 - Slider: "Stem height" (convergence offset, 0-60px)
-- Slider: "Endpoint padding" (dagre mode only, 0–0.45 as a fraction of node width; distinct from the `EDGE_ENDPOINT_PADDING` pixel constant)
+- Slider: "Endpoint padding" (dagre mode only, 0–0.45 as a fraction of node width; overrides `EDGE_ENDPOINT_PADDING` default of 0.25)
 
 Gallery page (`scripts/render_notebook_viz.py`) has a DialKit bar that broadcasts settings to all iframes via `postMessage`. Viz.js listens for `{ type: 'hypergraph-set-options', options: {...} }` messages.
 
