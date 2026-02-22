@@ -9,8 +9,7 @@ if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
 from hypergraph.viz.renderer import render_graph
-from hypergraph.viz.html_generator import generate_widget_html
-from hypergraph.viz.layout_estimator import estimate_layout
+from hypergraph.viz.html import estimate_layout, generate_widget_html
 
 
 class ScrollablePipelineWidget:

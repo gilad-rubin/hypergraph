@@ -60,15 +60,15 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     _validate_graph_data(graph_data)
     graph_json = _escape_json_for_html(json.dumps(graph_data))
 
-    def _read_asset(name: str, kind: str) -> Optional[str]:
+    def _read_asset(name: str, kind: str, package: str = "hypergraph.viz.assets") -> Optional[str]:
         """Read an asset file from the bundled package resources.
 
-        Assets are located in hypergraph/viz/assets/ which is included in the wheel.
+        Assets are in hypergraph/viz/assets/ (custom) and
+        hypergraph/viz/assets/vendor/ (third-party libraries).
         Uses importlib.resources for reliable access in installed packages.
         """
         try:
-            asset_files = files("hypergraph.viz.assets")
-            text = (asset_files / name).read_text(encoding="utf-8")
+            text = (files(package) / name).read_text(encoding="utf-8")
             if kind == "js":
                 return f"<script>{text}</script>"
             if kind == "css":
@@ -77,38 +77,32 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         except Exception:
             return None
 
-    # Load library assets
-    react_js = _read_asset("react.production.min.js", "js")
-    react_dom_js = _read_asset("react-dom.production.min.js", "js")
-    htm_js = _read_asset("htm.min.js", "js")
-    kiwi_js = _read_asset("kiwi.bundled.js", "js")
-    constants_js = _read_asset("constants.js", "js")
-    constraint_layout_js = _read_asset("constraint-layout.js", "js")
-    rf_js = _read_asset("reactflow.umd.js", "js")
-    rf_css = _read_asset("reactflow.css", "css")
-    tailwind_css = _read_asset("tailwind.min.css", "css")
+    _vendor = "hypergraph.viz.assets.vendor"
+
+    # Load vendor library assets
+    react_js = _read_asset("react.production.min.js", "js", _vendor)
+    react_dom_js = _read_asset("react-dom.production.min.js", "js", _vendor)
+    htm_js = _read_asset("htm.min.js", "js", _vendor)
+    dagre_js = _read_asset("dagre.min.js", "js", _vendor)
+    rf_js = _read_asset("reactflow.umd.js", "js", _vendor)
+    rf_css = _read_asset("reactflow.css", "css", _vendor)
+    tailwind_css = _read_asset("tailwind.min.css", "css", _vendor)
     custom_css = _read_asset("custom.css", "css") or ""
 
-    # Load our visualization modules
-    theme_utils_js = _read_asset("theme_utils.js", "js")
-    layout_js = _read_asset("layout.js", "js")
-    components_js = _read_asset("components.js", "js")
-    app_js = _read_asset("app.js", "js")
+    # Load our single visualization module
+    viz_js = _read_asset("viz.js", "js")
 
     # Check that all required assets are available
     required_library_assets = [
-        react_js, react_dom_js, htm_js, kiwi_js, constants_js,
-        constraint_layout_js, rf_js, rf_css, tailwind_css
-    ]
-    required_app_assets = [
-        theme_utils_js, layout_js, components_js, app_js
+        react_js, react_dom_js, htm_js, dagre_js,
+        rf_js, rf_css, tailwind_css
     ]
 
     if not all(required_library_assets):
         missing = []
         asset_names = [
-            "react", "react-dom", "htm", "kiwi", "constants",
-            "constraint-layout", "reactflow.js", "reactflow.css", "tailwind.css"
+            "react", "react-dom", "htm", "dagre",
+            "reactflow.js", "reactflow.css", "tailwind.css"
         ]
         for asset, name in zip(required_library_assets, asset_names):
             if not asset:
@@ -119,16 +113,9 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             "Try reinstalling with: pip install --force-reinstall hypergraph"
         )
 
-    if not all(required_app_assets):
-        missing = []
-        asset_names = [
-            "theme_utils.js", "layout.js", "components.js", "app.js"
-        ]
-        for asset, name in zip(required_app_assets, asset_names):
-            if not asset:
-                missing.append(name)
+    if not viz_js:
         raise RuntimeError(
-            f"Missing bundled visualization module assets: {missing}. "
+            "Missing bundled visualization module: viz.js. "
             "The hypergraph package may be incorrectly installed. "
             "Try reinstalling with: pip install --force-reinstall hypergraph"
         )
@@ -171,15 +158,10 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     {react_js}
     {react_dom_js}
     {htm_js}
-    {kiwi_js}
-    {constants_js}
-    {constraint_layout_js}
+    {dagre_js}
     {rf_js}
-    <!-- Hypergraph visualization modules -->
-    {theme_utils_js}
-    {layout_js}
-    {components_js}
-    {app_js}
+    <!-- Hypergraph visualization module -->
+    {viz_js}
 </head>
 <body>
   <div id="root">
@@ -208,9 +190,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
       // Check all required modules are loaded
       var requiredModules = [
-        'React', 'ReactDOM', 'ReactFlow', 'htm', 'ConstraintLayout',
-        'HypergraphVizTheme', 'HypergraphVizLayout',
-        'HypergraphVizComponents', 'HypergraphVizApp'
+        'React', 'ReactDOM', 'ReactFlow', 'htm', 'dagre', 'HypergraphViz'
       ];
       var missing = requiredModules.filter(function(m) {{ return !window[m]; }});
 
@@ -227,7 +207,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
       // Initialize the application
       try {{
-        window.HypergraphVizApp.init();
+        window.HypergraphViz.init();
       }} catch(err) {{
         console.error('Visualization initialization error:', err);
         var el = document.getElementById("fallback");

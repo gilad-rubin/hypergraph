@@ -413,57 +413,7 @@ class TestEdgeRouting:
 
 ---
 
-## 6. Coordinate Spaces (coordinates.py)
-
-For hierarchical layouts with nested containers.
-
-### Dataclasses
-
-#### `Point`
-```python
-@dataclass(frozen=True)
-class Point:
-    x: float
-    y: float
-
-    def __add__(self, other: Point) -> Point
-    def __sub__(self, other: Point) -> Point
-```
-
-#### `CoordinateSpace`
-```python
-@dataclass(frozen=True)
-class CoordinateSpace:
-    x: float                         # X offset in parent space
-    y: float                         # Y offset in parent space
-    space: str                       # Name identifier
-    parent: CoordinateSpace | None   # Parent space (None for root)
-
-    def to_parent(self, point: Point) -> Point
-    def to_absolute(self, point: Point) -> Point
-    def to_viewport(self, point: Point, viewport_offset: Point) -> Point
-```
-
-### Usage
-
-```python
-from hypergraph.viz.coordinates import Point, CoordinateSpace
-
-root = CoordinateSpace(0, 0, "root")
-container = CoordinateSpace(100, 50, "container", parent=root)
-nested = CoordinateSpace(20, 20, "nested", parent=container)
-
-# Point in nested space
-local_point = Point(10, 10)
-
-# Convert to absolute (root) space
-absolute = nested.to_absolute(local_point)
-# Result: Point(x=130, y=80)  # 100+20+10, 50+20+10
-```
-
----
-
-## 7. Browser Debug API
+## 6. Browser Debug API
 
 When rendering with `_debug_overlays=True`, the browser exposes `window.__hypergraphVizDebug`:
 
@@ -568,6 +518,5 @@ for node in dump['nodes']:
 |------|----------|
 | `src/hypergraph/viz/debug.py` | VizDebugger, extract_debug_data, dataclasses |
 | `src/hypergraph/viz/geometry.py` | NodeGeometry, EdgeGeometry, EdgeConnectionValidator |
-| `src/hypergraph/viz/coordinates.py` | Point, CoordinateSpace |
 | `tests/viz/conftest.py` | Playwright helpers, test fixtures |
 | `src/hypergraph/viz/CLAUDE.md` | Architecture notes, known issues |

@@ -1,7 +1,7 @@
 """Tests for the HTML generator."""
 
 import pytest
-from hypergraph.viz.html_generator import generate_widget_html
+from hypergraph.viz.html import generate_widget_html
 
 
 # Sample graph data for testing
@@ -54,8 +54,8 @@ class TestGenerateHtml:
         assert "ReactDOM" in html
         # ReactFlow
         assert "ReactFlow" in html
-        # ConstraintLayout (Kiwi constraint solver)
-        assert "ConstraintLayout" in html
+        # HypergraphViz (single visualization module)
+        assert "HypergraphViz" in html
 
     def test_no_external_scripts(self):
         """Test that HTML has no external script sources."""

@@ -14,9 +14,9 @@ if TYPE_CHECKING:
 
 
 class LayoutEstimator:
-    """Estimates visualization dimensions to match constraint-layout.js output."""
+    """Estimates visualization dimensions to match viz.js layout output."""
 
-    # Constants matching constraint-layout.js defaultOptions
+    # Constants matching viz.js layout defaults
     LAYOUT_SPACE_Y = 140  # Vertical spacing between nodes (matches Kedro-viz)
     LAYOUT_LAYER_SPACE_Y = 120  # Vertical spacing between layers (matches Kedro-viz)
     LAYOUT_SPACE_X = 30  # Horizontal spacing (matches Kedro-viz)
@@ -30,7 +30,7 @@ class LayoutEstimator:
     SEPARATE_LAYOUT_SPACE_Y = 100
     SEPARATE_LAYOUT_LAYER_SPACE_Y = 90
 
-    # Node sizing constants from html_generator.py
+    # Node sizing constants from html/generator.py
     MAX_NODE_WIDTH = 280
     CHAR_WIDTH_PX = 7
     NODE_BASE_PADDING = 52

@@ -72,7 +72,7 @@ def make_outer():
 
 def get_edge_pairs(graph, depth: int) -> set[tuple[str, str]]:
     """Extract (source, target) pairs from visualization instructions."""
-    from hypergraph.viz.instructions import build_instructions
+    from hypergraph.viz.renderer.instructions import build_instructions
 
     flat_graph = graph.to_flat_graph()
     instructions = build_instructions(flat_graph, depth=depth)
@@ -81,7 +81,7 @@ def get_edge_pairs(graph, depth: int) -> set[tuple[str, str]]:
 
 def get_node_ids(graph, depth: int) -> set[str]:
     """Extract node IDs from visualization instructions."""
-    from hypergraph.viz.instructions import build_instructions
+    from hypergraph.viz.renderer.instructions import build_instructions
 
     flat_graph = graph.to_flat_graph()
     instructions = build_instructions(flat_graph, depth=depth)
