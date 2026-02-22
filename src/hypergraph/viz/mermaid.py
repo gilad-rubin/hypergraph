@@ -51,7 +51,7 @@ DEFAULT_COLORS: dict[str, dict[str, str]] = {
     "function": {
         "fill": "#E8F5E8", "stroke": "#388E3C", "stroke-width": "2px", "color": "#1B5E20",
     },
-    "graph": {
+    "container": {
         "fill": "#FFF3E0", "stroke": "#F57C00", "stroke-width": "2px", "color": "#E65100",
     },
     "branch": {
@@ -71,7 +71,7 @@ DEFAULT_COLORS: dict[str, dict[str, str]] = {
 # Maps HyperGraph node_type to Mermaid classDef name
 _NODE_TYPE_TO_CLASS = {
     "FUNCTION": "function",
-    "GRAPH": "graph",
+    "GRAPH": "container",
     "BRANCH": "branch",
     "INPUT": "input",
     "INPUT_GROUP": "input",

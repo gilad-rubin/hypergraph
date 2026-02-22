@@ -60,7 +60,7 @@
 
     // Edge rendering (used by components.js)
     EDGE_SHARP_TURN_ANGLE: 35,            // Above this angle, force straight segments (if curveStyle < 1)
-    EDGE_CURVE_STYLE: 0,                  // 0 = polyline, 1 = smooth curve, 0..1 = Catmull-Rom
+    EDGE_CURVE_STYLE: 1,                  // 0 = polyline, 1 = smooth curve, 0..1 = Catmull-Rom
     EDGE_ELBOW_RADIUS: 16,               // Rounded corner radius for orthogonal polylines
   };
 });
