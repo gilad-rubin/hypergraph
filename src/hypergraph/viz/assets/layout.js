@@ -33,7 +33,6 @@
   // Constants for nested graph layout
   var GRAPH_PADDING = VizConstants.GRAPH_PADDING || 24;
   var HEADER_HEIGHT = VizConstants.HEADER_HEIGHT || 32;
-  var VERTICAL_GAP = VizConstants.VERTICAL_GAP || 60;
   var EDGE_CONVERGENCE_OFFSET = VizConstants.EDGE_CONVERGENCE_OFFSET || 20;
   var FEEDBACK_EDGE_GUTTER = VizConstants.FEEDBACK_EDGE_GUTTER || 40;
   var FEEDBACK_EDGE_HEADROOM = VizConstants.FEEDBACK_EDGE_HEADROOM || 30;
@@ -649,111 +648,8 @@
     return internalEdges;
   }
 
-  function applyVerticalGapFix(layoutNodes, layoutEdges, gapSize, debugMode, label) {
-    var nodeById = new Map(layoutNodes.map(function(n) { return [n.id, n]; }));
-
-    layoutEdges.forEach(function(e) {
-      var srcNode = nodeById.get(e.source);
-      var tgtNode = nodeById.get(e.target);
-      if (!srcNode || !tgtNode) return;
-
-      var srcOffset = getNodeTypeOffset(srcNode.data && srcNode.data.nodeType, srcNode.data && srcNode.data.isExpanded);
-      var srcBottom = srcNode.y + srcNode.height / 2 - srcOffset;
-      var tgtTop = tgtNode.y - tgtNode.height / 2;
-      var gap = tgtTop - srcBottom;
-
-      if (gap < gapSize) {
-        var shift = gapSize - gap;
-        var targetY = tgtNode.y;
-        if (debugMode) {
-          console.log('[recursive layout] shifting', label, tgtNode.id, 'down by', shift);
-        }
-        layoutNodes.forEach(function(n) {
-          if (n.y >= targetY) {
-            n.y += shift;
-          }
-        });
-      }
-    });
-  }
-
-  function snapInputsTowardTargets(layoutNodes, layoutEdges, debugMode) {
-    if (!layoutNodes || !layoutEdges || layoutNodes.length === 0) return;
-    var nodeById = new Map(layoutNodes.map(function(n) { return [n.id, n]; }));
-    var inputTargets = new Map();
-
-    layoutEdges.forEach(function(e) {
-      var src = nodeById.get(e.source);
-      var tgt = nodeById.get(e.target);
-      if (!src || !tgt) return;
-      var srcType = src.data && src.data.nodeType;
-      if (srcType !== 'INPUT' && srcType !== 'INPUT_GROUP') return;
-      var xs = inputTargets.get(src.id) || [];
-      xs.push(tgt.x);
-      inputTargets.set(src.id, xs);
-    });
-
-    inputTargets.forEach(function(targetXs, inputId) {
-      var inputNode = nodeById.get(inputId);
-      if (!inputNode || targetXs.length === 0) return;
-      if (targetXs.length > 2) return;
-      var desiredX = targetXs.reduce(function(sum, x) { return sum + x; }, 0) / targetXs.length;
-      var before = inputNode.x;
-      inputNode.x = before + (desiredX - before) * 0.95;
-      if (debugMode) {
-        console.log('[recursive layout] input-align', inputId, 'x', before, '->', inputNode.x, '(target avg', desiredX + ')');
-      }
-    });
-  }
-
-  function resolveNodeOverlaps(layoutNodes, debugMode, label) {
-    if (!layoutNodes || layoutNodes.length < 2) return;
-
-    var MIN_GAP_X = 24;
-    var OVERLAP_CLEARANCE = 8;
-    var MAX_PASSES = layoutNodes.length + 2;
-
-    var rect = function(n) {
-      return {
-        left: n.x - n.width / 2 - OVERLAP_CLEARANCE,
-        right: n.x + n.width / 2 + OVERLAP_CLEARANCE,
-        top: n.y - n.height / 2 - OVERLAP_CLEARANCE,
-        bottom: n.y + n.height / 2 + OVERLAP_CLEARANCE,
-      };
-    };
-
-    for (var pass = 0; pass < MAX_PASSES; pass += 1) {
-      var changed = false;
-      layoutNodes.sort(function(a, b) { return a.x - b.x; });
-
-      for (var i = 0; i < layoutNodes.length - 1; i += 1) {
-        for (var j = i + 1; j < layoutNodes.length; j += 1) {
-          var a = layoutNodes[i];
-          var b = layoutNodes[j];
-          var ra = rect(a);
-          var rb = rect(b);
-
-          var overlapsY = !(ra.bottom <= rb.top || rb.bottom <= ra.top);
-          if (!overlapsY) continue;
-
-          var neededShift = (ra.right + MIN_GAP_X) - rb.left;
-          if (neededShift > 0) {
-            b.x += neededShift;
-            changed = true;
-            if (debugMode) {
-              console.log('[recursive layout] overlap-fix shifting', label || 'nodes', b.id, 'right by', neededShift, '(vs', a.id + ')');
-            }
-          }
-        }
-      }
-
-      if (!changed) break;
-    }
-  }
-
   function layoutChildrenPhase(visibleNodes, edges, layoutOrder, nodeGroups, inputNodesInContainers, nodeDimensions, debugMode) {
     var childLayoutResults = new Map();
-    var CHILD_EDGE_GAP = VERTICAL_GAP;
 
     layoutOrder.forEach(function(graphNode) {
       var children = nodeGroups.get(graphNode.id) || [];
@@ -785,10 +681,6 @@
         'vertical',
         getLayoutOptions(childLayoutNodes)
       );
-
-      applyVerticalGapFix(childResult.nodes, childLayoutEdges, CHILD_EDGE_GAP, debugMode, graphNode.id);
-      snapInputsTowardTargets(childResult.nodes, childLayoutEdges, debugMode);
-      resolveNodeOverlaps(childResult.nodes, debugMode, graphNode.id);
 
       childResult.size = recalculateBounds(childResult.nodes, GRAPH_PADDING);
       childLayoutResults.set(graphNode.id, childResult);
@@ -904,9 +796,6 @@
       })));
     }
 
-    applyVerticalGapFix(rootResult.nodes, filteredRootLayoutEdges, VERTICAL_GAP, debugMode, 'root');
-    snapInputsTowardTargets(rootResult.nodes, filteredRootLayoutEdges, debugMode);
-    resolveNodeOverlaps(rootResult.nodes, debugMode, 'root');
     rootResult.size = recalculateBounds(rootResult.nodes, GRAPH_PADDING);
 
     return {
@@ -1589,6 +1478,60 @@
     return allPositionedEdges;
   }
 
+  function mergeSharedSourceEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes, debugMode) {
+    var edgesBySource = new Map();
+
+    allPositionedEdges.forEach(function(e) {
+      var points = e.data && e.data.points;
+      if (!points || points.length < 2) return;
+      if (e.data && e.data.isFeedbackEdge) return;
+
+      var actualSource = (e.data && e.data.actualSource) || e.source;
+      if (!nodePositions.has(actualSource) || !nodeDimensions.has(actualSource)) return;
+
+      if (!edgesBySource.has(actualSource)) edgesBySource.set(actualSource, []);
+      edgesBySource.get(actualSource).push(e);
+    });
+
+    edgesBySource.forEach(function(sourceEdges, sourceId) {
+      if (sourceEdges.length < 2) return;
+
+      var sourcePos = nodePositions.get(sourceId);
+      var sourceDims = nodeDimensions.get(sourceId);
+      if (!sourcePos || !sourceDims) return;
+
+      var sourceX = sourcePos.x + sourceDims.width / 2;
+      var sourceNodeType = nodeTypes.get(sourceId) || 'FUNCTION';
+      var sourceBottomY = sourcePos.y + sourceDims.height - getNodeTypeOffset(sourceNodeType);
+      var divergeY = sourceBottomY + EDGE_CONVERGENCE_OFFSET;
+
+      sourceEdges.forEach(function(e) {
+        var points = (e.data && e.data.points) ? e.data.points.slice() : [];
+        if (points.length < 2) return;
+
+        points[0] = { x: sourceX, y: sourceBottomY };
+
+        var divergePoint = { x: sourceX, y: divergeY };
+        var next = points[1];
+        var alreadyDiverged = next &&
+          Math.abs(next.x - divergePoint.x) < 0.5 &&
+          Math.abs(next.y - divergePoint.y) < 0.5;
+
+        if (!alreadyDiverged) {
+          points.splice(1, 0, divergePoint);
+        }
+
+        e.data = { ...(e.data || {}), points: points };
+      });
+
+      if (debugMode) {
+        console.log('[recursive layout] diverged', sourceEdges.length, 'edges from source', sourceId);
+      }
+    });
+
+    return allPositionedEdges;
+  }
+
   function validateEdgesPhase(allPositionedEdges, nodePositions, nodeDimensions, nodeTypes) {
     allPositionedEdges.forEach(function(e) {
       var points = e.data && e.data.points;
@@ -1712,6 +1655,14 @@
     );
 
     allPositionedEdges = mergeSharedTargetEdgesPhase(
+      allPositionedEdges,
+      nodePositions,
+      nodeDimensions,
+      nodeTypes,
+      debugMode
+    );
+
+    allPositionedEdges = mergeSharedSourceEdgesPhase(
       allPositionedEdges,
       nodePositions,
       nodeDimensions,
