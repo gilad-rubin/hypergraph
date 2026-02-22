@@ -58,7 +58,7 @@
   var LAYOUT_PADDING = 70;
   var EDGE_CONVERGE_TO_CENTER = true;
   var EDGE_CONVERGENCE_OFFSET = 20;
-  var EDGE_ENDPOINT_PADDING = 16;
+  var EDGE_ENDPOINT_PADDING = 0.15;  // fraction of node width (0-0.5)
   var FEEDBACK_EDGE_GUTTER = 70;
   var FEEDBACK_EDGE_HEADROOM = 40;
   var FEEDBACK_EDGE_STEM = 32;
@@ -355,10 +355,12 @@
           pts[pts.length - 1] = { x: tgt.x, y: tgtTop };
         } else {
           // Dagre mode: keep dagre's native x-positions, clamp Y and pad X
-          var srcLeft = src.x - src.width * 0.5 + endpointPadding;
-          var srcRight = src.x + src.width * 0.5 - endpointPadding;
-          var tgtLeft = tgt.x - tgt.width * 0.5 + endpointPadding;
-          var tgtRight = tgt.x + tgt.width * 0.5 - endpointPadding;
+          var srcPad = src.width * endpointPadding;
+          var tgtPad = tgt.width * endpointPadding;
+          var srcLeft = src.x - src.width * 0.5 + srcPad;
+          var srcRight = src.x + src.width * 0.5 - srcPad;
+          var tgtLeft = tgt.x - tgt.width * 0.5 + tgtPad;
+          var tgtRight = tgt.x + tgt.width * 0.5 - tgtPad;
           pts[0] = {
             x: srcForceCenterX ? src.x : Math.max(srcLeft, Math.min(srcRight, pts[0].x)),
             y: srcBottom,
@@ -1292,9 +1294,9 @@
           <div className="mt-2">
             <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
               <span>Endpoint padding</span>
-              <span className=${'font-mono ' + text}>${props.endpointPadding}px</span>
+              <span className=${'font-mono ' + text}>${Math.round(props.endpointPadding * 100)}%</span>
             </div>
-            <input type="range" min="0" max="60" step="1"
+            <input type="range" min="0" max="0.45" step="0.01"
               value=${props.endpointPadding}
               className=${'w-full h-1 rounded-lg appearance-none cursor-pointer ' + accent}
               onInput=${function(e) { props.onChangePadding(Number(e.target.value)); }} />
