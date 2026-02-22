@@ -543,6 +543,10 @@
     return deepToChild;
   }
 
+  // Note: deduplicates by (source, target) pair because dagre uses a simple graph.
+  // If two edges share the same endpoints (e.g., data + ordering), only the first
+  // survives in the recursive layout. This is a known simplification — parallel edges
+  // inside expanded containers may lose one edge visually.
   function collectEdgesForGroup(edges, memberIds, deepToChild) {
     var seen = new Set(), result = [];
     edges.forEach(function(e) {
@@ -1458,8 +1462,7 @@
     // Select precomputed nodes
     var selectedNodes = useMemo(function() {
       var key = expansionStateToKey(expansionState, separateOutputs);
-      var pre = nodesByState[key];
-      var base = (pre && pre.length > 0) ? pre : initialData.nodes;
+      var base = Object.prototype.hasOwnProperty.call(nodesByState, key) ? nodesByState[key] : initialData.nodes;
       return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
     }, [expansionState, separateOutputs, showTypes, activeTheme, nodesByState, initialData.nodes]);
 
@@ -1500,8 +1503,7 @@
     // Select edges
     var selectedEdges = useMemo(function() {
       var key = expansionStateToKey(expansionState, separateOutputs);
-      var pre = edgesByState[key];
-      return (pre && pre.length > 0) ? pre : initialData.edges || [];
+      return Object.prototype.hasOwnProperty.call(edgesByState, key) ? edgesByState[key] : (initialData.edges || []);
     }, [expansionState, separateOutputs, edgesByState, initialData.edges]);
 
     useEffect(function() {

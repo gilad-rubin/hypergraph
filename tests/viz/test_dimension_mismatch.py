@@ -16,10 +16,10 @@ the expected behavior of the system architecture:
 
 THREE DIMENSION SOURCES:
 
-1. **Calculated Dimensions** (pre-render, in layout.js calculateDimensions())
+1. **Calculated Dimensions** (pre-render, in viz.js calculateDimensions())
    - Source: Character-width based calculation with padding
    - Constants: CHAR_WIDTH_PX = 7, NODE_BASE_PADDING = 52, FUNCTION_NODE_BASE_PADDING = 48
-   - Location: /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/layout.js:44-98
+   - Location: /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:44-98
    - Purpose: Initial layout positioning before React Flow renders
 
 2. **Wrapper Dimensions** (React Flow wrapper element: .react-flow__node)
@@ -36,8 +36,8 @@ THREE DIMENSION SOURCES:
 SHADOW HANDLING (ALREADY CORRECT):
 
 The system properly accounts for CSS shadows via SHADOW_OFFSET = 10:
-- Location: layout.js:37, constraint-layout.js:44, app.js:1091
-- Applied: Edge routing subtracts SHADOW_OFFSET from node bottom (layout.js:886, 954)
+- Location: viz.js:37, viz.js:44, viz.js:1091
+- Applied: Edge routing subtracts SHADOW_OFFSET from node bottom (viz.js:886, 954)
 - Purpose: Edges connect to VISIBLE node boundary, not the shadow extent
 - Compromise value: Balances shadow-lg (14px) and shadow-sm (6px) shadows
 
@@ -48,7 +48,7 @@ NO BORDER WIDTH FACTORS:
 COORDINATE SYSTEM:
 - Center-based: nodes positioned by center point
 - Normalized: bounds calculated using node edges (nodeLeft/nodeRight/nodeTop/nodeBottom helpers)
-- Location: constraint-layout.js bounds() function uses node.x ± width/2
+- Location: viz.js bounds() function uses node.x ± width/2
 
 === CONCLUSION: NO FIXES NEEDED ===
 
@@ -98,7 +98,7 @@ class TestDimensionMismatch:
         FINDINGS:
         - Calculated dimensions (pre-render): Based on character width + padding
           * CHAR_WIDTH_PX = 7, NODE_BASE_PADDING = 52, FUNCTION_NODE_BASE_PADDING = 48
-          * Location: layout.js:44-98 calculateDimensions()
+          * Location: viz.js:44-98 calculateDimensions()
 
         - Wrapper dimensions (~10px larger): React Flow adds handles and padding
           * This is EXPECTED behavior, not a bug
@@ -109,8 +109,8 @@ class TestDimensionMismatch:
           * Box shadow does NOT affect these bounds (proven by other test)
 
         - Shadow handling: SHADOW_OFFSET = 10 already applied to edge routing
-          * Location: layout.js:37, constraint-layout.js:44
-          * Applied: layout.js:886 (srcBottomY = height - SHADOW_OFFSET)
+          * Location: viz.js:37, viz.js:44
+          * Applied: viz.js:886 (srcBottomY = height - SHADOW_OFFSET)
           * Purpose: Edges connect to visible boundary, not shadow extent
 
         CONCLUSION: No fixes needed - dimension handling is working as designed.
@@ -233,11 +233,11 @@ class TestDimensionMismatch:
           extends beyond the visible node due to shadow blur
 
         LOCATIONS OF SHADOW_OFFSET USAGE:
-        1. layout.js:37 - Constant definition
-        2. layout.js:886 - srcBottomY calculation for cross-boundary edges
-        3. layout.js:954 - newStartY calculation for re-routed edges
-        4. constraint-layout.js:44-45 - nodeVisibleBottom() helper
-        5. app.js:1091-1101 - Debug overlay visible height calculation
+        1. viz.js:37 - Constant definition
+        2. viz.js:886 - srcBottomY calculation for cross-boundary edges
+        3. viz.js:954 - newStartY calculation for re-routed edges
+        4. viz.js:44-45 - nodeVisibleBottom() helper
+        5. viz.js:1091-1101 - Debug overlay visible height calculation
 
         NO FIXES NEEDED: Shadow handling is correct and well-documented in CLAUDE.md
         """
@@ -325,7 +325,7 @@ NO FIXES ARE NEEDED - the system is working as designed.
 THREE DIMENSION SOURCES (All Working Correctly):
 
 1. CALCULATED DIMENSIONS (Pre-render)
-   File: /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/layout.js
+   File: /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js
    Lines: 44-98 (calculateDimensions function)
    Constants:
    - CHAR_WIDTH_PX = 7 (line 26)
@@ -357,18 +357,18 @@ SHADOW HANDLING (Already Correct):
 The SHADOW_OFFSET = 10 constant is properly applied throughout the system:
 
 Locations:
-1. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/layout.js:37
+1. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:37
    - Constant definition with documentation
-2. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/layout.js:886
+2. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:886
    - srcBottomY = actualSrcPos.y + actualSrcDims.height - SHADOW_OFFSET
    - Cross-boundary edge routing
-3. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/layout.js:954
+3. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:954
    - newStartY = producerPos.y + producerDims.height - SHADOW_OFFSET
    - Re-routed edge start point calculation
-4. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/constraint-layout.js:44-45
+4. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:44-45
    - nodeVisibleBottom() helper function
    - Used throughout edge routing logic
-5. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/app.js:1091-1101
+5. /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js:1091-1101
    - Debug overlay visible height calculation
 
 Purpose: Visual alignment - edges connect to where the user SEES the node boundary,
@@ -390,7 +390,7 @@ COORDINATE SYSTEM:
   * nodeRight(node) = node.x + node.width * 0.5
   * nodeTop(node) = node.y - node.height * 0.5
   * nodeBottom(node) = node.y + node.height * 0.5
-- Location: /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/constraint-layout.js
+- Location: /Users/giladrubin/python_workspace/hypergraph/src/hypergraph/viz/assets/viz.js
 - Status: CORRECT - properly centers content and calculates bounds
 
 FIX PLAN: NO FIXES NEEDED
