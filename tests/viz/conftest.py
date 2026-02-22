@@ -523,17 +523,19 @@ def click_to_collapse_container(page, container_id: str) -> None:
 
     # For expanded containers, find the collapse button inside the node
     # The button has the container label text and is styled with "absolute -top-3"
+    # Use dispatch_event because React Flow CSS transforms can cause Playwright
+    # to report the element as "outside of the viewport" even when visible.
     collapse_button = node_element.locator('button').first
     if collapse_button.count() > 0:
-        collapse_button.click()
+        collapse_button.dispatch_event('click')
     else:
         # Fallback: try clicking the title text directly
         title_element = node_element.locator(f'text={container_id}').first
         if title_element.count() > 0:
-            title_element.click()
+            title_element.dispatch_event('click')
         else:
             # Last resort: click the node itself
-            node_element.click()
+            node_element.dispatch_event('click')
 
     # Wait for layout to update (version should increment) AND centering to complete
     page.wait_for_function(
