@@ -98,7 +98,7 @@ Offsets defined in viz.js Section 1:
 Dev-only controls visible when `window.__hypergraph_debug_viz = true`:
 - Toggle: "Converge to center" (switches edge routing mode)
 - Slider: "Stem height" (convergence offset, 0-60px)
-- Slider: "Endpoint padding" (dagre mode only, 0-60px)
+- Slider: "Endpoint padding" (dagre mode only, 0–0.45 as a fraction of node width; distinct from the `EDGE_ENDPOINT_PADDING` pixel constant)
 
 Gallery page (`scripts/render_notebook_viz.py`) has a DialKit bar that broadcasts settings to all iframes via `postMessage`. Viz.js listens for `{ type: 'hypergraph-set-options', options: {...} }` messages.
 

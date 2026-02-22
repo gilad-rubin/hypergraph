@@ -190,7 +190,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
 
       // Check all required modules are loaded
       var requiredModules = [
-        'React', 'ReactDOM', 'ReactFlow', 'htm', 'HypergraphViz'
+        'React', 'ReactDOM', 'ReactFlow', 'htm', 'dagre', 'HypergraphViz'
       ];
       var missing = requiredModules.filter(function(m) {{ return !window[m]; }});
 

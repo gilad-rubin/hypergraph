@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import traceback
 import webbrowser
 from contextlib import redirect_stderr, redirect_stdout
@@ -100,7 +101,6 @@ class VizCapture:
 
         # If the caller specified a different filepath, copy there too
         if caller_filepath and str(Path(caller_filepath).resolve()) != str(filepath.resolve()):
-            import shutil
             shutil.copy2(str(filepath), str(caller_filepath))
 
         self._record(graph, filepath, kwargs)
@@ -303,22 +303,24 @@ def render_vizdev_graphs(output_dir: Path) -> list[VizRecord]:
     if not manifest_path.exists():
         return []
 
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     records: list[VizRecord] = []
 
     for i, entry in enumerate(manifest.get("graphs", [])):
-        graph_id = entry["id"]
+        graph_id = entry.get("id")
+        if not graph_id:
+            continue
         graph_name = entry.get("name", graph_id)
         data_path = VIZ_DEV_DATA_DIR / f"{graph_id}.json"
         if not data_path.exists():
             continue
 
-        graph_data = json.loads(data_path.read_text())
+        graph_data = json.loads(data_path.read_text(encoding="utf-8"))
         html_content = generate_widget_html(graph_data)
 
         filename = f"vizdev_{i:03d}_{graph_id}.html"
         filepath = output_dir / filename
-        filepath.write_text(html_content)
+        filepath.write_text(html_content, encoding="utf-8")
 
         records.append(VizRecord(
             notebook="viz-dev/public/data",

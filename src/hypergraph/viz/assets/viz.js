@@ -15,8 +15,10 @@
   var RF = root.ReactFlow;
   var htm = root.htm;
 
-  if (!React || !ReactDOM || !RF || !htm) {
-    console.error('HypergraphViz: Missing required globals (React, ReactDOM, ReactFlow, htm)');
+  var dagre = root.dagre;
+
+  if (!React || !ReactDOM || !RF || !htm || !dagre) {
+    console.error('HypergraphViz: Missing required globals (React, ReactDOM, ReactFlow, htm, dagre)');
     return;
   }
 
@@ -984,10 +986,11 @@
     var markerEnd = props.markerEnd;
     var edgePath, labelX, labelY;
 
+    var edgeLabel = label || (data && data.label);
+
     if (data && data.points && data.points.length > 0) {
       var points = normalizePoints(data.points.slice());
       edgePath = curveBasis(points);
-      var edgeLabel = label || (data && data.label);
       var isBranch = edgeLabel === 'True' || edgeLabel === 'False';
       var lp = isBranch
         ? pointAlongPolyline(points, outgoingMidpointDistance(points) / (function() {
@@ -999,12 +1002,9 @@
       var r = getBezierPath({ sourceX: props.sourceX, sourceY: props.sourceY, sourcePosition: props.sourcePosition,
         targetX: props.targetX, targetY: props.targetY, targetPosition: props.targetPosition });
       edgePath = r[0];
-      var edgeLabel = label || (data && data.label);
       labelX = sourceX + (props.targetX - sourceX) * 0.35;
       labelY = sourceY + (props.targetY - sourceY) * 0.35;
     }
-
-    var edgeLabel = label || (data && data.label);
     var labelStyle = {};
     if (edgeLabel === 'True') labelStyle = { background: 'rgba(16,185,129,0.9)', border: '1px solid #34d399', color: '#fff', boxShadow: '0 2px 6px rgba(16,185,129,0.3)' };
     else if (edgeLabel === 'False') labelStyle = { background: 'rgba(239,68,68,0.9)', border: '1px solid #f87171', color: '#fff', boxShadow: '0 2px 6px rgba(239,68,68,0.3)' };
@@ -1090,6 +1090,7 @@
     var wrapStyle = (nodeType !== 'BRANCH' && !(nodeType === 'PIPELINE' && isExpanded)) ? { paddingBottom: bottomOff + 'px' } : null;
 
     useEffect(function() { updateNodeInternals(id); }, [id, data.separateOutputs, data.showTypes, data.outputs ? data.outputs.length : 0, data.inputs ? data.inputs.length : 0, isExpanded, theme]);
+    var hoverState = useState(false);
 
     // Color config by type
     var colors = { bg: 'indigo', border: 'indigo' };
@@ -1163,7 +1164,6 @@
 
     // ── BRANCH node (diamond) ──
     if (nodeType === 'BRANCH') {
-      var hoverState = useState(false);
       var diamondBg = isLight ? '#ecfeff' : '#083344';
       var diamondBorder = isLight ? '#22d3ee' : 'rgba(6,182,212,0.6)';
       var diamondHover = isLight ? '#06b6d4' : 'rgba(34,211,238,0.8)';
@@ -1739,9 +1739,12 @@
     var styledEdges = useMemo(function() {
       if (isLayouting) return [];
       return layoutedEdges.map(function(e) {
-        var isControl = e.data && e.data.edgeType === 'control';
+        var edgeType = e.data && e.data.edgeType;
+        var isControl = edgeType === 'control';
+        var isOrdering = edgeType === 'ordering';
         var st = { ...edgeOpts.style, strokeWidth: (e.data && e.data.isDataLink) ? 1.5 : 2 };
         if (isControl) st.strokeDasharray = '6 4';
+        if (isOrdering) { st.stroke = '#8b5cf6'; st.strokeWidth = 1.5; st.strokeDasharray = '6 3'; }
         return { ...e, id: e.id + '_exp_' + (expansionKey ? expansionKey.replace(/,/g, '_') : 'none') + '_mode_' + renderModeKey,
           ...edgeOpts, style: st, markerEnd: edgeOpts.markerEnd, data: e.data };
       });
@@ -1783,7 +1786,8 @@
   };
 
   function init() {
-    var initialData = JSON.parse(document.getElementById('graph-data').textContent || '{"nodes":[],"edges":[]}');
+    var graphDataEl = document.getElementById('graph-data');
+    var initialData = JSON.parse((graphDataEl && graphDataEl.textContent) || '{"nodes":[],"edges":[]}');
     var themePreference = normalizeThemePref((initialData.meta && initialData.meta.theme_preference) || 'auto');
     var rootEl = document.getElementById('root');
     var fallback = document.getElementById('fallback');
