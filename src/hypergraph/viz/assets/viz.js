@@ -56,6 +56,7 @@
   var GRAPH_PADDING = 24;
   var HEADER_HEIGHT = 32;
   var LAYOUT_PADDING = 70;
+  var EDGE_CONVERGE_TO_CENTER = true;
   var EDGE_CONVERGENCE_OFFSET = 20;
   var FEEDBACK_EDGE_GUTTER = 70;
   var FEEDBACK_EDGE_HEADROOM = 40;
@@ -296,7 +297,9 @@
    * This is THE key change: dagre computes multi-point edge paths,
    * and we use them directly instead of generating 2-point straight lines.
    */
-  function layoutGraph(nodes, edges) {
+  function layoutGraph(nodes, edges, convergeToCenter, convergenceOffset) {
+    if (convergeToCenter === undefined) convergeToCenter = EDGE_CONVERGE_TO_CENTER;
+    if (convergenceOffset === undefined) convergenceOffset = EDGE_CONVERGENCE_OFFSET;
     var g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: 'TB', nodesep: 42, ranksep: 140, marginx: 0, marginy: 0 });
     g.setDefaultEdgeLabel(function() { return {}; });
@@ -340,18 +343,89 @@
       var dagreEdge = g.edge(e.source, e.target);
       if (dagreEdge && dagreEdge.points && dagreEdge.points.length > 0) {
         var pts = dagreEdge.points.map(function(p) { return { x: p.x, y: p.y }; });
-        // Adjust first/last to our visible bounds
-        pts[0] = { x: src.x, y: srcBottom };
-        pts[pts.length - 1] = { x: tgt.x, y: tgtTop };
+        if (convergeToCenter) {
+          // Center mode: all edges go to node center-x
+          pts[0] = { x: src.x, y: srcBottom };
+          pts[pts.length - 1] = { x: tgt.x, y: tgtTop };
+        } else {
+          // Dagre mode: keep dagre's native x-positions, only clamp Y
+          pts[0].y = srcBottom;
+          pts[pts.length - 1].y = tgtTop;
+        }
         e.points = pts;
       } else {
+        // Fallback: no dagre edge data, use center-x for both modes
         e.points = [{ x: src.x, y: srcBottom }, { x: tgt.x, y: tgtTop }];
       }
     });
 
+    // Add convergence/divergence stems when edges converge to center
+    if (convergeToCenter) {
+      addConvergenceStems(edges, nodeById, convergenceOffset);
+    }
+
     var size = computeBounds(nodes, LAYOUT_PADDING);
     offsetAll(nodes, edges, size.min);
     return { nodes: nodes, edges: edges, size: size };
+  }
+
+  /**
+   * Insert convergence/divergence stem points for edges that share endpoints.
+   * When multiple edges arrive at the same target center, inserting a convergence
+   * point creates the V-shape merge effect. Same for divergence from sources.
+   */
+  function addConvergenceStems(edges, nodeById, offset) {
+    // Group edges by target
+    var byTarget = {};
+    edges.forEach(function(e) {
+      if (!e.points || e.points.length < 2) return;
+      if (!byTarget[e.target]) byTarget[e.target] = [];
+      byTarget[e.target].push(e);
+    });
+
+    // Add convergence points for targets with 2+ incoming edges
+    Object.keys(byTarget).forEach(function(targetId) {
+      var group = byTarget[targetId];
+      if (group.length < 2) return;
+      var tgt = nodeById[targetId];
+      if (!tgt) return;
+
+      var tgtType = resolveNodeType(tgt.data && tgt.data.nodeType, tgt.data && tgt.data.isExpanded);
+      var tgtTop = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
+      var convergeY = tgtTop - offset;
+
+      group.forEach(function(e) {
+        var last = e.points[e.points.length - 1];
+        // Insert convergence point before the final target point
+        e.points.splice(e.points.length - 1, 0, { x: last.x, y: convergeY });
+      });
+    });
+
+    // Group edges by source
+    var bySource = {};
+    edges.forEach(function(e) {
+      if (!e.points || e.points.length < 2) return;
+      if (!bySource[e.source]) bySource[e.source] = [];
+      bySource[e.source].push(e);
+    });
+
+    // Add divergence points for sources with 2+ outgoing edges
+    Object.keys(bySource).forEach(function(sourceId) {
+      var group = bySource[sourceId];
+      if (group.length < 2) return;
+      var src = nodeById[sourceId];
+      if (!src) return;
+
+      var srcType = resolveNodeType(src.data && src.data.nodeType, src.data && src.data.isExpanded);
+      var srcBottom = src.y + src.height * 0.5 - getOffset(srcType);
+      var divergeY = srcBottom + offset;
+
+      group.forEach(function(e) {
+        var first = e.points[0];
+        // Insert divergence point after the initial source point
+        e.points.splice(1, 0, { x: first.x, y: divergeY });
+      });
+    });
   }
 
   // ── Feedback edge detection (DFS cycle detection) ──
@@ -469,7 +543,7 @@
 
   // ── Recursive layout ──
 
-  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData) {
+  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData, convergeToCenter, convergenceOffset) {
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
 
@@ -516,7 +590,7 @@
       var fbKeys = computeFeedbackEdgeKeys(children, intEdges);
       var layoutEdges = intEdges.filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); });
 
-      var result = layoutGraph(buildLayoutNodes(children, nodeDimensions), layoutEdges);
+      var result = layoutGraph(buildLayoutNodes(children, nodeDimensions), layoutEdges, convergeToCenter, convergenceOffset);
       result.size = computeBounds(result.nodes, GRAPH_PADDING);
       childLayoutResults.set(graphNode.id, result);
 
@@ -551,7 +625,7 @@
     var rootFbKeys = computeFeedbackEdgeKeys(rootNodes, rootEdges);
     var filteredRootEdges = rootEdges.filter(function(e) { return !rootFbKeys.has(e.source + '->' + e.target); });
 
-    var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges);
+    var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges, convergeToCenter, convergenceOffset);
     rootResult.size = computeBounds(rootResult.nodes, GRAPH_PADDING);
 
     // Phase 3: Compose positions
@@ -709,7 +783,7 @@
 
   // ── useLayout hook ──
 
-  function useLayout(nodes, edges, expansionState, routingData) {
+  function useLayout(nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset) {
     var nodesState = useState([]), edgesState = useState([]);
     var errorState = useState(null), versionState = useState(0);
     var heightState = useState(600), widthState = useState(600), busyState = useState(false);
@@ -722,7 +796,7 @@
         var visible = nodes.filter(function(n) { return !n.hidden; });
 
         if (expansionState && expansionState.size > 0) {
-          var res = performRecursiveLayout(visible, edges, expansionState, debug, routingData);
+          var res = performRecursiveLayout(visible, edges, expansionState, debug, routingData, convergeToCenter, convergenceOffset);
           nodesState[1](res.nodes); edgesState[1](res.edges);
           versionState[1](function(v) { return v + 1; }); busyState[1](false); errorState[1](null);
           if (res.size) { widthState[1](res.size.width); heightState[1](res.size.height); }
@@ -742,7 +816,7 @@
           .filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); })
           .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-        var result = layoutGraph(layoutNodes, layoutEdges);
+        var result = layoutGraph(layoutNodes, layoutEdges, convergeToCenter, convergenceOffset);
 
         var positioned = result.nodes.map(function(n) {
           return {
@@ -785,7 +859,7 @@
         nodesState[1](fallback); edgesState[1](edges);
         versionState[1](function(v) { return v + 1; }); busyState[1](false);
       }
-    }, [nodes, edges, expansionState, routingData]);
+    }, [nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset]);
 
     return {
       layoutedNodes: nodesState[0], layoutedEdges: edgesState[0], layoutError: errorState[0],
@@ -1168,6 +1242,39 @@
       <//>`;
   };
 
+  // ── Dev-only edge convergence controls (DialKit) ──
+
+  var DevEdgeControls = function(props) {
+    var isLight = props.theme === 'light';
+    var bg = isLight ? 'bg-white/90 border-slate-300' : 'bg-slate-900/90 border-slate-700';
+    var text = isLight ? 'text-slate-700' : 'text-slate-300';
+    var muted = isLight ? 'text-slate-500' : 'text-slate-500';
+    var accent = isLight ? 'accent-indigo-500' : 'accent-indigo-400';
+
+    return html`
+      <${Panel} position="top-left" className=${'p-3 rounded-lg border shadow-lg backdrop-blur-sm ' + bg}>
+        <div className=${'text-xs font-semibold mb-2 ' + muted}>Edge Routing</div>
+        <label className=${'flex items-center gap-2 text-xs cursor-pointer ' + text}>
+          <input type="checkbox" checked=${props.convergeToCenter}
+            className=${accent}
+            onChange=${function(e) { props.onToggleConverge(e.target.checked); }} />
+          Converge to center
+        </label>
+        ${props.convergeToCenter ? html`
+          <div className="mt-2">
+            <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
+              <span>Stem height</span>
+              <span className=${'font-mono ' + text}>${props.convergenceOffset}px</span>
+            </div>
+            <input type="range" min="0" max="60" step="1"
+              value=${props.convergenceOffset}
+              className=${'w-full h-1 rounded-lg appearance-none cursor-pointer ' + accent}
+              onInput=${function(e) { props.onChangeOffset(Number(e.target.value)); }} />
+          </div>
+        ` : null}
+      <//>`;
+  };
+
   // ╔═══════════════════════════════════════════════════════════╗
   // ║  Section 7: App + Init                                   ║
   // ╚═══════════════════════════════════════════════════════════╝
@@ -1185,6 +1292,12 @@
     var separateOutputs = sepState[0], setSeparateOutputs = sepState[1];
     var typState = useState(props.initialShowTypes);
     var showTypes = typState[0], setShowTypes = typState[1];
+
+    // Edge convergence state (dev-only controls)
+    var convState = useState(EDGE_CONVERGE_TO_CENTER);
+    var convergeToCenter = convState[0], setConvergeToCenter = convState[1];
+    var convOffState = useState(EDGE_CONVERGENCE_OFFSET);
+    var convergenceOffset = convOffState[0], setConvergenceOffset = convOffState[1];
 
     var onToggleSep = useCallback(function(v) {
       root.__hypergraphVizReady = false;
@@ -1330,7 +1443,7 @@
       };
     }, [initialData]);
 
-    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData);
+    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData, convergeToCenter, convergenceOffset);
     var layoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
@@ -1575,6 +1688,12 @@
           <${CustomControls} theme=${theme} onToggleTheme=${toggleTheme} separateOutputs=${separateOutputs}
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}
             onToggleTypes=${function() { onToggleTyp(); }} onFitView=${fitWithFixedPadding} />
+          ${root.__hypergraph_debug_viz ? html`
+            <${DevEdgeControls} theme=${theme} convergeToCenter=${convergeToCenter}
+              convergenceOffset=${convergenceOffset}
+              onToggleConverge=${function(v) { root.__hypergraphVizReady = false; setConvergeToCenter(v); }}
+              onChangeOffset=${function(v) { root.__hypergraphVizReady = false; setConvergenceOffset(v); }} />
+          ` : null}
         <//>
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
