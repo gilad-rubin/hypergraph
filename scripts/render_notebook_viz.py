@@ -90,14 +90,19 @@ class VizCapture:
         # Always disable debug overlays for gallery output.
         kwargs["_debug_overlays"] = False
 
-        filepath = kwargs.get("filepath")
-        if not filepath:
-            filepath = self._next_filepath(graph)
-            kwargs["filepath"] = str(filepath)
-        else:
-            filepath = Path(filepath)
+        # Capture to gallery output dir, but also honor caller's filepath
+        # (extract_debug_data needs its temp file to exist for Playwright)
+        caller_filepath = kwargs.pop("filepath", None)
+        filepath = self._next_filepath(graph)
+        kwargs["filepath"] = str(filepath)
 
         result = self._orig_visualize(graph, *args, **kwargs)
+
+        # If the caller specified a different filepath, copy there too
+        if caller_filepath and str(Path(caller_filepath).resolve()) != str(filepath.resolve()):
+            import shutil
+            shutil.copy2(str(filepath), str(caller_filepath))
+
         self._record(graph, filepath, kwargs)
         self._counter += 1
         return result
