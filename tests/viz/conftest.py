@@ -15,7 +15,7 @@ import tempfile
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.viz.html_generator import generate_widget_html
+from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph
 
 # =============================================================================

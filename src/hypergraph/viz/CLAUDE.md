@@ -178,4 +178,6 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 - `src/hypergraph/viz/assets/layout.js`: layout phases + reroute logic
 - `src/hypergraph/viz/assets/layout-engine.js`: dagre wrapper for node positioning
 - `src/hypergraph/viz/assets/constants.js`: shared layout + rendering constants
-- `src/hypergraph/viz/html_generator.py`: HTML + centering + debug overlays
+- `src/hypergraph/viz/html/generator.py`: HTML + centering + debug overlays
+- `src/hypergraph/viz/html/estimator.py`: iframe dimension estimation
+- `src/hypergraph/viz/renderer/instructions.py`: VizInstructions data contract
