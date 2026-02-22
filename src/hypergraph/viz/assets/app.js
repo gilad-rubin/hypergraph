@@ -86,553 +86,6 @@
     return y + height - offset;
   }
 
-  // === DEBUG OVERLAY COMPONENT ===
-  var DebugOverlay = function(props) {
-    var nodes = props.nodes;
-    var edges = props.edges;
-    var enabled = props.enabled;
-    var theme = props.theme;
-
-    var showPanelState = useState(true);
-    var showPanel = showPanelState[0];
-    var setShowPanel = showPanelState[1];
-
-    var activeTabState = useState('bounds');
-    var activeTab = activeTabState[0];
-    var setActiveTab = activeTabState[1];
-
-    if (!enabled) return null;
-
-    var visibleNodes = nodes.filter(function(n) { return !n.hidden; });
-    var isLight = theme === 'light';
-
-    var TYPE_HINT_MAX_CHARS = VizLayout.TYPE_HINT_MAX_CHARS;
-    var NODE_LABEL_MAX_CHARS = VizLayout.NODE_LABEL_MAX_CHARS;
-    var CHAR_WIDTH_PX = VizLayout.CHAR_WIDTH_PX;
-    var NODE_BASE_PADDING = VizLayout.NODE_BASE_PADDING;
-    var MAX_NODE_WIDTH = VizLayout.MAX_NODE_WIDTH;
-
-    var nodeBounds = visibleNodes.map(function(n) {
-      var elkWidth = Math.round((n.style && n.style.width) || 200);
-      var label = (n.data && n.data.label) || '';
-      var typeHint = (n.data && n.data.typeHint) || '';
-      var showTypes = n.data && n.data.showTypes;
-      var params = (n.data && n.data.params) || [];
-      var paramTypes = (n.data && n.data.paramTypes) || [];
-      var outputs = (n.data && n.data.outputs) || [];
-
-      var expectedWidth = 0;
-      var contentDesc = '';
-      var longestText = '';
-      var longestTextLen = 0;
-      var allTexts = [];
-
-      if (n.data && (n.data.nodeType === 'DATA' || n.data.nodeType === 'INPUT')) {
-        var truncLabelLen = Math.min(label.length, NODE_LABEL_MAX_CHARS);
-        var typeLen = (showTypes && typeHint) ? Math.min(typeHint.length, TYPE_HINT_MAX_CHARS) + 2 : 0;
-        expectedWidth = Math.min(MAX_NODE_WIDTH, (truncLabelLen + typeLen) * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-        contentDesc = showTypes && typeHint ? (label + ': ' + typeHint) : label;
-        allTexts = [{ text: label, len: label.length, kind: 'label', truncated: label.length > NODE_LABEL_MAX_CHARS }];
-        if (typeHint) allTexts.push({ text: typeHint, len: typeHint.length, kind: 'type', truncated: typeHint.length > TYPE_HINT_MAX_CHARS });
-        longestText = typeHint && typeHint.length > label.length ? typeHint : label;
-        longestTextLen = Math.max(label.length, typeHint ? typeHint.length : 0);
-      } else if (n.data && n.data.nodeType === 'INPUT_GROUP') {
-        var maxLen = 0;
-        params.forEach(function(p, i) {
-          var pLen = p ? p.length : 0;
-          var truncPLen = Math.min(pLen, NODE_LABEL_MAX_CHARS);
-          var t = paramTypes[i] || '';
-          allTexts.push({ text: p, len: pLen, kind: 'param', truncated: pLen > NODE_LABEL_MAX_CHARS });
-          if (t) allTexts.push({ text: t, len: t.length, kind: 'type', truncated: t.length > TYPE_HINT_MAX_CHARS });
-          var len = truncPLen;
-          if (showTypes && t) {
-            len += 2 + Math.min(t.length, TYPE_HINT_MAX_CHARS);
-          }
-          if (len > maxLen) {
-            maxLen = len;
-            longestText = showTypes && t ? (p + ': ' + t) : p;
-          }
-        });
-        longestTextLen = maxLen;
-        expectedWidth = Math.min(MAX_NODE_WIDTH, maxLen * CHAR_WIDTH_PX + NODE_BASE_PADDING);
-        contentDesc = params.join(', ');
-      } else if (n.data && (n.data.nodeType === 'FUNCTION' || n.data.nodeType === 'PIPELINE')) {
-        allTexts = [{ text: label, len: label.length, kind: 'label', truncated: label.length > NODE_LABEL_MAX_CHARS }];
-        longestText = label;
-        longestTextLen = label.length;
-        outputs.forEach(function(out) {
-          var outName = out.name || '';
-          var outType = out.type || '';
-          allTexts.push({ text: outName, len: outName.length, kind: 'output', truncated: outName.length > NODE_LABEL_MAX_CHARS });
-          if (outType) allTexts.push({ text: outType, len: outType.length, kind: 'type', truncated: outType.length > TYPE_HINT_MAX_CHARS });
-          var combined = showTypes && outType ? (outName + ': ' + outType) : outName;
-          if (combined.length > longestTextLen) {
-            longestText = combined;
-            longestTextLen = combined.length;
-          }
-        });
-      }
-
-      return {
-        id: n.id,
-        shortId: n.id.length > 20 ? n.id.slice(-18) + '..' : n.id,
-        y: Math.round((n.position && n.position.y) || 0),
-        height: Math.round((n.style && n.style.height) || 68),
-        bottom: Math.round(((n.position && n.position.y) || 0) + ((n.style && n.style.height) || 68)),
-        nodeType: n.data && n.data.nodeType,
-        width: elkWidth,
-        expectedWidth: expectedWidth,
-        widthDiff: elkWidth - expectedWidth,
-        contentDesc: contentDesc.length > 25 ? contentDesc.slice(0, 22) + '...' : contentDesc,
-        label: label,
-        typeHint: typeHint || '',
-        longestText: longestText,
-        longestTextLen: longestTextLen,
-        allTexts: allTexts,
-        isTruncated: longestTextLen > TYPE_HINT_MAX_CHARS,
-      };
-    });
-
-    var inputNodes = nodeBounds.filter(function(n) {
-      return ['DATA', 'INPUT', 'INPUT_GROUP'].includes(n.nodeType);
-    });
-
-    // Build node position map with parent info for edge validation
-    var nodeMap = {};
-    var childrenMap = {};  // parentId -> [childIds]
-
-    // First pass: collect all nodes and build children map
-    visibleNodes.forEach(function(n) {
-      var parentId = n.parentNode || null;
-      if (parentId) {
-        if (!childrenMap[parentId]) childrenMap[parentId] = [];
-        childrenMap[parentId].push(n.id);
-      }
-      nodeMap[n.id] = {
-        x: Math.round((n.position && n.position.x) || 0),
-        y: Math.round((n.position && n.position.y) || 0),
-        width: Math.round((n.style && n.style.width) || 200),
-        height: Math.round((n.style && n.style.height) || 68),
-        nodeType: n.data && n.data.nodeType,
-        label: (n.data && n.data.label) || n.id,
-        parentId: parentId,
-        isExpanded: n.data && n.data.isExpanded,
-      };
-    });
-
-    // Second pass: compute absolute positions and padding info
-    var computeAbsolutePos = function(nodeId) {
-      var node = nodeMap[nodeId];
-      if (!node) return { x: 0, y: 0 };
-      if (node._absX !== undefined) return { x: node._absX, y: node._absY };
-
-      var absX = node.x;
-      var absY = node.y;
-      if (node.parentId && nodeMap[node.parentId]) {
-        var parentAbs = computeAbsolutePos(node.parentId);
-        absX += parentAbs.x;
-        absY += parentAbs.y;
-      }
-      node._absX = absX;
-      node._absY = absY;
-      return { x: absX, y: absY };
-    };
-
-    // Compute absolute positions and padding for all nodes
-    Object.keys(nodeMap).forEach(function(nodeId) {
-      var node = nodeMap[nodeId];
-      var absPos = computeAbsolutePos(nodeId);
-      node.absX = absPos.x;
-      node.absY = absPos.y;
-
-      // Canvas padding (distance from origin)
-      node.canvasPadLeft = absPos.x;
-      node.canvasPadTop = absPos.y;
-
-      // Parent padding (distance from parent edges)
-      if (node.parentId && nodeMap[node.parentId]) {
-        var parent = nodeMap[node.parentId];
-        node.parentPadLeft = node.x;  // relative position IS the left padding
-        node.parentPadTop = node.y;
-        node.parentPadRight = parent.width - node.x - node.width;
-        node.parentPadBottom = parent.height - node.y - node.height;
-        // Centering offset: positive = shifted right of parent center
-        var parentCenterX = parent.width / 2;
-        var nodeCenterX = node.x + node.width / 2;
-        node.centerOffset = Math.round(nodeCenterX - parentCenterX);
-      }
-    });
-
-    // Build list of nodes with their children for NODES tab
-    var nodeDetails = Object.keys(nodeMap).map(function(nodeId) {
-      var node = nodeMap[nodeId];
-      return {
-        id: nodeId,
-        label: node.label,
-        nodeType: node.nodeType,
-        parentId: node.parentId,
-        isExpanded: node.isExpanded,
-        children: childrenMap[nodeId] || [],
-        position: { x: node.x, y: node.y },
-        absPosition: { x: node.absX, y: node.absY },
-        size: { w: node.width, h: node.height },
-        canvasPad: { left: node.canvasPadLeft, top: node.canvasPadTop },
-        parentPad: node.parentId ? {
-          left: node.parentPadLeft,
-          top: node.parentPadTop,
-          right: node.parentPadRight,
-          bottom: node.parentPadBottom,
-          centerOffset: node.centerOffset,
-        } : null,
-      };
-    }).sort(function(a, b) {
-      // Sort: root nodes first, then by parent, then by name
-      if (!a.parentId && b.parentId) return -1;
-      if (a.parentId && !b.parentId) return 1;
-      if (a.parentId !== b.parentId) return (a.parentId || '').localeCompare(b.parentId || '');
-      return a.id.localeCompare(b.id);
-    });
-
-    // Validate edges with boundary-crossing info
-    var edgeValidation = edges.map(function(e) {
-      var srcNode = nodeMap[e.source];
-      var tgtNode = nodeMap[e.target];
-
-      if (!srcNode || !tgtNode) {
-        return {
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          status: 'MISSING',
-          issue: !srcNode ? 'Source not visible' : 'Target not visible',
-          srcBottom: null,
-          tgtTop: null,
-          vertDist: null,
-          horizDist: null,
-        };
-      }
-
-      // Use absolute positions for edge validation
-      var srcCenterX = srcNode.absX + srcNode.width / 2;
-      var tgtCenterX = tgtNode.absX + tgtNode.width / 2;
-      var srcBottom = getVisibleBottom(srcNode.absY, srcNode.height, srcNode.nodeType, srcNode.isExpanded);
-      var tgtTop = tgtNode.absY;
-
-      var vertDist = tgtTop - srcBottom;
-      var horizDist = Math.round(tgtCenterX - srcCenterX);
-
-      // Check if this is a boundary-crossing edge
-      var srcIsContainer = srcNode.isExpanded && (childrenMap[e.source] || []).length > 0;
-      var tgtIsContainer = tgtNode.isExpanded && (childrenMap[e.target] || []).length > 0;
-
-      // Find logical connection points
-      var logicalSource = e.source;
-      var logicalTarget = e.target;
-      var boundaryInfo = null;
-
-      // If source is expanded container, edge should come from last child
-      if (srcIsContainer) {
-        var srcChildren = childrenMap[e.source] || [];
-        // Find bottommost child (last in data flow)
-        var bottomChild = srcChildren.reduce(function(best, childId) {
-          var child = nodeMap[childId];
-          if (!child) return best;
-          if (!best) return childId;
-          var bestNode = nodeMap[best];
-          return (child.absY + child.height) > (bestNode.absY + bestNode.height) ? childId : best;
-        }, null);
-        if (bottomChild) {
-          logicalSource = bottomChild;
-          boundaryInfo = (boundaryInfo || '') + 'src→' + nodeMap[bottomChild].label + ' ';
-        }
-      }
-
-      // If target is expanded container, edge should go to first child
-      if (tgtIsContainer) {
-        var tgtChildren = childrenMap[e.target] || [];
-        // Find topmost child (first in data flow)
-        var topChild = tgtChildren.reduce(function(best, childId) {
-          var child = nodeMap[childId];
-          if (!child) return best;
-          if (!best) return childId;
-          var bestNode = nodeMap[best];
-          return child.absY < bestNode.absY ? childId : best;
-        }, null);
-        if (topChild) {
-          logicalTarget = topChild;
-          boundaryInfo = (boundaryInfo || '') + 'tgt→' + nodeMap[topChild].label;
-        }
-      }
-
-      var issues = [];
-      if (vertDist < 0) {
-        issues.push('Target above source (' + vertDist + 'px)');
-      }
-      if (Math.abs(horizDist) > 500) {
-        issues.push('Large horizontal gap (' + horizDist + 'px)');
-      }
-      if (vertDist > 300) {
-        issues.push('Large vertical gap (' + vertDist + 'px)');
-      }
-      if (boundaryInfo) {
-        issues.push('Boundary: ' + boundaryInfo.trim());
-      }
-
-      return {
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        srcLabel: srcNode.label,
-        tgtLabel: tgtNode.label,
-        logicalSource: logicalSource,
-        logicalTarget: logicalTarget,
-        logicalSrcLabel: logicalSource !== e.source ? (nodeMap[logicalSource] || {}).label : null,
-        logicalTgtLabel: logicalTarget !== e.target ? (nodeMap[logicalTarget] || {}).label : null,
-        srcIsContainer: srcIsContainer,
-        tgtIsContainer: tgtIsContainer,
-        status: issues.length > 0 ? (vertDist < 0 ? 'WARN' : 'INFO') : 'OK',
-        issue: issues.join('; ') || null,
-        srcBottom: Math.round(srcBottom),
-        tgtTop: Math.round(tgtTop),
-        vertDist: Math.round(vertDist),
-        horizDist: horizDist,
-      };
-    });
-
-    var edgeIssues = edgeValidation.filter(function(e) { return e.status !== 'OK'; });
-
-    var handleCopy = function() {
-      var info = {
-        nodes: nodeBounds,
-        edges: edges.map(function(e) { return { id: e.id, source: e.source, target: e.target }; })
-      };
-      navigator.clipboard.writeText(JSON.stringify(info, null, 2))
-        .then(function() { alert('Debug info copied!'); })
-        .catch(function(e) { console.error('Copy failed', e); });
-    };
-
-    return html`
-      <${React.Fragment}>
-        <${Panel} position="top-center" className="pointer-events-none">
-          <div className=${'text-[10px] font-mono px-2 py-1 rounded ' + (isLight ? 'bg-red-100 text-red-800' : 'bg-red-900/80 text-red-200')}>
-            DEBUG: Green=source, Blue=target | Yellow highlight = width mismatch
-          </div>
-        <//>
-        <${Panel} position="top-right" className="mt-16 mr-4 pointer-events-auto flex flex-col gap-2">
-          <div className=${'rounded-lg border shadow-xl max-h-[60vh] overflow-hidden flex flex-col ' + (isLight ? 'bg-white border-slate-200' : 'bg-slate-900 border-slate-700')}>
-            <div className="flex items-center border-b border-slate-500/20">
-              <button
-                onClick=${function() { setActiveTab('bounds'); }}
-                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide ' + (activeTab === 'bounds' ? (isLight ? 'bg-red-100 text-red-800' : 'bg-red-900/50 text-red-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
-              >BOUNDS</button>
-              <button
-                onClick=${function() { setActiveTab('widths'); }}
-                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'widths' ? (isLight ? 'bg-amber-100 text-amber-800' : 'bg-amber-900/50 text-amber-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
-              >WIDTHS</button>
-              <button
-                onClick=${function() { setActiveTab('texts'); }}
-                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'texts' ? (isLight ? 'bg-cyan-100 text-cyan-800' : 'bg-cyan-900/50 text-cyan-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
-              >TEXTS</button>
-              <button
-                onClick=${function() { setActiveTab('nodes'); }}
-                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'nodes' ? (isLight ? 'bg-green-100 text-green-800' : 'bg-green-900/50 text-green-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
-              >NODES</button>
-              <button
-                onClick=${function() { setActiveTab('edges'); }}
-                className=${'flex-1 px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (activeTab === 'edges' ? (isLight ? 'bg-purple-100 text-purple-800' : 'bg-purple-900/50 text-purple-300') : (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'))}
-              >EDGES${edgeIssues.length > 0 ? ' (' + edgeIssues.length + ')' : ''}</button>
-              <button
-                onClick=${function() { setShowPanel(function(p) { return !p; }); }}
-                className=${'px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (isLight ? 'bg-slate-100 text-slate-600 hover:bg-slate-200' : 'bg-slate-800 text-slate-400 hover:bg-slate-700')}
-              >${showPanel ? '▼' : '▶'}</button>
-              <button
-                onClick=${handleCopy}
-                className=${'px-3 py-1.5 text-[10px] font-bold tracking-wide border-l border-slate-500/20 ' + (isLight ? 'bg-blue-100 text-blue-800 hover:bg-blue-200' : 'bg-blue-900/50 text-blue-300 hover:bg-blue-900/70')}
-                title="Copy debug info to clipboard"
-              >COPY</button>
-            </div>
-            ${showPanel && activeTab === 'bounds' ? html`
-              <div className="overflow-y-auto max-h-[50vh]">
-                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
-                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
-                    <tr>
-                      <th className="px-2 py-1 text-left">Node</th>
-                      <th className="px-2 py-1 text-right">Y</th>
-                      <th className="px-2 py-1 text-right">H</th>
-                      <th className="px-2 py-1 text-right font-bold text-amber-500">Bottom</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${nodeBounds.map(function(n, i) {
-                      return html`
-                        <tr key=${n.id} className=${(i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')) + (n.nodeType === 'PIPELINE' ? (isLight ? ' !bg-amber-50' : ' !bg-amber-900/20') : '')}>
-                          <td className="px-2 py-0.5 truncate max-w-[120px]" title=${n.id}>${n.shortId}</td>
-                          <td className="px-2 py-0.5 text-right">${n.y}</td>
-                          <td className="px-2 py-0.5 text-right">${n.height}</td>
-                          <td className="px-2 py-0.5 text-right font-bold text-amber-500">${n.bottom}</td>
-                        </tr>
-                      `;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ` : null}
-            ${showPanel && activeTab === 'widths' ? html`
-              <div className="overflow-y-auto max-h-[50vh]">
-                <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-amber-50 text-amber-800' : 'bg-amber-900/30 text-amber-300')}>
-                  Formula: (labelLen + typeLen) * 7 + 52 | Green = OK, Yellow = too wide, Red = too narrow
-                </div>
-                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
-                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
-                    <tr>
-                      <th className="px-2 py-1 text-left">Node</th>
-                      <th className="px-2 py-1 text-left">Content</th>
-                      <th className="px-2 py-1 text-right">ELK W</th>
-                      <th className="px-2 py-1 text-right">Expect</th>
-                      <th className="px-2 py-1 text-right">Diff</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${inputNodes.map(function(n, i) {
-                      var diffClass = n.widthDiff > 20 ? 'text-amber-500' : n.widthDiff < -5 ? 'text-red-500' : 'text-green-500';
-                      return html`
-                        <tr key=${n.id} className=${i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')}>
-                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${n.id}>${n.shortId}</td>
-                          <td className="px-2 py-0.5 truncate max-w-[100px]" title=${n.contentDesc}>${n.contentDesc}</td>
-                          <td className="px-2 py-0.5 text-right">${n.width}</td>
-                          <td className="px-2 py-0.5 text-right">${n.expectedWidth}</td>
-                          <td className=${'px-2 py-0.5 text-right font-bold ' + diffClass}>${n.widthDiff > 0 ? '+' : ''}${n.widthDiff}</td>
-                        </tr>
-                      `;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ` : null}
-            ${showPanel && activeTab === 'texts' ? html`
-              <div className="overflow-y-auto max-h-[50vh]">
-                <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-cyan-50 text-cyan-800' : 'bg-cyan-900/30 text-cyan-300')}>
-                  Type hints truncated at K=${TYPE_HINT_MAX_CHARS} chars | Red = truncated
-                </div>
-                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
-                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
-                    <tr>
-                      <th className="px-2 py-1 text-left">Node</th>
-                      <th className="px-2 py-1 text-left">Type</th>
-                      <th className="px-2 py-1 text-left">Label</th>
-                      <th className="px-2 py-1 text-left">TypeHint (full)</th>
-                      <th className="px-2 py-1 text-right">Longest</th>
-                      <th className="px-2 py-1 text-right">W</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${nodeBounds.map(function(n, i) {
-                      var truncClass = n.isTruncated ? 'text-red-500' : 'text-green-500';
-                      return html`
-                        <tr key=${n.id} className=${i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')}>
-                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${n.id}>${n.shortId}</td>
-                          <td className="px-2 py-0.5">${n.nodeType || '-'}</td>
-                          <td className="px-2 py-0.5 truncate max-w-[80px]" title=${n.label}>${n.label || '-'}</td>
-                          <td className=${'px-2 py-0.5 truncate max-w-[120px] ' + (n.typeHint && n.typeHint.length > TYPE_HINT_MAX_CHARS ? 'text-red-500 font-bold' : '')} title=${n.typeHint}>${n.typeHint || '-'}</td>
-                          <td className=${'px-2 py-0.5 text-right ' + truncClass}>${n.longestTextLen}</td>
-                          <td className="px-2 py-0.5 text-right">${n.width}</td>
-                        </tr>
-                      `;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ` : null}
-            ${showPanel && activeTab === 'nodes' ? html`
-              <div className="overflow-y-auto max-h-[50vh]">
-                <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-green-50 text-green-800' : 'bg-green-900/30 text-green-300')}>
-                  Node positioning: Absolute position, parent padding, center offset | ${nodeDetails.length} nodes
-                </div>
-                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
-                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
-                    <tr>
-                      <th className="px-2 py-1 text-left">Node</th>
-                      <th className="px-2 py-1 text-left">Parent</th>
-                      <th className="px-2 py-1 text-right">AbsX</th>
-                      <th className="px-2 py-1 text-right">AbsY</th>
-                      <th className="px-2 py-1 text-right">W×H</th>
-                      <th className="px-2 py-1 text-right" title="Left/Top/Right/Bottom padding from parent">Pad L/T/R/B</th>
-                      <th className="px-2 py-1 text-right" title="Center offset within parent (+ = right of center)">CtrOff</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${nodeDetails.map(function(n, i) {
-                      var isContainer = n.isExpanded && n.children.length > 0;
-                      var rowClass = isContainer ? (isLight ? '!bg-amber-50' : '!bg-amber-900/20') : '';
-                      var padStr = n.parentPad ? n.parentPad.left + '/' + n.parentPad.top + '/' + n.parentPad.right + '/' + n.parentPad.bottom : '-';
-                      var centerOffClass = n.parentPad && Math.abs(n.parentPad.centerOffset) > 20 ? 'text-amber-500 font-bold' : '';
-                      return html`
-                        <tr key=${n.id} className=${(i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')) + ' ' + rowClass}>
-                          <td className="px-2 py-0.5 truncate max-w-[100px]" title=${n.id + (isContainer ? ' [EXPANDED]' : '') + (n.children.length > 0 ? ' children: ' + n.children.join(', ') : '')}>
-                            ${n.parentId ? '  ' : ''}${n.label}${isContainer ? ' ▼' : ''}
-                          </td>
-                          <td className="px-2 py-0.5 truncate max-w-[60px]" title=${n.parentId || 'root'}>${n.parentId ? nodeMap[n.parentId].label : '-'}</td>
-                          <td className="px-2 py-0.5 text-right">${n.absPosition.x}</td>
-                          <td className="px-2 py-0.5 text-right">${n.absPosition.y}</td>
-                          <td className="px-2 py-0.5 text-right">${n.size.w}×${n.size.h}</td>
-                          <td className="px-2 py-0.5 text-right text-[8px]">${padStr}</td>
-                          <td className=${'px-2 py-0.5 text-right ' + centerOffClass}>${n.parentPad ? n.parentPad.centerOffset : '-'}</td>
-                        </tr>
-                      `;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ` : null}
-            ${showPanel && activeTab === 'edges' ? html`
-              <div className="overflow-y-auto max-h-[50vh]">
-                <div className=${'px-2 py-1 text-[8px] font-mono ' + (isLight ? 'bg-purple-50 text-purple-800' : 'bg-purple-900/30 text-purple-300')}>
-                  Edge validation: srcBottom → tgtTop | V.Dist should be ≥0 | Logical shows actual node connections | ${edgeValidation.length} edges, ${edgeIssues.length} issues
-                </div>
-                <table className=${'text-[9px] font-mono w-full ' + (isLight ? 'text-slate-700' : 'text-slate-300')}>
-                  <thead className=${'sticky top-0 ' + (isLight ? 'bg-slate-100' : 'bg-slate-800')}>
-                    <tr>
-                      <th className="px-2 py-1 text-left">Source</th>
-                      <th className="px-2 py-1 text-left">Target</th>
-                      <th className="px-2 py-1 text-left" title="Logical connection (what the edge SHOULD connect to)">Logical</th>
-                      <th className="px-2 py-1 text-right">SrcBot</th>
-                      <th className="px-2 py-1 text-right">TgtTop</th>
-                      <th className="px-2 py-1 text-right">V.Dist</th>
-                      <th className="px-2 py-1 text-right">H.Dist</th>
-                      <th className="px-2 py-1 text-left">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${edgeValidation.map(function(e, i) {
-                      var statusClass = e.status === 'OK' ? 'text-green-500' : e.status === 'WARN' ? 'text-amber-500' : e.status === 'INFO' ? 'text-blue-500' : 'text-red-500';
-                      var rowClass = e.status === 'WARN' ? (isLight ? '!bg-amber-50' : '!bg-amber-900/20') : e.status === 'INFO' ? (isLight ? '!bg-blue-50' : '!bg-blue-900/20') : '';
-                      var logicalStr = '';
-                      if (e.logicalSrcLabel || e.logicalTgtLabel) {
-                        logicalStr = (e.logicalSrcLabel || e.srcLabel) + '→' + (e.logicalTgtLabel || e.tgtLabel);
-                      }
-                      return html`
-                        <tr key=${e.id} className=${(i % 2 === 0 ? (isLight ? 'bg-white' : 'bg-slate-900') : (isLight ? 'bg-slate-50' : 'bg-slate-800/50')) + ' ' + rowClass}>
-                          <td className=${'px-2 py-0.5 truncate max-w-[70px] ' + (e.srcIsContainer ? 'text-amber-600 font-bold' : '')} title=${e.source + (e.srcIsContainer ? ' [CONTAINER]' : '')}>${e.srcLabel || e.source}</td>
-                          <td className=${'px-2 py-0.5 truncate max-w-[70px] ' + (e.tgtIsContainer ? 'text-amber-600 font-bold' : '')} title=${e.target + (e.tgtIsContainer ? ' [CONTAINER]' : '')}>${e.tgtLabel || e.target}</td>
-                          <td className="px-2 py-0.5 truncate max-w-[90px] text-cyan-600" title=${logicalStr || 'same as rendered'}>${logicalStr || '-'}</td>
-                          <td className="px-2 py-0.5 text-right">${e.srcBottom !== null ? e.srcBottom : '-'}</td>
-                          <td className="px-2 py-0.5 text-right">${e.tgtTop !== null ? e.tgtTop : '-'}</td>
-                          <td className=${'px-2 py-0.5 text-right ' + (e.vertDist !== null && e.vertDist < 0 ? 'text-red-500 font-bold' : '')}>${e.vertDist !== null ? e.vertDist : '-'}</td>
-                          <td className="px-2 py-0.5 text-right">${e.horizDist !== null ? e.horizDist : '-'}</td>
-                          <td className=${'px-2 py-0.5 ' + statusClass} title=${e.issue || ''}>${e.status}${e.issue ? ' ⚠' : ''}</td>
-                        </tr>
-                      `;
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ` : null}
-          </div>
-        <//>
-      <//>
-    `;
-  };
-
   // === MAIN APP COMPONENT ===
   var App = function(props) {
     var initialData = props.initialData;
@@ -641,8 +94,6 @@
     var panOnScroll = props.panOnScroll;
     var initialSeparateOutputs = props.initialSeparateOutputs;
     var initialShowTypes = props.initialShowTypes;
-    var initialDebugOverlays = props.initialDebugOverlays;
-
     var separateOutputsState = useState(initialSeparateOutputs);
     var separateOutputs = separateOutputsState[0];
     var setSeparateOutputs = separateOutputsState[1];
@@ -651,18 +102,9 @@
     var showTypes = showTypesState[0];
     var setShowTypes = showTypesState[1];
 
-    var debugOverlaysState = useState(initialDebugOverlays);
-    var debugOverlays = debugOverlaysState[0];
-    var setDebugOverlays = debugOverlaysState[1];
-
     var themeDebugState = useState({ source: 'init', luminance: null, background: 'transparent', appliedTheme: themePreference });
     var themeDebug = themeDebugState[0];
     var setThemeDebug = themeDebugState[1];
-
-    // Sync debug overlay state with global flag
-    useEffect(function() {
-      root.__hypergraph_debug_overlays = debugOverlays;
-    }, [debugOverlays]);
 
     var onToggleSeparateOutputs = useCallback(function(nextValue) {
       root.__hypergraphVizReady = false;
@@ -922,7 +364,7 @@
       checkNodeStyles();
       var interval = setInterval(checkNodeStyles, 1000);
 
-      if (showThemeDebug || debugOverlays) {
+      if (showThemeDebug) {
         setThemeDebug(function(prev) {
           return {
             ...prev,
@@ -934,7 +376,7 @@
         });
       }
       return function() { clearInterval(interval); };
-    }, [activeTheme, activeBackground, resolvedDetected, showThemeDebug, themePreference, manualTheme, debugOverlays]);
+    }, [activeTheme, activeBackground, resolvedDetected, showThemeDebug, themePreference, manualTheme]);
 
     // Theme toggle
     var toggleTheme = useCallback(function() {
@@ -1202,12 +644,7 @@
       return function() { clearTimeout(timer); };
     }, [layoutRefreshKey, rawLayoutedNodes, updateNodeInternals]);
 
-    // Add debug mode to layouted nodes
-    var layoutedNodes = useMemo(function() {
-      return rawLayoutedNodes.map(function(n) {
-        return { ...n, data: { ...n.data, debugMode: debugOverlays } };
-      });
-    }, [rawLayoutedNodes, debugOverlays]);
+    var layoutedNodes = rawLayoutedNodes;
 
     // Expose debug layout info
     useEffect(function() {
@@ -1523,10 +960,10 @@
           ...edgeOptions,
           style: edgeStyle,
           markerEnd: edgeOptions.markerEnd,
-          data: { ...e.data, debugMode: debugOverlays }
+          data: e.data,
         };
       });
-    }, [layoutedEdges, theme, isLayouting, debugOverlays, expansionKey, renderModeKey]);
+    }, [layoutedEdges, theme, isLayouting, expansionKey, renderModeKey]);
 
     // Notify parent of click
     var notifyParentClick = useCallback(function() {
@@ -1575,7 +1012,7 @@
             onToggleTypes=${function() { onToggleShowTypes(); }}
             onFitView=${fitWithFixedPadding}
           />
-          ${(showThemeDebug || debugOverlays) ? html`
+          ${(showThemeDebug) ? html`
           <${Panel} position="bottom-left" className=${'backdrop-blur-sm rounded-lg shadow-lg border text-xs px-3 py-2 mb-3 ml-3 max-w-xs pointer-events-auto ' +
                 (theme === 'light' ? 'bg-white/95 border-slate-200 text-slate-700' : 'bg-slate-900/90 border-slate-700 text-slate-200')}>
             <div className="text-[10px] font-semibold tracking-wide uppercase opacity-70 mb-1">Theme Debug</div>
@@ -1597,7 +1034,6 @@
             </div>
           <//>
           ` : null}
-          ${debugOverlays ? html`<${DebugOverlay} nodes=${layoutedNodes} edges=${styledEdges} enabled=${debugOverlays} theme=${theme} />` : null}
         <//>
         ${(!isLayouting && (layoutError || (!layoutedNodes.length && rfNodes.length) || (!rfNodes.length))) ? html`
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
@@ -1622,17 +1058,6 @@
     var initialSeparateOutputs = Boolean((initialData.meta && initialData.meta.separate_outputs) || false);
     var initialShowTypes = Boolean((initialData.meta && initialData.meta.show_types) !== false);
 
-    // Parse URL parameters for debug mode
-    var urlParams = new URLSearchParams(root.location.search);
-    var debugParam = urlParams.get('debug');
-    var debugFromUrl = debugParam === 'overlays' || debugParam === 'true' || debugParam === '1';
-    var debugFromMeta = Boolean(initialData.meta && initialData.meta.debug_overlays);
-    var initialDebugOverlays = debugFromUrl || debugFromMeta;
-    if (initialDebugOverlays) {
-      root.__hypergraph_debug_overlays = true;
-      root.__hypergraph_debug_viz = true;  // Enable layout debug logging
-    }
-
     var rootEl = document.getElementById('root');
     var fallback = document.getElementById('fallback');
 
@@ -1646,7 +1071,6 @@
           panOnScroll=${panOnScroll}
           initialSeparateOutputs=${initialSeparateOutputs}
           initialShowTypes=${initialShowTypes}
-          initialDebugOverlays=${initialDebugOverlays}
         />
       <//>
     `);
@@ -1658,6 +1082,5 @@
   return {
     init: init,
     App: App,
-    DebugOverlay: DebugOverlay
   };
 });
