@@ -6,13 +6,42 @@ This document captures the current visualization architecture, key invariants, a
 
 **Python pipeline**
 1. `Graph` → `to_flat_graph()`
-2. `renderer.py` → React Flow nodes/edges + `meta` (includes `nodesByState`, `edgesByState`)
-3. `html_generator.py` → HTML + JS assets + debug overlays
+2. `renderer/` → React Flow nodes/edges + `meta` (includes `nodesByState`, `edgesByState`)
+3. `html/generator.py` → HTML + JS assets
 
-**JavaScript pipeline**
-1. `app.js` builds expansion state + selects `nodesByState`/`edgesByState`
-2. `layout.js` runs layout phases and routes edges
-3. `layout-engine.js` wraps dagre for node positioning (replaces old constraint solver)
+**JavaScript pipeline** (single file: `assets/viz.js`)
+1. Section 7 (App) builds expansion state + selects `nodesByState`/`edgesByState`
+2. `layoutGraph()` runs dagre for node positioning + native edge routing
+3. `performRecursiveLayout()` handles expanded containers (recursive dagre passes)
+4. `addConvergenceStems()` inserts merge/diverge points for shared endpoints
+5. `CustomEdge` renders B-spline curves via `curveBasis()`
+
+## Single-File Architecture (viz.js)
+
+All JS is in one file (`assets/viz.js`) organized in 7 sections:
+1. **Constants + Helpers** — layout constants, node-type offsets
+2. **Theme** — host theme detection, light/dark switching
+3. **Layout** — `layoutGraph()`, `performRecursiveLayout()`, feedback edge routing
+4. **Edge Component** — `curveBasis()`, `CustomEdge`, label placement
+5. **Node Components** — `CustomNode` for all node types
+6. **Controls** — zoom/fit/toggle buttons, `DevEdgeControls` (DialKit)
+7. **App + Init** — state management, `useLayout` hook, rendering
+
+## Edge Routing Modes
+
+Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `true`):
+
+**Center mode** (`convergeToCenter=true`):
+- All edge endpoints forced to node center-x
+- `addConvergenceStems()` inserts V-shape merge points for targets with 2+ incoming edges
+- `EDGE_CONVERGENCE_OFFSET` controls stem height (default: 20px)
+
+**Dagre mode** (`convergeToCenter=false`):
+- Edge endpoints use dagre's native x-positions (spread across node width)
+- Endpoints clamped within padded region: `EDGE_ENDPOINT_PADDING` (default: 16px)
+- No convergence stems needed
+
+**BRANCH/END exception**: Always use center-x regardless of mode (diamond has single exit point at bottom vertex).
 
 ## Node Types and Mapping
 
@@ -31,33 +60,24 @@ Key format:
 - `"nodeId:1|sep:1"` (expanded, separate outputs)
 - `"sep:0"` / `"sep:1"` (no expandable nodes)
 
-Selection happens in `app.js` via `expansionStateToKey()` and lookups in `meta.nodesByState` / `meta.edgesByState`.
-
-**Why**: Ensures expand/collapse produces identical edges whether the graph is initially rendered expanded or toggled interactively.
+Selection happens in App via `expansionStateToKey()` and lookups in `meta.nodesByState` / `meta.edgesByState`.
 
 ## Edge Computation Model
 
-`renderer.py` generates edges for a given expansion state in two modes:
+`renderer/` generates edges for a given expansion state in two modes:
 
 1. **Merged outputs** (`separate_outputs=False`)
    - Edges go function → function
    - Data nodes are hidden
-   - Container edges re-route to internal consumers/producers when expanded
 
 2. **Separate outputs** (`separate_outputs=True`)
    - Edges go function → DATA → consumer
-   - Container DATA nodes are hidden when the container is expanded
-   - Reroute logic must not override DATA node sources
+   - Container DATA nodes hidden when expanded
 
 3. **Ordering edges** (both modes)
-   - Created by `emit`/`wait_for` declarations on nodes
+   - Created by `emit`/`wait_for` declarations
    - `edge_type="ordering"` in NetworkX graph
-   - Rendered with purple dashed style (`#8b5cf6`, `strokeDasharray: "6 3"`)
-   - Suppressed when a data edge already exists between the same pair
-
-**Rename handling**
-- `with_inputs` / `with_outputs` can rename exposed parameters.
-- `_find_internal_producer_for_output()` resolves container output names to internal producers when names differ.
+   - Rendered with dashed style
 
 ## Input Grouping + Scope
 
@@ -65,105 +85,45 @@ External inputs are grouped by **consumer set** and **bound status**:
 - Single param → `INPUT`
 - Multiple params → `INPUT_GROUP` (stable ID: `input_group_<sorted_params>`)
 
-**Scope rules**:
-- If all consumers are inside one expanded container → set `ownerContainer`
-- Otherwise keep at root
-- `deepestOwnerContainer` is metadata for debugging
+## Node-Type Offsets and Visible Bounds
 
-`layout.js` dynamically assigns `parentNode` for owned inputs so they appear inside expanded containers; Python controls visibility via precomputed `hidden` flags.
+Offsets defined in viz.js Section 1:
+- `NODE_TYPE_OFFSETS` — bottom gap (shadow/padding) per node type
+- `NODE_TYPE_TOP_INSETS` — top gap per node type
 
-## Output Visibility
+**Invariant**: edge Y coordinates must target the **visible** bounds, not the React Flow wrapper.
 
-Container outputs are only shown when consumed externally:
-- **Merged outputs**: filter container output list in `renderer.py`
-- **Separate outputs**: suppress container DATA nodes if container is expanded
+## Dev Controls (DialKit)
 
-This prevents duplicate output nodes when a container is expanded.
+Dev-only controls visible when `window.__hypergraph_debug_viz = true`:
+- Toggle: "Converge to center" (switches edge routing mode)
+- Slider: "Stem height" (convergence offset, 0-60px)
+- Slider: "Endpoint padding" (dagre mode only, 0-60px)
 
-## Layout Pipeline (layout.js)
-
-The recursive layout is split into explicit phases:
-
-1. **layoutChildrenPhase**: layout each expanded container’s children
-2. **layoutRootPhase**: layout top-level nodes
-3. **composePositionsPhase**: merge child and root layouts
-4. **routeCrossBoundaryEdgesPhase**: attach edges that cross container boundaries
-5. **applyEdgeReroutesPhase**: re-route cross-boundary edges using routing data
-6. **validateEdgesPhase** (debug only): verify stem alignment to visible bounds
-
-**Deep lift**: edges originating from deeply nested nodes are lifted to their direct child ancestor when laying out a container’s children (`deepToChild`). This ensures internal ordering uses the real edge structure.
-
-## Layout Engine (layout-engine.js)
-
-- Thin wrapper around dagre (Sugiyama algorithm) for node positioning
-- Each container gets its own flat dagre graph (no compound graphs — dagre bug with external edges)
-- Generates 2-point straight edge paths [srcVisibleBottom → tgtVisibleTop]
-- Merge phases in layout.js add convergence/divergence stems afterward
-
-Key config values live in `assets/constants.js` and are shared across layout and rendering.
-
-## Edge Styling Constants (constants.js)
-
-- `EDGE_CURVE_STYLE`: `0` = polyline, `1` = smooth curve, `0..1` = Catmull‑Rom
-- `EDGE_ELBOW_RADIUS`: rounded corner radius for polylines
-- `EDGE_SHARP_TURN_ANGLE`: force straight segments on sharp turns (when `curveStyle < 1`)
-- `EDGE_CONVERGENCE_OFFSET`: Y offset for merge/diverge stems
-
-**Blending invariant**: The final tail segment into a node is always straight, forcing all incoming edges to share the same stem and visually merge.
-
-## Edge Renderer Notes (components.js)
-
-- Curves are drawn by default using B‑spline or Catmull‑Rom (based on `EDGE_CURVE_STYLE`).
-- If `EDGE_CURVE_STYLE == 0` or sharp‑turn mode kicks in, edges are polylines.
-- We detect the **final vertical tail** and draw it as straight lines to guarantee
-  convergence, because B‑splines do not pass through intermediate points.
+Gallery page (`scripts/render_notebook_viz.py`) has a DialKit bar that broadcasts settings to all iframes via `postMessage`. Viz.js listens for `{ type: 'hypergraph-set-options', options: {...} }` messages.
 
 ## Gallery Script (render_notebook_viz.py)
 
-Generates a scrollable gallery of all notebook visualizations.
+Generates a scrollable gallery of all notebook visualizations with DialKit controls.
 
 **Usage**
 - `uv run python scripts/render_notebook_viz.py`
 - Output: `outputs/viz_gallery/index.html`
 
 **Options**
-- `--no-open` disables auto‑open
+- `--no-open` disables auto-open
 - `--iframe-height 800` adjusts embedded preview height
 - `--verbose` shows notebook output
-
-Debug overlays are forced **off** in gallery renders.
-
-## Node-Type Offsets and Visible Bounds
-
-Different node types have different wrapper-to-visible gaps (shadows, padding). Offsets are defined in `constants.js` and applied in:
-- `constraint-layout.js` (visible bottoms)
-- `layout.js` (edge stem placement)
-- `app.js` debug API (visible vs wrapper bounds)
-
-**Invariant**: edge Y coordinates must target the **visible** bounds, not the React Flow wrapper.
-
-## Viewport Centering
-
-`html_generator.py` performs a post-layout DOM measurement to center content:
-- Uses inner content bounds (not wrapper bounds)
-- Centers in full viewport (not “available width”)
-- Applies all corrections in a single viewport update
-
-## Debug Surfaces
-
-- **Debug API**: `window.__hypergraphVizDebug` and `window.__hypergraphVizReady`
-- **Debug logging**: set `window.__hypergraph_debug_viz = true` before render
 
 ## Common Failure Modes
 
 | Symptom | Likely Cause | Fix Location |
 | --- | --- | --- |
-| Edge points to container when expanded | edgesByState key mismatch or missing consumer mapping | `renderer.py` / `app.js` |
-| Input appears outside expanded container | ownerContainer not set | `renderer.py` `_compute_input_scope()` |
-| DATA node duplicated when expanded | container DATA not filtered | `renderer.py` |
-| Separate outputs edge becomes function edge | Step 5 reroute clobbers DATA edge | `layout.js` `applyEdgeReroutesPhase` |
-| Edge starts/ends with visible gap | wrong node-type offset | `constants.js` + layout/routing usage |
-| Incoming edges don’t merge | curve doesn’t pass through convergence point | `components.js` tail‑straight logic |
+| Edge points to container when expanded | edgesByState key mismatch | `renderer/` |
+| Input appears outside expanded container | ownerContainer not set | `renderer/` |
+| Edge starts/ends with visible gap | wrong node-type offset | viz.js Section 1 |
+| Incoming edges don't merge | convergence stem not inserted | `addConvergenceStems()` |
+| Branch labels at wrong position | `outgoingMidpointDistance` heuristic | viz.js Section 4 |
 
 ## Test Coverage Pointers
 
@@ -174,10 +134,9 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 
 ## File Map
 
-- `src/hypergraph/viz/renderer.py`: edge computation, scoping, precomputed states
-- `src/hypergraph/viz/assets/layout.js`: layout phases + reroute logic
-- `src/hypergraph/viz/assets/layout-engine.js`: dagre wrapper for node positioning
-- `src/hypergraph/viz/assets/constants.js`: shared layout + rendering constants
-- `src/hypergraph/viz/html/generator.py`: HTML + centering + debug overlays
-- `src/hypergraph/viz/html/estimator.py`: iframe dimension estimation
-- `src/hypergraph/viz/renderer/instructions.py`: VizInstructions data contract
+- `src/hypergraph/viz/renderer/` — edge computation, scoping, precomputed states
+- `src/hypergraph/viz/assets/viz.js` — single-file JS app (layout, rendering, controls)
+- `src/hypergraph/viz/html/generator.py` — HTML assembly with embedded assets
+- `src/hypergraph/viz/html/estimator.py` — iframe dimension estimation
+- `src/hypergraph/viz/renderer/instructions.py` — VizInstructions data contract
+- `scripts/render_notebook_viz.py` — gallery generator with DialKit controls
