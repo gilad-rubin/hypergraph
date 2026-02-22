@@ -58,6 +58,7 @@
   var LAYOUT_PADDING = 70;
   var EDGE_CONVERGE_TO_CENTER = true;
   var EDGE_CONVERGENCE_OFFSET = 20;
+  var EDGE_ENDPOINT_PADDING = 16;
   var FEEDBACK_EDGE_GUTTER = 70;
   var FEEDBACK_EDGE_HEADROOM = 40;
   var FEEDBACK_EDGE_STEM = 32;
@@ -297,9 +298,10 @@
    * This is THE key change: dagre computes multi-point edge paths,
    * and we use them directly instead of generating 2-point straight lines.
    */
-  function layoutGraph(nodes, edges, convergeToCenter, convergenceOffset) {
+  function layoutGraph(nodes, edges, convergeToCenter, convergenceOffset, endpointPadding) {
     if (convergeToCenter === undefined) convergeToCenter = EDGE_CONVERGE_TO_CENTER;
     if (convergenceOffset === undefined) convergenceOffset = EDGE_CONVERGENCE_OFFSET;
+    if (endpointPadding === undefined) endpointPadding = EDGE_ENDPOINT_PADDING;
     var g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: 'TB', nodesep: 42, ranksep: 140, marginx: 0, marginy: 0 });
     g.setDefaultEdgeLabel(function() { return {}; });
@@ -340,6 +342,10 @@
       var srcBottom = src.y + src.height * 0.5 - getOffset(srcType);
       var tgtTop = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
 
+      // BRANCH/END nodes always use center-x (diamond has single entry/exit point)
+      var srcForceCenterX = srcType === 'BRANCH' || srcType === 'END';
+      var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'END';
+
       var dagreEdge = g.edge(e.source, e.target);
       if (dagreEdge && dagreEdge.points && dagreEdge.points.length > 0) {
         var pts = dagreEdge.points.map(function(p) { return { x: p.x, y: p.y }; });
@@ -348,9 +354,19 @@
           pts[0] = { x: src.x, y: srcBottom };
           pts[pts.length - 1] = { x: tgt.x, y: tgtTop };
         } else {
-          // Dagre mode: keep dagre's native x-positions, only clamp Y
-          pts[0].y = srcBottom;
-          pts[pts.length - 1].y = tgtTop;
+          // Dagre mode: keep dagre's native x-positions, clamp Y and pad X
+          var srcLeft = src.x - src.width * 0.5 + endpointPadding;
+          var srcRight = src.x + src.width * 0.5 - endpointPadding;
+          var tgtLeft = tgt.x - tgt.width * 0.5 + endpointPadding;
+          var tgtRight = tgt.x + tgt.width * 0.5 - endpointPadding;
+          pts[0] = {
+            x: srcForceCenterX ? src.x : Math.max(srcLeft, Math.min(srcRight, pts[0].x)),
+            y: srcBottom,
+          };
+          pts[pts.length - 1] = {
+            x: tgtForceCenterX ? tgt.x : Math.max(tgtLeft, Math.min(tgtRight, pts[pts.length - 1].x)),
+            y: tgtTop,
+          };
         }
         e.points = pts;
       } else {
@@ -543,7 +559,7 @@
 
   // ── Recursive layout ──
 
-  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData, convergeToCenter, convergenceOffset) {
+  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData, convergeToCenter, convergenceOffset, endpointPadding) {
     var nodeGroups = groupNodesByParent(visibleNodes);
     var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
 
@@ -590,7 +606,7 @@
       var fbKeys = computeFeedbackEdgeKeys(children, intEdges);
       var layoutEdges = intEdges.filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); });
 
-      var result = layoutGraph(buildLayoutNodes(children, nodeDimensions), layoutEdges, convergeToCenter, convergenceOffset);
+      var result = layoutGraph(buildLayoutNodes(children, nodeDimensions), layoutEdges, convergeToCenter, convergenceOffset, endpointPadding);
       result.size = computeBounds(result.nodes, GRAPH_PADDING);
       childLayoutResults.set(graphNode.id, result);
 
@@ -625,7 +641,7 @@
     var rootFbKeys = computeFeedbackEdgeKeys(rootNodes, rootEdges);
     var filteredRootEdges = rootEdges.filter(function(e) { return !rootFbKeys.has(e.source + '->' + e.target); });
 
-    var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges, convergeToCenter, convergenceOffset);
+    var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges, convergeToCenter, convergenceOffset, endpointPadding);
     rootResult.size = computeBounds(rootResult.nodes, GRAPH_PADDING);
 
     // Phase 3: Compose positions
@@ -783,7 +799,7 @@
 
   // ── useLayout hook ──
 
-  function useLayout(nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset) {
+  function useLayout(nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding) {
     var nodesState = useState([]), edgesState = useState([]);
     var errorState = useState(null), versionState = useState(0);
     var heightState = useState(600), widthState = useState(600), busyState = useState(false);
@@ -796,7 +812,7 @@
         var visible = nodes.filter(function(n) { return !n.hidden; });
 
         if (expansionState && expansionState.size > 0) {
-          var res = performRecursiveLayout(visible, edges, expansionState, debug, routingData, convergeToCenter, convergenceOffset);
+          var res = performRecursiveLayout(visible, edges, expansionState, debug, routingData, convergeToCenter, convergenceOffset, endpointPadding);
           nodesState[1](res.nodes); edgesState[1](res.edges);
           versionState[1](function(v) { return v + 1; }); busyState[1](false); errorState[1](null);
           if (res.size) { widthState[1](res.size.width); heightState[1](res.size.height); }
@@ -816,7 +832,7 @@
           .filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); })
           .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-        var result = layoutGraph(layoutNodes, layoutEdges, convergeToCenter, convergenceOffset);
+        var result = layoutGraph(layoutNodes, layoutEdges, convergeToCenter, convergenceOffset, endpointPadding);
 
         var positioned = result.nodes.map(function(n) {
           return {
@@ -859,7 +875,7 @@
         nodesState[1](fallback); edgesState[1](edges);
         versionState[1](function(v) { return v + 1; }); busyState[1](false);
       }
-    }, [nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset]);
+    }, [nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding]);
 
     return {
       layoutedNodes: nodesState[0], layoutedEdges: edgesState[0], layoutError: errorState[0],
@@ -1272,6 +1288,18 @@
               onInput=${function(e) { props.onChangeOffset(Number(e.target.value)); }} />
           </div>
         ` : null}
+        ${!props.convergeToCenter ? html`
+          <div className="mt-2">
+            <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
+              <span>Endpoint padding</span>
+              <span className=${'font-mono ' + text}>${props.endpointPadding}px</span>
+            </div>
+            <input type="range" min="0" max="60" step="1"
+              value=${props.endpointPadding}
+              className=${'w-full h-1 rounded-lg appearance-none cursor-pointer ' + accent}
+              onInput=${function(e) { props.onChangePadding(Number(e.target.value)); }} />
+          </div>
+        ` : null}
       <//>`;
   };
 
@@ -1298,6 +1326,8 @@
     var convergeToCenter = convState[0], setConvergeToCenter = convState[1];
     var convOffState = useState(EDGE_CONVERGENCE_OFFSET);
     var convergenceOffset = convOffState[0], setConvergenceOffset = convOffState[1];
+    var padState = useState(EDGE_ENDPOINT_PADDING);
+    var endpointPadding = padState[0], setEndpointPadding = padState[1];
 
     var onToggleSep = useCallback(function(v) {
       root.__hypergraphVizReady = false;
@@ -1322,6 +1352,10 @@
           root.__hypergraphVizReady = false;
           setConvergenceOffset(Number(opts.convergenceOffset));
         }
+        if (Object.prototype.hasOwnProperty.call(opts, 'endpointPadding')) {
+          root.__hypergraphVizReady = false;
+          setEndpointPadding(Number(opts.endpointPadding));
+        }
       };
       root.__hypergraphVizSetRenderOptions = applyOpts;
 
@@ -1337,7 +1371,7 @@
         delete root.__hypergraphVizSetRenderOptions;
         root.removeEventListener('message', onMessage);
       };
-    }, [onToggleSep, onToggleTyp, setConvergeToCenter, setConvergenceOffset]);
+    }, [onToggleSep, onToggleTyp, setConvergeToCenter, setConvergenceOffset, setEndpointPadding]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
@@ -1464,7 +1498,7 @@
       };
     }, [initialData]);
 
-    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData, convergeToCenter, convergenceOffset);
+    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding);
     var layoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
@@ -1711,9 +1745,10 @@
             onToggleTypes=${function() { onToggleTyp(); }} onFitView=${fitWithFixedPadding} />
           ${root.__hypergraph_debug_viz ? html`
             <${DevEdgeControls} theme=${theme} convergeToCenter=${convergeToCenter}
-              convergenceOffset=${convergenceOffset}
+              convergenceOffset=${convergenceOffset} endpointPadding=${endpointPadding}
               onToggleConverge=${function(v) { root.__hypergraphVizReady = false; setConvergeToCenter(v); }}
-              onChangeOffset=${function(v) { root.__hypergraphVizReady = false; setConvergenceOffset(v); }} />
+              onChangeOffset=${function(v) { root.__hypergraphVizReady = false; setConvergenceOffset(v); }}
+              onChangePadding=${function(v) { root.__hypergraphVizReady = false; setEndpointPadding(v); }} />
           ` : null}
         <//>
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
