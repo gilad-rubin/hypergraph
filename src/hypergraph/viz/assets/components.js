@@ -310,7 +310,12 @@
       // curveBasis: B-spline interpolation
       var curveBasis = function(pts) {
         if (pts.length < 2) return 'M ' + pts[0].x + ' ' + pts[0].y;
-        if (pts.length === 2) return 'M ' + pts[0].x + ' ' + pts[0].y + ' L ' + pts[1].x + ' ' + pts[1].y;
+        if (pts.length === 2) {
+          // S-curve via cubic Bézier: control points at 1/3 and 2/3 Y, each at source/target X
+          var p0 = pts[0], p1 = pts[1];
+          var midY = (p0.y + p1.y) / 2;
+          return 'M ' + p0.x + ' ' + p0.y + ' C ' + p0.x + ' ' + midY + ' ' + p1.x + ' ' + midY + ' ' + p1.x + ' ' + p1.y;
+        }
 
         var clamped = [pts[0]].concat(pts).concat([pts[pts.length - 1]]);
         var path = 'M ' + clamped[0].x + ' ' + clamped[0].y;
@@ -336,7 +341,11 @@
 
       var curveCatmullRom = function(pts, tension) {
         if (pts.length < 2) return 'M ' + pts[0].x + ' ' + pts[0].y;
-        if (pts.length === 2) return 'M ' + pts[0].x + ' ' + pts[0].y + ' L ' + pts[1].x + ' ' + pts[1].y;
+        if (pts.length === 2) {
+          var p0 = pts[0], p1 = pts[1];
+          var midY = (p0.y + p1.y) / 2;
+          return 'M ' + p0.x + ' ' + p0.y + ' C ' + p0.x + ' ' + midY + ' ' + p1.x + ' ' + midY + ' ' + p1.x + ' ' + p1.y;
+        }
 
         var t = Math.max(0, Math.min(1, tension));
         var path = 'M ' + pts[0].x + ' ' + pts[0].y;
