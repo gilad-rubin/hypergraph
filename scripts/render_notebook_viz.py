@@ -191,7 +191,7 @@ def build_index(
         "  <div class='dialkit' id='dialkit'>",
         "    <span class='title'>Edge Routing</span>",
         "    <label>",
-        "      <input type='checkbox' id='dk-converge' checked>",
+        "      <input type='checkbox' id='dk-converge'>",
         "      Converge to center",
         "    </label>",
         "    <div class='group' id='dk-offset-group'>",
@@ -201,8 +201,14 @@ def build_index(
         "    </div>",
         "    <div class='group' id='dk-padding-group'>",
         "      <span>Endpoint padding</span>",
-        "      <input type='range' id='dk-padding' min='0' max='0.45' step='0.01' value='0.15'>",
-        "      <span class='value' id='dk-padding-value'>15%</span>",
+        "      <input type='range' id='dk-padding' min='0' max='0.45' step='0.01' value='0.25'>",
+        "      <span class='value' id='dk-padding-value'>25%</span>",
+        "    </div>",
+        "    <span class='title' style='margin-left: 12px'>Layout</span>",
+        "    <div class='group'>",
+        "      <span>Vertical gap</span>",
+        "      <input type='range' id='dk-ranksep' min='40' max='300' step='5' value='140'>",
+        "      <span class='value' id='dk-ranksep-value'>140px</span>",
         "    </div>",
         "  </div>",
         "  <h1>Hypergraph Viz Gallery</h1>",
@@ -246,6 +252,8 @@ def build_index(
         "    var paddingEl = document.getElementById('dk-padding');",
         "    var paddingValueEl = document.getElementById('dk-padding-value');",
         "    var paddingGroup = document.getElementById('dk-padding-group');",
+        "    var ranksepEl = document.getElementById('dk-ranksep');",
+        "    var ranksepValueEl = document.getElementById('dk-ranksep-value');",
         "",
         "    function broadcast() {",
         "      var converge = convergeEl.checked;",
@@ -253,6 +261,7 @@ def build_index(
         "        convergeToCenter: converge,",
         "        convergenceOffset: Number(offsetEl.value),",
         "        endpointPadding: Number(paddingEl.value),",
+        "        ranksep: Number(ranksepEl.value),",
         "      };",
         "      offsetGroup.style.opacity = converge ? '1' : '0.3';",
         "      offsetGroup.style.pointerEvents = converge ? 'auto' : 'none';",
@@ -260,6 +269,7 @@ def build_index(
         "      paddingGroup.style.pointerEvents = converge ? 'none' : 'auto';",
         "      offsetValueEl.textContent = offsetEl.value + 'px';",
         "      paddingValueEl.textContent = Math.round(paddingEl.value * 100) + '%';",
+        "      ranksepValueEl.textContent = ranksepEl.value + 'px';",
         "      var msg = { type: 'hypergraph-set-options', options: opts };",
         "      var iframes = document.querySelectorAll('iframe');",
         "      iframes.forEach(function(iframe) {",
@@ -270,6 +280,7 @@ def build_index(
         "    convergeEl.addEventListener('change', broadcast);",
         "    offsetEl.addEventListener('input', broadcast);",
         "    paddingEl.addEventListener('input', broadcast);",
+        "    ranksepEl.addEventListener('input', broadcast);",
         "    broadcast();",
         "  })();",
         "  </script>",
@@ -279,6 +290,45 @@ def build_index(
     index_path = output_dir / "index.html"
     index_path.write_text("\n".join(lines))
     return index_path
+
+
+VIZ_DEV_DATA_DIR = Path("viz-dev/public/data")
+
+
+def render_vizdev_graphs(output_dir: Path) -> list[VizRecord]:
+    """Render viz-dev JSON test graphs into the gallery."""
+    from hypergraph.viz.html import generate_widget_html
+
+    manifest_path = VIZ_DEV_DATA_DIR / "manifest.json"
+    if not manifest_path.exists():
+        return []
+
+    manifest = json.loads(manifest_path.read_text())
+    records: list[VizRecord] = []
+
+    for i, entry in enumerate(manifest.get("graphs", [])):
+        graph_id = entry["id"]
+        graph_name = entry.get("name", graph_id)
+        data_path = VIZ_DEV_DATA_DIR / f"{graph_id}.json"
+        if not data_path.exists():
+            continue
+
+        graph_data = json.loads(data_path.read_text())
+        html_content = generate_widget_html(graph_data)
+
+        filename = f"vizdev_{i:03d}_{graph_id}.html"
+        filepath = output_dir / filename
+        filepath.write_text(html_content)
+
+        records.append(VizRecord(
+            notebook="viz-dev/public/data",
+            index=i,
+            filepath=filepath,
+            graph_name=graph_name,
+            kwargs={},
+        ))
+
+    return records
 
 
 def main() -> None:
@@ -358,10 +408,14 @@ def main() -> None:
         }
         exec_notebook_cells(nb, globals_ns, nb_path, verbose=args.verbose)
 
+    # Render viz-dev JSON test graphs
+    vizdev_records = render_vizdev_graphs(output_dir)
+    all_records = capture.records + vizdev_records
+
     index_path = build_index(
-        output_dir, capture.records, iframe_height=args.iframe_height
+        output_dir, all_records, iframe_height=args.iframe_height
     )
-    print(f"Wrote {len(capture.records)} visualizations to {output_dir}")
+    print(f"Wrote {len(all_records)} visualizations to {output_dir}")
     print(f"Index: {index_path}")
 
     if not args.no_open:
