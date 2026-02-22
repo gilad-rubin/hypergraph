@@ -1310,7 +1310,7 @@
 
     // Render options hook for tests and dev gallery
     useEffect(function() {
-      root.__hypergraphVizSetRenderOptions = function(opts) {
+      var applyOpts = function(opts) {
         if (!opts) return;
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
@@ -1323,7 +1323,20 @@
           setConvergenceOffset(Number(opts.convergenceOffset));
         }
       };
-      return function() { delete root.__hypergraphVizSetRenderOptions; };
+      root.__hypergraphVizSetRenderOptions = applyOpts;
+
+      // Listen for postMessage from parent (gallery page) — works cross-origin
+      var onMessage = function(event) {
+        if (event.data && event.data.type === 'hypergraph-set-options') {
+          applyOpts(event.data.options);
+        }
+      };
+      root.addEventListener('message', onMessage);
+
+      return function() {
+        delete root.__hypergraphVizSetRenderOptions;
+        root.removeEventListener('message', onMessage);
+      };
     }, [onToggleSep, onToggleTyp, setConvergeToCenter, setConvergenceOffset]);
 
     var detState = useState(function() { return detectHostTheme(); });
