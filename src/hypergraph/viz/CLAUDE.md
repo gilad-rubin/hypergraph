@@ -12,7 +12,7 @@ This document captures the current visualization architecture, key invariants, a
 **JavaScript pipeline**
 1. `app.js` builds expansion state + selects `nodesByState`/`edgesByState`
 2. `layout.js` runs layout phases and routes edges
-3. `constraint-layout.js` solves constraints and routes edge paths
+3. `layout-engine.js` wraps dagre for node positioning (replaces old constraint solver)
 
 ## Node Types and Mapping
 
@@ -93,46 +93,23 @@ The recursive layout is split into explicit phases:
 
 **Deep lift**: edges originating from deeply nested nodes are lifted to their direct child ancestor when laying out a container’s children (`deepToChild`). This ensures internal ordering uses the real edge structure.
 
-## Routing Details (constraint-layout.js)
+## Layout Engine (layout-engine.js)
 
-- **Stems**: 2-point vertical stems at node centers for entry/exit
-- **Shoulder waypoint**: optional mid-point to create a natural fan-out curve
-- **Corridor routing**: avoids obstacles with left/right corridors; guided by `naturalX`
+- Thin wrapper around dagre (Sugiyama algorithm) for node positioning
+- Each container gets its own flat dagre graph (no compound graphs — dagre bug with external edges)
+- Generates 2-point straight edge paths [srcVisibleBottom → tgtVisibleTop]
+- Merge phases in layout.js add convergence/divergence stems afterward
 
-Key config values live in `assets/constants.js` and are shared across layout and routing.
+Key config values live in `assets/constants.js` and are shared across layout and rendering.
 
-## Edge Styling + Routing Knobs (constants.js)
+## Edge Styling Constants (constants.js)
 
-These are the main “shape” controls we’ve added and tuned.
+- `EDGE_CURVE_STYLE`: `0` = polyline, `1` = smooth curve, `0..1` = Catmull‑Rom
+- `EDGE_ELBOW_RADIUS`: rounded corner radius for polylines
+- `EDGE_SHARP_TURN_ANGLE`: force straight segments on sharp turns (when `curveStyle < 1`)
+- `EDGE_CONVERGENCE_OFFSET`: Y offset for merge/diverge stems
 
-- `EDGE_CURVE_STYLE`
-  - `0` = straight polyline
-  - `1` = smooth curve (B‑spline)
-  - between `0..1` = gentler Catmull‑Rom curve
-- `EDGE_ELBOW_RADIUS`
-  - Only used for straight polylines (rounded elbows)
-  - Example: `EDGE_CURVE_STYLE: 0`, `EDGE_ELBOW_RADIUS: 12`
-- `EDGE_SHARP_TURN_ANGLE`
-  - Only applies when `EDGE_CURVE_STYLE < 1`
-  - Forces straight segments on sharp turns
-- `EDGE_NONSTRAIGHT_WEIGHT`
-  - Penalizes cumulative bend angles
-  - Helps prefer “big angle then straight” over many small bends
-- `EDGE_CURVE_WEIGHT`, `EDGE_TURN_WEIGHT`, `EDGE_LATERAL_WEIGHT`
-  - Penalize extra X changes, left/right flips, and total sideways travel
-- `EDGE_NODE_PENALTY`, `EDGE_NODE_CLEARANCE`
-  - Penalize corridor segments passing over nodes
-  - Expanded containers are excluded
-- `EDGE_EDGE_PENALTY`, `EDGE_EDGE_CLEARANCE`
-  - Penalize corridor segments crossing other edges
-- `EDGE_SHARED_TARGET_SPACING_SCALE`
-  - Scales separation between sources of the same target
-- `EDGE_STRAIGHTEN_MAX_SHIFT`
-  - Limits how far we can shift to keep a straight corridor
-
-**Blending invariant**
-- The final tail segment into a node is always straight (even for curved heads).
-- This forces all incoming edges to share the same stem and visually merge.
+**Blending invariant**: The final tail segment into a node is always straight, forcing all incoming edges to share the same stem and visually merge.
 
 ## Edge Renderer Notes (components.js)
 
@@ -175,8 +152,7 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 ## Debug Surfaces
 
 - **Debug API**: `window.__hypergraphVizDebug` and `window.__hypergraphVizReady`
-- **Debug overlay**: set `window.__hypergraph_debug_viz = true` before render
-- **Edge validation**: enabled when debug overlays are on (Step 6)
+- **Debug logging**: set `window.__hypergraph_debug_viz = true` before render
 
 ## Common Failure Modes
 
@@ -200,6 +176,6 @@ Different node types have different wrapper-to-visible gaps (shadows, padding). 
 
 - `src/hypergraph/viz/renderer.py`: edge computation, scoping, precomputed states
 - `src/hypergraph/viz/assets/layout.js`: layout phases + reroute logic
-- `src/hypergraph/viz/assets/constraint-layout.js`: constraint solver + routing
-- `src/hypergraph/viz/assets/constants.js`: shared layout constants
+- `src/hypergraph/viz/assets/layout-engine.js`: dagre wrapper for node positioning
+- `src/hypergraph/viz/assets/constants.js`: shared layout + rendering constants
 - `src/hypergraph/viz/html_generator.py`: HTML + centering + debug overlays
