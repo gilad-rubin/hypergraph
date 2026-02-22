@@ -1327,7 +1327,6 @@
   var App = function(props) {
     var initialData = props.initialData;
     var themePreference = props.themePreference;
-    var showThemeDebug = props.showThemeDebug;
     var panOnScroll = props.panOnScroll;
 
     var sepState = useState(props.initialSeparateOutputs);
@@ -1791,7 +1790,6 @@
     ReactDOM.createRoot(rootEl).render(html`
       <${ReactFlowProvider}>
         <${App} initialData=${initialData} themePreference=${themePreference}
-          showThemeDebug=${Boolean(initialData.meta && initialData.meta.theme_debug)}
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)} />

@@ -48,3 +48,7 @@ logs/security/
 .env
 
 .codex/
+
+# Dev scratch directories
+viz-dev/
+.entire/
