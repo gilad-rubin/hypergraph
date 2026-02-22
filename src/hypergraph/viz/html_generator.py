@@ -60,15 +60,15 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     _validate_graph_data(graph_data)
     graph_json = _escape_json_for_html(json.dumps(graph_data))
 
-    def _read_asset(name: str, kind: str) -> Optional[str]:
+    def _read_asset(name: str, kind: str, package: str = "hypergraph.viz.assets") -> Optional[str]:
         """Read an asset file from the bundled package resources.
 
-        Assets are located in hypergraph/viz/assets/ which is included in the wheel.
+        Assets are in hypergraph/viz/assets/ (custom) and
+        hypergraph/viz/assets/vendor/ (third-party libraries).
         Uses importlib.resources for reliable access in installed packages.
         """
         try:
-            asset_files = files("hypergraph.viz.assets")
-            text = (asset_files / name).read_text(encoding="utf-8")
+            text = (files(package) / name).read_text(encoding="utf-8")
             if kind == "js":
                 return f"<script>{text}</script>"
             if kind == "css":
@@ -77,14 +77,16 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
         except Exception:
             return None
 
-    # Load library assets
-    react_js = _read_asset("react.production.min.js", "js")
-    react_dom_js = _read_asset("react-dom.production.min.js", "js")
-    htm_js = _read_asset("htm.min.js", "js")
-    dagre_js = _read_asset("dagre.min.js", "js")
-    rf_js = _read_asset("reactflow.umd.js", "js")
-    rf_css = _read_asset("reactflow.css", "css")
-    tailwind_css = _read_asset("tailwind.min.css", "css")
+    _vendor = "hypergraph.viz.assets.vendor"
+
+    # Load vendor library assets
+    react_js = _read_asset("react.production.min.js", "js", _vendor)
+    react_dom_js = _read_asset("react-dom.production.min.js", "js", _vendor)
+    htm_js = _read_asset("htm.min.js", "js", _vendor)
+    dagre_js = _read_asset("dagre.min.js", "js", _vendor)
+    rf_js = _read_asset("reactflow.umd.js", "js", _vendor)
+    rf_css = _read_asset("reactflow.css", "css", _vendor)
+    tailwind_css = _read_asset("tailwind.min.css", "css", _vendor)
     custom_css = _read_asset("custom.css", "css") or ""
 
     # Load our single visualization module
