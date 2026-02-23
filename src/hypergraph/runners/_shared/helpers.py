@@ -28,6 +28,12 @@ def compute_active_node_set(graph: Graph) -> set[str] | None:
     Returns None when no entrypoints are configured (all nodes active).
     Delegates to input_spec._active_from_entrypoints to avoid duplicating
     the forward-reachability logic.
+
+    Note: This only considers entrypoints, not select. This is intentional —
+    ``with_entrypoint()`` narrows *execution* (which nodes run), while
+    ``select()`` narrows *validation* (which inputs are required) and
+    *output filtering* (what run() returns). Use ``with_entrypoint()`` when
+    you need to skip upstream node execution entirely.
     """
     if graph.entrypoints_config is None:
         return None
