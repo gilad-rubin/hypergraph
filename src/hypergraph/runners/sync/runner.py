@@ -11,7 +11,7 @@ from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
-from hypergraph.runners._shared.helpers import get_ready_nodes, initialize_state
+from hypergraph.runners._shared.helpers import compute_active_node_set, get_ready_nodes, initialize_state
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
 from hypergraph.runners._shared.types import GraphState, RunnerCapabilities, _generate_run_id
@@ -107,9 +107,10 @@ class SyncRunner(SyncRunnerTemplate):
         On failure, raises ExecutionError wrapping the cause and partial state.
         """
         state = initialize_state(graph, values)
+        active_nodes = compute_active_node_set(graph)
 
         for _ in range(max_iterations):
-            ready_nodes = get_ready_nodes(graph, state)
+            ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
 
             if not ready_nodes:
                 break  # No more nodes to execute
@@ -134,7 +135,7 @@ class SyncRunner(SyncRunnerTemplate):
 
         else:
             # Loop completed without break = hit max_iterations
-            if get_ready_nodes(graph, state):
+            if get_ready_nodes(graph, state, active_nodes=active_nodes):
                 raise ExecutionError(
                     InfiniteLoopError(max_iterations),
                     state,

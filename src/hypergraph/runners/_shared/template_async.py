@@ -28,6 +28,7 @@ from hypergraph.runners._shared.types import (
     _generate_run_id,
 )
 from hypergraph.runners._shared.validation import (
+    _resolve_runtime_selected,
     validate_inputs,
     validate_map_compatible,
     validate_node_types,
@@ -158,7 +159,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
-        validate_inputs(graph, normalized_values, entrypoint=entrypoint)
+        effective_selected = _resolve_runtime_selected(select, graph)
+        validate_inputs(
+            graph,
+            normalized_values,
+            entrypoint=entrypoint,
+            selected=effective_selected,
+        )
         _validate_on_missing(on_missing)
 
         max_iter = max_iterations or self.default_max_iterations

@@ -12,7 +12,7 @@ from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.nodes.interrupt import InterruptNode
-from hypergraph.runners._shared.helpers import get_ready_nodes, initialize_state
+from hypergraph.runners._shared.helpers import compute_active_node_set, get_ready_nodes, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
@@ -126,6 +126,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         On failure, raises ExecutionError wrapping the cause and partial state.
         """
         state = initialize_state(graph, values)
+        active_nodes = compute_active_node_set(graph)
 
         # Set up concurrency limiter only at top level (when none exists)
         # Nested graphs inherit the parent's semaphore via ContextVar
@@ -138,7 +139,7 @@ class AsyncRunner(AsyncRunnerTemplate):
 
         try:
             for _ in range(max_iterations):
-                ready_nodes = get_ready_nodes(graph, state)
+                ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
 
                 if not ready_nodes:
                     break  # No more nodes to execute
@@ -165,7 +166,7 @@ class AsyncRunner(AsyncRunnerTemplate):
 
             else:
                 # Loop completed without break = hit max_iterations
-                if get_ready_nodes(graph, state):
+                if get_ready_nodes(graph, state, active_nodes=active_nodes):
                     raise ExecutionError(
                         InfiniteLoopError(max_iterations),
                         state,

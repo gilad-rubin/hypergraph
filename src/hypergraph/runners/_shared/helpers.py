@@ -22,6 +22,22 @@ if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
 
 
+def compute_active_node_set(graph: Graph) -> set[str] | None:
+    """Compute active node names from graph's entrypoint config.
+
+    Returns None when no entrypoints are configured (all nodes active).
+    """
+    if graph._entrypoints is None:
+        return None
+
+    import networkx as nx
+
+    active = set(graph._entrypoints)
+    for ep in graph._entrypoints:
+        active.update(nx.descendants(graph._nx_graph, ep))
+    return active & set(graph._nodes)
+
+
 class ValueSource(Enum):
     """Source of a parameter's value during graph execution."""
 
@@ -115,7 +131,12 @@ def get_value_source(
     raise KeyError(f"No value for input '{param}'")
 
 
-def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
+def get_ready_nodes(
+    graph: Graph,
+    state: GraphState,
+    *,
+    active_nodes: set[str] | None = None,
+) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
     A node is ready when:
@@ -123,10 +144,14 @@ def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
     2. The node hasn't been executed yet, OR
     3. The node was executed but its inputs have changed (stale)
     4. If controlled by a gate, the gate has routed to this node
+    5. If active_nodes is set, the node must be in the active set
 
     Args:
         graph: The graph being executed
         state: Current execution state
+        active_nodes: Optional set of node names to restrict scheduling to.
+            When set (from with_entrypoint), nodes outside this set are never
+            scheduled even if their inputs are available.
 
     Returns:
         List of nodes ready to execute
@@ -135,7 +160,8 @@ def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
     activated_nodes = _get_activated_nodes(graph, state)
 
     ready = []
-    for node in graph._nodes.values():
+    nodes_to_check = (n for n in graph._nodes.values() if n.name in active_nodes) if active_nodes is not None else graph._nodes.values()
+    for node in nodes_to_check:
         if _is_node_ready(node, graph, state, activated_nodes):
             ready.append(node)
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
 
 # === Shared test nodes ===
@@ -341,3 +341,144 @@ class TestImmutability:
 
         g3 = g2.add_nodes(extra_node)
         assert g3.entrypoints_config is None
+
+
+# === Runtime select narrows validation ===
+
+
+class TestRuntimeSelectNarrowsValidation:
+    """runner.run(select=...) should only require inputs for selected outputs."""
+
+    def test_runtime_select_narrows_validation(self):
+        """runner.run(select="a_val") only validates inputs for a_val."""
+
+        @node(output_name="a_val")
+        def node_a(x):
+            return x
+
+        @node(output_name="b_val")
+        def node_b(a_val, y):
+            return f"{a_val}-{y}"
+
+        graph = Graph([node_a, node_b])
+        runner = SyncRunner()
+
+        # Without select, both x and y are required → missing y raises
+        with pytest.raises(Exception, match="y"):
+            runner.run(graph, {"x": 1})
+
+        # With select="a_val", only x is required → succeeds
+        result = runner.run(graph, {"x": 1}, select="a_val")
+        assert result["a_val"] == 1
+
+    def test_runtime_select_overrides_graph_select(self):
+        """Runtime select takes precedence over graph.select()."""
+
+        @node(output_name="a_val")
+        def node_a(x):
+            return x
+
+        @node(output_name="b_val")
+        def node_b(a_val, y):
+            return f"{a_val}-{y}"
+
+        # Graph-level select requires both x and y
+        graph = Graph([node_a, node_b]).select("b_val")
+        runner = SyncRunner()
+
+        # Runtime select="a_val" should narrow validation to just x
+        result = runner.run(graph, {"x": 1}, select="a_val")
+        assert result["a_val"] == 1
+
+
+# === Entrypoint execution tests ===
+
+
+class TestEntrypointExecution:
+    """with_entrypoint should affect actual execution, not just validation."""
+
+    def test_entrypoint_skips_upstream_execution(self):
+        """with_entrypoint skips upstream nodes — they never execute."""
+        call_log = []
+
+        @node(output_name="mid")
+        def upstream(x):
+            call_log.append("upstream")
+            return x * 2
+
+        @node(output_name="out")
+        def downstream(mid):
+            call_log.append("downstream")
+            return mid + 1
+
+        graph = Graph([upstream, downstream]).with_entrypoint("downstream")
+        runner = SyncRunner()
+        result = runner.run(graph, {"mid": 10})
+        assert result["out"] == 11
+        assert call_log == ["downstream"]  # upstream never called
+
+    def test_entrypoint_downstream_executes(self):
+        """with_entrypoint at non-leaf → downstream still runs."""
+        call_log = []
+
+        @node(output_name="mid")
+        def first(x):
+            call_log.append("first")
+            return x
+
+        @node(output_name="out")
+        def second(mid):
+            call_log.append("second")
+            return mid * 2
+
+        graph = Graph([first, second]).with_entrypoint("first")
+        runner = SyncRunner()
+        result = runner.run(graph, {"x": 5})
+        assert result["out"] == 10
+        assert call_log == ["first", "second"]
+
+    def test_entrypoint_upstream_never_fires_even_with_provided_inputs(self):
+        """Upstream node should NOT fire under with_entrypoint even if its inputs are provided."""
+        call_log = []
+
+        @node(output_name="mid")
+        def upstream_prov(x):
+            call_log.append("upstream")
+            return x * 2
+
+        @node(output_name="out")
+        def downstream_prov(mid):
+            call_log.append("downstream")
+            return mid + 1
+
+        graph = Graph([upstream_prov, downstream_prov]).with_entrypoint("downstream_prov")
+        runner = SyncRunner()
+        # Provide both mid (needed) AND x (upstream's input) — x should be ignored
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            result = runner.run(graph, {"mid": 10, "x": 5})
+        assert result["out"] == 11
+        # upstream should NOT fire even though x is provided
+        assert call_log == ["downstream"]
+
+    def test_no_entrypoint_all_nodes_execute(self):
+        """Without with_entrypoint, all nodes execute (backward compat)."""
+        call_log = []
+
+        @node(output_name="mid")
+        def first_node(x):
+            call_log.append("first")
+            return x
+
+        @node(output_name="out")
+        def second_node(mid):
+            call_log.append("second")
+            return mid * 2
+
+        graph = Graph([first_node, second_node])
+        runner = SyncRunner()
+        result = runner.run(graph, {"x": 5})
+        assert result["out"] == 10
+        assert set(call_log) == {"first", "second"}

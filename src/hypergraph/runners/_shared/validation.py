@@ -10,6 +10,7 @@ from hypergraph.runners._shared.types import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+    from hypergraph.graph.input_spec import InputSpec
     from hypergraph.nodes.base import HyperNode
 
 
@@ -18,6 +19,7 @@ def validate_inputs(
     values: dict[str, Any],
     *,
     entrypoint: str | None = None,
+    selected: tuple[str, ...] | None = None,
 ) -> None:
     """Validate that all required inputs are provided.
 
@@ -32,12 +34,13 @@ def validate_inputs(
         graph: The graph to validate against
         values: The input values provided
         entrypoint: Optional explicit entry point node name for cycle
+        selected: Optional runtime output selection (narrows validation scope)
 
     Raises:
         MissingInputError: If required inputs or cycle entry points are missing
         ValueError: If entrypoint is invalid or cycle entry is ambiguous
     """
-    inputs_spec = graph.inputs
+    inputs_spec = _resolve_effective_input_spec(graph, selected)
     # Step 1: Merge bound + provided
     merged = {**inputs_spec.bound, **values}
     provided = set(merged.keys())
@@ -392,6 +395,54 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
             bypassed_inputs -= set(node.inputs)
 
     return bypassed_inputs
+
+
+def _resolve_runtime_selected(
+    select: Any,
+    graph: Graph,
+) -> tuple[str, ...] | None:
+    """Convert runtime select parameter into a tuple for validation.
+
+    Handles the ``_UNSET_SELECT`` sentinel, ``"**"``, single strings,
+    and lists.  Returns ``None`` when all outputs are requested (no
+    narrowing).
+    """
+    from hypergraph.runners._shared.helpers import _UNSET_SELECT
+
+    if select is _UNSET_SELECT:
+        # Fall back to graph-level selection
+        return graph.selected  # already tuple | None
+    if select == "**":
+        return None  # all outputs — no narrowing
+    if isinstance(select, str):
+        return (select,)
+    if isinstance(select, list):
+        return tuple(select)
+    return None
+
+
+def _resolve_effective_input_spec(
+    graph: Graph,
+    selected: tuple[str, ...] | None,
+) -> InputSpec:
+    """Compute InputSpec scoped to runtime selection if different from graph config.
+
+    When the runner passes a runtime ``selected`` that differs from
+    ``graph.selected``, we recompute InputSpec so validation uses the
+    narrower scope. Otherwise, return the cached ``graph.inputs``.
+    """
+    if selected is None or selected == graph.selected:
+        return graph.inputs
+
+    from hypergraph.graph.input_spec import compute_input_spec
+
+    return compute_input_spec(
+        graph._nodes,
+        graph._nx_graph,
+        graph._bound,
+        entrypoints=graph._entrypoints,
+        selected=selected,
+    )
 
 
 def validate_node_types(
