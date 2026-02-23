@@ -993,3 +993,207 @@ Summary:
 
 If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/giladrubin/.REDACTED.jsonl
 Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the conversation:
+
+1. **Initial Context (from previous session summary)**: The user invoked `/feature` to implement a "Partial Input Semantics" plan. A team "feature-partial-input-semantics" was created with tasks #1-#7. Stage 1 (Active Subgraph Computation + with_entrypoint + select-aware InputSpec) was completed and committed. Stage 2 was started but left broken - `validation.py` referenced `_resolve_effective_input_spec` which didn't exist yet.
+
+2. **This session begins**: I picked up from the broken state. Read all key files to understand current state:
+   - `validation.py` - broken, references non-existent `_resolve_effective_input_spec`
+   - `helpers.py` - needs `active_nodes` filter in `get_ready_nodes`
+   - `template_sync.py` - needs runtime select threading
+   - `template_async.py` - same
+   - `base.py` - abstract runner
+   - `sync/runner.py` - `get_ready_nodes` call sites
+   - `async_/runner.py` - same
+   - `core.py` - Graph class with `_entrypoints`, `_selected`, `_bound`
+
+3. **Fix 1: Add `_resolve_effective_input_spec`** - Added the function to validation.py to compute InputSpec scoped to runtime selection. Tests pass (44).
+
+4. **Fix 2: Thread runtime select through templates** - Added `_resolve_runtime_selected` helper and `effective_selected` computation in both sync and async templates. Updated imports.
+
+5. **Fix 3: Active-set enforcement** - Added `compute_active_node_set` to helpers.py, added `active_nodes` parameter to `get_ready_nodes`, updated both sync and async runners to pass active_nodes.
+
+6. **Test failure discovered**: `test_entrypoint_upstream_never_fires_even_with_bound_inputs` failed because `bind(x=5)` was rejected - `with_entrypoint` already narrows the valid inputs. Changed test to use `run()` values instead, which revealed the REAL issue: upstream node was still firing even with `with_entrypoint`.
+
+7. **Fix implemented**: Added `active_nodes` filter to `get_ready_nodes` and threaded it through both runners. Test now passes.
+
+8. **Refactor: Thread InputSpec through helpers** - Updated `_validate_cycle_entry` and `_find_bypassed_inputs` to accept InputSpec parameter instead of reading `graph.inputs` directly.
+
+9. **All committed** in 3 commits:
+   - `d0f738a` - Stage 1 (from previous session)
+   - `4fd15f5` - Stage 2: runtime select + active-set enforcement
+   - `80ce711` - Refactor: InputSpec threading
+
+10. **Code review launched** as background agent (acc93565e79e0aba8). It's still running - reading files, running tests, analyzing the diff.
+
+11. **Task status**: #3 Implementation marked completed, #4 Review in_progress.
+
+Key user messages:
+- The initial continuation message was a system-generated summary asking to continue
+- A system reminder triggered (no user message)
+- The current message asks for a summary
+
+The reviewer agent is still running in the background. It was checking:
+- All tests pass (1381 non-viz, 8 pre-existing viz failures)
+- Examining `_find_bypassed_inputs` using `graph._nodes` (full graph) vs scoped InputSpec
+- Checking `_active_from_selection` fallback behavior
+- Checking `_resolve_runtime_selected` edge cases
+
+Summary:
+1. Primary Request and Intent:
+   The user invoked `/feature` to implement a "Partial Input Semantics" plan for the hypergraph workflow orchestration framework. The plan makes `InputSpec.required` a function of four dimensions: entrypoints (start), selection (end), bindings (pre-fill), and defaults (fallback). The implementation follows a team-based doer+critic workflow with phases: Plan → Implement → Review → Docs → PR. The team "feature-partial-input-semantics" was created with tasks #1-#7. This session continues from a previous session where Stage 1 was committed but Stage 2 was left broken.
+
+2. Key Technical Concepts:
+   - **Active Subgraph**: Set of nodes that will execute, determined by forward-reachability from entrypoints and backward-reachability from selected outputs
+   - **Pessimistic Gate Expansion**: When narrowing via selection, if a gate is in the needed set, ALL its targets + descendants are included
+   - **Four-dimension InputSpec**: Required inputs depend on entrypoints, selection, bindings, and defaults
+   - **`with_entrypoint()`**: Graph method that narrows execution to forward-reachable nodes (unified for DAGs and cycles)
+   - **Select-aware InputSpec**: `graph.select("a").inputs.required` shows only what's needed for "a"
+   - **Runtime select narrowing**: `runner.run(graph, values, select="a")` validates only inputs needed for "a"
+   - **Active-set enforcement**: `get_ready_nodes` filters nodes to only the active set, preventing upstream nodes from executing under `with_entrypoint`
+   - **`_UNSET_SELECT` sentinel**: Distinguishes "user didn't pass select" from explicit `"**"` (all outputs)
+   - **InputSpec threading**: Internal validation helpers receive InputSpec as parameter rather than reading `graph.inputs` directly
+   - **Immutable Graph pattern**: All config methods (bind, select, with_entrypoint) return new Graph via `_shallow_copy`
+
+3. Files and Code Sections:
+
+   - **`src/hypergraph/runners/_shared/validation.py`** (MODIFIED - Stage 2)
+     - Central file for runner validation. Fixed the broken `_resolve_effective_input_spec` reference, added three new functions, refactored two existing ones.
+     - Added `_resolve_runtime_selected(select, graph) -> tuple[str, ...] | None`: Converts runner's select param (sentinel/string/list) to tuple for validation
+     - Added `_resolve_effective_input_spec(graph, selected) -> InputSpec`: Recomputes InputSpec when runtime selection differs from graph config
+     - Modified `validate_inputs` to accept `selected: tuple[str, ...] | None = None` parameter and use `_resolve_effective_input_spec`
+     - Modified `_validate_cycle_entry` to accept `inputs_spec: InputSpec` parameter instead of reading `graph.inputs.entrypoints`
+     - Modified `_find_bypassed_inputs` to accept `inputs_spec: InputSpec` parameter instead of reading `graph.inputs.entrypoints`
+     ```python
+     def _resolve_runtime_selected(select: Any, graph: Graph) -> tuple[str, ...] | None:
+         from hypergraph.runners._shared.helpers import _UNSET_SELECT
+         if select is _UNSET_SELECT:
+             return graph.selected
+         if select == "**":
+             return None
+         if isinstance(select, str):
+             return (select,)
+         if isinstance(select, list):
+             return tuple(select)
+         return None
+
+     def _resolve_effective_input_spec(graph: Graph, selected: tuple[str, ...] | None) -> InputSpec:
+         if selected is None or selected == graph.selected:
+             return graph.inputs
+         from hypergraph.graph.input_spec import compute_input_spec
+         return compute_input_spec(
+             graph._nodes, graph._nx_graph, graph._bound,
+             entrypoints=graph._entrypoints, selected=selected,
+         )
+     ```
+
+   - **`src/hypergraph/runners/_shared/helpers.py`** (MODIFIED - Stage 2)
+     - Runner scheduling helpers. Added active node set computation and filtering.
+     - Added `compute_active_node_set(graph) -> set[str] | None`: Returns active node names from graph's entrypoint config, or None if no entrypoints
+     - Modified `get_ready_nodes` to accept `active_nodes: set[str] | None = None` keyword parameter that filters scheduling
+     ```python
+     def compute_active_node_set(graph: Graph) -> set[str] | None:
+         if graph._entrypoints is None:
+             return None
+         import networkx as nx
+         active = set(graph._entrypoints)
+         for ep in graph._entrypoints:
+             active.update(nx.descendants(graph._nx_graph, ep))
+         return active & set(graph._nodes)
+
+     def get_ready_nodes(graph: Graph, state: GraphState, *, active_nodes: set[str] | None = None) -> list[HyperNode]:
+         # ... existing gate activation logic ...
+         nodes_to_check = (n for n in graph._nodes.values() if n.name in active_nodes) if active_nodes is not None else graph._nodes.values()
+         for node in nodes_to_check:
+             if _is_node_ready(node, graph, state, activated_nodes):
+                 ready.append(node)
+     ```
+
+   - **`src/hypergraph/runners/_shared/template_sync.py`** (MODIFIED - Stage 2)
+     - Sync runner lifecycle template. Threads runtime select into validation.
+     - Added import of `_resolve_runtime_selected`
+     - In `run()`: computes `effective_selected = _resolve_runtime_selected(select, graph)` and passes to `validate_inputs`
+
+   - **`src/hypergraph/runners/_shared/template_async.py`** (MODIFIED - Stage 2)
+     - Async runner lifecycle template. Same changes as sync template.
+
+   - **`src/hypergraph/runners/sync/runner.py`** (MODIFIED - Stage 2)
+     - SyncRunner implementation. Added active-set enforcement.
+     - Imports `compute_active_node_set`
+     - In `_execute_graph_impl`: computes `active_nodes = compute_active_node_set(graph)` and passes to both `get_ready_nodes` calls (line 112 loop and line 137 termination check)
+
+   - **`src/hypergraph/runners/async_/runner.py`** (MODIFIED - Stage 2)
+     - AsyncRunner implementation. Same changes as sync runner.
+
+   - **`src/hypergraph/runners/base.py`** (READ, not modified)
+     - Abstract runner with `entrypoint: str | None = None`. Plan calls for type change to `str | tuple[str, ...] | None` but not yet done.
+
+   - **`src/hypergraph/graph/core.py`** (MODIFIED in Stage 1, read in this session)
+     - Graph class. Contains `_entrypoints` field, `with_entrypoint()` method, `entrypoints_config` property, modified `inputs` cached_property.
+
+   - **`src/hypergraph/graph/input_spec.py`** (MODIFIED in Stage 1, read in this session)
+     - InputSpec computation. Contains `_compute_active_scope()`, `_active_from_entrypoints()`, `_active_from_selection()` with pessimistic gate expansion.
+
+   - **`tests/test_partial_inputs.py`** (MODIFIED - grew from 20 to 26 tests)
+     - Added `TestRuntimeSelectNarrowsValidation` class (2 tests: runtime select narrows, runtime overrides graph select)
+     - Added `TestEntrypointExecution` class (4 tests: skips upstream, downstream executes, upstream never fires with provided inputs, backward compat)
+
+4. Errors and Fixes:
+   - **Broken `_resolve_effective_input_spec` reference**: Previous session left `validation.py` calling a non-existent function. Fixed by implementing the function.
+   - **`test_entrypoint_upstream_never_fires_even_with_bound_inputs` - bind rejected**: `with_entrypoint("downstream_bound")` narrows the active set so `x` is no longer a valid input, causing `bind(x=5)` to raise ValueError. Fixed by changing the test to provide `x` via `run()` values instead of `bind()`, which revealed the real issue.
+   - **Upstream node executing under `with_entrypoint` when inputs provided**: Test `test_entrypoint_upstream_never_fires_even_with_provided_inputs` showed that providing `x=5` at runtime caused the upstream node to fire even with `with_entrypoint("downstream_prov")`. Fixed by adding `active_nodes` filter to `get_ready_nodes` and threading it through both runners.
+   - **Pre-commit hook ruff format failure**: First commit attempt for Stage 2 failed because ruff reformatted one file. Fixed by re-staging the formatted file and committing again.
+
+5. Problem Solving:
+   - Successfully fixed the broken code from previous session
+   - Implemented runtime select narrowing end-to-end (template → validation → InputSpec)
+   - Discovered and fixed that `get_ready_nodes` needed active-set enforcement for `with_entrypoint` to actually prevent upstream execution
+   - Refactored internal helpers to use explicit InputSpec parameter instead of `graph.inputs` to ensure runtime-scoped validation
+   - All 1381 non-viz tests pass, 8 pre-existing viz test failures are unrelated
+   - Deferred breaking changes (disconnected island rejection, non-consecutive input conflicts, pessimistic branches) to separate PRs
+
+6. All User Messages:
+   - (System-generated continuation summary asking to continue from where left off)
+   - (System reminder - no user content, just triggered the assistant to check reviewer progress)
+   - (Current message asking for detailed summary)
+
+7. Pending Tasks (from task list):
+   - Task #3: Implement the feature — **COMPLETED**
+   - Task #4: Review the implementation — **IN PROGRESS** (code-reviewer agent running in background, agent ID: acc93565e79e0aba8)
+   - Task #5: Write documentation — pending, blocked by #4
+   - Task #6: Review documentation — pending, blocked by #5
+   - Task #7: Create PR — pending, blocked by #6
+
+   Plan items deferred to separate PRs:
+   - Phase 3A: Disconnected island rejection (breaking change)
+   - Phase 3B: Non-consecutive input conflict detection (breaking change)
+   - Pessimistic branch requirements / END-aware logic (breaking change)
+   - BaseRunner type update (`entrypoint: str | tuple[str, ...] | None`)
+
+8. Current Work:
+   I was waiting for the code-reviewer background agent (acc93565e79e0aba8) to complete its review. The reviewer has been:
+   - Reading the full diff (39KB across 9 files, 775 insertions)
+   - Running the full test suite (found 1381 pass, 8 pre-existing viz failures)
+   - Examining specific code areas: `_find_bypassed_inputs` using `graph._nodes` (full graph) while receiving scoped InputSpec, `_active_from_selection` fallback when no producers found, `_resolve_runtime_selected` edge cases, long line in `get_ready_nodes`
+   - The reviewer was still running when this summary was requested (had been checking for merge conflicts on master, which it encountered in viz files)
+
+   Git state: 3 commits on branch `worktree-piped-dreaming-canyon` ahead of `origin/master`:
+   ```
+   80ce711 refactor(runners): thread InputSpec through bypass and cycle-entry helpers
+   4fd15f5 feat(runners): thread runtime select into validation and add active-set enforcement
+   d0f738a feat(graph): add select-aware InputSpec and with_entrypoint for DAGs
+   ```
+
+9. Optional Next Step:
+   Wait for the code-reviewer agent (acc93565e79e0aba8) to complete and return its verdict. Based on the review:
+   - If **APPROVED**: Mark task #4 complete, proceed to Phase 3 (docs) per the `/feature` skill workflow
+   - If **ISSUES FOUND**: Address the reviewer's feedback, re-run tests, send updated diff for re-review (max 3 iterations per the skill workflow)
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/giladrubin/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
