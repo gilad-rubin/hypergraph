@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "d1b9793bdfde",
+  "strategy": "manual-commit",
+  "branch": "worktree-prancy-jingling-dijkstra",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hypergraph/__init__.py",
+    "src/hypergraph/runners/__init__.py",
+    "src/hypergraph/runners/_shared/helpers.py",
+    "src/hypergraph/runners/_shared/template_async.py",
+    "src/hypergraph/runners/_shared/template_sync.py",
+    "src/hypergraph/runners/async_/executors/graph_node.py",
+    "src/hypergraph/runners/base.py",
+    "src/hypergraph/runners/sync/executors/graph_node.py",
+    "tests/test_run_error_handling.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d1/b9793bdfde/0/metadata.json",
+      "transcript": "/d1/b9793bdfde/0/full.jsonl",
+      "context": "/d1/b9793bdfde/0/context.md",
+      "content_hash": "/d1/b9793bdfde/0/content_hash.txt",
+      "prompt": "/d1/b9793bdfde/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 225,
+    "cache_creation_tokens": 389949,
+    "cache_read_tokens": 21767859,
+    "output_tokens": 23123,
+    "api_call_count": 187
+  }
+}

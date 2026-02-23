@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "d1b9793bdfde",
+  "session_id": "2107eca7-609a-488a-bdbe-387e783be2a9",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-23T20:49:50.460521Z",
+  "branch": "worktree-prancy-jingling-dijkstra",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hypergraph/__init__.py",
+    "src/hypergraph/runners/__init__.py",
+    "src/hypergraph/runners/_shared/helpers.py",
+    "src/hypergraph/runners/_shared/template_async.py",
+    "src/hypergraph/runners/_shared/template_sync.py",
+    "src/hypergraph/runners/async_/executors/graph_node.py",
+    "src/hypergraph/runners/base.py",
+    "src/hypergraph/runners/sync/executors/graph_node.py",
+    "tests/test_run_error_handling.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "0cd8b8a1c84f",
+  "token_usage": {
+    "input_tokens": 225,
+    "cache_creation_tokens": 389949,
+    "cache_read_tokens": 21767859,
+    "output_tokens": 23123,
+    "api_call_count": 187
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-23T20:49:48.303391Z",
+    "agent_lines": 235,
+    "human_added": 117,
+    "human_modified": 14,
+    "human_removed": 0,
+    "total_committed": 366,
+    "agent_percentage": 64.20765027322405
+  },
+  "transcript_path": ".claude/projects/-Users-giladrubin-python-workspace-hypergraph--claude-worktrees-prancy-jingling-dijkstra/2107eca7-609a-488a-bdbe-387e783be2a9.jsonl"
+}
