@@ -655,15 +655,15 @@ class Graph:
 
         Preserves: name, strict_types, nodes, nx_graph, cached_hash
         Creates new: _bound dict (to allow independent modifications)
-        Clears: cached inputs (depends on _bound which may differ)
+        Clears: cached inputs (depends on _bound, _selected, _entrypoints)
         """
         import copy
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
-        # Clear cached_property values that depend on _bound
+        # Clear cached_property values that depend on _bound / _selected / _entrypoints
         new_graph.__dict__.pop("inputs", None)
-        # _selected is an immutable tuple (or None), safe to share via copy.copy
+        # _selected and _entrypoints are immutable tuples (or None), safe to share via copy.copy
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 

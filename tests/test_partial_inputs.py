@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph import Graph, SyncRunner, node
+from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
 
 # === Shared test nodes ===
@@ -482,3 +482,121 @@ class TestEntrypointExecution:
         result = runner.run(graph, {"x": 5})
         assert result["out"] == 10
         assert set(call_log) == {"first", "second"}
+
+
+# === Entrypoint + cycle interaction ===
+
+
+class TestEntrypointCycleInteraction:
+    """with_entrypoint should interact correctly with cyclic graphs."""
+
+    def test_entrypoint_at_cycle_node_narrows_inputs(self):
+        """with_entrypoint at a cycle member exposes bootstrap params.
+
+        Cycle: A(c) -> a, B(a) -> b, C(b) -> c
+        with_entrypoint("node_b") skips node_a, so 'a' becomes a user-provided
+        bootstrap param (it's a cycle param that needs seeding).
+        """
+
+        @node(output_name="a")
+        def node_a(c: int) -> int:
+            return c + 1
+
+        @node(output_name="b")
+        def node_b(a: int) -> int:
+            return a * 2
+
+        @node(output_name="c")
+        def node_c(b: int) -> int:
+            return b - 1
+
+        graph = Graph([node_a, node_b, node_c])
+        assert graph.has_cycles
+
+        # Entrypoint at node_b: skip node_a, so 'a' is the bootstrap param
+        g2 = graph.with_entrypoint("node_b")
+        assert "a" in g2.inputs.entrypoints.get("node_b", ())
+
+    def test_dag_upstream_of_cycle_excluded_by_entrypoint(self):
+        """with_entrypoint at cycle member excludes DAG nodes upstream.
+
+        DAG root(x) -> a, then cycle: A(a,c) -> a2, B(a2) -> b, C(b) -> c
+        with_entrypoint("cycle_a") skips the root, so 'a' becomes user-provided.
+        """
+
+        @node(output_name="a")
+        def root(x):
+            return x
+
+        @node(output_name="a2")
+        def cycle_a(a, c=0):
+            return a + c
+
+        @node(output_name="b")
+        def cycle_b(a2):
+            return a2 * 2
+
+        @node(output_name="c")
+        def cycle_c(b):
+            return b - 1
+
+        graph = Graph([root, cycle_a, cycle_b, cycle_c])
+        # Full graph: x is required (root's input)
+        assert "x" in graph.inputs.required
+
+        # Entrypoint at cycle_a: root is upstream → skipped
+        g2 = graph.with_entrypoint("cycle_a")
+        assert "x" not in set(g2.inputs.required) | set(g2.inputs.optional)
+        # 'a' is now user-provided since root is skipped
+        assert "a" in set(g2.inputs.required) | set(g2.inputs.optional) | {p for params in g2.inputs.entrypoints.values() for p in params}
+
+
+# === Async runner path ===
+
+
+class TestAsyncRunnerEntrypoint:
+    """AsyncRunner should enforce entrypoint active-set filtering."""
+
+    @pytest.mark.asyncio
+    async def test_async_entrypoint_skips_upstream(self):
+        """AsyncRunner with_entrypoint skips upstream nodes."""
+        call_log = []
+
+        @node(output_name="mid")
+        async def async_upstream(x):
+            call_log.append("upstream")
+            return x * 2
+
+        @node(output_name="out")
+        async def async_downstream(mid):
+            call_log.append("downstream")
+            return mid + 1
+
+        graph = Graph([async_upstream, async_downstream]).with_entrypoint("async_downstream")
+        runner = AsyncRunner()
+        result = await runner.run(graph, {"mid": 10})
+        assert result["out"] == 11
+        assert call_log == ["downstream"]
+
+    @pytest.mark.asyncio
+    async def test_async_runtime_select_narrows_validation(self):
+        """AsyncRunner runtime select narrows validation like SyncRunner."""
+
+        @node(output_name="a_val")
+        async def node_a(x):
+            return x
+
+        @node(output_name="b_val")
+        async def node_b(a_val, y):
+            return f"{a_val}-{y}"
+
+        graph = Graph([node_a, node_b])
+        runner = AsyncRunner()
+
+        # Without select, both x and y required
+        with pytest.raises(Exception, match="y"):
+            await runner.run(graph, {"x": 1})
+
+        # With select="a_val", only x is required
+        result = await runner.run(graph, {"x": 1}, select="a_val")
+        assert result["a_val"] == 1

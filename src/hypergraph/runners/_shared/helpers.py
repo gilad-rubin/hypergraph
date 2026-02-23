@@ -26,16 +26,15 @@ def compute_active_node_set(graph: Graph) -> set[str] | None:
     """Compute active node names from graph's entrypoint config.
 
     Returns None when no entrypoints are configured (all nodes active).
+    Delegates to input_spec._active_from_entrypoints to avoid duplicating
+    the forward-reachability logic.
     """
     if graph._entrypoints is None:
         return None
 
-    import networkx as nx
+    from hypergraph.graph.input_spec import _active_from_entrypoints
 
-    active = set(graph._entrypoints)
-    for ep in graph._entrypoints:
-        active.update(nx.descendants(graph._nx_graph, ep))
-    return active & set(graph._nodes)
+    return _active_from_entrypoints(graph._entrypoints, graph._nodes, graph._nx_graph)
 
 
 class ValueSource(Enum):
@@ -160,8 +159,9 @@ def get_ready_nodes(
     activated_nodes = _get_activated_nodes(graph, state)
 
     ready = []
-    nodes_to_check = (n for n in graph._nodes.values() if n.name in active_nodes) if active_nodes is not None else graph._nodes.values()
-    for node in nodes_to_check:
+    for node in graph._nodes.values():
+        if active_nodes is not None and node.name not in active_nodes:
+            continue
         if _is_node_ready(node, graph, state, activated_nodes):
             ready.append(node)
 

@@ -347,6 +347,11 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSp
 
     When a node is bypassed, its exclusive inputs (not needed by other nodes)
     can be removed from the required set.
+
+    Note: This iterates ``graph._nodes`` (the full graph), not just the active
+    subgraph. This is safe because bypassed inputs are subtracted from
+    ``inputs_spec.required``, which is already scoped to active nodes.
+    Extra bypassed inputs from inactive nodes are no-ops.
     """
     # Build output -> producer nodes mapping (handle mutex branches)
     output_to_nodes: dict[str, list[str]] = {}
@@ -398,7 +403,7 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSp
     return bypassed_inputs
 
 
-def _resolve_runtime_selected(
+def resolve_runtime_selected(
     select: Any,
     graph: Graph,
 ) -> tuple[str, ...] | None:
@@ -419,6 +424,8 @@ def _resolve_runtime_selected(
         return (select,)
     if isinstance(select, list):
         return tuple(select)
+    # Unexpected type — treat as "no narrowing" rather than raising, since
+    # run() signature already constrains the type at the public API level.
     return None
 
 

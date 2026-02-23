@@ -299,6 +299,10 @@ def _active_from_selection(
     selected_set = set(selected_outputs)
     producers = {name for name in active_set if set(nodes[name].outputs) & selected_set}
     if not producers:
+        # No active node produces the selected outputs — return full active set
+        # as a graceful fallback. graph.select() validates output names at
+        # construction time, so this path only triggers via runtime select with
+        # entrypoints that exclude the producer (defense-in-depth).
         return active_set
 
     sub = nx_graph.subgraph(active_set)
