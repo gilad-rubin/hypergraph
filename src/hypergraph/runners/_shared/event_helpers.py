@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
 
 def create_dispatcher(
-    processors: "list[EventProcessor] | None",
-) -> "EventDispatcher":
+    processors: list[EventProcessor] | None,
+) -> EventDispatcher:
     """Create an EventDispatcher from processor list."""
     from hypergraph.events.dispatcher import EventDispatcher
 
@@ -35,8 +35,8 @@ def create_dispatcher(
 def build_node_start_event(
     run_id: str,
     run_span_id: str,
-    node: "HyperNode",
-    graph: "Graph",
+    node: HyperNode,
+    graph: Graph,
 ) -> tuple[str, Any]:
     """Build a NodeStartEvent. Returns (span_id, event)."""
     from hypergraph.events.types import NodeStartEvent, _generate_span_id
@@ -56,8 +56,8 @@ def build_node_end_event(
     run_id: str,
     node_span_id: str,
     run_span_id: str,
-    node: "HyperNode",
-    graph: "Graph",
+    node: HyperNode,
+    graph: Graph,
     duration_ms: float,
     cached: bool = False,
 ) -> Any:
@@ -79,8 +79,8 @@ def build_cache_hit_event(
     run_id: str,
     node_span_id: str,
     run_span_id: str,
-    node: "HyperNode",
-    graph: "Graph",
+    node: HyperNode,
+    graph: Graph,
     cache_key: str,
 ) -> Any:
     """Build a CacheHitEvent."""
@@ -100,8 +100,8 @@ def build_node_error_event(
     run_id: str,
     node_span_id: str,
     run_span_id: str,
-    node: "HyperNode",
-    graph: "Graph",
+    node: HyperNode,
+    graph: Graph,
 ) -> Any:
     """Build a NodeErrorEvent from the current exception context."""
     from hypergraph.events.types import NodeErrorEvent
@@ -121,9 +121,9 @@ def build_node_error_event(
 def build_route_decision_event(
     run_id: str,
     run_span_id: str,
-    node: "HyperNode",
-    graph: "Graph",
-    state: "GraphState",
+    node: HyperNode,
+    graph: Graph,
+    state: GraphState,
 ) -> Any | None:
     """Build a RouteDecisionEvent if the node made a routing decision.
 
@@ -153,7 +153,7 @@ def build_route_decision_event(
 
 
 def build_run_start_event(
-    graph: "Graph",
+    graph: Graph,
     parent_span_id: str | None,
     *,
     is_map: bool = False,
@@ -179,7 +179,7 @@ def build_run_start_event(
 def build_run_end_event(
     run_id: str,
     span_id: str,
-    graph: "Graph",
+    graph: Graph,
     start_time: float,
     parent_span_id: str | None,
     *,

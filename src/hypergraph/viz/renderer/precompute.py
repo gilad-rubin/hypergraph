@@ -42,11 +42,7 @@ def compute_nodes_for_state(
     """Compute nodes for a specific expansion state."""
     nodes: list[dict[str, Any]] = []
 
-    self_loop_nodes = {
-        source
-        for source, target in flat_graph.edges()
-        if source == target and is_node_visible(source, flat_graph, expansion_state)
-    }
+    self_loop_nodes = {source for source, target in flat_graph.edges() if source == target and is_node_visible(source, flat_graph, expansion_state)}
 
     bound_params = set(input_spec.get("bound", {}).keys())
     param_to_consumer = build_param_to_consumer_map(
@@ -95,10 +91,7 @@ def compute_nodes_for_state(
         if node_type == "GRAPH" and not separate_outputs:
             allowed_outputs = graph_output_visibility.get(node_id) if graph_output_visibility else None
             if allowed_outputs is not None and "outputs" in rf_node["data"]:
-                rf_node["data"]["outputs"] = [
-                    out for out in rf_node["data"]["outputs"]
-                    if out["name"] in allowed_outputs
-                ]
+                rf_node["data"]["outputs"] = [out for out in rf_node["data"]["outputs"] if out["name"] in allowed_outputs]
 
         nodes.append(rf_node)
 

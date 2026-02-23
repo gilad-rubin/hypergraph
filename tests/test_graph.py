@@ -1,6 +1,7 @@
 """Tests for graph.py - InputSpec and Graph classes."""
 
 import pytest
+
 from hypergraph import InputSpec
 from hypergraph.graph import Graph, GraphConfigError
 from hypergraph.nodes.function import node
@@ -88,6 +89,7 @@ class TestGraphConstruction:
 
     def test_single_node_graph(self):
         """Test graph with a single node."""
+
         @node(output_name="result")
         def single(x: int) -> int:
             return x * 2
@@ -103,6 +105,7 @@ class TestGraphConstruction:
 
     def test_linear_chain(self):
         """Test graph with linear dependency: a -> b."""
+
         @node(output_name="a_out")
         def node_a(x: int) -> int:
             return x + 1
@@ -122,6 +125,7 @@ class TestGraphConstruction:
 
     def test_fan_out(self):
         """Test graph with fan-out: a -> b, a -> c."""
+
         @node(output_name="a_out")
         def node_a(x: int) -> int:
             return x + 1
@@ -146,6 +150,7 @@ class TestGraphConstruction:
 
     def test_fan_in(self):
         """Test graph with fan-in: a -> c, b -> c."""
+
         @node(output_name="a_out")
         def node_a(x: int) -> int:
             return x + 1
@@ -170,6 +175,7 @@ class TestGraphConstruction:
 
     def test_duplicate_node_names_raises(self):
         """Test that duplicate node names raise GraphConfigError."""
+
         @node(output_name="out1")
         def process(x: int) -> int:
             return x + 1
@@ -183,6 +189,7 @@ class TestGraphConstruction:
 
     def test_duplicate_outputs_raises(self):
         """Test that duplicate output names raise GraphConfigError."""
+
         @node(output_name="result")
         def node_a(x: int) -> int:
             return x + 1
@@ -196,6 +203,7 @@ class TestGraphConstruction:
 
     def test_nodes_property_returns_dict_copy(self):
         """Test that nodes property returns a copy (prevents mutation)."""
+
         @node(output_name="result")
         def single(x: int) -> int:
             return x
@@ -211,6 +219,7 @@ class TestGraphConstruction:
 
     def test_outputs_property(self):
         """Test outputs property returns all node outputs."""
+
         @node(output_name="a_out")
         def node_a(x: int) -> int:
             return x
@@ -225,6 +234,7 @@ class TestGraphConstruction:
 
     def test_leaf_outputs_property(self):
         """Test leaf_outputs property returns only leaf node outputs."""
+
         @node(output_name="a_out")
         def node_a(x: int) -> int:
             return x
@@ -245,6 +255,7 @@ class TestGraphConstruction:
 
     def test_nx_graph_has_correct_edges(self):
         """Test NetworkX graph contains correct edges with attributes."""
+
         @node(output_name="a_out")
         def node_a(x: int) -> int:
             return x
@@ -265,6 +276,7 @@ class TestGraphConstruction:
 
     def test_nx_graph_has_node_attributes(self):
         """Test NetworkX nodes contain flattened attributes."""
+
         @node(output_name="result")
         def single(x: int) -> int:
             return x
@@ -280,6 +292,7 @@ class TestGraphConstruction:
 
     def test_graph_with_optional_name(self):
         """Test Graph can be created with optional name."""
+
         @node(output_name="result")
         def single(x: int) -> int:
             return x
@@ -290,6 +303,7 @@ class TestGraphConstruction:
 
     def test_graph_without_name(self):
         """Test Graph name defaults to None."""
+
         @node(output_name="result")
         def single(x: int) -> int:
             return x
@@ -782,6 +796,7 @@ class TestGraphAsNode:
 
     def test_as_node_uses_graph_name(self):
         """Test as_node() uses graph.name when present."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -793,6 +808,7 @@ class TestGraphAsNode:
 
     def test_as_node_override_name(self):
         """Test as_node(name=...) overrides graph.name."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -804,6 +820,7 @@ class TestGraphAsNode:
 
     def test_as_node_no_name_raises(self):
         """Test as_node() raises when graph has no name and no override."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -815,6 +832,7 @@ class TestGraphAsNode:
 
     def test_graphnode_inputs_match_graph(self):
         """Test GraphNode.inputs matches graph.inputs.all."""
+
         @node(output_name="x")
         def step1(a: int, b: int = 10) -> int:
             return a + b
@@ -832,6 +850,7 @@ class TestGraphAsNode:
 
     def test_graphnode_outputs_match_graph(self):
         """Test GraphNode.outputs matches graph.outputs."""
+
         @node(output_name="x")
         def step1(a: int) -> int:
             return a + 1
@@ -848,6 +867,7 @@ class TestGraphAsNode:
 
     def test_graphnode_definition_hash(self):
         """Test GraphNode.definition_hash returns graph's hash."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -859,6 +879,7 @@ class TestGraphAsNode:
 
     def test_graphnode_graph_property(self):
         """Test GraphNode.graph property returns wrapped graph."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -874,6 +895,7 @@ class TestGraphNodeOutputAnnotation:
 
     def test_single_typed_output(self):
         """Test GraphNode exposes output type from typed function."""
+
         @node(output_name="x")
         def inner_func(_a: int) -> str:
             return "hello"
@@ -885,6 +907,7 @@ class TestGraphNodeOutputAnnotation:
 
     def test_multiple_outputs(self):
         """Test GraphNode exposes multiple output types."""
+
         @node(output_name="x")
         def func_a(_a: int) -> str:
             return ""
@@ -900,6 +923,7 @@ class TestGraphNodeOutputAnnotation:
 
     def test_untyped_outputs(self):
         """Test GraphNode returns None for untyped outputs."""
+
         @node(output_name="x")
         def untyped(a):
             return a
@@ -911,6 +935,7 @@ class TestGraphNodeOutputAnnotation:
 
     def test_mixed_typed_untyped(self):
         """Test GraphNode includes all outputs, None for untyped."""
+
         @node(output_name="x")
         def typed(_a: int) -> str:
             return ""
@@ -927,6 +952,7 @@ class TestGraphNodeOutputAnnotation:
 
     def test_nested_graphnode(self):
         """Test output_annotation works with nested GraphNode."""
+
         @node(output_name="x")
         def inner(_a: int) -> str:
             return ""
@@ -950,6 +976,7 @@ class TestGraphStrictTypes:
 
     def test_strict_types_defaults_false(self):
         """Test strict_types defaults to False."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x
@@ -960,6 +987,7 @@ class TestGraphStrictTypes:
 
     def test_strict_types_true(self):
         """Test strict_types can be set to True."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x
@@ -970,6 +998,7 @@ class TestGraphStrictTypes:
 
     def test_strict_types_preserved_through_bind(self):
         """Test strict_types is preserved through bind operation."""
+
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -981,6 +1010,7 @@ class TestGraphStrictTypes:
 
     def test_strict_types_preserved_through_unbind(self):
         """Test strict_types is preserved through unbind operation."""
+
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -993,6 +1023,7 @@ class TestGraphStrictTypes:
 
     def test_strict_types_with_name(self):
         """Test strict_types works with name parameter."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x
@@ -1004,6 +1035,7 @@ class TestGraphStrictTypes:
 
     def test_strict_types_independent_per_graph(self):
         """Test each graph has its own strict_types setting."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x
@@ -1020,6 +1052,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_missing_input_annotation(self):
         """Test missing input annotation raises GraphConfigError."""
+
         @node(output_name="result")
         def producer() -> int:
             return 42
@@ -1039,6 +1072,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_missing_output_annotation(self):
         """Test missing output annotation raises GraphConfigError."""
+
         @node(output_name="result")
         def producer():  # Missing return type annotation
             return 42
@@ -1058,6 +1092,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_type_mismatch(self):
         """Test type mismatch raises GraphConfigError."""
+
         @node(output_name="result")
         def producer() -> int:
             return 42
@@ -1078,6 +1113,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_compatible_types_pass(self):
         """Test compatible types pass validation."""
+
         @node(output_name="result")
         def producer() -> int:
             return 42
@@ -1094,6 +1130,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_union_compatible(self):
         """Test int is compatible with int | str."""
+
         @node(output_name="result")
         def producer() -> int:
             return 42
@@ -1109,6 +1146,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_disabled_skips_validation(self):
         """Test type mismatch is ignored when strict_types=False."""
+
         @node(output_name="result")
         def producer() -> int:
             return 42
@@ -1125,6 +1163,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_graphnode_output_compatible(self):
         """Test GraphNode output type validates correctly."""
+
         @node(output_name="x")
         def inner_func(_a: int) -> str:
             return "hello"
@@ -1144,6 +1183,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_graphnode_output_incompatible(self):
         """Test GraphNode output type mismatch raises error."""
+
         @node(output_name="x")
         def inner_func(_a: int) -> str:
             return "hello"
@@ -1166,6 +1206,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_chain_validation(self):
         """Test type validation works through a chain of nodes."""
+
         @node(output_name="a")
         def step1(x: int) -> int:
             return x + 1
@@ -1186,6 +1227,7 @@ class TestStrictTypesValidation:
 
     def test_strict_types_chain_mismatch_detected(self):
         """Test type mismatch in middle of chain is detected."""
+
         @node(output_name="a")
         def step1(x: int) -> int:
             return x + 1
@@ -1212,6 +1254,7 @@ class TestGraphNodeRename:
 
     def test_with_name_returns_new_instance(self):
         """with_name returns new GraphNode with different name."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -1226,6 +1269,7 @@ class TestGraphNodeRename:
 
     def test_with_name_preserves_graph_reference(self):
         """Renamed GraphNode shares same underlying Graph (immutable)."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -1239,6 +1283,7 @@ class TestGraphNodeRename:
 
     def test_with_inputs_renames_inputs(self):
         """with_inputs renames inputs in returned GraphNode."""
+
         @node(output_name="result")
         def foo(a: int, b: int) -> int:
             return a + b
@@ -1252,6 +1297,7 @@ class TestGraphNodeRename:
 
     def test_with_outputs_renames_outputs(self):
         """with_outputs renames outputs in returned GraphNode."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -1265,6 +1311,7 @@ class TestGraphNodeRename:
 
     def test_rename_preserves_inputs_outputs_types(self):
         """Renamed GraphNode has same tuple types for inputs/outputs."""
+
         @node(output_name="result")
         def foo(a: int, b: int = 10) -> int:
             return a + b
@@ -1321,6 +1368,7 @@ class TestGraphNodeRename:
 
     def test_original_unchanged_after_rename(self):
         """Original GraphNode is not mutated by rename operations."""
+
         @node(output_name="result")
         def foo(a: int, b: int) -> int:
             return a + b
@@ -1354,6 +1402,7 @@ class TestGraphNodeCapabilities:
 
     def test_has_default_for_with_default(self):
         """Inner graph has node with default, GraphNode.has_default_for returns True."""
+
         @node(output_name="result")
         def foo(x: int, y: int = 10) -> int:
             return x + y
@@ -1365,6 +1414,7 @@ class TestGraphNodeCapabilities:
 
     def test_has_default_for_without_default(self):
         """Inner graph node has no default, returns False."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -1376,6 +1426,7 @@ class TestGraphNodeCapabilities:
 
     def test_has_default_for_nonexistent_param(self):
         """Param not in inputs, returns False."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -1387,6 +1438,7 @@ class TestGraphNodeCapabilities:
 
     def test_get_default_for_retrieves_value(self):
         """Get actual default value from inner graph."""
+
         @node(output_name="result")
         def foo(x: int, y: int = 42) -> int:
             return x + y
@@ -1398,6 +1450,7 @@ class TestGraphNodeCapabilities:
 
     def test_get_default_for_raises_on_no_default(self):
         """KeyError when param has no default."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x * 2
@@ -1410,6 +1463,7 @@ class TestGraphNodeCapabilities:
 
     def test_get_input_type_returns_type(self):
         """Returns type annotation from inner graph node."""
+
         @node(output_name="result")
         def foo(x: int, y: str) -> str:
             return f"{x}: {y}"
@@ -1417,11 +1471,12 @@ class TestGraphNodeCapabilities:
         inner_graph = Graph([foo], name="inner")
         gn = inner_graph.as_node()
 
-        assert gn.get_input_type("x") == int
-        assert gn.get_input_type("y") == str
+        assert gn.get_input_type("x") is int
+        assert gn.get_input_type("y") is str
 
     def test_get_input_type_untyped_returns_none(self):
         """Returns None for untyped params."""
+
         @node(output_name="result")
         def foo(x):
             return x
@@ -1433,6 +1488,7 @@ class TestGraphNodeCapabilities:
 
     def test_get_input_type_nonexistent_returns_none(self):
         """Returns None for nonexistent param."""
+
         @node(output_name="result")
         def foo(x: int) -> int:
             return x
@@ -1444,6 +1500,7 @@ class TestGraphNodeCapabilities:
 
     def test_get_output_type_returns_type(self):
         """Returns output type from inner graph node."""
+
         @node(output_name="result")
         def foo(x: int) -> str:
             return str(x)
@@ -1451,10 +1508,11 @@ class TestGraphNodeCapabilities:
         inner_graph = Graph([foo], name="inner")
         gn = inner_graph.as_node()
 
-        assert gn.get_output_type("result") == str
+        assert gn.get_output_type("result") is str
 
     def test_get_output_type_untyped_returns_none(self):
         """Returns None for untyped output."""
+
         @node(output_name="result")
         def foo(x):
             return x
@@ -1468,6 +1526,7 @@ class TestGraphNodeCapabilities:
 
     def test_bound_inner_graph_includes_bound_in_inputs(self):
         """Bound values remain in GraphNode.inputs (as optional)."""
+
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -1481,6 +1540,7 @@ class TestGraphNodeCapabilities:
 
     def test_bound_inner_graph_preserves_unbound_inputs(self):
         """Unbound inputs still in GraphNode.inputs."""
+
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -1494,6 +1554,7 @@ class TestGraphNodeCapabilities:
 
     def test_bound_value_accessible_via_has_default(self):
         """Bound values act as defaults - has_default_for returns True."""
+
         @node(output_name="result")
         def foo(x: int, y: int) -> int:
             return x + y
@@ -1509,6 +1570,7 @@ class TestGraphNodeCapabilities:
 
     def test_nested_graphnode_with_bound_inner(self):
         """GraphNode of GraphNode with bound values - types flow correctly."""
+
         @node(output_name="intermediate")
         def inner_func(a: int, b: int = 5) -> str:
             return str(a + b)
@@ -1525,9 +1587,9 @@ class TestGraphNodeCapabilities:
         outer_gn = outer_graph.as_node()
 
         # Types should flow correctly: inner produces str, outer consumes str
-        assert outer_gn.get_input_type("a") == int
-        assert outer_gn.get_output_type("intermediate") == str
-        assert outer_gn.get_output_type("final") == int
+        assert outer_gn.get_input_type("a") is int
+        assert outer_gn.get_output_type("intermediate") is str
+        assert outer_gn.get_output_type("final") is int
 
         # Both a and b appear in outer's inputs (b is optional due to binding)
         assert "a" in outer_gn.inputs
@@ -1542,6 +1604,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_strict_types_propagates_to_inner_graph(self):
         """Inner graph respects strict_types from outer graph construction."""
+
         @node(output_name="x")
         def inner_typed(a: int) -> str:
             return str(a)
@@ -1561,6 +1624,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_strict_types_detects_inner_outer_mismatch(self):
         """Type mismatch between inner output and outer input is detected."""
+
         @node(output_name="x")
         def inner_typed(a: int) -> int:
             return a * 2
@@ -1582,6 +1646,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_type_mismatch_at_graphnode_boundary(self):
         """Type error is detected at GraphNode input boundary."""
+
         @node(output_name="x")
         def producer() -> int:
             return 42
@@ -1601,6 +1666,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_nested_graphnode_chain_type_checking(self):
         """Multiple nested levels are type checked."""
+
         @node(output_name="a")
         def step1(x: int) -> str:
             return str(x)
@@ -1627,6 +1693,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_nested_graphnode_chain_type_mismatch(self):
         """Type mismatch in nested chain is detected."""
+
         @node(output_name="a")
         def step1(x: int) -> str:
             return str(x)
@@ -1646,6 +1713,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_deeply_nested_graphnode_type_checking(self):
         """Three levels of GraphNode nesting with type checking."""
+
         @node(output_name="x")
         def level3_node(a: int) -> str:
             return str(a)
@@ -1672,6 +1740,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_graphnode_with_multiple_outputs_type_checked(self):
         """GraphNode with multiple outputs has all outputs type checked."""
+
         @node(output_name=("a", "b"))
         def multi_output(x: int) -> tuple[str, float]:
             return str(x), float(x)
@@ -1696,6 +1765,7 @@ class TestStrictTypesWithNestedGraphNode:
 
     def test_graphnode_with_multiple_outputs_mismatch(self):
         """Type mismatch detected when one of multiple outputs doesn't match."""
+
         @node(output_name=("a", "b"))
         def multi_output(x: int) -> tuple[str, float]:
             return str(x), float(x)
@@ -1724,7 +1794,7 @@ class TestCycleSameOutput:
 
     def test_unordered_producers_in_cycle_rejected(self):
         """Two unordered producers in a cycle should raise GraphConfigError."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name="messages")
         def accumulate_query(messages: list, query: str) -> list:
@@ -1743,7 +1813,7 @@ class TestCycleSameOutput:
 
     def test_ordered_via_emit_wait_for_allowed(self):
         """Two producers with emit/wait_for ordering should be allowed."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name="messages", emit="query_done")
         def accumulate_query(messages: list, query: str) -> list:
@@ -1762,7 +1832,7 @@ class TestCycleSameOutput:
 
     def test_ordered_via_emit_wait_for_runs(self):
         """Ordered producers should execute end-to-end."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
         from hypergraph.runners.sync import SyncRunner
 
         @node(output_name="messages", emit="query_done")
@@ -1799,7 +1869,7 @@ class TestCycleSameOutput:
 
     def test_self_producers_property(self):
         """graph should expose self_producers mapping output to producer sets."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name="messages", emit="query_done")
         def accumulate_query(messages: list, query: str) -> list:
@@ -1821,7 +1891,7 @@ class TestCycleSameOutput:
 
     def test_mixed_mutex_and_ordered_allowed(self):
         """3 producers: pair (A,B) mutex via exclusive gate, pairs (A,C) and (B,C) ordered."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import route
 
         @node(output_name="result", emit="c_done")
         def producer_c(x: int) -> int:
@@ -1850,7 +1920,7 @@ class TestCycleSameOutput:
 
     def test_multiple_shared_outputs_checked(self):
         """Two nodes sharing two output names: edges for both removed before checking."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name=("x", "y"), emit="a_done")
         def producer_a(seed: int) -> tuple[int, int]:
@@ -2063,7 +2133,7 @@ class TestAddNodes:
 
     def test_gate_target_filled(self):
         """Adding a node that a gate targets resolves the route."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @route(targets=["process", END])
         def decide(x: int) -> str:

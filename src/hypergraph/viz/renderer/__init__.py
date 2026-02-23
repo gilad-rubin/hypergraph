@@ -18,7 +18,9 @@ from hypergraph.viz._common import (
     build_output_to_producer_map,
     build_param_to_consumer_map,
     expansion_state_to_key,
-    get_expandable_nodes,
+)
+from hypergraph.viz._common import (
+    get_expandable_nodes as get_expandable_nodes,
 )
 from hypergraph.viz.renderer.precompute import precompute_all_edges, precompute_all_nodes
 from hypergraph.viz.renderer.scope import build_graph_output_visibility
@@ -113,8 +115,4 @@ def render_graph(
 
 def _build_node_to_parent_map(flat_graph: nx.DiGraph) -> dict[str, str]:
     """Build mapping from node name to parent name for routing."""
-    return {
-        node_id: attrs.get("parent")
-        for node_id, attrs in flat_graph.nodes(data=True)
-        if attrs.get("parent") is not None
-    }
+    return {node_id: attrs.get("parent") for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("parent") is not None}

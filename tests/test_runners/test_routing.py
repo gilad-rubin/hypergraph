@@ -11,9 +11,8 @@ Tests cover:
 
 import pytest
 
-from hypergraph import Graph, node, route, END, SyncRunner, AsyncRunner, RunStatus
+from hypergraph import END, AsyncRunner, Graph, RunStatus, SyncRunner, node, route
 from hypergraph.graph import GraphConfigError
-
 
 # =============================================================================
 # Basic Routing Execution Tests
@@ -575,11 +574,7 @@ class TestControlEdges:
         graph = Graph([start, decide, end_a, end_b])
 
         # Check control edges exist
-        control_edges = [
-            (u, v)
-            for u, v, d in graph._nx_graph.edges(data=True)
-            if d.get("edge_type") == "control"
-        ]
+        control_edges = [(u, v) for u, v, d in graph._nx_graph.edges(data=True) if d.get("edge_type") == "control"]
         assert ("decide", "end_a") in control_edges
         assert ("decide", "end_b") in control_edges
 

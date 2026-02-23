@@ -18,8 +18,8 @@ class AsyncInterruptNodeExecutor:
 
     async def __call__(
         self,
-        node: "InterruptNode",
-        state: "GraphState",
+        node: InterruptNode,
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
@@ -29,8 +29,7 @@ class AsyncInterruptNodeExecutor:
         for name in node.inputs:
             if name not in inputs:
                 raise KeyError(
-                    f"InterruptNode '{node.name}' requires input '{name}' "
-                    f"but it was not provided. Available inputs: {list(inputs.keys())}"
+                    f"InterruptNode '{node.name}' requires input '{name}' but it was not provided. Available inputs: {list(inputs.keys())}"
                 )
             input_values[name] = inputs[name]
 
@@ -49,10 +48,7 @@ class AsyncInterruptNodeExecutor:
             if isawaitable(response):
                 response = await response
         except Exception as e:
-            raise RuntimeError(
-                f"Handler for InterruptNode '{node.name}' failed: "
-                f"{type(e).__name__}: {e}"
-            ) from e
+            raise RuntimeError(f"Handler for InterruptNode '{node.name}' failed: {type(e).__name__}: {e}") from e
 
         # None return means "pause"
         if response is not None:
@@ -61,10 +57,7 @@ class AsyncInterruptNodeExecutor:
 
         # Pause path: handler returned None
         if not data_outputs:
-            raise RuntimeError(
-                f"InterruptNode '{node.name}' returned None (pause) "
-                f"but has no data outputs to resume into"
-            )
+            raise RuntimeError(f"InterruptNode '{node.name}' returned None (pause) but has no data outputs to resume into")
         raise PauseExecution(
             PauseInfo(
                 node_name=node.name,
@@ -77,7 +70,7 @@ class AsyncInterruptNodeExecutor:
 
 
 def _normalize_response(
-    node: "InterruptNode",
+    node: InterruptNode,
     response: Any,
     data_outputs: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -93,18 +86,16 @@ def _normalize_response(
             raise ValueError(
                 f"Handler for InterruptNode '{node.name}' returned dict "
                 f"with incorrect keys. Expected: {sorted(expected_keys)}, "
-                f"Got: {sorted(actual_keys)}. "
-                + (f"Missing: {sorted(missing)}. " if missing else "")
-                + (f"Extra: {sorted(extra)}." if extra else "")
+                f"Got: {sorted(actual_keys)}. " + (f"Missing: {sorted(missing)}. " if missing else "") + (f"Extra: {sorted(extra)}." if extra else "")
             )
         return response
     # Single value (or single value for multi-output): assign to first output
     return {data_outputs[0]: response}
 
 
-def _add_emit_sentinels(result: dict[str, Any], node: "InterruptNode") -> dict[str, Any]:
+def _add_emit_sentinels(result: dict[str, Any], node: InterruptNode) -> dict[str, Any]:
     """Add emit sentinel values to the result dict."""
-    emit_outputs = node.outputs[len(node.data_outputs):]
+    emit_outputs = node.outputs[len(node.data_outputs) :]
     for name in emit_outputs:
         result[name] = _EMIT_SENTINEL
     return result

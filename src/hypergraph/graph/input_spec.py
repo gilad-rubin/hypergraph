@@ -6,8 +6,9 @@ which parameters are required, optional, or cycle entrypoints.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, Iterator, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
@@ -47,7 +48,7 @@ class InputSpec:
 
 
 def compute_input_spec(
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
     nx_graph: nx.DiGraph,
     bound: dict[str, Any],
 ) -> InputSpec:
@@ -88,7 +89,7 @@ def compute_input_spec(
     )
 
 
-def _unique_params(nodes: dict[str, "HyperNode"]) -> Iterator[str]:
+def _unique_params(nodes: dict[str, HyperNode]) -> Iterator[str]:
     """Yield each unique parameter name across all nodes."""
     seen: set[str] = set()
     for node in nodes.values():
@@ -102,7 +103,7 @@ def _categorize_param(
     param: str,
     edge_produced: set[str],
     bound: dict[str, Any],
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
 ) -> str | None:
     """Categorize a non-cycle parameter: 'required', 'optional', or None (edge-produced)."""
     if param in edge_produced:
@@ -114,24 +115,18 @@ def _categorize_param(
     return "required"
 
 
-def _is_interrupt_produced(param: str, nodes: dict[str, "HyperNode"]) -> bool:
+def _is_interrupt_produced(param: str, nodes: dict[str, HyperNode]) -> bool:
     """Check if param is produced by an interrupt node."""
-    return any(
-        n.is_interrupt and param in n.outputs
-        for n in nodes.values()
-    )
+    return any(n.is_interrupt and param in n.outputs for n in nodes.values())
 
 
-def _any_node_has_default(param: str, nodes: dict[str, "HyperNode"]) -> bool:
+def _any_node_has_default(param: str, nodes: dict[str, HyperNode]) -> bool:
     """Check if any node consuming this param has a default value."""
-    for node in nodes.values():
-        if param in node.inputs and node.has_default_for(param):
-            return True
-    return False
+    return any(param in node.inputs and node.has_default_for(param) for node in nodes.values())
 
 
 def _compute_entrypoints(
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
     nx_graph: nx.DiGraph,
     edge_produced: set[str],
     bound: dict[str, Any],
@@ -169,11 +164,9 @@ def _compute_entrypoints(
             # Params this node needs that are cycle-produced
             # (minus bound, minus interrupt-produced, minus defaulted)
             needed = tuple(
-                p for p in node.inputs
-                if p in cycle_params
-                and p not in bound
-                and not _is_interrupt_produced(p, nodes)
-                and not node.has_default_for(p)
+                p
+                for p in node.inputs
+                if p in cycle_params and p not in bound and not _is_interrupt_produced(p, nodes) and not node.has_default_for(p)
             )
             if needed:  # Only include if node needs user-provided cycle params
                 entrypoints[node_name] = needed
@@ -190,7 +183,7 @@ def _is_cyclic_scc(scc: set[str], graph: nx.DiGraph) -> bool:
 
 
 def _get_all_cycle_params(
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
     data_graph: nx.DiGraph,
     edge_produced: set[str],
 ) -> set[str]:
@@ -199,16 +192,12 @@ def _get_all_cycle_params(
     if not cycles:
         return set()
 
-    return {
-        param
-        for cycle in cycles
-        for param in _params_flowing_in_cycle(cycle, nodes, edge_produced)
-    }
+    return {param for cycle in cycles for param in _params_flowing_in_cycle(cycle, nodes, edge_produced)}
 
 
 def _params_flowing_in_cycle(
     cycle: list[str],
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
     edge_produced: set[str],
 ) -> Iterator[str]:
     """Yield params that flow within a cycle."""
@@ -222,13 +211,9 @@ def _params_flowing_in_cycle(
                 yield param
 
 
-
 def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
     """Return subgraph containing only data edges (no control edges)."""
-    data_edges = [
-        (u, v) for u, v, data in nx_graph.edges(data=True)
-        if data.get("edge_type") == "data"
-    ]
+    data_edges = [(u, v) for u, v, data in nx_graph.edges(data=True) if data.get("edge_type") == "data"]
     subgraph = nx.DiGraph()
     subgraph.add_nodes_from(nx_graph.nodes())
     subgraph.add_edges_from(data_edges)
@@ -236,7 +221,7 @@ def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
 
 
 def _collect_bound_values(
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
     bound: dict[str, Any],
 ) -> dict[str, Any]:
     """Collect all bound values from graph and nested GraphNodes.

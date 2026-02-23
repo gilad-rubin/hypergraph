@@ -15,11 +15,12 @@ import re
 import shutil
 import traceback
 import webbrowser
+from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 NOTEBOOKS_DEFAULT = [
     "notebooks/test_viz_layout.ipynb",
@@ -57,10 +58,7 @@ class VizCapture:
         return slug or "graph"
 
     def _next_filepath(self, graph: Any) -> Path:
-        if not self._notebook:
-            notebook_part = "notebook"
-        else:
-            notebook_part = self._slugify(self._notebook.stem)
+        notebook_part = "notebook" if not self._notebook else self._slugify(self._notebook.stem)
 
         graph_name = getattr(graph, "name", None) or getattr(graph, "_name", None)
         graph_part = self._slugify(graph_name) if graph_name else "graph"
@@ -82,9 +80,7 @@ class VizCapture:
 
     def visualize(self, graph: Any, *args: Any, **kwargs: Any) -> Any:
         if self._orig_visualize is None:
-            raise RuntimeError(
-                "VizCapture not initialized with original visualize function"
-            )
+            raise RuntimeError("VizCapture not initialized with original visualize function")
 
         # Notebooks sometimes call visualize(width=..., height=...) which is not supported.
         kwargs.pop("width", None)
@@ -151,9 +147,7 @@ def exec_notebook_cells(
             raise
 
 
-def build_index(
-    output_dir: Path, records: list[VizRecord], *, iframe_height: int
-) -> Path:
+def build_index(output_dir: Path, records: list[VizRecord], *, iframe_height: int) -> Path:
     records_by_notebook: dict[str, list[VizRecord]] = {}
     for record in records:
         records_by_notebook.setdefault(record.notebook, []).append(record)
@@ -165,27 +159,23 @@ def build_index(
         "  <meta charset='UTF-8'>",
         "  <title>Hypergraph Viz Gallery</title>",
         "  <style>",
-        "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
-        " padding: 20px; padding-top: 80px; }",
+        "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; padding-top: 80px; }",
         "    h1 { margin-bottom: 6px; }",
         "    h2 { margin-top: 28px; }",
         "    h3 { margin: 16px 0 6px; }",
         "    ul { line-height: 1.7; }",
         "    .meta { color: #666; font-size: 12px; }",
         "    .card { margin: 16px 0 28px; padding-bottom: 12px; border-bottom: 1px solid #eee; }",
-        f"    iframe {{ width: 100%; height: {iframe_height}px; border: 1px solid #ddd;"
-        " border-radius: 8px; }}",
+        f"    iframe {{ width: 100%; height: {iframe_height}px; border: 1px solid #ddd; border-radius: 8px; }}}}",
         "    .dialkit { position: fixed; top: 0; left: 0; right: 0; z-index: 100;"
         " background: #1e293b; border-bottom: 1px solid #334155; padding: 10px 20px;"
         " display: flex; align-items: center; gap: 24px; font-size: 13px; color: #e2e8f0; }",
         "    .dialkit label { display: flex; align-items: center; gap: 6px; cursor: pointer; }",
         "    .dialkit .group { display: flex; align-items: center; gap: 8px; }",
-        "    .dialkit .value { font-family: ui-monospace, monospace; font-size: 12px;"
-        " color: #94a3b8; min-width: 36px; text-align: right; }",
+        "    .dialkit .value { font-family: ui-monospace, monospace; font-size: 12px; color: #94a3b8; min-width: 36px; text-align: right; }",
         "    .dialkit input[type=range] { width: 120px; accent-color: #818cf8; }",
         "    .dialkit input[type=checkbox] { accent-color: #818cf8; }",
-        "    .dialkit .title { font-weight: 600; color: #94a3b8; font-size: 11px;"
-        " text-transform: uppercase; letter-spacing: 0.05em; }",
+        "    .dialkit .title { font-weight: 600; color: #94a3b8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }",
         "  </style>",
         "</head>",
         "<body>",
@@ -238,58 +228,57 @@ def build_index(
             rel_attr = esc(rel, quote=True)
             lines.append("  <div class='card'>")
             lines.append(f"    <h3>{label}</h3>")
-            lines.append(
-                f"    <div><a href='{rel_attr}' target='_blank'>Open in new tab</a>"
-                f" <span class='meta'>{esc(detail_str)}</span></div>"
-            )
+            lines.append(f"    <div><a href='{rel_attr}' target='_blank'>Open in new tab</a> <span class='meta'>{esc(detail_str)}</span></div>")
             lines.append(f"    <iframe src='{rel_attr}' loading='lazy'></iframe>")
             lines.append("  </div>")
 
-    lines.extend([
-        "  <script>",
-        "  (function() {",
-        "    var convergeEl = document.getElementById('dk-converge');",
-        "    var offsetEl = document.getElementById('dk-offset');",
-        "    var offsetValueEl = document.getElementById('dk-offset-value');",
-        "    var offsetGroup = document.getElementById('dk-offset-group');",
-        "    var paddingEl = document.getElementById('dk-padding');",
-        "    var paddingValueEl = document.getElementById('dk-padding-value');",
-        "    var paddingGroup = document.getElementById('dk-padding-group');",
-        "    var ranksepEl = document.getElementById('dk-ranksep');",
-        "    var ranksepValueEl = document.getElementById('dk-ranksep-value');",
-        "",
-        "    function broadcast() {",
-        "      var converge = convergeEl.checked;",
-        "      var opts = {",
-        "        convergeToCenter: converge,",
-        "        convergenceOffset: Number(offsetEl.value),",
-        "        endpointPadding: Number(paddingEl.value),",
-        "        ranksep: Number(ranksepEl.value),",
-        "      };",
-        "      offsetGroup.style.opacity = converge ? '1' : '0.3';",
-        "      offsetGroup.style.pointerEvents = converge ? 'auto' : 'none';",
-        "      paddingGroup.style.opacity = converge ? '0.3' : '1';",
-        "      paddingGroup.style.pointerEvents = converge ? 'none' : 'auto';",
-        "      offsetValueEl.textContent = offsetEl.value + 'px';",
-        "      paddingValueEl.textContent = Math.round(paddingEl.value * 100) + '%';",
-        "      ranksepValueEl.textContent = ranksepEl.value + 'px';",
-        "      var msg = { type: 'hypergraph-set-options', options: opts };",
-        "      var iframes = document.querySelectorAll('iframe');",
-        "      iframes.forEach(function(iframe) {",
-        "        try { iframe.contentWindow.postMessage(msg, '*'); } catch(e) {}",
-        "      });",
-        "    }",
-        "",
-        "    convergeEl.addEventListener('change', broadcast);",
-        "    offsetEl.addEventListener('input', broadcast);",
-        "    paddingEl.addEventListener('input', broadcast);",
-        "    ranksepEl.addEventListener('input', broadcast);",
-        "    broadcast();",
-        "  })();",
-        "  </script>",
-        "</body>",
-        "</html>",
-    ])
+    lines.extend(
+        [
+            "  <script>",
+            "  (function() {",
+            "    var convergeEl = document.getElementById('dk-converge');",
+            "    var offsetEl = document.getElementById('dk-offset');",
+            "    var offsetValueEl = document.getElementById('dk-offset-value');",
+            "    var offsetGroup = document.getElementById('dk-offset-group');",
+            "    var paddingEl = document.getElementById('dk-padding');",
+            "    var paddingValueEl = document.getElementById('dk-padding-value');",
+            "    var paddingGroup = document.getElementById('dk-padding-group');",
+            "    var ranksepEl = document.getElementById('dk-ranksep');",
+            "    var ranksepValueEl = document.getElementById('dk-ranksep-value');",
+            "",
+            "    function broadcast() {",
+            "      var converge = convergeEl.checked;",
+            "      var opts = {",
+            "        convergeToCenter: converge,",
+            "        convergenceOffset: Number(offsetEl.value),",
+            "        endpointPadding: Number(paddingEl.value),",
+            "        ranksep: Number(ranksepEl.value),",
+            "      };",
+            "      offsetGroup.style.opacity = converge ? '1' : '0.3';",
+            "      offsetGroup.style.pointerEvents = converge ? 'auto' : 'none';",
+            "      paddingGroup.style.opacity = converge ? '0.3' : '1';",
+            "      paddingGroup.style.pointerEvents = converge ? 'none' : 'auto';",
+            "      offsetValueEl.textContent = offsetEl.value + 'px';",
+            "      paddingValueEl.textContent = Math.round(paddingEl.value * 100) + '%';",
+            "      ranksepValueEl.textContent = ranksepEl.value + 'px';",
+            "      var msg = { type: 'hypergraph-set-options', options: opts };",
+            "      var iframes = document.querySelectorAll('iframe');",
+            "      iframes.forEach(function(iframe) {",
+            "        try { iframe.contentWindow.postMessage(msg, '*'); } catch(e) {}",
+            "      });",
+            "    }",
+            "",
+            "    convergeEl.addEventListener('change', broadcast);",
+            "    offsetEl.addEventListener('input', broadcast);",
+            "    paddingEl.addEventListener('input', broadcast);",
+            "    ranksepEl.addEventListener('input', broadcast);",
+            "    broadcast();",
+            "  })();",
+            "  </script>",
+            "</body>",
+            "</html>",
+        ]
+    )
     index_path = output_dir / "index.html"
     index_path.write_text("\n".join(lines))
     return index_path
@@ -325,21 +314,21 @@ def render_vizdev_graphs(output_dir: Path) -> list[VizRecord]:
         filepath = output_dir / filename
         filepath.write_text(html_content, encoding="utf-8")
 
-        records.append(VizRecord(
-            notebook="viz-dev/public/data",
-            index=i,
-            filepath=filepath,
-            graph_name=graph_name,
-            kwargs={},
-        ))
+        records.append(
+            VizRecord(
+                notebook="viz-dev/public/data",
+                index=i,
+                filepath=filepath,
+                graph_name=graph_name,
+                kwargs={},
+            )
+        )
 
     return records
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Render all visualize() calls from notebooks."
-    )
+    parser = argparse.ArgumentParser(description="Render all visualize() calls from notebooks.")
     parser.add_argument(
         "--output-dir",
         default="outputs/viz_gallery",
@@ -380,8 +369,6 @@ def main() -> None:
     capture.set_original(original_visualize)
     viz.visualize = capture.visualize  # type: ignore[assignment]
 
-    original_graph_visualize = Graph.visualize
-
     def graph_visualize_wrapper(self: Graph, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
         kwargs.pop("width", None)
         kwargs.pop("height", None)
@@ -417,9 +404,7 @@ def main() -> None:
     vizdev_records = render_vizdev_graphs(output_dir)
     all_records = capture.records + vizdev_records
 
-    index_path = build_index(
-        output_dir, all_records, iframe_height=args.iframe_height
-    )
+    index_path = build_index(output_dir, all_records, iframe_height=args.iframe_height)
     print(f"Wrote {len(all_records)} visualizations to {output_dir}")
     print(f"Index: {index_path}")
 

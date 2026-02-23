@@ -568,13 +568,13 @@ class TestFunctionNodeParameterAnnotations:
 
     def test_complex_types(self):
         """Complex type annotations are preserved."""
-        from typing import Optional, List
+        from typing import Optional
 
-        def foo(items: List[int], default: Optional[str] = None) -> dict:
+        def foo(items: list[int], default: str | None = None) -> dict:
             return {}
 
         fn = FunctionNode(foo, output_name="result")
-        assert fn.parameter_annotations == {"items": List[int], "default": Optional[str]}
+        assert fn.parameter_annotations == {"items": list[int], "default": Optional[str]}  # noqa: UP045
 
 
 class TestFunctionNodeOutputAnnotation:
@@ -637,13 +637,13 @@ class TestFunctionNodeOutputAnnotation:
 
     def test_complex_return_type(self):
         """Complex return types are preserved."""
-        from typing import Optional, Dict
+        from typing import Optional
 
-        def foo(x: int) -> Optional[Dict[str, int]]:
+        def foo(x: int) -> dict[str, int] | None:
             return None
 
         fn = FunctionNode(foo, output_name="result")
-        assert fn.output_annotation == {"result": Optional[Dict[str, int]]}
+        assert fn.output_annotation == {"result": Optional[dict[str, int]]}  # noqa: UP045
 
 
 class TestFunctionSignatures:
@@ -752,7 +752,7 @@ class TestFunctionSignatures:
             pass
 
         fn = FunctionNode(foo)
-        assert fn.parameter_annotations.get("kw") == str
+        assert fn.parameter_annotations.get("kw") is str
 
     # FUNC-04: positional-only tests
 
@@ -781,7 +781,7 @@ class TestFunctionSignatures:
             return ""
 
         fn = FunctionNode(foo, output_name="result")
-        assert fn.parameter_annotations.get("a") == int
+        assert fn.parameter_annotations.get("a") is int
 
     # FUNC-05: mixed argument types tests
 
@@ -814,9 +814,9 @@ class TestFunctionSignatures:
 
         fn = FunctionNode(foo, output_name="result")
         # Verify standard params are annotated
-        assert fn.parameter_annotations.get("pos") == int
-        assert fn.parameter_annotations.get("reg") == str
-        assert fn.parameter_annotations.get("kw") == bool
+        assert fn.parameter_annotations.get("pos") is int
+        assert fn.parameter_annotations.get("reg") is str
+        assert fn.parameter_annotations.get("kw") is bool
 
     def test_mixed_rename_works(self):
         """rename_inputs works with mixed param kinds (FUNC-05)."""
@@ -905,8 +905,7 @@ class TestGeneratorEdgeCases:
         """Generator with return statement."""
 
         def gen_with_return(n: int):
-            for i in range(n):
-                yield i
+            yield from range(n)
             return  # Explicit return
 
         fn = FunctionNode(gen_with_return, output_name="items")
@@ -963,11 +962,10 @@ class TestGeneratorEdgeCases:
 
     def test_generator_with_type_annotations(self):
         """Generator with full type annotations."""
-        from typing import Iterator
+        from collections.abc import Iterator
 
         def typed_gen(n: int) -> Iterator[int]:
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         fn = FunctionNode(typed_gen, output_name="items")
         assert fn.is_generator is True
@@ -997,8 +995,7 @@ class TestGeneratorExecution:
 
         @node(output_name="items")
         def gen_items(n: int):
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         graph = Graph([gen_items])
         runner = SyncRunner()
@@ -1071,8 +1068,7 @@ class TestGeneratorExecution:
         @node(output_name="items")
         def growing_gen(items: list, limit: int = 5):
             # Yield existing items plus one more
-            for item in items:
-                yield item
+            yield from items
             if len(items) < limit:
                 yield len(items)
 

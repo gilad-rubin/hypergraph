@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def validate_inputs(
-    graph: "Graph",
+    graph: Graph,
     values: dict[str, Any],
     *,
     entrypoint: str | None = None,
@@ -48,6 +48,7 @@ def validate_inputs(
     unexpected = provided - expected_inputs - interrupt_outputs
     if unexpected:
         import warnings
+
         warnings.warn(
             f"Providing values for internal parameters: {sorted(unexpected)}. "
             f"These are produced by graph edges and will override node outputs. "
@@ -87,7 +88,7 @@ def validate_inputs(
 
 
 def _validate_cycle_entry(
-    graph: "Graph",
+    graph: Graph,
     provided: set[str],
     bypassed: set[str],
     entrypoint: str | None,
@@ -107,17 +108,11 @@ def _validate_cycle_entry(
     if entrypoint is not None:
         if entrypoint not in ep:
             valid = sorted(ep.keys())
-            raise ValueError(
-                f"'{entrypoint}' is not a valid entry point. "
-                f"Valid entry points: {valid}"
-            )
+            raise ValueError(f"'{entrypoint}' is not a valid entry point. Valid entry points: {valid}")
         needed = set(ep[entrypoint]) - bypassed
         if not needed <= provided:
             missing = sorted(needed - provided)
-            raise ValueError(
-                f"Entry point '{entrypoint}' needs: {', '.join(sorted(ep[entrypoint]))}. "
-                f"Missing: {', '.join(missing)}"
-            )
+            raise ValueError(f"Entry point '{entrypoint}' needs: {', '.join(sorted(ep[entrypoint]))}. Missing: {', '.join(missing)}")
         # Still validate other independent cycles
         scc_groups = _group_entrypoints_by_scc(graph, ep)
         ep_scc = _find_scc_for_node(entrypoint, scc_groups)
@@ -134,7 +129,7 @@ def _validate_cycle_entry(
 
 
 def _group_entrypoints_by_scc(
-    graph: "Graph",
+    graph: Graph,
     entrypoints: dict[str, tuple[str, ...]],
 ) -> dict[int, list[str]]:
     """Group entry point node names by which cycle (SCC) they belong to.
@@ -147,6 +142,7 @@ def _group_entrypoints_by_scc(
         return {}
 
     import networkx as nx
+
     from hypergraph.graph.input_spec import _data_only_subgraph
 
     data_graph = _data_only_subgraph(graph.nx_graph)
@@ -169,7 +165,8 @@ def _group_entrypoints_by_scc(
 
 
 def _find_scc_for_node(
-    node_name: str, scc_groups: dict[int, list[str]],
+    node_name: str,
+    scc_groups: dict[int, list[str]],
 ) -> int | None:
     """Find which SCC group a node belongs to."""
     for scc_idx, members in scc_groups.items():
@@ -208,9 +205,7 @@ def _check_cycle_entry(
         # the user is seeding the cycle regardless of which node runs first.
         distinct_param_sets = {entrypoints[name] for name in satisfied}
         if len(distinct_param_sets) > 1:
-            lines = [
-                "Ambiguous cycle entry — provided values match multiple entry points:"
-            ]
+            lines = ["Ambiguous cycle entry — provided values match multiple entry points:"]
             for name in satisfied:
                 params = ", ".join(entrypoints[name])
                 lines.append(f"  {name} (needs: {params})")
@@ -273,7 +268,7 @@ def _build_missing_input_message(
 
 
 def validate_runner_compatibility(
-    graph: "Graph",
+    graph: Graph,
     capabilities: RunnerCapabilities,
 ) -> None:
     """Validate that a runner can execute a graph.
@@ -294,8 +289,7 @@ def validate_runner_compatibility(
         # Find the async node(s) for a helpful error message
         async_nodes = [node.name for node in graph._nodes.values() if node.is_async]
         raise IncompatibleRunnerError(
-            f"Graph contains async node(s) but runner doesn't support async: "
-            f"{', '.join(async_nodes)}. Use AsyncRunner instead.",
+            f"Graph contains async node(s) but runner doesn't support async: {', '.join(async_nodes)}. Use AsyncRunner instead.",
             node_name=async_nodes[0] if async_nodes else None,
             capability="supports_async_nodes",
         )
@@ -309,19 +303,15 @@ def validate_runner_compatibility(
 
     # Check interrupts
     if graph.has_interrupts and not capabilities.supports_interrupts:
-        interrupt_names = [
-            node.name for node in graph._nodes.values()
-            if node.is_interrupt
-        ]
+        interrupt_names = [node.name for node in graph._nodes.values() if node.is_interrupt]
         raise IncompatibleRunnerError(
-            f"Graph contains InterruptNode(s) but runner doesn't support interrupts: "
-            f"{', '.join(interrupt_names)}. Use AsyncRunner instead.",
+            f"Graph contains InterruptNode(s) but runner doesn't support interrupts: {', '.join(interrupt_names)}. Use AsyncRunner instead.",
             node_name=interrupt_names[0] if interrupt_names else None,
             capability="supports_interrupts",
         )
 
 
-def validate_map_compatible(graph: "Graph") -> None:
+def validate_map_compatible(graph: Graph) -> None:
     """Validate that a graph can be used with map().
 
     Checks that graphs with interrupts are not used with map().
@@ -334,23 +324,17 @@ def validate_map_compatible(graph: "Graph") -> None:
     """
     if graph.has_interrupts:
         raise IncompatibleRunnerError(
-            "Graph contains InterruptNode(s) which are incompatible with .map(). "
-            "Use .run() for graphs with interrupts.",
+            "Graph contains InterruptNode(s) which are incompatible with .map(). Use .run() for graphs with interrupts.",
             capability="supports_interrupts",
         )
 
 
-def _get_interrupt_outputs(graph: "Graph") -> set[str]:
+def _get_interrupt_outputs(graph: Graph) -> set[str]:
     """Get all output names produced by interrupt nodes in the graph."""
-    return {
-        output
-        for n in graph._nodes.values()
-        if n.is_interrupt
-        for output in n.outputs
-    }
+    return {output for n in graph._nodes.values() if n.is_interrupt for output in n.outputs}
 
 
-def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
+def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
     """Find inputs that belong to nodes fully bypassed by intermediate injection.
 
     A node is bypassed ONLY if ALL of its outputs that are consumed downstream
@@ -373,9 +357,7 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
 
     # Cycle entry point params: providing these means bootstrapping a cycle,
     # NOT bypassing the producer node. Exclude from bypass check.
-    cycle_ep_params = {
-        p for params in graph.inputs.entrypoints.values() for p in params
-    }
+    cycle_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
 
     # A node is bypassed only if ALL its non-cycle consumed outputs are provided
     bypassed_nodes: set[str] = set()
@@ -413,8 +395,8 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
 
 
 def validate_node_types(
-    graph: "Graph",
-    supported_types: set[type["HyperNode"]],
+    graph: Graph,
+    supported_types: set[type[HyperNode]],
 ) -> None:
     """Validate that all nodes in graph have registered executors.
 
@@ -429,7 +411,4 @@ def validate_node_types(
         node_type = type(node)
         if node_type not in supported_types:
             supported_names = [t.__name__ for t in supported_types]
-            raise TypeError(
-                f"Runner does not support node type '{node_type.__name__}'. "
-                f"Supported types: {supported_names}"
-            )
+            raise TypeError(f"Runner does not support node type '{node_type.__name__}'. Supported types: {supported_names}")

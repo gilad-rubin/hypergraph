@@ -1,8 +1,10 @@
 """Tests for separate outputs visualization mode."""
 
 import pytest
+
 from hypergraph import Graph, node
 from hypergraph.viz.renderer import render_graph
+from tests.viz.conftest import HAS_PLAYWRIGHT
 
 
 @node(output_name="cleaned")
@@ -38,9 +40,7 @@ class TestSeparateOutputsEdges:
         # Edges TO DATA nodes should exist (function -> DATA)
         edges_to_data = [e for e in edges if e["target"] in data_node_ids]
         assert len(edges_to_data) > 0, (
-            f"No edges to DATA nodes found!\n"
-            f"DATA nodes: {data_node_ids}\n"
-            f"All edges: {[(e['source'], e['target']) for e in edges]}"
+            f"No edges to DATA nodes found!\nDATA nodes: {data_node_ids}\nAll edges: {[(e['source'], e['target']) for e in edges]}"
         )
 
     def test_data_edges_exist_from_data_nodes(self):
@@ -58,9 +58,7 @@ class TestSeparateOutputsEdges:
         # At depth=1, internal nodes are visible, so edges FROM DATA nodes should exist
         edges_from_data = [e for e in edges if e["source"] in data_node_ids]
         assert len(edges_from_data) > 0, (
-            f"No edges from DATA nodes found!\n"
-            f"DATA nodes: {data_node_ids}\n"
-            f"All edges: {[(e['source'], e['target']) for e in edges]}"
+            f"No edges from DATA nodes found!\nDATA nodes: {data_node_ids}\nAll edges: {[(e['source'], e['target']) for e in edges]}"
         )
 
     def test_precomputed_edges_include_output_edges_when_separate(self):
@@ -78,21 +76,16 @@ class TestSeparateOutputsEdges:
         data_node_ids = {n["id"] for n in data_nodes}
 
         # Look for keys with sep:1 (separate outputs mode)
-        sep_keys = [k for k in edges_by_state.keys() if "sep:1" in k]
+        sep_keys = [k for k in edges_by_state if "sep:1" in k]
 
         # Should have at least one key with sep:1
-        assert len(sep_keys) > 0, (
-            f"No edge state keys with 'sep:1' found!\n"
-            f"Available keys: {list(edges_by_state.keys())}"
-        )
+        assert len(sep_keys) > 0, f"No edge state keys with 'sep:1' found!\nAvailable keys: {list(edges_by_state.keys())}"
 
         for state_key in sep_keys:
             edges = edges_by_state[state_key]
             edges_to_data = [e for e in edges if e["target"] in data_node_ids]
             assert len(edges_to_data) > 0, (
-                f"State '{state_key}' has no edges to DATA nodes!\n"
-                f"DATA nodes: {data_node_ids}\n"
-                f"Edges: {[(e['source'], e['target']) for e in edges]}"
+                f"State '{state_key}' has no edges to DATA nodes!\nDATA nodes: {data_node_ids}\nEdges: {[(e['source'], e['target']) for e in edges]}"
             )
 
 
@@ -120,6 +113,7 @@ class TestDeeplyNestedSeparateOutputs:
 
     def test_deeply_nested_edges_route_through_data_nodes(self):
         """Edges should route through DATA nodes, not direct function→function."""
+
         # Level 1: Simple transform
         @node(output_name="step1_out")
         def step1(x: int) -> int:
@@ -152,22 +146,16 @@ class TestDeeplyNestedSeparateOutputs:
         edges_by_state = result["meta"].get("edgesByState", {})
 
         # Find the key with all containers expanded (middle:1, inner:1) and sep:1
-        expanded_sep1_keys = [k for k in edges_by_state.keys()
-                             if "sep:1" in k and "middle:1" in k and "inner:1" in k]
+        expanded_sep1_keys = [k for k in edges_by_state if "sep:1" in k and "middle:1" in k and "inner:1" in k]
 
-        assert len(expanded_sep1_keys) > 0, (
-            f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
-        )
+        assert len(expanded_sep1_keys) > 0, f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
 
         edges = edges_by_state[expanded_sep1_keys[0]]
 
         # Find edge to middle/validate - should come from DATA node, not function (hierarchical IDs)
         edges_to_validate = [e for e in edges if e["target"] == "middle/validate"]
 
-        assert len(edges_to_validate) > 0, (
-            f"No edges to 'middle/validate' found!\n"
-            f"All edges: {[(e['source'], e['target']) for e in edges]}"
-        )
+        assert len(edges_to_validate) > 0, f"No edges to 'middle/validate' found!\nAll edges: {[(e['source'], e['target']) for e in edges]}"
 
         # The source should be a DATA node, not a function
         for edge in edges_to_validate:
@@ -180,6 +168,7 @@ class TestDeeplyNestedSeparateOutputs:
 
     def test_deeply_nested_collapsed_then_expanded_edges(self):
         """Test edges when rendered at depth=0 then containers expanded interactively."""
+
         # Level 1: Simple transform
         @node(output_name="step1_out")
         def step1(x: int) -> int:
@@ -213,33 +202,26 @@ class TestDeeplyNestedSeparateOutputs:
 
         # Check the key for when middle AND inner are both expanded (user expands interactively)
         # Key format: "inner:1,middle:1|sep:1"
-        expanded_sep1_keys = [k for k in edges_by_state.keys()
-                             if "sep:1" in k and "middle:1" in k and "inner:1" in k]
+        expanded_sep1_keys = [k for k in edges_by_state if "sep:1" in k and "middle:1" in k and "inner:1" in k]
 
-        assert len(expanded_sep1_keys) > 0, (
-            f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
-        )
+        assert len(expanded_sep1_keys) > 0, f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
 
         edges = edges_by_state[expanded_sep1_keys[0]]
 
         # Find edge to middle/validate - should come from DATA node (hierarchical IDs)
         edges_to_validate = [e for e in edges if e["target"] == "middle/validate"]
 
-        assert len(edges_to_validate) > 0, (
-            f"No edges to 'middle/validate' found!\n"
-            f"All edges: {[(e['source'], e['target']) for e in edges]}"
-        )
+        assert len(edges_to_validate) > 0, f"No edges to 'middle/validate' found!\nAll edges: {[(e['source'], e['target']) for e in edges]}"
 
         for edge in edges_to_validate:
             source = edge["source"]
             assert source.startswith("data_"), (
-                f"Edge to 'middle/validate' should come from DATA node!\n"
-                f"Got source: {source}\n"
-                f"Expected: data_middle/inner/step2_step2_out"
+                f"Edge to 'middle/validate' should come from DATA node!\nGot source: {source}\nExpected: data_middle/inner/step2_step2_out"
             )
 
     def test_deeply_nested_no_function_to_function_data_edges(self):
         """In separate outputs mode, data edges should never go direct function→function."""
+
         # Level 1
         @node(output_name="step1_out")
         def step1(x: int) -> int:
@@ -269,11 +251,10 @@ class TestDeeplyNestedSeparateOutputs:
         edges_by_state = result["meta"].get("edgesByState", {})
 
         # Check all sep:1 keys
-        sep1_keys = [k for k in edges_by_state.keys() if "sep:1" in k]
+        sep1_keys = [k for k in edges_by_state if "sep:1" in k]
 
         # Get function node IDs (not DATA, not INPUT)
-        function_ids = {n["id"] for n in result["nodes"]
-                       if n["data"].get("nodeType") in ("FUNCTION", "PIPELINE")}
+        function_ids = {n["id"] for n in result["nodes"] if n["data"].get("nodeType") in ("FUNCTION", "PIPELINE")}
 
         for key in sep1_keys:
             edges = edges_by_state[key]
@@ -310,11 +291,7 @@ class TestSeparateOutputsEdgeKeys:
 
         assert len(sep0_keys) > 0, f"No sep:0 keys found. Keys: {keys}"
         assert len(sep1_keys) > 0, f"No sep:1 keys found. Keys: {keys}"
-        assert len(sep0_keys) == len(sep1_keys), (
-            f"Mismatch in sep:0 vs sep:1 keys.\n"
-            f"sep:0: {sep0_keys}\n"
-            f"sep:1: {sep1_keys}"
-        )
+        assert len(sep0_keys) == len(sep1_keys), f"Mismatch in sep:0 vs sep:1 keys.\nsep:0: {sep0_keys}\nsep:1: {sep1_keys}"
 
     def test_empty_graph_edge_key_format(self):
         """For graphs with no containers, keys should be just 'sep:0' or 'sep:1'."""
@@ -331,6 +308,7 @@ class TestSeparateOutputsEdgeKeys:
         assert "sep:1" in keys, f"'sep:1' not found. Keys: {keys}"
 
 
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestSeparateOutputsLayout:
     """Test that layout positions sources above targets in separate outputs mode."""
 
@@ -399,17 +377,10 @@ class TestSeparateOutputsLayout:
         data = extract_debug_data(outer, depth=2, separate_outputs=True)
 
         # Collect any edges where target is above source
-        issues = [
-            edge for edge in data.edges
-            if edge.vert_dist is not None and edge.vert_dist < 0
-        ]
+        issues = [edge for edge in data.edges if edge.vert_dist is not None and edge.vert_dist < 0]
 
-        assert len(issues) == 0, (
-            f"Found {len(issues)} edges with target above source:\n"
-            + "\n".join(
-                f"  {e.source} -> {e.target}: vDist={e.vert_dist}"
-                for e in issues
-            )
+        assert len(issues) == 0, f"Found {len(issues)} edges with target above source:\n" + "\n".join(
+            f"  {e.source} -> {e.target}: vDist={e.vert_dist}" for e in issues
         )
 
     def test_no_edge_issues_in_separate_outputs_mode(self):
@@ -421,10 +392,6 @@ class TestSeparateOutputsLayout:
 
         data = extract_debug_data(workflow, depth=1, separate_outputs=True)
 
-        assert data.summary["edgeIssues"] == 0, (
-            f"Found {data.summary['edgeIssues']} edge issues:\n"
-            + "\n".join(
-                f"  {e.source} -> {e.target}: {e.issue}"
-                for e in data.edge_issues
-            )
+        assert data.summary["edgeIssues"] == 0, f"Found {data.summary['edgeIssues']} edge issues:\n" + "\n".join(
+            f"  {e.source} -> {e.target}: {e.issue}" for e in data.edge_issues
         )

@@ -7,12 +7,13 @@ These tests verify:
 """
 
 import pytest
-from hypergraph import Graph, node
 
+from hypergraph import Graph, node
 
 # =============================================================================
 # Test Graph: Generation with nested prompt_building
 # =============================================================================
+
 
 @node(output_name="filtered_document")
 def filter_document_pages(document: str, selected_pages: list[int]) -> str:
@@ -69,6 +70,7 @@ def make_generation_graph() -> Graph:
 # =============================================================================
 # Test: Edge Routing to Internal Nodes
 # =============================================================================
+
 
 class TestEdgeRoutingToInternalNodes:
     """Test that edges route to actual internal nodes, not containers."""
@@ -136,14 +138,14 @@ class TestEdgeRoutingToInternalNodes:
         # When collapsed, target should be the container
         target = fdp_edges[0]["target"]
         assert target == "prompt_building", (
-            f"Expected: filter_document_pages -> prompt_building (collapsed)\n"
-            f"Actual: filter_document_pages -> {target}"
+            f"Expected: filter_document_pages -> prompt_building (collapsed)\nActual: filter_document_pages -> {target}"
         )
 
 
 # =============================================================================
 # Test: INPUT Node Positioning
 # =============================================================================
+
 
 class TestInputNodePositioning:
     """Test that INPUT nodes are positioned correctly relative to containers."""
@@ -162,9 +164,9 @@ class TestInputNodePositioning:
 
         # Find the system_instructions INPUT node
         input_node = None
-        for node in result["nodes"]:
-            if node["id"] == "input_system_instructions":
-                input_node = node
+        for item in result["nodes"]:
+            if item["id"] == "input_system_instructions":
+                input_node = item
                 break
 
         assert input_node is not None, "input_system_instructions node not found"
@@ -195,18 +197,15 @@ class TestInputNodePositioning:
 
         # Find the query INPUT node
         input_node = None
-        for node in result["nodes"]:
-            if node["id"] == "input_query":
-                input_node = node
+        for item in result["nodes"]:
+            if item["id"] == "input_query":
+                input_node = item
                 break
 
         assert input_node is not None, "input_query node not found"
 
         owner = input_node["data"].get("ownerContainer")
-        assert owner is None, (
-            f"Expected: ownerContainer=None (query has external consumers)\n"
-            f"Actual: ownerContainer={owner}"
-        )
+        assert owner is None, f"Expected: ownerContainer=None (query has external consumers)\nActual: ownerContainer={owner}"
 
 
 # =============================================================================
@@ -236,9 +235,9 @@ class TestInputPositioningInsideContainers:
 
         # Find prompt_building container bounds
         container = None
-        for node in data.nodes:
-            if node.get("id") == "prompt_building":
-                container = node
+        for item in data.nodes:
+            if item.get("id") == "prompt_building":
+                container = item
                 break
 
         assert container is not None, "prompt_building container not found"
@@ -250,9 +249,9 @@ class TestInputPositioningInsideContainers:
 
         # Find system_instructions INPUT position
         input_node = None
-        for node in data.nodes:
-            if node.get("id") == "input_system_instructions":
-                input_node = node
+        for item in data.nodes:
+            if item.get("id") == "input_system_instructions":
+                input_node = item
                 break
 
         assert input_node is not None, "input_system_instructions not found"
@@ -288,9 +287,9 @@ class TestInputPositioningInsideContainers:
 
         # Find prompt_building container bounds
         container = None
-        for node in data.nodes:
-            if node.get("id") == "prompt_building":
-                container = node
+        for item in data.nodes:
+            if item.get("id") == "prompt_building":
+                container = item
                 break
 
         assert container is not None, "prompt_building container not found"
@@ -302,9 +301,9 @@ class TestInputPositioningInsideContainers:
 
         # Find images INPUT position
         input_node = None
-        for node in data.nodes:
-            if node.get("id") == "input_images":
-                input_node = node
+        for item in data.nodes:
+            if item.get("id") == "input_images":
+                input_node = item
                 break
 
         assert input_node is not None, "input_images not found"
@@ -339,9 +338,9 @@ class TestInputPositioningInsideContainers:
 
         # Find prompt_building container bounds
         container = None
-        for node in data.nodes:
-            if node.get("id") == "prompt_building":
-                container = node
+        for item in data.nodes:
+            if item.get("id") == "prompt_building":
+                container = item
                 break
 
         assert container is not None, "prompt_building container not found"
@@ -351,9 +350,9 @@ class TestInputPositioningInsideContainers:
 
         # Find query INPUT position
         input_node = None
-        for node in data.nodes:
-            if node.get("id") == "input_query":
-                input_node = node
+        for item in data.nodes:
+            if item.get("id") == "input_query":
+                input_node = item
                 break
 
         assert input_node is not None, "input_query not found"
@@ -377,6 +376,7 @@ class TestInputPositioningInsideContainers:
 # Test: Internal-Only DATA Node Visibility
 # =============================================================================
 
+
 class TestInternalOnlyDataNodes:
     """Test that internal-only DATA nodes have the correct flag."""
 
@@ -394,9 +394,9 @@ class TestInternalOnlyDataNodes:
 
         # Find the context_text DATA node (from prompt_building/build_context)
         data_node = None
-        for node in result["nodes"]:
-            if node["id"] == "data_prompt_building/build_context_context_text":
-                data_node = node
+        for item in result["nodes"]:
+            if item["id"] == "data_prompt_building/build_context_context_text":
+                data_node = item
                 break
 
         assert data_node is not None, "data_prompt_building/build_context_context_text node not found"
@@ -423,23 +423,21 @@ class TestInternalOnlyDataNodes:
 
         # Find the chat_messages DATA node (from prompt_building/build_prompt)
         data_node = None
-        for node in result["nodes"]:
-            if node["id"] == "data_prompt_building/build_prompt_chat_messages":
-                data_node = node
+        for item in result["nodes"]:
+            if item["id"] == "data_prompt_building/build_prompt_chat_messages":
+                data_node = item
                 break
 
         assert data_node is not None, "data_prompt_building/build_prompt_chat_messages node not found"
 
         internal_only = data_node["data"].get("internalOnly")
-        assert internal_only is False, (
-            f"Expected: internalOnly=False (chat_messages has external consumer)\n"
-            f"Actual: internalOnly={internal_only}"
-        )
+        assert internal_only is False, f"Expected: internalOnly=False (chat_messages has external consumer)\nActual: internalOnly={internal_only}"
 
 
 # =============================================================================
 # Test: Control Edge Routing (Route/IfElse Nodes)
 # =============================================================================
+
 
 class TestControlEdgeRouting:
     """Test that control edges from route/ifelse nodes route correctly."""
@@ -450,19 +448,19 @@ class TestControlEdgeRouting:
         When a route targets a container that is collapsed,
         the edge should go to the container boundary.
         """
-        from hypergraph import Graph, node, route, END
+        from hypergraph import END, Graph, node, route
         from hypergraph.viz.renderer import render_graph
 
-        @node(output_name='result')
+        @node(output_name="result")
         def inner_step(x: int) -> int:
             return x * 2
 
-        @route(targets=['inner_graph', END])
+        @route(targets=["inner_graph", END])
         def decide(x: int) -> str:
-            return 'inner_graph' if x > 0 else END
+            return "inner_graph" if x > 0 else END
 
-        inner = Graph(nodes=[inner_step], name='inner_graph')
-        outer = Graph(nodes=[decide, inner.as_node()], name='outer')
+        inner = Graph(nodes=[inner_step], name="inner_graph")
+        outer = Graph(nodes=[decide, inner.as_node()], name="outer")
         flat_graph = outer.to_flat_graph()
 
         result = render_graph(flat_graph, depth=0)
@@ -473,18 +471,12 @@ class TestControlEdgeRouting:
         edges = edges_by_state[collapsed_key]
 
         # Find control edges from decide (excluding END edges)
-        control_edges = [
-            e for e in edges
-            if e["source"] == "decide" and e["target"] != "__end__"
-        ]
+        control_edges = [e for e in edges if e["source"] == "decide" and e["target"] != "__end__"]
         assert len(control_edges) == 1
 
         # When collapsed, target should be the container
         target = control_edges[0]["target"]
-        assert target == "inner_graph", (
-            f"Expected: decide -> inner_graph (collapsed container)\n"
-            f"Actual: decide -> {target}"
-        )
+        assert target == "inner_graph", f"Expected: decide -> inner_graph (collapsed container)\nActual: decide -> {target}"
 
     def test_control_edge_routes_to_internal_node_when_expanded(self):
         """Control edge should go to internal node when container is expanded.
@@ -492,19 +484,19 @@ class TestControlEdgeRouting:
         When a route targets a container that is expanded,
         the edge should go to the entry point node inside the container.
         """
-        from hypergraph import Graph, node, route, END
+        from hypergraph import END, Graph, node, route
         from hypergraph.viz.renderer import render_graph
 
-        @node(output_name='result')
+        @node(output_name="result")
         def inner_step(x: int) -> int:
             return x * 2
 
-        @route(targets=['inner_graph', END])
+        @route(targets=["inner_graph", END])
         def decide(x: int) -> str:
-            return 'inner_graph' if x > 0 else END
+            return "inner_graph" if x > 0 else END
 
-        inner = Graph(nodes=[inner_step], name='inner_graph')
-        outer = Graph(nodes=[decide, inner.as_node()], name='outer')
+        inner = Graph(nodes=[inner_step], name="inner_graph")
+        outer = Graph(nodes=[decide, inner.as_node()], name="outer")
         flat_graph = outer.to_flat_graph()
 
         result = render_graph(flat_graph, depth=1)
@@ -515,10 +507,7 @@ class TestControlEdgeRouting:
         edges = edges_by_state[expanded_key]
 
         # Find control edges from decide (excluding END edges)
-        control_edges = [
-            e for e in edges
-            if e["source"] == "decide" and e["target"] != "__end__"
-        ]
+        control_edges = [e for e in edges if e["source"] == "decide" and e["target"] != "__end__"]
         assert len(control_edges) == 1
 
         # When expanded, target should be the internal entry point (hierarchical ID)
@@ -569,12 +558,7 @@ def make_batch_eval_graph() -> Graph:
     - compute_metrics consumes eval_results
     """
     batch_eval = Graph(nodes=[run_single_eval], name="batch_eval")
-    mapped_eval = (
-        batch_eval.as_node()
-        .with_inputs(eval_pair="eval_pairs")
-        .with_outputs(eval_result="eval_results")
-        .map_over("eval_pairs")
-    )
+    mapped_eval = batch_eval.as_node().with_inputs(eval_pair="eval_pairs").with_outputs(eval_result="eval_results").map_over("eval_pairs")
 
     return Graph(
         nodes=[build_pairs, mapped_eval, compute_metrics],
@@ -585,6 +569,7 @@ def make_batch_eval_graph() -> Graph:
 # =============================================================================
 # Test: Edge Routing INTO Expanded Nested Graph
 # =============================================================================
+
 
 class TestEdgeRoutingIntoExpandedContainer:
     """Test that data edges route INTO internal consumers when container is expanded.
@@ -649,15 +634,13 @@ class TestEdgeRoutingIntoExpandedContainer:
 
         # When collapsed, target should be the container
         target = bp_edges[0]["target"]
-        assert target == "batch_eval", (
-            f"Expected: build_pairs -> batch_eval (collapsed)\n"
-            f"Actual: build_pairs -> {target}"
-        )
+        assert target == "batch_eval", f"Expected: build_pairs -> batch_eval (collapsed)\nActual: build_pairs -> {target}"
 
 
 # =============================================================================
 # Test: Edge Routing OUT OF Expanded Nested Graph
 # =============================================================================
+
 
 class TestEdgeRoutingFromExpandedContainer:
     """Test that data edges route FROM internal producers when container is expanded.
@@ -726,15 +709,13 @@ class TestEdgeRoutingFromExpandedContainer:
 
         # When collapsed, source should be the container
         source = cm_edges[0]["source"]
-        assert source == "batch_eval", (
-            f"Expected: batch_eval -> compute_metrics (collapsed)\n"
-            f"Actual: {source} -> compute_metrics"
-        )
+        assert source == "batch_eval", f"Expected: batch_eval -> compute_metrics (collapsed)\nActual: {source} -> compute_metrics"
 
 
 # =============================================================================
 # Test Graph: Input Groups inside Collapsed Containers
 # =============================================================================
+
 
 @node(output_name="alpha_out")
 def alpha_step(alpha: int) -> int:
@@ -756,6 +737,7 @@ def make_input_group_container_graph() -> Graph:
 # Test: INPUT/INPUT_GROUP visibility when container is collapsed
 # =============================================================================
 
+
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInputVisibilityWhenCollapsed:
     """Inputs owned by a collapsed container should be hidden."""
@@ -770,9 +752,7 @@ class TestInputVisibilityWhenCollapsed:
         node_ids = {n["id"] for n in data.nodes}
 
         # system_instructions is only consumed inside prompt_building
-        assert "input_system_instructions" not in node_ids, (
-            "input_system_instructions should be hidden when prompt_building is collapsed."
-        )
+        assert "input_system_instructions" not in node_ids, "input_system_instructions should be hidden when prompt_building is collapsed."
         # query has external consumers; it should remain visible at root
         assert "input_query" in node_ids, "input_query should stay visible at root."
 
@@ -784,14 +764,13 @@ class TestInputVisibilityWhenCollapsed:
         data = extract_debug_data(graph, depth=0)
 
         node_ids = {n["id"] for n in data.nodes}
-        assert "input_group_alpha_beta" not in node_ids, (
-            "input_group_alpha_beta should be hidden when inner is collapsed."
-        )
+        assert "input_group_alpha_beta" not in node_ids, "input_group_alpha_beta should be hidden when inner is collapsed."
 
 
 # =============================================================================
 # Test: Stable INPUT_GROUP edges across expansion states
 # =============================================================================
+
 
 class TestInputGroupEdgesAcrossExpansion:
     """INPUT_GROUP edge sources should match visible group IDs when expanded."""
@@ -804,10 +783,7 @@ class TestInputGroupEdgesAcrossExpansion:
         flat_graph = graph.to_flat_graph()
         result = render_graph(flat_graph, depth=0)
 
-        group_node = next(
-            n for n in result["nodes"]
-            if n["data"]["nodeType"] == "INPUT_GROUP"
-        )
+        group_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "INPUT_GROUP")
 
         edges_by_state = result["meta"]["edgesByState"]
         expandable = result["meta"]["expandableNodes"]
@@ -819,14 +795,14 @@ class TestInputGroupEdgesAcrossExpansion:
         group_edges = [e for e in edges if e["source"] == group_node["id"]]
 
         assert not group_edges, (
-            f"Expected NO edges from INPUT_GROUP {group_node['id']} in expanded state.\n"
-            f"Edges: {[(e['source'], e['target']) for e in edges]}"
+            f"Expected NO edges from INPUT_GROUP {group_node['id']} in expanded state.\nEdges: {[(e['source'], e['target']) for e in edges]}"
         )
 
 
 # =============================================================================
 # Test Graph: Container output visibility
 # =============================================================================
+
 
 @node(output_name="internal_only")
 def produce_internal(seed: int) -> int:
@@ -853,6 +829,7 @@ def make_container_output_graph() -> Graph:
 # Test: Container outputs only shown when externally consumed
 # =============================================================================
 
+
 class TestContainerOutputVisibility:
     """Container outputs without external consumers should be hidden."""
 
@@ -876,10 +853,7 @@ class TestContainerOutputVisibility:
         graph = make_container_output_graph()
         result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
 
-        data_node_ids = {
-            n["id"] for n in result["nodes"]
-            if n["data"]["nodeType"] == "DATA"
-        }
+        data_node_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] == "DATA"}
 
         assert "data_inner_external" in data_node_ids
         assert "data_inner_internal_only" not in data_node_ids

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import (
+    END,
     AsyncRunner,
     Graph,
     InterruptNode,
@@ -15,11 +16,9 @@ from hypergraph import (
     interrupt,
     node,
     route,
-    END,
 )
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.nodes.function import FunctionNode
-
 
 # ── Node construction ──
 
@@ -97,6 +96,7 @@ class TestInterruptNodeConstruction:
 
     def test_isinstance_function_node(self):
         """InterruptNode is a FunctionNode subclass."""
+
         def approval(draft: str) -> str:
             return "ok"
 
@@ -202,8 +202,7 @@ class TestGraphInterruptDetection:
             return query
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         graph = Graph([make_draft, approval])
         assert graph.has_interrupts is True
@@ -222,8 +221,7 @@ class TestGraphInterruptDetection:
             return query
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         graph = Graph([make_draft, approval])
         assert len(graph.interrupt_nodes) == 1
@@ -249,9 +247,7 @@ class TestPauseInfo:
         assert p.response_key == "review.decision"
 
     def test_response_key_deeply_nested(self):
-        p = PauseInfo(
-            node_name="outer/review/approval", output_param="decision", value=None
-        )
+        p = PauseInfo(node_name="outer/review/approval", output_param="decision", value=None)
         assert p.response_key == "outer.review.decision"
 
     def test_response_keys_single_output(self):
@@ -315,8 +311,7 @@ class TestInterruptValidation:
             return query
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         graph = Graph([make_draft, approval])
         runner = SyncRunner()
@@ -330,8 +325,7 @@ class TestInterruptValidation:
             return query
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         graph = Graph([make_draft, approval])
         runner = AsyncRunner()
@@ -350,8 +344,7 @@ class TestAsyncRunnerPause:
             return f"Draft for: {query}"
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...  # returns None → pause
+        def approval(draft: str) -> str: ...  # returns None → pause
 
         @node(output_name="result")
         def finalize(decision: str) -> str:
@@ -376,8 +369,7 @@ class TestAsyncRunnerPause:
             return f"Draft for: {query}"
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         @node(output_name="result")
         def finalize(decision: str) -> str:
@@ -391,9 +383,7 @@ class TestAsyncRunnerPause:
         assert result.paused
 
         # Resume with response
-        result = await runner.run(
-            graph, {"query": "hello", result.pause.response_key: "approved"}
-        )
+        result = await runner.run(graph, {"query": "hello", result.pause.response_key: "approved"})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == "Final: approved"
 
@@ -448,12 +438,10 @@ class TestAsyncRunnerPause:
             return x
 
         @interrupt(output_name="response1")
-        def interrupt1(step1: str) -> str:
-            ...
+        def interrupt1(step1: str) -> str: ...
 
         @interrupt(output_name="response2")
-        def interrupt2(response1: str) -> str:
-            ...
+        def interrupt2(response1: str) -> str: ...
 
         @node(output_name="result")
         def final(response2: str) -> str:
@@ -474,9 +462,7 @@ class TestAsyncRunnerPause:
         assert r2.pause.value == "resp1"
 
         # Resume second
-        r3 = await runner.run(
-            graph, {"x": "hello", "response1": "resp1", "response2": "resp2"}
-        )
+        r3 = await runner.run(graph, {"x": "hello", "response1": "resp1", "response2": "resp2"})
         assert r3.status == RunStatus.COMPLETED
         assert r3["result"] == "done: resp2"
 
@@ -497,8 +483,7 @@ class TestAsyncRunnerMultiParam:
             return {"query": query}
 
         @interrupt(output_name="decision")
-        def review(draft: str, metadata: dict) -> str:
-            ...
+        def review(draft: str, metadata: dict) -> str: ...
 
         @node(output_name="result")
         def finalize(decision: str) -> str:
@@ -525,8 +510,7 @@ class TestAsyncRunnerMultiParam:
             return f"Draft for: {query}"
 
         @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> tuple[str, str]:
-            ...
+        def review(draft: str) -> tuple[str, str]: ...
 
         @node(output_name="result")
         def finalize(decision: str, notes: str) -> str:
@@ -553,8 +537,7 @@ class TestAsyncRunnerMultiParam:
             return f"Draft for: {query}"
 
         @interrupt(output_name=("decision", "notes"))
-        def review(draft: str) -> tuple[str, str]:
-            ...
+        def review(draft: str) -> tuple[str, str]: ...
 
         @node(output_name="result")
         def finalize(decision: str, notes: str) -> str:
@@ -568,9 +551,7 @@ class TestAsyncRunnerMultiParam:
         assert r1.paused
 
         # Resume with all outputs
-        r2 = await runner.run(
-            graph, {"query": "hello", "decision": "approved", "notes": "looks good"}
-        )
+        r2 = await runner.run(graph, {"query": "hello", "decision": "approved", "notes": "looks good"})
         assert r2.status == RunStatus.COMPLETED
         assert r2["result"] == "approved: looks good"
 
@@ -678,8 +659,7 @@ class TestNestedInterruptPropagation:
         """InterruptNode in nested graph propagates with prefixed node_name."""
 
         @interrupt(output_name="y")
-        def approval(x: str) -> str:
-            ...
+        def approval(x: str) -> str: ...
 
         inner = Graph([approval], name="inner")
 
@@ -711,8 +691,7 @@ class TestInterruptNodeInCycle:
         """Interrupt output in a cycle should NOT be a seed input."""
 
         @interrupt(output_name="query")
-        def ask_user(messages: list) -> str:
-            ...
+        def ask_user(messages: list) -> str: ...
 
         @node(output_name="response")
         def process(query: str) -> str:
@@ -737,8 +716,7 @@ class TestInterruptNodeInCycle:
         """First run with no query should pause at the interrupt."""
 
         @interrupt(output_name="query")
-        def ask_user(messages: list) -> str:
-            ...
+        def ask_user(messages: list) -> str: ...
 
         @node(output_name="response")
         def process(query: str) -> str:
@@ -765,8 +743,7 @@ class TestInterruptNodeInCycle:
         """Resuming with a query should process it, then pause again on next iteration."""
 
         @interrupt(output_name="query")
-        def ask_user(messages: list) -> str:
-            ...
+        def ask_user(messages: list) -> str: ...
 
         @node(output_name="response")
         def process(query: str) -> str:
@@ -799,8 +776,7 @@ class TestInterruptNodeInCycle:
         """Cycle should complete when decide returns END."""
 
         @interrupt(output_name="query")
-        def ask_user(messages: list) -> str:
-            ...
+        def ask_user(messages: list) -> str: ...
 
         @node(output_name="response")
         def process(query: str) -> str:
@@ -860,8 +836,7 @@ class TestInterruptDecorator:
         """Function with ... body returns None → pause."""
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         assert approval("test") is None
 
@@ -883,16 +858,14 @@ class TestInterruptDecorator:
 
     def test_type_inference_from_annotations(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> bool:
-            ...
+        def approval(draft: str) -> bool: ...
 
         assert approval.get_input_type("draft") is str
         assert approval.get_output_type("decision") is bool
 
     def test_defaults_from_signature(self):
         @interrupt(output_name="decision")
-        def approval(draft: str, threshold: float = 0.8) -> str:
-            ...
+        def approval(draft: str, threshold: float = 0.8) -> str: ...
 
         assert approval.has_default_for("threshold") is True
         assert approval.get_default_for("threshold") == 0.8
@@ -908,8 +881,7 @@ class TestInterruptDecorator:
 
     def test_with_name(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         renamed = approval.with_name("review_step")
         assert renamed.name == "review_step"
@@ -917,16 +889,14 @@ class TestInterruptDecorator:
 
     def test_with_inputs(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         renamed = approval.with_inputs(draft="document")
         assert renamed.inputs == ("document",)
 
     def test_with_outputs(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         renamed = approval.with_outputs(decision="verdict")
         assert renamed.outputs == ("verdict",)
@@ -945,22 +915,19 @@ class TestInterruptDecorator:
 
     def test_cache_default_false(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         assert approval.cache is False
 
     def test_cache_configurable_via_decorator(self):
         @interrupt(output_name="decision", cache=True)
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         assert approval.cache is True
 
     def test_repr(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         assert "InterruptNode" in repr(approval)
         assert "approval" in repr(approval)
@@ -1001,8 +968,7 @@ class TestInterruptDecoratorExecution:
             return f"Draft for: {query}"
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...  # returns None → pause
+        def approval(draft: str) -> str: ...  # returns None → pause
 
         @node(output_name="result")
         def finalize(decision: str) -> str:
@@ -1025,8 +991,7 @@ class TestInterruptDecoratorExecution:
             return f"Draft for: {query}"
 
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
-            ...
+        def approval(draft: str) -> str: ...
 
         @node(output_name="result")
         def finalize(decision: str) -> str:
@@ -1038,9 +1003,7 @@ class TestInterruptDecoratorExecution:
         r1 = await runner.run(graph, {"query": "hello"})
         assert r1.paused
 
-        r2 = await runner.run(
-            graph, {"query": "hello", r1.pause.response_key: "user-approved"}
-        )
+        r2 = await runner.run(graph, {"query": "hello", r1.pause.response_key: "user-approved"})
         assert r2.status == RunStatus.COMPLETED
         assert r2["result"] == "Final: user-approved"
 
@@ -1198,8 +1161,7 @@ class TestInterruptDecoratorExecution:
         """Decorator interrupt in nested graph propagates with prefix."""
 
         @interrupt(output_name="decision")
-        def approval(x: str) -> str:
-            ...
+        def approval(x: str) -> str: ...
 
         inner = Graph([approval], name="inner")
 
@@ -1249,9 +1211,7 @@ class TestInterruptNodeFunctionStyleConstructor:
         def approval(draft: str) -> str:
             return "ok"
 
-        n = InterruptNode(
-            approval, output_name="decision", rename_inputs={"draft": "document"}
-        )
+        n = InterruptNode(approval, output_name="decision", rename_inputs={"draft": "document"})
         assert n.inputs == ("document",)
         assert n.get_input_type("document") is str
 
@@ -1297,9 +1257,7 @@ class TestInterruptNodeFunctionStyleConstructor:
         def approval(draft: str) -> str:
             return "ok"
 
-        n = InterruptNode(
-            approval, output_name="decision", rename_inputs={"draft": "document"}
-        )
+        n = InterruptNode(approval, output_name="decision", rename_inputs={"draft": "document"})
         mapped = n.map_inputs_to_params({"document": "text"})
         assert mapped == {"draft": "text"}
 
@@ -1349,9 +1307,7 @@ class TestInterruptNodeEmitWaitFor:
             return "ok"
 
         with pytest.raises(ValueError, match="emit and wait_for share"):
-            InterruptNode(
-                approval, output_name="decision", emit="sig", wait_for="sig"
-            )
+            InterruptNode(approval, output_name="decision", emit="sig", wait_for="sig")
 
     def test_decorator_with_emit(self):
         @interrupt(output_name="decision", emit="approved_done")
@@ -1371,7 +1327,6 @@ class TestInterruptNodeEmitWaitFor:
     @pytest.mark.asyncio
     async def test_emit_produces_sentinel_in_execution(self):
         """emit output produces sentinel value during execution."""
-        from hypergraph.nodes.base import _EMIT_SENTINEL
 
         @node(output_name="draft")
         def make_draft(query: str) -> str:

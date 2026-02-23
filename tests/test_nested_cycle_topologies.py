@@ -1,11 +1,8 @@
 """Tests for deeply nested graphs with cycles (GAP-02)."""
 
-import pytest
-
 from hypergraph import Graph, node
-from hypergraph.nodes.gate import route, END
-from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
-
+from hypergraph.nodes.gate import END, route
+from hypergraph.runners import AsyncRunner, RunStatus, SyncRunner
 
 # === Test Fixtures ===
 
@@ -244,6 +241,7 @@ class TestNestedCyclesWithDifferentSeeds:
 
     def test_inner_cycle_completes_before_outer_processing(self):
         """Inner cycle completes, then outer node processes result."""
+
         # Inner graph has a cycle with its own seed
         @node(output_name="inner_count")
         def inner_cycle(inner_count: int, inner_limit: int = 2) -> int:
@@ -278,6 +276,7 @@ class TestNestedCyclesWithDifferentSeeds:
 
     def test_two_independent_nested_cycles(self):
         """Two nested graphs each with their own cycles."""
+
         # Inner A: cycle to limit_a
         @node(output_name="a")
         def cycle_a(a: int, limit_a: int = 3) -> int:

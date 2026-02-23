@@ -14,7 +14,6 @@ from hypergraph.runners._shared.caching import (
     restore_routing_decision,
     store_in_cache,
 )
-from hypergraph.runners._shared.helpers import collect_inputs_for_node
 from hypergraph.runners._shared.event_helpers import (
     build_cache_hit_event,
     build_node_end_event,
@@ -22,6 +21,7 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
+from hypergraph.runners._shared.helpers import collect_inputs_for_node
 from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 if TYPE_CHECKING:
@@ -31,9 +31,7 @@ if TYPE_CHECKING:
     from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 
 # Context variable for concurrency limiting across nested graphs
-_concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar(
-    "_concurrency_limiter", default=None
-)
+_concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar("_concurrency_limiter", default=None)
 
 
 def get_concurrency_limiter() -> asyncio.Semaphore | None:
@@ -52,15 +50,15 @@ def reset_concurrency_limiter(token: Any) -> None:
 
 
 async def run_superstep_async(
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     ready_nodes: list[HyperNode],
     provided_values: dict[str, Any],
-    execute_node: "AsyncNodeExecutor",
+    execute_node: AsyncNodeExecutor,
     max_concurrency: int | None = None,
     *,
-    cache: "CacheBackend | None" = None,
-    dispatcher: "EventDispatcher | None" = None,
+    cache: CacheBackend | None = None,
+    dispatcher: EventDispatcher | None = None,
     run_id: str = "",
     run_span_id: str = "",
 ) -> GraphState:

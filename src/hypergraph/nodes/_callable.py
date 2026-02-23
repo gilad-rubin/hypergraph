@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable, get_type_hints
+from collections.abc import Callable
+from typing import Any, get_type_hints
 
 from hypergraph.nodes._rename import build_reverse_rename_map
 
@@ -89,11 +90,7 @@ class CallableMixin:
         sig = inspect.signature(self.func)
         rename_map = _build_forward_rename_map(self._rename_history)
 
-        return {
-            rename_map.get(name, name): param.default
-            for name, param in sig.parameters.items()
-            if param.default is not inspect.Parameter.empty
-        }
+        return {rename_map.get(name, name): param.default for name, param in sig.parameters.items() if param.default is not inspect.Parameter.empty}
 
     @functools.cached_property
     def parameter_annotations(self) -> dict[str, Any]:

@@ -38,10 +38,10 @@ class BaseRunner(ABC):
     @abstractmethod
     def run(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any] | None = None,
         *,
-        select: "str | list[str]" = _UNSET_SELECT,
+        select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
@@ -68,12 +68,12 @@ class BaseRunner(ABC):
     @abstractmethod
     def map(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any] | None = None,
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
-        select: "str | list[str]" = _UNSET_SELECT,
+        select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,

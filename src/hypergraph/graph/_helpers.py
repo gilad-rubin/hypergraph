@@ -26,6 +26,6 @@ def get_edge_produced_values(nx_graph: nx.DiGraph) -> set[str]:
     return result
 
 
-def sources_of(output: str, nodes: dict[str, "HyperNode"]) -> list[str]:
+def sources_of(output: str, nodes: dict[str, HyperNode]) -> list[str]:
     """Get all node names that produce the given output."""
     return [node.name for node in nodes.values() if output in node.outputs]

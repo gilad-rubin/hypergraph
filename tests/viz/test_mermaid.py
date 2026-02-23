@@ -149,10 +149,9 @@ class TestBasicMermaid:
 
         # Check for common emoji ranges
         import re
+
         emoji_pattern = re.compile(
-            "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
-            "\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
-            "\U00002702-\U000027B0\U0001F900-\U0001F9FF]"
+            "[\U0001f600-\U0001f64f\U0001f300-\U0001f5ff\U0001f680-\U0001f6ff\U0001f1e0-\U0001f1ff\U00002702-\U000027b0\U0001f900-\U0001f9ff]"
         )
         assert not emoji_pattern.search(str(mermaid))
 
@@ -281,6 +280,7 @@ class TestEdgeTypes:
         @ifelse(when_true=END, when_false=END) as a degenerate case.
         """
         import networkx as nx
+
         from hypergraph.viz.mermaid import _render_end_edges
 
         fg = nx.DiGraph()
@@ -290,8 +290,8 @@ class TestEdgeTypes:
         )
         lines = _render_end_edges(fg, expansion_state={})
 
-        true_edges = [l for l in lines if "True" in l]
-        false_edges = [l for l in lines if "False" in l]
+        true_edges = [line for line in lines if "True" in line]
+        false_edges = [line for line in lines if "False" in line]
         assert len(true_edges) == 1, f"Expected 1 True→END edge, got {true_edges}"
         assert len(false_edges) == 1, f"Expected 1 False→END edge, got {false_edges}"
 
@@ -348,7 +348,7 @@ class TestSubgraphs:
         graph = Graph(nodes=[inner.as_node(), add_one])
         mermaid = graph.to_mermaid(depth=1)
 
-        assert 'subgraph pipeline' in mermaid
+        assert "subgraph pipeline" in mermaid
         assert "end" in mermaid
         assert "step1" in mermaid
         assert "step2" in mermaid
@@ -408,9 +408,7 @@ class TestCustomColors:
     def test_custom_color_override(self):
         """Custom colors override defaults."""
         graph = Graph(nodes=[double])
-        mermaid = graph.to_mermaid(
-            colors={"function": {"fill": "#FF0000", "stroke": "#CC0000"}}
-        )
+        mermaid = graph.to_mermaid(colors={"function": {"fill": "#FF0000", "stroke": "#CC0000"}})
 
         assert "#FF0000" in mermaid
         assert "#CC0000" in mermaid
@@ -540,4 +538,3 @@ class TestMermaidDiagram:
         diagram = graph.to_mermaid()
 
         assert "color:#1B5E20" in diagram  # function text color
-

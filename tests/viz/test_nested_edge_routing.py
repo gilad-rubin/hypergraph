@@ -9,15 +9,15 @@ import pytest
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_workflow,
     make_outer,
+    make_workflow,
     render_to_page,
 )
-
 
 # =============================================================================
 # Tests
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestNestedEdgeRouting:
@@ -31,12 +31,8 @@ class TestNestedEdgeRouting:
         data = extract_debug_data(workflow, depth=1)
 
         # All edges should have positive vertical distance
-        assert data.summary["edgeIssues"] == 0, (
-            f"Found {data.summary['edgeIssues']} edge issues:\n"
-            + "\n".join(
-                f"  {e.source} -> {e.target}: {e.issue}"
-                for e in data.edge_issues
-            )
+        assert data.summary["edgeIssues"] == 0, f"Found {data.summary['edgeIssues']} edge issues:\n" + "\n".join(
+            f"  {e.source} -> {e.target}: {e.issue}" for e in data.edge_issues
         )
 
     def test_workflow_edges_target_below_source(self):
@@ -60,12 +56,8 @@ class TestNestedEdgeRouting:
         outer = make_outer()
         data = extract_debug_data(outer, depth=2)
 
-        assert data.summary["edgeIssues"] == 0, (
-            f"Found {data.summary['edgeIssues']} edge issues:\n"
-            + "\n".join(
-                f"  {e.source} -> {e.target}: {e.issue}"
-                for e in data.edge_issues
-            )
+        assert data.summary["edgeIssues"] == 0, f"Found {data.summary['edgeIssues']} edge issues:\n" + "\n".join(
+            f"  {e.source} -> {e.target}: {e.issue}" for e in data.edge_issues
         )
 
     def test_workflow_depth0_collapsed_ok(self):
@@ -416,10 +408,7 @@ class TestDoubleNestedEdgeRouting:
 
         assert inner_top is not None, "inner node not found at depth=1"
         input_edges = [edge_id for edge_id in result.get("edgeIds", []) if "input_x" in edge_id]
-        assert not input_edges, (
-            "Internal-only inputs should be hidden when their owner container is collapsed.\n"
-            f"Found input edges: {input_edges}"
-        )
+        assert not input_edges, f"Internal-only inputs should be hidden when their owner container is collapsed.\nFound input edges: {input_edges}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -737,20 +726,17 @@ class TestNestedGraphPadding:
         data = extract_debug_data(workflow, depth=1)
 
         # Find the topmost node
-        min_y = float('inf')
+        min_y = float("inf")
         top_node = None
         for n in data.nodes:
-            y = n.get('y', float('inf'))
+            y = n.get("y", float("inf"))
             if y < min_y:
                 min_y = y
                 top_node = n
 
         # Top padding should be at least 20px (we use 24px GRAPH_PADDING)
         min_padding = 20
-        assert min_y >= min_padding, (
-            f"Topmost node '{top_node.get('id')}' has insufficient top padding: "
-            f"y={min_y}px, expected >= {min_padding}px"
-        )
+        assert min_y >= min_padding, f"Topmost node '{top_node.get('id')}' has insufficient top padding: y={min_y}px, expected >= {min_padding}px"
 
     def test_nested_graph_symmetric_padding(self):
         """Test that nested graph containers have symmetric padding.
@@ -779,14 +765,8 @@ class TestNestedGraphPadding:
             h_diff = abs(left - right)
             v_diff = abs(top - bottom)
 
-            assert h_diff <= tolerance, (
-                f"Node {node.get('id')} has asymmetric horizontal padding: "
-                f"left={left}, right={right}, diff={h_diff}"
-            )
-            assert v_diff <= tolerance, (
-                f"Node {node.get('id')} has asymmetric vertical padding: "
-                f"top={top}, bottom={bottom}, diff={v_diff}"
-            )
+            assert h_diff <= tolerance, f"Node {node.get('id')} has asymmetric horizontal padding: left={left}, right={right}, diff={h_diff}"
+            assert v_diff <= tolerance, f"Node {node.get('id')} has asymmetric vertical padding: top={top}, bottom={bottom}, diff={v_diff}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -813,9 +793,7 @@ class TestNodeToParentDebugAPI:
         }""")
 
         assert result["hasRoutingData"], "routingData not found in debug API"
-        assert result["hasNodeToParent"], (
-            f"node_to_parent not found in routingData. Available keys: {result['allKeys']}"
-        )
+        assert result["hasNodeToParent"], f"node_to_parent not found in routingData. Available keys: {result['allKeys']}"
 
         node_to_parent = result["nodeToParent"]
         assert isinstance(node_to_parent, dict), f"node_to_parent should be dict, got {type(node_to_parent)}"
@@ -845,9 +823,7 @@ class TestNodeToParentDebugAPI:
         outer = make_outer()
         render_to_page(page, outer, depth=2, temp_path=temp_html_file)
 
-        node_to_parent = page.evaluate(
-            "window.__hypergraphVizDebug.routingData.node_to_parent"
-        )
+        node_to_parent = page.evaluate("window.__hypergraphVizDebug.routingData.node_to_parent")
 
         assert node_to_parent is not None, "node_to_parent not found"
 
@@ -861,9 +837,7 @@ class TestNodeToParentDebugAPI:
         )
 
         # Level 2: middle/inner, middle/validate inside middle
-        assert node_to_parent.get("middle/inner") == "middle", (
-            f"middle/inner should have parent 'middle', got: {node_to_parent.get('middle/inner')}"
-        )
+        assert node_to_parent.get("middle/inner") == "middle", f"middle/inner should have parent 'middle', got: {node_to_parent.get('middle/inner')}"
         assert node_to_parent.get("middle/validate") == "middle", (
             f"middle/validate should have parent 'middle', got: {node_to_parent.get('middle/validate')}"
         )

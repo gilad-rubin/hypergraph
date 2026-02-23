@@ -8,8 +8,7 @@ Tests cover:
 
 import pytest
 
-from hypergraph.nodes.gate import END, GateNode, RouteNode, route
-
+from hypergraph.nodes.gate import END, GateNode, route
 
 # =============================================================================
 # END Sentinel Tests
@@ -36,7 +35,7 @@ class TestENDSentinel:
     def test_end_not_equal_to_string(self):
         """END should not be equal to the string 'END'."""
         assert END != "END"
-        assert "END" != END
+        assert END != "END"
 
     def test_end_identity(self):
         """Assigning END to a variable should preserve identity."""

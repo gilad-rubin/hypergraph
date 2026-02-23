@@ -11,25 +11,24 @@ All tests run in parallel via pytest-xdist.
 import pytest
 
 from hypergraph import InMemoryCache
-from hypergraph.runners import SyncRunner, AsyncRunner, RunStatus
+from hypergraph.runners import AsyncRunner, RunStatus, SyncRunner
 
+from .builders import build_graph_for_capability, get_test_inputs
 from .matrix import (
+    Binding,
     Caching,
     Capability,
-    Runner,
-    Topology,
     MapMode,
     NestingDepth,
-    Renaming,
-    Binding,
     NodeType,
+    Renaming,
+    Runner,
+    Topology,
     all_valid_combinations,
-    pairwise_combinations,
     combinations_for,
     count_combinations,
+    pairwise_combinations,
 )
-from .builders import build_graph_for_capability, get_test_inputs
-
 
 # =============================================================================
 # Test helpers
@@ -157,9 +156,7 @@ class TestFullMatrixSync:
     Run with: pytest -m full_matrix
     """
 
-    @pytest.mark.parametrize(
-        "cap", list(combinations_for(runner=Runner.SYNC)), ids=str
-    )
+    @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.SYNC)), ids=str)
     def test_all_sync_combinations(self, cap: Capability):
         """Every valid sync combination should execute."""
         run_capability_sync(cap)
@@ -173,9 +170,7 @@ class TestFullMatrixAsync:
     Run with: pytest -m full_matrix
     """
 
-    @pytest.mark.parametrize(
-        "cap", list(combinations_for(runner=Runner.ASYNC)), ids=str
-    )
+    @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.ASYNC)), ids=str)
     async def test_all_async_combinations(self, cap: Capability):
         """Every valid async combination should execute."""
         await run_capability_async(cap)

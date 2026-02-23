@@ -38,11 +38,7 @@ class TestEndToEndWorkflow:
             return mean, std
 
         # Chain renames
-        renamed = (
-            stats.with_inputs(data="input_data")
-            .with_outputs(mean="average", std="standard_deviation")
-            .with_name("compute_statistics")
-        )
+        renamed = stats.with_inputs(data="input_data").with_outputs(mean="average", std="standard_deviation").with_name("compute_statistics")
 
         assert renamed.name == "compute_statistics"
         assert renamed.inputs == ("input_data",)
@@ -124,8 +120,7 @@ class TestGeneratorFunctionNode:
 
         @node(output_name="values")
         def generate_numbers(n: int):
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         assert generate_numbers.is_async is False
         assert generate_numbers.is_generator is True
@@ -135,8 +130,7 @@ class TestGeneratorFunctionNode:
 
         @node(output_name="values")
         def generate_numbers(n: int):
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         result = list(generate_numbers(3))
         assert result == [0, 1, 2]

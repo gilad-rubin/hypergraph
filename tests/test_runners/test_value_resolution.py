@@ -1,12 +1,9 @@
 """Tests for value source detection and resolution order."""
+
 import threading
 
-import pytest
-
-from hypergraph import Graph, node, SyncRunner
+from hypergraph import Graph, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
-from hypergraph.runners._shared.helpers import ValueSource, get_value_source
-from hypergraph.runners._shared.types import GraphState
 
 
 class TestValueSourceDetection:
@@ -14,6 +11,7 @@ class TestValueSourceDetection:
 
     def test_edge_value_source(self):
         """Edge values (upstream outputs) have highest priority."""
+
         @node(output_name="x")
         def produce() -> int:
             return 42
@@ -31,6 +29,7 @@ class TestValueSourceDetection:
 
     def test_provided_value_source(self):
         """Provided values (from run() call) override defaults and bindings."""
+
         @node(output_name="result")
         def process(x: int = 10) -> int:
             return x
@@ -44,6 +43,7 @@ class TestValueSourceDetection:
 
     def test_bound_value_source(self):
         """Bound values (from .bind()) override defaults."""
+
         @node(output_name="result")
         def process(x: int = 10) -> int:
             return x
@@ -57,6 +57,7 @@ class TestValueSourceDetection:
 
     def test_default_value_source(self):
         """Signature defaults are lowest priority."""
+
         @node(output_name="result")
         def process(x: int = 10) -> int:
             return x
@@ -79,8 +80,10 @@ class TestNonCopyableBoundValues:
         bound non-copyable objects (like Embedder with RLock) is used as
         a node, the runner should NOT attempt to deep-copy those values.
         """
+
         class NonCopyableObject:
             """Object with thread lock - cannot be pickled/deep-copied."""
+
             def __init__(self):
                 self._lock = threading.RLock()
 
@@ -125,6 +128,7 @@ class TestNonCopyableBoundValues:
 
     def test_non_copyable_default_raises_clear_error(self):
         """Non-copyable signature defaults should raise helpful error."""
+
         class NonCopyableObject:
             def __init__(self):
                 self._lock = threading.RLock()
@@ -149,6 +153,7 @@ class TestNonCopyableBoundValues:
 
         # Check that execution failed
         from hypergraph.runners._shared.types import RunStatus
+
         assert result.status == RunStatus.FAILED
         assert result.error is not None
         assert isinstance(result.error, GraphConfigError)

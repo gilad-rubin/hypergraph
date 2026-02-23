@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from hypergraph.nodes.function import FunctionNode
 
@@ -40,10 +40,7 @@ class InterruptNode(FunctionNode):
         wait_for: str | tuple[str, ...] | None = None,
     ) -> None:
         if output_name is None:
-            raise TypeError(
-                "InterruptNode requires output_name "
-                "(defines where human responses are written)"
-            )
+            raise TypeError("InterruptNode requires output_name (defines where human responses are written)")
         super().__init__(
             source,
             name=name,

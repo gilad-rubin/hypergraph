@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from hypergraph import END, Graph, SyncRunner, node, route
 from hypergraph.events import EventProcessor, TypedEventProcessor
 from hypergraph.events.types import (
@@ -15,7 +13,6 @@ from hypergraph.events.types import (
     RunStartEvent,
     RunStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -333,9 +330,7 @@ class TestMapEvents:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        results = runner.map(
-            graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp]
-        )
+        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp])
 
         assert len(results) == 3
 

@@ -54,9 +54,7 @@ class TestMapAllFail:
     def test_sync_all_fail_continue(self):
         graph = Graph([always_fail])
         runner = SyncRunner()
-        results = runner.map(
-            graph, values={"x": [1, 2, 3]}, map_over="x", error_handling="continue"
-        )
+        results = runner.map(graph, values={"x": [1, 2, 3]}, map_over="x", error_handling="continue")
         assert len(results) == 3
         assert all(r.status == RunStatus.FAILED for r in results)
         assert all(isinstance(r.error, FailError) for r in results)
@@ -65,9 +63,7 @@ class TestMapAllFail:
     async def test_async_all_fail_continue(self):
         graph = Graph([async_always_fail])
         runner = AsyncRunner()
-        results = await runner.map(
-            graph, values={"x": [1, 2, 3]}, map_over="x", error_handling="continue"
-        )
+        results = await runner.map(graph, values={"x": [1, 2, 3]}, map_over="x", error_handling="continue")
         assert len(results) == 3
         assert all(r.status == RunStatus.FAILED for r in results)
 
@@ -138,9 +134,7 @@ class TestMapFirstItemFails:
     def test_sync_first_item_fails_continue(self):
         graph = Graph([always_fail])
         runner = SyncRunner()
-        results = runner.map(
-            graph, values={"x": [1]}, map_over="x", error_handling="continue"
-        )
+        results = runner.map(graph, values={"x": [1]}, map_over="x", error_handling="continue")
         assert len(results) == 1
         assert results[0].status == RunStatus.FAILED
 
@@ -151,9 +145,7 @@ class TestMapSingleItem:
     def test_sync_single_success(self):
         graph = Graph([double_fail_on_odd])
         runner = SyncRunner()
-        results = runner.map(
-            graph, values={"x": [2]}, map_over="x", error_handling="continue"
-        )
+        results = runner.map(graph, values={"x": [2]}, map_over="x", error_handling="continue")
         assert len(results) == 1
         assert results[0].status == RunStatus.COMPLETED
         assert results[0]["doubled"] == 4
@@ -171,17 +163,13 @@ class TestMapEmptyInput:
     def test_sync_empty_raise(self):
         graph = Graph([double_fail_on_odd])
         runner = SyncRunner()
-        results = runner.map(
-            graph, values={"x": []}, map_over="x", error_handling="raise"
-        )
+        results = runner.map(graph, values={"x": []}, map_over="x", error_handling="raise")
         assert results == []
 
     def test_sync_empty_continue(self):
         graph = Graph([double_fail_on_odd])
         runner = SyncRunner()
-        results = runner.map(
-            graph, values={"x": []}, map_over="x", error_handling="continue"
-        )
+        results = runner.map(graph, values={"x": []}, map_over="x", error_handling="continue")
         assert results == []
 
 
@@ -303,11 +291,7 @@ class TestMapOverWithRenamedOutputs:
 
     def test_sync_renamed_outputs_continue(self):
         inner = Graph([double_fail_on_odd], name="inner")
-        gn = (
-            inner.as_node()
-            .with_outputs(doubled="processed")
-            .map_over("x", error_handling="continue")
-        )
+        gn = inner.as_node().with_outputs(doubled="processed").map_over("x", error_handling="continue")
 
         @node(output_name="final")
         def consume(processed: list) -> list:

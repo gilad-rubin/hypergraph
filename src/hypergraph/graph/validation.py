@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import keyword
 from collections import defaultdict
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
@@ -24,7 +24,7 @@ class GraphConfigError(Exception):
 
 
 def validate_graph(
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
     nx_graph: nx.DiGraph,
     graph_name: str | None,
     strict_types: bool,
@@ -66,7 +66,7 @@ def _validate_graph_name(graph_name: str | None) -> None:
                 )
 
 
-def _validate_valid_identifiers(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
     """Node and output names must be valid Python identifiers (not keywords)."""
     from hypergraph.nodes.graph_node import GraphNode
 
@@ -91,8 +91,7 @@ def _validate_valid_identifiers(nodes: dict[str, "HyperNode"]) -> None:
         for output in node.outputs:
             if not output.isidentifier():
                 raise GraphConfigError(
-                    f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
-                    f"  -> Output names must be valid Python identifiers"
+                    f"Invalid output name: '{output}' (from node '{node.name}')\n\n  -> Output names must be valid Python identifiers"
                 )
             if keyword.iskeyword(output):
                 raise GraphConfigError(
@@ -103,7 +102,7 @@ def _validate_valid_identifiers(nodes: dict[str, "HyperNode"]) -> None:
                 )
 
 
-def _validate_no_namespace_collision(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_no_namespace_collision(nodes: dict[str, HyperNode]) -> None:
     """Ensure GraphNode names don't collide with output names.
 
     GraphNode names are used for path-based result access (e.g., results['subgraph.output']).
@@ -111,9 +110,7 @@ def _validate_no_namespace_collision(nodes: dict[str, "HyperNode"]) -> None:
     """
     from hypergraph.nodes.graph_node import GraphNode
 
-    graph_node_names = {
-        node.name for node in nodes.values() if isinstance(node, GraphNode)
-    }
+    graph_node_names = {node.name for node in nodes.values() if isinstance(node, GraphNode)}
 
     if not graph_node_names:
         return  # No GraphNodes, nothing to validate
@@ -140,7 +137,7 @@ def _validate_no_namespace_collision(nodes: dict[str, "HyperNode"]) -> None:
             )
 
 
-def _validate_consistent_defaults(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_consistent_defaults(nodes: dict[str, HyperNode]) -> None:
     """Shared input parameters must have ALL-or-NONE consistent defaults."""
     param_info = _collect_param_default_info(nodes)
 
@@ -151,7 +148,7 @@ def _validate_consistent_defaults(nodes: dict[str, "HyperNode"]) -> None:
 
 
 def _collect_param_default_info(
-    nodes: dict[str, "HyperNode"],
+    nodes: dict[str, HyperNode],
 ) -> dict[str, list[tuple[bool, Any, str]]]:
     """Collect signature default info for each parameter across all nodes.
 
@@ -173,9 +170,7 @@ def _collect_param_default_info(
     return param_info
 
 
-def _check_defaults_consistency(
-    param: str, info_list: list[tuple[bool, Any, str]]
-) -> None:
+def _check_defaults_consistency(param: str, info_list: list[tuple[bool, Any, str]]) -> None:
     """Check that defaults are consistent for a shared parameter."""
     with_default = [(v, n) for has, v, n in info_list if has]
     without_default = [n for has, v, n in info_list if not has]
@@ -192,9 +187,7 @@ def _check_defaults_consistency(
     _check_default_values_match(param, with_default)
 
 
-def _check_default_values_match(
-    param: str, with_default: list[tuple[Any, str]]
-) -> None:
+def _check_default_values_match(param: str, with_default: list[tuple[Any, str]]) -> None:
     """Check that all default values for a parameter are identical."""
     if len(with_default) <= 1:
         return
@@ -229,7 +222,7 @@ def _values_equal(a: Any, b: Any) -> bool:
         return False
 
 
-def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None:
+def _validate_types(nodes: dict[str, HyperNode], nx_graph: nx.DiGraph) -> None:
     """Validate type compatibility between connected nodes.
 
     Checks each edge (source_node -> target_node) for:
@@ -285,14 +278,14 @@ def _validate_types(nodes: dict[str, "HyperNode"], nx_graph: nx.DiGraph) -> None
 # =============================================================================
 
 
-def _validate_no_interrupt_in_map_over(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_no_interrupt_in_map_over(nodes: dict[str, HyperNode]) -> None:
     """GraphNodes with map_over cannot wrap graphs containing InterruptNodes."""
     from hypergraph.nodes.graph_node import GraphNode
 
     for node in nodes.values():
         if not isinstance(node, GraphNode):
             continue
-        if not (hasattr(node, 'map_config') and node.map_config):
+        if not (hasattr(node, "map_config") and node.map_config):
             continue
         if not node.graph.has_interrupts:
             continue
@@ -309,7 +302,7 @@ def _validate_no_interrupt_in_map_over(nodes: dict[str, "HyperNode"]) -> None:
 # =============================================================================
 
 
-def _validate_reserved_names(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_reserved_names(nodes: dict[str, HyperNode]) -> None:
     """Node names cannot be reserved words like 'END'."""
     for name in nodes:
         if name == "END":
@@ -320,9 +313,9 @@ def _validate_reserved_names(nodes: dict[str, "HyperNode"]) -> None:
             )
 
 
-def _validate_gate_targets(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_gate_targets(nodes: dict[str, HyperNode]) -> None:
     """Validate that all gate targets exist in the graph (or are END)."""
-    from hypergraph.nodes.gate import GateNode, END
+    from hypergraph.nodes.gate import END, GateNode
 
     for node in nodes.values():
         if not isinstance(node, GateNode):
@@ -342,7 +335,7 @@ def _validate_gate_targets(nodes: dict[str, "HyperNode"]) -> None:
                 )
 
 
-def _validate_no_gate_self_loop(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_no_gate_self_loop(nodes: dict[str, HyperNode]) -> None:
     """Gates cannot route to themselves."""
     from hypergraph.nodes.gate import GateNode
 
@@ -359,7 +352,7 @@ def _validate_no_gate_self_loop(nodes: dict[str, "HyperNode"]) -> None:
             )
 
 
-def _validate_no_cache_on_non_function_nodes(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_no_cache_on_non_function_nodes(nodes: dict[str, HyperNode]) -> None:
     """Disallow cache=True on GraphNode.
 
     GraphNodes should cache individual inner nodes instead.
@@ -378,7 +371,7 @@ def _validate_no_cache_on_non_function_nodes(nodes: dict[str, "HyperNode"]) -> N
             )
 
 
-def _validate_wait_for_references(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_wait_for_references(nodes: dict[str, HyperNode]) -> None:
     """Validate that wait_for values reference existing outputs or emits.
 
     Each wait_for name must match an output (including emit) of some node
@@ -413,7 +406,7 @@ def _find_similar_names(name: str, candidates: set[str]) -> str | None:
     return matches[0] if matches else None
 
 
-def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> None:
+def _validate_multi_target_output_conflicts(nodes: dict[str, HyperNode]) -> None:
     """Validate that multi_target gates don't have targets sharing outputs.
 
     For multi_target=True, we can't know which targets will run, so if
@@ -422,7 +415,7 @@ def _validate_multi_target_output_conflicts(nodes: dict[str, "HyperNode"]) -> No
     For multi_target=False (default), exactly one target runs, so same
     output names are allowed (mutually exclusive).
     """
-    from hypergraph.nodes.gate import RouteNode, END
+    from hypergraph.nodes.gate import END, RouteNode
 
     for node in nodes.values():
         if not isinstance(node, RouteNode):

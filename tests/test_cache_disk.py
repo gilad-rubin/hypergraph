@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import Graph, node, SyncRunner
+from hypergraph import Graph, SyncRunner, node
 
 diskcache = pytest.importorskip("diskcache", reason="diskcache not installed")
 

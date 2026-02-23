@@ -1,7 +1,5 @@
 """Tests for runner types: RunStatus, RunResult, RunnerCapabilities, GraphState."""
 
-import pytest
-
 from hypergraph.runners import (
     GraphState,
     NodeExecution,

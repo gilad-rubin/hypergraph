@@ -13,10 +13,11 @@ TDD tests for issues identified in the code review:
 """
 
 import warnings
+
 import pytest
 
 from hypergraph import END, Graph
-from hypergraph.nodes.function import FunctionNode, node
+from hypergraph.nodes.function import node
 from hypergraph.nodes.gate import route
 from hypergraph.runners.sync import SyncRunner
 
@@ -32,10 +33,12 @@ class TestPython310Compatibility:
         """GraphNode should import on Python 3.10+."""
         # This test verifies the fix - import should not fail
         from hypergraph.nodes.graph_node import GraphNode
+
         assert GraphNode is not None
 
     def test_graphnode_map_over_returns_graphnode(self):
         """GraphNode.map_over() should return a GraphNode instance."""
+
         @node(output_name="y")
         def double(x: int) -> int:
             return x * 2
@@ -46,10 +49,12 @@ class TestPython310Compatibility:
 
         # Verify it's still a GraphNode
         from hypergraph.nodes.graph_node import GraphNode
+
         assert isinstance(mapped, GraphNode)
 
     def test_graphnode_with_inputs_returns_graphnode(self):
         """GraphNode.with_inputs() should return a GraphNode instance."""
+
         @node(output_name="y")
         def double(x: int) -> int:
             return x * 2
@@ -59,6 +64,7 @@ class TestPython310Compatibility:
         renamed = gn.with_inputs(x="z")
 
         from hypergraph.nodes.graph_node import GraphNode
+
         assert isinstance(renamed, GraphNode)
 
 
@@ -106,6 +112,7 @@ class TestRenameChaining:
 
     def test_rename_chaining_execution(self):
         """Chained renames should compose transitively."""
+
         @node(output_name="result")
         def add_one(a: int) -> int:
             return a + 1
@@ -126,6 +133,7 @@ class TestRenameChaining:
 
     def test_triple_rename_chaining(self):
         """Three-level rename chaining should work."""
+
         @node(output_name="result")
         def double(x: int) -> int:
             return x * 2
@@ -151,6 +159,7 @@ class TestFunctionNodeDefaultsWithRenames:
 
     def test_defaults_uses_renamed_names(self):
         """FunctionNode.defaults should use renamed parameter names."""
+
         @node(output_name="result", rename_inputs={"x": "input_value"})
         def func_with_default(x: int = 10) -> int:
             return x
@@ -161,6 +170,7 @@ class TestFunctionNodeDefaultsWithRenames:
 
     def test_has_default_for_renamed_param(self):
         """has_default_for should work with renamed parameter names."""
+
         @node(output_name="result", rename_inputs={"x": "input_value"})
         def func_with_default(x: int = 10) -> int:
             return x
@@ -172,6 +182,7 @@ class TestFunctionNodeDefaultsWithRenames:
 
     def test_get_default_for_renamed_param(self):
         """get_default_for should work with renamed parameter names."""
+
         @node(output_name="result", rename_inputs={"x": "my_param"})
         def func_with_default(x: int = 42) -> int:
             return x
@@ -181,6 +192,7 @@ class TestFunctionNodeDefaultsWithRenames:
 
     def test_defaults_after_with_inputs(self):
         """defaults should reflect names after with_inputs() chaining."""
+
         @node(output_name="result")
         def func_with_default(x: int = 5) -> int:
             return x
@@ -205,12 +217,13 @@ class TestValueComparisonSafety:
 
         class ArrayLike:
             """Mock array-like that raises on truth test."""
+
             def __init__(self, data):
                 self.data = data
 
             def __ne__(self, other):
                 # Return array-like result (ambiguous truth value)
-                return [a != b for a, b in zip(self.data, other.data)]
+                return [a != b for a, b in zip(self.data, other.data, strict=False)]
 
             def __bool__(self):
                 raise ValueError("Ambiguous truth value")
@@ -249,6 +262,7 @@ class TestGraphNodeInputTypeConsistency:
 
     def test_input_type_consistency_warning(self):
         """Graph should warn/error if shared inputs have inconsistent types."""
+
         # This tests the design choice: we should validate at graph construction
         @node(output_name="out1")
         def node_int(x: int) -> int:
@@ -279,6 +293,7 @@ class TestSelectParameterValidation:
 
     def test_invalid_select_ignored_by_default(self):
         """Invalid select parameter silently omitted with default on_missing='ignore'."""
+
         @node(output_name="result")
         def identity(x: int) -> int:
             return x
@@ -291,6 +306,7 @@ class TestSelectParameterValidation:
 
     def test_invalid_select_warns_with_on_missing(self):
         """Invalid select parameter warns with on_missing='warn'."""
+
         @node(output_name="result")
         def identity(x: int) -> int:
             return x
@@ -307,6 +323,7 @@ class TestSelectParameterValidation:
 
     def test_valid_select_no_warning(self):
         """Valid select parameter should not warn."""
+
         @node(output_name="result")
         def identity(x: int) -> int:
             return x
@@ -332,6 +349,7 @@ class TestGraphNodeNameValidation:
 
     def test_graphnode_name_cannot_contain_dot(self):
         """GraphNode name should not contain '.'."""
+
         @node(output_name="y")
         def double(x: int) -> int:
             return x * 2
@@ -345,6 +363,7 @@ class TestGraphNodeNameValidation:
 
     def test_graphnode_name_cannot_contain_slash(self):
         """GraphNode name should not contain '/'."""
+
         @node(output_name="y")
         def double(x: int) -> int:
             return x * 2
@@ -409,6 +428,7 @@ class TestInputValidationOverrides:
 
     def test_cannot_override_edge_produced_values(self):
         """Cannot provide values for edge-produced outputs in runner.run()."""
+
         @node(output_name="intermediate")
         def step1(x: int) -> int:
             return x + 1
@@ -465,6 +485,7 @@ class TestMultiCycleEntryPointValidation:
 
         # Cycle A entrypoint satisfied (b=1 for node_a), but cycle B has no entry
         from hypergraph.exceptions import MissingInputError
+
         with pytest.raises((ValueError, MissingInputError)):
             runner.run(graph, {"b": 1}, entrypoint="node_a")
 
@@ -535,7 +556,6 @@ class TestEarlyOnMissingValidation:
 
     def test_invalid_on_missing_fails_even_when_all_outputs_present(self):
         """Invalid on_missing raises immediately, not only when outputs miss."""
-        from hypergraph.runners._shared.helpers import filter_outputs
 
         @node(output_name="result")
         def identity(x: int) -> int:

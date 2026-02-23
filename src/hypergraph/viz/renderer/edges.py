@@ -60,14 +60,16 @@ def add_end_node_edges(
                 has_end = True
 
         if has_end:
-            edges.append({
-                "id": f"e_{node_id}_to___end__",
-                "source": node_id,
-                "target": "__end__",
-                "animated": False,
-                "style": {"stroke": "#10b981", "strokeWidth": 2},
-                "data": {"edgeType": "end", "label": label},
-            })
+            edges.append(
+                {
+                    "id": f"e_{node_id}_to___end__",
+                    "source": node_id,
+                    "target": "__end__",
+                    "animated": False,
+                    "style": {"stroke": "#10b981", "strokeWidth": 2},
+                    "data": {"edgeType": "end", "label": label},
+                }
+            )
 
 
 def add_merged_output_edges(
@@ -97,9 +99,7 @@ def add_merged_output_edges(
             is_target_expanded = expansion_state.get(target, False)
 
             if is_target_container and is_target_expanded:
-                entrypoints = find_container_entrypoints(
-                    target, flat_graph, expansion_state
-                )
+                entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
                 if entrypoints:
                     actual_target = entrypoints[0]
 
@@ -163,38 +163,29 @@ def add_merged_output_edges(
             is_source_container = source_attrs.get("node_type") == "GRAPH"
             is_source_expanded = expansion_state.get(source, False)
 
-            if is_source_container and is_source_expanded:
-                if value_name:
-                    internal_producer = output_to_producer.get(value_name)
-                    if internal_producer and internal_producer != source and is_descendant_of(internal_producer, source, flat_graph):
-                        actual_source = internal_producer
-                    else:
-                        internal_source = find_internal_producer_for_output(
-                            source, value_name, flat_graph, expansion_state
-                        )
-                        if internal_source:
-                            actual_source = internal_source
+            if is_source_container and is_source_expanded and value_name:
+                internal_producer = output_to_producer.get(value_name)
+                if internal_producer and internal_producer != source and is_descendant_of(internal_producer, source, flat_graph):
+                    actual_source = internal_producer
+                else:
+                    internal_source = find_internal_producer_for_output(source, value_name, flat_graph, expansion_state)
+                    if internal_source:
+                        actual_source = internal_source
 
             actual_target = target
             target_attrs = flat_graph.nodes.get(target, {})
             is_target_container = target_attrs.get("node_type") == "GRAPH"
             is_target_expanded = expansion_state.get(target, False)
 
-            if is_target_container and is_target_expanded:
-                if value_name:
-                    consumers = param_to_consumers.get(value_name, [])
-                    internal_consumers = [
-                        c for c in consumers
-                        if c != target and is_descendant_of(c, target, flat_graph)
-                    ]
-                    if internal_consumers:
-                        actual_target = internal_consumers[0]
-                    else:
-                        entrypoints = find_container_entrypoints(
-                            target, flat_graph, expansion_state
-                        )
-                        if entrypoints:
-                            actual_target = entrypoints[0]
+            if is_target_container and is_target_expanded and value_name:
+                consumers = param_to_consumers.get(value_name, [])
+                internal_consumers = [c for c in consumers if c != target and is_descendant_of(c, target, flat_graph)]
+                if internal_consumers:
+                    actual_target = internal_consumers[0]
+                else:
+                    entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
+                    if entrypoints:
+                        actual_target = entrypoints[0]
 
             if not is_node_visible(actual_source, flat_graph, expansion_state):
                 continue
@@ -256,14 +247,16 @@ def add_separate_output_edges(
             if not is_data_node_visible(node_id, output_name, flat_graph, expansion_state):
                 continue
             data_node_id = f"data_{node_id}_{output_name}"
-            edges.append({
-                "id": f"e_{node_id}_to_{data_node_id}",
-                "source": node_id,
-                "target": data_node_id,
-                "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
-                "data": {"edgeType": "output"},
-            })
+            edges.append(
+                {
+                    "id": f"e_{node_id}_to_{data_node_id}",
+                    "source": node_id,
+                    "target": data_node_id,
+                    "animated": False,
+                    "style": {"stroke": "#64748b", "strokeWidth": 2},
+                    "data": {"edgeType": "output"},
+                }
+            )
 
     # 2. Add edges from DATA nodes to consumer functions
     for source, target, edge_data in flat_graph.edges(data=True):
@@ -294,9 +287,7 @@ def add_separate_output_edges(
                     actual_producer = output_to_producer.get(value_name, source)
                     data_value = value_name
                     if actual_producer == source:
-                        internal_producer = find_internal_producer_for_output(
-                            source, value_name, flat_graph, expansion_state
-                        )
+                        internal_producer = find_internal_producer_for_output(source, value_name, flat_graph, expansion_state)
                         if internal_producer:
                             actual_producer = internal_producer
                             internal_outputs = flat_graph.nodes[actual_producer].get("outputs", ())
@@ -317,35 +308,39 @@ def add_separate_output_edges(
 
                 edge_id = f"e_{data_node_id}_to_{target}"
 
-                edges.append({
-                    "id": edge_id,
-                    "source": data_node_id,
-                    "target": target,
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                    "data": {
-                        "edgeType": "data",
-                        "valueName": value_name,
-                    },
-                })
+                edges.append(
+                    {
+                        "id": edge_id,
+                        "source": data_node_id,
+                        "target": target,
+                        "animated": False,
+                        "style": {"stroke": "#64748b", "strokeWidth": 2},
+                        "data": {
+                            "edgeType": "data",
+                            "valueName": value_name,
+                        },
+                    }
+                )
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
             edge_id = f"e_ord_{source}_{target}"
-            edges.append({
-                "id": edge_id,
-                "source": source,
-                "target": target,
-                "animated": False,
-                "style": {
-                    "stroke": "#8b5cf6",
-                    "strokeWidth": 1.5,
-                    "strokeDasharray": "6 3",
-                },
-                "data": {
-                    "edgeType": "ordering",
-                    "valueName": value_name,
-                },
-            })
+            edges.append(
+                {
+                    "id": edge_id,
+                    "source": source,
+                    "target": target,
+                    "animated": False,
+                    "style": {
+                        "stroke": "#8b5cf6",
+                        "strokeWidth": 1.5,
+                        "strokeDasharray": "6 3",
+                    },
+                    "data": {
+                        "edgeType": "ordering",
+                        "valueName": value_name,
+                    },
+                }
+            )
 
         else:
             actual_target = target
@@ -355,9 +350,7 @@ def add_separate_output_edges(
                 is_target_expanded = expansion_state.get(target, False)
 
                 if is_target_container and is_target_expanded:
-                    entrypoints = find_container_entrypoints(
-                        target, flat_graph, expansion_state
-                    )
+                    entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
                     if entrypoints:
                         actual_target = entrypoints[0]
 
@@ -425,25 +418,29 @@ def compute_edges_for_state(
             param = params[0]
             input_node_id = f"input_{param}"
             for actual_target in actual_targets:
-                edges.append({
-                    "id": f"e_{input_node_id}_to_{actual_target}",
-                    "source": input_node_id,
-                    "target": actual_target,
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                    "data": {"edgeType": "input"},
-                })
+                edges.append(
+                    {
+                        "id": f"e_{input_node_id}_to_{actual_target}",
+                        "source": input_node_id,
+                        "target": actual_target,
+                        "animated": False,
+                        "style": {"stroke": "#64748b", "strokeWidth": 2},
+                        "data": {"edgeType": "input"},
+                    }
+                )
         else:
             group_id = f"input_group_{'_'.join(params)}"
             for actual_target in actual_targets:
-                edges.append({
-                    "id": f"e_{group_id}_{actual_target}",
-                    "source": group_id,
-                    "target": actual_target,
-                    "animated": False,
-                    "style": {"stroke": "#64748b", "strokeWidth": 2},
-                    "data": {"edgeType": "input"},
-                })
+                edges.append(
+                    {
+                        "id": f"e_{group_id}_{actual_target}",
+                        "source": group_id,
+                        "target": actual_target,
+                        "animated": False,
+                        "style": {"stroke": "#64748b", "strokeWidth": 2},
+                        "data": {"edgeType": "input"},
+                    }
+                )
 
     # 2. Add edges between function nodes
     if separate_outputs:

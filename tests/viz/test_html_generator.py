@@ -1,8 +1,6 @@
 """Tests for the HTML generator."""
 
-import pytest
 from hypergraph.viz.html import generate_widget_html
-
 
 # Sample graph data for testing
 SAMPLE_GRAPH_DATA = {

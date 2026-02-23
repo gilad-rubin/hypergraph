@@ -1,9 +1,9 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
-from typing import Any, Literal, TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
-from hypergraph.nodes.base import HyperNode, RenameEntry
 from hypergraph.nodes._rename import build_reverse_rename_map
+from hypergraph.nodes.base import HyperNode, RenameEntry
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
@@ -53,7 +53,7 @@ class GraphNode(HyperNode):
 
     # Reserved characters that cannot appear in GraphNode names
     # These are used as path separators in nested graph output access
-    _RESERVED_CHARS = frozenset('./')
+    _RESERVED_CHARS = frozenset("./")
 
     def __init__(
         self,
@@ -72,18 +72,12 @@ class GraphNode(HyperNode):
         """
         resolved_name = name or graph.name
         if resolved_name is None:
-            raise ValueError(
-                "GraphNode requires a name. Either set name on Graph(..., name='x') "
-                "or pass name to as_node(name='x')"
-            )
+            raise ValueError("GraphNode requires a name. Either set name on Graph(..., name='x') or pass name to as_node(name='x')")
 
         # Validate name doesn't contain reserved path separators
         for char in self._RESERVED_CHARS:
             if char in resolved_name:
-                raise ValueError(
-                    f"GraphNode name cannot contain '{char}': {resolved_name!r}. "
-                    f"Reserved characters: {set(self._RESERVED_CHARS)}"
-                )
+                raise ValueError(f"GraphNode name cannot contain '{char}': {resolved_name!r}. Reserved characters: {set(self._RESERVED_CHARS)}")
 
         self._graph = graph
         self._rename_history: list[RenameEntry] = []
@@ -327,10 +321,7 @@ class GraphNode(HyperNode):
         if original_param in self._graph.inputs.bound:
             return True
         # Check if any inner node has a default
-        for inner_node in self._graph.iter_nodes():
-            if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
-                return True
-        return False
+        return any(original_param in inner_node.inputs and inner_node.has_default_for(original_param) for inner_node in self._graph.iter_nodes())
 
     def get_default_for(self, param: str) -> Any:
         """Get the default or bound value for a parameter from the inner graph.
@@ -383,16 +374,12 @@ class GraphNode(HyperNode):
             return False
 
         # Check if ALL inner nodes using this param have signature defaults
-        inner_nodes_with_param = [
-            n for n in self._graph.iter_nodes() if original_param in n.inputs
-        ]
+        inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
 
         if not inner_nodes_with_param:
             return False
 
-        return all(
-            n.has_signature_default_for(original_param) for n in inner_nodes_with_param
-        )
+        return all(n.has_signature_default_for(original_param) for n in inner_nodes_with_param)
 
     def get_signature_default_for(self, param: str) -> Any:
         """Get the signature default value for a parameter.
@@ -472,10 +459,7 @@ class GraphNode(HyperNode):
         # Validate all params exist in inputs
         for param in params:
             if param not in self.inputs:
-                raise ValueError(
-                    f"Parameter '{param}' is not an input of this GraphNode. "
-                    f"Available inputs: {self.inputs}"
-                )
+                raise ValueError(f"Parameter '{param}' is not an input of this GraphNode. Available inputs: {self.inputs}")
 
         # Create copy with map_over configuration
         clone = self._copy()
@@ -514,8 +498,6 @@ class GraphNode(HyperNode):
 
         # Update map_over if any mapped params were renamed
         if clone._map_over is not None:
-            clone._map_over = [
-                combined.get(p, p) for p in clone._map_over
-            ]
+            clone._map_over = [combined.get(p, p) for p in clone._map_over]
 
         return clone

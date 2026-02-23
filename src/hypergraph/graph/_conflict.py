@@ -20,7 +20,7 @@ from hypergraph.graph.validation import GraphConfigError
 
 def validate_output_conflicts(
     G: nx.DiGraph,
-    nodes: list["HyperNode"],
+    nodes: list[HyperNode],
     output_to_sources: dict[str, list[str]],
 ) -> None:
     """Validate that duplicate outputs are mutex or ordered.
@@ -41,11 +41,7 @@ def validate_output_conflicts(
     expanded_groups = _expand_mutex_groups(G, nodes)
 
     # Collect outputs that have multiple producers
-    contested_outputs = {
-        output: sources
-        for output, sources in output_to_sources.items()
-        if len(sources) > 1
-    }
+    contested_outputs = {output: sources for output, sources in output_to_sources.items() if len(sources) > 1}
     if not contested_outputs:
         return
 
@@ -78,11 +74,7 @@ def _contested_values_for(
     output_to_sources: dict[str, list[str]],
 ) -> set[str]:
     """Find all output names that are contested by the given producer set."""
-    return {
-        output
-        for output, sources in output_to_sources.items()
-        if len(sources) > 1 and len(producer_set & set(sources)) > 1
-    }
+    return {output for output, sources in output_to_sources.items() if len(sources) > 1 and len(producer_set & set(sources)) > 1}
 
 
 class _EdgeInfo:
@@ -98,7 +90,7 @@ class _EdgeInfo:
 
 def _build_full_edge_map(
     G: nx.DiGraph,
-    nodes: list["HyperNode"],
+    nodes: list[HyperNode],
     output_to_sources: dict[str, list[str]],
 ) -> tuple[set[str], dict[tuple[str, str], _EdgeInfo]]:
     """Build a complete edge map with edges from ALL producers.
@@ -144,9 +136,7 @@ def _build_full_edge_map(
     return node_names, edges
 
 
-def _is_pair_mutex(
-    a: str, b: str, expanded_groups: list[list[set[str]]]
-) -> bool:
+def _is_pair_mutex(a: str, b: str, expanded_groups: list[list[set[str]]]) -> bool:
     """Check if two nodes are in different branches of the same exclusive gate."""
     for branches in expanded_groups:
         a_branch = None
@@ -189,32 +179,22 @@ def _is_pair_ordered(
     return nx.has_path(sub, a, b) or nx.has_path(sub, b, a)
 
 
-
-def _compute_exclusive_reachability(
-    G: nx.DiGraph, targets: list[str]
-) -> dict[str, set[str]]:
+def _compute_exclusive_reachability(G: nx.DiGraph, targets: list[str]) -> dict[str, set[str]]:
     """For each target, find nodes reachable ONLY through that target.
 
     A node is "exclusively reachable" from target T if:
     - It is reachable from T (via graph edges)
     - It is NOT reachable from any other target
     """
-    reachable: dict[str, set[str]] = {
-        t: set(nx.descendants(G, t)) | {t} for t in targets
-    }
+    reachable: dict[str, set[str]] = {t: set(nx.descendants(G, t)) | {t} for t in targets}
 
     all_reachable_nodes = [node for nodes in reachable.values() for node in nodes]
     node_counts = Counter(all_reachable_nodes)
 
-    return {
-        t: {node for node in reachable[t] if node_counts[node] == 1}
-        for t in targets
-    }
+    return {t: {node for node in reachable[t] if node_counts[node] == 1} for t in targets}
 
 
-def _expand_mutex_groups(
-    G: nx.DiGraph, nodes: list["HyperNode"]
-) -> list[list[set[str]]]:
+def _expand_mutex_groups(G: nx.DiGraph, nodes: list[HyperNode]) -> list[list[set[str]]]:
     """Expand mutex groups to include downstream exclusive nodes.
 
     For each gate with mutually exclusive targets (RouteNode with multi_target=False
@@ -225,7 +205,7 @@ def _expand_mutex_groups(
         List of mutex group sets, where each element is a list of branch sets.
         Nodes are mutex only if they're in DIFFERENT branch sets of the same gate.
     """
-    from hypergraph.nodes.gate import RouteNode, IfElseNode, END
+    from hypergraph.nodes.gate import END, IfElseNode, RouteNode
 
     expanded_groups: list[list[set[str]]] = []
 

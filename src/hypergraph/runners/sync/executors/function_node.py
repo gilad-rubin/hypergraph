@@ -24,8 +24,8 @@ class SyncFunctionNodeExecutor:
 
     def __call__(
         self,
-        node: "FunctionNode",
-        state: "GraphState",
+        node: FunctionNode,
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute a FunctionNode synchronously.

@@ -29,17 +29,17 @@ import pytest
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_workflow,
-    extract_edge_routing,
-    render_and_extract,
-    click_to_expand_container,
     click_to_collapse_container,
+    click_to_expand_container,
+    extract_edge_routing,
+    make_workflow,
+    render_and_extract,
 )
-
 
 # =============================================================================
 # Tests for Interactive Expand Edge Routing
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInteractiveExpandEdgeRouting:
@@ -60,38 +60,25 @@ class TestInteractiveExpandEdgeRouting:
 
         # === STATIC DEPTH=1: The expected/correct behavior ===
         static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
-        static_targets = {
-            eid: info['target']
-            for eid, info in static_data['edges'].items()
-        }
+        static_targets = {eid: info["target"] for eid, info in static_data["edges"].items()}
 
         # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
         render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
         click_to_expand_container(page, "preprocess")
         interactive_data = extract_edge_routing(page)
-        interactive_targets = {
-            eid: info['target']
-            for eid, info in interactive_data['edges'].items()
-        }
+        interactive_targets = {eid: info["target"] for eid, info in interactive_data["edges"].items()}
 
         # Compare edge targets - find input edge that should route to clean_text
         # At depth=1, input edge targets clean_text (internal node)
         # The bug: After interactive expand, input edge still targets preprocess (container)
 
         # Find edges that enter the preprocess subgraph (hierarchical IDs)
-        static_internal_targets = [
-            target for target in static_targets.values()
-            if target in ('preprocess/clean_text', 'preprocess/normalize_text')
-        ]
+        static_internal_targets = [target for target in static_targets.values() if target in ("preprocess/clean_text", "preprocess/normalize_text")]
         interactive_internal_targets = [
-            target for target in interactive_targets.values()
-            if target in ('preprocess/clean_text', 'preprocess/normalize_text')
+            target for target in interactive_targets.values() if target in ("preprocess/clean_text", "preprocess/normalize_text")
         ]
 
-        assert len(static_internal_targets) > 0, (
-            "Static depth=1 should have edges targeting internal nodes.\n"
-            f"Static targets: {static_targets}"
-        )
+        assert len(static_internal_targets) > 0, f"Static depth=1 should have edges targeting internal nodes.\nStatic targets: {static_targets}"
 
         # THE KEY ASSERTION: Interactive expand should produce same internal targets
         assert set(interactive_internal_targets) == set(static_internal_targets), (
@@ -114,36 +101,28 @@ class TestInteractiveExpandEdgeRouting:
         workflow = make_workflow()
         # === STATIC DEPTH=1: The expected/correct behavior ===
         static_data = render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
-        static_sources = {
-            eid: info['source']
-            for eid, info in static_data['edges'].items()
-        }
+        static_sources = {eid: info["source"] for eid, info in static_data["edges"].items()}
 
         # === INTERACTIVE EXPAND: Render at depth=0, click to expand ===
         render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
         click_to_expand_container(page, "preprocess")
         interactive_data = extract_edge_routing(page)
-        interactive_sources = {
-            eid: info['source']
-            for eid, info in interactive_data['edges'].items()
-        }
+        interactive_sources = {eid: info["source"] for eid, info in interactive_data["edges"].items()}
 
         # Find edges that exit the preprocess subgraph (hierarchical IDs)
         static_internal_sources = [
-            source for source in static_sources.values()
-            if source in ('preprocess/clean_text', 'preprocess/normalize_text')
-            or 'data_preprocess/' in source  # data nodes like data_preprocess/normalize_text_normalized
+            source
+            for source in static_sources.values()
+            if source in ("preprocess/clean_text", "preprocess/normalize_text")
+            or "data_preprocess/" in source  # data nodes like data_preprocess/normalize_text_normalized
         ]
         interactive_internal_sources = [
-            source for source in interactive_sources.values()
-            if source in ('preprocess/clean_text', 'preprocess/normalize_text')
-            or 'data_preprocess/' in source
+            source
+            for source in interactive_sources.values()
+            if source in ("preprocess/clean_text", "preprocess/normalize_text") or "data_preprocess/" in source
         ]
 
-        assert len(static_internal_sources) > 0, (
-            "Static depth=1 should have edges sourcing from internal nodes.\n"
-            f"Static sources: {static_sources}"
-        )
+        assert len(static_internal_sources) > 0, f"Static depth=1 should have edges sourcing from internal nodes.\nStatic sources: {static_sources}"
 
         # THE KEY ASSERTION: Interactive expand should produce same internal sources
         assert set(interactive_internal_sources) == set(static_internal_sources), (
@@ -175,18 +154,16 @@ class TestInteractiveExpandEdgeRouting:
 
         # Find the input edge (from input_text or similar)
         input_edge = None
-        for eid, info in data['edges'].items():
-            if 'input' in info['source'].lower():
+        for _eid, info in data["edges"].items():
+            if "input" in info["source"].lower():
                 input_edge = info
                 break
 
-        assert input_edge is not None, (
-            f"No input edge found. Edges: {data['edges']}"
-        )
+        assert input_edge is not None, f"No input edge found. Edges: {data['edges']}"
 
         # After expand, the input edge should target preprocess/clean_text, NOT preprocess
-        target = input_edge['target']
-        assert target == 'preprocess/clean_text', (
+        target = input_edge["target"]
+        assert target == "preprocess/clean_text", (
             "INTERACTIVE EXPAND BUG: Input edge still targets container!\n"
             f"\nExpected target: 'preprocess/clean_text' (the actual consumer)\n"
             f"Actual target: '{target}'\n"
@@ -211,23 +188,17 @@ class TestInteractiveExpandEdgeRouting:
 
         # Find the edge to analyze (the output edge from preprocess area)
         output_edge = None
-        for eid, info in data['edges'].items():
-            if info['target'] == 'analyze':
+        for _eid, info in data["edges"].items():
+            if info["target"] == "analyze":
                 output_edge = info
                 break
 
-        assert output_edge is not None, (
-            f"No edge to analyze found. Edges: {data['edges']}"
-        )
+        assert output_edge is not None, f"No edge to analyze found. Edges: {data['edges']}"
 
         # After expand, the output edge should source from normalize_text's data node
         # or normalize_text itself, NOT preprocess
-        source = output_edge['source']
-        is_from_internal = (
-            'normalize_text' in source
-            or 'normalized' in source
-            or 'data_normalize' in source
-        )
+        source = output_edge["source"]
+        is_from_internal = "normalize_text" in source or "normalized" in source or "data_normalize" in source
 
         assert is_from_internal, (
             "INTERACTIVE EXPAND BUG: Output edge still sources from container!\n"
@@ -242,6 +213,7 @@ class TestInteractiveExpandEdgeRouting:
 # =============================================================================
 # Tests for Interactive Collapse Edge Routing (NEW BUG)
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInteractiveCollapseEdgeRouting:
@@ -267,19 +239,13 @@ class TestInteractiveCollapseEdgeRouting:
         workflow = make_workflow()
         # === STATIC DEPTH=0: The expected/correct behavior (collapsed) ===
         static_data = render_and_extract(page, workflow, depth=0, temp_path=temp_html_file)
-        static_targets = {
-            eid: info['target']
-            for eid, info in static_data['edges'].items()
-        }
+        static_targets = {eid: info["target"] for eid, info in static_data["edges"].items()}
 
         # === INTERACTIVE COLLAPSE: Render at depth=1 (expanded), click to collapse ===
         render_and_extract(page, workflow, depth=1, temp_path=temp_html_file)
         click_to_collapse_container(page, "preprocess")
         interactive_data = extract_edge_routing(page)
-        interactive_targets = {
-            eid: info['target']
-            for eid, info in interactive_data['edges'].items()
-        }
+        interactive_targets = {eid: info["target"] for eid, info in interactive_data["edges"].items()}
 
         # After collapse, targets should match the static depth=0 view
         assert interactive_targets == static_targets, (
@@ -292,10 +258,7 @@ class TestInteractiveCollapseEdgeRouting:
         # Ensure no edges point at hidden internal nodes after collapse
         hidden_targets = {"clean_text", "normalize_text"}
         bad_targets = hidden_targets.intersection(interactive_targets.values())
-        assert not bad_targets, (
-            "Collapsed view should not target hidden internal nodes.\n"
-            f"Unexpected targets: {sorted(bad_targets)}"
-        )
+        assert not bad_targets, f"Collapsed view should not target hidden internal nodes.\nUnexpected targets: {sorted(bad_targets)}"
 
     def test_internal_input_edges_hidden_after_collapse(self, page, temp_html_file):
         """Specifically test that input_text edge is hidden after collapse.
@@ -313,15 +276,9 @@ class TestInteractiveCollapseEdgeRouting:
         data = extract_edge_routing(page)
 
         # Inputs that are only used inside a collapsed container are hidden.
-        input_edges = [
-            info for info in data['edges'].values()
-            if 'input' in info['source'].lower()
-        ]
+        input_edges = [info for info in data["edges"].values() if "input" in info["source"].lower()]
 
-        assert not input_edges, (
-            "Collapsed view should hide internal-only input edges.\n"
-            f"Edges: {data['edges']}"
-        )
+        assert not input_edges, f"Collapsed view should hide internal-only input edges.\nEdges: {data['edges']}"
 
     def test_output_edge_routes_from_container_after_collapse(self, page, temp_html_file):
         """Specifically test that output edge sources from preprocess after collapse.
@@ -339,8 +296,8 @@ class TestInteractiveCollapseEdgeRouting:
 
         # Find the edge to analyze (the output edge from preprocess area)
         output_edge = None
-        for eid, info in data['edges'].items():
-            if info['target'] == 'analyze':
+        for _eid, info in data["edges"].items():
+            if info["target"] == "analyze":
                 output_edge = info
                 break
 
@@ -353,8 +310,8 @@ class TestInteractiveCollapseEdgeRouting:
         )
 
         # After collapse, the output edge should source from preprocess, NOT normalize_text
-        source = output_edge['source']
-        is_from_container = source == 'preprocess'
+        source = output_edge["source"]
+        is_from_container = source == "preprocess"
 
         assert is_from_container, (
             "INTERACTIVE COLLAPSE BUG: Output edge has wrong source!\n"

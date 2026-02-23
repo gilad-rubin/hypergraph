@@ -6,11 +6,10 @@ import time
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.exceptions import InfiniteLoopError, MissingInputError
-from hypergraph.nodes.gate import route, END
-from hypergraph.runners import RunStatus, AsyncRunner
+from hypergraph.exceptions import MissingInputError
+from hypergraph.nodes.gate import END, route
+from hypergraph.runners import AsyncRunner, RunStatus
 from hypergraph.runners._shared import template_async as template_async_module
-
 
 # === Test Fixtures ===
 
@@ -280,7 +279,7 @@ class TestAsyncRunnerRun:
         runner = AsyncRunner()
 
         start = time.time()
-        result = await runner.run(graph, {"x": 5, "delay": 0.05}, max_concurrency=1)
+        await runner.run(graph, {"x": 5, "delay": 0.05}, max_concurrency=1)
         elapsed = time.time() - start
 
         # With max_concurrency=1, should be sequential (~0.1s)
@@ -1068,10 +1067,7 @@ class TestGlobalConcurrencyLimit:
             return x
 
         # 4 independent nodes
-        nodes = [
-            tracked_node.with_name(f"n{i}").with_inputs(x=f"x{i}").with_outputs(result=f"r{i}")
-            for i in range(4)
-        ]
+        nodes = [tracked_node.with_name(f"n{i}").with_inputs(x=f"x{i}").with_outputs(result=f"r{i}") for i in range(4)]
         graph = Graph(nodes)
 
         runner = AsyncRunner()

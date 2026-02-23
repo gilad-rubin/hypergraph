@@ -10,11 +10,11 @@ Investigates scenarios that reportedly cause InfiniteLoopError or hangs:
 import pytest
 
 from hypergraph import Graph, SyncRunner, node
-from hypergraph.exceptions import InfiniteLoopError
-from hypergraph.nodes.gate import route, END
-
+from hypergraph.graph import GraphConfigError
+from hypergraph.nodes.gate import END, route
 
 # -- Shared fixtures --
+
 
 @node(output_name="v1")
 def add_one(x: int) -> int:
@@ -38,6 +38,7 @@ def identity(x: int) -> int:
 
 
 # -- Scenario A: 4-level sync nesting --
+
 
 class TestFourLevelNestingSync:
     """4-level nesting works in async (test_async_runner.py:616).
@@ -76,22 +77,15 @@ class TestFourLevelNestingSync:
 
 # -- Scenario B: Same inner graph used twice --
 
+
 class TestSameInnerGraphTwice:
     """Two GraphNode instances from the same inner graph in one outer graph."""
 
     def test_same_graph_different_renames(self):
         inner = Graph(nodes=[double], name="inner")
 
-        node_a = (
-            inner.as_node(name="inner_a")
-            .with_inputs(x="a")
-            .with_outputs(doubled="res_a")
-        )
-        node_b = (
-            inner.as_node(name="inner_b")
-            .with_inputs(x="b")
-            .with_outputs(doubled="res_b")
-        )
+        node_a = inner.as_node(name="inner_a").with_inputs(x="a").with_outputs(doubled="res_a")
+        node_b = inner.as_node(name="inner_b").with_inputs(x="b").with_outputs(doubled="res_b")
 
         outer = Graph(nodes=[node_a, node_b])
         runner = SyncRunner()
@@ -105,15 +99,18 @@ class TestSameInnerGraphTwice:
         This should raise a validation error, not hang."""
         inner = Graph(nodes=[double], name="inner")
 
-        with pytest.raises(Exception):
+        with pytest.raises(GraphConfigError):
             # Both produce "doubled" — should be caught at build time
-            Graph(nodes=[
-                inner.as_node(name="inner_a"),
-                inner.as_node(name="inner_b"),
-            ])
+            Graph(
+                nodes=[
+                    inner.as_node(name="inner_a"),
+                    inner.as_node(name="inner_b"),
+                ]
+            )
 
 
 # -- Scenario C: Output name == input name --
+
 
 class TestOutputMatchesInput:
     """A node whose output has the same name as its input creates a self-loop.
@@ -157,6 +154,7 @@ class TestOutputMatchesInput:
 
 # -- Scenario D: GraphNode name collision (#31) --
 
+
 class TestGraphNodeNameCollision:
     """A GraphNode with the same name as another node in the outer graph.
     Should raise a validation error at build time, not infinite loop."""
@@ -175,7 +173,7 @@ class TestGraphNodeNameCollision:
         inner = Graph(nodes=[inner_fn], name="compute")
         gn = inner.as_node()  # name="compute", same as the function node
 
-        with pytest.raises(Exception):
+        with pytest.raises(GraphConfigError):
             Graph(nodes=[gn, compute])
 
     def test_two_graphnodes_same_name(self):
@@ -192,5 +190,5 @@ class TestGraphNodeNameCollision:
         g1 = Graph(nodes=[fn_a], name="shared")
         g2 = Graph(nodes=[fn_b], name="shared")
 
-        with pytest.raises(Exception):
+        with pytest.raises(GraphConfigError):
             Graph(nodes=[g1.as_node(), g2.as_node()])

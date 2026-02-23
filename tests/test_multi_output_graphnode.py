@@ -11,7 +11,6 @@ from hypergraph import Graph, node
 from hypergraph.runners import AsyncRunner, SyncRunner
 from hypergraph.runners._shared.types import RunStatus
 
-
 # --- Inner graph nodes ---
 
 

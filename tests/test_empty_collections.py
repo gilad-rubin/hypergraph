@@ -1,11 +1,8 @@
 """Tests for empty collection edge cases across topologies (GAP-01)."""
 
-import pytest
-
 from hypergraph import Graph, node
-from hypergraph.nodes.gate import route, END
+from hypergraph.nodes.gate import END, route
 from hypergraph.runners import RunStatus, SyncRunner
-
 
 # === Test Fixtures ===
 
@@ -38,8 +35,7 @@ def double(x: int) -> int:
 @node(output_name="items")
 def gen_items(n: int):
     """Generator that yields n items."""
-    for i in range(n):
-        yield i
+    yield from range(n)
 
 
 @node(output_name="result_a")

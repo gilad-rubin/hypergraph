@@ -21,29 +21,29 @@ Test Graphs:
 """
 
 import pytest
-from hypergraph import Graph
+
 from hypergraph.viz.geometry import (
-    NodeGeometry,
-    EdgeGeometry,
     EdgeConnectionValidator,
+    EdgeGeometry,
+    NodeGeometry,
     format_issues,
 )
 
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_simple_graph,
-    make_chain_graph,
-    make_workflow,
-    make_outer,
-    extract_inner_bounds_and_edge_paths,
     convert_layout_to_screen,
+    extract_inner_bounds_and_edge_paths,
+    make_chain_graph,
+    make_outer,
+    make_simple_graph,
+    make_workflow,
 )
-
 
 # =============================================================================
 # Extraction Helper
 # =============================================================================
+
 
 def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry], list[EdgeGeometry]]:
     """Extract node and edge geometry from rendered visualization.
@@ -56,9 +56,10 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
     Returns:
         Tuple of (nodes dict, edges list) with geometry data
     """
-    from hypergraph.viz.widget import visualize
-    import tempfile
     import os
+    import tempfile
+
+    from hypergraph.viz.widget import visualize
 
     # Render to temp file
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
@@ -88,9 +89,7 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
         }
 
         # Extract edge geometry from SVG paths (call function directly for fresh data)
-        raw_edges = page.evaluate(
-            "window.__hypergraphVizExtractEdgePaths ? window.__hypergraphVizExtractEdgePaths() : []"
-        )
+        raw_edges = page.evaluate("window.__hypergraphVizExtractEdgePaths ? window.__hypergraphVizExtractEdgePaths() : []")
 
         edges = []
         for e in raw_edges:
@@ -116,6 +115,7 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
 # =============================================================================
 # Tests: Simple Graph (No Nesting)
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeConnectionsSimple:
@@ -150,15 +150,13 @@ class TestEdgeConnectionsSimple:
             src = nodes.get(edge.source_id)
             tgt = nodes.get(edge.target_id)
             if src and tgt:
-                assert src.bottom < tgt.y, (
-                    f"Source '{src.id}' not above target '{tgt.id}': "
-                    f"src.bottom={src.bottom:.1f} >= tgt.y={tgt.y:.1f}"
-                )
+                assert src.bottom < tgt.y, f"Source '{src.id}' not above target '{tgt.id}': src.bottom={src.bottom:.1f} >= tgt.y={tgt.y:.1f}"
 
 
 # =============================================================================
 # Tests: 1-Level Nesting (workflow graph)
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestWorkflowDepth0:
@@ -182,9 +180,7 @@ class TestWorkflowDepth0:
         # At depth=0: preprocess (collapsed), analyze
         # Internal-only inputs are hidden when the container is collapsed.
         assert len(nodes) >= 2, f"Expected at least 2 nodes, got {len(nodes)}: {list(nodes.keys())}"
-        assert not any(node_id.startswith("input_") for node_id in nodes), (
-            f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
-        )
+        assert not any(node_id.startswith("input_") for node_id in nodes), f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
         assert len(edges) >= 1, f"Expected at least 1 edge, got {len(edges)}"
 
 
@@ -209,9 +205,7 @@ class TestWorkflowDepth1:
 
         # At depth=1: input_text, preprocess, clean_text, normalize_text, analyze
         node_ids = set(nodes.keys())
-        assert "clean_text" in node_ids or any("clean" in n for n in node_ids), (
-            f"Expected clean_text in expanded nodes: {node_ids}"
-        )
+        assert "clean_text" in node_ids or any("clean" in n for n in node_ids), f"Expected clean_text in expanded nodes: {node_ids}"
 
     def test_workflow_depth1_input_edge_to_internal(self, page):
         """Input edge should connect to clean_text, not preprocess container."""
@@ -229,9 +223,7 @@ class TestWorkflowDepth1:
                     actual_y = edge.end_point[1]
                     gap = abs(actual_y - expected_y)
                     assert gap == 0, (
-                        f"Input edge has {gap:.1f}px gap from clean_text top:\n"
-                        f"  Expected Y: {expected_y:.1f}\n"
-                        f"  Actual Y: {actual_y:.1f}"
+                        f"Input edge has {gap:.1f}px gap from clean_text top:\n  Expected Y: {expected_y:.1f}\n  Actual Y: {actual_y:.1f}"
                     )
 
     def test_workflow_depth1_output_edge_from_internal(self, page):
@@ -249,15 +241,14 @@ class TestWorkflowDepth1:
                     actual_y = edge.start_point[1]
                     gap = abs(actual_y - expected_y)
                     assert gap == 0, (
-                        f"Output edge has {gap:.1f}px gap from {edge.source_id} bottom:\n"
-                        f"  Expected Y: {expected_y:.1f}\n"
-                        f"  Actual Y: {actual_y:.1f}"
+                        f"Output edge has {gap:.1f}px gap from {edge.source_id} bottom:\n  Expected Y: {expected_y:.1f}\n  Actual Y: {actual_y:.1f}"
                     )
 
 
 # =============================================================================
 # Tests: 2-Level Nesting (outer graph)
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestOuterDepth0:
@@ -281,9 +272,7 @@ class TestOuterDepth0:
         # At depth=0: middle (collapsed), log_result
         # Internal-only inputs are hidden when the container is collapsed.
         assert len(nodes) >= 2, f"Expected at least 2 nodes, got {len(nodes)}: {list(nodes.keys())}"
-        assert not any(node_id.startswith("input_") for node_id in nodes), (
-            f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
-        )
+        assert not any(node_id.startswith("input_") for node_id in nodes), f"Unexpected input nodes in collapsed view: {list(nodes.keys())}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -308,9 +297,7 @@ class TestOuterDepth1:
         node_ids = set(nodes.keys())
         # Should have inner (collapsed) and validate visible
         # Hierarchical IDs: middle/inner and middle/validate
-        assert "middle/inner" in node_ids or "middle/validate" in node_ids, (
-            f"Expected middle/inner or middle/validate in nodes: {node_ids}"
-        )
+        assert "middle/inner" in node_ids or "middle/validate" in node_ids, f"Expected middle/inner or middle/validate in nodes: {node_ids}"
 
     def test_outer_depth1_internal_inputs_hidden(self, page):
         """Internal-only inputs are hidden when inner is collapsed."""
@@ -318,10 +305,7 @@ class TestOuterDepth1:
         nodes, edges = extract_geometries(page, graph, depth=1)
 
         input_edges = [edge for edge in edges if edge.source_id.startswith("input_")]
-        assert not input_edges, (
-            "Internal-only inputs should be hidden when inner is collapsed.\n"
-            f"Edges: {[e.id for e in input_edges]}"
-        )
+        assert not input_edges, f"Internal-only inputs should be hidden when inner is collapsed.\nEdges: {[e.id for e in input_edges]}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -345,9 +329,7 @@ class TestOuterDepth2:
 
         node_ids = set(nodes.keys())
         # Should have step1, step2, validate visible
-        assert "step1" in node_ids or any("step1" in n for n in node_ids), (
-            f"Expected step1 in fully expanded nodes: {node_ids}"
-        )
+        assert "step1" in node_ids or any("step1" in n for n in node_ids), f"Expected step1 in fully expanded nodes: {node_ids}"
 
     def test_outer_depth2_input_routes_to_step1(self, page):
         """Input edge should route to step1, the deepest internal node."""
@@ -362,11 +344,7 @@ class TestOuterDepth2:
                     expected_y = step1_node.y
                     actual_y = edge.end_point[1]
                     gap = abs(actual_y - expected_y)
-                    assert gap == 0, (
-                        f"Input edge has {gap:.1f}px gap from step1 top:\n"
-                        f"  Expected Y: {expected_y:.1f}\n"
-                        f"  Actual Y: {actual_y:.1f}"
-                    )
+                    assert gap == 0, f"Input edge has {gap:.1f}px gap from step1 top:\n  Expected Y: {expected_y:.1f}\n  Actual Y: {actual_y:.1f}"
 
     def test_outer_depth2_output_routes_from_validate(self, page):
         """Output edge to log_result should come from validate's output."""
@@ -382,15 +360,14 @@ class TestOuterDepth2:
                     actual_y = edge.start_point[1]
                     gap = abs(actual_y - expected_y)
                     assert gap == 0, (
-                        f"Output edge has {gap:.1f}px gap from {edge.source_id} bottom:\n"
-                        f"  Expected Y: {expected_y:.1f}\n"
-                        f"  Actual Y: {actual_y:.1f}"
+                        f"Output edge has {gap:.1f}px gap from {edge.source_id} bottom:\n  Expected Y: {expected_y:.1f}\n  Actual Y: {actual_y:.1f}"
                     )
 
 
 # =============================================================================
 # Tests: Edge Position Precision (applies to all graphs)
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgePositionPrecision:
@@ -408,12 +385,8 @@ class TestEdgePositionPrecision:
                 dx_start = abs(edge.start_point[0] - src.center_x)
                 dx_end = abs(edge.end_point[0] - tgt.center_x)
 
-                assert dx_start == 0, (
-                    f"Edge start X not centered: delta={dx_start:.1f}px"
-                )
-                assert dx_end == 0, (
-                    f"Edge end X not centered: delta={dx_end:.1f}px"
-                )
+                assert dx_start == 0, f"Edge start X not centered: delta={dx_start:.1f}px"
+                assert dx_end == 0, f"Edge end X not centered: delta={dx_end:.1f}px"
 
     def test_simple_no_gap_at_source(self, page):
         """No gap between source bottom and edge start."""
@@ -446,9 +419,7 @@ class TestEdgePositionPrecision:
             src = nodes.get(edge.source_id)
             if src:
                 gap = abs(edge.start_point[1] - src.bottom)
-                assert gap == 0, (
-                    f"Gap at source for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
-                )
+                assert gap == 0, f"Gap at source for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
 
     def test_workflow_expanded_no_gap_at_target(self, page):
         """No gap at target for expanded workflow edges."""
@@ -459,9 +430,7 @@ class TestEdgePositionPrecision:
             tgt = nodes.get(edge.target_id)
             if tgt:
                 gap = abs(edge.end_point[1] - tgt.y)
-                assert gap == 0, (
-                    f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
-                )
+                assert gap == 0, f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
 
     def test_outer_depth2_no_gap_at_source(self, page):
         """No gap at source for fully expanded outer edges."""
@@ -472,9 +441,7 @@ class TestEdgePositionPrecision:
             src = nodes.get(edge.source_id)
             if src:
                 gap = abs(edge.start_point[1] - src.bottom)
-                assert gap == 0, (
-                    f"Gap at source for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
-                )
+                assert gap == 0, f"Gap at source for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
 
     def test_outer_depth2_no_gap_at_target(self, page):
         """No gap at target for fully expanded outer edges."""
@@ -485,14 +452,13 @@ class TestEdgePositionPrecision:
             tgt = nodes.get(edge.target_id)
             if tgt:
                 gap = abs(edge.end_point[1] - tgt.y)
-                assert gap == 0, (
-                    f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
-                )
+                assert gap == 0, f"Gap at target for {edge.source_id}->{edge.target_id}: {gap:.1f}px"
 
 
 # =============================================================================
 # Tests: Edge-to-Shadow Gap Detection
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeShadowGap:
@@ -532,44 +498,46 @@ class TestEdgeShadowGap:
         issues = []
         gap_details = []
 
-        for edge_path in data['edgePaths']:
-            source_id = edge_path['source']
-            target_id = edge_path['target']
+        for edge_path in data["edgePaths"]:
+            source_id = edge_path["source"]
+            target_id = edge_path["target"]
 
             if not source_id or not target_id:
                 continue
 
             # Get inner bounds (screen coordinates)
-            source_inner = data['innerBounds'].get(source_id)
-            target_inner = data['innerBounds'].get(target_id)
+            source_inner = data["innerBounds"].get(source_id)
+            target_inner = data["innerBounds"].get(target_id)
 
             # Get shadow offsets
-            source_shadow = data['shadowOffsets'].get(source_id, {})
-            target_shadow = data['shadowOffsets'].get(target_id, {})
+            source_shadow = data["shadowOffsets"].get(source_id, {})
+            target_shadow = data["shadowOffsets"].get(target_id, {})
 
             if source_inner and target_inner:
                 # Edge coordinates are in layout space, need to convert to screen
-                transform = data['viewportTransform']
+                transform = data["viewportTransform"]
 
-                if transform and edge_path['startY'] is not None:
-                    edge_start_screen_y = convert_layout_to_screen(edge_path['startY'], transform)
-                    edge_end_screen_y = convert_layout_to_screen(edge_path['endY'], transform)
+                if transform and edge_path["startY"] is not None:
+                    edge_start_screen_y = convert_layout_to_screen(edge_path["startY"], transform)
+                    edge_end_screen_y = convert_layout_to_screen(edge_path["endY"], transform)
 
                     # Compare edge Y to INNER element bounds
-                    start_gap = abs(edge_start_screen_y - source_inner['bottom'])
-                    end_gap = abs(edge_end_screen_y - target_inner['top'])
+                    start_gap = abs(edge_start_screen_y - source_inner["bottom"])
+                    end_gap = abs(edge_end_screen_y - target_inner["top"])
 
-                    gap_details.append({
-                        'edge': f"{source_id} -> {target_id}",
-                        'edge_start_y': edge_start_screen_y,
-                        'edge_end_y': edge_end_screen_y,
-                        'source_inner_bottom': source_inner['bottom'],
-                        'target_inner_top': target_inner['top'],
-                        'start_gap': start_gap,
-                        'end_gap': end_gap,
-                        'source_shadow_bottom_offset': source_shadow.get('bottomOffset', 0),
-                        'target_shadow_top_offset': target_shadow.get('topOffset', 0),
-                    })
+                    gap_details.append(
+                        {
+                            "edge": f"{source_id} -> {target_id}",
+                            "edge_start_y": edge_start_screen_y,
+                            "edge_end_y": edge_end_screen_y,
+                            "source_inner_bottom": source_inner["bottom"],
+                            "target_inner_top": target_inner["top"],
+                            "start_gap": start_gap,
+                            "end_gap": end_gap,
+                            "source_shadow_bottom_offset": source_shadow.get("bottomOffset", 0),
+                            "target_shadow_top_offset": target_shadow.get("topOffset", 0),
+                        }
+                    )
 
                     # Allow visual gaps due to CSS shadows
                     # shadow-lg (function nodes) = 14px, shadow-sm (data/input) = 6px
@@ -588,10 +556,7 @@ class TestEdgeShadowGap:
                             f"(edge_y={edge_end_screen_y:.1f}, inner_top={target_inner['top']:.1f})"
                         )
 
-        detail_lines = [
-            f"  {d['edge']}: start_gap={d['start_gap']:.1f}px, end_gap={d['end_gap']:.1f}px"
-            for d in gap_details
-        ]
+        detail_lines = [f"  {d['edge']}: start_gap={d['start_gap']:.1f}px, end_gap={d['end_gap']:.1f}px" for d in gap_details]
 
         assert len(issues) == 0, (
             f"Found {len(issues)} edge-to-visible-boundary gaps!\n\n"
@@ -621,48 +586,46 @@ class TestEdgeShadowGap:
         issues = []
         gap_details = []
 
-        for edge_path in data['edgePaths']:
-            source_id = edge_path['source']
-            target_id = edge_path['target']
+        for edge_path in data["edgePaths"]:
+            source_id = edge_path["source"]
+            target_id = edge_path["target"]
 
             if not source_id or not target_id:
                 continue
 
-            source_inner = data['innerBounds'].get(source_id)
-            target_inner = data['innerBounds'].get(target_id)
-            source_shadow = data['shadowOffsets'].get(source_id, {})
-            target_shadow = data['shadowOffsets'].get(target_id, {})
+            source_inner = data["innerBounds"].get(source_id)
+            target_inner = data["innerBounds"].get(target_id)
+            source_shadow = data["shadowOffsets"].get(source_id, {})
+            target_shadow = data["shadowOffsets"].get(target_id, {})
 
             if source_inner and target_inner:
-                transform = data['viewportTransform']
+                transform = data["viewportTransform"]
 
-                if transform and edge_path['startY'] is not None:
-                    edge_start_screen_y = convert_layout_to_screen(edge_path['startY'], transform)
-                    edge_end_screen_y = convert_layout_to_screen(edge_path['endY'], transform)
+                if transform and edge_path["startY"] is not None:
+                    edge_start_screen_y = convert_layout_to_screen(edge_path["startY"], transform)
+                    edge_end_screen_y = convert_layout_to_screen(edge_path["endY"], transform)
 
-                    start_gap = abs(edge_start_screen_y - source_inner['bottom'])
-                    end_gap = abs(edge_end_screen_y - target_inner['top'])
+                    start_gap = abs(edge_start_screen_y - source_inner["bottom"])
+                    end_gap = abs(edge_end_screen_y - target_inner["top"])
 
-                    gap_details.append({
-                        'edge': f"{source_id} -> {target_id}",
-                        'start_gap': start_gap,
-                        'end_gap': end_gap,
-                        'source_shadow_offset': source_shadow.get('bottomOffset', 0),
-                        'target_shadow_offset': target_shadow.get('topOffset', 0),
-                    })
+                    gap_details.append(
+                        {
+                            "edge": f"{source_id} -> {target_id}",
+                            "start_gap": start_gap,
+                            "end_gap": end_gap,
+                            "source_shadow_offset": source_shadow.get("bottomOffset", 0),
+                            "target_shadow_offset": target_shadow.get("topOffset", 0),
+                        }
+                    )
 
                     # Allow visual gaps due to CSS shadows
                     # shadow-lg (function nodes) = 14px, shadow-sm (data/input) = 6px
                     # After removing SHADOW_OFFSET compensation, edges connect to wrapper bounds
                     tolerance = 15.0
                     if start_gap > tolerance:
-                        issues.append(
-                            f"{source_id} -> {target_id}: START gap of {start_gap:.1f}px"
-                        )
+                        issues.append(f"{source_id} -> {target_id}: START gap of {start_gap:.1f}px")
                     if end_gap > tolerance:
-                        issues.append(
-                            f"{source_id} -> {target_id}: END gap of {end_gap:.1f}px"
-                        )
+                        issues.append(f"{source_id} -> {target_id}: END gap of {end_gap:.1f}px")
 
         detail_lines = [
             f"  {d['edge']}: start_gap={d['start_gap']:.1f}px, end_gap={d['end_gap']:.1f}px "
@@ -701,12 +664,10 @@ class TestEdgeShadowGap:
         shadow_info = []
         has_shadow = False
 
-        for node_id, offsets in data['shadowOffsets'].items():
-            top_offset = offsets.get('topOffset', 0)
-            bottom_offset = offsets.get('bottomOffset', 0)
-            shadow_info.append(
-                f"  {node_id}: top_offset={top_offset:.1f}px, bottom_offset={bottom_offset:.1f}px"
-            )
+        for node_id, offsets in data["shadowOffsets"].items():
+            top_offset = offsets.get("topOffset", 0)
+            bottom_offset = offsets.get("bottomOffset", 0)
+            shadow_info.append(f"  {node_id}: top_offset={top_offset:.1f}px, bottom_offset={bottom_offset:.1f}px")
             if abs(top_offset) > 0.5 or abs(bottom_offset) > 0.5:
                 has_shadow = True
 

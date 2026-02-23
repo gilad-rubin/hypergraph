@@ -7,7 +7,7 @@ iframe can be sized appropriately and avoid double scrolling in notebooks.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
@@ -155,11 +155,7 @@ class LayoutEstimator:
 
             if self.separate_outputs:
                 # DATA nodes might make the level wider
-                data_width = sum(
-                    self._estimate_data_width(out)
-                    for name in level_nodes
-                    for out in self.graph.nodes[name].outputs
-                )
+                data_width = sum(self._estimate_data_width(out) for name in level_nodes for out in self.graph.nodes[name].outputs)
                 level_width = max(level_width, data_width)
 
             max_level_width = max(max_level_width, level_width)
@@ -264,11 +260,7 @@ class LayoutEstimator:
     def _estimate_input_group_height(self, inputs: list[str]) -> int:
         """Estimate height of an INPUT_GROUP node."""
         num_params = max(1, len(inputs))
-        return (
-            self.INPUT_GROUP_BASE_HEIGHT
-            + num_params * self.INPUT_GROUP_ROW_HEIGHT
-            + (num_params - 1) * self.INPUT_GROUP_GAP
-        )
+        return self.INPUT_GROUP_BASE_HEIGHT + num_params * self.INPUT_GROUP_ROW_HEIGHT + (num_params - 1) * self.INPUT_GROUP_GAP
 
 
 def estimate_layout(

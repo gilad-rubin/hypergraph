@@ -2,7 +2,7 @@
 
 import hashlib
 import inspect
-from typing import Callable
+from collections.abc import Callable
 
 
 def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
@@ -57,9 +57,7 @@ def hash_definition(func: Callable) -> str:
         h.update(code.co_code)
 
         # Serialize co_consts deterministically (replace nested code objects with names)
-        consts_serialized = tuple(
-            c if not hasattr(c, "co_name") else c.co_name for c in code.co_consts
-        )
+        consts_serialized = tuple(c if not hasattr(c, "co_name") else c.co_name for c in code.co_consts)
         h.update(repr(consts_serialized).encode())
 
         # Include function defaults to distinguish f(x=1) from f(x=2)
@@ -79,8 +77,6 @@ def hash_definition(func: Callable) -> str:
 
     # Name-based fallback — for builtins/C extensions/functools.partial
     module = getattr(func, "__module__", "") or ""
-    qualname = getattr(func, "__qualname__", None) or getattr(
-        func, "__name__", repr(func)
-    )
+    qualname = getattr(func, "__qualname__", None) or getattr(func, "__name__", repr(func))
     identity = f"{module}:{qualname}"
     return hashlib.sha256(identity.encode()).hexdigest()

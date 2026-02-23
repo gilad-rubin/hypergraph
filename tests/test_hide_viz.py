@@ -1,8 +1,7 @@
 """Tests for @node(hide=True) visualization feature."""
 
-import pytest
 from hypergraph import Graph, node
-from hypergraph.nodes.gate import route, ifelse, END
+from hypergraph.nodes.gate import ifelse, route
 
 
 @node(output_name="a")

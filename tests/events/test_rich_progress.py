@@ -15,7 +15,6 @@ from hypergraph.events.types import (
     RunStartEvent,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -281,8 +280,8 @@ class TestMapFailures:
 
         # Two items fail
         for i, sid in enumerate(["item1", "item2"]):
-            proc.on_run_start(_run_start(run_id=f"r{i+2}", span_id=sid, parent_span_id="map1"))
-            proc.on_run_end(_run_end(run_id=f"r{i+2}", span_id=sid, parent_span_id="map1", status="failed"))
+            proc.on_run_start(_run_start(run_id=f"r{i + 2}", span_id=sid, parent_span_id="map1"))
+            proc.on_run_end(_run_end(run_id=f"r{i + 2}", span_id=sid, parent_span_id="map1", status="failed"))
 
         update_calls = [c for c in mock.update.call_args_list if "description" in c.kwargs]
         last_desc = update_calls[-1].kwargs["description"]
@@ -341,8 +340,7 @@ class TestLifecycle:
 
 class TestImportGuard:
     def test_raises_without_rich(self):
-        with patch.dict("sys.modules", {"rich": None}):
-            with pytest.raises(ImportError, match="rich"):
-                from hypergraph.events.rich_progress import _require_rich
+        with patch.dict("sys.modules", {"rich": None}), pytest.raises(ImportError, match="rich"):
+            from hypergraph.events.rich_progress import _require_rich
 
-                _require_rich()
+            _require_rich()

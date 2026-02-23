@@ -6,13 +6,15 @@ This creates a test case focused on layout challenges:
 - Complex edge routing scenarios
 - Wide and deep graph structures
 """
-from __future__ import annotations
-from hypergraph import Graph, node
 
+from __future__ import annotations
+
+from hypergraph import Graph, node
 
 # =============================================================================
 # Data Ingestion Layer (Nested Level 1)
 # =============================================================================
+
 
 @node(output_name="raw_documents")
 def fetch_documents(api_key: str, query: str) -> list:
@@ -34,15 +36,13 @@ def fetch_metadata(api_key: str, doc_ids: list) -> dict:
 
 def make_ingestion_graph() -> Graph:
     """Create data ingestion subgraph."""
-    return Graph(
-        nodes=[fetch_documents, fetch_images, fetch_metadata],
-        name="data_ingestion"
-    )
+    return Graph(nodes=[fetch_documents, fetch_images, fetch_metadata], name="data_ingestion")
 
 
 # =============================================================================
 # Processing Layer (Nested Level 2)
 # =============================================================================
+
 
 @node(output_name="cleaned_docs")
 def clean_documents(raw_documents: list, config: dict) -> list:
@@ -76,21 +76,13 @@ def index_documents(validated_docs: list, index_config: dict) -> dict:
 
 def make_processing_graph() -> Graph:
     """Create processing subgraph."""
-    return Graph(
-        nodes=[
-            clean_documents,
-            process_images,
-            enrich_metadata,
-            validate_documents,
-            index_documents
-        ],
-        name="document_processing"
-    )
+    return Graph(nodes=[clean_documents, process_images, enrich_metadata, validate_documents, index_documents], name="document_processing")
 
 
 # =============================================================================
 # Analysis Layer (Nested Level 2)
 # =============================================================================
+
 
 @node(output_name="sentiment_scores")
 def analyze_sentiment(validated_docs: list, model_name: str) -> dict:
@@ -117,33 +109,20 @@ def generate_summaries(validated_docs: list, max_length: int) -> dict:
 
 
 @node(output_name="analysis_report")
-def compile_analysis(
-    sentiment_scores: dict,
-    topic_labels: dict,
-    entity_mentions: dict,
-    summary_text: dict
-) -> dict:
+def compile_analysis(sentiment_scores: dict, topic_labels: dict, entity_mentions: dict, summary_text: dict) -> dict:
     """Compile all analysis results."""
     return {}
 
 
 def make_analysis_graph() -> Graph:
     """Create analysis subgraph."""
-    return Graph(
-        nodes=[
-            analyze_sentiment,
-            extract_topics,
-            extract_entities,
-            generate_summaries,
-            compile_analysis
-        ],
-        name="document_analysis"
-    )
+    return Graph(nodes=[analyze_sentiment, extract_topics, extract_entities, generate_summaries, compile_analysis], name="document_analysis")
 
 
 # =============================================================================
 # Retrieval Layer (Nested Level 1)
 # =============================================================================
+
 
 @node(output_name="search_results")
 def search_index(indexed_docs: dict, user_query: str, top_k: int) -> list:
@@ -165,23 +144,16 @@ def filter_results(reranked_results: list, filters: dict) -> list:
 
 def make_retrieval_graph() -> Graph:
     """Create retrieval subgraph."""
-    return Graph(
-        nodes=[search_index, rerank_results, filter_results],
-        name="retrieval"
-    )
+    return Graph(nodes=[search_index, rerank_results, filter_results], name="retrieval")
 
 
 # =============================================================================
 # Generation Layer (Nested Level 1)
 # =============================================================================
 
+
 @node(output_name="prompt")
-def build_prompt(
-    filtered_results: list,
-    user_query: str,
-    template: str,
-    analysis_report: dict
-) -> str:
+def build_prompt(filtered_results: list, user_query: str, template: str, analysis_report: dict) -> str:
     """Build LLM prompt."""
     return ""
 
@@ -200,15 +172,13 @@ def format_response(llm_response: str, format_spec: dict) -> dict:
 
 def make_generation_graph() -> Graph:
     """Create generation subgraph."""
-    return Graph(
-        nodes=[build_prompt, call_llm, format_response],
-        name="generation"
-    )
+    return Graph(nodes=[build_prompt, call_llm, format_response], name="generation")
 
 
 # =============================================================================
 # Main Pipeline Assembly
 # =============================================================================
+
 
 @node(output_name="system_config")
 def load_config(config_path: str) -> dict:
@@ -217,11 +187,7 @@ def load_config(config_path: str) -> dict:
 
 
 @node(output_name="final_output")
-def finalize_output(
-    formatted_response: dict,
-    enriched_metadata: dict,
-    analysis_report: dict
-) -> dict:
+def finalize_output(formatted_response: dict, enriched_metadata: dict, analysis_report: dict) -> dict:
     """Finalize the output."""
     return {}
 
@@ -234,14 +200,14 @@ def log_execution(final_output: dict, system_config: dict) -> dict:
 
 def make_rag_pipeline() -> Graph:
     """Create the main RAG pipeline with nested graphs."""
-    
+
     # Create nested subgraphs
     ingestion = make_ingestion_graph()
     processing = make_processing_graph()
     analysis = make_analysis_graph()
     retrieval = make_retrieval_graph()
     generation = make_generation_graph()
-    
+
     # Assemble main pipeline
     return Graph(
         nodes=[
@@ -252,9 +218,9 @@ def make_rag_pipeline() -> Graph:
             retrieval.as_node(),
             generation.as_node(),
             finalize_output,
-            log_execution
+            log_execution,
         ],
-        name="rag_pipeline"
+        name="rag_pipeline",
     )
 
 
@@ -262,20 +228,16 @@ def make_rag_pipeline() -> Graph:
 # Visualization
 # =============================================================================
 
+
 def visualize_pipeline(depth: int = 2) -> None:
     """Visualize the RAG pipeline."""
     from hypergraph.viz import visualize
-    
+
     pipeline = make_rag_pipeline()
     print(f"\nVisualizing RAG pipeline at depth={depth}")
     print("=" * 60)
-    
-    visualize(
-        pipeline,
-        depth=depth,
-        separate_outputs=False,
-        filepath=f"/home/ubuntu/comprehensive_test_depth{depth}.html"
-    )
+
+    visualize(pipeline, depth=depth, separate_outputs=False, filepath=f"/home/ubuntu/comprehensive_test_depth{depth}.html")
     print(f"Saved to /home/ubuntu/comprehensive_test_depth{depth}.html")
 
 

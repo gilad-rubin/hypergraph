@@ -146,9 +146,8 @@ def is_output_externally_consumed(
     source_container = source_node if source_attrs.get("node_type") == "GRAPH" else source_parent
 
     for node_id, attrs in flat_graph.nodes(data=True):
-        if output_param in attrs.get("inputs", ()):
-            if not is_descendant_of(node_id, source_container, flat_graph):
-                return True
+        if output_param in attrs.get("inputs", ()) and not is_descendant_of(node_id, source_container, flat_graph):
+            return True
 
     return False
 
@@ -159,11 +158,7 @@ def build_graph_output_visibility(flat_graph: nx.DiGraph) -> dict[str, set[str]]
     for node_id, attrs in flat_graph.nodes(data=True):
         if attrs.get("node_type") != "GRAPH":
             continue
-        visible_outputs = {
-            output_name
-            for output_name in attrs.get("outputs", ())
-            if is_output_externally_consumed(output_name, node_id, flat_graph)
-        }
+        visible_outputs = {output_name for output_name in attrs.get("outputs", ()) if is_output_externally_consumed(output_name, node_id, flat_graph)}
         visibility[node_id] = visible_outputs
     return visibility
 
@@ -174,11 +169,7 @@ def find_container_entrypoints(
     expansion_state: dict[str, bool],
 ) -> list[str]:
     """Find entry point nodes inside a container for control edge routing."""
-    direct_children = [
-        node_id
-        for node_id, attrs in flat_graph.nodes(data=True)
-        if attrs.get("parent") == container_id
-    ]
+    direct_children = [node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("parent") == container_id]
 
     internal_outputs = set()
     for node_id in direct_children:
@@ -193,9 +184,8 @@ def find_container_entrypoints(
 
         consumes_internal = bool(inputs & internal_outputs)
 
-        if not consumes_internal:
-            if is_node_visible(node_id, flat_graph, expansion_state):
-                entrypoints.append(node_id)
+        if not consumes_internal and is_node_visible(node_id, flat_graph, expansion_state):
+            entrypoints.append(node_id)
 
     return entrypoints
 
@@ -238,18 +228,14 @@ def find_internal_producer_for_output(
             internal_producers[output] = node_id
 
     internal_consumed: set[str] = set()
-    for node_id, attrs in flat_graph.nodes(data=True):
+    for _node_id, attrs in flat_graph.nodes(data=True):
         if attrs.get("parent") != container_id:
             continue
         for inp in attrs.get("inputs", ()):
             if inp in internal_producers:
                 internal_consumed.add(inp)
 
-    terminal_outputs = {
-        out: prod
-        for out, prod in internal_producers.items()
-        if out not in internal_consumed
-    }
+    terminal_outputs = {out: prod for out, prod in internal_producers.items() if out not in internal_consumed}
 
     if output_name in terminal_outputs:
         producer = terminal_outputs[output_name]
@@ -259,8 +245,7 @@ def find_internal_producer_for_output(
     # Fuzzy fallback: with_outputs renames can differ slightly (e.g. pluralization).
     # Substring matching is intentionally loose to maximize recall in visualization.
     for internal_out, producer in terminal_outputs.items():
-        if internal_out in output_name or output_name in internal_out:
-            if is_node_visible(producer, flat_graph, expansion_state):
-                return producer
+        if (internal_out in output_name or output_name in internal_out) and is_node_visible(producer, flat_graph, expansion_state):
+            return producer
 
     return None

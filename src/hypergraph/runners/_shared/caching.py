@@ -20,9 +20,9 @@ _ROUTING_DECISION_KEY = "__routing_decision__"
 
 
 def check_cache(
-    node: "HyperNode",
+    node: HyperNode,
     inputs: dict[str, Any],
-    cache: "CacheBackend",
+    cache: CacheBackend,
 ) -> tuple[str, dict[str, Any] | None]:
     """Check cache for a node's result.
 
@@ -46,9 +46,9 @@ def check_cache(
 
 
 def restore_routing_decision(
-    node: "HyperNode",
+    node: HyperNode,
     outputs: dict[str, Any],
-    state: "GraphState",
+    state: GraphState,
 ) -> None:
     """Restore a cached routing decision for gate nodes.
 
@@ -63,10 +63,10 @@ def restore_routing_decision(
 
 
 def store_in_cache(
-    node: "HyperNode",
+    node: HyperNode,
     outputs: dict[str, Any],
-    state: "GraphState",
-    cache: "CacheBackend",
+    state: GraphState,
+    cache: CacheBackend,
     cache_key: str,
 ) -> None:
     """Store a node's outputs in cache, including routing decisions for gates."""

@@ -31,7 +31,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
@@ -54,8 +54,8 @@ class NodeTrace:
 
     status: str  # "FOUND" or "NOT_FOUND"
     node_id: str
-    node_type: Optional[str] = None
-    parent: Optional[str] = None
+    node_type: str | None = None
+    parent: str | None = None
     incoming_edges: list[dict[str, str]] = field(default_factory=list)
     outgoing_edges: list[dict[str, str]] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
@@ -86,13 +86,7 @@ class IssueReport:
     @property
     def has_issues(self) -> bool:
         """True if any issues were found."""
-        return bool(
-            self.validation_errors
-            or self.orphan_edges
-            or self.disconnected_nodes
-            or self.missing_parents
-            or self.self_loops
-        )
+        return bool(self.validation_errors or self.orphan_edges or self.disconnected_nodes or self.missing_parents or self.self_loops)
 
 
 class VizDebugger:
@@ -107,14 +101,14 @@ class VizDebugger:
         >>> debugger.visualize(depth=1)  # Shows viz with debug overlays
     """
 
-    def __init__(self, graph: "Graph"):
+    def __init__(self, graph: Graph):
         """Create debugger for a graph.
 
         Args:
             graph: The hypergraph Graph to debug
         """
         self.graph = graph
-        self._flat_graph: Optional[nx.DiGraph] = None
+        self._flat_graph: nx.DiGraph | None = None
 
     @property
     def flat_graph(self) -> nx.DiGraph:
@@ -213,9 +207,7 @@ class VizDebugger:
         }
 
         if node_type == "GRAPH":
-            children = [
-                nid for nid, a in G.nodes(data=True) if a.get("parent") == node_id
-            ]
+            children = [nid for nid, a in G.nodes(data=True) if a.get("parent") == node_id]
             details["children"] = children
 
         return NodeTrace(
@@ -280,17 +272,11 @@ class VizDebugger:
         analysis: dict[str, Any] = {}
 
         if source in G.nodes:
-            from_source = [
-                {"to": tgt, "value": G.edges[source, tgt].get("value_name")}
-                for _, tgt in G.out_edges(source)
-            ]
+            from_source = [{"to": tgt, "value": G.edges[source, tgt].get("value_name")} for _, tgt in G.out_edges(source)]
             analysis["edges_from_source"] = from_source
 
         if target in G.nodes:
-            to_target = [
-                {"from": src, "value": G.edges[src, target].get("value_name")}
-                for src, _ in G.in_edges(target)
-            ]
+            to_target = [{"from": src, "value": G.edges[src, target].get("value_name")} for src, _ in G.in_edges(target)]
             analysis["edges_to_target"] = to_target
 
         if source in G.nodes and target in G.nodes:
@@ -298,14 +284,9 @@ class VizDebugger:
             target_inputs = set(G.nodes[target].get("inputs", ()))
             matching = source_outputs & target_inputs
             if matching:
-                analysis["suggestion"] = (
-                    f"Matching params exist: {matching}. Edge should exist."
-                )
+                analysis["suggestion"] = f"Matching params exist: {matching}. Edge should exist."
             else:
-                analysis["suggestion"] = (
-                    f"No matching params. "
-                    f"Source outputs: {source_outputs}, target inputs: {target_inputs}"
-                )
+                analysis["suggestion"] = f"No matching params. Source outputs: {source_outputs}, target inputs: {target_inputs}"
 
         return analysis
 
@@ -328,11 +309,7 @@ class VizDebugger:
             edge_nodes.add(src)
             edge_nodes.add(tgt)
 
-        parent_nodes = {
-            attrs.get("parent")
-            for _, attrs in G.nodes(data=True)
-            if attrs.get("parent")
-        }
+        parent_nodes = {attrs.get("parent") for _, attrs in G.nodes(data=True) if attrs.get("parent")}
 
         for node_id in G.nodes():
             if node_id not in edge_nodes and node_id not in parent_nodes:
@@ -426,7 +403,7 @@ class VizDebugger:
         depth: int = 0,
         theme: str = "auto",
         show_types: bool = False,
-        filepath: Optional[str] = None,
+        filepath: str | None = None,
     ) -> Any:
         """Visualize the graph with debug overlays enabled.
 
@@ -453,8 +430,7 @@ class VizDebugger:
         stats = self.debug_dump()["stats"]
 
         print("=== Debug Visualization ===")
-        print(f"Nodes: {stats['total_nodes']} | Edges: {stats['total_edges']} | "
-              f"Types: {stats['node_types']} | Cycles: {stats['has_cycles']}")
+        print(f"Nodes: {stats['total_nodes']} | Edges: {stats['total_edges']} | Types: {stats['node_types']} | Cycles: {stats['has_cycles']}")
 
         if issues.has_issues:
             print("\n--- Issues Found ---")
@@ -484,7 +460,7 @@ class VizDebugger:
         )
 
 
-def validate_graph(graph: "Graph") -> ValidationResult:
+def validate_graph(graph: Graph) -> ValidationResult:
     """Quick validation of a graph.
 
     Args:
@@ -501,7 +477,7 @@ def validate_graph(graph: "Graph") -> ValidationResult:
     return VizDebugger(graph).validate()
 
 
-def find_issues(graph: "Graph") -> IssueReport:
+def find_issues(graph: Graph) -> IssueReport:
     """Quick issue discovery for a graph.
 
     Args:
@@ -524,14 +500,14 @@ class RenderedEdge:
 
     source: str
     target: str
-    source_label: Optional[str] = None
-    target_label: Optional[str] = None
-    src_bottom: Optional[float] = None
-    tgt_top: Optional[float] = None
-    vert_dist: Optional[float] = None
-    horiz_dist: Optional[float] = None
+    source_label: str | None = None
+    target_label: str | None = None
+    src_bottom: float | None = None
+    tgt_top: float | None = None
+    vert_dist: float | None = None
+    horiz_dist: float | None = None
     status: str = "OK"
-    issue: Optional[str] = None
+    issue: str | None = None
 
 
 @dataclass
@@ -551,9 +527,9 @@ class RenderedDebugData:
 
     def print_report(self) -> None:
         """Print a human-readable report with expected vs actual values."""
-        total_nodes = self.summary.get('totalNodes', 0)
-        total_edges = self.summary.get('totalEdges', 0)
-        issue_count = self.summary.get('edgeIssues', 0)
+        total_nodes = self.summary.get("totalNodes", 0)
+        total_edges = self.summary.get("totalEdges", 0)
+        issue_count = self.summary.get("edgeIssues", 0)
 
         print("=== Edge Validation Report ===")
         print(f"Nodes: {total_nodes} | Edges: {total_edges} | Issues: {issue_count}")
@@ -601,7 +577,7 @@ class RenderedDebugData:
 
 
 async def _extract_debug_data_async(
-    graph: "Graph",
+    graph: Graph,
     *,
     depth: int = 0,
     theme: str = "auto",
@@ -610,10 +586,11 @@ async def _extract_debug_data_async(
     timeout: int = 5000,
 ) -> RenderedDebugData:
     """Async implementation of extract_debug_data."""
+    import os
+    import tempfile
+
     from playwright.async_api import async_playwright
 
-    import tempfile
-    import os
     from hypergraph.viz.widget import visualize
 
     # Render to temp HTML file
@@ -651,7 +628,7 @@ async def _extract_debug_data_async(
 
 
 def _extract_debug_data_sync(
-    graph: "Graph",
+    graph: Graph,
     *,
     depth: int = 0,
     theme: str = "auto",
@@ -660,10 +637,11 @@ def _extract_debug_data_sync(
     timeout: int = 5000,
 ) -> RenderedDebugData:
     """Sync implementation of extract_debug_data."""
+    import os
+    import tempfile
+
     from playwright.sync_api import sync_playwright
 
-    import tempfile
-    import os
     from hypergraph.viz.widget import visualize
 
     # Render to temp HTML file
@@ -730,6 +708,7 @@ def _parse_debug_data(debug_data: dict) -> RenderedDebugData:
 def _is_in_async_context() -> bool:
     """Check if we're running inside an async event loop."""
     import asyncio
+
     try:
         asyncio.get_running_loop()
         return True
@@ -738,7 +717,7 @@ def _is_in_async_context() -> bool:
 
 
 def extract_debug_data(
-    graph: "Graph",
+    graph: Graph,
     *,
     depth: int = 0,
     theme: str = "auto",
@@ -775,18 +754,22 @@ def extract_debug_data(
         ...     print(f"{edge.source} -> {edge.target}: {edge.issue}")
     """
     try:
-        import playwright
+        import importlib.util
+
+        if importlib.util.find_spec("playwright") is None:
+            raise ImportError
     except ImportError:
         raise ImportError(
-            "playwright is required for extract_debug_data. "
-            "Install with: pip install playwright && playwright install chromium"
-        )
+            "playwright is required for extract_debug_data. Install with: pip install playwright && playwright install chromium"
+        ) from None
 
     if _is_in_async_context():
         # Running in Jupyter or async context - use nest_asyncio or asyncio.run
         import asyncio
+
         try:
             import nest_asyncio
+
             nest_asyncio.apply()
         except ImportError:
             pass

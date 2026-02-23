@@ -8,7 +8,12 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError
-from hypergraph.runners._shared.helpers import _UNSET_SELECT, _validate_on_missing, filter_outputs, generate_map_inputs
+from hypergraph.runners._shared.helpers import (
+    _UNSET_SELECT,
+    _validate_on_missing,
+    filter_outputs,
+    generate_map_inputs,
+)
 from hypergraph.runners._shared.input_normalization import (
     ASYNC_MAP_RESERVED_OPTION_NAMES,
     ASYNC_RUN_RESERVED_OPTION_NAMES,
@@ -45,7 +50,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
     @property
     @abstractmethod
-    def supported_node_types(self) -> set[type["HyperNode"]]:
+    def supported_node_types(self) -> set[type[HyperNode]]:
         """Node types supported by this runner."""
         ...
 
@@ -58,15 +63,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     async def _execute_graph_impl_async(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any],
         max_iterations: int,
         max_concurrency: int | None,
         *,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
         run_id: str,
         run_span_id: str,
-        event_processors: list["EventProcessor"] | None = None,
+        event_processors: list[EventProcessor] | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -74,16 +79,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     def _create_dispatcher(
         self,
-        processors: list["EventProcessor"] | None,
-    ) -> "EventDispatcher":
+        processors: list[EventProcessor] | None,
+    ) -> EventDispatcher:
         """Create event dispatcher."""
         ...
 
     @abstractmethod
     async def _emit_run_start_async(
         self,
-        dispatcher: "EventDispatcher",
-        graph: "Graph",
+        dispatcher: EventDispatcher,
+        graph: Graph,
         parent_span_id: str | None,
         *,
         is_map: bool = False,
@@ -95,10 +100,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     async def _emit_run_end_async(
         self,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
         run_id: str,
         span_id: str,
-        graph: "Graph",
+        graph: Graph,
         start_time: float,
         parent_span_id: str | None,
         *,
@@ -110,7 +115,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     async def _shutdown_dispatcher_async(
         self,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
     ) -> None:
         """Shut down dispatcher."""
         ...
@@ -132,15 +137,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
     async def run(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any] | None = None,
         *,
-        select: "str | list[str]" = _UNSET_SELECT,
+        select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
-        event_processors: list["EventProcessor"] | None = None,
+        event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -159,7 +164,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_iter = max_iterations or self.default_max_iterations
         dispatcher = self._create_dispatcher(event_processors)
         run_id, run_span_id = await self._emit_run_start_async(
-            dispatcher, graph, _parent_span_id,
+            dispatcher,
+            graph,
+            _parent_span_id,
         )
         start_time = time.time()
 
@@ -181,16 +188,17 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
             )
             await self._emit_run_end_async(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                run_id,
+                run_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
             )
             return result
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
+            partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
@@ -205,14 +213,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 partial_state = e.partial_state
 
             await self._emit_run_end_async(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                run_id,
+                run_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
                 error=error,
             )
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
+            partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.FAILED,
@@ -225,17 +234,17 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
     async def map(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any] | None = None,
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
-        select: "str | list[str]" = _UNSET_SELECT,
+        select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
-        event_processors: list["EventProcessor"] | None = None,
+        event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
@@ -271,10 +280,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         start_time = time.time()
 
         existing_limiter = self._get_concurrency_limiter()
-        if existing_limiter is None and max_concurrency is not None:
-            token = self._set_concurrency_limiter(max_concurrency)
-        else:
-            token = None
+        token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
 
         async def _run_map_item(variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation and normalize failures to RunResult."""
@@ -299,10 +305,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         try:
             if max_concurrency is None:
-                tasks = [
-                    _run_map_item(v)
-                    for v in input_variations
-                ]
+                tasks = [_run_map_item(v) for v in input_variations]
                 gathered = await asyncio.gather(*tasks, return_exceptions=True)
                 results: list[RunResult] = []
                 for item in gathered:
@@ -332,10 +335,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         result = await _run_map_item(v)
                         results_list.append(result)
                         order.append(idx)
-                        if (
-                            error_handling == "raise"
-                            and result.status == RunStatus.FAILED
-                        ):
+                        if error_handling == "raise" and result.status == RunStatus.FAILED:
                             stop_event.set()
 
                 num_workers = min(max_concurrency, len(input_variations))
@@ -345,19 +345,29 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 except Exception:
                     # Let the outer error handler emit map-level failure events.
                     raise
-                results = [r for _, r in sorted(zip(order, results_list))]
+                results = [r for _, r in sorted(zip(order, results_list, strict=False))]
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:
                             raise result.error  # type: ignore[misc]
 
             await self._emit_run_end_async(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                map_run_id,
+                map_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
             )
             return results
         except Exception as e:
             await self._emit_run_end_async(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                map_run_id,
+                map_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
                 error=e,
             )
             raise

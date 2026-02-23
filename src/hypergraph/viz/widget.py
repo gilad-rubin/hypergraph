@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import html as html_module
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
-from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.html import estimate_layout, generate_widget_html
+from hypergraph.viz.renderer import render_graph
 
 
 class ScrollablePipelineWidget:
@@ -55,10 +55,10 @@ class ScrollablePipelineWidget:
             f'<iframe srcdoc="{escaped_html}" '
             f'width="{self.width}" height="{self.height}" frameborder="0" '
             f'style="border: none; width: {self.width}px; max-width: 100%; '
-            f'height: {self.height}px; display: block; background: transparent; '
+            f"height: {self.height}px; display: block; background: transparent; "
             f'margin: 0 auto; border-radius: 8px;" '
             f'sandbox="allow-scripts allow-same-origin allow-popups allow-forms">'
-            f'</iframe>'
+            f"</iframe>"
         )
 
 

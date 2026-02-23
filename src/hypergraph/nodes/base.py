@@ -439,10 +439,7 @@ class HyperNode(ABC):
         chain = self._get_rename_chain(name, attr)
         if chain:
             chain_str = "→".join(chain)
-            return RenameError(
-                f"'{name}' was renamed: {chain_str}. "
-                f"Current {attr}: {current}"
-            )
+            return RenameError(f"'{name}' was renamed: {chain_str}. Current {attr}: {current}")
         return RenameError(f"'{name}' not found. Current {attr}: {current}")
 
     def _get_rename_chain(self, name: str, attr: str) -> list[str]:
@@ -473,11 +470,7 @@ def _invalidate_cached_properties(obj: object) -> None:
     property recomputes with the clone's updated state.
     """
     cls = type(obj)
-    stale = [
-        key
-        for key in list(obj.__dict__)
-        if isinstance(getattr(cls, key, None), functools.cached_property)
-    ]
+    stale = [key for key in list(obj.__dict__) if isinstance(getattr(cls, key, None), functools.cached_property)]
     for key in stale:
         del obj.__dict__[key]
 
@@ -487,7 +480,4 @@ def _check_rename_duplicates(values: tuple[str, ...], attr: str) -> None:
     if len(values) == len(set(values)):
         return
     dupes = sorted({v for v in values if values.count(v) > 1})
-    raise RenameError(
-        f"Rename produces duplicate {attr}: {dupes}. "
-        f"Each name must be unique."
-    )
+    raise RenameError(f"Rename produces duplicate {attr}: {dupes}. Each name must be unique.")

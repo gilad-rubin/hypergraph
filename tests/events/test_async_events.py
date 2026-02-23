@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import END, Graph, AsyncRunner, node, route
-from hypergraph.events import AsyncEventProcessor, EventProcessor, TypedEventProcessor
+from hypergraph import END, AsyncRunner, Graph, node, route
+from hypergraph.events import AsyncEventProcessor, EventProcessor
 from hypergraph.events.types import (
     NodeEndEvent,
     NodeErrorEvent,
@@ -15,7 +15,6 @@ from hypergraph.events.types import (
     RunStartEvent,
     RunStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -226,9 +225,7 @@ class TestErrorEvents:
         runner = AsyncRunner()
         good = ListProcessor()
 
-        result = await runner.run(
-            graph, {"x": 5}, event_processors=[BadProcessor(), good]
-        )
+        result = await runner.run(graph, {"x": 5}, event_processors=[BadProcessor(), good])
 
         assert result["out"] == 10
         assert len(good.events) > 0
@@ -365,9 +362,7 @@ class TestMapEvents:
         runner = AsyncRunner()
         lp = ListProcessor()
 
-        results = await runner.map(
-            graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp]
-        )
+        results = await runner.map(graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp])
 
         assert len(results) == 3
 
@@ -394,9 +389,7 @@ class TestMapEvents:
         runner = AsyncRunner()
         lp = ListProcessor()
 
-        await runner.map(
-            graph, {"x": [1, 2]}, map_over="x", event_processors=[lp]
-        )
+        await runner.map(graph, {"x": [1, 2]}, map_over="x", event_processors=[lp])
 
         run_ends = lp.of_type(RunEndEvent)
         # 1 map-level RunEnd + 2 individual RunEnds
@@ -432,9 +425,7 @@ class TestShutdown:
         runner = AsyncRunner()
         alp = AsyncListProcessor()
 
-        await runner.map(
-            graph, {"x": [1, 2]}, map_over="x", event_processors=[alp]
-        )
+        await runner.map(graph, {"x": [1, 2]}, map_over="x", event_processors=[alp])
         assert alp.shutdown_called
 
 
@@ -484,11 +475,14 @@ class TestNoProcessors:
         def produce(x: int) -> int:
             return x
 
-        outer = Graph([
-            produce,
-            graph_a.as_node().with_inputs(x="val"),
-            graph_b.as_node().with_inputs(y="val"),
-        ], name="outer")
+        outer = Graph(
+            [
+                produce,
+                graph_a.as_node().with_inputs(x="val"),
+                graph_b.as_node().with_inputs(y="val"),
+            ],
+            name="outer",
+        )
 
         lp = ListProcessor()
         runner = AsyncRunner()
@@ -500,22 +494,16 @@ class TestNoProcessors:
 
         # Each nested RunStartEvent's parent_span_id should match
         # a NodeStartEvent for the corresponding GraphNode
-        nested_run_starts = [
-            e for e in lp.of_type(RunStartEvent)
-            if e.parent_span_id is not None and e.graph_name in ("graph_a", "graph_b")
-        ]
+        nested_run_starts = [e for e in lp.of_type(RunStartEvent) if e.parent_span_id is not None and e.graph_name in ("graph_a", "graph_b")]
         assert len(nested_run_starts) == 2
 
         node_starts = {e.span_id: e for e in lp.of_type(NodeStartEvent)}
         for rs in nested_run_starts:
             parent_node = node_starts.get(rs.parent_span_id)
             assert parent_node is not None, (
-                f"Nested run for {rs.graph_name} has parent_span_id={rs.parent_span_id} "
-                f"which doesn't match any NodeStartEvent"
+                f"Nested run for {rs.graph_name} has parent_span_id={rs.parent_span_id} which doesn't match any NodeStartEvent"
             )
-            assert parent_node.node_name in ("graph_a", "graph_b"), (
-                f"Expected parent node to be a graph node, got {parent_node.node_name}"
-            )
+            assert parent_node.node_name in ("graph_a", "graph_b"), f"Expected parent node to be a graph node, got {parent_node.node_name}"
 
     @pytest.mark.asyncio
     async def test_map_without_processors(self):

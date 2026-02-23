@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import functools
 import hashlib
-import networkx as nx
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from hypergraph.nodes.base import HyperNode
+import networkx as nx
+
 from hypergraph.graph._conflict import validate_output_conflicts
 from hypergraph.graph._helpers import get_edge_produced_values, sources_of
 from hypergraph.graph.input_spec import InputSpec, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
+from hypergraph.nodes.base import HyperNode
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.viz.debug import VizDebugger
 
@@ -105,7 +107,7 @@ class Graph:
         return self._controlled_by
 
     def _compute_controlled_by(self) -> dict[str, list[str]]:
-        from hypergraph.nodes.gate import GateNode, END
+        from hypergraph.nodes.gate import END, GateNode
 
         controlled_by: dict[str, list[str]] = {}
         for node in self._nodes.values():
@@ -120,7 +122,7 @@ class Graph:
         """Map of node name -> node object."""
         return dict(self._nodes)  # Return copy to prevent mutation
 
-    def iter_nodes(self) -> "Iterable[HyperNode]":
+    def iter_nodes(self) -> Iterable[HyperNode]:
         """Iterate over all nodes without copying the internal dict."""
         return self._nodes.values()
 
@@ -146,11 +148,7 @@ class Graph:
     @property
     def leaf_outputs(self) -> tuple[str, ...]:
         """Unique outputs from leaf nodes (no downstream destinations)."""
-        leaves = [
-            self._nodes[name]
-            for name in self._nodes
-            if self._nx_graph.out_degree(name) == 0
-        ]
+        leaves = [self._nodes[name] for name in self._nodes if self._nx_graph.out_degree(name) == 0]
         return _unique_outputs(leaves)
 
     @functools.cached_property
@@ -170,10 +168,7 @@ class Graph:
         Cyclic re-execution should instead be driven by gates (``@route``).
         """
         output_sources = self._collect_output_sources(list(self._nodes.values()))
-        return {
-            output: set(sources)
-            for output, sources in output_sources.items()
-        }
+        return {output: set(sources) for output, sources in output_sources.items()}
 
     @functools.cached_property
     def sole_producers(self) -> dict[str, str]:
@@ -181,11 +176,7 @@ class Graph:
 
         Convenience accessor; prefer ``self_producers`` for staleness checks.
         """
-        return {
-            output: next(iter(nodes))
-            for output, nodes in self.self_producers.items()
-            if len(nodes) == 1
-        }
+        return {output: next(iter(nodes)) for output, nodes in self.self_producers.items() if len(nodes) == 1}
 
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
@@ -288,10 +279,7 @@ class Graph:
                 if param in output_to_source:
                     edge_values[(output_to_source[param], n.name)].append(param)
 
-        G.add_edges_from(
-            (src, dst, {"edge_type": "data", "value_names": names})
-            for (src, dst), names in edge_values.items()
-        )
+        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": names}) for (src, dst), names in edge_values.items())
 
     def _add_control_edges(
         self,
@@ -302,7 +290,7 @@ class Graph:
 
         Control edges indicate routing relationships but don't carry data.
         """
-        from hypergraph.nodes.gate import GateNode, END
+        from hypergraph.nodes.gate import END, GateNode
 
         for node in nodes:
             if not isinstance(node, GateNode):
@@ -311,10 +299,9 @@ class Graph:
             for target in node.targets:
                 if target is END:
                     continue  # END is not a node
-                if target in G.nodes:
+                if target in G.nodes and not G.has_edge(node.name, target):
                     # Only add control edge if no data edge exists
-                    if not G.has_edge(node.name, target):
-                        G.add_edge(node.name, target, edge_type="control")
+                    G.add_edge(node.name, target, edge_type="control")
 
     def _add_ordering_edges(
         self,
@@ -337,12 +324,13 @@ class Graph:
                     continue  # Skip self-loops
                 if not G.has_edge(producer, node.name):
                     G.add_edge(
-                        producer, node.name,
+                        producer,
+                        node.name,
                         edge_type="ordering",
                         value_names=[name],
                     )
 
-    def bind(self, **values: Any) -> "Graph":
+    def bind(self, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).
 
         Accepts any graph input or output name. Bound values act as
@@ -358,26 +346,21 @@ class Graph:
 
         for key in values:
             if key in emit_only:
-                raise ValueError(
-                    f"Cannot bind '{key}': emit-only output (ordering signal, not data)"
-                )
+                raise ValueError(f"Cannot bind '{key}': emit-only output (ordering signal, not data)")
             if key not in valid_names:
-                raise ValueError(
-                    f"Cannot bind '{key}': not a graph input or output. "
-                    f"Valid names: {sorted(valid_names)}"
-                )
+                raise ValueError(f"Cannot bind '{key}': not a graph input or output. Valid names: {sorted(valid_names)}")
 
         new_graph = self._shallow_copy()
         new_graph._bound = {**self._bound, **values}
         return new_graph
 
-    def unbind(self, *keys: str) -> "Graph":
+    def unbind(self, *keys: str) -> Graph:
         """Remove specific bindings. Returns new Graph."""
         new_graph = self._shallow_copy()
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
-    def select(self, *names: str) -> "Graph":
+    def select(self, *names: str) -> Graph:
         """Set default output selection. Returns new Graph (immutable).
 
         Controls which outputs are returned by runner.run() and which outputs
@@ -409,20 +392,15 @@ class Graph:
         all_outputs = set(self.outputs)
         invalid = [n for n in names if n not in all_outputs]
         if invalid:
-            raise ValueError(
-                f"Cannot select {invalid}: not graph outputs. "
-                f"Valid outputs: {self.outputs}"
-            )
+            raise ValueError(f"Cannot select {invalid}: not graph outputs. Valid outputs: {self.outputs}")
         if len(names) != len(set(names)):
-            raise ValueError(
-                f"select() requires unique output names. Received: {names}"
-            )
+            raise ValueError(f"select() requires unique output names. Received: {names}")
 
         new_graph = self._shallow_copy()
         new_graph._selected = names
         return new_graph
 
-    def add_nodes(self, *nodes: HyperNode) -> "Graph":
+    def add_nodes(self, *nodes: HyperNode) -> Graph:
         """Add nodes to graph. Returns new Graph (immutable).
 
         Equivalent to rebuilding the graph with the combined node list,
@@ -444,8 +422,7 @@ class Graph:
             invalid = [k for k in self._bound if k not in valid_names]
             if invalid:
                 raise ValueError(
-                    f"Cannot replay bind after add_nodes: {invalid} no longer valid. "
-                    f"Call unbind({', '.join(repr(k) for k in invalid)}) first."
+                    f"Cannot replay bind after add_nodes: {invalid} no longer valid. Call unbind({', '.join(repr(k) for k in invalid)}) first."
                 )
             new_graph._bound = dict(self._bound)
             new_graph.__dict__.pop("inputs", None)
@@ -469,7 +446,6 @@ class Graph:
     def has_async_nodes(self) -> bool:
         """True if any node requires async execution."""
         return any(node.is_async for node in self._nodes.values())
-
 
     @property
     def has_interrupts(self) -> bool:
@@ -506,17 +482,14 @@ class Graph:
             node_hashes.append(f"{node.name}:{node.definition_hash}")
 
         # 2. Include structure (edges)
-        edges = sorted(
-            (u, v, ",".join(data.get("value_names", [])))
-            for u, v, data in self._nx_graph.edges(data=True)
-        )
+        edges = sorted((u, v, ",".join(data.get("value_names", []))) for u, v, data in self._nx_graph.edges(data=True))
         edge_str = str(edges)
 
         # 3. Combine and hash
         combined = "|".join(node_hashes) + "|" + edge_str
         return hashlib.sha256(combined.encode()).hexdigest()
 
-    def _shallow_copy(self) -> "Graph":
+    def _shallow_copy(self) -> Graph:
         """Create a shallow copy of this graph.
 
         Preserves: name, strict_types, nodes, nx_graph, cached_hash
@@ -539,7 +512,7 @@ class Graph:
         # Note: Duplicate outputs caught in validate_output_conflicts()
         validate_graph(self._nodes, self._nx_graph, self.name, self._strict_types)
 
-    def as_node(self, *, name: str | None = None) -> "GraphNode":
+    def as_node(self, *, name: str | None = None) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.
 
         Args:
@@ -696,9 +669,7 @@ class Graph:
             if inner is not None:
                 self._flatten_nodes(G, list(inner.nodes.values()), parent=node_id)
 
-    def _build_name_to_id_lookup(
-        self, G: nx.DiGraph, parent_id: str | None
-    ) -> dict[str, str]:
+    def _build_name_to_id_lookup(self, G: nx.DiGraph, parent_id: str | None) -> dict[str, str]:
         """Build a lookup from original node names to hierarchical IDs for a scope.
 
         Args:
@@ -734,9 +705,7 @@ class Graph:
             node_id = root_lookup.get(node.name, node.name)
             self._add_nested_edges(G, node, node_id)
 
-    def _add_nested_edges(
-        self, G: nx.DiGraph, node: HyperNode, parent_id: str
-    ) -> None:
+    def _add_nested_edges(self, G: nx.DiGraph, node: HyperNode, parent_id: str) -> None:
         """Recursively add edges from nested graphs.
 
         Args:
@@ -762,7 +731,7 @@ class Graph:
             child_id = child_lookup.get(child_node.name, child_node.name)
             self._add_nested_edges(G, child_node, child_id)
 
-    def debug_viz(self) -> "VizDebugger":
+    def debug_viz(self) -> VizDebugger:
         """Get a debugger for this graph's visualization.
 
         Returns a VizDebugger instance for tracing nodes/edges and finding issues.
