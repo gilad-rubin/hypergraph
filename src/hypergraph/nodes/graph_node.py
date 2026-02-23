@@ -327,10 +327,7 @@ class GraphNode(HyperNode):
         if original_param in self._graph.inputs.bound:
             return True
         # Check if any inner node has a default
-        for inner_node in self._graph.iter_nodes():
-            if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
-                return True
-        return False
+        return any(original_param in inner_node.inputs and inner_node.has_default_for(original_param) for inner_node in self._graph.iter_nodes())
 
     def get_default_for(self, param: str) -> Any:
         """Get the default or bound value for a parameter from the inner graph.

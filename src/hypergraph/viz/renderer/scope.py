@@ -146,9 +146,8 @@ def is_output_externally_consumed(
     source_container = source_node if source_attrs.get("node_type") == "GRAPH" else source_parent
 
     for node_id, attrs in flat_graph.nodes(data=True):
-        if output_param in attrs.get("inputs", ()):
-            if not is_descendant_of(node_id, source_container, flat_graph):
-                return True
+        if output_param in attrs.get("inputs", ()) and not is_descendant_of(node_id, source_container, flat_graph):
+            return True
 
     return False
 
@@ -258,8 +257,7 @@ def find_internal_producer_for_output(
     # Fuzzy fallback: with_outputs renames can differ slightly (e.g. pluralization).
     # Substring matching is intentionally loose to maximize recall in visualization.
     for internal_out, producer in terminal_outputs.items():
-        if internal_out in output_name or output_name in internal_out:
-            if is_node_visible(producer, flat_graph, expansion_state):
-                return producer
+        if (internal_out in output_name or output_name in internal_out) and is_node_visible(producer, flat_graph, expansion_state):
+            return producer
 
     return None

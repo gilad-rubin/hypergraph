@@ -454,17 +454,16 @@ def _resolve_data_source(
     """Resolve actual source for a data edge, exiting expanded containers."""
     actual_source = source
     source_attrs = flat_graph.nodes.get(source, {})
-    if source_attrs.get("node_type") == "GRAPH" and expansion_state.get(source, False):
-        if value_name:
-            internal = output_to_producer.get(value_name)
-            if internal and internal != source and is_descendant_of(internal, source, flat_graph):
-                actual_source = internal
-            else:
-                found = find_internal_producer_for_output(
-                    source, value_name, flat_graph, expansion_state,
-                )
-                if found:
-                    actual_source = found
+    if source_attrs.get("node_type") == "GRAPH" and expansion_state.get(source, False) and value_name:
+        internal = output_to_producer.get(value_name)
+        if internal and internal != source and is_descendant_of(internal, source, flat_graph):
+            actual_source = internal
+        else:
+            found = find_internal_producer_for_output(
+                source, value_name, flat_graph, expansion_state,
+            )
+            if found:
+                actual_source = found
     if not is_node_visible(actual_source, flat_graph, expansion_state):
         return None
     return actual_source
@@ -480,19 +479,18 @@ def _resolve_data_target(
     """Resolve actual target for a data edge, entering expanded containers."""
     actual_target = target
     target_attrs = flat_graph.nodes.get(target, {})
-    if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False):
-        if value_name:
-            consumers = param_to_consumers.get(value_name, [])
-            internal = [
-                c for c in consumers
-                if c != target and is_descendant_of(c, target, flat_graph)
-            ]
-            if internal:
-                actual_target = internal[0]
-            else:
-                entry = find_container_entrypoints(target, flat_graph, expansion_state)
-                if entry:
-                    actual_target = entry[0]
+    if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False) and value_name:
+        consumers = param_to_consumers.get(value_name, [])
+        internal = [
+            c for c in consumers
+            if c != target and is_descendant_of(c, target, flat_graph)
+        ]
+        if internal:
+            actual_target = internal[0]
+        else:
+            entry = find_container_entrypoints(target, flat_graph, expansion_state)
+            if entry:
+                actual_target = entry[0]
     if not is_node_visible(actual_target, flat_graph, expansion_state):
         return None
     return actual_target
@@ -742,20 +740,14 @@ def to_mermaid(
     lines.append("    %% Edges")
     for group in input_groups:
         params = group["params"]
-        if len(params) == 1:
-            input_node_id = f"input_{params[0]}"
-        else:
-            input_node_id = f"input_group_{'_'.join(params)}"
+        input_node_id = f"input_{params[0]}" if len(params) == 1 else f"input_group_{'_'.join(params)}"
 
         targets = _get_input_targets(params, flat_graph, param_to_consumers, expansion_state)
         for tgt in targets:
             lines.append(_format_edge(input_node_id, tgt, None))
 
     # --- Internal edges ---
-    if separate_outputs:
-        edge_lines = _render_separate_edges(flat_graph, expansion_state)
-    else:
-        edge_lines = _render_merged_edges(flat_graph, expansion_state)
+    edge_lines = _render_separate_edges(flat_graph, expansion_state) if separate_outputs else _render_merged_edges(flat_graph, expansion_state)
     lines.extend(edge_lines)
 
     # --- END edges ---

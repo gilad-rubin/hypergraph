@@ -374,12 +374,10 @@ def pairwise_combinations() -> Iterator[Capability]:
         if len(row) > 10:
             topology = row[2]
             output_conflict = row[10]
-            if output_conflict == OutputConflict.ORDERED:
-                if topology != Topology.CYCLIC:
-                    return False
-            if output_conflict == OutputConflict.MUTEX:
-                if topology not in {Topology.BRANCHING, Topology.DIAMOND}:
-                    return False
+            if output_conflict == OutputConflict.ORDERED and topology != Topology.CYCLIC:
+                return False
+            if output_conflict == OutputConflict.MUTEX and topology not in {Topology.BRANCHING, Topology.DIAMOND}:
+                return False
 
         return True
 

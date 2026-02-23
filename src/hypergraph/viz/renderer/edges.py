@@ -163,17 +163,16 @@ def add_merged_output_edges(
             is_source_container = source_attrs.get("node_type") == "GRAPH"
             is_source_expanded = expansion_state.get(source, False)
 
-            if is_source_container and is_source_expanded:
-                if value_name:
-                    internal_producer = output_to_producer.get(value_name)
-                    if internal_producer and internal_producer != source and is_descendant_of(internal_producer, source, flat_graph):
-                        actual_source = internal_producer
-                    else:
-                        internal_source = find_internal_producer_for_output(
-                            source, value_name, flat_graph, expansion_state
-                        )
-                        if internal_source:
-                            actual_source = internal_source
+            if is_source_container and is_source_expanded and value_name:
+                internal_producer = output_to_producer.get(value_name)
+                if internal_producer and internal_producer != source and is_descendant_of(internal_producer, source, flat_graph):
+                    actual_source = internal_producer
+                else:
+                    internal_source = find_internal_producer_for_output(
+                        source, value_name, flat_graph, expansion_state
+                    )
+                    if internal_source:
+                        actual_source = internal_source
 
             actual_target = target
             target_attrs = flat_graph.nodes.get(target, {})

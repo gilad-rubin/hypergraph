@@ -340,8 +340,7 @@ class TestLifecycle:
 
 class TestImportGuard:
     def test_raises_without_rich(self):
-        with patch.dict("sys.modules", {"rich": None}):
-            with pytest.raises(ImportError, match="rich"):
-                from hypergraph.events.rich_progress import _require_rich
+        with patch.dict("sys.modules", {"rich": None}), pytest.raises(ImportError, match="rich"):
+            from hypergraph.events.rich_progress import _require_rich
 
-                _require_rich()
+            _require_rich()

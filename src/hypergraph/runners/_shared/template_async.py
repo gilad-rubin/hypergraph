@@ -276,10 +276,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         start_time = time.time()
 
         existing_limiter = self._get_concurrency_limiter()
-        if existing_limiter is None and max_concurrency is not None:
-            token = self._set_concurrency_limiter(max_concurrency)
-        else:
-            token = None
+        token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
 
         async def _run_map_item(variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation and normalize failures to RunResult."""
