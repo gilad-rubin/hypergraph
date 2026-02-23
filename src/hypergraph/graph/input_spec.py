@@ -262,7 +262,7 @@ def _compute_active_scope(
         active = _active_from_selection(selected, active, nodes, nx_graph)
 
     active_nodes = {name: nodes[name] for name in nodes if name in active}
-    active_subgraph = nx_graph.subgraph(active)
+    active_subgraph = nx_graph.subgraph(active).copy()
     return active_nodes, active_subgraph
 
 
@@ -299,11 +299,12 @@ def _active_from_selection(
     selected_set = set(selected_outputs)
     producers = {name for name in active_set if set(nodes[name].outputs) & selected_set}
     if not producers:
-        # No active node produces the selected outputs — return full active set
-        # as a graceful fallback. graph.select() validates output names at
-        # construction time, so this path only triggers via runtime select with
-        # entrypoints that exclude the producer (defense-in-depth).
-        return active_set
+        # No active node produces the selected outputs — return empty set.
+        # graph.select() validates output names at construction time; runtime
+        # select names are validated in resolve_runtime_selected(). This path
+        # only triggers when entrypoints exclude the output's producer, in which
+        # case no nodes are needed for this selection.
+        return set()
 
     sub = nx_graph.subgraph(active_set)
     needed: set[str] = set()

@@ -6,6 +6,7 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
+from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners._shared.types import RunnerCapabilities
 
 if TYPE_CHECKING:
@@ -421,12 +422,23 @@ def resolve_runtime_selected(
     if select == "**":
         return None  # all outputs — no narrowing
     if isinstance(select, str):
-        return (select,)
-    if isinstance(select, list):
-        return tuple(select)
-    # Unexpected type — treat as "no narrowing" rather than raising, since
-    # run() signature already constrains the type at the public API level.
-    return None
+        sel: tuple[str, ...] = (select,)
+    elif isinstance(select, list):
+        sel = tuple(select)
+    else:
+        # Unexpected type — treat as "no narrowing" rather than raising, since
+        # run() signature already constrains the type at the public API level.
+        return None
+
+    invalid = [n for n in sel if n not in graph.outputs]
+    if invalid:
+        valid_outputs = sorted(graph.outputs)
+        raise GraphConfigError(
+            f"Invalid select: {invalid} not in graph outputs.\n\n"
+            f"Valid outputs: {valid_outputs}\n\n"
+            f"How to fix: Check spelling or use select='**' to select all outputs."
+        )
+    return sel
 
 
 def _resolve_effective_input_spec(

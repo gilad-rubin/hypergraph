@@ -29,12 +29,12 @@ def compute_active_node_set(graph: Graph) -> set[str] | None:
     Delegates to input_spec._active_from_entrypoints to avoid duplicating
     the forward-reachability logic.
     """
-    if graph._entrypoints is None:
+    if graph.entrypoints_config is None:
         return None
 
     from hypergraph.graph.input_spec import _active_from_entrypoints
 
-    return _active_from_entrypoints(graph._entrypoints, graph._nodes, graph._nx_graph)
+    return _active_from_entrypoints(graph.entrypoints_config, graph._nodes, graph._nx_graph)
 
 
 class ValueSource(Enum):

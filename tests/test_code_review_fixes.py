@@ -16,7 +16,7 @@ import warnings
 
 import pytest
 
-from hypergraph import END, Graph
+from hypergraph import END, Graph, GraphConfigError
 from hypergraph.nodes.function import node
 from hypergraph.nodes.gate import route
 from hypergraph.runners.sync import SyncRunner
@@ -287,12 +287,12 @@ class TestGraphNodeInputTypeConsistency:
 class TestSelectParameterValidation:
     """Edge 2: Invalid select parameter handling.
 
-    Runner.run() with select=["typo_output"] silently returns empty by default,
-    warns with on_missing="warn", errors with on_missing="error".
+    Runner.run() with select=["typo_output"] raises GraphConfigError immediately —
+    invalid select names are caught before execution starts.
     """
 
-    def test_invalid_select_ignored_by_default(self):
-        """Invalid select parameter silently omitted with default on_missing='ignore'."""
+    def test_invalid_select_raises_config_error(self):
+        """Invalid select parameter raises GraphConfigError before execution."""
 
         @node(output_name="result")
         def identity(x: int) -> int:
@@ -301,11 +301,11 @@ class TestSelectParameterValidation:
         graph = Graph([identity])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 10}, select=["typo_result"])
-        assert result.values == {}
+        with pytest.raises(GraphConfigError, match="typo_result"):
+            runner.run(graph, {"x": 10}, select=["typo_result"])
 
-    def test_invalid_select_warns_with_on_missing(self):
-        """Invalid select parameter warns with on_missing='warn'."""
+    def test_invalid_select_with_on_missing_still_errors(self):
+        """Invalid select names raise GraphConfigError regardless of on_missing."""
 
         @node(output_name="result")
         def identity(x: int) -> int:
@@ -314,12 +314,9 @@ class TestSelectParameterValidation:
         graph = Graph([identity])
         runner = SyncRunner()
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        # on_missing governs missing run-time inputs, not invalid select names
+        with pytest.raises(GraphConfigError, match="typo_result"):
             runner.run(graph, {"x": 10}, select=["typo_result"], on_missing="warn")
-
-            assert len(w) >= 1
-            assert any("typo_result" in str(warning.message) for warning in w)
 
     def test_valid_select_no_warning(self):
         """Valid select parameter should not warn."""
