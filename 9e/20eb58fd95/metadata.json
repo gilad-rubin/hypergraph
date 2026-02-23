@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "9e20eb58fd95",
+  "strategy": "manual-commit",
+  "branch": "worktree-piped-dreaming-canyon",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hypergraph/runners/_shared/validation.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9e/20eb58fd95/0/metadata.json",
+      "transcript": "/9e/20eb58fd95/0/full.jsonl",
+      "context": "/9e/20eb58fd95/0/context.md",
+      "content_hash": "/9e/20eb58fd95/0/content_hash.txt",
+      "prompt": "/9e/20eb58fd95/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 9793,
+    "cache_read_tokens": 950777,
+    "output_tokens": 191,
+    "api_call_count": 7
+  }
+}
