@@ -38,7 +38,7 @@ Errors caught at `Graph()` construction, not hours into a run. Invalid targets, 
 
 ## 5. Immutability
 
-`with_*`, `bind`, `select`, `unbind` return new instances. No in-place mutation.
+`with_*`, `bind`, `select`, `unbind`, `with_entrypoint` return new instances. No in-place mutation.
 
 **What breaks**: In-place mutation creates spooky action at a distance. `base = Graph([a, b, c]); configured = base.bind(x=1)` — if `bind` mutates `base`, anyone holding a reference to `base` gets the binding unexpectedly.
 

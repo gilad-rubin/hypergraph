@@ -107,6 +107,7 @@ class Graph:
         self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
+        self._entrypoints: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
@@ -169,7 +170,13 @@ class Graph:
     @functools.cached_property
     def inputs(self) -> InputSpec:
         """Graph input specification (cached per instance)."""
-        return compute_input_spec(self._nodes, self._nx_graph, self._bound)
+        return compute_input_spec(
+            self._nodes,
+            self._nx_graph,
+            self._bound,
+            entrypoints=self._entrypoints,
+            selected=self._selected,
+        )
 
     @functools.cached_property
     def self_producers(self) -> dict[str, set[str]]:
@@ -462,9 +469,10 @@ class Graph:
         Controls which outputs are returned by runner.run() and which outputs
         are exposed when this graph is used as a nested node via as_node().
 
-        This does NOT affect internal graph execution — all nodes still run
-        and all intermediate values are still computed. It only filters what
-        is returned to the caller.
+        Also narrows ``graph.inputs`` to only parameters needed to produce
+        the selected outputs. Nodes that don't contribute are excluded from
+        InputSpec computation. However, at execution time all reachable nodes
+        still run — use ``with_entrypoint()`` to skip upstream execution.
 
         A runtime ``select=`` passed to runner.run() overrides this default.
 
@@ -539,6 +547,58 @@ class Graph:
         """Default output selection, or None if all outputs are returned."""
         return self._selected
 
+    def with_entrypoint(self, *node_names: str) -> Graph:
+        """Set execution entry points. Returns new Graph (immutable).
+
+        Entry points define where execution enters the graph. Upstream
+        nodes are excluded — their outputs become direct user inputs.
+
+        Works for both DAGs and cycles:
+        - DAG: entry point determines where computation starts
+        - Cycle: entry point determines cycle bootstrap requirements
+
+        Chainable: ``graph.with_entrypoint("A").with_entrypoint("B")``
+
+        Args:
+            *node_names: One or more node names to use as entry points.
+
+        Returns:
+            New Graph with entry points configured.
+
+        Raises:
+            GraphConfigError: If node doesn't exist or is a gate.
+
+        Example:
+            >>> # Skip upstream, provide intermediate values directly
+            >>> g = Graph([root, process, output])
+            >>> g2 = g.with_entrypoint("process")
+            >>> g2.inputs.required  # only process's unproduced inputs
+        """
+        from hypergraph.nodes.gate import GateNode
+
+        for name in node_names:
+            if name not in self._nodes:
+                raise GraphConfigError(
+                    f"Unknown entry point node: '{name}'\n\n  -> '{name}' is not in the graph\n  -> Available nodes: {sorted(self._nodes.keys())}"
+                )
+            if isinstance(self._nodes[name], GateNode):
+                raise GraphConfigError(
+                    f"Cannot use gate '{name}' as entry point\n\n"
+                    f"  -> Gates control routing, they cannot be entry points\n\n"
+                    f"How to fix:\n"
+                    f"  Use a non-gate node as the entry point"
+                )
+
+        new_graph = self._shallow_copy()
+        existing = self._entrypoints or ()
+        new_graph._entrypoints = tuple(dict.fromkeys(existing + node_names))
+        return new_graph
+
+    @property
+    def entrypoints_config(self) -> tuple[str, ...] | None:
+        """Configured entry points, or None if all nodes are active."""
+        return self._entrypoints
+
     @property
     def has_cycles(self) -> bool:
         """True if graph contains cycles."""
@@ -596,15 +656,15 @@ class Graph:
 
         Preserves: name, strict_types, nodes, nx_graph, cached_hash
         Creates new: _bound dict (to allow independent modifications)
-        Clears: cached inputs (depends on _bound which may differ)
+        Clears: cached inputs (depends on _bound, _selected, _entrypoints)
         """
         import copy
 
         new_graph = copy.copy(self)
         new_graph._bound = dict(self._bound)
-        # Clear cached_property values that depend on _bound
+        # Clear cached_property values that depend on _bound / _selected / _entrypoints
         new_graph.__dict__.pop("inputs", None)
-        # _selected is an immutable tuple (or None), safe to share via copy.copy
+        # _selected and _entrypoints are immutable tuples (or None), safe to share via copy.copy
         # All other attributes preserved: _strict_types, _nodes, _nx_graph, _cached_hash
         return new_graph
 

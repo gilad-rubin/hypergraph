@@ -6,10 +6,12 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
+from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners._shared.types import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+    from hypergraph.graph.input_spec import InputSpec
     from hypergraph.nodes.base import HyperNode
 
 
@@ -18,6 +20,7 @@ def validate_inputs(
     values: dict[str, Any],
     *,
     entrypoint: str | None = None,
+    selected: tuple[str, ...] | None = None,
 ) -> None:
     """Validate that all required inputs are provided.
 
@@ -32,12 +35,13 @@ def validate_inputs(
         graph: The graph to validate against
         values: The input values provided
         entrypoint: Optional explicit entry point node name for cycle
+        selected: Optional runtime output selection (narrows validation scope)
 
     Raises:
         MissingInputError: If required inputs or cycle entry points are missing
         ValueError: If entrypoint is invalid or cycle entry is ambiguous
     """
-    inputs_spec = graph.inputs
+    inputs_spec = _resolve_effective_input_spec(graph, selected)
     # Step 1: Merge bound + provided
     merged = {**inputs_spec.bound, **values}
     provided = set(merged.keys())
@@ -58,11 +62,11 @@ def validate_inputs(
         )
 
     # Step 3: Bypass detection (considering merged values)
-    bypassed_inputs = _find_bypassed_inputs(graph, provided)
+    bypassed_inputs = _find_bypassed_inputs(graph, provided, inputs_spec)
 
     # Step 4: Cycle entry point matching
     if inputs_spec.entrypoints:
-        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint)
+        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint, inputs_spec)
 
     # Step 5: Completeness check for required (acyclic) inputs
     required = set(inputs_spec.required) - bypassed_inputs
@@ -92,6 +96,7 @@ def _validate_cycle_entry(
     provided: set[str],
     bypassed: set[str],
     entrypoint: str | None,
+    inputs_spec: InputSpec,
 ) -> None:
     """Validate cycle entry points.
 
@@ -102,7 +107,7 @@ def _validate_cycle_entry(
         ValueError: If entrypoint is invalid, ambiguous, or mismatched.
         MissingInputError: If no entry point is satisfied for a cycle.
     """
-    ep = graph.inputs.entrypoints
+    ep = inputs_spec.entrypoints
 
     # If explicit entrypoint, validate it then check remaining cycles
     if entrypoint is not None:
@@ -334,7 +339,7 @@ def _get_interrupt_outputs(graph: Graph) -> set[str]:
     return {output for n in graph._nodes.values() if n.is_interrupt for output in n.outputs}
 
 
-def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
+def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSpec) -> set[str]:
     """Find inputs that belong to nodes fully bypassed by intermediate injection.
 
     A node is bypassed ONLY if ALL of its outputs that are consumed downstream
@@ -343,6 +348,11 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
 
     When a node is bypassed, its exclusive inputs (not needed by other nodes)
     can be removed from the required set.
+
+    Note: This iterates ``graph._nodes`` (the full graph), not just the active
+    subgraph. This is safe because bypassed inputs are subtracted from
+    ``inputs_spec.required``, which is already scoped to active nodes.
+    Extra bypassed inputs from inactive nodes are no-ops.
     """
     # Build output -> producer nodes mapping (handle mutex branches)
     output_to_nodes: dict[str, list[str]] = {}
@@ -357,7 +367,7 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
 
     # Cycle entry point params: providing these means bootstrapping a cycle,
     # NOT bypassing the producer node. Exclude from bypass check.
-    cycle_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
+    cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
 
     # A node is bypassed only if ALL its non-cycle consumed outputs are provided
     bypassed_nodes: set[str] = set()
@@ -392,6 +402,67 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
             bypassed_inputs -= set(node.inputs)
 
     return bypassed_inputs
+
+
+def resolve_runtime_selected(
+    select: Any,
+    graph: Graph,
+) -> tuple[str, ...] | None:
+    """Convert runtime select parameter into a tuple for validation.
+
+    Handles the ``_UNSET_SELECT`` sentinel, ``"**"``, single strings,
+    and lists.  Returns ``None`` when all outputs are requested (no
+    narrowing).
+    """
+    from hypergraph.runners._shared.helpers import _UNSET_SELECT
+
+    if select is _UNSET_SELECT:
+        # Fall back to graph-level selection
+        return graph.selected  # already tuple | None
+    if select == "**":
+        return None  # all outputs — no narrowing
+    if isinstance(select, str):
+        sel: tuple[str, ...] = (select,)
+    elif isinstance(select, list):
+        sel = tuple(select)
+    else:
+        # Unexpected type — treat as "no narrowing" rather than raising, since
+        # run() signature already constrains the type at the public API level.
+        return None
+
+    invalid = [n for n in sel if n not in graph.outputs]
+    if invalid:
+        valid_outputs = sorted(graph.outputs)
+        raise GraphConfigError(
+            f"Invalid select: {invalid} not in graph outputs.\n\n"
+            f"Valid outputs: {valid_outputs}\n\n"
+            f"How to fix: Check spelling or use select='**' to select all outputs."
+        )
+    return sel
+
+
+def _resolve_effective_input_spec(
+    graph: Graph,
+    selected: tuple[str, ...] | None,
+) -> InputSpec:
+    """Compute InputSpec scoped to runtime selection if different from graph config.
+
+    When the runner passes a runtime ``selected`` that differs from
+    ``graph.selected``, we recompute InputSpec so validation uses the
+    narrower scope. Otherwise, return the cached ``graph.inputs``.
+    """
+    if selected == graph.selected:
+        return graph.inputs
+
+    from hypergraph.graph.input_spec import compute_input_spec
+
+    return compute_input_spec(
+        graph._nodes,
+        graph._nx_graph,
+        graph._bound,
+        entrypoints=graph._entrypoints,
+        selected=selected,
+    )
 
 
 def validate_node_types(

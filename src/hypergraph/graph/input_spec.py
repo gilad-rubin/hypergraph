@@ -51,40 +51,56 @@ def compute_input_spec(
     nodes: dict[str, HyperNode],
     nx_graph: nx.DiGraph,
     bound: dict[str, Any],
+    *,
+    entrypoints: tuple[str, ...] | None = None,
+    selected: tuple[str, ...] | None = None,
 ) -> InputSpec:
     """Compute input specification for a graph.
+
+    Required inputs depend on four dimensions:
+    - Entrypoints (start): which nodes execute
+    - Selection (end): which outputs are needed
+    - Bindings (pre-fill): which params have fixed values
+    - Defaults (fallback): which params have function-level fallbacks
 
     Args:
         nodes: Map of node name -> HyperNode
         nx_graph: The NetworkX directed graph
         bound: Currently bound values
+        entrypoints: Optional entry point node names (narrows to forward-reachable)
+        selected: Optional output names to produce (narrows to backward-reachable)
 
     Returns:
-        InputSpec with categorized parameters
+        InputSpec with categorized parameters scoped to the active subgraph
     """
-    edge_produced = get_edge_produced_values(nx_graph)
-    entrypoints = _compute_entrypoints(nodes, nx_graph, edge_produced, bound)
-    # Flat set of all entrypoint params (for categorization)
-    all_entry_params = {p for params in entrypoints.values() for p in params}
+    active_nodes, active_subgraph = _compute_active_scope(
+        nodes,
+        nx_graph,
+        entrypoints=entrypoints,
+        selected=selected,
+    )
+
+    edge_produced = get_edge_produced_values(active_subgraph)
+    cycle_entrypoints = _compute_entrypoints(active_nodes, active_subgraph, edge_produced, bound)
+    all_entry_params = {p for params in cycle_entrypoints.values() for p in params}
 
     required, optional = [], []
 
-    for param in _unique_params(nodes):
+    for param in _unique_params(active_nodes):
         if param in all_entry_params:
             continue  # Handled by entrypoints
-        category = _categorize_param(param, edge_produced, bound, nodes)
+        category = _categorize_param(param, edge_produced, bound, active_nodes)
         if category == "required":
             required.append(param)
         elif category == "optional":
             optional.append(param)
 
-    # Merge bound values from nested GraphNodes
-    all_bound = _collect_bound_values(nodes, bound)
+    all_bound = _collect_bound_values(active_nodes, bound)
 
     return InputSpec(
         required=tuple(required),
         optional=tuple(optional),
-        entrypoints=entrypoints,
+        entrypoints=cycle_entrypoints,
         bound=all_bound,
     )
 
@@ -218,6 +234,106 @@ def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
     subgraph.add_nodes_from(nx_graph.nodes())
     subgraph.add_edges_from(data_edges)
     return subgraph
+
+
+# =============================================================================
+# Active Subgraph Computation
+# =============================================================================
+
+
+def _compute_active_scope(
+    nodes: dict[str, HyperNode],
+    nx_graph: nx.DiGraph,
+    *,
+    entrypoints: tuple[str, ...] | None = None,
+    selected: tuple[str, ...] | None = None,
+) -> tuple[dict[str, HyperNode], nx.DiGraph]:
+    """Compute active node set and induced subgraph.
+
+    The active set is determined by:
+    1. Forward-reachable from entrypoints (or all nodes if none)
+    2. Narrowed to backward-reachable from selected outputs
+       (with pessimistic gate expansion)
+    """
+    active = set(nodes)
+    if entrypoints is not None:
+        active = _active_from_entrypoints(entrypoints, nodes, nx_graph)
+    if selected is not None:
+        active = _active_from_selection(selected, active, nodes, nx_graph)
+
+    active_nodes = {name: nodes[name] for name in nodes if name in active}
+    active_subgraph = nx_graph.subgraph(active).copy()
+    return active_nodes, active_subgraph
+
+
+def _active_from_entrypoints(
+    entrypoint_nodes: tuple[str, ...],
+    nodes: dict[str, HyperNode],
+    nx_graph: nx.DiGraph,
+) -> set[str]:
+    """Compute active nodes by forward reachability from entrypoints.
+
+    Everything upstream of entrypoints is excluded. Only the entrypoint
+    nodes and their downstream descendants are active.
+    """
+    active = set(entrypoint_nodes)
+    for ep in entrypoint_nodes:
+        active.update(nx.descendants(nx_graph, ep))
+    return active & set(nodes)
+
+
+def _active_from_selection(
+    selected_outputs: tuple[str, ...],
+    active_set: set[str],
+    nodes: dict[str, HyperNode],
+    nx_graph: nx.DiGraph,
+) -> set[str]:
+    """Narrow active set to nodes needed for selected outputs.
+
+    Walks backward from output producers. When a gate is encountered,
+    pessimistically includes ALL its targets and their descendants
+    (since routing decisions are made at runtime).
+    """
+    from hypergraph.nodes.gate import END, GateNode
+
+    selected_set = set(selected_outputs)
+    producers = {name for name in active_set if set(nodes[name].outputs) & selected_set}
+    if not producers:
+        # No active node produces the selected outputs — return empty set.
+        # graph.select() validates output names at construction time; runtime
+        # select names are validated in resolve_runtime_selected(). This path
+        # only triggers when entrypoints exclude the output's producer, in which
+        # case no nodes are needed for this selection.
+        return set()
+
+    sub = nx_graph.subgraph(active_set)
+    needed: set[str] = set()
+    worklist = list(producers)
+
+    while worklist:
+        name = worklist.pop()
+        if name in needed or name not in active_set:
+            continue
+        needed.add(name)
+
+        # Backward: include predecessors
+        for pred in sub.predecessors(name):
+            if pred not in needed:
+                worklist.append(pred)
+
+        # Pessimistic gate expansion: all targets might execute
+        node = nodes.get(name)
+        if isinstance(node, GateNode):
+            for target in node.targets:
+                if target is END or target not in active_set:
+                    continue
+                if target not in needed:
+                    worklist.append(target)
+                    for desc in nx.descendants(sub, target):
+                        if desc not in needed:
+                            worklist.append(desc)
+
+    return needed
 
 
 def _collect_bound_values(

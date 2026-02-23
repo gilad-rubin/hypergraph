@@ -22,6 +22,27 @@ if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
 
 
+def compute_active_node_set(graph: Graph) -> set[str] | None:
+    """Compute active node names from graph's entrypoint config.
+
+    Returns None when no entrypoints are configured (all nodes active).
+    Delegates to input_spec._active_from_entrypoints to avoid duplicating
+    the forward-reachability logic.
+
+    Note: This only considers entrypoints, not select. This is intentional —
+    ``with_entrypoint()`` narrows *execution* (which nodes run), while
+    ``select()`` narrows *validation* (which inputs are required) and
+    *output filtering* (what run() returns). Use ``with_entrypoint()`` when
+    you need to skip upstream node execution entirely.
+    """
+    if graph.entrypoints_config is None:
+        return None
+
+    from hypergraph.graph.input_spec import _active_from_entrypoints
+
+    return _active_from_entrypoints(graph.entrypoints_config, graph._nodes, graph._nx_graph)
+
+
 class ValueSource(Enum):
     """Source of a parameter's value during graph execution."""
 
@@ -115,7 +136,12 @@ def get_value_source(
     raise KeyError(f"No value for input '{param}'")
 
 
-def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
+def get_ready_nodes(
+    graph: Graph,
+    state: GraphState,
+    *,
+    active_nodes: set[str] | None = None,
+) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
     A node is ready when:
@@ -123,10 +149,14 @@ def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
     2. The node hasn't been executed yet, OR
     3. The node was executed but its inputs have changed (stale)
     4. If controlled by a gate, the gate has routed to this node
+    5. If active_nodes is set, the node must be in the active set
 
     Args:
         graph: The graph being executed
         state: Current execution state
+        active_nodes: Optional set of node names to restrict scheduling to.
+            When set (from with_entrypoint), nodes outside this set are never
+            scheduled even if their inputs are available.
 
     Returns:
         List of nodes ready to execute
@@ -136,6 +166,8 @@ def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
 
     ready = []
     for node in graph._nodes.values():
+        if active_nodes is not None and node.name not in active_nodes:
+            continue
         if _is_node_ready(node, graph, state, activated_nodes):
             ready.append(node)
 

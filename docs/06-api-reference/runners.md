@@ -64,7 +64,7 @@ Execute a graph once.
 **Args:**
 - `graph` - The graph to execute
 - `values` - Optional input values as `{param_name: value}`
-- `select` - Which outputs to return. `"**"` (default) returns all outputs. Pass a list of names for specific outputs.
+- `select` - Which outputs to return. `"**"` (default) returns all outputs. Pass a list of names for specific outputs. Also narrows input validation -- only inputs needed to produce the selected outputs are required. See [InputSpec](inputspec.md) for details on scope narrowing.
 - `on_missing` - How to handle missing selected outputs:
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
@@ -90,7 +90,7 @@ result = runner.run(graph, {"query": "What is RAG?"})
 # kwargs shorthand
 result = runner.run(graph, query="What is RAG?")
 
-# Select specific outputs
+# Select specific outputs (also narrows required inputs)
 result = runner.run(graph, values, select=["final_answer"])
 
 # Limit iterations for cyclic graphs
@@ -254,7 +254,7 @@ Execute a graph asynchronously.
 **Args:**
 - `graph` - The graph to execute
 - `values` - Optional input values
-- `select` - Which outputs to return. `"**"` (default) returns all outputs.
+- `select` - Which outputs to return. `"**"` (default) returns all outputs. Also narrows input validation to only what's needed for the selected outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Optional explicit cycle entrypoint node name
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
