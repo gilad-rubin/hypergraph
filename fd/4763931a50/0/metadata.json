@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "fd4763931a50",
+  "session_id": "a560566f-c6bc-4068-b50e-313844890bc3",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-23T10:59:02.835577Z",
+  "branch": "agent-readiness",
+  "checkpoints_count": 0,
+  "files_touched": [
+    ".claude/skills/feature/SKILL.md",
+    ".pre-commit-config.yaml",
+    "AGENTS.md",
+    "dev/CODE-CONVENTIONS.md",
+    "dev/CORE-BELIEFS.md",
+    "dev/REVIEW-CHECKLIST.md",
+    ".claude/skills/quality-criteria/SKILL.md",
+    ".claude/skills/quality-criteria/references/quality-criteria.md",
+    ".claude/skills/code-smells/SKILL.md",
+    ".claude/skills/docs-writer/references/examples.md",
+    ".claude/skills/update-docs/SKILL.md",
+    "dev/ARCHITECTURE.md",
+    "dev/CONTRIBUTING.md",
+    "dev/TESTING-GUIDE.md",
+    "pyproject.toml",
+    ".claude/skills/docs-writer/SKILL.md",
+    ".claude/skills/docs-writer/references/page-templates.md",
+    ".claude/skills/docs-writer/references/style-guide.md",
+    ".github/workflows/ci.yml"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "cc825ef3bb3a",
+  "token_usage": {
+    "input_tokens": 88,
+    "cache_creation_tokens": 192476,
+    "cache_read_tokens": 5056246,
+    "output_tokens": 21474,
+    "api_call_count": 62
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-23T10:59:01.922786Z",
+    "agent_lines": 2706,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2706,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-Users-giladrubin-python-workspace-hypergraph/a560566f-c6bc-4068-b50e-313844890bc3.jsonl"
+}

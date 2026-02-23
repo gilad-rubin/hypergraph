@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "fd4763931a50",
+  "strategy": "manual-commit",
+  "branch": "agent-readiness",
+  "checkpoints_count": 0,
+  "files_touched": [
+    ".claude/skills/code-smells/SKILL.md",
+    ".claude/skills/docs-writer/SKILL.md",
+    ".claude/skills/docs-writer/references/examples.md",
+    ".claude/skills/docs-writer/references/page-templates.md",
+    ".claude/skills/docs-writer/references/style-guide.md",
+    ".claude/skills/feature/SKILL.md",
+    ".claude/skills/quality-criteria/SKILL.md",
+    ".claude/skills/quality-criteria/references/quality-criteria.md",
+    ".claude/skills/update-docs/SKILL.md",
+    ".github/workflows/ci.yml",
+    ".pre-commit-config.yaml",
+    "AGENTS.md",
+    "dev/ARCHITECTURE.md",
+    "dev/CODE-CONVENTIONS.md",
+    "dev/CONTRIBUTING.md",
+    "dev/CORE-BELIEFS.md",
+    "dev/REVIEW-CHECKLIST.md",
+    "dev/TESTING-GUIDE.md",
+    "pyproject.toml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fd/4763931a50/0/metadata.json",
+      "transcript": "/fd/4763931a50/0/full.jsonl",
+      "context": "/fd/4763931a50/0/context.md",
+      "content_hash": "/fd/4763931a50/0/content_hash.txt",
+      "prompt": "/fd/4763931a50/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 88,
+    "cache_creation_tokens": 192476,
+    "cache_read_tokens": 5056246,
+    "output_tokens": 21474,
+    "api_call_count": 62
+  }
+}
