@@ -33,14 +33,15 @@ generation (outer)
 └── format_response(raw_answer, query) → response
 ```
 """
+
 from __future__ import annotations
 
 from hypergraph import Graph, node
 
-
 # =============================================================================
 # Outer graph nodes (at root level)
 # =============================================================================
+
 
 @node(output_name="filtered_document")
 def filter_document_pages(document: str, selected_pages: list[int]) -> str:
@@ -63,6 +64,7 @@ def format_response(raw_answer: str, query: str) -> dict:
 # =============================================================================
 # Inner graph nodes (inside prompt_building container)
 # =============================================================================
+
 
 @node(output_name="system_prompt")
 def get_system_prompt(system_instructions: str) -> str:
@@ -94,6 +96,7 @@ def build_prompt(
 # Graph Construction
 # =============================================================================
 
+
 def make_prompt_building_graph() -> Graph:
     """Create the inner prompt_building graph."""
     return Graph(
@@ -119,6 +122,7 @@ def make_generation_graph() -> Graph:
 # =============================================================================
 # Visualization and Testing
 # =============================================================================
+
 
 def visualize_graph(depth: int = 1, separate_outputs: bool = False) -> None:
     """Visualize the graph at a given depth.
@@ -152,7 +156,6 @@ def visualize_graph(depth: int = 1, separate_outputs: bool = False) -> None:
 
 def analyze_input_scopes() -> None:
     """Analyze and print expected INPUT scopes for the graph."""
-    from hypergraph.viz.renderer import render_graph
 
     graph = make_generation_graph()
     flat_graph = graph.to_flat_graph()
@@ -175,11 +178,7 @@ def analyze_input_scopes() -> None:
             param_consumers[param].append(node_id)
 
     # Get containers (GRAPH nodes)
-    containers = {
-        node_id
-        for node_id, attrs in flat_graph.nodes(data=True)
-        if attrs.get("node_type") == "GRAPH"
-    }
+    containers = {node_id for node_id, attrs in flat_graph.nodes(data=True) if attrs.get("node_type") == "GRAPH"}
 
     print(f"\nContainers: {containers}")
     print(f"\nExternal inputs: {all_inputs}")

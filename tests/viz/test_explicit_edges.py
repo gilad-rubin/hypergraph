@@ -219,9 +219,10 @@ class TestOuterExplicitEdges:
         # Input edge should NOT go to container
         input_edges = [(s, t) for s, t in edges if "input" in s.lower()]
         for src, tgt in input_edges:
-            assert tgt not in ("middle", "inner"), (
-                f"Input edge should go to 'step1', not container at depth=2.\nFound: {src} → {tgt}\nAll edges: {edges}"
-            )
+            assert tgt not in (
+                "middle",
+                "inner",
+            ), f"Input edge should go to 'step1', not container at depth=2.\nFound: {src} → {tgt}\nAll edges: {edges}"
 
     def test_depth2_no_inputs_artificial_node(self):
         """At depth=2, should not have __inputs__ artificial node."""

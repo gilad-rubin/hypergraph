@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate debug HTML for hypergraph visualization and extract debug info."""
+
 import argparse
 import importlib
 import json
@@ -67,10 +68,7 @@ def generate_debug_html(
     else:
         graph = graph_obj
 
-    if hasattr(graph, "bind"):
-        bound = graph.bind()
-    else:
-        bound = graph
+    bound = graph.bind() if hasattr(graph, "bind") else graph
 
     flat_graph = bound.to_flat_graph()
 
@@ -81,9 +79,8 @@ def generate_debug_html(
         debug_overlays=True,
     )
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-    html_path = tmp.name
-    tmp.close()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+        html_path = tmp.name
 
     visualize(
         bound,
@@ -109,23 +106,27 @@ def generate_debug_html(
             debug_info["expansion_state"][n["id"]] = n.get("data", {}).get("isExpanded", False)
 
     for e in result["edges"]:
-        debug_info["edges_to_check"].append({
-            "id": e["id"],
-            "source": e["source"],
-            "target": e["target"],
-            "valueName": e.get("data", {}).get("valueName", ""),
-        })
+        debug_info["edges_to_check"].append(
+            {
+                "id": e["id"],
+                "source": e["source"],
+                "target": e["target"],
+                "valueName": e.get("data", {}).get("valueName", ""),
+            }
+        )
 
     for n in result["nodes"]:
         nt = n.get("data", {}).get("nodeType", "")
         if nt in ("INPUT", "INPUT_GROUP"):
-            debug_info["input_groups"].append({
-                "id": n["id"],
-                "nodeType": nt,
-                "ownerContainer": n.get("data", {}).get("ownerContainer"),
-                "deepestOwnerContainer": n.get("data", {}).get("deepestOwnerContainer"),
-                "parentNode": n.get("parentNode"),
-            })
+            debug_info["input_groups"].append(
+                {
+                    "id": n["id"],
+                    "nodeType": nt,
+                    "ownerContainer": n.get("data", {}).get("ownerContainer"),
+                    "deepestOwnerContainer": n.get("data", {}).get("deepestOwnerContainer"),
+                    "parentNode": n.get("parentNode"),
+                }
+            )
 
     for n in result["nodes"]:
         if n.get("parentNode"):
@@ -170,17 +171,17 @@ def main():
         args.separate_outputs,
     )
 
-    print(f"\n=== HTML Generated ===")
+    print("\n=== HTML Generated ===")
     print(f"Path: {html_path}")
 
     if args.open:
         subprocess.run(["open", html_path])
 
-    print(f"\n=== Debug Info ===")
+    print("\n=== Debug Info ===")
     print(json.dumps(debug_info, indent=2))
 
     # Analyze for common issues
-    print(f"\n=== Issue Detection ===")
+    print("\n=== Issue Detection ===")
 
     # Check for orphan edges (source doesn't exist or is hidden)
     node_ids = set(debug_info.get("node_ids", []))

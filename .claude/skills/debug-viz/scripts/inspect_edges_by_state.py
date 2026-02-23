@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Inspect precomputed edges for a specific expansion state key."""
+
 from __future__ import annotations
 
 import argparse
@@ -56,10 +57,7 @@ def render_edges_by_state(
     else:
         graph = graph_obj
 
-    if hasattr(graph, "bind"):
-        bound = graph.bind()
-    else:
-        bound = graph
+    bound = graph.bind() if hasattr(graph, "bind") else graph
 
     flat_graph = bound.to_flat_graph()
     result = render_graph(
@@ -113,20 +111,25 @@ def main() -> None:
         raise SystemExit(f"Key '{key}' not found. Available: {available}")
 
     edges = edges_by_state[key]
-    print(json.dumps({
-        "key": key,
-        "edge_count": len(edges),
-        "edges": [
+    print(
+        json.dumps(
             {
-                "id": e.get("id"),
-                "source": e.get("source"),
-                "target": e.get("target"),
-                "valueName": (e.get("data") or {}).get("valueName"),
-                "edgeType": (e.get("data") or {}).get("edgeType"),
-            }
-            for e in edges
-        ],
-    }, indent=2))
+                "key": key,
+                "edge_count": len(edges),
+                "edges": [
+                    {
+                        "id": e.get("id"),
+                        "source": e.get("source"),
+                        "target": e.get("target"),
+                        "valueName": (e.get("data") or {}).get("valueName"),
+                        "edgeType": (e.get("data") or {}).get("edgeType"),
+                    }
+                    for e in edges
+                ],
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

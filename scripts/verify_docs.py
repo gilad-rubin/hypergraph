@@ -30,7 +30,7 @@ def extract_code_blocks(md_content: str) -> list[tuple[int, str]]:
     for match in re.finditer(pattern, md_content, re.DOTALL):
         # Find line number
         start_pos = match.start()
-        line_num = md_content[:start_pos].count('\n') + 1
+        line_num = md_content[:start_pos].count("\n") + 1
         code = match.group(1).strip()
         blocks.append((line_num, code))
 
@@ -57,26 +57,24 @@ def test_code_block(code: str, line_num: int) -> tuple[bool, str]:
         return True, f"Line {line_num}: SKIP (error example)"
 
     # Add import at top if not present
-    if "from hypergraph import" not in code and "@node" in code:
-        code = "from hypergraph import node, FunctionNode, Graph\n" + code
-    elif "from hypergraph import" not in code:
+    if "from hypergraph import" not in code and "@node" in code or "from hypergraph import" not in code:
         code = "from hypergraph import node, FunctionNode, Graph\n" + code
 
     # Remove comment-only lines that show expected output
-    lines = code.split('\n')
+    lines = code.split("\n")
     exec_lines = []
     for line in lines:
         # Keep lines that aren't pure "# output" comments
-        if not line.strip().startswith('# ') or '=' in line or 'import' in line.lower():
+        if not line.strip().startswith("# ") or "=" in line or "import" in line.lower():
             exec_lines.append(line)
-        elif line.strip().startswith('# Warning:') or line.strip().startswith('# RenameError:'):
+        elif line.strip().startswith("# Warning:") or line.strip().startswith("# RenameError:"):
             # Skip expected output comments
             pass
-        elif line.strip().startswith('# '):
+        elif line.strip().startswith("# "):
             # Keep other comments
             exec_lines.append(line)
 
-    code = '\n'.join(exec_lines)
+    code = "\n".join(exec_lines)
 
     try:
         result = subprocess.run(
@@ -100,7 +98,7 @@ def test_code_block(code: str, line_num: int) -> tuple[bool, str]:
 
 def indent(text: str, prefix: str = "    ") -> str:
     """Indent text."""
-    return '\n'.join(prefix + line for line in text.split('\n'))
+    return "\n".join(prefix + line for line in text.split("\n"))
 
 
 def main():
@@ -130,7 +128,7 @@ def main():
         else:
             failed += 1
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Results: {passed} passed, {failed} failed, {skipped} skipped")
 
     if failed > 0:

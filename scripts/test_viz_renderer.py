@@ -1,6 +1,7 @@
 """Test script to verify the visualization renderer output."""
 
 from hypergraph import Graph, node
+from hypergraph.viz.renderer import render_graph
 
 
 @node(output_name="y")
@@ -10,13 +11,10 @@ def double(x: int) -> int:
 
 @node(output_name="z")
 def square(y: int) -> int:
-    return y ** 2
+    return y**2
 
 
 graph = Graph(nodes=[double, square])
-
-# Import and use renderer directly to see the JSON structure
-from hypergraph.viz.renderer import render_graph
 
 result = render_graph(graph.to_flat_graph(), separate_outputs=False, show_types=True)
 
@@ -31,6 +29,4 @@ for n in result["nodes"]:
 print()
 print("=== EDGES ===")
 for e in result["edges"]:
-    print(
-        f"  {e['source']} -> {e['target']} (type={e.get('data', {}).get('edgeType', '?')})"
-    )
+    print(f"  {e['source']} -> {e['target']} (type={e.get('data', {}).get('edgeType', '?')})")
