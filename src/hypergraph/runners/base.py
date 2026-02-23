@@ -73,6 +73,7 @@ class BaseRunner(ABC):
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         event_processors: list[EventProcessor] | None = None,
@@ -85,6 +86,10 @@ class BaseRunner(ABC):
             values: Optional input values dict (some should be lists for map_over)
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
+            clone: Deep-copy broadcast values per iteration.
+                False (default) = share by reference.
+                True = deep-copy all broadcast values.
+                list[str] = deep-copy only named params.
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
             event_processors: Optional list of event processors to receive execution events

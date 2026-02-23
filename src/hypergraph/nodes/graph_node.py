@@ -86,6 +86,7 @@ class GraphNode(HyperNode):
         self._map_over: list[str] | None = None
         self._map_mode: Literal["zip", "product"] = "zip"
         self._error_handling: ErrorHandling = "raise"
+        self._clone: bool | list[str] = False
 
         # Core HyperNode attributes
         self.name = resolved_name
@@ -278,6 +279,22 @@ class GraphNode(HyperNode):
             return list(self._map_over)
         return [reverse_map.get(p, p) for p in self._map_over]
 
+    def _original_clone(self) -> bool | list[str]:
+        """Get clone config translated to original inner graph names.
+
+        Mirrors _original_map_params() — user specifies clone in outer
+        (renamed) namespace, but generate_map_inputs operates on original names.
+
+        Returns:
+            Clone config with param names in original inner graph namespace.
+        """
+        if not isinstance(self._clone, list):
+            return self._clone
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return list(self._clone)
+        return [reverse_map.get(p, p) for p in self._clone]
+
     def map_outputs_from_original(self, outputs: dict[str, Any]) -> dict[str, Any]:
         """Map original inner graph output names to renamed external names.
 
@@ -415,6 +432,7 @@ class GraphNode(HyperNode):
         *params: str,
         mode: Literal["zip", "product"] = "zip",
         error_handling: ErrorHandling = "raise",
+        clone: bool | list[str] = False,
     ) -> _GN:
         """Configure this GraphNode for iteration over input parameters.
 
@@ -433,6 +451,41 @@ class GraphNode(HyperNode):
                 - "raise": Stop on first failure and raise the error (default).
                 - "continue": Collect all results; failed items become None
                   placeholders to preserve list length.
+            clone: Control deep-copying of broadcast (non-mapped) values per
+                iteration. Useful when nodes mutate broadcast inputs.
+                - False (default): share by reference (efficient, backward compatible)
+                - True: deep-copy ALL broadcast values per iteration
+                - list[str]: deep-copy only the named params per iteration
+
+                Broadcast Sharing:
+                    Non-mapped inputs ("broadcast values") are shared by reference
+                    across all iterations. This is efficient and correct for:
+                    - API clients (OpenAI, httpx) — designed for concurrent use
+                    - Immutable values (strings, ints, tuples) — can't be mutated
+                    - Frozen objects — mutation raises immediately
+
+                    If a node mutates a broadcast value, all iterations see the change.
+                    In async execution, this is a race condition.
+
+                    To protect against accidental mutation, either:
+
+                    1. Use clone= to deep-copy per iteration:
+                       inner.map_over("items", clone=["config"])
+
+                    2. Use immutable types for broadcast values:
+                       - dict → types.MappingProxyType(config)
+                       - list → tuple(items)
+                       - @dataclass → @dataclass(frozen=True)
+                       - Pydantic → model_config = ConfigDict(frozen=True)
+
+                    3. Use .bind() on the inner graph for shared resources:
+                       inner = Graph([...]).bind(client=openai_client)
+                       # bind values are resolved inside the inner graph
+                       # and never go through the clone path
+
+                    Performance note: clone=True deep-copies every broadcast value
+                    on every iteration. For large product-mode maps this can be
+                    expensive. Prefer clone=["specific_params"] when possible.
 
         Returns:
             New GraphNode instance with map_over configuration
@@ -440,6 +493,8 @@ class GraphNode(HyperNode):
         Raises:
             ValueError: If no parameters specified
             ValueError: If any parameter is not in this node's inputs
+            TypeError: If clone is not bool or list[str]
+            ValueError: If clone list contains a mapped parameter
 
         Example:
             >>> inner = Graph([double], name="inner")
@@ -452,6 +507,9 @@ class GraphNode(HyperNode):
 
             >>> # Product mode: process all combinations
             >>> gn = inner.as_node().map_over("x", "y", mode="product")
+
+            >>> # Clone broadcast values to prevent mutation leaking across iterations
+            >>> gn = inner.as_node().map_over("items", clone=["config"])
         """
         if not params:
             raise ValueError("map_over requires at least one parameter")
@@ -461,23 +519,30 @@ class GraphNode(HyperNode):
             if param not in self.inputs:
                 raise ValueError(f"Parameter '{param}' is not an input of this GraphNode. Available inputs: {self.inputs}")
 
+        # Validate clone parameter
+        _validate_clone(clone, params, self.inputs)
+
         # Create copy with map_over configuration
-        clone = self._copy()
-        clone._map_over = list(params)
-        clone._map_mode = mode
-        clone._error_handling = error_handling
-        return clone
+        new = self._copy()
+        new._map_over = list(params)
+        new._map_mode = mode
+        new._error_handling = error_handling
+        new._clone = list(clone) if isinstance(clone, list) else clone
+        return new
 
     def _copy(self: _GN) -> _GN:
         """Create a shallow copy preserving map_over configuration."""
         import copy
 
-        clone = copy.copy(self)
-        clone._rename_history = list(self._rename_history)
+        new = copy.copy(self)
+        new._rename_history = list(self._rename_history)
         # Preserve map_over as a new list if set
         if self._map_over is not None:
-            clone._map_over = list(self._map_over)
-        return clone
+            new._map_over = list(self._map_over)
+        # Preserve clone as a new list if it's a list
+        if isinstance(self._clone, list):
+            new._clone = list(self._clone)
+        return new
 
     def with_inputs(
         self: _GN,
@@ -494,10 +559,40 @@ class GraphNode(HyperNode):
             return self._copy()
 
         # Call base class rename
-        clone = self._with_renamed("inputs", combined)
+        renamed = self._with_renamed("inputs", combined)
 
         # Update map_over if any mapped params were renamed
-        if clone._map_over is not None:
-            clone._map_over = [combined.get(p, p) for p in clone._map_over]
+        if renamed._map_over is not None:
+            renamed._map_over = [combined.get(p, p) for p in renamed._map_over]
 
-        return clone
+        # Update clone list if any cloned params were renamed
+        if isinstance(renamed._clone, list):
+            renamed._clone = [combined.get(p, p) for p in renamed._clone]
+
+        return renamed
+
+
+def _validate_clone(
+    clone: bool | list[str],
+    map_params: tuple[str, ...],
+    node_inputs: tuple[str, ...],
+) -> None:
+    """Validate the clone parameter for map_over().
+
+    Raises:
+        TypeError: If clone is not bool or list of strings
+        ValueError: If clone list contains a mapped parameter
+    """
+    if not isinstance(clone, (bool, list)):
+        raise TypeError(f"clone must be bool or list[str], got {type(clone).__name__}")
+
+    if isinstance(clone, list):
+        for entry in clone:
+            if not isinstance(entry, str):
+                raise TypeError(f"clone list entries must be strings, got {type(entry).__name__}: {entry!r}")
+
+        # Cloning a mapped param is nonsensical — it's already per-iteration
+        mapped_set = set(map_params)
+        for name in clone:
+            if name in mapped_set:
+                raise ValueError(f"Cannot clone mapped parameter '{name}' — mapped params are already per-iteration")

@@ -246,6 +246,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
@@ -267,7 +268,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         validate_map_compatible(graph)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
-        input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode))
+        input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
         if not input_variations:
             return []
         if max_concurrency is None and len(input_variations) > MAX_UNBOUNDED_MAP_TASKS:
