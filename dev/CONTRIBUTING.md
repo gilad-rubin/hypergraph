@@ -15,8 +15,9 @@ git clone https://github.com/gilad-rubin/hypergraph.git
 cd hypergraph
 uv sync --group dev
 
-# Install pre-commit hooks
+# Install pre-commit and pre-push hooks
 uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
 
 # Enable session tracking (captures agent transcripts as Git checkpoints)
 entire enable
