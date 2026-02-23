@@ -344,11 +344,8 @@ class TestSyncRunnerRun:
         graph = Graph([counter, always_continue])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"count": 0}, max_iterations=5)
-
-        # Should fail due to infinite loop
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, InfiniteLoopError)
+        with pytest.raises(InfiniteLoopError):
+            runner.run(graph, {"count": 0}, max_iterations=5)
 
     def test_cycle_raises_on_infinite_loop(self):
         """Infinite loop detected and reported."""
@@ -360,10 +357,8 @@ class TestSyncRunnerRun:
         graph = Graph([counter, always_continue])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"count": 0}, max_iterations=10)
-
-        assert result.status == RunStatus.FAILED
-        assert "10" in str(result.error)  # Max iterations in message
+        with pytest.raises(InfiniteLoopError, match="10"):
+            runner.run(graph, {"count": 0}, max_iterations=10)
 
     # Nested graphs
 
@@ -432,10 +427,8 @@ class TestSyncRunnerRun:
         graph = Graph([failing])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
+        with pytest.raises(ValueError, match="intentional error"):
+            runner.run(graph, {"x": 5})
 
     def test_node_exception_sets_failed_status(self):
         """Exception sets status to FAILED."""
@@ -447,9 +440,8 @@ class TestSyncRunnerRun:
         graph = Graph([failing])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
+        with pytest.raises(RuntimeError, match="test"):
+            runner.run(graph, {"x": 5})
 
 
 class TestSyncRunnerRunGenerators:

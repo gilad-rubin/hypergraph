@@ -282,8 +282,8 @@ class TestMapOverSingleItem:
         gn = inner.as_node().map_over("x")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1]})
-        assert result.status == RunStatus.FAILED
+        with pytest.raises(FailError):
+            runner.run(outer, {"x": [1]})
 
 
 class TestMapOverWithRenamedOutputs:
@@ -321,11 +321,10 @@ class TestMapOverRaisePartialValues:
     """When map_over raise mode fails, outer run() returns FAILED status."""
 
     def test_sync_raise_outer_run_fails(self):
-        """Outer run() returns FAILED when inner map_over raises."""
+        """Outer run() raises when inner map_over raises."""
         inner = Graph([always_fail], name="inner")
         gn = inner.as_node().map_over("x")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2]})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, FailError)
+        with pytest.raises(FailError):
+            runner.run(outer, {"x": [1, 2]})

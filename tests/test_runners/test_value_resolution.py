@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from hypergraph import Graph, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
 
@@ -148,18 +150,11 @@ class TestNonCopyableBoundValues:
         graph = Graph([produce, bad_default])
         runner = SyncRunner()
 
-        # Should fail with GraphConfigError in RunResult
-        result = runner.run(graph, {})
-
-        # Check that execution failed
-        from hypergraph.runners._shared.types import RunStatus
-
-        assert result.status == RunStatus.FAILED
-        assert result.error is not None
-        assert isinstance(result.error, GraphConfigError)
+        # Should fail with GraphConfigError
+        with pytest.raises(GraphConfigError, match="cannot be safely copied") as exc_info:
+            runner.run(graph, {})
 
         # Check error message content
-        error_msg = str(result.error)
-        assert "cannot be safely copied" in error_msg
+        error_msg = str(exc_info.value)
         assert ".bind()" in error_msg  # Suggests solution
         assert "Why copying is needed" in error_msg  # Explains problem

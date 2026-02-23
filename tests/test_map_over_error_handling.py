@@ -34,13 +34,12 @@ class TestSyncMapOverErrorHandling:
     """SyncRunner with GraphNode.map_over() error_handling."""
 
     def test_raise_mode_is_default(self):
-        """Default error_handling='raise' fails the outer run on first inner failure."""
+        """Default error_handling='raise' raises on first inner failure."""
         inner = Graph([double_or_fail], name="inner")
         outer = Graph([inner.as_node().map_over("x"), passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomMapError)
+        with pytest.raises(CustomMapError):
+            runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
     def test_continue_mode_returns_none_placeholders(self):
         """error_handling='continue' uses None for failed items, preserving list length."""
@@ -88,9 +87,8 @@ class TestAsyncMapOverErrorHandling:
         inner = Graph([async_double_or_fail], name="inner")
         outer = Graph([inner.as_node().map_over("x"), passthrough])
         runner = AsyncRunner()
-        result = await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomMapError)
+        with pytest.raises(CustomMapError):
+            await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
     @pytest.mark.asyncio
     async def test_continue_mode_returns_none_placeholders(self):

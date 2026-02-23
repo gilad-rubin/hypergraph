@@ -98,6 +98,4 @@ class AsyncGraphNodeExecutor:
                 values=result.pause.values,
             )
             raise PauseExecution(nested_pause)
-        if result.status == RunStatus.FAILED:
-            raise result.error  # type: ignore[misc]
         return node.map_outputs_from_original(result.values)

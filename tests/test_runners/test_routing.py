@@ -393,11 +393,8 @@ class TestRoutingEdgeCases:
             return x
 
         graph = Graph([decide, a, b])
-        result = SyncRunner().run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
-        assert "invalid target" in str(result.error)
+        with pytest.raises(ValueError, match="invalid target"):
+            SyncRunner().run(graph, {"x": 5})
 
     def test_return_end_not_in_targets_raises(self):
         """Returning END when END isn't in targets should error."""
@@ -415,10 +412,8 @@ class TestRoutingEdgeCases:
             return x
 
         graph = Graph([decide, a, b])
-        result = SyncRunner().run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
+        with pytest.raises(ValueError):
+            SyncRunner().run(graph, {"x": 5})
 
     def test_single_target_returns_list_raises(self):
         """multi_target=False returning list should error."""
@@ -436,11 +431,8 @@ class TestRoutingEdgeCases:
             return x
 
         graph = Graph([decide, a, b])
-        result = SyncRunner().run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, TypeError)
-        assert "multi_target=False but returned a list" in str(result.error)
+        with pytest.raises(TypeError, match="multi_target=False but returned a list"):
+            SyncRunner().run(graph, {"x": 5})
 
     def test_multi_target_returns_string_raises(self):
         """multi_target=True returning string should error."""
@@ -458,11 +450,8 @@ class TestRoutingEdgeCases:
             return x
 
         graph = Graph([decide, a, b])
-        result = SyncRunner().run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, TypeError)
-        assert "multi_target=True but returned str" in str(result.error)
+        with pytest.raises(TypeError, match="multi_target=True but returned str"):
+            SyncRunner().run(graph, {"x": 5})
 
     # NOTE: test_chained_gates was removed because it exposes a known bug where
     # routing decisions don't block nodes that only depend on graph inputs.

@@ -1,6 +1,7 @@
 """Execution runners for hypergraph."""
 
 from hypergraph.runners._shared.types import (
+    ErrorHandling,
     GraphState,
     NodeExecution,
     PauseExecution,
@@ -15,6 +16,7 @@ from hypergraph.runners.sync import SyncRunner
 
 __all__ = [
     # Core types
+    "ErrorHandling",
     "RunStatus",
     "PauseExecution",
     "PauseInfo",

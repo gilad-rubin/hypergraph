@@ -152,7 +152,7 @@ class TestPartialStateFromSuperstep:
         """
         graph = Graph([first_node, second_node_fails])
         runner = SyncRunner()
-        result = runner.run(graph, {"x": 1})
+        result = runner.run(graph, {"x": 1}, error_handling="continue")
         assert result.status == RunStatus.FAILED
         # The key test: first_node ran before second_node_fails in the superstep.
         # Its output should be in partial_values.
@@ -172,7 +172,7 @@ class TestPartialStateFromSuperstep:
 
         graph = Graph([step1, step2_fails])
         runner = SyncRunner()
-        result = runner.run(graph, {"x": 5})
+        result = runner.run(graph, {"x": 5}, error_handling="continue")
         assert result.status == RunStatus.FAILED
         # step1 ran in a prior superstep, so its output must be preserved
         assert "step1_out" in result.values
@@ -196,7 +196,7 @@ class TestPartialStateFromSuperstep:
 
         graph = Graph([node_a, node_b, node_c])
         runner = SyncRunner()
-        result = runner.run(graph, {"x": 5})
+        result = runner.run(graph, {"x": 5}, error_handling="continue")
         assert result.status == RunStatus.FAILED
         assert result.values.get("a_out") == 6
         assert result.values.get("b_out") == 12
@@ -215,7 +215,7 @@ class TestPartialStateFromSuperstep:
 
         graph = Graph([async_first, async_second_fails])
         runner = AsyncRunner()
-        result = await runner.run(graph, {"x": 1})
+        result = await runner.run(graph, {"x": 1}, error_handling="continue")
         assert result.status == RunStatus.FAILED
         assert "first_out" in result.values, (
             "Async partial state should include outputs from nodes that completed before the failure in the same superstep"
