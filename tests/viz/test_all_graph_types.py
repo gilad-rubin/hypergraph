@@ -6,12 +6,11 @@ Tests verify:
 3. Edge validation passes (structural, not rendered positions)
 """
 
-import importlib.util
-
 import pytest
 
 from hypergraph import Graph, node
 from hypergraph.viz.debug import VizDebugger, find_issues, validate_graph
+from tests.viz.conftest import HAS_PLAYWRIGHT
 
 # =============================================================================
 # Graph Definitions (extracted from notebooks/test_viz_layout.ipynb)
@@ -407,8 +406,6 @@ class TestDebugDump:
 # =============================================================================
 # Rendered Position Tests (Playwright required)
 # =============================================================================
-
-HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")

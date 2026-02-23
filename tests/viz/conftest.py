@@ -8,10 +8,6 @@ This module provides:
 """
 
 import hashlib
-
-# =============================================================================
-# Playwright Detection
-# =============================================================================
 import importlib.util
 import os
 import shutil
@@ -23,7 +19,22 @@ from hypergraph import Graph, node
 from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph
 
-HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
+
+def _check_playwright_available() -> bool:
+    """Check if playwright is installed AND browser binaries are available."""
+    if importlib.util.find_spec("playwright") is None:
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            executable = p.chromium.executable_path
+            return os.path.exists(executable)
+    except Exception:
+        return False
+
+
+HAS_PLAYWRIGHT = _check_playwright_available()
 
 
 # =============================================================================
