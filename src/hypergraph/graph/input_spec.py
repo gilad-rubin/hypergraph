@@ -256,9 +256,9 @@ def _compute_active_scope(
        (with pessimistic gate expansion)
     """
     active = set(nodes)
-    if entrypoints:
+    if entrypoints is not None:
         active = _active_from_entrypoints(entrypoints, nodes, nx_graph)
-    if selected:
+    if selected is not None:
         active = _active_from_selection(selected, active, nodes, nx_graph)
 
     active_nodes = {name: nodes[name] for name in nodes if name in active}

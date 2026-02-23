@@ -451,7 +451,7 @@ def _resolve_effective_input_spec(
     ``graph.selected``, we recompute InputSpec so validation uses the
     narrower scope. Otherwise, return the cached ``graph.inputs``.
     """
-    if selected is None or selected == graph.selected:
+    if selected == graph.selected:
         return graph.inputs
 
     from hypergraph.graph.input_spec import compute_input_spec

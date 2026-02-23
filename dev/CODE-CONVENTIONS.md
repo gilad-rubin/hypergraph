@@ -58,7 +58,7 @@ def with_name(self, name: str) -> Self:
 | Node types | PascalCase, descriptive | `FunctionNode`, `GraphNode`, `RouteNode` |
 | Decorators | lowercase, verb-like | `@node`, `@route`, `@ifelse`, `@interrupt` |
 | Properties | snake_case, `@cached_property` when expensive | `input_spec`, `output_names` |
-| Internal helpers | `_` prefix | `_resolve_outputs()`, `_validate_names()` |
+| Internal helpers | `_` prefix (see [Module Naming](#module-naming) for `_shared/` exception) | `_resolve_outputs()`, `_validate_names()` |
 | Constants | UPPER_SNAKE_CASE | `END` |
 
 **Reserved characters**: `.` and `/` cannot appear in node or output names.

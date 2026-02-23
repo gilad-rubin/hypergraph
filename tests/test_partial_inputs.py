@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, node
+from hypergraph import AsyncRunner, Graph, MissingInputError, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
 
 # === Shared test nodes ===
@@ -364,7 +364,7 @@ class TestRuntimeSelectNarrowsValidation:
         runner = SyncRunner()
 
         # Without select, both x and y are required → missing y raises
-        with pytest.raises(Exception, match="y"):
+        with pytest.raises(MissingInputError, match="y"):
             runner.run(graph, {"x": 1})
 
         # With select="a_val", only x is required → succeeds
@@ -389,6 +389,30 @@ class TestRuntimeSelectNarrowsValidation:
         # Runtime select="a_val" should narrow validation to just x
         result = runner.run(graph, {"x": 1}, select="a_val")
         assert result["a_val"] == 1
+
+    def test_runtime_select_all_overrides_graph_select(self):
+        """select='**' at runtime overrides graph.select() and validates all inputs."""
+
+        @node(output_name="a_val")
+        def node_a(x):
+            return x
+
+        @node(output_name="b_val")
+        def node_b(a_val, y):
+            return f"{a_val}-{y}"
+
+        # Graph-level select only requires x (for "a_val")
+        graph = Graph([node_a, node_b]).select("a_val")
+        runner = SyncRunner()
+
+        # select="**" at runtime means "all outputs" → y becomes required
+        with pytest.raises(MissingInputError, match="y"):
+            runner.run(graph, {"x": 1}, select="**")
+
+        # Providing both inputs should succeed with all outputs
+        result = runner.run(graph, {"x": 1, "y": 2}, select="**")
+        assert "a_val" in result
+        assert "b_val" in result
 
 
 # === Entrypoint execution tests ===
@@ -594,7 +618,7 @@ class TestAsyncRunnerEntrypoint:
         runner = AsyncRunner()
 
         # Without select, both x and y required
-        with pytest.raises(Exception, match="y"):
+        with pytest.raises(MissingInputError, match="y"):
             await runner.run(graph, {"x": 1})
 
         # With select="a_val", only x is required

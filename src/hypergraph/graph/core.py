@@ -469,9 +469,10 @@ class Graph:
         Controls which outputs are returned by runner.run() and which outputs
         are exposed when this graph is used as a nested node via as_node().
 
-        This does NOT affect internal graph execution — all nodes still run
-        and all intermediate values are still computed. It only filters what
-        is returned to the caller.
+        Also narrows ``graph.inputs`` to only parameters needed to produce
+        the selected outputs. Nodes that don't contribute are excluded from
+        InputSpec computation. However, at execution time all reachable nodes
+        still run — use ``with_entrypoint()`` to skip upstream execution.
 
         A runtime ``select=`` passed to runner.run() overrides this default.
 
