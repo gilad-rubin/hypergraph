@@ -572,7 +572,7 @@ When a 2-tuple has no overlapping output/input names, it becomes an **ordering-o
 
 - `add_nodes()` raises `GraphConfigError` on a graph with explicit edges. Create a new `Graph` with the complete node and edge lists instead.
 - Auto-inference and explicit edges don't mix. When `edges` is provided, only declared edges exist.
-- Gate control edges and `emit`/`wait_for` ordering edges are still auto-wired in explicit mode.
+- Gate control edges and `emit`/`wait_for` ordering edges are still auto-wired in explicit mode. Don't declare edges from gate nodes to their targets — the explicit edge would override the auto-wired control edge type, affecting visualization.
 
 ### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, filepath=None)`
 

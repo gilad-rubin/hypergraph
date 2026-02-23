@@ -346,7 +346,6 @@ chat = Graph(
         (add_query, generate),                   # messages
         (generate, add_response),                # response
         (add_response, should_continue),         # messages
-        (should_continue, add_query),            # control (route)
         (add_response, add_query),               # messages (cycle)
     ],
 )
