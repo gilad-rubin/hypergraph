@@ -136,10 +136,7 @@ class TestRenderGraph:
         result = render_graph(outer.to_flat_graph(), depth=1)
 
         # Should have FUNCTION/PIPELINE nodes from both outer and inner
-        fn_and_pipeline_nodes = [
-            n for n in result["nodes"]
-            if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")
-        ]
+        fn_and_pipeline_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")]
         node_ids = {n["id"] for n in fn_and_pipeline_nodes}
         assert "inner" in node_ids  # The pipeline node
         assert "inner/double" in node_ids  # Inner node (expanded, hierarchical ID)
@@ -163,10 +160,7 @@ class TestRenderGraph:
 
         # All nodes should be present (children included for click-to-expand)
         # Visibility is controlled by JS based on expansion state
-        fn_and_pipeline_nodes = [
-            n for n in result["nodes"]
-            if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")
-        ]
+        fn_and_pipeline_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] in ("FUNCTION", "PIPELINE")]
         node_ids = {n["id"] for n in fn_and_pipeline_nodes}
         assert "inner" in node_ids
         assert "add" in node_ids

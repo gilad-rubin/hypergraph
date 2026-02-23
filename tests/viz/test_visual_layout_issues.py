@@ -59,6 +59,7 @@ def make_branch_anchor_graph() -> Graph:
 # Test: Input nodes should be ABOVE their targets (edges flow downward)
 # =============================================================================
 
+
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInputNodePosition:
     """Tests that input nodes are positioned above their target nodes."""
@@ -162,6 +163,7 @@ class TestInputNodePosition:
 # =============================================================================
 # Test: No visible gaps between edges and nodes
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeGaps:
@@ -299,14 +301,10 @@ class TestEdgeGaps:
     @staticmethod
     def _assert_branch_labels_centered(result: dict, stage: str) -> None:
         assert result["reports"], (
-            f"No True/False edge labels found ({stage}). "
-            f"Parsed labels: {result['parsedLabels']}, branch edges: {result['edgesWithBranchLabel']}"
+            f"No True/False edge labels found ({stage}). Parsed labels: {result['parsedLabels']}, branch edges: {result['edgesWithBranchLabel']}"
         )
         for report in result["reports"]:
-            assert report["actual"] is not None, (
-                f"Label not found for edge {report['edge']} ({stage}). "
-                f"Parsed labels: {result['parsedLabels']}"
-            )
+            assert report["actual"] is not None, f"Label not found for edge {report['edge']} ({stage}). Parsed labels: {result['parsedLabels']}"
             assert report["distance"] <= 2.5, (
                 f"Branch label not centered on outgoing leg for {report['edge']} ({report['label']}) [{stage}].\n"
                 f"Expected: ({report['expected']['x']:.2f}, {report['expected']['y']:.2f})\n"
@@ -544,12 +542,8 @@ class TestEdgeGaps:
             return { issues };
         }""")
 
-        assert not result["issues"], (
-            "Found edges crossing visible nodes:\n" +
-            "\n".join(
-                f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}"
-                for i in result["issues"][:10]
-            )
+        assert not result["issues"], "Found edges crossing visible nodes:\n" + "\n".join(
+            f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}" for i in result["issues"][:10]
         )
 
     def test_branch_labels_center_on_outgoing_leg(self, page, temp_html_file):
@@ -598,7 +592,6 @@ class TestEdgeGaps:
             self._branch_label_reports(page),
             stage="after collapse retrieval",
         )
-
 
     def test_workflow_depth1_all_edges_no_gap(self, page, temp_html_file):
         """All edges in workflow should have no visible gaps.
@@ -707,15 +700,13 @@ class TestEdgeGaps:
                     f"(tgt.top={gap_info['tgtTop']:.1f}, path.end={gap_info['pathEndY']:.1f})"
                 )
 
-        assert len(issues) == 0, (
-            f"Found {len(issues)} edge gaps (max allowed: {max_gap}px):\n" +
-            "\n".join(f"  - {issue}" for issue in issues)
-        )
+        assert len(issues) == 0, f"Found {len(issues)} edge gaps (max allowed: {max_gap}px):\n" + "\n".join(f"  - {issue}" for issue in issues)
 
 
 # =============================================================================
 # Test: Edges connect to actual nodes, not container boundaries
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeConnectsToActualNode:
@@ -814,6 +805,7 @@ class TestEdgeConnectsToActualNode:
 # Test: Comprehensive edge validation
 # =============================================================================
 
+
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestEdgeValidation:
     """Comprehensive tests for edge validation at all depths."""
@@ -829,15 +821,9 @@ class TestEdgeValidation:
         issues = []
         for edge in data.edges:
             if edge.vert_dist is not None and edge.vert_dist < 0:
-                issues.append(
-                    f"{edge.source} -> {edge.target}: "
-                    f"flows upward ({edge.vert_dist}px)"
-                )
+                issues.append(f"{edge.source} -> {edge.target}: flows upward ({edge.vert_dist}px)")
 
-        assert len(issues) == 0, (
-            "Edges flow upward instead of downward:\n" +
-            "\n".join(f"  - {issue}" for issue in issues)
-        )
+        assert len(issues) == 0, "Edges flow upward instead of downward:\n" + "\n".join(f"  - {issue}" for issue in issues)
 
     def test_outer_depth2_no_edge_issues(self):
         """Should have zero edge issues at depth=2."""
@@ -846,12 +832,8 @@ class TestEdgeValidation:
         outer = make_outer()
         data = extract_debug_data(outer, depth=2)
 
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues, found {data.summary['edgeIssues']}:\n" +
-            "\n".join(
-                f"  - {e.source} -> {e.target}: {e.issue}"
-                for e in data.edge_issues
-            )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues, found {data.summary['edgeIssues']}:\n" + "\n".join(
+            f"  - {e.source} -> {e.target}: {e.issue}" for e in data.edge_issues
         )
 
     def test_workflow_depth1_no_edge_issues(self):
@@ -861,18 +843,15 @@ class TestEdgeValidation:
         workflow = make_workflow()
         data = extract_debug_data(workflow, depth=1)
 
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues, found {data.summary['edgeIssues']}:\n" +
-            "\n".join(
-                f"  - {e.source} -> {e.target}: {e.issue}"
-                for e in data.edge_issues
-            )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues, found {data.summary['edgeIssues']}:\n" + "\n".join(
+            f"  - {e.source} -> {e.target}: {e.issue}" for e in data.edge_issues
         )
 
 
 # =============================================================================
 # Test: Multiple INPUT nodes feeding the same target should be side-by-side
 # =============================================================================
+
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestInputNodeHorizontalSpread:
@@ -930,9 +909,7 @@ class TestInputNodeHorizontalSpread:
 
         # The group ID should contain both param names
         group_id = result["groupNodes"][0]["id"]
-        assert "max_tokens" in group_id and "system_prompt" in group_id, (
-            f"INPUT_GROUP should contain both parameter names, got: {group_id}"
-        )
+        assert "max_tokens" in group_id and "system_prompt" in group_id, f"INPUT_GROUP should contain both parameter names, got: {group_id}"
 
     def test_different_targets_no_grouping_horizontal_spread(self, page, temp_html_file):
         """When inputs have different targets, they should NOT be grouped and spread horizontally.
@@ -1072,8 +1049,7 @@ class TestInputNodeHorizontalSpread:
 
         # Verify no ungrouped INPUT nodes remain
         assert len(result["inputNodes"]) == 0, (
-            f"Expected all inputs to be grouped, but found {len(result['inputNodes'])} ungrouped:\n"
-            f"Input nodes: {result['inputNodes']}"
+            f"Expected all inputs to be grouped, but found {len(result['inputNodes'])} ungrouped:\nInput nodes: {result['inputNodes']}"
         )
 
         # Check that one group has bound params (model, temperature) and one has unbound (max_tokens, system_prompt)

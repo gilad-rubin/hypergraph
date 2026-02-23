@@ -359,9 +359,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(
-            graph, state, ready, {"x": 5}, self._execute_node
-        )
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
 
         assert new_state.values["doubled"] == 10
         assert new_state.values["tripled"] == 15
@@ -372,9 +370,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(
-            graph, state, ready, {"x": 5}, self._execute_node
-        )
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
 
         assert "doubled" in new_state.values
         assert new_state.values["doubled"] == 10
@@ -385,9 +381,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(
-            graph, state, ready, {"x": 5}, self._execute_node
-        )
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
 
         assert new_state.versions["doubled"] == 1
 
@@ -397,9 +391,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(
-            graph, state, ready, {"x": 5}, self._execute_node
-        )
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
 
         assert new_state is not state
         assert "doubled" not in state.values
@@ -437,9 +429,7 @@ class TestRunSuperstepAsync:
         ready = get_ready_nodes(graph, state)
 
         start = time.time()
-        new_state = await run_superstep_async(
-            graph, state, ready, {"x": 5}, self._execute_node
-        )
+        new_state = await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node)
         elapsed = time.time() - start
 
         # Should be ~0.1s (concurrent), not ~0.2s (sequential)
@@ -480,9 +470,7 @@ class TestRunSuperstepAsync:
 
         try:
             start = time.time()
-            await run_superstep_async(
-                graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1
-            )
+            await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1)
             elapsed = time.time() - start
 
             # With max_concurrency=1, should be sequential (~0.1s)
@@ -496,9 +484,7 @@ class TestRunSuperstepAsync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = await run_superstep_async(
-            graph, state, ready, {"x": 5}, self._execute_node
-        )
+        new_state = await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node)
 
         assert new_state.values["doubled"] == 10
 

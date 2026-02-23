@@ -6,6 +6,8 @@ Tests verify:
 3. Edge validation passes (structural, not rendered positions)
 """
 
+import importlib.util
+
 import pytest
 
 from hypergraph import Graph, node
@@ -14,6 +16,7 @@ from hypergraph.viz.debug import VizDebugger, find_issues, validate_graph
 # =============================================================================
 # Graph Definitions (extracted from notebooks/test_viz_layout.ipynb)
 # =============================================================================
+
 
 # --- Simple 2-node graph ---
 @node(output_name="y")
@@ -283,10 +286,8 @@ class TestNestedGraphStructure:
         clean_attrs = G.nodes.get("preprocess/clean_text", {})
         normalize_attrs = G.nodes.get("preprocess/normalize_text", {})
 
-        assert clean_attrs.get("parent") == "preprocess", \
-            "preprocess/clean_text should have parent=preprocess"
-        assert normalize_attrs.get("parent") == "preprocess", \
-            "preprocess/normalize_text should have parent=preprocess"
+        assert clean_attrs.get("parent") == "preprocess", "preprocess/clean_text should have parent=preprocess"
+        assert normalize_attrs.get("parent") == "preprocess", "preprocess/normalize_text should have parent=preprocess"
 
     def test_workflow_graph_node_type(self, workflow_graph):
         """Preprocess node should be type GRAPH."""
@@ -407,11 +408,7 @@ class TestDebugDump:
 # Rendered Position Tests (Playwright required)
 # =============================================================================
 
-try:
-    import playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
+HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
@@ -423,59 +420,44 @@ class TestRenderedPositions:
         from hypergraph.viz import extract_debug_data
 
         data = extract_debug_data(simple_graph, depth=0)
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
-        )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
 
     def test_diamond_graph_edges_valid(self, diamond_graph):
         """Diamond graph should have valid edge positions."""
         from hypergraph.viz import extract_debug_data
 
         data = extract_debug_data(diamond_graph, depth=0)
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
-        )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
 
     def test_rag_graph_edges_valid(self, rag_graph):
         """RAG graph should have valid edge positions."""
         from hypergraph.viz import extract_debug_data
 
         data = extract_debug_data(rag_graph, depth=0)
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
-        )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
 
     def test_etl_chain_edges_valid(self, etl_chain):
         """ETL chain should have valid edge positions."""
         from hypergraph.viz import extract_debug_data
 
         data = extract_debug_data(etl_chain, depth=0)
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
-        )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues, got {data.summary['edgeIssues']}"
 
     def test_workflow_expanded_edges_valid(self, workflow_graph):
         """Expanded workflow should have valid edge positions."""
         from hypergraph.viz import extract_debug_data
 
         data = extract_debug_data(workflow_graph, depth=1)
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues:\n{_format_edge_issues(data)}"
-        )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues:\n{_format_edge_issues(data)}"
 
     def test_outer_expanded_edges_valid(self, outer_graph):
         """Expanded outer graph should have valid edge positions."""
         from hypergraph.viz import extract_debug_data
 
         data = extract_debug_data(outer_graph, depth=2)
-        assert data.summary["edgeIssues"] == 0, (
-            f"Expected 0 edge issues:\n{_format_edge_issues(data)}"
-        )
+        assert data.summary["edgeIssues"] == 0, f"Expected 0 edge issues:\n{_format_edge_issues(data)}"
 
 
 def _format_edge_issues(data) -> str:
     """Format edge issues for error message."""
-    return "\n".join(
-        f"  {e.source} -> {e.target}: {e.issue}"
-        for e in data.edge_issues
-    )
+    return "\n".join(f"  {e.source} -> {e.target}: {e.issue}" for e in data.edge_issues)

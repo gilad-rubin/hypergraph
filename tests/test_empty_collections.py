@@ -1,6 +1,5 @@
 """Tests for empty collection edge cases across topologies (GAP-01)."""
 
-
 from hypergraph import Graph, node
 from hypergraph.nodes.gate import END, route
 from hypergraph.runners import RunStatus, SyncRunner

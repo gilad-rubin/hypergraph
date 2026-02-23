@@ -55,10 +55,12 @@ def build_input_groups(
 
     group_specs: list[dict[str, Any]] = []
     for (_, is_bound), params in groups.items():
-        group_specs.append({
-            "params": sorted(params),
-            "is_bound": is_bound,
-        })
+        group_specs.append(
+            {
+                "params": sorted(params),
+                "is_bound": is_bound,
+            }
+        )
 
     group_specs.sort(key=lambda g: "_".join(g["params"]))
     return group_specs
@@ -72,10 +74,7 @@ def build_classic_input_groups(
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
     params = sorted(set(required) | set(optional))
-    return [
-        {"params": [param], "is_bound": param in bound_params}
-        for param in params
-    ]
+    return [{"params": [param], "is_bound": param in bound_params} for param in params]
 
 
 # =============================================================================
@@ -166,10 +165,7 @@ def create_rf_node(
 
     if not separate_outputs and node_type in ("FUNCTION", "PIPELINE"):
         output_types = attrs.get("output_types", {})
-        rf_node["data"]["outputs"] = [
-            {"name": out, "type": format_type(output_types.get(out))}
-            for out in attrs.get("outputs", ())
-        ]
+        rf_node["data"]["outputs"] = [{"name": out, "type": format_type(output_types.get(out))} for out in attrs.get("outputs", ())]
 
     input_types = attrs.get("input_types", {})
     has_defaults = attrs.get("has_defaults", {})
@@ -387,16 +383,8 @@ def apply_node_visibility(
     separate_outputs: bool,
 ) -> None:
     """Apply visibility rules to nodes in-place, setting `hidden` flags."""
-    parent_map: dict[str, str] = {
-        n["id"]: n["parentNode"]
-        for n in nodes
-        if n.get("parentNode")
-    }
-    pipeline_ids = {
-        n["id"]
-        for n in nodes
-        if n.get("data", {}).get("nodeType") == "PIPELINE"
-    }
+    parent_map: dict[str, str] = {n["id"]: n["parentNode"] for n in nodes if n.get("parentNode")}
+    pipeline_ids = {n["id"] for n in nodes if n.get("data", {}).get("nodeType") == "PIPELINE"}
 
     def _hidden_by_ancestor(node_id: str) -> bool:
         current = node_id

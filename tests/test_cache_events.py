@@ -136,10 +136,7 @@ class TestNodeEndEventCachedField:
 
         # Event order: NodeStartEvent -> CacheHitEvent -> NodeEndEvent
         node_events = [
-            e
-            for e in proc.events
-            if isinstance(e, (NodeStartEvent, CacheHitEvent, NodeEndEvent))
-            and getattr(e, "node_name", "") == "add_one"
+            e for e in proc.events if isinstance(e, (NodeStartEvent, CacheHitEvent, NodeEndEvent)) and getattr(e, "node_name", "") == "add_one"
         ]
         assert len(node_events) == 3
         assert isinstance(node_events[0], NodeStartEvent)

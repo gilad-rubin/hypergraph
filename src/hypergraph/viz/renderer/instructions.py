@@ -26,11 +26,12 @@ if TYPE_CHECKING:
 
 class NodeType(str, Enum):
     """Types of nodes in the visualization."""
-    INPUT = "INPUT"           # Individual input parameter
+
+    INPUT = "INPUT"  # Individual input parameter
     INPUT_GROUP = "INPUT_GROUP"  # Grouped inputs (optional)
-    FUNCTION = "FUNCTION"     # Function node
-    DATA = "DATA"             # Output data node
-    CONTAINER = "CONTAINER"   # Expanded nested graph container
+    FUNCTION = "FUNCTION"  # Function node
+    DATA = "DATA"  # Output data node
+    CONTAINER = "CONTAINER"  # Expanded nested graph container
 
 
 def _format_type(t: type | None) -> str | None:
@@ -48,17 +49,18 @@ class VizNode:
 
     Represents any visual element: inputs, functions, outputs, or containers.
     """
+
     id: str
     type: NodeType
     label: str
     parent_id: str | None = None  # ID of containing CONTAINER, or None for root
-    is_expanded: bool = False     # Only relevant for CONTAINER nodes
+    is_expanded: bool = False  # Only relevant for CONTAINER nodes
 
     # INPUT node fields
     type_hint: str | None = None  # Type annotation (e.g., "str", "int")
 
     # INPUT_GROUP fields (for grouped inputs)
-    params: list[str] | None = None       # Parameter names in group
+    params: list[str] | None = None  # Parameter names in group
     param_types: list[str] | None = None  # Type hints for each param
 
     # FUNCTION node fields
@@ -129,6 +131,7 @@ class VizEdge:
     Edges are explicit: source and target are always the actual nodes
     that should be visually connected. No re-routing in JavaScript.
     """
+
     source: str  # Source node ID (always explicit - the actual visual source)
     target: str  # Target node ID (always explicit - the actual visual target)
     id: str | None = None  # Optional explicit ID, generated if not provided
@@ -158,6 +161,7 @@ class VizInstructions:
     This is the single source of truth that Python sends to JavaScript.
     JavaScript trusts these instructions completely - no interpretation needed.
     """
+
     nodes: list[VizNode] = field(default_factory=list)
     edges: list[VizEdge] = field(default_factory=list)
 
@@ -181,10 +185,7 @@ class VizInstructions:
         sorted_edges = sorted(self.edges, key=lambda e: e.id or "")
 
         # Convert edges_by_state to dict format
-        edges_by_state_dict = {
-            key: [e.to_dict() for e in sorted(edges, key=lambda e: e.id or "")]
-            for key, edges in self.edges_by_state.items()
-        }
+        edges_by_state_dict = {key: [e.to_dict() for e in sorted(edges, key=lambda e: e.id or "")] for key, edges in self.edges_by_state.items()}
 
         return {
             "nodes": [n.to_dict() for n in sorted_nodes],
@@ -258,9 +259,7 @@ def _compute_edges_for_state(
     # 1. Add edges from INPUT nodes to their actual consumers
     for param in external_inputs:
         input_node_id = f"input_{param}"
-        actual_target = _pick_primary_consumer(
-            param_to_consumers.get(param, []), flat_graph
-        )
+        actual_target = _pick_primary_consumer(param_to_consumers.get(param, []), flat_graph)
 
         if actual_target:
             edges.append(VizEdge(source=input_node_id, target=actual_target))
@@ -354,14 +353,16 @@ def _add_input_nodes(
                 if param_type is not None:
                     break
 
-        instructions.add_node(VizNode(
-            id=f"input_{param}",
-            type=NodeType.INPUT,
-            label=param,
-            type_hint=_format_type(param_type),
-            theme=theme,
-            show_types=show_types,
-        ))
+        instructions.add_node(
+            VizNode(
+                id=f"input_{param}",
+                type=NodeType.INPUT,
+                label=param,
+                type_hint=_format_type(param_type),
+                theme=theme,
+                show_types=show_types,
+            )
+        )
 
 
 def _add_all_graph_nodes(
@@ -378,26 +379,30 @@ def _add_all_graph_nodes(
 
         if node_type == "GRAPH":
             is_expanded = initial_expansion_state.get(node_id, False)
-            instructions.add_node(VizNode(
-                id=node_id,
-                type=NodeType.CONTAINER,
-                label=attrs.get("label", node_id),
-                parent_id=parent_id,
-                is_expanded=is_expanded,
-                outputs=list(attrs.get("outputs", ())),
-                theme=theme,
-                show_types=show_types,
-            ))
+            instructions.add_node(
+                VizNode(
+                    id=node_id,
+                    type=NodeType.CONTAINER,
+                    label=attrs.get("label", node_id),
+                    parent_id=parent_id,
+                    is_expanded=is_expanded,
+                    outputs=list(attrs.get("outputs", ())),
+                    theme=theme,
+                    show_types=show_types,
+                )
+            )
         else:
-            instructions.add_node(VizNode(
-                id=node_id,
-                type=NodeType.FUNCTION,
-                label=attrs.get("label", node_id),
-                parent_id=parent_id,
-                outputs=list(attrs.get("outputs", ())),
-                theme=theme,
-                show_types=show_types,
-            ))
+            instructions.add_node(
+                VizNode(
+                    id=node_id,
+                    type=NodeType.FUNCTION,
+                    label=attrs.get("label", node_id),
+                    parent_id=parent_id,
+                    outputs=list(attrs.get("outputs", ())),
+                    theme=theme,
+                    show_types=show_types,
+                )
+            )
 
 
 def _add_edges(
@@ -415,9 +420,7 @@ def _add_edges(
     # 1. Add edges from INPUT nodes to their actual consumers
     for param in external_inputs:
         input_node_id = f"input_{param}"
-        actual_target = _pick_primary_consumer(
-            param_to_consumers.get(param, []), flat_graph
-        )
+        actual_target = _pick_primary_consumer(param_to_consumers.get(param, []), flat_graph)
 
         if actual_target:
             instructions.add_edge(input_node_id, actual_target)

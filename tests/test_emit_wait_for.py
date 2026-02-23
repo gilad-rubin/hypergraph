@@ -473,10 +473,7 @@ class TestVizOrderingEdges:
         graph = Graph(nodes=[step_a, step_b])
         result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
 
-        ordering_edges = [
-            e for e in result["edges"]
-            if e.get("data", {}).get("edgeType") == "ordering"
-        ]
+        ordering_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "ordering"]
         assert len(ordering_edges) >= 1
         edge = ordering_edges[0]
         assert edge["source"] == "step_a"
@@ -499,10 +496,7 @@ class TestVizOrderingEdges:
         graph = Graph(nodes=[step_a, step_b])
         result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
 
-        ordering_edges = [
-            e for e in result["edges"]
-            if e.get("data", {}).get("edgeType") == "ordering"
-        ]
+        ordering_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "ordering"]
         assert len(ordering_edges) >= 1
         edge = ordering_edges[0]
         assert edge["source"] == "step_a"
@@ -553,10 +547,7 @@ class TestVizOrderingEdges:
         graph = Graph(nodes=[step_a, step_b])
         flat = graph.to_flat_graph()
 
-        ordering_edges = [
-            (u, v, d) for u, v, d in flat.edges(data=True)
-            if d.get("edge_type") == "ordering"
-        ]
+        ordering_edges = [(u, v, d) for u, v, d in flat.edges(data=True) if d.get("edge_type") == "ordering"]
         assert len(ordering_edges) == 1
         u, v, d = ordering_edges[0]
         assert u == "step_a"

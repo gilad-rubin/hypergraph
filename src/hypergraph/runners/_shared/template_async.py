@@ -164,7 +164,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_iter = max_iterations or self.default_max_iterations
         dispatcher = self._create_dispatcher(event_processors)
         run_id, run_span_id = await self._emit_run_start_async(
-            dispatcher, graph, _parent_span_id,
+            dispatcher,
+            graph,
+            _parent_span_id,
         )
         start_time = time.time()
 
@@ -186,16 +188,17 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
             )
             await self._emit_run_end_async(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                run_id,
+                run_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
             )
             return result
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
+            partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
@@ -210,14 +213,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 partial_state = e.partial_state
 
             await self._emit_run_end_async(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                run_id,
+                run_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
                 error=error,
             )
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
+            partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.FAILED,
@@ -301,10 +305,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         try:
             if max_concurrency is None:
-                tasks = [
-                    _run_map_item(v)
-                    for v in input_variations
-                ]
+                tasks = [_run_map_item(v) for v in input_variations]
                 gathered = await asyncio.gather(*tasks, return_exceptions=True)
                 results: list[RunResult] = []
                 for item in gathered:
@@ -334,10 +335,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         result = await _run_map_item(v)
                         results_list.append(result)
                         order.append(idx)
-                        if (
-                            error_handling == "raise"
-                            and result.status == RunStatus.FAILED
-                        ):
+                        if error_handling == "raise" and result.status == RunStatus.FAILED:
                             stop_event.set()
 
                 num_workers = min(max_concurrency, len(input_variations))
@@ -354,12 +352,22 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                             raise result.error  # type: ignore[misc]
 
             await self._emit_run_end_async(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                map_run_id,
+                map_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
             )
             return results
         except Exception as e:
             await self._emit_run_end_async(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                map_run_id,
+                map_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
                 error=e,
             )
             raise

@@ -155,7 +155,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
             )
             self._emit_run_end_sync(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                run_id,
+                run_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
             )
             return result
         except Exception as e:
@@ -166,14 +171,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 partial_state = e.partial_state
 
             self._emit_run_end_sync(
-                dispatcher, run_id, run_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                run_id,
+                run_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
                 error=error,
             )
-            partial_values = (
-                filter_outputs(partial_state, graph, select)
-                if partial_state is not None
-                else {}
-            )
+            partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.FAILED,
@@ -242,12 +248,22 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     raise result.error  # type: ignore[misc]
 
             self._emit_run_end_sync(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                map_run_id,
+                map_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
             )
             return results
         except Exception as e:
             self._emit_run_end_sync(
-                dispatcher, map_run_id, map_span_id, graph, start_time, _parent_span_id,
+                dispatcher,
+                map_run_id,
+                map_span_id,
+                graph,
+                start_time,
+                _parent_span_id,
                 error=e,
             )
             raise

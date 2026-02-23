@@ -8,6 +8,11 @@ This module provides:
 """
 
 import hashlib
+
+# =============================================================================
+# Playwright Detection
+# =============================================================================
+import importlib.util
 import os
 import shutil
 import tempfile
@@ -18,20 +23,13 @@ from hypergraph import Graph, node
 from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph
 
-# =============================================================================
-# Playwright Detection
-# =============================================================================
-
-try:
-    import playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
+HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 
 # =============================================================================
 # Test Node Definitions
 # =============================================================================
+
 
 # --- Simple graph nodes ---
 @node(output_name="a_out")
@@ -93,6 +91,7 @@ def log_result(validated: int) -> int:
 # Test Graph Factories
 # =============================================================================
 
+
 def make_simple_graph() -> Graph:
     """Simple 2-node graph: a -> b."""
     return Graph(nodes=[node_a, node_b])
@@ -133,9 +132,7 @@ def _viz_cache_key(
 ) -> tuple:
     """Build a stable cache key for HTML rendering within a test run."""
     input_spec = graph.inputs
-    bound_items = tuple(
-        sorted((key, repr(value)) for key, value in input_spec.bound.items())
-    )
+    bound_items = tuple(sorted((key, repr(value)) for key, value in input_spec.bound.items()))
     return (
         graph.definition_hash,
         graph.name,
@@ -193,6 +190,7 @@ def _cached_html_path(
 # Playwright Fixtures
 # =============================================================================
 
+
 @pytest.fixture(scope="session")
 def _playwright_instance():
     """Shared Playwright instance for the test session."""
@@ -200,6 +198,7 @@ def _playwright_instance():
         pytest.skip("playwright not installed")
 
     from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         yield p
 
@@ -241,6 +240,7 @@ def temp_html_file():
 # =============================================================================
 # Common Extraction Helpers
 # =============================================================================
+
 
 def wait_for_debug_ready(page, timeout: int = 10000) -> None:
     """Wait for the hypergraph debug API and centering to be ready.
@@ -469,7 +469,7 @@ def convert_layout_to_screen(layout_y: float, viewport_transform: dict) -> float
     """Convert layout Y coordinate to screen Y coordinate."""
     if viewport_transform is None:
         return layout_y
-    return layout_y * viewport_transform['zoom'] + viewport_transform['y']
+    return layout_y * viewport_transform["zoom"] + viewport_transform["y"]
 
 
 def click_to_expand_container(page, container_id: str) -> None:
@@ -525,17 +525,17 @@ def click_to_collapse_container(page, container_id: str) -> None:
     # The button has the container label text and is styled with "absolute -top-3"
     # Use dispatch_event because React Flow CSS transforms can cause Playwright
     # to report the element as "outside of the viewport" even when visible.
-    collapse_button = node_element.locator('button').first
+    collapse_button = node_element.locator("button").first
     if collapse_button.count() > 0:
-        collapse_button.dispatch_event('click')
+        collapse_button.dispatch_event("click")
     else:
         # Fallback: try clicking the title text directly
-        title_element = node_element.locator(f'text={container_id}').first
+        title_element = node_element.locator(f"text={container_id}").first
         if title_element.count() > 0:
-            title_element.dispatch_event('click')
+            title_element.dispatch_event("click")
         else:
             # Last resort: click the node itself
-            node_element.dispatch_event('click')
+            node_element.dispatch_event("click")
 
     # Wait for layout to update (version should increment) AND centering to complete
     page.wait_for_function(

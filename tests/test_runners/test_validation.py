@@ -107,9 +107,8 @@ class TestValidateInputs:
     def test_error_message_suggests_similar_names(self):
         """Error message suggests similar names for typos."""
         graph = Graph([double])
-        with pytest.warns(UserWarning):  # warns about internal param "xx"
-            with pytest.raises(MissingInputError) as exc_info:
-                validate_inputs(graph, {"xx": 1})  # typo: xx instead of x
+        with pytest.warns(UserWarning), pytest.raises(MissingInputError) as exc_info:
+            validate_inputs(graph, {"xx": 1})  # typo: xx instead of x
         assert "x" in exc_info.value.missing
         # Should suggest 'xx' as similar to missing 'x'
         assert "xx" in str(exc_info.value)

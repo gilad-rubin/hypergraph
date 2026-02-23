@@ -32,6 +32,7 @@ def _simplify_type_string(type_str: str) -> str:
         "list[mymodule.Document]" → "list[Document]"
         "Dict[str, foo.bar.Baz]" → "Dict[str, Baz]"
     """
+
     def replace_with_final(match: re.Match) -> str:
         full_match = match.group(0)
         parts = full_match.split(".")

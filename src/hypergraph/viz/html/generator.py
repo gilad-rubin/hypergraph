@@ -4,6 +4,7 @@ HTML generator for Hypergraph visualization.
 Generates a standalone HTML document with embedded React Flow visualization.
 All JavaScript modules are loaded from bundled assets in viz/assets/.
 """
+
 import json
 from importlib.resources import files
 from typing import Any
@@ -93,17 +94,11 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
     viz_js = _read_asset("viz.js", "js")
 
     # Check that all required assets are available
-    required_library_assets = [
-        react_js, react_dom_js, htm_js, dagre_js,
-        rf_js, rf_css, tailwind_css
-    ]
+    required_library_assets = [react_js, react_dom_js, htm_js, dagre_js, rf_js, rf_css, tailwind_css]
 
     if not all(required_library_assets):
         missing = []
-        asset_names = [
-            "react", "react-dom", "htm", "dagre",
-            "reactflow.js", "reactflow.css", "tailwind.css"
-        ]
+        asset_names = ["react", "react-dom", "htm", "dagre", "reactflow.js", "reactflow.css", "tailwind.css"]
         for asset, name in zip(required_library_assets, asset_names, strict=False):
             if not asset:
                 missing.append(name)

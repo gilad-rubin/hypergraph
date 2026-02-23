@@ -1,6 +1,5 @@
 """Tests for runner types: RunStatus, RunResult, RunnerCapabilities, GraphState."""
 
-
 from hypergraph.runners import (
     GraphState,
     NodeExecution,

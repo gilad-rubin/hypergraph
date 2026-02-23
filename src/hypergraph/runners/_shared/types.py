@@ -62,10 +62,7 @@ def _compact_mapping(mapping: dict[Any, Any], depth: int, seen: set[int]) -> str
     """Return a compact representation for dict-like values."""
     items = list(mapping.items())
     preview_items = items[:_MAX_MAPPING_PREVIEW]
-    parts = [
-        f"{_truncate_text(_safe_repr(k), 80)}: {_compact_value(v, depth + 1, seen)}"
-        for k, v in preview_items
-    ]
+    parts = [f"{_truncate_text(_safe_repr(k), 80)}: {_compact_value(v, depth + 1, seen)}" for k, v in preview_items]
     remaining = len(items) - len(preview_items)
     if remaining > 0:
         parts.append(f"... (+{remaining} more)")
@@ -110,9 +107,7 @@ def _compact_value(value: Any, depth: int = 0, seen: set[int] | None = None) -> 
     if depth >= 2:
         return _truncate_text(_safe_repr(value), _MAX_VALUE_REPR)
 
-    is_recursive_candidate = isinstance(value, (dict, list, tuple, set, frozenset)) or (
-        is_dataclass(value) and not isinstance(value, type)
-    )
+    is_recursive_candidate = isinstance(value, (dict, list, tuple, set, frozenset)) or (is_dataclass(value) and not isinstance(value, type))
     if is_recursive_candidate:
         object_id = id(value)
         if object_id in seen:

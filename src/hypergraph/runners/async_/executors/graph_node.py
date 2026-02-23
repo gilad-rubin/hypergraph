@@ -67,8 +67,10 @@ class AsyncGraphNodeExecutor:
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
             results = await self.runner.map(
-                node.graph, inner_inputs,
-                map_over=original_params, map_mode=mode,
+                node.graph,
+                inner_inputs,
+                map_over=original_params,
+                map_mode=mode,
                 error_handling=error_handling,
                 event_processors=event_processors,
                 _parent_span_id=parent_span_id,
@@ -76,7 +78,8 @@ class AsyncGraphNodeExecutor:
             return collect_as_lists(results, node, error_handling)
 
         result = await self.runner.run(
-            node.graph, inner_inputs,
+            node.graph,
+            inner_inputs,
             event_processors=event_processors,
             _parent_span_id=parent_span_id,
         )

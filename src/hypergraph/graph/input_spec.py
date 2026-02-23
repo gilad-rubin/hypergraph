@@ -117,10 +117,7 @@ def _categorize_param(
 
 def _is_interrupt_produced(param: str, nodes: dict[str, HyperNode]) -> bool:
     """Check if param is produced by an interrupt node."""
-    return any(
-        n.is_interrupt and param in n.outputs
-        for n in nodes.values()
-    )
+    return any(n.is_interrupt and param in n.outputs for n in nodes.values())
 
 
 def _any_node_has_default(param: str, nodes: dict[str, HyperNode]) -> bool:
@@ -167,11 +164,9 @@ def _compute_entrypoints(
             # Params this node needs that are cycle-produced
             # (minus bound, minus interrupt-produced, minus defaulted)
             needed = tuple(
-                p for p in node.inputs
-                if p in cycle_params
-                and p not in bound
-                and not _is_interrupt_produced(p, nodes)
-                and not node.has_default_for(p)
+                p
+                for p in node.inputs
+                if p in cycle_params and p not in bound and not _is_interrupt_produced(p, nodes) and not node.has_default_for(p)
             )
             if needed:  # Only include if node needs user-provided cycle params
                 entrypoints[node_name] = needed
@@ -197,11 +192,7 @@ def _get_all_cycle_params(
     if not cycles:
         return set()
 
-    return {
-        param
-        for cycle in cycles
-        for param in _params_flowing_in_cycle(cycle, nodes, edge_produced)
-    }
+    return {param for cycle in cycles for param in _params_flowing_in_cycle(cycle, nodes, edge_produced)}
 
 
 def _params_flowing_in_cycle(
@@ -220,13 +211,9 @@ def _params_flowing_in_cycle(
                 yield param
 
 
-
 def _data_only_subgraph(nx_graph: nx.DiGraph) -> nx.DiGraph:
     """Return subgraph containing only data edges (no control edges)."""
-    data_edges = [
-        (u, v) for u, v, data in nx_graph.edges(data=True)
-        if data.get("edge_type") == "data"
-    ]
+    data_edges = [(u, v) for u, v, data in nx_graph.edges(data=True) if data.get("edge_type") == "data"]
     subgraph = nx.DiGraph()
     subgraph.add_nodes_from(nx_graph.nodes())
     subgraph.add_edges_from(data_edges)

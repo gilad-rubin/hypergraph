@@ -38,11 +38,7 @@ class TestEndToEndWorkflow:
             return mean, std
 
         # Chain renames
-        renamed = (
-            stats.with_inputs(data="input_data")
-            .with_outputs(mean="average", std="standard_deviation")
-            .with_name("compute_statistics")
-        )
+        renamed = stats.with_inputs(data="input_data").with_outputs(mean="average", std="standard_deviation").with_name("compute_statistics")
 
         assert renamed.name == "compute_statistics"
         assert renamed.inputs == ("input_data",)

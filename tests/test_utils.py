@@ -1,6 +1,5 @@
 """Tests for hypergraph._utils."""
 
-
 from hypergraph._utils import ensure_tuple, hash_definition
 
 

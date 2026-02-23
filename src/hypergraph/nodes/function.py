@@ -156,21 +156,19 @@ class FunctionNode(CallableMixin, HyperNode):
         self.outputs = data_outputs + self._emit
 
         inputs = tuple(inspect.signature(func).parameters.keys())
-        self.inputs, self._rename_history = _apply_renames(
-            inputs, rename_inputs, "inputs"
-        )
+        self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
         _validate_emit_wait_for(
-            self.name, self._emit, self._wait_for, data_outputs, self.inputs,
+            self.name,
+            self._emit,
+            self._wait_for,
+            data_outputs,
+            self.inputs,
         )
 
         # Auto-detect execution mode
-        self._is_async = inspect.iscoroutinefunction(
-            func
-        ) or inspect.isasyncgenfunction(func)
-        self._is_generator = inspect.isgeneratorfunction(
-            func
-        ) or inspect.isasyncgenfunction(func)
+        self._is_async = inspect.iscoroutinefunction(func) or inspect.isasyncgenfunction(func)
+        self._is_generator = inspect.isgeneratorfunction(func) or inspect.isasyncgenfunction(func)
 
     @property
     def is_async(self) -> bool:
@@ -203,7 +201,7 @@ class FunctionNode(CallableMixin, HyperNode):
         if not self._emit:
             return self.outputs
         # outputs = data_outputs + emit, so strip the emit portion
-        return self.outputs[:len(self.outputs) - len(self._emit)]
+        return self.outputs[: len(self.outputs) - len(self._emit)]
 
     @property
     def output_annotation(self) -> dict[str, Any]:

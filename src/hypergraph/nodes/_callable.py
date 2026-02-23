@@ -90,11 +90,7 @@ class CallableMixin:
         sig = inspect.signature(self.func)
         rename_map = _build_forward_rename_map(self._rename_history)
 
-        return {
-            rename_map.get(name, name): param.default
-            for name, param in sig.parameters.items()
-            if param.default is not inspect.Parameter.empty
-        }
+        return {rename_map.get(name, name): param.default for name, param in sig.parameters.items() if param.default is not inspect.Parameter.empty}
 
     @functools.cached_property
     def parameter_annotations(self) -> dict[str, Any]:

@@ -42,29 +42,57 @@ _VALID_DIRECTIONS = {"TD", "TB", "BT", "LR", "RL"}
 _UNSAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 # Mermaid reserved words that cannot be used as bare node IDs
-_RESERVED_WORDS = frozenset({
-    "end", "subgraph", "direction", "click", "style", "classDef", "class",
-    "linkStyle", "graph", "flowchart",
-})
+_RESERVED_WORDS = frozenset(
+    {
+        "end",
+        "subgraph",
+        "direction",
+        "click",
+        "style",
+        "classDef",
+        "class",
+        "linkStyle",
+        "graph",
+        "flowchart",
+    }
+)
 
 DEFAULT_COLORS: dict[str, dict[str, str]] = {
     "function": {
-        "fill": "#E8F5E8", "stroke": "#388E3C", "stroke-width": "2px", "color": "#1B5E20",
+        "fill": "#E8F5E8",
+        "stroke": "#388E3C",
+        "stroke-width": "2px",
+        "color": "#1B5E20",
     },
     "container": {
-        "fill": "#FFF3E0", "stroke": "#F57C00", "stroke-width": "2px", "color": "#E65100",
+        "fill": "#FFF3E0",
+        "stroke": "#F57C00",
+        "stroke-width": "2px",
+        "color": "#E65100",
     },
     "branch": {
-        "fill": "#FFF8E1", "stroke": "#FBC02D", "stroke-width": "2px", "color": "#F57F17",
+        "fill": "#FFF8E1",
+        "stroke": "#FBC02D",
+        "stroke-width": "2px",
+        "color": "#F57F17",
     },
     "input": {
-        "fill": "#E3F2FD", "stroke": "#1976D2", "stroke-width": "2px", "color": "#0D47A1",
+        "fill": "#E3F2FD",
+        "stroke": "#1976D2",
+        "stroke-width": "2px",
+        "color": "#0D47A1",
     },
     "data": {
-        "fill": "#F3E5F5", "stroke": "#7B1FA2", "stroke-width": "2px", "color": "#4A148C",
+        "fill": "#F3E5F5",
+        "stroke": "#7B1FA2",
+        "stroke-width": "2px",
+        "color": "#4A148C",
     },
     "end": {
-        "fill": "#ECEFF1", "stroke": "#546E7A", "stroke-width": "2px", "color": "#263238",
+        "fill": "#ECEFF1",
+        "stroke": "#546E7A",
+        "stroke-width": "2px",
+        "color": "#263238",
     },
 }
 
@@ -264,10 +292,13 @@ def _render_merged_edges(
     """
     lines: list[str] = []
     output_to_producer = build_output_to_producer_map(
-        flat_graph, expansion_state, use_deepest=True,
+        flat_graph,
+        expansion_state,
+        use_deepest=True,
     )
     param_to_consumers = build_param_to_consumer_map(
-        flat_graph, expansion_state,
+        flat_graph,
+        expansion_state,
     )
     seen_edges: set[tuple[str, str, str]] = set()
 
@@ -280,7 +311,10 @@ def _render_merged_edges(
 
         if edge_type == "control":
             actual_target = _resolve_control_target(
-                source, target, flat_graph, expansion_state,
+                source,
+                target,
+                flat_graph,
+                expansion_state,
             )
             if actual_target is None:
                 continue
@@ -307,10 +341,18 @@ def _render_merged_edges(
         values = value_names if value_names else [""]
         for value_name in values:
             actual_source = _resolve_data_source(
-                source, value_name, flat_graph, expansion_state, output_to_producer,
+                source,
+                value_name,
+                flat_graph,
+                expansion_state,
+                output_to_producer,
             )
             actual_target = _resolve_data_target(
-                target, value_name, flat_graph, expansion_state, param_to_consumers,
+                target,
+                value_name,
+                flat_graph,
+                expansion_state,
+                param_to_consumers,
             )
             if actual_source is None or actual_target is None:
                 continue
@@ -335,7 +377,9 @@ def _render_separate_edges(
     """
     lines: list[str] = []
     output_to_producer = build_output_to_producer_map(
-        flat_graph, expansion_state, use_deepest=True,
+        flat_graph,
+        expansion_state,
+        use_deepest=True,
     )
     seen_edges: set[tuple[str, ...]] = set()
 
@@ -363,12 +407,15 @@ def _render_separate_edges(
         value_names = edge_data.get("value_names", [])
 
         if edge_type == "data":
-            for value_name in (value_names or [""]):
+            for value_name in value_names or [""]:
                 if not value_name:
                     continue
                 # Resolve source to internal producer for expanded graphs
                 actual_source = _resolve_data_source(
-                    source, value_name, flat_graph, expansion_state,
+                    source,
+                    value_name,
+                    flat_graph,
+                    expansion_state,
                     output_to_producer,
                 )
                 if actual_source is None:
@@ -388,7 +435,10 @@ def _render_separate_edges(
 
         elif edge_type == "control":
             actual_target = _resolve_control_target(
-                source, target, flat_graph, expansion_state,
+                source,
+                target,
+                flat_graph,
+                expansion_state,
             )
             if actual_target is None:
                 continue
@@ -460,7 +510,10 @@ def _resolve_data_source(
             actual_source = internal
         else:
             found = find_internal_producer_for_output(
-                source, value_name, flat_graph, expansion_state,
+                source,
+                value_name,
+                flat_graph,
+                expansion_state,
             )
             if found:
                 actual_source = found
@@ -481,10 +534,7 @@ def _resolve_data_target(
     target_attrs = flat_graph.nodes.get(target, {})
     if target_attrs.get("node_type") == "GRAPH" and expansion_state.get(target, False) and value_name:
         consumers = param_to_consumers.get(value_name, [])
-        internal = [
-            c for c in consumers
-            if c != target and is_descendant_of(c, target, flat_graph)
-        ]
+        internal = [c for c in consumers if c != target and is_descendant_of(c, target, flat_graph)]
         if internal:
             actual_target = internal[0]
         else:
@@ -534,13 +584,11 @@ def _render_subgraph_block(
     label = _escape_label(attrs.get("label", container_id))
     prefix = "    " * indent
 
-    lines = [f"{prefix}subgraph {safe_id} [\"{label}\"]"]
+    lines = [f'{prefix}subgraph {safe_id} ["{label}"]']
 
     # Render child nodes
     children = [
-        (nid, nattrs) for nid, nattrs in flat_graph.nodes(data=True)
-        if nattrs.get("parent") == container_id
-        and not nattrs.get("hide", False)
+        (nid, nattrs) for nid, nattrs in flat_graph.nodes(data=True) if nattrs.get("parent") == container_id and not nattrs.get("hide", False)
     ]
 
     for child_id, child_attrs in children:
@@ -548,17 +596,28 @@ def _render_subgraph_block(
 
         # Nested subgraph
         if child_type == "GRAPH" and expansion_state.get(child_id, False):
-            lines.extend(_render_subgraph_block(
-                child_id, flat_graph, expansion_state,
-                show_types, separate_outputs, node_class_map,
-                indent=indent + 1,
-            ))
+            lines.extend(
+                _render_subgraph_block(
+                    child_id,
+                    flat_graph,
+                    expansion_state,
+                    show_types,
+                    separate_outputs,
+                    node_class_map,
+                    indent=indent + 1,
+                )
+            )
         else:
             child_label = _build_label(child_attrs, show_types, separate_outputs)
             mermaid_type = "GRAPH" if child_type == "GRAPH" else child_type
-            lines.append("    " * (indent + 1) + _format_node(
-                _sanitize_id(child_id), child_label, mermaid_type,
-            ).strip())
+            lines.append(
+                "    " * (indent + 1)
+                + _format_node(
+                    _sanitize_id(child_id),
+                    child_label,
+                    mermaid_type,
+                ).strip()
+            )
             node_class_map[child_id] = _NODE_TYPE_TO_CLASS.get(mermaid_type, "function")
 
     lines.append(f"{prefix}end")
@@ -661,10 +720,7 @@ def to_mermaid(
         lines.append("    %% Inputs")
     for group in input_groups:
         params = group["params"]
-        param_types = [
-            format_type(_get_param_type(p, flat_graph))
-            for p in params
-        ]
+        param_types = [format_type(_get_param_type(p, flat_graph)) for p in params]
         label = _build_input_label(params, param_types, show_types)
 
         if len(params) == 1:
@@ -681,9 +737,7 @@ def to_mermaid(
     lines.append("    %% Nodes")
     # Track which containers are expanded so we skip their children
     # (they're rendered inside the subgraph block, not at top level)
-    expanded_containers = {
-        nid for nid, expanded in expansion_state.items() if expanded
-    }
+    expanded_containers = {nid for nid, expanded in expansion_state.items() if expanded}
 
     for node_id, attrs in flat_graph.nodes(data=True):
         if attrs.get("hide", False):
@@ -700,10 +754,16 @@ def to_mermaid(
 
         # Expanded subgraph
         if node_type == "GRAPH" and expansion_state.get(node_id, False):
-            lines.extend(_render_subgraph_block(
-                node_id, flat_graph, expansion_state,
-                show_types, separate_outputs, node_class_map,
-            ))
+            lines.extend(
+                _render_subgraph_block(
+                    node_id,
+                    flat_graph,
+                    expansion_state,
+                    show_types,
+                    separate_outputs,
+                    node_class_map,
+                )
+            )
             continue
 
         label = _build_label(attrs, show_types, separate_outputs)

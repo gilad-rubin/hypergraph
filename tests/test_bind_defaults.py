@@ -22,6 +22,7 @@ def test_bound_params_not_treated_as_defaults():
     The key fix: A bound parameter in an inner graph is NOT a signature default,
     so it shouldn't trigger the "inconsistent defaults" validation error.
     """
+
     # Inner graph with bound parameter
     @node(output_name="result")
     def inner_func(x: int, config: str) -> str:
@@ -52,6 +53,7 @@ def test_bound_params_not_treated_as_defaults():
 
 def test_actual_defaults_still_validated():
     """Validation should still catch inconsistent actual defaults."""
+
     @node(output_name="a")
     def node_with_default(x: int = 10) -> int:
         return x
@@ -67,6 +69,7 @@ def test_actual_defaults_still_validated():
 
 def test_nested_graph_with_bound_and_defaults():
     """Complex case: nested graph with both bound params and actual defaults."""
+
     @node(output_name="result")
     def func_with_default(x: int, y: int = 5) -> int:
         return x + y
@@ -87,6 +90,7 @@ def test_nested_graph_with_bound_and_defaults():
 
 def test_user_rag_example():
     """Reproduce the exact bug from the user's notebook example."""
+
     # Simplified version of the user's RAG example
     @node(output_name="answer")
     def rag_func(query: str, llm) -> str:
@@ -124,6 +128,7 @@ def test_bound_value_overrides_signature_default():
     1. Remove the binding (expose the signature default)
     2. Bind at the outer graph level to satisfy both nodes
     """
+
     @node(output_name="result1")
     def func_with_default(x: int = 10) -> int:
         return x
@@ -163,8 +168,10 @@ def test_user_rag_example_with_non_copyable_embedder():
     (like Embedder with RLock) is used as a node, the runner should NOT attempt
     to deep-copy those bound values.
     """
+
     class Embedder:
         """Simplified Embedder with non-copyable RLock."""
+
         def __init__(self):
             self._lock = threading.RLock()
 
@@ -203,6 +210,7 @@ def test_three_level_nested_binding():
     Before fix: embedder was optional but not in eval_graph.inputs.bound
     After fix: embedder is in eval_graph.inputs.bound (propagated from inner graph)
     """
+
     class Embedder:
         def embed(self, text: str) -> list[float]:
             return [0.1, 0.2]

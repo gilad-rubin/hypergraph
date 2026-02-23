@@ -280,8 +280,8 @@ class TestMapFailures:
 
         # Two items fail
         for i, sid in enumerate(["item1", "item2"]):
-            proc.on_run_start(_run_start(run_id=f"r{i+2}", span_id=sid, parent_span_id="map1"))
-            proc.on_run_end(_run_end(run_id=f"r{i+2}", span_id=sid, parent_span_id="map1", status="failed"))
+            proc.on_run_start(_run_start(run_id=f"r{i + 2}", span_id=sid, parent_span_id="map1"))
+            proc.on_run_end(_run_end(run_id=f"r{i + 2}", span_id=sid, parent_span_id="map1", status="failed"))
 
         update_calls = [c for c in mock.update.call_args_list if "description" in c.kwargs]
         last_desc = update_calls[-1].kwargs["description"]

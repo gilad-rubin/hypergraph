@@ -520,6 +520,7 @@ class TestCachedRoutingDecisionNotMutated:
 
     def test_routing_decision_key_not_in_result_values(self):
         """__routing_decision__ internal key must not leak into RunResult.values."""
+
         @route(targets=["a", END], cache=True)
         def gate(x: int) -> str:
             return "a"

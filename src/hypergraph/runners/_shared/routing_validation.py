@@ -29,8 +29,7 @@ def validate_routing_decision(node: RouteNode, decision: Any) -> None:
     # (string "END" is never a valid target - it's rejected at construction time)
     if decision == "END" and decision is not END and END in node.targets:
         warnings.warn(
-            f"Gate '{node.name}' returned string 'END' instead of END sentinel.\n"
-            f"Use 'from hypergraph import END' and return END directly.",
+            f"Gate '{node.name}' returned string 'END' instead of END sentinel.\nUse 'from hypergraph import END' and return END directly.",
             UserWarning,
             stacklevel=5,
         )

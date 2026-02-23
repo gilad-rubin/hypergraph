@@ -1067,10 +1067,7 @@ class TestGlobalConcurrencyLimit:
             return x
 
         # 4 independent nodes
-        nodes = [
-            tracked_node.with_name(f"n{i}").with_inputs(x=f"x{i}").with_outputs(result=f"r{i}")
-            for i in range(4)
-        ]
+        nodes = [tracked_node.with_name(f"n{i}").with_inputs(x=f"x{i}").with_outputs(result=f"r{i}") for i in range(4)]
         graph = Graph(nodes)
 
         runner = AsyncRunner()

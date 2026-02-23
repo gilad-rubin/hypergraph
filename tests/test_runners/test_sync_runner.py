@@ -395,9 +395,7 @@ class TestSyncRunnerRun:
     def test_deeply_nested_graph(self):
         """Multiple levels of nesting work."""
         innermost = Graph([double], name="innermost")
-        middle = Graph(
-            [innermost.as_node(), increment.with_inputs(x="doubled")], name="middle"
-        )
+        middle = Graph([innermost.as_node(), increment.with_inputs(x="doubled")], name="middle")
         outer = Graph([middle.as_node()])
         runner = SyncRunner()
 

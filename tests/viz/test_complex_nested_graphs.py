@@ -109,9 +109,7 @@ def test_rag_style_query_edges_route_to_internal_nodes_when_expanded() -> None:
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)
 
-    query_targets = {
-        edge["target"] for edge in edges if edge["source"] == "input_query"
-    }
+    query_targets = {edge["target"] for edge in edges if edge["source"] == "input_query"}
 
     assert "rag_validate_query" in query_targets
     assert "retrieval/rag_embed_query" in query_targets
@@ -123,9 +121,7 @@ def test_rag_style_retrieval_output_routes_from_internal_producer() -> None:
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)
 
-    sources = {
-        edge["source"] for edge in edges if edge["target"] == "rag_select_document"
-    }
+    sources = {edge["source"] for edge in edges if edge["target"] == "rag_select_document"}
 
     assert sources == {"retrieval/rag_limit_docs"}
 
@@ -136,10 +132,9 @@ def test_rag_style_control_edge_routes_to_entrypoint_when_expanded() -> None:
     edges = _expanded_edges(result)
 
     control_edges = [
-        edge for edge in edges
-        if edge["source"] == "rag_route_query"
-        and edge["data"].get("edgeType") == "control"
-        and edge["data"].get("label") == "True"
+        edge
+        for edge in edges
+        if edge["source"] == "rag_route_query" and edge["data"].get("edgeType") == "control" and edge["data"].get("label") == "True"
     ]
 
     assert control_edges, "Expected a True control edge from rag_route_query"
@@ -198,9 +193,7 @@ def test_batch_recommendations_input_group_routes_to_container() -> None:
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)
 
-    group_edges = [
-        edge for edge in edges if edge["source"] == "input_group_feedbacks_results"
-    ]
+    group_edges = [edge for edge in edges if edge["source"] == "input_group_feedbacks_results"]
 
     assert group_edges, "Expected grouped input edges for results/feedbacks"
     targets = {edge["target"] for edge in group_edges}
@@ -212,9 +205,7 @@ def test_batch_recommendations_outputs_route_from_internal_nodes() -> None:
     result = render_graph(graph.to_flat_graph(), depth=0)
     edges = _expanded_edges(result)
 
-    sources = {
-        edge["source"] for edge in edges if edge["target"] == "rec_build_batch_prompt"
-    }
+    sources = {edge["source"] for edge in edges if edge["target"] == "rec_build_batch_prompt"}
 
     # With hierarchical IDs, nodes inside map_recommendations get that prefix
     assert sources == {"map_recommendations/rec_build_recommendation"}
@@ -270,12 +261,7 @@ def make_batch_recall_graph() -> Graph:
         name="recall",
     )
 
-    mapped = (
-        recall.as_node(name="batch_recall")
-        .with_inputs(eval_pair="eval_pairs")
-        .with_outputs(recall_score="recall_scores")
-        .map_over("eval_pairs")
-    )
+    mapped = recall.as_node(name="batch_recall").with_inputs(eval_pair="eval_pairs").with_outputs(recall_score="recall_scores").map_over("eval_pairs")
 
     return Graph(
         nodes=[batch_build_pairs, mapped, batch_aggregate_scores],
@@ -289,9 +275,7 @@ def test_batch_recall_input_edges_route_from_external_builder() -> None:
     edges = _expanded_edges(result)
 
     # With hierarchical IDs, batch_extract_query is inside batch_recall
-    sources = {
-        edge["source"] for edge in edges if edge["target"] == "batch_recall/batch_extract_query"
-    }
+    sources = {edge["source"] for edge in edges if edge["target"] == "batch_recall/batch_extract_query"}
 
     assert sources == {"batch_build_pairs"}
 
@@ -303,13 +287,9 @@ def test_batch_recall_routes_through_nested_retrieval_when_expanded() -> None:
 
     # With hierarchical IDs, nodes are inside batch_recall and batch_recall/retrieval
     assert any(
-        edge["source"] == "batch_recall/batch_extract_query"
-        and edge["target"] == "batch_recall/retrieval/batch_embed_query"
-        for edge in edges
+        edge["source"] == "batch_recall/batch_extract_query" and edge["target"] == "batch_recall/retrieval/batch_embed_query" for edge in edges
     ), "Expected query edge to route into nested retrieval when expanded"
 
-    sources = {
-        edge["source"] for edge in edges if edge["target"] == "batch_aggregate_scores"
-    }
+    sources = {edge["source"] for edge in edges if edge["target"] == "batch_aggregate_scores"}
 
     assert sources == {"batch_recall/batch_score_recall"}

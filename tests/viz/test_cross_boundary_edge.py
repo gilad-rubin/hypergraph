@@ -1,4 +1,5 @@
 """Test that edges crossing container boundaries connect to visible nodes."""
+
 import pytest
 
 from hypergraph import Graph, node
@@ -60,10 +61,7 @@ def compute_retrieval_metrics(retrieval_eval_results: list) -> dict:
 
 def build_triple_nested_graph():
     """Build the retrieval_recall_batch graph with triple nesting."""
-    retrieval_graph = Graph(
-        nodes=[retrieve_pages, aggregate_pages, sort_documents, limit_documents],
-        name="retrieval"
-    )
+    retrieval_graph = Graph(nodes=[retrieve_pages, aggregate_pages, sort_documents, limit_documents], name="retrieval")
     bound_retrieval = retrieval_graph.bind(
         vector_store="mock_vector_store",
         top_k_pages=30,
@@ -72,10 +70,7 @@ def build_triple_nested_graph():
     )
 
     retrieval_node = bound_retrieval.as_node(name="retrieval")
-    retrieval_recall_graph = Graph(
-        nodes=[extract_retrieval_query, retrieval_node, extract_retrieved_ids, compute_recall],
-        name="retrieval_recall"
-    )
+    retrieval_recall_graph = Graph(nodes=[extract_retrieval_query, retrieval_node, extract_retrieved_ids, compute_recall], name="retrieval_recall")
 
     batch_recall = (
         retrieval_recall_graph.as_node(name="batch_recall")
@@ -84,10 +79,7 @@ def build_triple_nested_graph():
         .map_over("eval_pairs")
     )
 
-    outer_graph = Graph(
-        nodes=[load_queries, build_retrieval_pairs, batch_recall, compute_retrieval_metrics],
-        name="retrieval_recall_batch"
-    )
+    outer_graph = Graph(nodes=[load_queries, build_retrieval_pairs, batch_recall, compute_retrieval_metrics], name="retrieval_recall_batch")
     return outer_graph.bind(max_queries=10, filter_local=True)
 
 
@@ -128,10 +120,7 @@ class TestCrossBoundaryEdge:
             # Skip synthetic nodes (input_, data_)
             if source.startswith("input_") or source.startswith("data_"):
                 continue
-            assert source in node_ids, (
-                f"Edge source '{source}' not found in nodes. "
-                f"Edge: {edge['source']} -> {edge['target']}"
-            )
+            assert source in node_ids, f"Edge source '{source}' not found in nodes. Edge: {edge['source']} -> {edge['target']}"
 
     def test_precomputed_edges_depth1_correct_source(self):
         """Pre-computed edges for depth=1 should have correct source."""

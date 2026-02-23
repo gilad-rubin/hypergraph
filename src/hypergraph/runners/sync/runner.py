@@ -167,9 +167,7 @@ class SyncRunner(SyncRunnerTemplate):
             executor = self._executors.get(node_type)
 
             if executor is None:
-                raise TypeError(
-                    f"No executor registered for node type '{node_type.__name__}'"
-                )
+                raise TypeError(f"No executor registered for node type '{node_type.__name__}'")
 
             # For GraphNodeExecutor, pass context as params (not mutable state)
             if isinstance(executor, SyncGraphNodeExecutor):
@@ -274,14 +272,16 @@ def _emit_run_start(
 
     from hypergraph.events.types import RunStartEvent
 
-    dispatcher.emit(RunStartEvent(
-        run_id=run_id,
-        span_id=span_id,
-        parent_span_id=parent_span_id,
-        graph_name=graph.name,
-        is_map=is_map,
-        map_size=map_size,
-    ))
+    dispatcher.emit(
+        RunStartEvent(
+            run_id=run_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            graph_name=graph.name,
+            is_map=is_map,
+            map_size=map_size,
+        )
+    )
     return run_id, span_id
 
 
@@ -302,12 +302,14 @@ def _emit_run_end(
     from hypergraph.events.types import RunEndEvent
 
     duration_ms = (time.time() - start_time) * 1000
-    dispatcher.emit(RunEndEvent(
-        run_id=run_id,
-        span_id=span_id,
-        parent_span_id=parent_span_id,
-        graph_name=graph.name,
-        status="failed" if error else "completed",
-        error=str(error) if error else None,
-        duration_ms=duration_ms,
-    ))
+    dispatcher.emit(
+        RunEndEvent(
+            run_id=run_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            graph_name=graph.name,
+            status="failed" if error else "completed",
+            error=str(error) if error else None,
+            duration_ms=duration_ms,
+        )
+    )

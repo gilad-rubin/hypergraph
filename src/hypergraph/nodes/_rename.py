@@ -63,10 +63,7 @@ def _validate_rename_keys(
     if unknown_keys:
         unknown_str = ", ".join(repr(k) for k in unknown_keys)
         valid_str = ", ".join(repr(v) for v in values) if values else "(none)"
-        raise RenameError(
-            f"Cannot rename unknown {kind}: {unknown_str}. "
-            f"Valid {kind}: {valid_str}."
-        )
+        raise RenameError(f"Cannot rename unknown {kind}: {unknown_str}. Valid {kind}: {valid_str}.")
 
 
 def _apply_renames(

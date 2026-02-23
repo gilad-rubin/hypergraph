@@ -522,9 +522,7 @@ class TestDeeplyNestedGraphs:
         inner_inner = Graph([level3_node], name="inner_inner", strict_types=True)
 
         # Level 2: connects level3 output to level2 input
-        middle = Graph(
-            [inner_inner.as_node(), level2_node], name="middle", strict_types=True
-        )
+        middle = Graph([inner_inner.as_node(), level2_node], name="middle", strict_types=True)
 
         # Level 1: outer wrapper
         outer = Graph([middle.as_node()], name="outer", strict_types=True)

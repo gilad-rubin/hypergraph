@@ -31,9 +31,7 @@ if TYPE_CHECKING:
     from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 
 # Context variable for concurrency limiting across nested graphs
-_concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar(
-    "_concurrency_limiter", default=None
-)
+_concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar("_concurrency_limiter", default=None)
 
 
 def get_concurrency_limiter() -> asyncio.Semaphore | None:

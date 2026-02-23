@@ -24,10 +24,11 @@ if TYPE_CHECKING:
 
 class ValueSource(Enum):
     """Source of a parameter's value during graph execution."""
-    EDGE = "edge"           # From upstream node output
-    PROVIDED = "provided"   # From run() call
-    BOUND = "bound"         # From graph.bind() - NEVER copy
-    DEFAULT = "default"     # From function signature - MUST copy
+
+    EDGE = "edge"  # From upstream node output
+    PROVIDED = "provided"  # From run() call
+    BOUND = "bound"  # From graph.bind() - NEVER copy
+    DEFAULT = "default"  # From function signature - MUST copy
 
 
 def _safe_deepcopy(value: Any, param_name: str = "<unknown>") -> Any:
@@ -296,7 +297,8 @@ def _wait_for_satisfied(node: HyperNode, state: GraphState) -> bool:
 
 
 def _defer_wait_for_nodes(
-    ready: list[HyperNode], graph: Graph,
+    ready: list[HyperNode],
+    graph: Graph,
 ) -> list[HyperNode]:
     """If a producer and its wait_for consumer are both ready, defer the consumer.
 
@@ -350,9 +352,7 @@ def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> 
     return bool(node.has_default_for(param))
 
 
-def _needs_execution(
-    node: HyperNode, graph: Graph, state: GraphState
-) -> bool:
+def _needs_execution(node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if node needs (re-)execution."""
     if node.name not in state.node_executions:
         return True  # Never executed
@@ -445,9 +445,7 @@ def _resolve_input(
     return value
 
 
-def map_inputs_to_func_params(
-    node: HyperNode, inputs: dict[str, Any]
-) -> dict[str, Any]:
+def map_inputs_to_func_params(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]:
     """Map renamed input names back to original function parameter names.
 
     Delegates to node.map_inputs_to_params() for polymorphic behavior.
@@ -472,7 +470,7 @@ def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
     from hypergraph.nodes.base import _EMIT_SENTINEL
 
     data_outputs = node.data_outputs
-    emit_outputs = node.outputs[len(data_outputs):]  # emit portion
+    emit_outputs = node.outputs[len(data_outputs) :]  # emit portion
 
     # Wrap data outputs
     if not data_outputs:
@@ -481,10 +479,7 @@ def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
         wrapped = {data_outputs[0]: result}
     else:
         if len(data_outputs) != len(result):
-            raise ValueError(
-                f"Node '{node.name}' has {len(data_outputs)} data outputs but returned "
-                f"{len(result)} values"
-            )
+            raise ValueError(f"Node '{node.name}' has {len(data_outputs)} data outputs but returned {len(result)} values")
         wrapped = dict(zip(data_outputs, result, strict=True))
 
     # Auto-produce sentinel for each emit output
@@ -546,10 +541,7 @@ def filter_outputs(
         Dict of output values
     """
     if on_missing not in _VALID_ON_MISSING:
-        raise ValueError(
-            f"Invalid on_missing={on_missing!r}. "
-            f"Expected one of: {', '.join(_VALID_ON_MISSING)}"
-        )
+        raise ValueError(f"Invalid on_missing={on_missing!r}. Expected one of: {', '.join(_VALID_ON_MISSING)}")
 
     from hypergraph.nodes.base import _EMIT_SENTINEL
 
@@ -570,14 +562,12 @@ def _resolve_select(select: Any, graph: Graph) -> str | list[str]:
 
 
 def _collect_all_outputs(
-    state: GraphState, graph: Graph, sentinel: Any,
+    state: GraphState,
+    graph: Graph,
+    sentinel: Any,
 ) -> dict[str, Any]:
     """Return all graph outputs present in state, excluding emit sentinels."""
-    return {
-        k: state.values[k]
-        for k in graph.outputs
-        if k in state.values and state.values[k] is not sentinel
-    }
+    return {k: state.values[k] for k in graph.outputs if k in state.values and state.values[k] is not sentinel}
 
 
 def _collect_selected_outputs(
@@ -607,10 +597,7 @@ _VALID_ON_MISSING = ("ignore", "warn", "error")
 def _validate_on_missing(on_missing: str) -> None:
     """Validate on_missing parameter eagerly (before execution)."""
     if on_missing not in _VALID_ON_MISSING:
-        raise ValueError(
-            f"Invalid on_missing={on_missing!r}. "
-            f"Expected one of: {', '.join(_VALID_ON_MISSING)}"
-        )
+        raise ValueError(f"Invalid on_missing={on_missing!r}. Expected one of: {', '.join(_VALID_ON_MISSING)}")
 
 
 def _handle_missing_outputs(
@@ -621,21 +608,16 @@ def _handle_missing_outputs(
 ) -> None:
     """Handle missing outputs per policy: ignore, warn, or error."""
     if on_missing not in _VALID_ON_MISSING:
-        raise ValueError(
-            f"Invalid on_missing={on_missing!r}. "
-            f"Expected one of: {', '.join(_VALID_ON_MISSING)}"
-        )
+        raise ValueError(f"Invalid on_missing={on_missing!r}. Expected one of: {', '.join(_VALID_ON_MISSING)}")
     if on_missing == "ignore":
         return
 
     available = [k for k in state.values if state.values[k] is not sentinel]
-    msg = (
-        f"Requested outputs not found: {missing}. "
-        f"Available outputs: {available}"
-    )
+    msg = f"Requested outputs not found: {missing}. Available outputs: {available}"
 
     if on_missing == "warn":
         import warnings
+
         # stacklevel=6: _handle → _collect_selected → filter_outputs → run → user
         warnings.warn(msg, UserWarning, stacklevel=6)
     elif on_missing == "error":
@@ -683,8 +665,7 @@ def _generate_zip_inputs(
     lengths = [len(v) for v in mapped_values.values()]
     if len(set(lengths)) > 1:
         raise ValueError(
-            f"map_over parameters must have equal lengths in zip mode. "
-            f"Got lengths: {dict(zip(mapped_values.keys(), lengths, strict=False))}"
+            f"map_over parameters must have equal lengths in zip mode. Got lengths: {dict(zip(mapped_values.keys(), lengths, strict=False))}"
         )
 
     if not lengths:

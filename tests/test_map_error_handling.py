@@ -86,9 +86,7 @@ class TestSyncMapErrorHandling:
     def test_raise_mode_all_succeed(self):
         graph = Graph([double])
         runner = SyncRunner()
-        results = runner.map(
-            graph, values={"x": [1, 2, 3]}, map_over="x", error_handling="raise"
-        )
+        results = runner.map(graph, values={"x": [1, 2, 3]}, map_over="x", error_handling="raise")
         assert all(r.status == RunStatus.COMPLETED for r in results)
         assert [r["doubled"] for r in results] == [2, 4, 6]
 

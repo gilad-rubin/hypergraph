@@ -87,10 +87,7 @@ class TestCollectAsListsLengthConsistency:
     def test_renamed_multi_output_map_over_lengths_match(self):
         """Renamed outputs should still produce equal-length lists."""
         inner = Graph([produce_a, produce_b], name="inner")
-        gn = (
-            inner.as_node().map_over("x")
-            .with_outputs(a="alpha", b="beta")
-        )
+        gn = inner.as_node().map_over("x").with_outputs(a="alpha", b="beta")
 
         @node(output_name="result")
         def use_renamed(alpha: list, beta: list) -> dict:
@@ -159,10 +156,7 @@ class TestPartialStateFromSuperstep:
         assert result.status == RunStatus.FAILED
         # The key test: first_node ran before second_node_fails in the superstep.
         # Its output should be in partial_values.
-        assert "first_out" in result.values, (
-            "Partial state should include outputs from nodes that completed "
-            "before the failure in the same superstep"
-        )
+        assert "first_out" in result.values, "Partial state should include outputs from nodes that completed before the failure in the same superstep"
         assert result.values["first_out"] == 101
 
     def test_partial_values_from_prior_superstep(self):
@@ -224,8 +218,7 @@ class TestPartialStateFromSuperstep:
         result = await runner.run(graph, {"x": 1})
         assert result.status == RunStatus.FAILED
         assert "first_out" in result.values, (
-            "Async partial state should include outputs from nodes that "
-            "completed before the failure in the same superstep"
+            "Async partial state should include outputs from nodes that completed before the failure in the same superstep"
         )
 
 

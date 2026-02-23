@@ -163,11 +163,7 @@ class TestMapOverRenameExecution:
             return {"id": item["id"], "result": item["value"] * multiplier}
 
         inner = Graph(nodes=[process_item], name="inner")
-        mapped_node = (
-            inner.as_node(name="process_all")
-            .with_inputs(item="items")
-            .map_over("items")
-        )
+        mapped_node = inner.as_node(name="process_all").with_inputs(item="items").map_over("items")
 
         outer = Graph(nodes=[produce_items, mapped_node]).bind(multiplier=2)
         runner = SyncRunner()
@@ -198,12 +194,7 @@ class TestMapOverRenameExecution:
             return x * 2
 
         inner = Graph(nodes=[process], name="inner")
-        mapped_node = (
-            inner.as_node(name="mapper")
-            .with_inputs(x="items")
-            .with_outputs(doubled="results")
-            .map_over("items")
-        )
+        mapped_node = inner.as_node(name="mapper").with_inputs(x="items").with_outputs(doubled="results").map_over("items")
 
         outer = Graph(nodes=[produce, mapped_node])
         runner = SyncRunner()
@@ -225,11 +216,7 @@ class TestMapOverRenameExecution:
             return value + 1
 
         inner = Graph(nodes=[process], name="inner")
-        mapped_node = (
-            inner.as_node(name="mapper")
-            .with_inputs(value="items")
-            .map_over("items")
-        )
+        mapped_node = inner.as_node(name="mapper").with_inputs(value="items").map_over("items")
 
         outer = Graph(nodes=[produce, mapped_node])
         runner = AsyncRunner()
@@ -255,11 +242,7 @@ class TestMapOverRenameExecution:
             return a + b
 
         inner = Graph(nodes=[add_nums], name="inner")
-        mapped_node = (
-            inner.as_node(name="adder")
-            .with_inputs(a="xs", b="ys")
-            .map_over("xs", "ys", mode="zip")
-        )
+        mapped_node = inner.as_node(name="adder").with_inputs(a="xs", b="ys").map_over("xs", "ys", mode="zip")
 
         outer = Graph(nodes=[produce_xs, produce_ys, mapped_node])
         runner = SyncRunner()
@@ -281,11 +264,7 @@ class TestMapOverRenameExecution:
             return value * factor
 
         inner = Graph(nodes=[multiply], name="inner")
-        mapped_node = (
-            inner.as_node(name="multiplier")
-            .with_inputs(value="items")
-            .map_over("items")
-        )
+        mapped_node = inner.as_node(name="multiplier").with_inputs(value="items").map_over("items")
 
         outer = Graph(nodes=[produce, mapped_node])
         runner = SyncRunner()
@@ -802,10 +781,12 @@ class TestMaxConcurrency:
         inner_b = Graph([slow_b], name="inner_b")
 
         # Two independent mapped GraphNodes
-        outer = Graph([
-            inner_a.as_node().map_over("x"),
-            inner_b.as_node().map_over("y"),
-        ])
+        outer = Graph(
+            [
+                inner_a.as_node().map_over("x"),
+                inner_b.as_node().map_over("y"),
+            ]
+        )
 
         runner = AsyncRunner()
 

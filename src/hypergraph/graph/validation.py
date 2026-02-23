@@ -91,8 +91,7 @@ def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
         for output in node.outputs:
             if not output.isidentifier():
                 raise GraphConfigError(
-                    f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
-                    f"  -> Output names must be valid Python identifiers"
+                    f"Invalid output name: '{output}' (from node '{node.name}')\n\n  -> Output names must be valid Python identifiers"
                 )
             if keyword.iskeyword(output):
                 raise GraphConfigError(
@@ -111,9 +110,7 @@ def _validate_no_namespace_collision(nodes: dict[str, HyperNode]) -> None:
     """
     from hypergraph.nodes.graph_node import GraphNode
 
-    graph_node_names = {
-        node.name for node in nodes.values() if isinstance(node, GraphNode)
-    }
+    graph_node_names = {node.name for node in nodes.values() if isinstance(node, GraphNode)}
 
     if not graph_node_names:
         return  # No GraphNodes, nothing to validate
@@ -173,9 +170,7 @@ def _collect_param_default_info(
     return param_info
 
 
-def _check_defaults_consistency(
-    param: str, info_list: list[tuple[bool, Any, str]]
-) -> None:
+def _check_defaults_consistency(param: str, info_list: list[tuple[bool, Any, str]]) -> None:
     """Check that defaults are consistent for a shared parameter."""
     with_default = [(v, n) for has, v, n in info_list if has]
     without_default = [n for has, v, n in info_list if not has]
@@ -192,9 +187,7 @@ def _check_defaults_consistency(
     _check_default_values_match(param, with_default)
 
 
-def _check_default_values_match(
-    param: str, with_default: list[tuple[Any, str]]
-) -> None:
+def _check_default_values_match(param: str, with_default: list[tuple[Any, str]]) -> None:
     """Check that all default values for a parameter are identical."""
     if len(with_default) <= 1:
         return
@@ -292,7 +285,7 @@ def _validate_no_interrupt_in_map_over(nodes: dict[str, HyperNode]) -> None:
     for node in nodes.values():
         if not isinstance(node, GraphNode):
             continue
-        if not (hasattr(node, 'map_config') and node.map_config):
+        if not (hasattr(node, "map_config") and node.map_config):
             continue
         if not node.graph.has_interrupts:
             continue

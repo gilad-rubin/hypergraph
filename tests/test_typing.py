@@ -92,9 +92,9 @@ class TestUnionTypeCompatibility:
 
     def test_typing_union_syntax(self) -> None:
         """Test typing.Union syntax works the same as | syntax."""
-        assert is_type_compatible(int, Union[int, str]) is True
-        assert is_type_compatible(Union[int, str], Union[int, str, float]) is True
-        assert is_type_compatible(Union[int, str], int) is False
+        assert is_type_compatible(int, Union[int, str]) is True  # noqa: UP007
+        assert is_type_compatible(Union[int, str], Union[int, str, float]) is True  # noqa: UP007
+        assert is_type_compatible(Union[int, str], int) is False  # noqa: UP007
 
 
 # ---------------------------------------------------------------------------
@@ -266,12 +266,8 @@ class TestAnnotatedTypeCompatibility:
 
     def test_annotated_types_compare_primary(self) -> None:
         """Annotated types should compare their primary types."""
-        assert is_type_compatible(
-            Annotated[int, "metadata"], Annotated[int, "other"]
-        ) is True
-        assert is_type_compatible(
-            Annotated[int, "metadata"], Annotated[str, "metadata"]
-        ) is False
+        assert is_type_compatible(Annotated[int, "metadata"], Annotated[int, "other"]) is True
+        assert is_type_compatible(Annotated[int, "metadata"], Annotated[str, "metadata"]) is False
 
     def test_annotated_vs_plain_type(self) -> None:
         """Annotated[T, ...] should be compatible with T."""
@@ -346,12 +342,10 @@ class TestEdgeCases:
 
     def test_optional_type(self) -> None:
         """Optional[T] is Union[T, None] and should work correctly."""
-        from typing import Optional
-
-        # Optional[int] is Union[int, None]
-        assert is_type_compatible(int, Optional[int]) is True
-        assert is_type_compatible(type(None), Optional[int]) is True
-        assert is_type_compatible(str, Optional[int]) is False
+        # int | None is the modern form of Optional[int]
+        assert is_type_compatible(int, int | None) is True
+        assert is_type_compatible(type(None), int | None) is True
+        assert is_type_compatible(str, int | None) is False
 
     def test_empty_memo_is_created_if_none(self) -> None:
         """If memo is None, function should create an empty one."""
@@ -695,5 +689,3 @@ class TestSelfTypeCompatibility:
             assert isinstance(result, bool)
         except Exception:
             pass
-
-

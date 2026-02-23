@@ -330,9 +330,7 @@ class TestMapEvents:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        results = runner.map(
-            graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp]
-        )
+        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x", event_processors=[lp])
 
         assert len(results) == 3
 

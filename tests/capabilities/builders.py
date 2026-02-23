@@ -261,9 +261,7 @@ def _build_topology(topology: Topology, prefer_async: bool = False) -> Graph:
 # =============================================================================
 
 
-def _wrap_in_nesting(
-    graph: Graph, depth: NestingDepth, map_mode: MapMode, map_input: str | None = None
-) -> Graph:
+def _wrap_in_nesting(graph: Graph, depth: NestingDepth, map_mode: MapMode, map_input: str | None = None) -> Graph:
     """Wrap a graph in the specified nesting depth."""
     if depth == NestingDepth.FLAT:
         return graph
@@ -323,10 +321,7 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
     elif renaming == Renaming.OUTPUTS:
         # Rename an output on a LEAF node (so we don't break edges)
         # Find a leaf node (node with out_degree == 0)
-        leaf_nodes = [
-            (i, n) for i, n in enumerate(nodes)
-            if graph._nx_graph.out_degree(n.name) == 0
-        ]
+        leaf_nodes = [(i, n) for i, n in enumerate(nodes) if graph._nx_graph.out_degree(n.name) == 0]
         if leaf_nodes and leaf_nodes[0][1].outputs:
             idx, target_node = leaf_nodes[0]
             old_output = target_node.outputs[0]
@@ -400,10 +395,8 @@ def build_graph_for_capability(cap: Capability) -> Graph:
     map_input = _get_map_input_for_topology(cap.topology)
 
     # Adjust map_input if inputs were renamed
-    if cap.renaming == Renaming.INPUTS and map_input:
-        # Check if the map_input was the one that got renamed
-        if map_input not in graph.inputs.all:
-            map_input = f"{map_input}_renamed"
+    if cap.renaming == Renaming.INPUTS and map_input and map_input not in graph.inputs.all:
+        map_input = f"{map_input}_renamed"
 
     # Apply nesting
     graph = _wrap_in_nesting(graph, cap.nesting, cap.map_mode, map_input)

@@ -24,8 +24,7 @@ def _require_rich() -> None:
         import rich  # noqa: F401
     except ImportError:
         raise ImportError(
-            "The 'rich' package is required for RichProgressProcessor. "
-            "Install it with: pip install 'hypergraph[progress]' or pip install rich"
+            "The 'rich' package is required for RichProgressProcessor. Install it with: pip install 'hypergraph[progress]' or pip install rich"
         ) from None
 
 
@@ -171,9 +170,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
         if event.is_map and event.map_size is not None:
             info.map_size = event.map_size
-            desc = self._make_description(
-                f"{event.graph_name or 'Map'} Progress", info.depth, is_map=True
-            )
+            desc = self._make_description(f"{event.graph_name or 'Map'} Progress", info.depth, is_map=True)
             info.rich_task_id = self._progress.add_task(desc, total=event.map_size)
 
         # If this run is a child of a map, track the relationship
@@ -235,9 +232,7 @@ class RichProgressProcessor(TypedEventProcessor):
         bar = self._node_bars.get(key)
         if bar is not None:
             current = self._progress.tasks[bar.rich_task_id].description
-            self._progress.update(
-                bar.rich_task_id, description=f"{current} [red]FAILED[/red]"
-            )
+            self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
 
     def on_run_end(self, event: RunEndEvent) -> None:
         """Handle run end: advance map bars and show completion."""
@@ -268,13 +263,9 @@ class RichProgressProcessor(TypedEventProcessor):
         # If this is a root run (no parent), show completion
         if span_info.parent_span_id is None:
             if event.status == RunStatus.COMPLETED:
-                self._progress.console.print(
-                    f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]"
-                )
+                self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
             else:
-                self._progress.console.print(
-                    f"[bold red]✗ {event.graph_name or 'Run'} failed: {event.error}[/bold red]"
-                )
+                self._progress.console.print(f"[bold red]✗ {event.graph_name or 'Run'} failed: {event.error}[/bold red]")
 
     def shutdown(self) -> None:
         """Stop the Rich progress display."""

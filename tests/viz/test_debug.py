@@ -1,5 +1,7 @@
 """Tests for the visualization debug utilities."""
 
+import importlib.util
+
 import pytest
 
 from hypergraph import Graph, node
@@ -379,11 +381,7 @@ class TestCacheInvalidation:
         assert debugger._flat_graph is not None
 
 
-try:
-    import playwright
-    HAS_PLAYWRIGHT = True
-except ImportError:
-    HAS_PLAYWRIGHT = False
+HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")

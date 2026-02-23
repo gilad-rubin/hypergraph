@@ -4,7 +4,6 @@ This tests the polymorphic approach to mapping renamed inputs back to
 original function parameters, replacing isinstance checks with proper OOP.
 """
 
-
 from hypergraph.nodes.function import FunctionNode, node
 from hypergraph.nodes.gate import END, RouteNode, route
 
@@ -14,6 +13,7 @@ class TestHyperNodeMapInputsToParams:
 
     def test_default_returns_inputs_unchanged(self):
         """Base class default implementation returns inputs unchanged."""
+
         # Use FunctionNode but test the base behavior before any renames
         def foo(a, b):
             return a + b
@@ -27,6 +27,7 @@ class TestHyperNodeMapInputsToParams:
 
     def test_empty_inputs_returns_empty(self):
         """Empty inputs dict returns empty dict."""
+
         def foo():
             pass
 
@@ -40,6 +41,7 @@ class TestFunctionNodeMapInputsToParams:
 
     def test_single_rename(self):
         """Single renamed input is mapped back to original."""
+
         def foo(x, y):
             return x + y
 
@@ -53,6 +55,7 @@ class TestFunctionNodeMapInputsToParams:
 
     def test_multiple_renames(self):
         """Multiple renamed inputs are all mapped back."""
+
         def foo(a, b, c):
             return a + b + c
 
@@ -65,6 +68,7 @@ class TestFunctionNodeMapInputsToParams:
 
     def test_chained_renames(self):
         """Chained renames (a->x then x->z) map z back to a."""
+
         def foo(a, b):
             return a + b
 
@@ -84,6 +88,7 @@ class TestFunctionNodeMapInputsToParams:
         If we rename x->y and y->z in the same with_inputs call,
         they should NOT chain (x shouldn't map to z).
         """
+
         def foo(x, y):
             return x + y
 
@@ -103,6 +108,7 @@ class TestFunctionNodeMapInputsToParams:
 
         If we rename x->y and y->x in the same call, they swap.
         """
+
         def foo(x, y):
             return x + y
 
@@ -119,6 +125,7 @@ class TestFunctionNodeMapInputsToParams:
 
     def test_no_renames_passthrough(self):
         """Without renames, inputs pass through unchanged."""
+
         def foo(a, b, c):
             return a + b + c
 
@@ -135,6 +142,7 @@ class TestFunctionNodeMapInputsToParams:
         This handles cases where inputs dict may have extra keys
         that the node doesn't care about.
         """
+
         def foo(x):
             return x
 
@@ -152,6 +160,7 @@ class TestRouteNodeMapInputsToParams:
 
     def test_single_rename(self):
         """Single renamed input is mapped back to original."""
+
         def decide(x):
             return "target_a" if x > 0 else "target_b"
 
@@ -164,6 +173,7 @@ class TestRouteNodeMapInputsToParams:
 
     def test_multiple_renames(self):
         """Multiple renamed inputs are all mapped back."""
+
         def decide(a, b):
             return "target_a" if a > b else "target_b"
 
@@ -176,6 +186,7 @@ class TestRouteNodeMapInputsToParams:
 
     def test_chained_renames_via_with_inputs(self):
         """Chained renames work for RouteNode too."""
+
         def decide(a):
             return "target_a"
 
@@ -191,6 +202,7 @@ class TestRouteNodeMapInputsToParams:
 
     def test_no_renames_passthrough(self):
         """Without renames, inputs pass through unchanged."""
+
         def decide(flag):
             return "target_a" if flag else "target_b"
 
@@ -203,6 +215,7 @@ class TestRouteNodeMapInputsToParams:
 
     def test_with_route_decorator(self):
         """map_inputs_to_params works with @route decorator."""
+
         @route(targets=["process", END], rename_inputs={"x": "input_value"})
         def decide(x):
             return "process" if x > 0 else END

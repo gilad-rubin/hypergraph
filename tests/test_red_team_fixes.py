@@ -92,10 +92,7 @@ class TestCycleTermination:
         runner = SyncRunner()
         result = runner.run(graph, {"count": 0})
 
-        assert result["count"] == 3, (
-            f"Expected count=3, got count={result['count']}. "
-            "Extra iteration after END."
-        )
+        assert result["count"] == 3, f"Expected count=3, got count={result['count']}. Extra iteration after END."
 
     def test_single_iteration_loop(self):
         """Loop that should execute exactly once."""
@@ -336,14 +333,10 @@ class TestControlOnlyCycles:
         graph = Graph(nodes=[process, check])
 
         # "data" feeds process but is NOT part of any data cycle
-        assert "data" in graph.inputs.required, (
-            f"'data' should be required, got: {graph.inputs.required}"
-        )
+        assert "data" in graph.inputs.required, f"'data' should be required, got: {graph.inputs.required}"
         # 'data' should not be an entrypoint param (it's required, not a cycle param)
         all_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
-        assert "data" not in all_ep_params, (
-            f"'data' should NOT be an entrypoint param: {graph.inputs.entrypoints}"
-        )
+        assert "data" not in all_ep_params, f"'data' should NOT be an entrypoint param: {graph.inputs.entrypoints}"
 
 
 # === Fix #11: Output rename propagation in GraphNode ===
@@ -368,6 +361,4 @@ class TestOutputRenamePropagation:
         runner = SyncRunner()
         result = runner.run(outer_graph, {"x": 5})
 
-        assert result["final"] == 11, (
-            f"Expected 11 (5*2+1), got {result['final']}"
-        )
+        assert result["final"] == 11, f"Expected 11 (5*2+1), got {result['final']}"

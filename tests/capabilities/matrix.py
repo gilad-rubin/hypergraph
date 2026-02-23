@@ -149,9 +149,7 @@ class Capability:
     @property
     def has_async_nodes(self) -> bool:
         """Whether this capability includes async nodes."""
-        return bool(
-            self.node_types & {NodeType.ASYNC_FUNC, NodeType.ASYNC_GENERATOR}
-        )
+        return bool(self.node_types & {NodeType.ASYNC_FUNC, NodeType.ASYNC_GENERATOR})
 
     @property
     def has_nesting(self) -> bool:
@@ -428,12 +426,8 @@ def count_combinations() -> dict[str, int]:
             "sync": sum(1 for c in all_combos if c.runner == Runner.SYNC),
             "async": sum(1 for c in all_combos if c.runner == Runner.ASYNC),
         },
-        "by_topology": {
-            t.name: sum(1 for c in all_combos if c.topology == t) for t in Topology
-        },
-        "by_nesting": {
-            n.name: sum(1 for c in all_combos if c.nesting == n) for n in NestingDepth
-        },
+        "by_topology": {t.name: sum(1 for c in all_combos if c.topology == t) for t in Topology},
+        "by_nesting": {n.name: sum(1 for c in all_combos if c.nesting == n) for n in NestingDepth},
     }
 
 

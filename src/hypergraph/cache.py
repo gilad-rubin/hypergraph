@@ -84,11 +84,9 @@ class DiskCache:
         try:
             import diskcache
         except ImportError:
-            raise ImportError(
-                "diskcache is required for DiskCache. "
-                "Install it with: pip install 'hypergraph[cache]'"
-            ) from None
+            raise ImportError("diskcache is required for DiskCache. Install it with: pip install 'hypergraph[cache]'") from None
         import os
+
         self._cache = diskcache.Cache(os.path.expanduser(cache_dir), **kwargs)
 
     def get(self, key: str) -> tuple[bool, Any]:
@@ -104,9 +102,7 @@ class DiskCache:
         try:
             self._cache.set(key, value)
         except (pickle.PicklingError, TypeError, AttributeError):
-            logger.warning(
-                "Cache write skipped: output not picklable for key %s", key
-            )
+            logger.warning("Cache write skipped: output not picklable for key %s", key)
 
 
 def compute_cache_key(definition_hash: str, inputs: dict[str, Any]) -> str:

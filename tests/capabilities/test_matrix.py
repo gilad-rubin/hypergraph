@@ -156,9 +156,7 @@ class TestFullMatrixSync:
     Run with: pytest -m full_matrix
     """
 
-    @pytest.mark.parametrize(
-        "cap", list(combinations_for(runner=Runner.SYNC)), ids=str
-    )
+    @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.SYNC)), ids=str)
     def test_all_sync_combinations(self, cap: Capability):
         """Every valid sync combination should execute."""
         run_capability_sync(cap)
@@ -172,9 +170,7 @@ class TestFullMatrixAsync:
     Run with: pytest -m full_matrix
     """
 
-    @pytest.mark.parametrize(
-        "cap", list(combinations_for(runner=Runner.ASYNC)), ids=str
-    )
+    @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.ASYNC)), ids=str)
     async def test_all_async_combinations(self, cap: Capability):
         """Every valid async combination should execute."""
         await run_capability_async(cap)

@@ -87,46 +87,31 @@ class EdgeConnectionValidator:
 
         # Check 1: Source above target
         if src.bottom >= tgt.y:
-            issues.append(
-                f"Source '{src.id}' not above target '{tgt.id}': "
-                f"src.bottom={src.bottom:.1f} >= tgt.y={tgt.y:.1f}"
-            )
+            issues.append(f"Source '{src.id}' not above target '{tgt.id}': src.bottom={src.bottom:.1f} >= tgt.y={tgt.y:.1f}")
 
         # Check 2: Edge starts from center-bottom of source
         expected_start = src.center_bottom
         dx_start = abs(edge.start_point[0] - expected_start[0])
         dy_start = abs(edge.start_point[1] - expected_start[1])
         if dx_start > self.tolerance:
-            issues.append(
-                f"Edge start X offset: {dx_start:.1f}px from center of '{src.id}'"
-            )
+            issues.append(f"Edge start X offset: {dx_start:.1f}px from center of '{src.id}'")
         if dy_start > self.tolerance:
-            issues.append(
-                f"Edge start Y offset: {dy_start:.1f}px from bottom of '{src.id}'"
-            )
+            issues.append(f"Edge start Y offset: {dy_start:.1f}px from bottom of '{src.id}'")
 
         # Check 3: Edge ends at center-top of target
         expected_end = tgt.center_top
         dx_end = abs(edge.end_point[0] - expected_end[0])
         dy_end = abs(edge.end_point[1] - expected_end[1])
         if dx_end > self.tolerance:
-            issues.append(
-                f"Edge end X offset: {dx_end:.1f}px from center of '{tgt.id}'"
-            )
+            issues.append(f"Edge end X offset: {dx_end:.1f}px from center of '{tgt.id}'")
         if dy_end > self.tolerance:
-            issues.append(
-                f"Edge end Y offset: {dy_end:.1f}px from top of '{tgt.id}'"
-            )
+            issues.append(f"Edge end Y offset: {dy_end:.1f}px from top of '{tgt.id}'")
 
         return issues
 
     def validate_all(self) -> dict[str, list[str]]:
         """Returns {edge_id: [issues]} for all edges with issues."""
-        return {
-            f"{e.source_id}->{e.target_id}": issues
-            for e in self.edges
-            if (issues := self.validate_edge(e))
-        }
+        return {f"{e.source_id}->{e.target_id}": issues for e in self.edges if (issues := self.validate_edge(e))}
 
 
 def format_issues(issues: dict[str, list[str]]) -> str:

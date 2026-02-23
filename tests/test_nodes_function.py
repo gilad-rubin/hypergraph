@@ -574,7 +574,7 @@ class TestFunctionNodeParameterAnnotations:
             return {}
 
         fn = FunctionNode(foo, output_name="result")
-        assert fn.parameter_annotations == {"items": list[int], "default": Optional[str]}
+        assert fn.parameter_annotations == {"items": list[int], "default": Optional[str]}  # noqa: UP045
 
 
 class TestFunctionNodeOutputAnnotation:
@@ -643,7 +643,7 @@ class TestFunctionNodeOutputAnnotation:
             return None
 
         fn = FunctionNode(foo, output_name="result")
-        assert fn.output_annotation == {"result": Optional[dict[str, int]]}
+        assert fn.output_annotation == {"result": Optional[dict[str, int]]}  # noqa: UP045
 
 
 class TestFunctionSignatures:
@@ -752,7 +752,7 @@ class TestFunctionSignatures:
             pass
 
         fn = FunctionNode(foo)
-        assert fn.parameter_annotations.get("kw") == str
+        assert fn.parameter_annotations.get("kw") is str
 
     # FUNC-04: positional-only tests
 
@@ -781,7 +781,7 @@ class TestFunctionSignatures:
             return ""
 
         fn = FunctionNode(foo, output_name="result")
-        assert fn.parameter_annotations.get("a") == int
+        assert fn.parameter_annotations.get("a") is int
 
     # FUNC-05: mixed argument types tests
 
@@ -814,9 +814,9 @@ class TestFunctionSignatures:
 
         fn = FunctionNode(foo, output_name="result")
         # Verify standard params are annotated
-        assert fn.parameter_annotations.get("pos") == int
-        assert fn.parameter_annotations.get("reg") == str
-        assert fn.parameter_annotations.get("kw") == bool
+        assert fn.parameter_annotations.get("pos") is int
+        assert fn.parameter_annotations.get("reg") is str
+        assert fn.parameter_annotations.get("kw") is bool
 
     def test_mixed_rename_works(self):
         """rename_inputs works with mixed param kinds (FUNC-05)."""

@@ -130,15 +130,11 @@ def _evaluate_forwardref(ref: ForwardRef, memo: TypeCheckMemo) -> Any:
         NameError: If the forward reference cannot be resolved
     """
     if _evaluate_forward_ref_public is not None:
-        return _evaluate_forward_ref_public(
-            ref, globals=memo.globals, locals=memo.locals, type_params=()
-        )
+        return _evaluate_forward_ref_public(ref, globals=memo.globals, locals=memo.locals, type_params=())
     # Fallback for Python < 3.14
     if sys.version_info < (3, 13):
         return ref._evaluate(memo.globals, memo.locals, recursive_guard=frozenset())
-    return ref._evaluate(
-        memo.globals, memo.locals, recursive_guard=frozenset(), type_params={}
-    )
+    return ref._evaluate(memo.globals, memo.locals, recursive_guard=frozenset(), type_params={})
 
 
 def _resolve_type(type_: Any, memo: TypeCheckMemo) -> Any:
@@ -179,7 +175,7 @@ def _resolve_type(type_: Any, memo: TypeCheckMemo) -> Any:
         resolved_args = tuple(_resolve_type(arg, memo) for arg in args)
         # Handle both Union and UnionType (| syntax)
         if origin in {Union, UnionType}:
-            return Union[resolved_args]
+            return Union[resolved_args]  # noqa: UP007 — dynamically constructed union
         return origin[resolved_args]
 
     return type_
@@ -261,12 +257,7 @@ def _check_identical_or_any(incoming_type: Any, required_type: Any) -> bool:
             )
             return True
 
-    return (
-        incoming_type == required_type
-        or required_type is Any
-        or incoming_type is NoAnnotation
-        or required_type is NoAnnotation
-    )
+    return incoming_type == required_type or required_type is Any or incoming_type is NoAnnotation or required_type is NoAnnotation
 
 
 def _all_types_compatible(
@@ -287,10 +278,7 @@ def _all_types_compatible(
     Returns:
         True if every incoming type is compatible with some required type
     """
-    return all(
-        any(is_type_compatible(t1, t2, memo) for t2 in required_args)
-        for t1 in incoming_args
-    )
+    return all(any(is_type_compatible(t1, t2, memo) for t2 in required_args) for t1 in incoming_args)
 
 
 def _handle_union_types(
@@ -313,12 +301,8 @@ def _handle_union_types(
     Returns:
         True/False if Union logic applies, None if neither is a Union
     """
-    incoming_is_union = isinstance(incoming_type, UnionType) or get_origin(
-        incoming_type
-    ) is Union
-    required_is_union = isinstance(required_type, UnionType) or get_origin(
-        required_type
-    ) is Union
+    incoming_is_union = isinstance(incoming_type, UnionType) or get_origin(incoming_type) is Union
+    required_is_union = isinstance(required_type, UnionType) or get_origin(required_type) is Union
 
     # Both are Union types
     if incoming_is_union and required_is_union:
@@ -328,17 +312,11 @@ def _handle_union_types(
 
     # Only incoming is Union: all members must satisfy required
     if incoming_is_union:
-        return all(
-            is_type_compatible(t, required_type, memo)
-            for t in get_args(incoming_type)
-        )
+        return all(is_type_compatible(t, required_type, memo) for t in get_args(incoming_type))
 
     # Only required is Union: incoming must satisfy some member
     if required_is_union:
-        return any(
-            is_type_compatible(incoming_type, t, memo)
-            for t in get_args(required_type)
-        )
+        return any(is_type_compatible(incoming_type, t, memo) for t in get_args(required_type))
 
     # Neither is Union
     return None
@@ -400,10 +378,7 @@ def _handle_generic_types(
             return False
 
         # Compare args pairwise
-        return all(
-            is_type_compatible(t1, t2, memo)
-            for t1, t2 in zip(incoming_args, required_args, strict=True)
-        )
+        return all(is_type_compatible(t1, t2, memo) for t1, t2 in zip(incoming_args, required_args, strict=True))
 
     return None
 
@@ -431,10 +406,7 @@ def _is_typevar_compatible(
         return True
 
     # Check constraints
-    if required_type.__constraints__ and any(
-        is_type_compatible(incoming_type, c, memo)
-        for c in required_type.__constraints__
-    ):
+    if required_type.__constraints__ and any(is_type_compatible(incoming_type, c, memo) for c in required_type.__constraints__):
         return True
 
     # Check bound

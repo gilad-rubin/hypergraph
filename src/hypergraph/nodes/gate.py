@@ -231,10 +231,7 @@ class RouteNode(GateNode):
 
         # Validate targets
         if not target_list:
-            raise ValueError(
-                f"RouteNode '{func.__name__}' must have at least one target.\n\n"
-                f"How to fix: Provide a non-empty targets list"
-            )
+            raise ValueError(f"RouteNode '{func.__name__}' must have at least one target.\n\nHow to fix: Provide a non-empty targets list")
 
         # Reject "END" string as target
         for t in target_list:
@@ -278,12 +275,14 @@ class RouteNode(GateNode):
         self.outputs = self._emit  # Gates: only emit outputs (no data outputs)
 
         inputs = tuple(inspect.signature(func).parameters.keys())
-        self.inputs, self._rename_history = _apply_renames(
-            inputs, rename_inputs, "inputs"
-        )
+        self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
         _validate_emit_wait_for(
-            self.name, self._emit, self._wait_for, (), self.inputs,
+            self.name,
+            self._emit,
+            self._wait_for,
+            (),
+            self.inputs,
         )
 
     def __call__(self, *args: Any, **kwargs: Any) -> str | type[END] | list | None:
@@ -480,12 +479,14 @@ class IfElseNode(GateNode):
         self.outputs = self._emit  # Gates: only emit outputs (no data outputs)
 
         inputs = tuple(inspect.signature(func).parameters.keys())
-        self.inputs, self._rename_history = _apply_renames(
-            inputs, rename_inputs, "inputs"
-        )
+        self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
         _validate_emit_wait_for(
-            self.name, self._emit, self._wait_for, (), self.inputs,
+            self.name,
+            self._emit,
+            self._wait_for,
+            (),
+            self.inputs,
         )
 
     def __call__(self, *args: Any, **kwargs: Any) -> bool:
