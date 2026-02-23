@@ -2,6 +2,20 @@
 
 Python workflow orchestration framework (alpha, solo dev). One set of primitives for DAGs, branches, loops, and nested hierarchies.
 
+## Information Architecture
+
+This repo uses a three-layer progressive disclosure pattern to keep agent context lean:
+
+| Layer | What | When Loaded |
+|-------|------|-------------|
+| **L1: Index** | This file (AGENTS.md) — module map, commands, deep-dive links | Every session (auto-loaded) |
+| **L2: Domain guides** | `dev/` directory, subdomain docs (`docs/AGENTS.md`, `src/hypergraph/viz/AGENTS.md`) | Read when the task touches that domain |
+| **L3: Skills & specs** | `.claude/skills/`, `specs/` — detailed workflows, reviewed designs | Activated by triggers or explicit request |
+
+**Convention**: Every directory with its own AGENTS.md also has a `CLAUDE.md` symlink pointing to it (`CLAUDE.md → AGENTS.md`). This ensures both Claude Code and Codex find the same instructions.
+
+**Rule**: Don't dump L2/L3 content into context upfront. Read it when the task requires it.
+
 ## Module Map
 
 ```
@@ -81,8 +95,23 @@ Conventional commits with scopes: `feat(graph):`, `fix(runners):`, `test(viz):`,
 | Testing guide | [dev/TESTING-GUIDE.md](dev/TESTING-GUIDE.md) |
 | Review checklist | [dev/REVIEW-CHECKLIST.md](dev/REVIEW-CHECKLIST.md) |
 | Setup & workflow | [dev/CONTRIBUTING.md](dev/CONTRIBUTING.md) |
-| Documentation guidelines | [docs/CLAUDE.md](docs/CLAUDE.md) |
+| Documentation guidelines | [docs/AGENTS.md](docs/AGENTS.md) |
+| Visualization system | [src/hypergraph/viz/AGENTS.md](src/hypergraph/viz/AGENTS.md) |
 | Design specs | `specs/reviewed/`, `specs/not_reviewed/` |
+
+## Hooks (Automatic)
+
+These run without agent intervention via `.claude/settings.json`:
+
+| Event | What It Does |
+|-------|--------------|
+| **PostToolUse (Write\|Edit)** | Auto-runs `ruff check --fix` + `ruff format` on any `.py` file after edits |
+| **SessionStart** | Context bootstrapping via `entire` |
+| **SessionEnd / Stop** | Session cleanup via `entire` |
+| **PreToolUse (Task)** | Subagent pre-validation via `entire` |
+| **PostToolUse (Task)** | Subagent post-processing via `entire` |
+
+The auto-format hook means agents never need to manually run ruff — code is always formatted after every edit.
 
 ## Skills
 
@@ -95,3 +124,12 @@ Conventional commits with scopes: `feat(graph):`, `fix(runners):`, `test(viz):`,
 | `/test-matrix-analysis` | Coverage gaps | N-dimensional test matrix, gap analysis |
 | `/update-docs` | Sync docs with code | Detect changes, update docs/, README |
 | `/code-smells` | Design review | Surface code smells, SOLID violations, flat-code issues |
+
+## Guardrails
+
+- **Branch protection**: `master` requires PR review + all CI checks before merge
+- **Auto-format**: ruff runs on every file edit (hook), so lint errors are fixed automatically
+- **Pre-commit**: ruff check + ruff format + nbstripout run on every commit
+- **CI**: lint + test matrix (Python 3.10-3.13) on every push/PR to master
+- **Build-time validation**: Graph() catches structural errors at construction, not runtime
+- **Tests**: `uv run pytest` must pass before any PR — the `/feature` skill enforces this
