@@ -134,3 +134,34 @@ tests/
 - Descriptive names: `test_route_node_rejects_async_function` not `test_route_1`
 - Fixtures: prefer `conftest.py` for shared fixtures, local for one-file fixtures
 - Marks: `@pytest.mark.slow` for slow tests, `@pytest.mark.full_matrix` for exhaustive
+
+## Common Gotchas
+
+### Cycle Tests Need Unique Output Names
+
+Each node in a cycle must produce a **unique** output name. Two nodes producing the same output triggers `validate_output_conflicts` unless they are in mutex gate branches or connected by a directed path.
+
+```python
+# WRONG — two producers of "state" raises GraphConfigError
+@node(output_name="state")
+def init(seed): return seed
+@node(output_name="state")
+def update(processed): return processed
+
+# RIGHT — unique outputs, cycle formed by data dependencies
+@node(output_name="a")
+def node_a(c: int) -> int: return c + 1
+@node(output_name="b")
+def node_b(a: int) -> int: return a * 2
+@node(output_name="c")
+def node_c(b: int) -> int: return b - 1
+# Graph([node_a, node_b, node_c]) → valid 3-node cycle A→B→C→A
+```
+
+### with_entrypoint in Pure Cycles
+
+`with_entrypoint("B")` in a pure cycle (A→B→C→A) does **not** exclude any cycle member — all are forward-reachable from each other. It only excludes DAG nodes upstream of the cycle. Test narrowing with a DAG-feeding-cycle topology instead.
+
+### bind() Rejects Inactive Inputs
+
+`with_entrypoint("downstream")` narrows the valid input set. `bind(x=5)` for an upstream input will raise `ValueError` because `x` is no longer in the graph's valid inputs. Use `runner.run(graph, {"x": 5})` for override-style injection (will trigger an "internal parameters" warning).
