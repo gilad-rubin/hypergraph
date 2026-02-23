@@ -1,5 +1,18 @@
 # Changelog
 
+## February 2026
+
+### Added
+
+- **`with_entrypoint(*node_names)`** — Graph method that narrows execution to start at specific nodes, skipping upstream. Works for DAGs and cycles. Returns a new Graph (immutable, chainable). Upstream nodes are excluded from the active set and never execute at runtime.
+- **Select-aware InputSpec** — `graph.select("a").inputs.required` now shows only what's needed to produce output "a", not the full graph. Previously `select()` only filtered returned outputs.
+- **Runtime select narrowing** — `runner.run(graph, values, select="a")` validates only the inputs needed for output "a". Passing `select` at runtime recomputes InputSpec scoped to the selected outputs.
+- **`entrypoints_config` property** — `graph.entrypoints_config` returns the configured entry point node names, or `None` if all nodes are active.
+
+### Changed
+
+- **InputSpec is now scope-aware** — `graph.inputs` considers both `with_entrypoint()` (forward-reachable) and `select()` (backward-reachable) when determining required, optional, and entrypoint parameters. Parameters from excluded nodes no longer appear in InputSpec.
+
 ## January 2026
 
 ### Added

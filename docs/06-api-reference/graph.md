@@ -5,7 +5,8 @@ A **Graph** defines a computation graph from nodes with automatic edge inference
 - **Automatic wiring** - Edges inferred from matching output/input names
 - **Build-time validation (`strict_types`)** - Type mismatches caught at construction when `strict_types=True`
 - **Hierarchical composition** - Graphs nest as nodes via `.as_node()`
-- **Immutable** - `bind()`, `select()`, and other methods return new instances
+- **Partial input semantics** - `with_entrypoint()` and `select()` narrow inputs to the active subgraph
+- **Immutable** - `bind()`, `select()`, `with_entrypoint()`, and other methods return new instances
 
 ```python
 from hypergraph import node, Graph
@@ -139,6 +140,18 @@ print(g.selected)  # None
 
 g2 = g.select("result")
 print(g2.selected)  # ('result',)
+```
+
+### `entrypoints_config: tuple[str, ...] | None`
+
+Configured entry point node names set via `with_entrypoint()`, or `None` if all nodes are active.
+
+```python
+g = Graph([upstream, downstream])
+print(g.entrypoints_config)  # None
+
+g2 = g.with_entrypoint("downstream")
+print(g2.entrypoints_config)  # ('downstream',)
 ```
 
 ### `has_cycles: bool`
@@ -304,7 +317,28 @@ Set a default output selection. Returns a new Graph (immutable pattern).
 
 This controls which outputs are returned by `runner.run()` and which outputs are exposed when the graph is used as a nested node via `as_node()`.
 
-All nodes still execute and all intermediate values are still computed internally. `select` only filters what is **returned to the caller**.
+`select` also narrows `graph.inputs` to only the parameters needed to produce the selected outputs. Nodes that don't contribute to those outputs are excluded from input computation.
+
+```python
+from hypergraph import node, Graph
+
+@node(output_name="a_val")
+def node_a(x: int) -> int:
+    return x * 2
+
+@node(output_name="b_val")
+def node_b(y: int) -> int:
+    return y + 1
+
+g = Graph([node_a, node_b])
+print(g.inputs.required)  # ('x', 'y')
+
+# Select narrows inputs to what's actually needed
+selected = g.select("a_val")
+print(selected.inputs.required)  # ('x',) - y is not needed for a_val
+```
+
+At runtime, all nodes in the active subgraph still execute. `select` filters what is **returned to the caller** and narrows what is **required from the caller**.
 
 ```python
 g = Graph([embed, retrieve, generate])
@@ -345,6 +379,97 @@ If the parent graph needs an intermediate output, add it to the selection:
 
 ```python
 inner = Graph([embed, retrieve, generate], name="rag").select("answer", "docs")
+```
+
+### `with_entrypoint(*node_names) -> Graph`
+
+Set execution entry points. Returns a new Graph (immutable pattern, like `bind()` and `select()`).
+
+Entry points define where execution starts. Upstream nodes are excluded from the active subgraph -- their outputs become direct user inputs instead of computed values.
+
+```python
+from hypergraph import node, Graph
+
+@node(output_name="embedding")
+def embed(text: str) -> list[float]:
+    return [0.1, 0.2, 0.3]
+
+@node(output_name="docs")
+def retrieve(embedding: list[float], top_k: int = 5) -> list[str]:
+    return ["doc1", "doc2"]
+
+@node(output_name="answer")
+def generate(docs: list[str], query: str) -> str:
+    return f"Answer based on {len(docs)} docs"
+
+g = Graph([embed, retrieve, generate])
+print(g.inputs.required)  # ('text', 'query')
+
+# Skip embed, start at retrieve
+g2 = g.with_entrypoint("retrieve")
+print(g2.inputs.required)  # ('embedding', 'query') - embedding is now a user input
+```
+
+`embed` is upstream of `retrieve`, so it is excluded from the active subgraph. Its output `embedding` is no longer produced by a node -- it becomes a required user input.
+
+**Args:**
+- `*node_names`: One or more node names to use as entry points.
+
+**Returns:** New Graph with entry points configured
+
+**Raises:**
+- `GraphConfigError` - If any name is not a node in the graph
+- `GraphConfigError` - If any name is a gate node (gates control routing, they cannot be entry points)
+
+#### Chainable
+
+`with_entrypoint` merges with previous calls. Each call adds to the set:
+
+```python
+g2 = g.with_entrypoint("retrieve").with_entrypoint("generate")
+print(g2.entrypoints_config)  # ('retrieve', 'generate')
+```
+
+#### Works with cycles
+
+For cyclic graphs, `with_entrypoint` determines which part of the cycle is active. The narrowed `inputs` reflects only the cycle parameters reachable from the entry point:
+
+```python
+# In a cycle: accumulate → generate → should_continue → accumulate
+g = Graph([accumulate, generate, should_continue])
+
+# Start at generate, skip accumulate as bootstrap
+g2 = g.with_entrypoint("generate")
+# g2.inputs shows only what generate needs to enter the cycle
+```
+
+#### Composes with select and bind
+
+All four dimensions compose -- `with_entrypoint` (start), `select` (end), `bind` (pre-fill), and function defaults (fallback):
+
+```python
+g = Graph([embed, retrieve, generate])
+
+# Start at retrieve, only need "answer", pre-fill top_k
+configured = (
+    g.with_entrypoint("retrieve")
+     .select("answer")
+     .bind(top_k=10)
+)
+print(configured.inputs.required)  # ('embedding', 'query')
+print(configured.inputs.optional)  # ('top_k',)
+```
+
+#### Active-set enforcement
+
+`with_entrypoint` is not just input narrowing -- it prevents upstream nodes from executing at runtime. Even if you provide all of `embed`'s inputs, it will not run:
+
+```python
+g2 = g.with_entrypoint("retrieve")
+
+# embed never runs, even if you provide 'text'
+result = runner.run(g2, {"embedding": [0.1, 0.2], "query": "hello"})
+# Only retrieve and generate execute
 ```
 
 ### `as_node(*, name=None) -> GraphNode`
