@@ -44,8 +44,13 @@ class Graph:
     Graph is a pure structure definition - it describes what nodes exist and how
     they connect.
 
-    Edges are inferred automatically: if node A produces output "x" and node B
-    has input "x", an edge A→B is created.
+    By default, edges are inferred automatically: if node A produces output "x"
+    and node B has input "x", an edge A→B is created.
+
+    For cyclic graphs with shared output names, use ``edges`` to declare
+    topology explicitly::
+
+        Graph([a, b, c], edges=[(a, b), (b, c), (c, a)])
 
     Attributes:
         name: Optional graph name (required for nesting via as_node)
@@ -76,6 +81,7 @@ class Graph:
         self,
         nodes: list[HyperNode],
         *,
+        edges: list[tuple] | None = None,
         name: str | None = None,
         strict_types: bool = False,
     ) -> None:
@@ -83,6 +89,14 @@ class Graph:
 
         Args:
             nodes: List of HyperNode objects
+            edges: Explicit edge declarations. Each edge is a tuple of
+                ``(source, target)`` or ``(source, target, values)`` where
+                source/target are node names (str) or node objects, and values
+                is a str or list of str specifying which outputs flow on the
+                edge. If omitted on a 2-tuple, values are auto-detected from
+                the intersection of source outputs and target inputs. Edges
+                with no matching values become ordering-only edges.
+                When ``edges`` is provided, auto-inference is disabled.
             name: Optional graph name for nesting
             strict_types: If True, validate type compatibility between connected
                          nodes at graph construction time. Calls _validate_types()
@@ -94,6 +108,7 @@ class Graph:
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
+        self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
         self._controlled_by: dict[str, list[str]] | None = None
@@ -221,33 +236,114 @@ class Graph:
                 output_sources.setdefault(output, []).append(node.name)
         return output_sources
 
+    def _normalize_edges(
+        self,
+        edges: list[tuple],
+    ) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+        """Normalize edge specs to frozen (source, target, value_names) triples.
+
+        Supports:
+        - 2-tuple: (source, target) — values inferred from output/input overlap
+        - 3-tuple: (source, target, values) — explicit value names
+
+        Source/target can be node name strings or HyperNode objects.
+        """
+        normalized: list[tuple[str, str, tuple[str, ...]]] = []
+        for edge in edges:
+            if not isinstance(edge, tuple) or len(edge) not in (2, 3):
+                raise GraphConfigError(
+                    f"Edge must be a 2-tuple or 3-tuple, got {type(edge).__name__} with {len(edge) if isinstance(edge, tuple) else '?'} elements"
+                )
+
+            src_raw, dst_raw = edge[0], edge[1]
+            src = src_raw.name if isinstance(src_raw, HyperNode) else src_raw
+            dst = dst_raw.name if isinstance(dst_raw, HyperNode) else dst_raw
+
+            if src not in self._nodes:
+                raise GraphConfigError(f"Edge references unknown source node '{src}'")
+            if dst not in self._nodes:
+                raise GraphConfigError(f"Edge references unknown target node '{dst}'")
+
+            if len(edge) == 3:
+                values = edge[2]
+                if isinstance(values, str):
+                    values = [values]
+                src_outputs = set(self._nodes[src].outputs)
+                dst_inputs = set(self._nodes[dst].inputs)
+                for v in values:
+                    if v not in src_outputs:
+                        raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an output of '{src}'. Outputs: {self._nodes[src].outputs}")
+                    if v not in dst_inputs:
+                        raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an input of '{dst}'. Inputs: {self._nodes[dst].inputs}")
+                value_names = tuple(dict.fromkeys(values))
+            else:
+                # Infer from intersection (preserve target input order)
+                src_outputs = set(self._nodes[src].outputs)
+                value_names = tuple(v for v in self._nodes[dst].inputs if v in src_outputs)
+                # Empty intersection is allowed — creates ordering-only edge
+
+            normalized.append((src, dst, value_names))
+
+        return tuple(normalized)
+
+    def _add_explicit_data_edges(
+        self,
+        G: nx.DiGraph,
+        normalized_edges: tuple[tuple[str, str, tuple[str, ...]], ...],
+    ) -> None:
+        """Add user-declared edges to the graph.
+
+        Edges with values get edge_type="data". Edges with no values
+        (empty intersection) get edge_type="ordering" (structural dependency).
+        """
+        from collections import defaultdict
+
+        data_edges: dict[tuple[str, str], list[str]] = defaultdict(list)
+        ordering_pairs: set[tuple[str, str]] = set()
+
+        for src, dst, value_names in normalized_edges:
+            if value_names:
+                data_edges[(src, dst)].extend(value_names)
+            else:
+                ordering_pairs.add((src, dst))
+
+        # Add data edges (dedup value_names per pair)
+        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": list(dict.fromkeys(names))}) for (src, dst), names in data_edges.items())
+
+        # Add ordering-only edges (skip if data edge already exists)
+        for src, dst in ordering_pairs:
+            if not G.has_edge(src, dst):
+                G.add_edge(src, dst, edge_type="ordering", value_names=[])
+
     def _build_graph(self, nodes: list[HyperNode]) -> nx.DiGraph:
-        """Build NetworkX DiGraph from nodes with edge inference.
+        """Build NetworkX DiGraph from nodes.
 
-        Process:
-        1. Add nodes to graph
-        2. Collect all output sources (allowing duplicates temporarily)
-        3. Build edges using first source for each output
-        4. Add control edges
-        5. Validate output conflicts with full graph structure (using reachability)
-
-        This ordering allows mutex branch detection using graph reachability analysis.
+        Uses explicit edges if provided, otherwise infers edges from
+        matching output/input names.
         """
         G = nx.DiGraph()
         self._add_nodes_to_graph(G, nodes)
 
-        # Collect all output sources (allowing duplicates temporarily)
         output_to_sources = self._collect_output_sources(nodes)
-
-        # Use first source for each output when building edges
         output_to_source = {k: v[0] for k, v in output_to_sources.items()}
-        self._add_data_edges(G, nodes, output_to_source)
-        self._add_control_edges(G, nodes)
-        self._add_ordering_edges(G, nodes, output_to_source)
 
-        # Validate output conflicts with full graph structure
-        # This allows mutex branch detection using reachability analysis
-        validate_output_conflicts(G, nodes, output_to_sources)
+        if self._explicit_edges is not None:
+            # Explicit mode: user-declared data edges
+            self._add_explicit_data_edges(G, self._explicit_edges)
+            self._add_control_edges(G, nodes)
+            self._add_ordering_edges(G, nodes, output_to_source)
+            validate_output_conflicts(
+                G,
+                nodes,
+                output_to_sources,
+                explicit_edges=True,
+            )
+        else:
+            # Auto-inference mode (default)
+            self._add_data_edges(G, nodes, output_to_source)
+            self._add_control_edges(G, nodes)
+            self._add_ordering_edges(G, nodes, output_to_source)
+            validate_output_conflicts(G, nodes, output_to_sources)
 
         return G
 
@@ -406,10 +502,16 @@ class Graph:
         Equivalent to rebuilding the graph with the combined node list,
         then replaying bind/select.
 
+        Raises GraphConfigError if graph was constructed with explicit edges.
         Raises ValueError if existing bindings become invalid after
         adding nodes (e.g., a bound key becomes emit-only).
         Fix: call unbind() before add_nodes().
         """
+        if self._explicit_edges is not None:
+            raise GraphConfigError(
+                "Cannot use add_nodes() on a graph with explicit edges.\nCreate a new Graph with the complete node and edge lists instead."
+            )
+
         if not nodes:
             return self
 

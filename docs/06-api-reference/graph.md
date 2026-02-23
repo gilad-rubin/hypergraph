@@ -26,7 +26,7 @@ Edges are inferred automatically: if node A produces output "x" and node B has i
 
 ## Constructor
 
-### `Graph(nodes, *, name=None, strict_types=False)`
+### `Graph(nodes, *, edges=None, name=None, strict_types=False)`
 
 Create a graph from nodes.
 
@@ -37,7 +37,7 @@ from hypergraph import node, Graph
 def process(x: int) -> int:
     return x * 2
 
-# Basic usage
+# Basic usage — edges inferred from matching names
 g = Graph([process])
 
 # With name (required for nesting)
@@ -49,12 +49,13 @@ g = Graph([process], strict_types=True)
 
 **Args:**
 - `nodes` (list[HyperNode]): List of nodes to include in the graph
+- `edges` (list[tuple] | None): Explicit edge declarations. Disables auto-inference when provided. See [Explicit Edges](#explicit-edges) below.
 - `name` (str | None): Optional graph name. Required if using `as_node()` for composition.
 - `strict_types` (bool): If True, validate type compatibility between connected nodes at construction time. Default: False.
 
 **Raises:**
 - `GraphConfigError` - If duplicate node names exist
-- `GraphConfigError` - If multiple nodes produce the same output name
+- `GraphConfigError` - If multiple nodes produce the same output name (in auto-inference mode without ordering)
 - `GraphConfigError` - If `strict_types=True` and types are incompatible or missing
 
 ## Properties
@@ -493,7 +494,10 @@ Graph([a, b])
 # GraphConfigError: Multiple nodes produce 'result'
 ```
 
-> **Exception**: Multiple nodes *can* produce the same output if they are **provably ordered** (via `emit`/`wait_for`) or in **mutually exclusive gate branches**. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
+Three ways to resolve this:
+1. **`emit`/`wait_for`** — Prove ordering between the producers. See [Shared Outputs in a Cycle](../03-patterns/03-agentic-loops.md#shared-outputs-in-a-cycle).
+2. **Explicit edges** — Declare the full topology manually via `edges=[...]`. See [Explicit Edges](#explicit-edges) below.
+3. **Mutually exclusive gate branches** — Place producers in different branches of an `@ifelse` or `@route` gate.
 
 **Invalid identifiers:**
 ```python
@@ -512,6 +516,63 @@ def b(value: int) -> int: return value  # No default!
 Graph([a, b])
 # GraphConfigError: Inconsistent defaults for 'value'
 ```
+
+## Explicit Edges
+
+By default, `Graph` infers edges from matching output/input names. Pass `edges` to disable auto-inference and declare the graph topology manually.
+
+```python
+from hypergraph import Graph, node
+
+@node(output_name="messages")
+def add_query(messages: list, query: str) -> list:
+    return [*messages, {"role": "user", "content": query}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+chat = Graph(
+    [add_query, generate, add_response],
+    edges=[
+        (add_query, generate),         # messages
+        (generate, add_response),      # response
+        (add_response, add_query),     # messages (cycle)
+    ],
+)
+```
+
+Both `add_query` and `add_response` produce `messages`. With auto-inference this would raise `GraphConfigError`. Explicit edges make the topology unambiguous.
+
+### Edge Format
+
+Each edge is a tuple of `(source, target)` or `(source, target, values)`:
+
+| Format | Behavior |
+|--------|----------|
+| `(source, target)` | Values auto-detected from intersection of `source.outputs` and `target.inputs` |
+| `(source, target, "name")` | Explicit single value |
+| `(source, target, ["a", "b"])` | Explicit multiple values |
+
+Source and target can be node objects or string names:
+
+```python
+# These are equivalent
+Graph([a, b], edges=[(a, b)])
+Graph([a, b], edges=[("a", "b")])
+```
+
+When a 2-tuple has no overlapping output/input names, it becomes an **ordering-only edge** — a structural dependency with no data flow.
+
+### Restrictions
+
+- `add_nodes()` raises `GraphConfigError` on a graph with explicit edges. Create a new `Graph` with the complete node and edge lists instead.
+- Auto-inference and explicit edges don't mix. When `edges` is provided, only declared edges exist.
+- Gate control edges and `emit`/`wait_for` ordering edges are still auto-wired in explicit mode. Don't declare edges from gate nodes to their targets — the explicit edge would override the auto-wired control edge type, affecting visualization.
 
 ### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, filepath=None)`
 

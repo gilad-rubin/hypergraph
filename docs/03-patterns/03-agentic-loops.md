@@ -280,7 +280,11 @@ result = runner.run(graph, {
 
 ## Shared Outputs in a Cycle
 
-Multiple nodes can produce the same output name when they are **provably ordered** via `emit`/`wait_for` or placed in **mutually exclusive gate branches**. Ordering ensures the consumer always receives the most recently produced value. Without ordering, two producers in the same cycle could both fire in the same superstep, creating ambiguity.
+When multiple nodes produce the same output name in a cycle — like two nodes both producing `messages` — the graph needs to know their execution order. There are two approaches: ordering signals (`emit`/`wait_for`) and explicit edges.
+
+### With emit/wait_for
+
+Use `emit`/`wait_for` to prove ordering between same-name producers. This keeps auto-inference for edge wiring while adding ordering constraints:
 
 ```python
 @node(output_name="query")
@@ -312,6 +316,54 @@ graph = Graph([
     should_continue,
 ])
 ```
+
+### With Explicit Edges
+
+When cycles share common output names like `messages`, `df`, or `state`, explicit edges let you declare the topology directly instead of inventing signal names. Pass `edges` to `Graph()` to disable auto-inference and wire edges manually:
+
+```python
+from hypergraph import Graph, node, route, END
+
+@node(output_name="messages")
+def add_query(messages: list, query: str) -> list:
+    return [*messages, {"role": "user", "content": query}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+@route(targets=["add_query", END])
+def should_continue(messages: list) -> str:
+    return END if len(messages) >= 10 else "add_query"
+
+chat = Graph(
+    [add_query, generate, add_response, should_continue],
+    edges=[
+        (add_query, generate),                   # messages
+        (generate, add_response),                # response
+        (add_response, should_continue),         # messages
+        (add_response, add_query),               # messages (cycle)
+    ],
+)
+```
+
+Each edge is a `(source, target)` tuple. Values are auto-detected from the intersection of source outputs and target inputs. When there's no overlap, the edge becomes ordering-only (structural dependency, no data flow).
+
+You can also use 3-tuples to specify values explicitly: `(source, target, "messages")` or `(source, target, ["messages", "response"])`.
+
+**When to use which approach:**
+
+| Situation | Use |
+|-----------|-----|
+| DAGs (no cycles) | Auto-inference (no `edges` needed) |
+| Cycles with unique output names | Auto-inference + `emit`/`wait_for` for ordering |
+| Cycles with shared output names (`messages`, `state`) | Explicit edges |
+
+For more on the `edges` parameter, see the [Graph API reference](../06-api-reference/graph.md#explicit-edges).
 
 ## Preventing Infinite Loops
 

@@ -22,17 +22,24 @@ def validate_output_conflicts(
     G: nx.DiGraph,
     nodes: list[HyperNode],
     output_to_sources: dict[str, list[str]],
+    *,
+    explicit_edges: bool = False,
 ) -> None:
     """Validate that duplicate outputs are mutex or ordered.
 
     Two producers of the same output are allowed if they are:
     1. In mutually exclusive gate branches (mutex), OR
-    2. Connected by a directed path after removing contested data edges (ordered)
+    2. Connected by a directed path (ordered)
+
+    In explicit mode, ordering is checked directly on the declared graph
+    topology. In auto-inference mode, contested data edges are stripped
+    before checking paths (since name-matched edges may be circular).
 
     Args:
-        G: The NetworkX directed graph (with edges from first producer only)
+        G: The NetworkX directed graph
         nodes: List of all nodes in the graph
         output_to_sources: Mapping from output name to list of nodes producing it
+        explicit_edges: If True, trust declared topology for ordering checks
 
     Raises:
         GraphConfigError: If multiple nodes produce the same output and they
@@ -45,7 +52,26 @@ def validate_output_conflicts(
     if not contested_outputs:
         return
 
-    # Build complete edge map with edges from ALL producers
+    if explicit_edges:
+        # Explicit mode: trust the declared topology directly
+        for output, sources in contested_outputs.items():
+            for a, b in combinations(sources, 2):
+                if _is_pair_mutex(a, b, expanded_groups):
+                    continue
+                if nx.has_path(G, a, b) or nx.has_path(G, b, a):
+                    continue
+
+                raise GraphConfigError(
+                    f"Multiple nodes produce '{output}'\n\n"
+                    f"  -> {a} creates '{output}'\n"
+                    f"  -> {b} creates '{output}'\n\n"
+                    f"How to fix:\n"
+                    f"  - Add an edge between the producers to declare ordering\n"
+                    f"  - Or place them in exclusive gate branches"
+                )
+        return
+
+    # Auto-inference mode: build complete edge map with edges from ALL producers
     node_names, edge_map = _build_full_edge_map(G, nodes, output_to_sources)
 
     for output, sources in contested_outputs.items():

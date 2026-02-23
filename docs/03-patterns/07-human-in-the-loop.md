@@ -123,6 +123,54 @@ Key patterns:
 - **`emit="turn_done"` + `wait_for="turn_done"`**: ensures `should_continue` sees the fully updated messages
 - Each resume replays the graph, providing all previous responses
 
+### Alternative: Explicit Edges
+
+The same chat loop without `emit`/`wait_for` signals. When multiple nodes produce `messages`, explicit edges declare the topology directly:
+
+```python
+from hypergraph import Graph, node, route, END, AsyncRunner, interrupt
+
+@interrupt(output_name="query")
+def ask_user(response: str) -> str | None:
+    return None  # always pause for human input
+
+@node(output_name="messages")
+def add_query(messages: list, query: str) -> list:
+    return [*messages, {"role": "user", "content": query}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+graph = Graph(
+    [ask_user, add_query, generate, add_response],
+    edges=[
+        (ask_user, add_query),                   # query
+        (add_query, generate),                    # messages
+        (generate, add_response),                 # response
+        (add_response, ask_user),                 # ordering only
+        (add_response, add_query),                # messages (cycle)
+    ],
+)
+
+chat = graph.bind(messages=[])
+runner = AsyncRunner()
+
+# Turn 1: pauses at ask_user
+result = await runner.run(chat, {})
+assert result.paused
+
+# Resume with user's first message
+result = await runner.run(chat, {"query": "Hello!"})
+assert result.paused  # pauses again for next turn
+```
+
+No ordering signals needed — the edge list makes execution order unambiguous. Both `add_query` and `add_response` produce `messages`, but the edges declare which runs first.
+
 ## Auto-Resolve with Handlers
 
 For testing or automation, the handler function resolves the interrupt without human input. Return a value to auto-resolve, return `None` to pause.
