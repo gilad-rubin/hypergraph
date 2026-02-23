@@ -106,12 +106,27 @@ These run without agent intervention via `.claude/settings.json`:
 | Event | What It Does |
 |-------|--------------|
 | **PostToolUse (Write\|Edit)** | Auto-runs `ruff check --fix` + `ruff format` on any `.py` file after edits |
-| **SessionStart** | Context bootstrapping via `entire` |
-| **SessionEnd / Stop** | Session cleanup via `entire` |
-| **PreToolUse (Task)** | Subagent pre-validation via `entire` |
-| **PostToolUse (Task)** | Subagent post-processing via `entire` |
+| **SessionStart** | Entire: begins session tracking, captures agent type and start time |
+| **UserPromptSubmit** | Entire: records each prompt for the session transcript |
+| **PreToolUse (Task)** | Entire: tracks subagent spawn (nested session hierarchy) |
+| **PostToolUse (Task)** | Entire: captures subagent results and token usage |
+| **PostToolUse (TodoWrite)** | Entire: records task list changes |
+| **SessionEnd / Stop** | Entire: finalizes session, stores transcript + token metrics + line attribution |
 
 The auto-format hook means agents never need to manually run ruff — code is always formatted after every edit.
+
+### Entire (Session Tracking)
+
+[Entire](https://docs.entire.io) captures agent sessions as Git-native checkpoints. On every commit, it stores the full transcript, files touched, token usage, and agent-vs-human line attribution. Strategy: `manual-commit` (checkpoints only on explicit commits, no extra commits on your branch).
+
+```bash
+entire status                    # Show active sessions
+entire explain                   # Browse checkpoints on current branch
+entire explain --commit HEAD     # See AI reasoning behind a specific commit
+entire rewind                    # Interactive rewind to any checkpoint
+```
+
+**Note**: If `uv run pre-commit install` overwrites git hooks, re-run `entire enable` to restore.
 
 ## Skills
 
