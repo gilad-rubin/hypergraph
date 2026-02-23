@@ -1,11 +1,9 @@
 """Tests for deeply nested graphs with cycles (GAP-02)."""
 
-import pytest
 
 from hypergraph import Graph, node
-from hypergraph.nodes.gate import route, END
-from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
-
+from hypergraph.nodes.gate import END, route
+from hypergraph.runners import AsyncRunner, RunStatus, SyncRunner
 
 # === Test Fixtures ===
 

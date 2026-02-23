@@ -8,6 +8,7 @@ These tests verify:
 """
 
 import pytest
+
 from hypergraph import Graph, ifelse, node
 
 # Import shared fixtures and helpers from conftest
@@ -15,8 +16,8 @@ from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
     click_to_collapse_container,
     click_to_expand_container,
-    make_workflow,
     make_outer,
+    make_workflow,
     render_to_page,
 )
 from tests.viz.test_complex_nested_graphs import make_rag_style_graph
@@ -834,7 +835,7 @@ class TestEdgeValidation:
                 )
 
         assert len(issues) == 0, (
-            f"Edges flow upward instead of downward:\n" +
+            "Edges flow upward instead of downward:\n" +
             "\n".join(f"  - {issue}" for issue in issues)
         )
 

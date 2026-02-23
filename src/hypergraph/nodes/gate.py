@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin
 from hypergraph.nodes._rename import _apply_renames
 from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
-
 
 # =============================================================================
 # Validation Helpers

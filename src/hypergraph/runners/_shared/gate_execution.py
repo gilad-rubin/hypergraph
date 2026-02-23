@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 
 def execute_ifelse(
-    node: "IfElseNode",
-    state: "GraphState",
+    node: IfElseNode,
+    state: GraphState,
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
     """Execute an IfElseNode's routing logic.
@@ -45,8 +45,8 @@ def execute_ifelse(
 
 
 def execute_route(
-    node: "RouteNode",
-    state: "GraphState",
+    node: RouteNode,
+    state: GraphState,
     inputs: dict[str, Any],
 ) -> dict[str, Any]:
     """Execute a RouteNode's routing logic.

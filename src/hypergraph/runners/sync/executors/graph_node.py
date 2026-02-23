@@ -22,7 +22,7 @@ class SyncGraphNodeExecutor:
     - Map-over execution (delegates to runner.map())
     """
 
-    def __init__(self, runner: "SyncRunner"):
+    def __init__(self, runner: SyncRunner):
         """Initialize with reference to parent runner.
 
         Args:
@@ -32,11 +32,11 @@ class SyncGraphNodeExecutor:
 
     def __call__(
         self,
-        node: "GraphNode",
-        state: "GraphState",
+        node: GraphNode,
+        state: GraphState,
         inputs: dict[str, Any],
         *,
-        event_processors: "list[EventProcessor] | None" = None,
+        event_processors: list[EventProcessor] | None = None,
         parent_span_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.

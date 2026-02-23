@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import (
+    END,
     AsyncRunner,
     Graph,
     InterruptNode,
@@ -15,11 +16,9 @@ from hypergraph import (
     interrupt,
     node,
     route,
-    END,
 )
 from hypergraph.exceptions import IncompatibleRunnerError
 from hypergraph.nodes.function import FunctionNode
-
 
 # ── Node construction ──
 
@@ -1371,7 +1370,6 @@ class TestInterruptNodeEmitWaitFor:
     @pytest.mark.asyncio
     async def test_emit_produces_sentinel_in_execution(self):
         """emit output produces sentinel value during execution."""
-        from hypergraph.nodes.base import _EMIT_SENTINEL
 
         @node(output_name="draft")
         def make_draft(query: str) -> str:

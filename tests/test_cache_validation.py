@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
-from hypergraph import Graph, node, END
-from hypergraph.graph.validation import GraphConfigError
+from hypergraph import END, Graph, node
 from hypergraph.nodes.gate import route
-from hypergraph.nodes.interrupt import InterruptNode, interrupt
+from hypergraph.nodes.interrupt import interrupt
 
 
 class TestCacheValidationOnGates:

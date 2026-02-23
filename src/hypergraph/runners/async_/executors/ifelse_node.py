@@ -20,8 +20,8 @@ class AsyncIfElseNodeExecutor:
 
     async def __call__(
         self,
-        node: "IfElseNode",
-        state: "GraphState",
+        node: IfElseNode,
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         return execute_ifelse(node, state, inputs)

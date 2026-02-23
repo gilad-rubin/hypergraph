@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import functools
 import hashlib
-import networkx as nx
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from hypergraph.nodes.base import HyperNode
+import networkx as nx
+
 from hypergraph.graph._conflict import validate_output_conflicts
 from hypergraph.graph._helpers import get_edge_produced_values, sources_of
 from hypergraph.graph.input_spec import InputSpec, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
+from hypergraph.nodes.base import HyperNode
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.viz.debug import VizDebugger
 
@@ -105,7 +107,7 @@ class Graph:
         return self._controlled_by
 
     def _compute_controlled_by(self) -> dict[str, list[str]]:
-        from hypergraph.nodes.gate import GateNode, END
+        from hypergraph.nodes.gate import END, GateNode
 
         controlled_by: dict[str, list[str]] = {}
         for node in self._nodes.values():
@@ -120,7 +122,7 @@ class Graph:
         """Map of node name -> node object."""
         return dict(self._nodes)  # Return copy to prevent mutation
 
-    def iter_nodes(self) -> "Iterable[HyperNode]":
+    def iter_nodes(self) -> Iterable[HyperNode]:
         """Iterate over all nodes without copying the internal dict."""
         return self._nodes.values()
 
@@ -302,7 +304,7 @@ class Graph:
 
         Control edges indicate routing relationships but don't carry data.
         """
-        from hypergraph.nodes.gate import GateNode, END
+        from hypergraph.nodes.gate import END, GateNode
 
         for node in nodes:
             if not isinstance(node, GateNode):
@@ -342,7 +344,7 @@ class Graph:
                         value_names=[name],
                     )
 
-    def bind(self, **values: Any) -> "Graph":
+    def bind(self, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).
 
         Accepts any graph input or output name. Bound values act as
@@ -371,13 +373,13 @@ class Graph:
         new_graph._bound = {**self._bound, **values}
         return new_graph
 
-    def unbind(self, *keys: str) -> "Graph":
+    def unbind(self, *keys: str) -> Graph:
         """Remove specific bindings. Returns new Graph."""
         new_graph = self._shallow_copy()
         new_graph._bound = {k: v for k, v in self._bound.items() if k not in keys}
         return new_graph
 
-    def select(self, *names: str) -> "Graph":
+    def select(self, *names: str) -> Graph:
         """Set default output selection. Returns new Graph (immutable).
 
         Controls which outputs are returned by runner.run() and which outputs
@@ -422,7 +424,7 @@ class Graph:
         new_graph._selected = names
         return new_graph
 
-    def add_nodes(self, *nodes: HyperNode) -> "Graph":
+    def add_nodes(self, *nodes: HyperNode) -> Graph:
         """Add nodes to graph. Returns new Graph (immutable).
 
         Equivalent to rebuilding the graph with the combined node list,
@@ -516,7 +518,7 @@ class Graph:
         combined = "|".join(node_hashes) + "|" + edge_str
         return hashlib.sha256(combined.encode()).hexdigest()
 
-    def _shallow_copy(self) -> "Graph":
+    def _shallow_copy(self) -> Graph:
         """Create a shallow copy of this graph.
 
         Preserves: name, strict_types, nodes, nx_graph, cached_hash
@@ -539,7 +541,7 @@ class Graph:
         # Note: Duplicate outputs caught in validate_output_conflicts()
         validate_graph(self._nodes, self._nx_graph, self.name, self._strict_types)
 
-    def as_node(self, *, name: str | None = None) -> "GraphNode":
+    def as_node(self, *, name: str | None = None) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.
 
         Args:
@@ -762,7 +764,7 @@ class Graph:
             child_id = child_lookup.get(child_node.name, child_node.name)
             self._add_nested_edges(G, child_node, child_id)
 
-    def debug_viz(self) -> "VizDebugger":
+    def debug_viz(self) -> VizDebugger:
         """Get a debugger for this graph's visualization.
 
         Returns a VizDebugger instance for tracing nodes/edges and finding issues.

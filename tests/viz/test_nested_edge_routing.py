@@ -9,11 +9,10 @@ import pytest
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_workflow,
     make_outer,
+    make_workflow,
     render_to_page,
 )
-
 
 # =============================================================================
 # Tests

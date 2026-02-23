@@ -1,6 +1,7 @@
 """Tests for graph validation (build-time checks)."""
 
 import pytest
+
 from hypergraph.graph import Graph, GraphConfigError
 from hypergraph.nodes.function import node
 

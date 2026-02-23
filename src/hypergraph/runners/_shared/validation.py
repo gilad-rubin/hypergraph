@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def validate_inputs(
-    graph: "Graph",
+    graph: Graph,
     values: dict[str, Any],
     *,
     entrypoint: str | None = None,
@@ -87,7 +87,7 @@ def validate_inputs(
 
 
 def _validate_cycle_entry(
-    graph: "Graph",
+    graph: Graph,
     provided: set[str],
     bypassed: set[str],
     entrypoint: str | None,
@@ -134,7 +134,7 @@ def _validate_cycle_entry(
 
 
 def _group_entrypoints_by_scc(
-    graph: "Graph",
+    graph: Graph,
     entrypoints: dict[str, tuple[str, ...]],
 ) -> dict[int, list[str]]:
     """Group entry point node names by which cycle (SCC) they belong to.
@@ -147,6 +147,7 @@ def _group_entrypoints_by_scc(
         return {}
 
     import networkx as nx
+
     from hypergraph.graph.input_spec import _data_only_subgraph
 
     data_graph = _data_only_subgraph(graph.nx_graph)
@@ -273,7 +274,7 @@ def _build_missing_input_message(
 
 
 def validate_runner_compatibility(
-    graph: "Graph",
+    graph: Graph,
     capabilities: RunnerCapabilities,
 ) -> None:
     """Validate that a runner can execute a graph.
@@ -321,7 +322,7 @@ def validate_runner_compatibility(
         )
 
 
-def validate_map_compatible(graph: "Graph") -> None:
+def validate_map_compatible(graph: Graph) -> None:
     """Validate that a graph can be used with map().
 
     Checks that graphs with interrupts are not used with map().
@@ -340,7 +341,7 @@ def validate_map_compatible(graph: "Graph") -> None:
         )
 
 
-def _get_interrupt_outputs(graph: "Graph") -> set[str]:
+def _get_interrupt_outputs(graph: Graph) -> set[str]:
     """Get all output names produced by interrupt nodes in the graph."""
     return {
         output
@@ -350,7 +351,7 @@ def _get_interrupt_outputs(graph: "Graph") -> set[str]:
     }
 
 
-def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
+def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
     """Find inputs that belong to nodes fully bypassed by intermediate injection.
 
     A node is bypassed ONLY if ALL of its outputs that are consumed downstream
@@ -413,8 +414,8 @@ def _find_bypassed_inputs(graph: "Graph", provided: set[str]) -> set[str]:
 
 
 def validate_node_types(
-    graph: "Graph",
-    supported_types: set[type["HyperNode"]],
+    graph: Graph,
+    supported_types: set[type[HyperNode]],
 ) -> None:
     """Validate that all nodes in graph have registered executors.
 

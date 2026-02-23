@@ -29,13 +29,12 @@ import pytest
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_workflow,
-    extract_edge_routing,
-    render_and_extract,
-    click_to_expand_container,
     click_to_collapse_container,
+    click_to_expand_container,
+    extract_edge_routing,
+    make_workflow,
+    render_and_extract,
 )
-
 
 # =============================================================================
 # Tests for Interactive Expand Edge Routing
@@ -175,7 +174,7 @@ class TestInteractiveExpandEdgeRouting:
 
         # Find the input edge (from input_text or similar)
         input_edge = None
-        for eid, info in data['edges'].items():
+        for _eid, info in data['edges'].items():
             if 'input' in info['source'].lower():
                 input_edge = info
                 break
@@ -211,7 +210,7 @@ class TestInteractiveExpandEdgeRouting:
 
         # Find the edge to analyze (the output edge from preprocess area)
         output_edge = None
-        for eid, info in data['edges'].items():
+        for _eid, info in data['edges'].items():
             if info['target'] == 'analyze':
                 output_edge = info
                 break
@@ -339,7 +338,7 @@ class TestInteractiveCollapseEdgeRouting:
 
         # Find the edge to analyze (the output edge from preprocess area)
         output_edge = None
-        for eid, info in data['edges'].items():
+        for _eid, info in data['edges'].items():
             if info['target'] == 'analyze':
                 output_edge = info
                 break

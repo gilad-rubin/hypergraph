@@ -4,22 +4,20 @@ Graph builders that create test graphs from Capability specs.
 Each builder function creates nodes/graphs matching the requested capability.
 """
 
-from functools import lru_cache
 from typing import Any
 
 from hypergraph import Graph, node
 from hypergraph.nodes import FunctionNode
 
 from .matrix import (
-    Capability,
-    NodeType,
-    Topology,
-    NestingDepth,
-    MapMode,
-    Renaming,
     Binding,
+    Capability,
+    MapMode,
+    NestingDepth,
+    NodeType,
+    Renaming,
+    Topology,
 )
-
 
 # =============================================================================
 # Node factories - create nodes of specific types

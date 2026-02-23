@@ -12,11 +12,10 @@ Usage:
         # ... test
 """
 
+import itertools
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Iterator
-import itertools
-
 
 # =============================================================================
 # Dimension Enums
@@ -192,16 +191,12 @@ class Capability:
 
 def _sync_runner_no_async_nodes(cap: Capability) -> bool:
     """SyncRunner cannot execute async nodes."""
-    if cap.runner == Runner.SYNC and cap.has_async_nodes:
-        return False
-    return True
+    return not (cap.runner == Runner.SYNC and cap.has_async_nodes)
 
 
 def _concurrency_only_for_async(cap: Capability) -> bool:
     """Concurrency limits only make sense for async runner."""
-    if cap.runner == Runner.SYNC and cap.concurrency == Concurrency.LIMITED:
-        return False
-    return True
+    return not (cap.runner == Runner.SYNC and cap.concurrency == Concurrency.LIMITED)
 
 
 def _map_requires_nesting_or_runner_map(cap: Capability) -> bool:
@@ -217,16 +212,12 @@ def _map_requires_nesting_or_runner_map(cap: Capability) -> bool:
 
 def _graph_node_requires_nesting(cap: Capability) -> bool:
     """GraphNode type requires nesting depth > 0."""
-    if NodeType.GRAPH_NODE in cap.node_types and cap.nesting == NestingDepth.FLAT:
-        return False
-    return True
+    return not (NodeType.GRAPH_NODE in cap.node_types and cap.nesting == NestingDepth.FLAT)
 
 
 def _nesting_requires_graph_node(cap: Capability) -> bool:
     """Nesting > 0 implies we have GraphNodes."""
-    if cap.nesting != NestingDepth.FLAT and NodeType.GRAPH_NODE not in cap.node_types:
-        return False
-    return True
+    return not (cap.nesting != NestingDepth.FLAT and NodeType.GRAPH_NODE not in cap.node_types)
 
 
 def _output_conflict_requires_topology(cap: Capability) -> bool:

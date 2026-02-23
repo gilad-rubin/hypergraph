@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hypergraph import Graph, InMemoryCache, node, SyncRunner
+from hypergraph import Graph, InMemoryCache, SyncRunner, node
 from hypergraph.events import EventProcessor
 from hypergraph.events.types import CacheHitEvent, NodeEndEvent, NodeStartEvent
 

@@ -11,9 +11,8 @@ Tests cover:
 
 import pytest
 
-from hypergraph import Graph, node, route, END, SyncRunner, AsyncRunner, RunStatus
+from hypergraph import END, AsyncRunner, Graph, RunStatus, SyncRunner, node, route
 from hypergraph.graph import GraphConfigError
-
 
 # =============================================================================
 # Basic Routing Execution Tests

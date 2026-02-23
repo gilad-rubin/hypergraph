@@ -8,7 +8,12 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import ExecutionError
-from hypergraph.runners._shared.helpers import _UNSET_SELECT, _validate_on_missing, filter_outputs, generate_map_inputs
+from hypergraph.runners._shared.helpers import (
+    _UNSET_SELECT,
+    _validate_on_missing,
+    filter_outputs,
+    generate_map_inputs,
+)
 from hypergraph.runners._shared.input_normalization import (
     ASYNC_MAP_RESERVED_OPTION_NAMES,
     ASYNC_RUN_RESERVED_OPTION_NAMES,
@@ -45,7 +50,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
     @property
     @abstractmethod
-    def supported_node_types(self) -> set[type["HyperNode"]]:
+    def supported_node_types(self) -> set[type[HyperNode]]:
         """Node types supported by this runner."""
         ...
 
@@ -58,15 +63,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     async def _execute_graph_impl_async(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any],
         max_iterations: int,
         max_concurrency: int | None,
         *,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
         run_id: str,
         run_span_id: str,
-        event_processors: list["EventProcessor"] | None = None,
+        event_processors: list[EventProcessor] | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -74,16 +79,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     def _create_dispatcher(
         self,
-        processors: list["EventProcessor"] | None,
-    ) -> "EventDispatcher":
+        processors: list[EventProcessor] | None,
+    ) -> EventDispatcher:
         """Create event dispatcher."""
         ...
 
     @abstractmethod
     async def _emit_run_start_async(
         self,
-        dispatcher: "EventDispatcher",
-        graph: "Graph",
+        dispatcher: EventDispatcher,
+        graph: Graph,
         parent_span_id: str | None,
         *,
         is_map: bool = False,
@@ -95,10 +100,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     async def _emit_run_end_async(
         self,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
         run_id: str,
         span_id: str,
-        graph: "Graph",
+        graph: Graph,
         start_time: float,
         parent_span_id: str | None,
         *,
@@ -110,7 +115,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
     @abstractmethod
     async def _shutdown_dispatcher_async(
         self,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
     ) -> None:
         """Shut down dispatcher."""
         ...
@@ -132,15 +137,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
     async def run(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any] | None = None,
         *,
-        select: "str | list[str]" = _UNSET_SELECT,
+        select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
-        event_processors: list["EventProcessor"] | None = None,
+        event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -225,17 +230,17 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
     async def map(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any] | None = None,
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
-        select: "str | list[str]" = _UNSET_SELECT,
+        select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
-        event_processors: list["EventProcessor"] | None = None,
+        event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
@@ -345,7 +350,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 except Exception:
                     # Let the outer error handler emit map-level failure events.
                     raise
-                results = [r for _, r in sorted(zip(order, results_list))]
+                results = [r for _, r in sorted(zip(order, results_list, strict=False))]
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:

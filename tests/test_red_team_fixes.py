@@ -6,9 +6,8 @@ Tests are written to fail before the fix and pass after.
 
 import pytest
 
-from hypergraph import Graph, node, route, END, SyncRunner
+from hypergraph import END, Graph, SyncRunner, node, route
 from hypergraph.nodes._rename import RenameError
-
 
 # === Fix #1: Mutable default arguments shared across runs ===
 
@@ -51,6 +50,7 @@ class TestMutableDefaults:
     def test_non_copyable_default_raises_error(self):
         """Non-copyable defaults should raise clear error (not warn)."""
         import threading
+
         from hypergraph.graph.validation import GraphConfigError
         from hypergraph.runners._shared.types import RunStatus
 

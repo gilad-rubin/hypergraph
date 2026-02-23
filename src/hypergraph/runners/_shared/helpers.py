@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.nodes.base import HyperNode
@@ -66,7 +67,7 @@ def _safe_deepcopy(value: Any, param_name: str = "<unknown>") -> Any:
 def get_value_source(
     param: str,
     node: HyperNode,
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     provided_values: dict[str, Any],
 ) -> tuple[ValueSource, Any]:
@@ -113,7 +114,7 @@ def get_value_source(
     raise KeyError(f"No value for input '{param}'")
 
 
-def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
+def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
     A node is ready when:
@@ -164,7 +165,7 @@ def get_ready_nodes(graph: "Graph", state: GraphState) -> list[HyperNode]:
     return ready
 
 
-def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
+def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
     """Get all nodes that have been activated by gate routing decisions.
 
     A node is activated if:
@@ -211,7 +212,7 @@ def _get_activated_nodes(graph: "Graph", state: GraphState) -> set[str]:
     return activated
 
 
-def _clear_stale_gate_decisions(graph: "Graph", state: GraphState) -> None:
+def _clear_stale_gate_decisions(graph: Graph, state: GraphState) -> None:
     """Clear routing decisions for gates that will re-execute.
 
     If a gate's inputs have changed since its last execution, its previous
@@ -244,7 +245,7 @@ def _is_node_activated_by_decision(node_name: str, decision: Any) -> bool:
 
 def _is_node_ready(
     node: HyperNode,
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     activated_nodes: set[str],
 ) -> bool:
@@ -265,7 +266,7 @@ def _is_node_ready(
     return _needs_execution(node, graph, state)
 
 
-def _is_controlled_by_gate(node: HyperNode, graph: "Graph") -> bool:
+def _is_controlled_by_gate(node: HyperNode, graph: Graph) -> bool:
     """Check if a node is controlled by any gate (O(1) via cached map)."""
     return bool(graph.controlled_by.get(node.name))
 
@@ -295,7 +296,7 @@ def _wait_for_satisfied(node: HyperNode, state: GraphState) -> bool:
 
 
 def _defer_wait_for_nodes(
-    ready: list[HyperNode], graph: "Graph",
+    ready: list[HyperNode], graph: Graph,
 ) -> list[HyperNode]:
     """If a producer and its wait_for consumer are both ready, defer the consumer.
 
@@ -330,15 +331,12 @@ def _defer_wait_for_nodes(
     return [n for n in ready if n.name not in deferred]
 
 
-def _has_all_inputs(node: HyperNode, graph: "Graph", state: GraphState) -> bool:
+def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if all inputs for a node are available."""
-    for param in node.inputs:
-        if not _has_input(param, node, graph, state):
-            return False
-    return True
+    return all(_has_input(param, node, graph, state) for param in node.inputs)
 
 
-def _has_input(param: str, node: HyperNode, graph: "Graph", state: GraphState) -> bool:
+def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if a single input parameter is available."""
     # Value in state (from edge or initial input)
     if param in state.values:
@@ -349,14 +347,11 @@ def _has_input(param: str, node: HyperNode, graph: "Graph", state: GraphState) -
         return True
 
     # Node has default for this parameter
-    if node.has_default_for(param):
-        return True
-
-    return False
+    return bool(node.has_default_for(param))
 
 
 def _needs_execution(
-    node: HyperNode, graph: "Graph", state: GraphState
+    node: HyperNode, graph: Graph, state: GraphState
 ) -> bool:
     """Check if node needs (re-)execution."""
     if node.name not in state.node_executions:
@@ -369,7 +364,7 @@ def _needs_execution(
 
 def _is_stale(
     node: HyperNode,
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     last_exec: NodeExecution,
 ) -> bool:
@@ -401,7 +396,7 @@ def _is_stale(
 
 def collect_inputs_for_node(
     node: HyperNode,
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     provided_values: dict[str, Any],
 ) -> dict[str, Any]:
@@ -431,7 +426,7 @@ def collect_inputs_for_node(
 def _resolve_input(
     param: str,
     node: HyperNode,
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     provided_values: dict[str, Any],
 ) -> Any:
@@ -500,7 +495,7 @@ def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
 
 
 def initialize_state(
-    graph: "Graph",
+    graph: Graph,
     values: dict[str, Any],
 ) -> GraphState:
     """Initialize execution state with provided input values.
@@ -527,8 +522,8 @@ _UNSET_SELECT: Any = object()
 
 def filter_outputs(
     state: GraphState,
-    graph: "Graph",
-    select: "str | list[str] | Any" = _UNSET_SELECT,
+    graph: Graph,
+    select: str | list[str] | Any = _UNSET_SELECT,
     on_missing: str = "ignore",
 ) -> dict[str, Any]:
     """Filter state values to only include requested outputs.
@@ -567,7 +562,7 @@ def filter_outputs(
     return _collect_selected_outputs(state, names, _EMIT_SENTINEL, on_missing)
 
 
-def _resolve_select(select: Any, graph: "Graph") -> "str | list[str]":
+def _resolve_select(select: Any, graph: Graph) -> str | list[str]:
     """Resolve effective select: unset → graph.selected → '**'."""
     if select is _UNSET_SELECT:
         return list(graph.selected) if graph.selected is not None else "**"
@@ -575,7 +570,7 @@ def _resolve_select(select: Any, graph: "Graph") -> "str | list[str]":
 
 
 def _collect_all_outputs(
-    state: GraphState, graph: "Graph", sentinel: Any,
+    state: GraphState, graph: Graph, sentinel: Any,
 ) -> dict[str, Any]:
     """Return all graph outputs present in state, excluding emit sentinels."""
     return {
@@ -689,7 +684,7 @@ def _generate_zip_inputs(
     if len(set(lengths)) > 1:
         raise ValueError(
             f"map_over parameters must have equal lengths in zip mode. "
-            f"Got lengths: {dict(zip(mapped_values.keys(), lengths))}"
+            f"Got lengths: {dict(zip(mapped_values.keys(), lengths, strict=False))}"
         )
 
     if not lengths:
@@ -719,13 +714,13 @@ def _generate_product_inputs(
     for combo in iter_product(*value_lists):
         yield {
             **broadcast_values,
-            **dict(zip(keys, combo)),
+            **dict(zip(keys, combo, strict=False)),
         }
 
 
 def collect_as_lists(
     results: list[RunResult],
-    node: "GraphNode",
+    node: GraphNode,
     error_handling: ErrorHandling = "raise",
 ) -> dict[str, list]:
     """Collect multiple RunResults into lists per output.

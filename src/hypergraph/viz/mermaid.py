@@ -207,7 +207,7 @@ def _build_input_label(
         return label
 
     parts = []
-    for param, ptype in zip(params, param_types):
+    for param, ptype in zip(params, param_types, strict=False):
         entry = _escape_label(param)
         if show_types and ptype:
             entry += f": {_escape_label(ptype)}"

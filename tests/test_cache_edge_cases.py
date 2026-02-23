@@ -10,13 +10,11 @@ from __future__ import annotations
 import asyncio
 import threading
 
-import pytest
-
-from hypergraph import AsyncRunner, Graph, GraphConfigError, InMemoryCache, node, SyncRunner
+from hypergraph import AsyncRunner, Graph, InMemoryCache, SyncRunner, node
 from hypergraph.cache import compute_cache_key
 from hypergraph.events import EventProcessor
 from hypergraph.events.types import CacheHitEvent, NodeEndEvent
-from hypergraph.nodes.gate import ifelse, route, END
+from hypergraph.nodes.gate import END, ifelse, route
 from hypergraph.runners import RunStatus
 
 

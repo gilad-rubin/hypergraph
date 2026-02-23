@@ -180,21 +180,20 @@ def add_merged_output_edges(
             is_target_container = target_attrs.get("node_type") == "GRAPH"
             is_target_expanded = expansion_state.get(target, False)
 
-            if is_target_container and is_target_expanded:
-                if value_name:
-                    consumers = param_to_consumers.get(value_name, [])
-                    internal_consumers = [
-                        c for c in consumers
-                        if c != target and is_descendant_of(c, target, flat_graph)
-                    ]
-                    if internal_consumers:
-                        actual_target = internal_consumers[0]
-                    else:
-                        entrypoints = find_container_entrypoints(
-                            target, flat_graph, expansion_state
-                        )
-                        if entrypoints:
-                            actual_target = entrypoints[0]
+            if is_target_container and is_target_expanded and value_name:
+                consumers = param_to_consumers.get(value_name, [])
+                internal_consumers = [
+                    c for c in consumers
+                    if c != target and is_descendant_of(c, target, flat_graph)
+                ]
+                if internal_consumers:
+                    actual_target = internal_consumers[0]
+                else:
+                    entrypoints = find_container_entrypoints(
+                        target, flat_graph, expansion_state
+                    )
+                    if entrypoints:
+                        actual_target = entrypoints[0]
 
             if not is_node_visible(actual_source, flat_graph, expansion_state):
                 continue

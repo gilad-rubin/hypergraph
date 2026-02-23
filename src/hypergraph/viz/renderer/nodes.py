@@ -11,7 +11,6 @@ from typing import Any
 import networkx as nx
 
 from hypergraph.viz._common import (
-    build_param_to_consumer_map,
     get_root_ancestor,
     is_node_visible,
 )
@@ -21,7 +20,6 @@ from hypergraph.viz.renderer.scope import (
     compute_input_scope,
     is_output_externally_consumed,
 )
-
 
 # =============================================================================
 # Input Grouping
@@ -380,10 +378,7 @@ def is_data_node_visible(
         return False
 
     source_attrs = flat_graph.nodes.get(source_id, {})
-    if source_attrs.get("node_type") == "GRAPH" and expansion_state.get(source_id, False):
-        return False
-
-    return True
+    return not (source_attrs.get("node_type") == "GRAPH" and expansion_state.get(source_id, False))
 
 
 def apply_node_visibility(

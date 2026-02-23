@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from hypergraph.nodes.gate import RouteNode
 
 
-def validate_routing_decision(node: "RouteNode", decision: Any) -> None:
+def validate_routing_decision(node: RouteNode, decision: Any) -> None:
     """Validate the routing decision matches expected type and values.
 
     Args:
@@ -41,7 +41,7 @@ def validate_routing_decision(node: "RouteNode", decision: Any) -> None:
         _validate_single_target_decision(node, decision)
 
 
-def _validate_multi_target_decision(node: "RouteNode", decision: Any) -> None:
+def _validate_multi_target_decision(node: RouteNode, decision: Any) -> None:
     """Validate a multi_target routing decision."""
     if decision is None:
         return
@@ -57,7 +57,7 @@ def _validate_multi_target_decision(node: "RouteNode", decision: Any) -> None:
         _validate_single_target(node, target)
 
 
-def _validate_single_target_decision(node: "RouteNode", decision: Any) -> None:
+def _validate_single_target_decision(node: RouteNode, decision: Any) -> None:
     """Validate a single-target routing decision."""
     if decision is None:
         return
@@ -73,7 +73,7 @@ def _validate_single_target_decision(node: "RouteNode", decision: Any) -> None:
     _validate_single_target(node, decision)
 
 
-def _validate_single_target(node: "RouteNode", target: Any) -> None:
+def _validate_single_target(node: RouteNode, target: Any) -> None:
     """Validate a single target is in the valid targets list."""
     from hypergraph.nodes.gate import END
 

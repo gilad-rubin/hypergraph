@@ -3,8 +3,7 @@
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.runners import RunStatus, SyncRunner, AsyncRunner
-
+from hypergraph.runners import AsyncRunner, RunStatus, SyncRunner
 
 # === Test Fixtures ===
 
@@ -620,7 +619,7 @@ class TestConcurrentNestedMaps:
         # Both mapped in outer
         @node(output_name="combined")
         def combine(a: list, b: list) -> list:
-            return [x + y for x, y in zip(a, b)]
+            return [x + y for x, y in zip(a, b, strict=False)]
 
         outer = Graph(
             [

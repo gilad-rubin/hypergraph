@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import Any, Callable, get_type_hints
+from collections.abc import Callable
+from typing import Any, get_type_hints
 
 from hypergraph.nodes._rename import build_reverse_rename_map
 

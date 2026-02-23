@@ -12,13 +12,11 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.viz._common import (
     build_expansion_state,
-    build_output_to_producer_map,
     build_param_to_consumer_map,
     enumerate_valid_expansion_states,
     expansion_state_to_key,
     get_expandable_nodes,
     get_nesting_depth,
-    get_root_ancestor,
     is_node_visible,
 )
 
@@ -350,7 +348,7 @@ def _add_input_nodes(
 
     for param in external_inputs:
         param_type = None
-        for node_id, attrs in flat_graph.nodes(data=True):
+        for _node_id, attrs in flat_graph.nodes(data=True):
             if param in attrs.get("inputs", ()):
                 param_type = attrs.get("input_types", {}).get(param)
                 if param_type is not None:

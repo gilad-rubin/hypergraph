@@ -1,6 +1,7 @@
 """Tests for graph.py - InputSpec and Graph classes."""
 
 import pytest
+
 from hypergraph import InputSpec
 from hypergraph.graph import Graph, GraphConfigError
 from hypergraph.nodes.function import node
@@ -1724,7 +1725,7 @@ class TestCycleSameOutput:
 
     def test_unordered_producers_in_cycle_rejected(self):
         """Two unordered producers in a cycle should raise GraphConfigError."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name="messages")
         def accumulate_query(messages: list, query: str) -> list:
@@ -1743,7 +1744,7 @@ class TestCycleSameOutput:
 
     def test_ordered_via_emit_wait_for_allowed(self):
         """Two producers with emit/wait_for ordering should be allowed."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name="messages", emit="query_done")
         def accumulate_query(messages: list, query: str) -> list:
@@ -1762,7 +1763,7 @@ class TestCycleSameOutput:
 
     def test_ordered_via_emit_wait_for_runs(self):
         """Ordered producers should execute end-to-end."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
         from hypergraph.runners.sync import SyncRunner
 
         @node(output_name="messages", emit="query_done")
@@ -1799,7 +1800,7 @@ class TestCycleSameOutput:
 
     def test_self_producers_property(self):
         """graph should expose self_producers mapping output to producer sets."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name="messages", emit="query_done")
         def accumulate_query(messages: list, query: str) -> list:
@@ -1821,7 +1822,7 @@ class TestCycleSameOutput:
 
     def test_mixed_mutex_and_ordered_allowed(self):
         """3 producers: pair (A,B) mutex via exclusive gate, pairs (A,C) and (B,C) ordered."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import route
 
         @node(output_name="result", emit="c_done")
         def producer_c(x: int) -> int:
@@ -1850,7 +1851,7 @@ class TestCycleSameOutput:
 
     def test_multiple_shared_outputs_checked(self):
         """Two nodes sharing two output names: edges for both removed before checking."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @node(output_name=("x", "y"), emit="a_done")
         def producer_a(seed: int) -> tuple[int, int]:
@@ -2063,7 +2064,7 @@ class TestAddNodes:
 
     def test_gate_target_filled(self):
         """Adding a node that a gate targets resolves the route."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
 
         @route(targets=["process", END])
         def decide(x: int) -> str:

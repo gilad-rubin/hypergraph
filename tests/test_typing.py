@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 import warnings
 from typing import Annotated, Any, ForwardRef, TypeVar, Union
 
@@ -13,7 +12,6 @@ from hypergraph._typing import (
     is_type_compatible,
     safe_get_type_hints,
 )
-
 
 # ---------------------------------------------------------------------------
 # Simple type compatibility tests
@@ -342,7 +340,7 @@ class TestEdgeCases:
 
     def test_callable_type(self) -> None:
         """Callable types should be handled."""
-        from typing import Callable
+        from collections.abc import Callable
 
         assert is_type_compatible(Callable[[int], str], Callable[[int], str]) is True
 
@@ -585,7 +583,8 @@ class TestParamSpecTypeCompatibility:
 
     def test_paramspec_basic_handling(self) -> None:
         """ParamSpec doesn't crash when used in type comparison."""
-        from typing import Callable, ParamSpec
+        from collections.abc import Callable
+        from typing import ParamSpec
 
         P = ParamSpec("P")
 
@@ -599,7 +598,8 @@ class TestParamSpecTypeCompatibility:
 
     def test_paramspec_in_callable_type(self) -> None:
         """Callable with ParamSpec compared to Callable with Any params."""
-        from typing import Callable, ParamSpec
+        from collections.abc import Callable
+        from typing import ParamSpec
 
         P = ParamSpec("P")
 

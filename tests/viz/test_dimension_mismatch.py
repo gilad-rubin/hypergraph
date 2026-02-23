@@ -69,12 +69,11 @@ import pytest
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_simple_graph,
-    wait_for_debug_ready,
     extract_debug_nodes,
     extract_inner_bounds_and_edge_paths,
+    make_simple_graph,
+    wait_for_debug_ready,
 )
-
 
 # =============================================================================
 # Tests: Dimension Mismatch Investigation

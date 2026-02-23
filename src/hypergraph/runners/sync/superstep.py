@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
-from hypergraph.runners._shared.types import PauseExecution
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
     store_in_cache,
 )
-from hypergraph.runners._shared.helpers import collect_inputs_for_node
 from hypergraph.runners._shared.event_helpers import (
     build_cache_hit_event,
     build_node_end_event,
@@ -21,7 +20,8 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.helpers import collect_inputs_for_node
+from hypergraph.runners._shared.types import GraphState, NodeExecution, PauseExecution
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
@@ -30,14 +30,14 @@ if TYPE_CHECKING:
 
 
 def run_superstep_sync(
-    graph: "Graph",
+    graph: Graph,
     state: GraphState,
     ready_nodes: list[HyperNode],
     provided_values: dict[str, Any],
     execute_node: Callable,
     *,
-    cache: "CacheBackend | None" = None,
-    dispatcher: "EventDispatcher | None" = None,
+    cache: CacheBackend | None = None,
+    dispatcher: EventDispatcher | None = None,
     run_id: str = "",
     run_span_id: str = "",
 ) -> GraphState:

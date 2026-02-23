@@ -25,7 +25,7 @@ class AsyncGraphNodeExecutor:
     so max_concurrency is shared across all levels of execution.
     """
 
-    def __init__(self, runner: "AsyncRunner"):
+    def __init__(self, runner: AsyncRunner):
         """Initialize with reference to parent runner.
 
         Args:
@@ -35,11 +35,11 @@ class AsyncGraphNodeExecutor:
 
     async def __call__(
         self,
-        node: "GraphNode",
-        state: "GraphState",
+        node: GraphNode,
+        state: GraphState,
         inputs: dict[str, Any],
         *,
-        event_processors: "list[EventProcessor] | None" = None,
+        event_processors: list[EventProcessor] | None = None,
         parent_span_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
@@ -82,7 +82,7 @@ class AsyncGraphNodeExecutor:
         )
         return self._handle_nested_result(node, result)
 
-    def _handle_nested_result(self, node: "GraphNode", result: RunResult) -> dict[str, Any]:
+    def _handle_nested_result(self, node: GraphNode, result: RunResult) -> dict[str, Any]:
         """Handle result from nested graph, propagating pause if needed."""
         if result.status == RunStatus.PAUSED:
             assert result.pause is not None, "PAUSED status requires pause info"

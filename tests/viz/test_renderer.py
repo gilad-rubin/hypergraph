@@ -1,6 +1,5 @@
 """Tests for the visualization renderer."""
 
-import pytest
 from hypergraph import Graph, node
 from hypergraph.viz.renderer import render_graph
 

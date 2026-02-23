@@ -20,8 +20,8 @@ class AsyncRouteNodeExecutor:
 
     async def __call__(
         self,
-        node: "RouteNode",
-        state: "GraphState",
+        node: RouteNode,
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         return execute_route(node, state, inputs)

@@ -10,9 +10,7 @@ Investigates scenarios that reportedly cause InfiniteLoopError or hangs:
 import pytest
 
 from hypergraph import Graph, SyncRunner, node
-from hypergraph.exceptions import InfiniteLoopError
-from hypergraph.nodes.gate import route, END
-
+from hypergraph.nodes.gate import END, route
 
 # -- Shared fixtures --
 

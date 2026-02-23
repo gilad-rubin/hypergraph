@@ -1,9 +1,9 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
-from typing import Any, Literal, TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
-from hypergraph.nodes.base import HyperNode, RenameEntry
 from hypergraph.nodes._rename import build_reverse_rename_map
+from hypergraph.nodes.base import HyperNode, RenameEntry
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")

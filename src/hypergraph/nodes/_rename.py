@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from typing import Literal
-
-
-import itertools
 
 _batch_counter = itertools.count()
 

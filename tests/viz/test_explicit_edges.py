@@ -9,8 +9,8 @@ These tests will FAIL until the refactor is complete.
 """
 
 import pytest
-from hypergraph import Graph, node
 
+from hypergraph import Graph, node
 
 # =============================================================================
 # Test Graph Definitions

@@ -124,8 +124,7 @@ class TestGeneratorFunctionNode:
 
         @node(output_name="values")
         def generate_numbers(n: int):
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         assert generate_numbers.is_async is False
         assert generate_numbers.is_generator is True
@@ -135,8 +134,7 @@ class TestGeneratorFunctionNode:
 
         @node(output_name="values")
         def generate_numbers(n: int):
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         result = list(generate_numbers(3))
         assert result == [0, 1, 2]

@@ -358,7 +358,7 @@ class GraphState:
         """Get current version of a value (0 if not set)."""
         return self.versions.get(name, 0)
 
-    def copy(self) -> "GraphState":
+    def copy(self) -> GraphState:
         """Create a copy of this state with independent NodeExecution instances.
 
         Values and versions dicts are shallow-copied (keys are strings).

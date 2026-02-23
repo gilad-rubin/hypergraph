@@ -1,6 +1,5 @@
 """Tests for separate outputs visualization mode."""
 
-import pytest
 from hypergraph import Graph, node
 from hypergraph.viz.renderer import render_graph
 
@@ -78,7 +77,7 @@ class TestSeparateOutputsEdges:
         data_node_ids = {n["id"] for n in data_nodes}
 
         # Look for keys with sep:1 (separate outputs mode)
-        sep_keys = [k for k in edges_by_state.keys() if "sep:1" in k]
+        sep_keys = [k for k in edges_by_state if "sep:1" in k]
 
         # Should have at least one key with sep:1
         assert len(sep_keys) > 0, (
@@ -152,7 +151,7 @@ class TestDeeplyNestedSeparateOutputs:
         edges_by_state = result["meta"].get("edgesByState", {})
 
         # Find the key with all containers expanded (middle:1, inner:1) and sep:1
-        expanded_sep1_keys = [k for k in edges_by_state.keys()
+        expanded_sep1_keys = [k for k in edges_by_state
                              if "sep:1" in k and "middle:1" in k and "inner:1" in k]
 
         assert len(expanded_sep1_keys) > 0, (
@@ -213,7 +212,7 @@ class TestDeeplyNestedSeparateOutputs:
 
         # Check the key for when middle AND inner are both expanded (user expands interactively)
         # Key format: "inner:1,middle:1|sep:1"
-        expanded_sep1_keys = [k for k in edges_by_state.keys()
+        expanded_sep1_keys = [k for k in edges_by_state
                              if "sep:1" in k and "middle:1" in k and "inner:1" in k]
 
         assert len(expanded_sep1_keys) > 0, (
@@ -269,7 +268,7 @@ class TestDeeplyNestedSeparateOutputs:
         edges_by_state = result["meta"].get("edgesByState", {})
 
         # Check all sep:1 keys
-        sep1_keys = [k for k in edges_by_state.keys() if "sep:1" in k]
+        sep1_keys = [k for k in edges_by_state if "sep:1" in k]
 
         # Get function node IDs (not DATA, not INPUT)
         function_ids = {n["id"] for n in result["nodes"]

@@ -6,7 +6,7 @@ import time
 import pytest
 
 from hypergraph import Graph, node
-from hypergraph.nodes.gate import route, END
+from hypergraph.nodes.gate import END, route
 from hypergraph.runners._shared.helpers import (
     collect_inputs_for_node,
     filter_outputs,
@@ -15,15 +15,14 @@ from hypergraph.runners._shared.helpers import (
     initialize_state,
 )
 from hypergraph.runners._shared.types import GraphState, NodeExecution
-from hypergraph.runners.sync.executors import SyncFunctionNodeExecutor
-from hypergraph.runners.sync.superstep import run_superstep_sync
 from hypergraph.runners.async_.executors import AsyncFunctionNodeExecutor
 from hypergraph.runners.async_.superstep import (
+    reset_concurrency_limiter,
     run_superstep_async,
     set_concurrency_limiter,
-    reset_concurrency_limiter,
 )
-
+from hypergraph.runners.sync.executors import SyncFunctionNodeExecutor
+from hypergraph.runners.sync.superstep import run_superstep_sync
 
 # === Test Fixtures ===
 
@@ -55,8 +54,7 @@ def split(x: int) -> tuple[int, int]:
 
 @node(output_name="items")
 def gen_items(n: int):
-    for i in range(n):
-        yield i
+    yield from range(n)
 
 
 @node(output_name="doubled")
@@ -124,7 +122,7 @@ class TestGetReadyNodes:
     def test_multiple_ready_nodes_returned(self):
         """Multiple independent nodes can be ready simultaneously."""
         # Two independent nodes both need x
-        double2 = double.with_name("double2").with_outputs(doubled="tripled")
+        double.with_name("double2").with_outputs(doubled="tripled")
 
         @node(output_name="tripled")
         def triple(x: int) -> int:
@@ -482,7 +480,7 @@ class TestRunSuperstepAsync:
 
         try:
             start = time.time()
-            new_state = await run_superstep_async(
+            await run_superstep_async(
                 graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1
             )
             elapsed = time.time() - start

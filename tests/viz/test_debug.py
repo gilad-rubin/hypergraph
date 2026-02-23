@@ -1,15 +1,14 @@
 """Tests for the visualization debug utilities."""
 
 import pytest
+
 from hypergraph import Graph, node
 from hypergraph.viz.debug import (
-    VizDebugger,
-    validate_graph,
-    find_issues,
-    ValidationResult,
-    NodeTrace,
-    EdgeTrace,
     IssueReport,
+    ValidationResult,
+    VizDebugger,
+    find_issues,
+    validate_graph,
 )
 
 

@@ -2,7 +2,7 @@
 
 import hashlib
 import inspect
-from typing import Callable
+from collections.abc import Callable
 
 
 def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:

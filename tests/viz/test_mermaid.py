@@ -281,6 +281,7 @@ class TestEdgeTypes:
         @ifelse(when_true=END, when_false=END) as a degenerate case.
         """
         import networkx as nx
+
         from hypergraph.viz.mermaid import _render_end_edges
 
         fg = nx.DiGraph()

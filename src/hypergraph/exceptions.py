@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.runners._shared.types import GraphState
@@ -103,7 +103,7 @@ class ExecutionError(Exception):
         partial_state: GraphState snapshot from before the failure
     """
 
-    def __init__(self, cause: BaseException, partial_state: "GraphState") -> None:
+    def __init__(self, cause: BaseException, partial_state: GraphState) -> None:
         self.partial_state = partial_state
         super().__init__(str(cause))
         self.__cause__ = cause

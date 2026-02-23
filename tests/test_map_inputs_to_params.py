@@ -4,11 +4,9 @@ This tests the polymorphic approach to mapping renamed inputs back to
 original function parameters, replacing isinstance checks with proper OOP.
 """
 
-import pytest
 
-from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode, node
-from hypergraph.nodes.gate import RouteNode, route, END
+from hypergraph.nodes.gate import END, RouteNode, route
 
 
 class TestHyperNodeMapInputsToParams:

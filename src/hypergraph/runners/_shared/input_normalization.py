@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 RUN_RESERVED_OPTION_NAMES = frozenset({
     "select",
     "max_iterations",

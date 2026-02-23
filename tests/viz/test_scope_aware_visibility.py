@@ -7,8 +7,8 @@ These tests verify:
 """
 
 import pytest
-from hypergraph import Graph, node
 
+from hypergraph import Graph, node
 
 # =============================================================================
 # Test Graph: Generation with nested prompt_building
@@ -450,7 +450,7 @@ class TestControlEdgeRouting:
         When a route targets a container that is collapsed,
         the edge should go to the container boundary.
         """
-        from hypergraph import Graph, node, route, END
+        from hypergraph import END, Graph, node, route
         from hypergraph.viz.renderer import render_graph
 
         @node(output_name='result')
@@ -492,7 +492,7 @@ class TestControlEdgeRouting:
         When a route targets a container that is expanded,
         the edge should go to the entry point node inside the container.
         """
-        from hypergraph import Graph, node, route, END
+        from hypergraph import END, Graph, node, route
         from hypergraph.viz.renderer import render_graph
 
         @node(output_name='result')

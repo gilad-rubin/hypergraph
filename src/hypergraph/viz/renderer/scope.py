@@ -193,9 +193,8 @@ def find_container_entrypoints(
 
         consumes_internal = bool(inputs & internal_outputs)
 
-        if not consumes_internal:
-            if is_node_visible(node_id, flat_graph, expansion_state):
-                entrypoints.append(node_id)
+        if not consumes_internal and is_node_visible(node_id, flat_graph, expansion_state):
+            entrypoints.append(node_id)
 
     return entrypoints
 

@@ -5,9 +5,8 @@ across repeated runs with the same inputs.
 """
 
 from hypergraph import Graph, InMemoryCache, node
-from hypergraph.nodes.gate import route, END
+from hypergraph.nodes.gate import END, route
 from hypergraph.runners import RunStatus, SyncRunner
-
 
 # === Test Fixtures ===
 
@@ -292,8 +291,7 @@ class TestCacheWithGenerators:
         @node(output_name="items", cache=True)
         def gen_items(n: int):
             counter.increment()
-            for i in range(n):
-                yield i
+            yield from range(n)
 
         graph = Graph([gen_items])
         runner = SyncRunner(cache=InMemoryCache())

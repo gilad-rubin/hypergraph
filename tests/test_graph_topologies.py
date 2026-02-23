@@ -1,8 +1,6 @@
 """Tests for complex graph topologies."""
 
-import pytest
-from hypergraph import InputSpec
-from hypergraph.graph import Graph, GraphConfigError
+from hypergraph.graph import Graph
 from hypergraph.nodes.function import node
 
 

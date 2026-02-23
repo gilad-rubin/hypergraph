@@ -6,7 +6,7 @@ All JavaScript modules are loaded from bundled assets in viz/assets/.
 """
 import json
 from importlib.resources import files
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def _escape_json_for_html(json_str: str) -> str:
@@ -17,7 +17,7 @@ def _escape_json_for_html(json_str: str) -> str:
     return json_str.replace("</", "<\\/")
 
 
-def _validate_graph_data(graph_data: Dict[str, Any]) -> None:
+def _validate_graph_data(graph_data: dict[str, Any]) -> None:
     """Lightweight validation of the renderer payload."""
     if not isinstance(graph_data, dict):
         raise ValueError("graph_data must be a dict")
@@ -51,7 +51,7 @@ def _validate_graph_data(graph_data: Dict[str, Any]) -> None:
                 raise ValueError(f"edge missing '{key}'")
 
 
-def generate_widget_html(graph_data: Dict[str, Any]) -> str:
+def generate_widget_html(graph_data: dict[str, Any]) -> str:
     """Generate an HTML document for React Flow rendering.
 
     All JS/CSS assets are bundled within the package (hypergraph.viz.assets).
@@ -60,7 +60,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
     _validate_graph_data(graph_data)
     graph_json = _escape_json_for_html(json.dumps(graph_data))
 
-    def _read_asset(name: str, kind: str, package: str = "hypergraph.viz.assets") -> Optional[str]:
+    def _read_asset(name: str, kind: str, package: str = "hypergraph.viz.assets") -> str | None:
         """Read an asset file from the bundled package resources.
 
         Assets are in hypergraph/viz/assets/ (custom) and
@@ -104,7 +104,7 @@ def generate_widget_html(graph_data: Dict[str, Any]) -> str:
             "react", "react-dom", "htm", "dagre",
             "reactflow.js", "reactflow.css", "tailwind.css"
         ]
-        for asset, name in zip(required_library_assets, asset_names):
+        for asset, name in zip(required_library_assets, asset_names, strict=False):
             if not asset:
                 missing.append(name)
         raise RuntimeError(

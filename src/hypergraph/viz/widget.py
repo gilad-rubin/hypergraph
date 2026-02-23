@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import html as html_module
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
-from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.html import estimate_layout, generate_widget_html
+from hypergraph.viz.renderer import render_graph
 
 
 class ScrollablePipelineWidget:

@@ -18,8 +18,8 @@ class AsyncInterruptNodeExecutor:
 
     async def __call__(
         self,
-        node: "InterruptNode",
-        state: "GraphState",
+        node: InterruptNode,
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
@@ -77,7 +77,7 @@ class AsyncInterruptNodeExecutor:
 
 
 def _normalize_response(
-    node: "InterruptNode",
+    node: InterruptNode,
     response: Any,
     data_outputs: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -102,7 +102,7 @@ def _normalize_response(
     return {data_outputs[0]: response}
 
 
-def _add_emit_sentinels(result: dict[str, Any], node: "InterruptNode") -> dict[str, Any]:
+def _add_emit_sentinels(result: dict[str, Any], node: InterruptNode) -> dict[str, Any]:
     """Add emit sentinel values to the result dict."""
     emit_outputs = node.outputs[len(node.data_outputs):]
     for name in emit_outputs:

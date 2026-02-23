@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from hypergraph import END, Graph, SyncRunner, node, route
 from hypergraph.events import EventProcessor, TypedEventProcessor
 from hypergraph.events.types import (
@@ -15,7 +13,6 @@ from hypergraph.events.types import (
     RunStartEvent,
     RunStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers

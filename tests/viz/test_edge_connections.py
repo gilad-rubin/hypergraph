@@ -21,25 +21,24 @@ Test Graphs:
 """
 
 import pytest
-from hypergraph import Graph
+
 from hypergraph.viz.geometry import (
-    NodeGeometry,
-    EdgeGeometry,
     EdgeConnectionValidator,
+    EdgeGeometry,
+    NodeGeometry,
     format_issues,
 )
 
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
-    make_simple_graph,
-    make_chain_graph,
-    make_workflow,
-    make_outer,
-    extract_inner_bounds_and_edge_paths,
     convert_layout_to_screen,
+    extract_inner_bounds_and_edge_paths,
+    make_chain_graph,
+    make_outer,
+    make_simple_graph,
+    make_workflow,
 )
-
 
 # =============================================================================
 # Extraction Helper
@@ -56,9 +55,10 @@ def extract_geometries(page, graph, depth: int) -> tuple[dict[str, NodeGeometry]
     Returns:
         Tuple of (nodes dict, edges list) with geometry data
     """
-    from hypergraph.viz.widget import visualize
-    import tempfile
     import os
+    import tempfile
+
+    from hypergraph.viz.widget import visualize
 
     # Render to temp file
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:

@@ -1,19 +1,19 @@
 """Capability matrix for systematic testing of hypergraph features."""
 
+from .builders import build_graph_for_capability
 from .matrix import (
     Caching,
     Capability,
-    Runner,
-    NodeType,
-    Topology,
+    Concurrency,
     MapMode,
     NestingDepth,
-    Concurrency,
+    NodeType,
+    Runner,
+    Topology,
     TypeValidation,
     all_valid_combinations,
     combinations_for,
 )
-from .builders import build_graph_for_capability
 
 __all__ = [
     "Caching",

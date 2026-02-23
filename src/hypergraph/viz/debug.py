@@ -31,7 +31,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import networkx as nx
 
@@ -54,8 +54,8 @@ class NodeTrace:
 
     status: str  # "FOUND" or "NOT_FOUND"
     node_id: str
-    node_type: Optional[str] = None
-    parent: Optional[str] = None
+    node_type: str | None = None
+    parent: str | None = None
     incoming_edges: list[dict[str, str]] = field(default_factory=list)
     outgoing_edges: list[dict[str, str]] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
@@ -107,14 +107,14 @@ class VizDebugger:
         >>> debugger.visualize(depth=1)  # Shows viz with debug overlays
     """
 
-    def __init__(self, graph: "Graph"):
+    def __init__(self, graph: Graph):
         """Create debugger for a graph.
 
         Args:
             graph: The hypergraph Graph to debug
         """
         self.graph = graph
-        self._flat_graph: Optional[nx.DiGraph] = None
+        self._flat_graph: nx.DiGraph | None = None
 
     @property
     def flat_graph(self) -> nx.DiGraph:
@@ -426,7 +426,7 @@ class VizDebugger:
         depth: int = 0,
         theme: str = "auto",
         show_types: bool = False,
-        filepath: Optional[str] = None,
+        filepath: str | None = None,
     ) -> Any:
         """Visualize the graph with debug overlays enabled.
 
@@ -484,7 +484,7 @@ class VizDebugger:
         )
 
 
-def validate_graph(graph: "Graph") -> ValidationResult:
+def validate_graph(graph: Graph) -> ValidationResult:
     """Quick validation of a graph.
 
     Args:
@@ -501,7 +501,7 @@ def validate_graph(graph: "Graph") -> ValidationResult:
     return VizDebugger(graph).validate()
 
 
-def find_issues(graph: "Graph") -> IssueReport:
+def find_issues(graph: Graph) -> IssueReport:
     """Quick issue discovery for a graph.
 
     Args:
@@ -524,14 +524,14 @@ class RenderedEdge:
 
     source: str
     target: str
-    source_label: Optional[str] = None
-    target_label: Optional[str] = None
-    src_bottom: Optional[float] = None
-    tgt_top: Optional[float] = None
-    vert_dist: Optional[float] = None
-    horiz_dist: Optional[float] = None
+    source_label: str | None = None
+    target_label: str | None = None
+    src_bottom: float | None = None
+    tgt_top: float | None = None
+    vert_dist: float | None = None
+    horiz_dist: float | None = None
     status: str = "OK"
-    issue: Optional[str] = None
+    issue: str | None = None
 
 
 @dataclass
@@ -601,7 +601,7 @@ class RenderedDebugData:
 
 
 async def _extract_debug_data_async(
-    graph: "Graph",
+    graph: Graph,
     *,
     depth: int = 0,
     theme: str = "auto",
@@ -610,10 +610,11 @@ async def _extract_debug_data_async(
     timeout: int = 5000,
 ) -> RenderedDebugData:
     """Async implementation of extract_debug_data."""
+    import os
+    import tempfile
+
     from playwright.async_api import async_playwright
 
-    import tempfile
-    import os
     from hypergraph.viz.widget import visualize
 
     # Render to temp HTML file
@@ -651,7 +652,7 @@ async def _extract_debug_data_async(
 
 
 def _extract_debug_data_sync(
-    graph: "Graph",
+    graph: Graph,
     *,
     depth: int = 0,
     theme: str = "auto",
@@ -660,10 +661,11 @@ def _extract_debug_data_sync(
     timeout: int = 5000,
 ) -> RenderedDebugData:
     """Sync implementation of extract_debug_data."""
+    import os
+    import tempfile
+
     from playwright.sync_api import sync_playwright
 
-    import tempfile
-    import os
     from hypergraph.viz.widget import visualize
 
     # Render to temp HTML file
@@ -738,7 +740,7 @@ def _is_in_async_context() -> bool:
 
 
 def extract_debug_data(
-    graph: "Graph",
+    graph: Graph,
     *,
     depth: int = 0,
     theme: str = "auto",

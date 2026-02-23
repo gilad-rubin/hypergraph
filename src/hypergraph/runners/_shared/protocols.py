@@ -29,7 +29,7 @@ class NodeExecutor(Protocol[N]):
     def __call__(
         self,
         node: N,
-        state: "GraphState",
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]: ...
 
@@ -51,6 +51,6 @@ class AsyncNodeExecutor(Protocol[N]):
     async def __call__(
         self,
         node: N,
-        state: "GraphState",
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]: ...

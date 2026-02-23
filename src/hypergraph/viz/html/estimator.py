@@ -7,7 +7,7 @@ iframe can be sized appropriately and avoid double scrolling in notebooks.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph

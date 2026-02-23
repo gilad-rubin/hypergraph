@@ -32,8 +32,8 @@ class AsyncFunctionNodeExecutor:
 
     async def __call__(
         self,
-        node: "FunctionNode",
-        state: "GraphState",
+        node: FunctionNode,
+        state: GraphState,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute a FunctionNode asynchronously.
@@ -58,7 +58,7 @@ class AsyncFunctionNodeExecutor:
 
     async def _execute(
         self,
-        node: "FunctionNode",
+        node: FunctionNode,
         inputs: dict[str, Any],
     ) -> dict[str, Any]:
         """Execute the function and handle result types."""

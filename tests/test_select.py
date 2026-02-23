@@ -1,6 +1,7 @@
 """Tests for Graph.select() — default output selection."""
 
 import pytest
+
 from hypergraph.graph import Graph
 from hypergraph.nodes.function import node
 from hypergraph.runners.sync.runner import SyncRunner

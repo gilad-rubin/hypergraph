@@ -8,9 +8,8 @@ from hypergraph.exceptions import (
     InfiniteLoopError,
     MissingInputError,
 )
-from hypergraph.nodes.gate import route, END
+from hypergraph.nodes.gate import END, route
 from hypergraph.runners import RunResult, RunStatus, SyncRunner
-
 
 # === Test Fixtures ===
 
@@ -54,8 +53,7 @@ def counter_gate(count: int, limit: int = 10) -> str:
 
 @node(output_name="items")
 def gen_items(n: int):
-    for i in range(n):
-        yield i
+    yield from range(n)
 
 
 @node(output_name="doubled")

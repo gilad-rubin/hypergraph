@@ -11,25 +11,24 @@ All tests run in parallel via pytest-xdist.
 import pytest
 
 from hypergraph import InMemoryCache
-from hypergraph.runners import SyncRunner, AsyncRunner, RunStatus
+from hypergraph.runners import AsyncRunner, RunStatus, SyncRunner
 
+from .builders import build_graph_for_capability, get_test_inputs
 from .matrix import (
+    Binding,
     Caching,
     Capability,
-    Runner,
-    Topology,
     MapMode,
     NestingDepth,
-    Renaming,
-    Binding,
     NodeType,
+    Renaming,
+    Runner,
+    Topology,
     all_valid_combinations,
-    pairwise_combinations,
     combinations_for,
     count_combinations,
+    pairwise_combinations,
 )
-from .builders import build_graph_for_capability, get_test_inputs
-
 
 # =============================================================================
 # Test helpers

@@ -3,15 +3,15 @@
 from hypergraph.runners._shared.types import (
     GraphState,
     NodeExecution,
-    RunnerCapabilities,
     PauseExecution,
     PauseInfo,
+    RunnerCapabilities,
     RunResult,
     RunStatus,
 )
+from hypergraph.runners.async_ import AsyncRunner
 from hypergraph.runners.base import BaseRunner
 from hypergraph.runners.sync import SyncRunner
-from hypergraph.runners.async_ import AsyncRunner
 
 __all__ = [
     # Core types

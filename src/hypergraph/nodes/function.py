@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import warnings
-from typing import Any, Callable, get_type_hints
+from collections.abc import Callable
+from typing import Any, get_type_hints
 
 from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin

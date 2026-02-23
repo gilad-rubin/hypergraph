@@ -1,6 +1,5 @@
 """Tests for bind/unbind edge cases."""
 
-import pytest
 from hypergraph.graph import Graph
 from hypergraph.nodes.function import node
 
@@ -360,11 +359,11 @@ class TestComplexTypeBindings:
 
     def test_bind_union_type_value(self):
         """Bind value to union type parameter."""
-        from typing import Union
+
         from hypergraph.runners.sync import SyncRunner
 
         @node(output_name="result")
-        def process_union(value: Union[str, int]) -> str:
+        def process_union(value: str | int) -> str:
             return str(value)
 
         g = Graph([process_union])
@@ -382,11 +381,11 @@ class TestComplexTypeBindings:
 
     def test_bind_optional_type(self):
         """Bind Optional[T] parameter."""
-        from typing import Optional
+
         from hypergraph.runners.sync import SyncRunner
 
         @node(output_name="result")
-        def with_optional(value: Optional[int] = None) -> int:
+        def with_optional(value: int | None = None) -> int:
             return value if value is not None else 0
 
         g = Graph([with_optional])
@@ -419,7 +418,8 @@ class TestComplexTypeBindings:
 
     def test_bind_callable(self):
         """Bind callable value."""
-        from typing import Callable
+        from collections.abc import Callable
+
         from hypergraph.runners.sync import SyncRunner
 
         @node(output_name="result")
@@ -582,7 +582,7 @@ class TestBindWithGates:
 
     def test_bind_with_route_gate(self):
         """bind() should work on graphs with route gates."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import route
 
         @route(targets=["a", "b"])
         def router(x: int) -> str:
@@ -606,7 +606,7 @@ class TestBindWithGates:
 
     def test_bind_with_route_and_end(self):
         """bind() should work on graphs with route gates that include END."""
-        from hypergraph.nodes.gate import route, END
+        from hypergraph.nodes.gate import END, route
         from hypergraph.runners.sync import SyncRunner
 
         @route(targets=["process", END])
@@ -629,7 +629,6 @@ class TestBindWithGates:
     def test_bind_with_ifelse_gate(self):
         """bind() should work on graphs with ifelse gates."""
         from hypergraph.nodes.gate import ifelse
-        from hypergraph.runners.sync import SyncRunner
 
         @ifelse(when_true="yes_branch", when_false="no_branch")
         def check(x: int) -> bool:

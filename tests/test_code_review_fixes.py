@@ -13,10 +13,11 @@ TDD tests for issues identified in the code review:
 """
 
 import warnings
+
 import pytest
 
 from hypergraph import END, Graph
-from hypergraph.nodes.function import FunctionNode, node
+from hypergraph.nodes.function import node
 from hypergraph.nodes.gate import route
 from hypergraph.runners.sync import SyncRunner
 
@@ -210,7 +211,7 @@ class TestValueComparisonSafety:
 
             def __ne__(self, other):
                 # Return array-like result (ambiguous truth value)
-                return [a != b for a, b in zip(self.data, other.data)]
+                return [a != b for a, b in zip(self.data, other.data, strict=False)]
 
             def __bool__(self):
                 raise ValueError("Ambiguous truth value")
@@ -535,7 +536,6 @@ class TestEarlyOnMissingValidation:
 
     def test_invalid_on_missing_fails_even_when_all_outputs_present(self):
         """Invalid on_missing raises immediately, not only when outputs miss."""
-        from hypergraph.runners._shared.helpers import filter_outputs
 
         @node(output_name="result")
         def identity(x: int) -> int:

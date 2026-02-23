@@ -1,12 +1,8 @@
 """Tests for value source detection and resolution order."""
 import threading
 
-import pytest
-
-from hypergraph import Graph, node, SyncRunner
+from hypergraph import Graph, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
-from hypergraph.runners._shared.helpers import ValueSource, get_value_source
-from hypergraph.runners._shared.types import GraphState
 
 
 class TestValueSourceDetection:

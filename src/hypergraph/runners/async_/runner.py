@@ -10,8 +10,8 @@ from hypergraph.exceptions import ExecutionError, InfiniteLoopError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
-from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.runners._shared.helpers import get_ready_nodes, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
@@ -72,7 +72,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         10
     """
 
-    def __init__(self, cache: "CacheBackend | None" = None):
+    def __init__(self, cache: CacheBackend | None = None):
         """Initialize AsyncRunner with its node executors.
 
         Args:
@@ -111,12 +111,12 @@ class AsyncRunner(AsyncRunnerTemplate):
 
     async def _execute_graph_impl_async(
         self,
-        graph: "Graph",
+        graph: Graph,
         values: dict[str, Any],
         max_iterations: int,
         max_concurrency: int | None,
         *,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
@@ -231,14 +231,14 @@ class AsyncRunner(AsyncRunnerTemplate):
     def _create_dispatcher(
         self,
         processors: list[EventProcessor] | None,
-    ) -> "EventDispatcher":
+    ) -> EventDispatcher:
         """Create event dispatcher for this runner."""
         return _create_dispatcher(processors)
 
     async def _emit_run_start_async(
         self,
-        dispatcher: "EventDispatcher",
-        graph: "Graph",
+        dispatcher: EventDispatcher,
+        graph: Graph,
         parent_span_id: str | None,
         *,
         is_map: bool = False,
@@ -255,10 +255,10 @@ class AsyncRunner(AsyncRunnerTemplate):
 
     async def _emit_run_end_async(
         self,
-        dispatcher: "EventDispatcher",
+        dispatcher: EventDispatcher,
         run_id: str,
         span_id: str,
-        graph: "Graph",
+        graph: Graph,
         start_time: float,
         parent_span_id: str | None,
         *,
@@ -275,7 +275,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             error=error,
         )
 
-    async def _shutdown_dispatcher_async(self, dispatcher: "EventDispatcher") -> None:
+    async def _shutdown_dispatcher_async(self, dispatcher: EventDispatcher) -> None:
         """Shut down dispatcher for top-level async runs."""
         await dispatcher.shutdown_async()
 
@@ -300,7 +300,7 @@ class AsyncRunner(AsyncRunnerTemplate):
 
 def _create_dispatcher(
     processors: list[EventProcessor] | None,
-) -> "EventDispatcher":
+) -> EventDispatcher:
     """Create an EventDispatcher from processor list."""
     from hypergraph.events.dispatcher import EventDispatcher
 
@@ -308,8 +308,8 @@ def _create_dispatcher(
 
 
 async def _emit_run_start(
-    dispatcher: "EventDispatcher",
-    graph: "Graph",
+    dispatcher: EventDispatcher,
+    graph: Graph,
     parent_span_id: str | None,
     *,
     is_map: bool = False,
@@ -338,10 +338,10 @@ async def _emit_run_start(
 
 
 async def _emit_run_end(
-    dispatcher: "EventDispatcher",
+    dispatcher: EventDispatcher,
     run_id: str,
     span_id: str,
-    graph: "Graph",
+    graph: Graph,
     start_time: float,
     parent_span_id: str | None,
     *,

@@ -7,7 +7,8 @@ build-time validation, while still making parameters optional at runtime.
 import threading
 
 import pytest
-from hypergraph import Graph, node, SyncRunner
+
+from hypergraph import Graph, SyncRunner, node
 from hypergraph.graph.validation import GraphConfigError
 
 

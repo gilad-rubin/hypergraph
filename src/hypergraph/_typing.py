@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import sys
 import warnings
+from collections.abc import Callable
 from types import UnionType
 from typing import (
     Annotated,
     Any,
-    Callable,
     ForwardRef,
     Literal,
     NamedTuple,
@@ -431,12 +431,11 @@ def _is_typevar_compatible(
         return True
 
     # Check constraints
-    if required_type.__constraints__:
-        if any(
-            is_type_compatible(incoming_type, c, memo)
-            for c in required_type.__constraints__
-        ):
-            return True
+    if required_type.__constraints__ and any(
+        is_type_compatible(incoming_type, c, memo)
+        for c in required_type.__constraints__
+    ):
+        return True
 
     # Check bound
     if required_type.__bound__:

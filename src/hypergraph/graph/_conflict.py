@@ -20,7 +20,7 @@ from hypergraph.graph.validation import GraphConfigError
 
 def validate_output_conflicts(
     G: nx.DiGraph,
-    nodes: list["HyperNode"],
+    nodes: list[HyperNode],
     output_to_sources: dict[str, list[str]],
 ) -> None:
     """Validate that duplicate outputs are mutex or ordered.
@@ -98,7 +98,7 @@ class _EdgeInfo:
 
 def _build_full_edge_map(
     G: nx.DiGraph,
-    nodes: list["HyperNode"],
+    nodes: list[HyperNode],
     output_to_sources: dict[str, list[str]],
 ) -> tuple[set[str], dict[tuple[str, str], _EdgeInfo]]:
     """Build a complete edge map with edges from ALL producers.
@@ -213,7 +213,7 @@ def _compute_exclusive_reachability(
 
 
 def _expand_mutex_groups(
-    G: nx.DiGraph, nodes: list["HyperNode"]
+    G: nx.DiGraph, nodes: list[HyperNode]
 ) -> list[list[set[str]]]:
     """Expand mutex groups to include downstream exclusive nodes.
 
@@ -225,7 +225,7 @@ def _expand_mutex_groups(
         List of mutex group sets, where each element is a list of branch sets.
         Nodes are mutex only if they're in DIFFERENT branch sets of the same gate.
     """
-    from hypergraph.nodes.gate import RouteNode, IfElseNode, END
+    from hypergraph.nodes.gate import END, IfElseNode, RouteNode
 
     expanded_groups: list[list[set[str]]] = []
 
