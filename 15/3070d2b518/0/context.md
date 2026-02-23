@@ -42,3 +42,25 @@ APPROVED? → next phase
     ↓ no
 Builder fi...
 
+### Prompt 5
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me carefully analyze the conversation chronologically:
+
+1. The user provided a detailed plan for "Partial Input Semantics" feature and asked to implement it using the `/feature` skill.
+
+2. The `/feature` skill was invoked, which set up a team-based workflow with phases: Plan, Implement, Review, Docs, PR.
+
+3. A team "feature-partial...
+
+### Prompt 6
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the conversation:
+
+1. **Initial Context (from previous session summary)**: The user invoked `/feature` to implement a "Partial Input Semantics" plan. A team "feature-partial-input-semantics" was created with tasks #1-#7. Stage 1 (Active Subgraph Computation + with_entrypoint + select-aware InputSpec) was ...
+
