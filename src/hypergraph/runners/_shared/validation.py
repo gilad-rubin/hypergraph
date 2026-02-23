@@ -61,11 +61,11 @@ def validate_inputs(
         )
 
     # Step 3: Bypass detection (considering merged values)
-    bypassed_inputs = _find_bypassed_inputs(graph, provided)
+    bypassed_inputs = _find_bypassed_inputs(graph, provided, inputs_spec)
 
     # Step 4: Cycle entry point matching
     if inputs_spec.entrypoints:
-        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint)
+        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint, inputs_spec)
 
     # Step 5: Completeness check for required (acyclic) inputs
     required = set(inputs_spec.required) - bypassed_inputs
@@ -95,6 +95,7 @@ def _validate_cycle_entry(
     provided: set[str],
     bypassed: set[str],
     entrypoint: str | None,
+    inputs_spec: InputSpec,
 ) -> None:
     """Validate cycle entry points.
 
@@ -105,7 +106,7 @@ def _validate_cycle_entry(
         ValueError: If entrypoint is invalid, ambiguous, or mismatched.
         MissingInputError: If no entry point is satisfied for a cycle.
     """
-    ep = graph.inputs.entrypoints
+    ep = inputs_spec.entrypoints
 
     # If explicit entrypoint, validate it then check remaining cycles
     if entrypoint is not None:
@@ -337,7 +338,7 @@ def _get_interrupt_outputs(graph: Graph) -> set[str]:
     return {output for n in graph._nodes.values() if n.is_interrupt for output in n.outputs}
 
 
-def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
+def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSpec) -> set[str]:
     """Find inputs that belong to nodes fully bypassed by intermediate injection.
 
     A node is bypassed ONLY if ALL of its outputs that are consumed downstream
@@ -360,7 +361,7 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
 
     # Cycle entry point params: providing these means bootstrapping a cycle,
     # NOT bypassing the producer node. Exclude from bypass check.
-    cycle_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
+    cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
 
     # A node is bypassed only if ALL its non-cycle consumed outputs are provided
     bypassed_nodes: set[str] = set()
