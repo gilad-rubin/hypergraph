@@ -18,8 +18,10 @@ repos:
         stages: [pre-push]
         args: [--no-fix]
         pass_filenames: false
+        always_run: true
       - id: ruff-format
         name: ruff format (all files, pre-push)
         stages: [pre-push]
         args: [--check]
         pass_filenames: false
+        always_run: true
