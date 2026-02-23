@@ -107,6 +107,7 @@ class Graph:
         self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
+        self._entrypoints: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
@@ -169,7 +170,13 @@ class Graph:
     @functools.cached_property
     def inputs(self) -> InputSpec:
         """Graph input specification (cached per instance)."""
-        return compute_input_spec(self._nodes, self._nx_graph, self._bound)
+        return compute_input_spec(
+            self._nodes,
+            self._nx_graph,
+            self._bound,
+            entrypoints=self._entrypoints,
+            selected=self._selected,
+        )
 
     @functools.cached_property
     def self_producers(self) -> dict[str, set[str]]:
@@ -538,6 +545,58 @@ class Graph:
     def selected(self) -> tuple[str, ...] | None:
         """Default output selection, or None if all outputs are returned."""
         return self._selected
+
+    def with_entrypoint(self, *node_names: str) -> Graph:
+        """Set execution entry points. Returns new Graph (immutable).
+
+        Entry points define where execution enters the graph. Upstream
+        nodes are excluded — their outputs become direct user inputs.
+
+        Works for both DAGs and cycles:
+        - DAG: entry point determines where computation starts
+        - Cycle: entry point determines cycle bootstrap requirements
+
+        Chainable: ``graph.with_entrypoint("A").with_entrypoint("B")``
+
+        Args:
+            *node_names: One or more node names to use as entry points.
+
+        Returns:
+            New Graph with entry points configured.
+
+        Raises:
+            GraphConfigError: If node doesn't exist or is a gate.
+
+        Example:
+            >>> # Skip upstream, provide intermediate values directly
+            >>> g = Graph([root, process, output])
+            >>> g2 = g.with_entrypoint("process")
+            >>> g2.inputs.required  # only process's unproduced inputs
+        """
+        from hypergraph.nodes.gate import GateNode
+
+        for name in node_names:
+            if name not in self._nodes:
+                raise GraphConfigError(
+                    f"Unknown entry point node: '{name}'\n\n  -> '{name}' is not in the graph\n  -> Available nodes: {sorted(self._nodes.keys())}"
+                )
+            if isinstance(self._nodes[name], GateNode):
+                raise GraphConfigError(
+                    f"Cannot use gate '{name}' as entry point\n\n"
+                    f"  -> Gates control routing, they cannot be entry points\n\n"
+                    f"How to fix:\n"
+                    f"  Use a non-gate node as the entry point"
+                )
+
+        new_graph = self._shallow_copy()
+        existing = self._entrypoints or ()
+        new_graph._entrypoints = tuple(dict.fromkeys(existing + node_names))
+        return new_graph
+
+    @property
+    def entrypoints_config(self) -> tuple[str, ...] | None:
+        """Configured entry points, or None if all nodes are active."""
+        return self._entrypoints
 
     @property
     def has_cycles(self) -> bool:
