@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "a25ae378335b",
+  "session_id": "90482ad4-8fc9-4f89-b19c-f9a35cbed495",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-23T16:50:45.609602Z",
+  "branch": "worktree-piped-dreaming-canyon",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "dev/CODE-CONVENTIONS.md",
+    "dev/CORE-BELIEFS.md",
+    "dev/REVIEW-CHECKLIST.md",
+    "dev/TESTING-GUIDE.md",
+    "dev/ARCHITECTURE.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "90884338f8c0",
+  "token_usage": {
+    "input_tokens": 190,
+    "cache_creation_tokens": 413384,
+    "cache_read_tokens": 19015443,
+    "output_tokens": 17799,
+    "api_call_count": 173
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-23T16:50:43.845349Z",
+    "agent_lines": 0,
+    "human_added": 40,
+    "human_modified": 6,
+    "human_removed": 0,
+    "total_committed": 40,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-giladrubin-python-workspace-hypergraph--claude-worktrees-piped-dreaming-canyon/90482ad4-8fc9-4f89-b19c-f9a35cbed495.jsonl"
+}

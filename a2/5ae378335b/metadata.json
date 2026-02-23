@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "a25ae378335b",
+  "strategy": "manual-commit",
+  "branch": "worktree-piped-dreaming-canyon",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "dev/ARCHITECTURE.md",
+    "dev/CODE-CONVENTIONS.md",
+    "dev/CORE-BELIEFS.md",
+    "dev/REVIEW-CHECKLIST.md",
+    "dev/TESTING-GUIDE.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a2/5ae378335b/0/metadata.json",
+      "transcript": "/a2/5ae378335b/0/full.jsonl",
+      "context": "/a2/5ae378335b/0/context.md",
+      "content_hash": "/a2/5ae378335b/0/content_hash.txt",
+      "prompt": "/a2/5ae378335b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 190,
+    "cache_creation_tokens": 413384,
+    "cache_read_tokens": 19015443,
+    "output_tokens": 17799,
+    "api_call_count": 173
+  }
+}
