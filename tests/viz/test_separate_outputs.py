@@ -1,7 +1,10 @@
 """Tests for separate outputs visualization mode."""
 
+import pytest
+
 from hypergraph import Graph, node
 from hypergraph.viz.renderer import render_graph
+from tests.viz.conftest import HAS_PLAYWRIGHT
 
 
 @node(output_name="cleaned")
@@ -305,6 +308,7 @@ class TestSeparateOutputsEdgeKeys:
         assert "sep:1" in keys, f"'sep:1' not found. Keys: {keys}"
 
 
+@pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 class TestSeparateOutputsLayout:
     """Test that layout positions sources above targets in separate outputs mode."""
 
