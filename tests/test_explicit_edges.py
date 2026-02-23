@@ -2,8 +2,7 @@
 
 import pytest
 
-from hypergraph import Graph, GraphConfigError, SyncRunner, node, route, END
-
+from hypergraph import END, Graph, GraphConfigError, SyncRunner, node, route
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -132,13 +131,12 @@ class TestExplicitEdgesConstruction:
         )
         assert g.has_cycles
         # Both add_query and add_response produce "messages"
-        producers = [
-            n for n in g.nodes.values() if "messages" in n.outputs
-        ]
+        producers = [n for n in g.nodes.values() if "messages" in n.outputs]
         assert len(producers) == 2
 
     def test_no_synthetic_edges_in_explicit(self):
         """Undeclared name-match edges don't appear in explicit mode."""
+
         # double produces "y", add_one consumes "y" — but we don't declare
         # that edge. Only declare double→square (no overlap = ordering)
         @node(output_name="unrelated")
@@ -192,9 +190,7 @@ class TestExplicitEdgesInputSpec:
             ],
         )
         # messages is a cycle seed (produced and consumed within cycle)
-        assert "messages" in {
-            p for params in g.inputs.entrypoints.values() for p in params
-        }
+        assert "messages" in {p for params in g.inputs.entrypoints.values() for p in params}
 
 
 # ── Execution tests ──────────────────────────────────────────────────────────
@@ -247,6 +243,7 @@ class TestExplicitEdgesWithEmitWaitFor:
 
     def test_emit_wait_for_works(self):
         """Ordering edges from emit/wait_for are still created."""
+
         @node(output_name="x", emit=("ready",))
         def producer(val: int) -> int:
             return val
@@ -266,6 +263,7 @@ class TestExplicitEdgesWithEmitWaitFor:
 
     def test_control_edges_work(self):
         """Gate nodes still auto-wire control edges."""
+
         @node(output_name="x")
         def start(val: int) -> int:
             return val
@@ -331,6 +329,7 @@ class TestExplicitEdgesSubgraph:
 
     def test_subgraph_pattern(self):
         """Inner auto-inference + outer explicit edges works."""
+
         @node(output_name="query")
         def _ask() -> str:
             return "hello"
@@ -398,6 +397,7 @@ class TestExplicitEdgesErrors:
 
     def test_invalid_value_not_in_target_raises(self):
         """3-tuple with value not in target inputs → error."""
+
         @node(output_name=("a", "b"))
         def multi_out(x: int) -> tuple[int, int]:
             return x, x + 1
@@ -428,6 +428,7 @@ class TestExplicitEdgesErrors:
 
     def test_unordered_same_output_raises(self):
         """Two same-name producers with no path between them → raises."""
+
         @node(output_name="x")
         def producer_a() -> int:
             return 1
@@ -482,7 +483,7 @@ class TestExplicitEdgesVisualization:
             edges=[(ask_user, generate), (generate, ask_user)],
         )
         flat = g.to_flat_graph()
-        for u, v, data in flat.edges(data=True):
+        for u, _v, data in flat.edges(data=True):
             if u == "ask_user":
                 # ask_user → generate: ask_user has no matching outputs for generate's inputs
                 # actually ask_user has output "query" and generate has input "messages" — no overlap
