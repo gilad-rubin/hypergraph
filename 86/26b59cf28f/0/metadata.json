@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "8626b59cf28f",
+  "session_id": "a560566f-c6bc-4068-b50e-313844890bc3",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-23T11:19:46.490418Z",
+  "branch": "agent-readiness",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "docs/AGENTS.md",
+    "docs/CLAUDE.md",
+    "src/hypergraph/viz/AGENTS.md",
+    "src/hypergraph/viz/CLAUDE.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "a9da994375dc",
+  "token_usage": {
+    "input_tokens": 3263,
+    "cache_creation_tokens": 592227,
+    "cache_read_tokens": 9181402,
+    "output_tokens": 27680,
+    "api_call_count": 99
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-23T11:19:45.414364Z",
+    "agent_lines": 0,
+    "human_added": 40,
+    "human_modified": 284,
+    "human_removed": 0,
+    "total_committed": 40,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-giladrubin-python-workspace-hypergraph/a560566f-c6bc-4068-b50e-313844890bc3.jsonl"
+}
