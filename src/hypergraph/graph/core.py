@@ -252,8 +252,7 @@ class Graph:
         for edge in edges:
             if not isinstance(edge, tuple) or len(edge) not in (2, 3):
                 raise GraphConfigError(
-                    f"Edge must be a 2-tuple or 3-tuple, got {type(edge).__name__} "
-                    f"with {len(edge) if isinstance(edge, tuple) else '?'} elements"
+                    f"Edge must be a 2-tuple or 3-tuple, got {type(edge).__name__} with {len(edge) if isinstance(edge, tuple) else '?'} elements"
                 )
 
             src_raw, dst_raw = edge[0], edge[1]
@@ -261,13 +260,9 @@ class Graph:
             dst = dst_raw.name if isinstance(dst_raw, HyperNode) else dst_raw
 
             if src not in self._nodes:
-                raise GraphConfigError(
-                    f"Edge references unknown source node '{src}'"
-                )
+                raise GraphConfigError(f"Edge references unknown source node '{src}'")
             if dst not in self._nodes:
-                raise GraphConfigError(
-                    f"Edge references unknown target node '{dst}'"
-                )
+                raise GraphConfigError(f"Edge references unknown target node '{dst}'")
 
             if len(edge) == 3:
                 values = edge[2]
@@ -277,22 +272,14 @@ class Graph:
                 dst_inputs = set(self._nodes[dst].inputs)
                 for v in values:
                     if v not in src_outputs:
-                        raise GraphConfigError(
-                            f"Edge ({src}, {dst}): '{v}' is not an output of '{src}'. "
-                            f"Outputs: {self._nodes[src].outputs}"
-                        )
+                        raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an output of '{src}'. Outputs: {self._nodes[src].outputs}")
                     if v not in dst_inputs:
-                        raise GraphConfigError(
-                            f"Edge ({src}, {dst}): '{v}' is not an input of '{dst}'. "
-                            f"Inputs: {self._nodes[dst].inputs}"
-                        )
+                        raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an input of '{dst}'. Inputs: {self._nodes[dst].inputs}")
                 value_names = tuple(dict.fromkeys(values))
             else:
                 # Infer from intersection (preserve target input order)
                 src_outputs = set(self._nodes[src].outputs)
-                value_names = tuple(
-                    v for v in self._nodes[dst].inputs if v in src_outputs
-                )
+                value_names = tuple(v for v in self._nodes[dst].inputs if v in src_outputs)
                 # Empty intersection is allowed — creates ordering-only edge
 
             normalized.append((src, dst, value_names))
@@ -321,11 +308,7 @@ class Graph:
                 ordering_pairs.add((src, dst))
 
         # Add data edges (dedup value_names per pair)
-        G.add_edges_from(
-            (src, dst, {"edge_type": "data",
-                        "value_names": list(dict.fromkeys(names))})
-            for (src, dst), names in data_edges.items()
-        )
+        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": list(dict.fromkeys(names))}) for (src, dst), names in data_edges.items())
 
         # Add ordering-only edges (skip if data edge already exists)
         for src, dst in ordering_pairs:
@@ -350,7 +333,10 @@ class Graph:
             self._add_control_edges(G, nodes)
             self._add_ordering_edges(G, nodes, output_to_source)
             validate_output_conflicts(
-                G, nodes, output_to_sources, explicit_edges=True,
+                G,
+                nodes,
+                output_to_sources,
+                explicit_edges=True,
             )
         else:
             # Auto-inference mode (default)
@@ -523,8 +509,7 @@ class Graph:
         """
         if self._explicit_edges is not None:
             raise GraphConfigError(
-                "Cannot use add_nodes() on a graph with explicit edges.\n"
-                "Create a new Graph with the complete node and edge lists instead."
+                "Cannot use add_nodes() on a graph with explicit edges.\nCreate a new Graph with the complete node and edge lists instead."
             )
 
         if not nodes:
