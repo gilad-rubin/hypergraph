@@ -963,6 +963,14 @@ class TestCloneConfiguration:
         with pytest.raises(ValueError, match="Cannot clone mapped parameter"):
             gn.map_over("a", clone=["a"])
 
+    def test_clone_rejects_nonexistent_param(self):
+        """Error if clone references a param not in node inputs."""
+        inner = Graph([add], name="inner")
+        gn = inner.as_node()
+
+        with pytest.raises(ValueError, match="not an input"):
+            gn.map_over("a", clone=["nonexistent"])
+
 
 class TestCloneExecution:
     """Tests for clone behavior at runtime."""

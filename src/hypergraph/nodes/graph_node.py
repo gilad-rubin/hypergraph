@@ -582,6 +582,7 @@ def _validate_clone(
     Raises:
         TypeError: If clone is not bool or list of strings
         ValueError: If clone list contains a mapped parameter
+        ValueError: If clone list contains a param not in node inputs
     """
     if not isinstance(clone, (bool, list)):
         raise TypeError(f"clone must be bool or list[str], got {type(clone).__name__}")
@@ -591,8 +592,10 @@ def _validate_clone(
             if not isinstance(entry, str):
                 raise TypeError(f"clone list entries must be strings, got {type(entry).__name__}: {entry!r}")
 
-        # Cloning a mapped param is nonsensical — it's already per-iteration
         mapped_set = set(map_params)
+        inputs_set = set(node_inputs)
         for name in clone:
             if name in mapped_set:
                 raise ValueError(f"Cannot clone mapped parameter '{name}' — mapped params are already per-iteration")
+            if name not in inputs_set:
+                raise ValueError(f"Parameter '{name}' in clone is not an input of this GraphNode. Available inputs: {node_inputs}")
