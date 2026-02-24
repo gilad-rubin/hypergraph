@@ -186,6 +186,17 @@ class TestInternalOverrideValidation:
         with pytest.raises(ValueError, match="Invalid on_internal_override"):
             validate_inputs(graph, {"x": 1}, on_internal_override="raise")  # type: ignore[arg-type]
 
+    def test_cycle_entrypoint_param_not_flagged_as_internal_override(self):
+        """Cycle entry point params are excluded from compute+inject conflict checks.
+
+        'count' is both produced by an edge (self-loop) and needed as a seed
+        value to bootstrap the cycle. Providing it should NOT be treated as an
+        internal override conflict.
+        """
+        graph = Graph([counter])
+        # 'count' is a cycle entrypoint param — should pass cleanly
+        validate_inputs(graph, {"count": 0}, on_internal_override="error")
+
     def test_entrypoint_scope_treats_excluded_branch_output_as_root_input(self):
         """Active-scope required roots are not treated as internal overrides."""
 

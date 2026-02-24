@@ -8,6 +8,7 @@
 - **Select-aware InputSpec** — `graph.select("a").inputs.required` now shows only what's needed to produce output "a", not the full graph. Previously `select()` only filtered returned outputs.
 - **Runtime select narrowing** — `runner.run(graph, values, select="a")` validates only the inputs needed for output "a". Passing `select` at runtime recomputes InputSpec scoped to the selected outputs.
 - **`entrypoints_config` property** — `graph.entrypoints_config` returns the configured entry point node names, or `None` if all nodes are active.
+- **`on_internal_override` parameter** — `run()` and `map()` accept `on_internal_override="ignore"|"warn"|"error"` (default: `"warn"`) to control how non-conflicting internal parameter overrides are handled. Contradictory compute+inject inputs always raise `ValueError` regardless of policy.
 
 ### Changed
 

@@ -187,14 +187,17 @@ See the docs for more patterns: [multi-agent orchestration](https://gilad-rubin.
 
 ```python
 # What does a graph need?
-print(graph.input_spec)
-# InputSpec(required={'text', 'query'}, optional={'config'}, seed={'messages'})
+print(graph.inputs)
+# InputSpec(required=('text', 'query'), optional=('config',), ...)
 
 # Pre-fill inputs for reuse
 configured = graph.bind(model="gpt-4", temperature=0.7)
 
 # Return only specific outputs
 focused = graph.select("answer", "confidence")
+
+# Start execution from a specific node (skip upstream)
+partial = graph.with_entrypoint("retriever")
 
 # Enable build-time type checking across node boundaries
 graph = Graph(nodes=[...], strict_types=True)
