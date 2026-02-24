@@ -209,3 +209,110 @@ If this plan can be broken down into multiple independent tasks, consider using 
 ---
 
 can you merge master into this brancha dn prepare a PR for review? then /review-pr
+
+---
+
+Base directory for this skill: /Users/giladrubin/.claude/skills/review-pr
+
+# PR Review Summary
+
+Fetch comments for PR number (argument) or current branch's PR if none provided.
+
+## Fetch Commands
+
+**IMPORTANT**: You MUST fetch from **all three** GitHub comment locations. Different bots post in different places — missing one location means missing entire reviewers (e.g., Qodo only posts to issue comments).
+
+### Step 1: Discover which bots commented (run all three in parallel)
+
+```bash
+# List unique commenters in each location
+gh api repos/:owner/:repo/pulls/{PR}/comments --jq '.[].user.login' | sort | uniq -c
+gh api repos/:owner/:repo/issues/{PR}/comments --jq '.[].user.login' | sort | uniq -c
+gh api repos/:owner/:repo/pulls/{PR}/reviews --jq '.[].user.login' | sort | uniq -c
+```
+
+### Step 2: Fetch full comments from each location
+
+#### 2a. Inline review comments (CodeRabbit, Greptile, Codex)
+```bash
+gh api repos/:owner/:repo/pulls/{PR}/comments --jq '.[] | {path: .path, line: (.line // .original_line), user: .user.login, body: .body}'
+```
+
+#### 2b. Issue-level comments (Qodo, CodeRabbit summaries, Claude)
+```bash
+gh api repos/:owner/:repo/issues/{PR}/comments --jq '.[] | {user: .user.login, body: .body}'
+```
+
+#### 2c. Review-level comments (approval/request-changes bodies)
+```bash
+gh api repos/:owner/:repo/pulls/{PR}/reviews --jq '.[] | {user: .user.login, state: .state, body: .body}'
+```
+
+### Handling Large Outputs
+
+Bot comments (especially Qodo and CodeRabbit) can be very large. If output is truncated:
+1. Filter by specific bot: `--jq '.[] | select(.user.login == "qodo-code-review[bot]") | ...'`
+2. Read from the persisted output file if Claude saves it
+3. Use `head -c 50000` to limit initial fetch, then fetch specific bots separately
+
+## Known Bot Comment Locations
+
+| Bot | Username | Inline (`pulls/comments`) | Issue (`issues/comments`) | Review (`pulls/reviews`) |
+|-----|----------|--------------------------|--------------------------|-------------------------|
+| **CodeRabbit** | `coderabbitai[bot]` | ✅ Main findings | ✅ Walkthrough summary | ✅ Review body |
+| **Qodo** | `qodo-code-review[bot]` | ❌ | ✅ Compliance + Code Suggestions | ❌ |
+| **Greptile** | `greptile-apps[bot]` | ✅ Inline comments | ✅ Overview summary | ✅ Review body |
+| **ChatGPT-Codex** | `chatgpt-codex-connector[bot]` | ✅ Inline comments | ❌ | ✅ Review body |
+| **Claude** | `claude-*[bot]` | ❌ | ✅ Review summary | ❌ |
+
+**Note**: If Step 1 shows a bot you don't recognize, fetch their comments anyway — new review bots appear frequently.
+
+## Triage: Classify Each Comment
+
+For **every** comment/suggestion, determine if it's actionable or a false positive:
+
+### False Positive Detection
+
+1. **Framework misunderstanding**: The reviewer doesn't understand how the framework works.
+   - Read the relevant source code to verify the reviewer's claim.
+   - If the reviewer is wrong, check: should a **docstring** or **doc page** be improved to prevent this confusion? If so, treat the docs improvement as an actionable item.
+
+2. **Write a quick test**: For code-level claims (bugs, edge cases, incorrect behavior), write a minimal reproducer test.
+   - If the test passes (the claimed bug doesn't exist), the comment is a false positive.
+   - If the test fails, the comment is legitimate — fix it.
+
+3. **Already handled**: The code already handles the case the reviewer describes, just in a different way. Read the surrounding code carefully before dismissing.
+
+### Action on Each Comment
+
+- **True positive (any severity)**: Add to the task list and fix it. This includes documentation, consistency, docstrings, style, naming — any opportunity to improve code quality.
+- **False positive (framework misunderstanding)**: If the misunderstanding is common/reasonable, improve the docs/docstring. Otherwise, skip it.
+- **False positive (test doesn't fail)**: Skip it, but note why in the summary.
+
+## Output Format
+
+Create a markdown table grouped by priority, with **Reviewer** and **Verdict** columns:
+- **High Priority**: P1/P2 badges, "Critical", "Important", 🔴
+- **Medium Priority**: "Potential issue", "Warning", 🟠, importance ≥ 7
+- **Low Priority**: "Nitpick", "Style", "Minor", 🟡, importance < 7
+
+| File:Line | Issue | Reviewer | Verdict | Action |
+|-----------|-------|----------|---------|--------|
+| path:line | Summary | Bot name | ✅ Fix / ❌ False positive (reason) | Brief description of fix or why skipped |
+
+At the end, include a **Reviewer Statistics** summary:
+
+| Reviewer | Comments | True Positives | False Positives |
+|----------|----------|---------------|-----------------|
+| Bot name | Count | Fix count | FP count (with reasons) |
+
+## Parsing Tips
+
+- **Qodo** embeds suggestions inside HTML `<table>` and `<details>` tags in issue comments. Look for "PR Code Suggestions" and "PR Compliance Guide" sections.
+- **CodeRabbit** inline comments start with severity badges like `_⚠️ Potential issue_ | _🔴 Critical_`.
+- **Greptile** inline comments include ````suggestion` blocks.
+- **Codex** uses P1/P2 badge images.
+- Strip HTML comments (`<!-- ... -->`), badge images, and fingerprinting markers. Collapse verbose analysis into actionable summaries.
+
+
+ARGUMENTS: 56
