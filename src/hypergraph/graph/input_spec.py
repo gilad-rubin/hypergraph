@@ -54,6 +54,7 @@ def compute_input_spec(
     *,
     entrypoints: tuple[str, ...] | None = None,
     selected: tuple[str, ...] | None = None,
+    _active_scope: tuple[dict[str, HyperNode], nx.DiGraph] | None = None,
 ) -> InputSpec:
     """Compute input specification for a graph.
 
@@ -69,16 +70,21 @@ def compute_input_spec(
         bound: Currently bound values
         entrypoints: Optional entry point node names (narrows to forward-reachable)
         selected: Optional output names to produce (narrows to backward-reachable)
+        _active_scope: Pre-computed (active_nodes, active_subgraph) to skip
+            redundant graph traversal. Internal optimization detail.
 
     Returns:
         InputSpec with categorized parameters scoped to the active subgraph
     """
-    active_nodes, active_subgraph = _compute_active_scope(
-        nodes,
-        nx_graph,
-        entrypoints=entrypoints,
-        selected=selected,
-    )
+    if _active_scope is not None:
+        active_nodes, active_subgraph = _active_scope
+    else:
+        active_nodes, active_subgraph = _compute_active_scope(
+            nodes,
+            nx_graph,
+            entrypoints=entrypoints,
+            selected=selected,
+        )
 
     edge_produced = get_edge_produced_values(active_subgraph)
     cycle_entrypoints = _compute_entrypoints(active_nodes, active_subgraph, edge_produced, bound)

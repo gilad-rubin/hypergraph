@@ -19,6 +19,7 @@ import pytest
 from hypergraph import END, Graph, GraphConfigError
 from hypergraph.nodes.function import node
 from hypergraph.nodes.gate import route
+from hypergraph.runners import AsyncRunner
 from hypergraph.runners.sync import SyncRunner
 
 
@@ -417,14 +418,14 @@ class TestRenameErrorMessages:
 
 
 class TestInputValidationOverrides:
-    """Edge 4: Input validation allows overriding internal edge values.
+    """Edge 4: Input validation must reject compute+inject conflicts.
 
-    Runner accepts any values dict without checking for edge-produced names.
-    This bypasses graph.bind() which explicitly forbids this.
+    Providing a node's internal output while also making that node runnable
+    creates contradictory inputs and should fail before execution.
     """
 
     def test_cannot_override_edge_produced_values(self):
-        """Cannot provide values for edge-produced outputs in runner.run()."""
+        """Reject overriding edge-produced outputs when producer can run."""
 
         @node(output_name="intermediate")
         def step1(x: int) -> int:
@@ -437,14 +438,26 @@ class TestInputValidationOverrides:
         graph = Graph([step1, step2])
         runner = SyncRunner()
 
-        # Trying to override 'intermediate' which is produced by step1
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        # 'intermediate' is produced by step1, and 'x' makes step1 runnable.
+        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
             runner.run(graph, {"x": 10, "intermediate": 999})
 
-            # Should at least warn about overriding internal value
-            assert len(w) >= 1
-            assert any("intermediate" in str(warning.message) for warning in w)
+    async def test_async_runner_rejects_override_edge_produced_values(self):
+        """AsyncRunner enforces the same compute-vs-inject conflict rule."""
+
+        @node(output_name="intermediate")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="result")
+        async def step2(intermediate: int) -> int:
+            return intermediate * 2
+
+        graph = Graph([step1, step2])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+            await runner.run(graph, {"x": 10, "intermediate": 999})
 
 
 class TestMultiCycleEntryPointValidation:

@@ -36,7 +36,7 @@ src/hypergraph/
     _rename.py         #   Internal rename/copy machinery
 
   graph/               # Graph construction and validation
-    core.py            #   Graph class (build pipeline, bind/select/unbind)
+    core.py            #   Graph class (build pipeline, bind/select/unbind/with_entrypoint)
     input_spec.py      #   InputSpec (required/optional/entrypoint classification)
     validation.py      #   Build-time validation checks
     _conflict.py       #   Name conflict resolution

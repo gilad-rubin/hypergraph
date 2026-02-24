@@ -117,6 +117,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         error_handling: ErrorHandling = "raise",
@@ -139,6 +140,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             normalized_values,
             entrypoint=entrypoint,
             selected=effective_selected,
+            on_internal_override=on_internal_override,
         )
         _validate_on_missing(on_missing)
         _validate_error_handling(error_handling)
@@ -214,6 +216,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -255,6 +258,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
+                    on_internal_override=on_internal_override,
                     entrypoint=entrypoint,
                     error_handling="continue",
                     event_processors=event_processors,

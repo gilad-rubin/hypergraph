@@ -43,6 +43,7 @@ class BaseRunner(ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         error_handling: ErrorHandling = "raise",
@@ -56,6 +57,7 @@ class BaseRunner(ABC):
             values: Optional input values dict
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
+            on_internal_override: How to handle non-conflicting internal input overrides.
             entrypoint: Optional explicit cycle entry point node name.
             max_iterations: Max iterations for cyclic graphs (None = default)
             error_handling: How to handle node execution errors.
@@ -80,6 +82,7 @@ class BaseRunner(ABC):
         clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
@@ -96,6 +99,7 @@ class BaseRunner(ABC):
                 list[str] = deep-copy only named params.
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
+            on_internal_override: How to handle non-conflicting internal input overrides.
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)
 
