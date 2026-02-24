@@ -261,6 +261,46 @@ class TestSyncRunnerRun:
 
         assert result["result"] == 15  # 5 + 10 (default)
 
+    def test_on_internal_override_policy_is_enforced(self):
+        """run() forwards on_internal_override policy into validation."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph([split, use_left, use_right])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.run(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="error",
+            )
+
+        result = runner.run(
+            graph,
+            {"left": 100, "right": 200},
+            on_internal_override="ignore",
+        )
+        assert result["double_left"] == 200
+        assert result["double_right"] == 400
+
+        with pytest.warns(UserWarning, match="left <- split"):
+            runner.run(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="warn",
+            )
+
     def test_input_overrides_bound(self):
         """Explicit input overrides bound value."""
         graph = Graph([add]).bind(a=5, b=10)
@@ -546,6 +586,50 @@ class TestSyncRunnerMap:
 
         with pytest.raises(ValueError, match="reserved runner options"):
             runner.map(graph, map_over="x", x=[1, 2], max_concurrency=1)
+
+    def test_map_forwards_on_internal_override_policy(self):
+        """map() forwards on_internal_override to per-item run() validation."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph([split, use_left, use_right])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+                on_internal_override="error",
+            )
+
+        results = runner.map(
+            graph,
+            {"left": [100], "right": 200},
+            map_over="left",
+            on_internal_override="ignore",
+        )
+        assert len(results) == 1
+        assert results[0]["double_left"] == 200
+        assert results[0]["double_right"] == 400
+
+        with pytest.warns(UserWarning, match="left <- split"):
+            runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+                on_internal_override="warn",
+            )
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""

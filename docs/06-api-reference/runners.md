@@ -52,6 +52,7 @@ def run(
     *,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     event_processors: list[EventProcessor] | None = None,
@@ -69,6 +70,11 @@ Execute a graph once.
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
   - `"error"`: raise error if any selected output is missing
+- `on_internal_override` - How to handle non-conflicting internal/unknown override-style inputs:
+  - `"warn"` (default): emit warning
+  - `"ignore"`: allow silently
+  - `"error"`: fail fast
+  - Note: contradictory compute+inject inputs for the same node always fail
 - `entrypoint` - Optional explicit cycle entrypoint node name. Disambiguates when multiple entrypoints match.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
@@ -119,6 +125,7 @@ def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -135,6 +142,7 @@ Execute a graph multiple times with different inputs.
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Optional explicit cycle entrypoint (passed to each `run()` call)
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
@@ -241,6 +249,7 @@ async def run(
     *,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
@@ -256,6 +265,7 @@ Execute a graph asynchronously.
 - `values` - Optional input values
 - `select` - Which outputs to return. `"**"` (default) returns all outputs. Also narrows input validation to only what's needed for the selected outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`). Contradictory compute+inject inputs always fail.
 - `entrypoint` - Optional explicit cycle entrypoint node name
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
@@ -314,6 +324,7 @@ async def map(
     map_mode: Literal["zip", "product"] = "zip",
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
@@ -331,6 +342,7 @@ Execute graph multiple times concurrently.
 - `map_mode` - `"zip"` or `"product"`
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Optional explicit cycle entrypoint (passed to each `run()` call)
 - `max_concurrency` - Shared limit across all executions
 - `error_handling` - How to handle failures:

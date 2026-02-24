@@ -716,6 +716,58 @@ def _is_in_async_context() -> bool:
         return False
 
 
+def _run_async_extract_in_thread(
+    graph: Graph,
+    *,
+    depth: int,
+    theme: str,
+    separate_outputs: bool,
+    headless: bool,
+    timeout: int,
+) -> RenderedDebugData:
+    """Run async extraction on a dedicated thread.
+
+    This avoids nested-event-loop errors when `extract_debug_data` is called
+    from environments that already have an active loop (e.g. pytest-asyncio,
+    Jupyter, async frameworks).
+    """
+    import asyncio
+    import threading
+
+    result: RenderedDebugData | None = None
+    error: BaseException | None = None
+
+    def _worker() -> None:
+        nonlocal result, error
+        try:
+            result = asyncio.run(
+                _extract_debug_data_async(
+                    graph,
+                    depth=depth,
+                    theme=theme,
+                    separate_outputs=separate_outputs,
+                    headless=headless,
+                    timeout=timeout,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - re-raised in caller
+            error = exc
+
+    thread = threading.Thread(target=_worker, name="hypergraph-viz-debug-extract")
+    thread.start()
+    # Playwright has its own timeout; add margin for setup/teardown
+    join_timeout = timeout / 1000 + 30
+    thread.join(timeout=join_timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(f"Debug data extraction timed out after {join_timeout:.0f}s in worker thread.")
+    if error is not None:
+        raise error
+    if result is None:
+        raise RuntimeError("Failed to extract debug data: worker returned no result.")
+    return result
+
+
 def extract_debug_data(
     graph: Graph,
     *,
@@ -764,31 +816,14 @@ def extract_debug_data(
         ) from None
 
     if _is_in_async_context():
-        # Running in Jupyter or async context - use nest_asyncio or asyncio.run
-        import asyncio
-
-        try:
-            import nest_asyncio
-
-            nest_asyncio.apply()
-        except ImportError:
-            pass
-
-        # Create new event loop for the async call
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                _extract_debug_data_async(
-                    graph,
-                    depth=depth,
-                    theme=theme,
-                    separate_outputs=separate_outputs,
-                    headless=headless,
-                    timeout=timeout,
-                )
-            )
-        finally:
-            loop.close()
+        return _run_async_extract_in_thread(
+            graph,
+            depth=depth,
+            theme=theme,
+            separate_outputs=separate_outputs,
+            headless=headless,
+            timeout=timeout,
+        )
     else:
         return _extract_debug_data_sync(
             graph,
