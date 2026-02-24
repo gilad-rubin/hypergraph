@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "679ee94fa8c8",
+  "session_id": "2107eca7-609a-488a-bdbe-387e783be2a9",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-24T06:18:17.48544Z",
+  "branch": "worktree-prancy-jingling-dijkstra",
+  "checkpoints_count": 9,
+  "files_touched": [
+    "tests/test_error_handling_edge_cases.py",
+    "tests/test_runners/test_async_runner.py",
+    "tests/test_runners/test_sync_runner.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "9838b0810412",
+  "token_usage": {
+    "input_tokens": 310,
+    "cache_creation_tokens": 730713,
+    "cache_read_tokens": 27804658,
+    "output_tokens": 26595,
+    "api_call_count": 241
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-24T06:18:11.016191Z",
+    "agent_lines": 0,
+    "human_added": 25,
+    "human_modified": 4,
+    "human_removed": 0,
+    "total_committed": 25,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-giladrubin-python-workspace-hypergraph--claude-worktrees-prancy-jingling-dijkstra/2107eca7-609a-488a-bdbe-387e783be2a9.jsonl"
+}

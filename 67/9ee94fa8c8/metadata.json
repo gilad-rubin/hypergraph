@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "679ee94fa8c8",
+  "strategy": "manual-commit",
+  "branch": "worktree-prancy-jingling-dijkstra",
+  "checkpoints_count": 9,
+  "files_touched": [
+    "tests/test_error_handling_edge_cases.py",
+    "tests/test_runners/test_async_runner.py",
+    "tests/test_runners/test_sync_runner.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/67/9ee94fa8c8/0/metadata.json",
+      "transcript": "/67/9ee94fa8c8/0/full.jsonl",
+      "context": "/67/9ee94fa8c8/0/context.md",
+      "content_hash": "/67/9ee94fa8c8/0/content_hash.txt",
+      "prompt": "/67/9ee94fa8c8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 310,
+    "cache_creation_tokens": 730713,
+    "cache_read_tokens": 27804658,
+    "output_tokens": 26595,
+    "api_call_count": 241
+  }
+}
