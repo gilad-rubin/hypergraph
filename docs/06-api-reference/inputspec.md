@@ -364,12 +364,12 @@ Emit-only outputs (ordering signals from `emit=`) cannot be bound — they are i
 
 When multiple sources provide the same value, the runner uses: **EDGE > PROVIDED > BOUND > DEFAULT**
 
-- A node that CAN run WILL run, and its output overwrites any provided/bound value
+- A node that CAN run WILL run (absent a compute/inject conflict), and its output overwrites any provided/bound value
+- Hard conflict rule: **either compute or inject, never both for the same node**
+  - Injecting a node's outputs while also making that node runnable raises `ValueError` unconditionally
+  - Partial injection of a multi-output producer is rejected when downstream still needs missing outputs
 - For non-conflicting internal overrides, `run(..., on_internal_override="ignore"|"warn"|"error")` controls policy (default: `"warn"`)
   - `map(...)` inherits the same policy and applies it per iteration
-- Hard conflict rule: **either compute or inject, never both for the same node**
-  - Injecting a node's outputs while also making that node runnable is rejected with `ValueError`
-  - Partial injection of a multi-output producer is rejected when downstream still needs missing outputs
 - Bound values bootstrap cycles: on the first iteration the bound value is used, then the cycle produces subsequent values
 
 ### Cycle entrypoints exclude certain parameters

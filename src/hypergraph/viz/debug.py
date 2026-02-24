@@ -735,7 +735,7 @@ def _run_async_extract_in_thread(
     import threading
 
     result: RenderedDebugData | None = None
-    error: BaseException | None = None
+    error: Exception | None = None
 
     def _worker() -> None:
         nonlocal result, error
@@ -750,7 +750,7 @@ def _run_async_extract_in_thread(
                     timeout=timeout,
                 )
             )
-        except BaseException as exc:  # pragma: no cover - re-raised in caller
+        except Exception as exc:  # pragma: no cover - re-raised in caller
             error = exc
 
     # daemon=True: if the caller times out, the process can still exit cleanly.

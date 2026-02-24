@@ -197,7 +197,7 @@ configured = graph.bind(model="gpt-4", temperature=0.7)
 focused = graph.select("answer", "confidence")
 
 # Start execution from a specific node (skip upstream)
-partial = graph.with_entrypoint("retriever")
+partial = graph.with_entrypoint("retrieve")
 
 # Enable build-time type checking across node boundaries
 graph = Graph(nodes=[...], strict_types=True)
