@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from hypergraph.exceptions import ExecutionError
 from hypergraph.runners._shared.helpers import (
     _UNSET_SELECT,
+    _validate_error_handling,
     _validate_on_missing,
     filter_outputs,
     generate_map_inputs,
@@ -146,6 +147,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
+        error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
@@ -167,6 +169,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             selected=effective_selected,
         )
         _validate_on_missing(on_missing)
+        _validate_error_handling(error_handling)
 
         max_iter = max_iterations or self.default_max_iterations
         dispatcher = self._create_dispatcher(event_processors)
@@ -228,6 +231,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
                 error=error,
             )
+
+            if error_handling == "raise":
+                raise error from None
+
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
@@ -265,6 +272,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
+        _validate_error_handling(error_handling)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode))
@@ -290,7 +298,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
 
         async def _run_map_item(variation_inputs: dict[str, Any]) -> RunResult:
-            """Execute one map variation and normalize failures to RunResult."""
+            """Execute one map variation, always returning RunResult."""
             try:
                 return await self.run(
                     graph,
@@ -299,10 +307,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     on_missing=on_missing,
                     entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
+                    error_handling="continue",
                     event_processors=event_processors,
                     _parent_span_id=map_span_id,
                 )
             except Exception as e:
+                # Catch validation errors (e.g., MissingInputError) that raise
+                # before run()'s execution try block
                 return RunResult(
                     values={},
                     status=RunStatus.FAILED,

@@ -54,6 +54,7 @@ def run(
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
 ) -> RunResult: ...
@@ -71,6 +72,9 @@ Execute a graph once.
   - `"error"`: raise error if any selected output is missing
 - `entrypoint` - Optional explicit cycle entrypoint node name. Disambiguates when multiple entrypoints match.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
+- `error_handling` - How to handle node execution errors:
+  - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
+  - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 - `**input_values` - Input shorthand (merged with `values`)
 
@@ -80,11 +84,12 @@ Execute a graph once.
 - `MissingInputError` - Required input not provided
 - `IncompatibleRunnerError` - Graph contains async nodes
 - `ValueError` - If `entrypoint` is invalid or ambiguous
+- Node execution errors (e.g., `ValueError`, `TypeError`) when `error_handling="raise"` (the default)
 
 **Example:**
 
 ```python
-# Basic execution
+# Basic execution — raises on failure (default)
 result = runner.run(graph, {"query": "What is RAG?"})
 
 # kwargs shorthand
@@ -105,6 +110,13 @@ result = runner.run(cyclic_graph, {"messages": []}, entrypoint="generate")
 # With progress bars
 from hypergraph import RichProgressProcessor
 result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
+
+# Collect partial results instead of raising on failure
+from hypergraph import RunStatus
+result = runner.run(graph, {"x": 5}, error_handling="continue")
+if result.status == RunStatus.FAILED:
+    print(result.error)        # the original exception
+    print(result.values)       # outputs from nodes that completed before the failure
 ```
 
 ### map()
@@ -244,6 +256,7 @@ async def run(
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
 ) -> RunResult: ...
@@ -259,6 +272,9 @@ Execute a graph asynchronously.
 - `entrypoint` - Optional explicit cycle entrypoint node name
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
+- `error_handling` - How to handle node execution errors:
+  - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
+  - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
 - `**input_values` - Input shorthand (merged with `values`)
 
@@ -444,10 +460,11 @@ result.get("key", default_value)
 
 ### Partial Values on Failure
 
-When a graph execution fails, `RunResult` preserves any outputs computed before the error:
+By default, `run()` raises the original exception on node failure. To get partial results instead, use `error_handling="continue"`:
 
 ```python
-result = runner.run(graph, {"x": 5})
+# Use error_handling="continue" to get partial results instead of raising
+result = runner.run(graph, {"x": 5}, error_handling="continue")
 
 if result.status == RunStatus.FAILED:
     # values contains outputs from nodes that succeeded before the failure
@@ -475,7 +492,8 @@ class RunStatus(Enum):
 **Usage:**
 
 ```python
-result = runner.run(graph, values)
+# With error_handling="continue", check the status to handle failures
+result = runner.run(graph, values, error_handling="continue")
 
 match result.status:
     case RunStatus.COMPLETED:
@@ -483,8 +501,10 @@ match result.status:
     case RunStatus.PAUSED:
         print(result.pause.value)  # Value from InterruptNode
     case RunStatus.FAILED:
-        raise result.error
+        raise result.error  # Re-raise manually if needed
 ```
+
+With the default `error_handling="raise"`, node failures raise before returning a `RunResult`, so the status will be `COMPLETED` or `PAUSED`.
 
 ---
 

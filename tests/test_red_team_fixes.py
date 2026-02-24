@@ -52,7 +52,6 @@ class TestMutableDefaults:
         import threading
 
         from hypergraph.graph.validation import GraphConfigError
-        from hypergraph.runners._shared.types import RunStatus
 
         lock = threading.Lock()
 
@@ -66,11 +65,8 @@ class TestMutableDefaults:
         runner = SyncRunner()
 
         # Should fail with GraphConfigError (not warn and continue)
-        result = runner.run(graph, {"x": 5})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, GraphConfigError)
-        assert "cannot be safely copied" in str(result.error)
-        assert ".bind()" in str(result.error)
+        with pytest.raises(GraphConfigError, match="cannot be safely copied"):
+            runner.run(graph, {"x": 5})
 
 
 # === Fix #2: Cycle termination off-by-one ===

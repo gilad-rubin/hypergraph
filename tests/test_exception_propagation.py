@@ -54,10 +54,8 @@ class TestExceptionInDiamondTopology:
         graph = Graph([branch_a, branch_b, combine])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="branch b failed"):
+            runner.run(graph, {"x": 5})
 
     def test_exception_at_diamond_join_point(self):
         """Exception at the join point of a diamond."""
@@ -77,10 +75,8 @@ class TestExceptionInDiamondTopology:
         graph = Graph([branch_a, branch_b, combine])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="combine failed"):
+            runner.run(graph, {"x": 5})
 
     def test_exception_at_diamond_start(self):
         """Exception at the start node of a diamond."""
@@ -100,10 +96,8 @@ class TestExceptionInDiamondTopology:
         graph = Graph([start_node, branch_a, branch_b])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="start failed"):
+            runner.run(graph, {"x": 5})
 
 
 class TestExceptionInNestedGraphNode:
@@ -120,10 +114,8 @@ class TestExceptionInNestedGraphNode:
         outer = Graph([inner.as_node()])
 
         runner = SyncRunner()
-        result = runner.run(outer, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="inner graph failed"):
+            runner.run(outer, {"x": 5})
 
     def test_exception_in_deeply_nested_graph(self):
         """Exception in deeply nested graph propagates."""
@@ -137,10 +129,8 @@ class TestExceptionInNestedGraphNode:
         level1 = Graph([level2.as_node()])
 
         runner = SyncRunner()
-        result = runner.run(level1, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="deep failure"):
+            runner.run(level1, {"x": 5})
 
     def test_exception_after_successful_nested_graph(self):
         """Exception after nested graph completes successfully."""
@@ -158,10 +148,8 @@ class TestExceptionInNestedGraphNode:
         outer = Graph([inner.as_node(), outer_failing])
 
         runner = SyncRunner()
-        result = runner.run(outer, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="outer failed after inner success"):
+            runner.run(outer, {"x": 5})
 
 
 class TestExceptionInCycle:
@@ -186,10 +174,8 @@ class TestExceptionInCycle:
         graph = Graph([counter_with_error, cycle_gate])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"count": 0, "fail_at": 3})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="failed at iteration"):
+            runner.run(graph, {"count": 0, "fail_at": 3})
 
     def test_exception_in_convergence_cycle(self):
         """Exception in a convergence cycle driven by gate."""
@@ -207,10 +193,8 @@ class TestExceptionInCycle:
         graph = Graph([converge_with_error, converge_gate])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"value": 0.0, "target": 10.0})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="convergence error"):
+            runner.run(graph, {"value": 0.0, "target": 10.0})
 
 
 class TestExceptionInMapOver:
@@ -229,10 +213,8 @@ class TestExceptionInMapOver:
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="failed on x=3"):
+            runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
     def test_exception_in_first_map_iteration(self):
         """Exception in first iteration of map_over."""
@@ -245,10 +227,8 @@ class TestExceptionInMapOver:
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3]})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="always fails"):
+            runner.run(outer, {"x": [1, 2, 3]})
 
 
 class TestExceptionPreservesPartialResults:
@@ -272,7 +252,7 @@ class TestExceptionPreservesPartialResults:
         graph = Graph([step_a, step_b, step_c])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
+        result = runner.run(graph, {"x": 5}, error_handling="continue")
 
         assert result.status == RunStatus.FAILED
         assert isinstance(result.error, CustomError)
@@ -296,9 +276,8 @@ class TestExceptionPreservesPartialResults:
         graph = Graph([branch_a, branch_b])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
+        with pytest.raises(CustomError, match="branch b failed"):
+            runner.run(graph, {"x": 5})
 
     def test_partial_values_with_select(self):
         """Partial values respect the select parameter."""
@@ -314,7 +293,7 @@ class TestExceptionPreservesPartialResults:
         graph = Graph([step_a, step_b])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5}, select=["a"])
+        result = runner.run(graph, {"x": 5}, select=["a"], error_handling="continue")
 
         assert result.status == RunStatus.FAILED
         assert result.values == {"a": 10}
@@ -333,7 +312,7 @@ class TestExceptionPreservesPartialResults:
         graph = Graph([step_a, step_b])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
+        result = runner.run(graph, {"x": 5}, error_handling="continue")
 
         assert result.status == RunStatus.FAILED
         assert "a" not in result.values
@@ -353,10 +332,8 @@ class TestAsyncExceptionHandling:
         graph = Graph([async_failing])
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="async failure"):
+            await runner.run(graph, {"x": 5})
 
     async def test_async_exception_in_nested_graph(self):
         """Exception in async nested graph propagates."""
@@ -369,10 +346,8 @@ class TestAsyncExceptionHandling:
         outer = Graph([inner.as_node()])
 
         runner = AsyncRunner()
-        result = await runner.run(outer, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="async inner failure"):
+            await runner.run(outer, {"x": 5})
 
     async def test_async_partial_values_on_failure(self):
         """Async runner returns partial values when a node fails."""
@@ -388,7 +363,7 @@ class TestAsyncExceptionHandling:
         graph = Graph([step_a, step_b])
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"x": 5})
+        result = await runner.run(graph, {"x": 5}, error_handling="continue")
 
         assert result.status == RunStatus.FAILED
         assert isinstance(result.error, CustomError)
@@ -412,10 +387,8 @@ class TestAsyncExceptionHandling:
         graph = Graph([async_a, async_b])
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="async b failed"):
+            await runner.run(graph, {"x": 5})
 
 
 class TestExceptionTypes:
@@ -431,10 +404,8 @@ class TestExceptionTypes:
         graph = Graph([value_error_node])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
+        with pytest.raises(ValueError, match="invalid value"):
+            runner.run(graph, {"x": 5})
 
     def test_type_error_propagates(self):
         """TypeError propagates correctly."""
@@ -446,10 +417,8 @@ class TestExceptionTypes:
         graph = Graph([type_error_node])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, TypeError)
+        with pytest.raises(TypeError, match="wrong type"):
+            runner.run(graph, {"x": 5})
 
     def test_runtime_error_propagates(self):
         """RuntimeError propagates correctly."""
@@ -461,10 +430,8 @@ class TestExceptionTypes:
         graph = Graph([runtime_error_node])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, RuntimeError)
+        with pytest.raises(RuntimeError, match="runtime problem"):
+            runner.run(graph, {"x": 5})
 
     def test_keyboard_interrupt_not_caught(self):
         """KeyboardInterrupt should not be caught."""
@@ -502,10 +469,8 @@ class TestExceptionInChain:
         graph = Graph([step1, step2, step3])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="step1 failed"):
+            runner.run(graph, {"x": 5})
 
     def test_exception_in_middle_of_chain(self):
         """Exception in middle of linear chain."""
@@ -525,10 +490,8 @@ class TestExceptionInChain:
         graph = Graph([step1, step2, step3])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="step2 failed"):
+            runner.run(graph, {"x": 5})
 
     def test_exception_at_end_of_chain(self):
         """Exception at end of linear chain."""
@@ -548,7 +511,5 @@ class TestExceptionInChain:
         graph = Graph([step1, step2, step3])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, CustomError)
+        with pytest.raises(CustomError, match="step3 failed"):
+            runner.run(graph, {"x": 5})

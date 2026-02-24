@@ -389,13 +389,13 @@ class TestMapOverExecution:
         runner = SyncRunner()
 
         # Note: add expects int, but doubled is list[int]
-        # This test documents current behavior
-        result = runner.run(outer, {"x": [1, 2], "b": 0})
-
-        # doubled = [2, 4], which gets passed to add as-is
-        # This may raise or have undefined behavior depending on implementation
-        # For now, just check it doesn't crash
-        assert result.status in (RunStatus.COMPLETED, RunStatus.FAILED)
+        # This test documents current behavior — may succeed or raise
+        # depending on how the downstream node handles list input
+        try:
+            result = runner.run(outer, {"x": [1, 2], "b": 0})
+            assert result.status == RunStatus.COMPLETED
+        except Exception:
+            pass  # Also acceptable — type mismatch in downstream node
 
     async def test_graphnode_map_over_async_runner(self):
         """map_over works with AsyncRunner."""
@@ -873,15 +873,12 @@ class TestMaxConcurrency:
 
         runner = AsyncRunner()
 
-        result = await runner.run(
-            outer,
-            {"x": [1, 2, 3]},
-            max_concurrency=1,
-        )
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
-        assert "x cannot be 2" in str(result.error)
+        with pytest.raises(ValueError, match="x cannot be 2"):
+            await runner.run(
+                outer,
+                {"x": [1, 2, 3]},
+                max_concurrency=1,
+            )
 
     async def test_empty_map_with_max_concurrency(self):
         """Empty map_over with max_concurrency returns empty results."""

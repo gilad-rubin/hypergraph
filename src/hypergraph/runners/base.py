@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.runners._shared.helpers import _UNSET_SELECT
-from hypergraph.runners._shared.types import RunnerCapabilities, RunResult
+from hypergraph.runners._shared.types import ErrorHandling, RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -45,6 +45,7 @@ class BaseRunner(ABC):
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
+        error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -57,6 +58,9 @@ class BaseRunner(ABC):
             on_missing: How to handle missing selected outputs.
             entrypoint: Optional explicit cycle entry point node name.
             max_iterations: Max iterations for cyclic graphs (None = default)
+            error_handling: How to handle node execution errors.
+                "raise" (default) re-raises the original exception.
+                "continue" returns RunResult with status=FAILED and partial values.
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)
 
