@@ -71,6 +71,7 @@ class AsyncGraphNodeExecutor:
                 inner_inputs,
                 map_over=original_params,
                 map_mode=mode,
+                clone=node._original_clone(),
                 error_handling=error_handling,
                 event_processors=event_processors,
                 _parent_span_id=parent_span_id,
