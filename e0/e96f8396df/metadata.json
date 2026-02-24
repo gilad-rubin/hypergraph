@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "e0e96f8396df",
+  "strategy": "manual-commit",
+  "branch": "worktree-floating-weaving-cat",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hypergraph/nodes/graph_node.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e0/e96f8396df/0/metadata.json",
+      "transcript": "/e0/e96f8396df/0/full.jsonl",
+      "context": "/e0/e96f8396df/0/context.md",
+      "content_hash": "/e0/e96f8396df/0/content_hash.txt",
+      "prompt": "/e0/e96f8396df/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 88,
+    "cache_creation_tokens": 406305,
+    "cache_read_tokens": 8627405,
+    "output_tokens": 15056,
+    "api_call_count": 80
+  }
+}
