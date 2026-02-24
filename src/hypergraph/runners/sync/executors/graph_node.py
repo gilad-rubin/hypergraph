@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_func_params
-from hypergraph.runners._shared.types import RunStatus
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -78,6 +77,4 @@ class SyncGraphNodeExecutor:
             event_processors=event_processors,
             _parent_span_id=parent_span_id,
         )
-        if result.status == RunStatus.FAILED:
-            raise result.error  # type: ignore[misc]
         return node.map_outputs_from_original(result.values)

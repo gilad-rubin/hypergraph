@@ -632,6 +632,20 @@ def _validate_on_missing(on_missing: str) -> None:
         raise ValueError(f"Invalid on_missing={on_missing!r}. Expected one of: {', '.join(_VALID_ON_MISSING)}")
 
 
+_VALID_ERROR_HANDLING = ("raise", "continue")
+
+
+def _validate_error_handling(error_handling: str) -> None:
+    """Validate error_handling parameter eagerly (before execution)."""
+    if error_handling not in _VALID_ERROR_HANDLING:
+        valid = ", ".join(repr(v) for v in _VALID_ERROR_HANDLING)
+        raise ValueError(
+            f"Invalid error_handling={error_handling!r}.\n\n"
+            f"Valid options: {valid}\n\n"
+            f"How to fix: Pass error_handling='raise' or error_handling='continue'."
+        )
+
+
 def _handle_missing_outputs(
     missing: list[str],
     state: GraphState,

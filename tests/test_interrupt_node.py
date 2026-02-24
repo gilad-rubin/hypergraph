@@ -647,10 +647,8 @@ class TestHandlerFailure:
         graph = Graph([make_draft, approval, finalize])
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"query": "hello"})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, RuntimeError)
-        assert "handler broke" in str(result.error)
+        with pytest.raises(RuntimeError, match="handler broke"):
+            await runner.run(graph, {"query": "hello"})
 
 
 class TestNestedInterruptPropagation:

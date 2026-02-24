@@ -405,7 +405,7 @@ class TestAsyncRunnerRun:
             await runner.run(graph, {})
 
     async def test_node_exception_propagates(self):
-        """Node exceptions result in FAILED status."""
+        """Node exceptions propagate by default (error_handling='raise')."""
 
         @node(output_name="result")
         async def failing(x: int) -> int:
@@ -414,10 +414,8 @@ class TestAsyncRunnerRun:
         graph = Graph([failing])
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
+        with pytest.raises(ValueError, match="intentional error"):
+            await runner.run(graph, {"x": 5})
 
 
 class TestAsyncRunnerMap:

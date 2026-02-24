@@ -186,7 +186,7 @@ class TestErrorEvents:
         runner = AsyncRunner()
         lp = ListProcessor()
 
-        result = await runner.run(graph, {"x": 1}, event_processors=[lp])
+        result = await runner.run(graph, {"x": 1}, error_handling="continue", event_processors=[lp])
 
         assert result.status.value == "failed"
         errors = lp.of_type(NodeErrorEvent)
@@ -205,7 +205,7 @@ class TestErrorEvents:
         runner = AsyncRunner()
         lp = ListProcessor()
 
-        await runner.run(graph, {"x": 1}, event_processors=[lp])
+        await runner.run(graph, {"x": 1}, error_handling="continue", event_processors=[lp])
 
         run_end = lp.of_type(RunEndEvent)[0]
         assert run_end.status == RunStatus.FAILED

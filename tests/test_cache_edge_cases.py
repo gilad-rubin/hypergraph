@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import threading
 
+import pytest
+
 from hypergraph import AsyncRunner, Graph, InMemoryCache, SyncRunner, node
 from hypergraph.cache import compute_cache_key
 from hypergraph.events import EventProcessor
@@ -165,8 +167,8 @@ class TestExceptionSafety:
         graph = Graph([flaky])
         runner = SyncRunner(cache=InMemoryCache())
 
-        r1 = runner.run(graph, {"x": 1})
-        assert r1.status == RunStatus.FAILED
+        with pytest.raises(ValueError, match="boom"):
+            runner.run(graph, {"x": 1})
 
         # Second run should execute (not serve cached error)
         result = runner.run(graph, {"x": 1})
