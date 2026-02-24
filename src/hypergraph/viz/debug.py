@@ -753,7 +753,10 @@ def _run_async_extract_in_thread(
         except BaseException as exc:  # pragma: no cover - re-raised in caller
             error = exc
 
-    thread = threading.Thread(target=_worker, name="hypergraph-viz-debug-extract")
+    # daemon=True: if the caller times out, the process can still exit cleanly.
+    # The thread continues running in the background until Playwright's own
+    # timeout fires, at which point it terminates naturally.
+    thread = threading.Thread(target=_worker, name="hypergraph-viz-debug-extract", daemon=True)
     thread.start()
     # Playwright has its own timeout; add margin for setup/teardown
     join_timeout = timeout / 1000 + 30
