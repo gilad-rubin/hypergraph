@@ -401,7 +401,7 @@ class TestSyncRunnerRun:
     # Errors
 
     def test_missing_input_raises(self):
-        """Missing required input causes FAILED status."""
+        """Missing required input raises MissingInputError."""
         graph = Graph([double])
         runner = SyncRunner()
 
@@ -418,7 +418,7 @@ class TestSyncRunnerRun:
             runner.run(graph, {"x": 5})
 
     def test_node_exception_propagates(self):
-        """Node exceptions result in FAILED status."""
+        """Node exceptions propagate by default (error_handling='raise')."""
 
         @node(output_name="result")
         def failing(x: int) -> int:

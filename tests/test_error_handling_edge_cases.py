@@ -318,7 +318,7 @@ class TestMapOverEmptyInput:
 
 
 class TestMapOverRaisePartialValues:
-    """When map_over raise mode fails, outer run() returns FAILED status."""
+    """When map_over raise mode fails, outer run() raises the error."""
 
     def test_sync_raise_outer_run_fails(self):
         """Outer run() raises when inner map_over raises."""
