@@ -1061,11 +1061,8 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("x", clone=True)])
         runner = SyncRunner()
 
-        # The error is caught by the outer runner and returned as FAILED
-        result = runner.run(outer, {"x": [1, 2], "lock": threading.Lock()})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, GraphConfigError)
-        assert "cannot be deep-copied for clone" in str(result.error)
+        with pytest.raises(GraphConfigError, match="cannot be deep-copied for clone"):
+            runner.run(outer, {"x": [1, 2], "lock": threading.Lock()})
 
     async def test_clone_with_async_runner(self):
         """Clone works with AsyncRunner."""
@@ -1160,8 +1157,5 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("x", clone=True)]).bind(lock=threading.Lock())
         runner = SyncRunner()
 
-        # Error is caught by outer runner and returned as FAILED
-        result = runner.run(outer, {"x": [1, 2]})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, GraphConfigError)
-        assert "cannot be deep-copied for clone" in str(result.error)
+        with pytest.raises(GraphConfigError, match="cannot be deep-copied for clone"):
+            runner.run(outer, {"x": [1, 2]})
