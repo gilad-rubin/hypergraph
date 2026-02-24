@@ -1,0 +1,211 @@
+Implement the following plan:
+
+# Plan: Add `clone` parameter to `map_over()`
+
+## Context
+
+When a GraphNode uses `map_over`, non-mapped ("broadcast") inputs are shared by reference across all iterations. This is the correct default (matches every peer library: LangGraph, Prefect, Hamilton, Dask, Ray), but there's no escape hatch when users need iteration-independent copies — e.g., a mutable config dict or state object that nodes modify.
+
+**Goal**: Add a `clone` parameter to `map_over()` that lets users opt specific broadcast values (or all of them) into deep-copying per iteration.
+
+## API Design
+
+```python
+# Default: all broadcast values shared by reference (current behavior)
+inner.map_over("items")
+
+# Clone specific broadcast params per iteration (deep copy)
+inner.map_over("items", clone=["config", "state"])
+
+# Clone ALL broadcast values per iteration
+inner.map_over("items", clone=True)
+```
+
+**Type**: `clone: bool | list[str] = False`
+
+- `False` (default) — share by reference (backward compatible)
+- `True` — deep-copy ALL broadcast values per iteration
+- `list[str]` — deep-copy only the named params per iteration
+
+**Validation** (in `map_over()`):
+- Reject non-`bool`/`list` types (including tuples, strings): `if not isinstance(clone, (bool, list)): raise TypeError(...)`
+- Reject non-string entries in list: `if any(not isinstance(c, str) for c in clone): raise TypeError(...)`
+- If `clone` is a list, validate params exist in inputs and are NOT in `*params` (cloning a mapped param is nonsensical).
+
+**Runtime error** (in `_clone_value()`):
+- Non-copyable objects → clear `GraphConfigError`:
+  ```
+  GraphConfigError: Parameter 'client' cannot be deep-copied for clone.
+
+  Options:
+    1. Use clone=["config", "state"] to clone only specific params
+    2. Use .bind(client=...) on the inner graph to share it
+       (bind values bypass clone entirely)
+  ```
+
+**`.bind()` interaction** (verified via code):
+- `InputSpec.all` (input_spec.py:38-47) = `required + optional + entrypoint` — **excludes bound params**
+- `GraphNode.inputs = graph.inputs.all` (graph_node.py:92) — so inner-bound params are NOT in `node.inputs`
+- `resolve_inputs()` (helpers.py:420) iterates `node.inputs` — inner-bound params are never resolved in the outer graph
+- Inner-bound values are resolved inside the inner graph's `run()` at step 3b of `get_value_source()` (helpers.py:104-107)
+- **Result**: inner `.bind()` values never pass through `generate_map_inputs()`, so clone does NOT affect them
+- **Outer `.bind()` and `run()` provided values** DO pass through as broadcast values — `clone=True` will deep-copy them
+
+## Files to Modify
+
+### 1. `src/hypergraph/nodes/graph_node.py`
+
+- Add `_clone` attribute to `__init__` (line ~88): `self._clone: bool | list[str] = False`
+- Add `clone` param to `map_over()` method (line ~413-469) with validation
+- Store `clone` in the new instance created by `_copy()`
+- Update `_copy()` to preserve `_clone` (line ~471-480): copy list if it's a list
+- `map_config` property (line ~124-132): **keep existing 3-tuple unchanged** — `clone` is accessed separately via `node._clone` in executors
+- **Update `with_inputs()`** (line ~488-503): remap `_clone` list entries when inputs are renamed, mirroring how `_map_over` is updated at line 501
+
+### 2. `src/hypergraph/runners/_shared/helpers.py`
+
+- Add `_clone_value()` helper near `_safe_deepcopy()` — clone-specific error message
+- Add `_maybe_clone_broadcast()` helper — dispatches on `clone` type
+- Update `generate_map_inputs()` (line ~627) to accept `clone: bool | list[str] = False`
+- Pass `clone` through to `_generate_zip_inputs()` and `_generate_product_inputs()`
+- Both generators call `_maybe_clone_broadcast(broadcast_values, clone)` per iteration
+
+### 3. `src/hypergraph/runners/_shared/template_sync.py`
+
+- Add `clone` param to `map()` method (line ~193), default `False`
+- Pass `clone` to `generate_map_inputs()` call (line ~220)
+
+### 4. `src/hypergraph/runners/_shared/template_async.py`
+
+- Same as sync — add `clone` param to `map()` method (line ~230)
+- Pass `clone` to `generate_map_inputs()` call (line ~263)
+
+### 5. `src/hypergraph/runners/base.py`
+
+- Update `BaseRunner.map()` abstract signature (line ~69) to include `clone` param
+- Keep it optional with default `False` for backward compatibility
+
+### 6. `src/hypergraph/runners/sync/executors/graph_node.py`
+
+- Read `clone` from `node._clone` (NOT from `map_config` — keeps existing 3-tuple stable)
+- Pass `clone` to `runner.map()` call
+
+### 7. `src/hypergraph/runners/async_/executors/graph_node.py`
+
+- Same as sync executor — read `node._clone`, pass to `runner.map()`
+
+## Implementation Detail: `generate_map_inputs`
+
+```python
+def _clone_value(value: Any, param_name: str) -> Any:
+    """Deep-copy a value for clone, with clone-specific error."""
+    try:
+        return copy.deepcopy(value)
+    except (TypeError, copy.Error) as e:
+        raise GraphConfigError(
+            f"Parameter '{param_name}' cannot be deep-copied for clone.\n\n"
+            f"Options:\n"
+            f"  1. Use clone=[...] to clone only specific params\n"
+            f"  2. Use .bind({param_name}=...) on the inner graph to share it\n"
+            f"     (bind values bypass clone entirely)\n\n"
+            f"Technical details: {e}"
+        ) from e
+
+
+def _maybe_clone_broadcast(
+    broadcast_values: dict[str, Any],
+    clone: bool | list[str],
+) -> dict[str, Any]:
+    """Clone broadcast values based on clone config."""
+    if clone is False:
+        return broadcast_values
+    if clone is True:
+        return {k: _clone_value(v, k) for k, v in broadcast_values.items()}
+    # clone is a list of param names
+    return {
+        k: _clone_value(v, k) if k in clone else v
+        for k, v in broadcast_values.items()
+    }
+```
+
+Both `_generate_zip_inputs` and `_generate_product_inputs` gain a `clone` param and call `_maybe_clone_broadcast` per iteration.
+
+## Tests
+
+Add to `tests/test_runners/test_graphnode_map_over.py`:
+
+1. **`test_clone_false_shares_by_reference`** — default: same object identity across iterations
+2. **`test_clone_true_copies_all_broadcast`** — all broadcast values are independent copies
+3. **`test_clone_list_copies_named_params_only`** — only named params copied, others shared
+4. **`test_clone_non_copyable_raises_clear_error`** — `GraphConfigError` with guidance
+5. **`test_clone_rejects_mapped_param`** — error if clone includes a map_over param
+6. **`test_clone_rejects_bare_string`** — `TypeError` for `clone="config"` (must be list)
+7. **`test_clone_rejects_tuple`** — `TypeError` for `clone=("config",)` (must be list)
+8. **`test_clone_rejects_non_string_list_entry`** — `TypeError` for `clone=["config", 123]`
+9. **`test_clone_with_async_runner`** — clone works with AsyncRunner
+8. **`test_clone_mutation_isolation`** — node mutates broadcast dict, other iterations unaffected
+9. **`test_clone_with_renamed_input`** — `with_inputs()` updates clone list correctly
+10. **`test_clone_with_product_mode`** — clone works with `mode="product"`
+11. **`test_clone_with_inner_bind`** — inner `.bind()` values are NOT cloned (bypass test)
+12. **`test_clone_true_with_outer_bind_non_copyable`** — outer `.bind()` non-copyable → error
+
+## Documentation: Best Practices for Broadcast Inputs
+
+Add to the `map_over()` docstring:
+
+```
+Broadcast Sharing:
+    Non-mapped inputs ("broadcast values") are shared by reference
+    across all iterations. This is efficient and correct for:
+    - API clients (OpenAI, httpx) — designed for concurrent use
+    - Immutable values (strings, ints, tuples) — can't be mutated
+    - Frozen objects — mutation raises immediately
+
+    If a node mutates a broadcast value, all iterations see the change.
+    In async execution, this is a race condition.
+
+    To protect against accidental mutation, either:
+
+    1. Use clone= to deep-copy per iteration:
+       inner.map_over("items", clone=["config"])
+
+    2. Use immutable types for broadcast values:
+       - dict → types.MappingProxyType(config)
+       - list → tuple(items)
+       - @dataclass → @dataclass(frozen=True)
+       - Pydantic → model_config = ConfigDict(frozen=True)
+
+    3. Use .bind() on the inner graph for shared resources:
+       inner = Graph([...]).bind(client=openai_client)
+       # bind values are resolved inside the inner graph
+       # and never go through the clone path
+
+    Performance note: clone=True deep-copies every broadcast value
+    on every iteration. For large product-mode maps this can be
+    expensive. Prefer clone=["specific_params"] when possible.
+```
+
+## Verification
+
+```bash
+# Run existing map_over tests (backward compatibility)
+uv run pytest tests/test_runners/test_graphnode_map_over.py -v
+
+# Run new clone tests
+uv run pytest tests/test_runners/test_graphnode_map_over.py -v -k clone
+
+# Full test suite
+uv run pytest
+
+# Lint
+uv run ruff check src/ tests/
+```
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/giladrubin/.REDACTED.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+can you merge master into this brancha dn prepare a PR for review? then /review-pr

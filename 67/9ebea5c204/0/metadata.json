@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "679ebea5c204",
+  "session_id": "825a10dc-9b52-403c-8272-b98652268f58",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-24T06:25:12.417358Z",
+  "branch": "worktree-floating-weaving-cat",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "tests/test_runners/test_graphnode_map_over.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "90eb39bf4176",
+  "token_usage": {
+    "input_tokens": 67,
+    "cache_creation_tokens": 246147,
+    "cache_read_tokens": 6285863,
+    "output_tokens": 12838,
+    "api_call_count": 63
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-24T06:25:11.977291Z",
+    "agent_lines": 17,
+    "human_added": 363,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 380,
+    "agent_percentage": 4.473684210526316
+  },
+  "transcript_path": ".claude/projects/-Users-giladrubin-python-workspace-hypergraph--claude-worktrees-floating-weaving-cat/825a10dc-9b52-403c-8272-b98652268f58.jsonl"
+}

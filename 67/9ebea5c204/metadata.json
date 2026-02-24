@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "679ebea5c204",
+  "strategy": "manual-commit",
+  "branch": "worktree-floating-weaving-cat",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "tests/test_runners/test_graphnode_map_over.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/67/9ebea5c204/0/metadata.json",
+      "transcript": "/67/9ebea5c204/0/full.jsonl",
+      "context": "/67/9ebea5c204/0/context.md",
+      "content_hash": "/67/9ebea5c204/0/content_hash.txt",
+      "prompt": "/67/9ebea5c204/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 67,
+    "cache_creation_tokens": 246147,
+    "cache_read_tokens": 6285863,
+    "output_tokens": 12838,
+    "api_call_count": 63
+  }
+}
