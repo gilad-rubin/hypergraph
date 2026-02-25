@@ -19,9 +19,6 @@ uv sync --group dev
 uv run pre-commit install
 uv run pre-commit install --hook-type pre-push
 
-# Enable session tracking (captures agent transcripts as Git checkpoints)
-entire enable
-
 # Playwright (only needed for viz tests)
 uv run playwright install chromium
 ```
@@ -43,12 +40,6 @@ uv run pre-commit run --all-files          # all hooks
 
 # Viz tests
 uv run pytest tests/viz/                   # requires Playwright
-
-# Session tracking (entire)
-entire status                              # active sessions
-entire explain                             # browse checkpoints
-entire explain --commit HEAD               # reasoning behind a commit
-entire rewind                              # interactive rewind
 ```
 
 ## Workflow
@@ -57,9 +48,7 @@ entire rewind                              # interactive rewind
 2. Implement with TDD: write failing test first, then make it pass
 3. Run `uv run pytest` after each logical step
 4. Commit with conventional commits: `feat(graph): add X`, `fix(runners): handle Y`
-   - Each commit automatically creates an Entire checkpoint with session context
 5. Push and create PR
-6. After pre-commit reinstalls hooks: `entire enable` to restore session tracking
 
 ## PR Expectations
 
