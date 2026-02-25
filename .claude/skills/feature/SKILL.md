@@ -217,14 +217,28 @@ Task tool:
 
 ## Phase 4: PR
 
-Create a pull request using project conventions:
+Create a pull request using the repo's PR template structure:
 
 ```bash
 gh pr create --title "<concise title>" --body "$(cat <<'EOF'
-## Summary
-<1-3 bullet points from the plan>
+## Problem / Bug / Challenge
+<What was broken, missing, or hard — 1-3 sentences>
 
-## Test plan
+## Before / After
+<Show the change with code snippets, API examples, or screenshots.
+ For viz changes, include before/after visualizations.>
+
+**Before:**
+```python
+<old behavior or code>
+```
+
+**After:**
+```python
+<new behavior or code>
+```
+
+## Test Plan
 <checklist from TDD spec>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
