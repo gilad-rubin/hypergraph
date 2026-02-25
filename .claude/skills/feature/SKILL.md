@@ -217,34 +217,11 @@ Task tool:
 
 ## Phase 4: PR
 
-Create a pull request using the repo's PR template structure:
+Create a pull request following the template in `.github/PULL_REQUEST_TEMPLATE.md`. Fill in each section:
 
-```bash
-gh pr create --title "<concise title>" --body "$(cat <<'EOF'
-## Problem / Bug / Challenge
-<What was broken, missing, or hard — 1-3 sentences>
-
-## Before / After
-<Show the change with code snippets, API examples, or screenshots.
- For viz changes, include before/after visualizations.>
-
-**Before:**
-```python
-<old behavior or code>
-```
-
-**After:**
-```python
-<new behavior or code>
-```
-
-## Test Plan
-<checklist from TDD spec>
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
+- **Problem / Bug / Challenge** — from the plan's requirements/scope
+- **Before / After** — code snippets, API examples, or screenshots (especially for viz changes)
+- **Test Plan** — from the TDD spec
 
 Mark the PR task as `completed`.
 

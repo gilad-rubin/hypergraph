@@ -11,7 +11,7 @@ Fetch PR review comments from ALL sources, triage by severity, fix issues, and i
 ### 1. SETUP
 - Run `git branch --show-current` to confirm the current branch. **Never commit to main/master directly.**
 - If a PR number is provided, use it. Otherwise, detect via `gh pr view --json number -q .number`.
-- If no PR exists yet: run the conflict check (below), then `gh pr create` and post the URL.
+- If no PR exists yet: run the conflict check (below), then `gh pr create` following `.github/PULL_REQUEST_TEMPLATE.md` and post the URL.
 - Determine repo owner/name: `gh repo view --json nameWithOwner -q .nameWithOwner`
 
 #### Conflict Check (run before creating OR pushing to a PR)
