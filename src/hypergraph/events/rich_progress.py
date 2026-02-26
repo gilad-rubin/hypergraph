@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.events.processor import TypedEventProcessor
 from hypergraph.events.types import RunStatus
@@ -54,52 +56,103 @@ class _NodeBarInfo:
 _NodeKey = tuple[str, str, int]
 
 
+def _is_tty() -> bool:
+    """Check if stdout is a TTY."""
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+def _timestamp() -> str:
+    """Return current time as [HH:MM:SS]."""
+    return datetime.now().strftime("[%H:%M:%S]")
+
+
+# Milestones for map progress (percentages to log)
+_MAP_MILESTONES = frozenset({10, 25, 50, 75, 100})
+
+
+@dataclass
+class _NonTTYMapState:
+    """Track map progress for milestone logging."""
+
+    total: int = 0
+    completed: int = 0
+    name: str = ""
+    logged_milestones: set[int] = field(default_factory=set)
+
+
 class RichProgressProcessor(TypedEventProcessor):
     """Displays hierarchical progress bars using Rich.
 
     Tracks graph execution events and renders live progress bars with
     proper nesting, icons, and aggregation for map operations.
 
-    Visual conventions:
+    In non-TTY environments (CI, piped output), falls back to simple
+    text milestone logging instead of Rich live progress bars.
+
+    Visual conventions (TTY mode):
         - ``📦`` regular nodes (depth 0)
         - ``🌳`` nested graph nodes (depth > 0)
         - ``🗺️`` map-level progress bars
         - Indentation: ``"  " * depth``
     """
 
-    def __init__(self, *, transient: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        transient: bool = True,
+        force_mode: Literal["tty", "non-tty", "auto"] = "auto",
+    ) -> None:
         """Initialize the progress processor.
 
         Args:
             transient: If True, remove progress bars after completion.
+            force_mode: Force TTY or non-TTY mode. "auto" detects via isatty().
         """
-        _require_rich()
-        from rich.progress import (
-            BarColumn,
-            MofNCompleteColumn,
-            Progress,
-            SpinnerColumn,
-            TextColumn,
-            TimeElapsedColumn,
-        )
-
-        self._progress = Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            transient=transient,
-        )
+        if force_mode == "auto":
+            self._tty_mode = _is_tty()
+        else:
+            self._tty_mode = force_mode == "tty"
 
         self._spans: dict[str, _SpanInfo] = {}
         self._node_bars: dict[_NodeKey, _NodeBarInfo] = {}
         self._started = False
 
+        # Non-TTY state
+        self._nontty_map_states: dict[str, _NonTTYMapState] = {}  # span_id -> state
+        self._nontty_node_count: int = 0
+        self._nontty_total_nodes: int | None = None
+
+        if self._tty_mode:
+            _require_rich()
+            from rich.progress import (
+                BarColumn,
+                MofNCompleteColumn,
+                Progress,
+                SpinnerColumn,
+                TextColumn,
+                TimeElapsedColumn,
+            )
+
+            self._progress = Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                transient=transient,
+            )
+        else:
+            self._progress = None  # type: ignore[assignment]
+
+    def _print(self, msg: str) -> None:
+        """Print a plain-text message (non-TTY mode)."""
+        print(f"{_timestamp()} {msg}", flush=True)
+
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
         if not self._started:
-            self._progress.start()
+            if self._tty_mode:
+                self._progress.start()
             self._started = True
 
     def _get_span(self, span_id: str) -> _SpanInfo:
@@ -170,8 +223,12 @@ class RichProgressProcessor(TypedEventProcessor):
 
         if event.is_map and event.map_size is not None:
             info.map_size = event.map_size
-            desc = self._make_description(f"{event.graph_name or 'Map'} Progress", info.depth, is_map=True)
-            info.rich_task_id = self._progress.add_task(desc, total=event.map_size)
+            if self._tty_mode:
+                desc = self._make_description(f"{event.graph_name or 'Map'} Progress", info.depth, is_map=True)
+                info.rich_task_id = self._progress.add_task(desc, total=event.map_size)
+            else:
+                name = event.graph_name or "Map"
+                self._nontty_map_states[span] = _NonTTYMapState(total=event.map_size, name=name)
 
         # If this run is a child of a map, track the relationship
         if parent is not None:
@@ -195,15 +252,19 @@ class RichProgressProcessor(TypedEventProcessor):
         key: _NodeKey = (event.graph_name, event.node_name, node_depth)
         total = self._get_node_total(span)
 
-        bar = self._node_bars.get(key)
-        if bar is None:
-            desc = self._make_description(event.node_name, node_depth)
-            task_id = self._progress.add_task(desc, total=total)
-            self._node_bars[key] = _NodeBarInfo(rich_task_id=task_id, total=total)
-        elif bar.total < total:
-            # Update total if map size increased (e.g., outer map * inner map)
-            bar.total = total
-            self._progress.update(bar.rich_task_id, total=total)
+        if self._tty_mode:
+            bar = self._node_bars.get(key)
+            if bar is None:
+                desc = self._make_description(event.node_name, node_depth)
+                task_id = self._progress.add_task(desc, total=total)
+                self._node_bars[key] = _NodeBarInfo(rich_task_id=task_id, total=total)
+            elif bar.total < total:
+                bar.total = total
+                self._progress.update(bar.rich_task_id, total=total)
+        else:
+            # Non-TTY: log node start only for non-map runs (map items are tracked via milestones)
+            if not self._find_map_ancestor(span):
+                self._print(f"▶ {event.node_name} started")
 
     def on_node_end(self, event: NodeEndEvent) -> None:
         """Handle node end: advance progress bars."""
@@ -212,10 +273,16 @@ class RichProgressProcessor(TypedEventProcessor):
         span_info = self._spans.get(span)
         node_depth = span_info.depth if span_info else 0
 
-        key: _NodeKey = (event.graph_name, event.node_name, node_depth)
-        bar = self._node_bars.get(key)
-        if bar is not None:
-            self._progress.advance(bar.rich_task_id, 1)
+        if self._tty_mode:
+            key: _NodeKey = (event.graph_name, event.node_name, node_depth)
+            bar = self._node_bars.get(key)
+            if bar is not None:
+                self._progress.advance(bar.rich_task_id, 1)
+        else:
+            # Non-TTY: log node completion for non-map runs
+            if not self._find_map_ancestor(span):
+                self._nontty_node_count += 1
+                self._print(f"✓ {event.node_name} completed")
 
         # Track node completions for map-item runs
         if parent:
@@ -225,14 +292,28 @@ class RichProgressProcessor(TypedEventProcessor):
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
         """Handle node error: mark bar as failed."""
-        span_info = self._spans.get(event.span_id)
-        node_depth = span_info.depth if span_info else 0
+        if self._tty_mode:
+            span_info = self._spans.get(event.span_id)
+            node_depth = span_info.depth if span_info else 0
 
-        key: _NodeKey = (event.graph_name, event.node_name, node_depth)
-        bar = self._node_bars.get(key)
-        if bar is not None:
-            current = self._progress.tasks[bar.rich_task_id].description
-            self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
+            key: _NodeKey = (event.graph_name, event.node_name, node_depth)
+            bar = self._node_bars.get(key)
+            if bar is not None:
+                current = self._progress.tasks[bar.rich_task_id].description
+                self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
+        else:
+            self._print(f"✗ {event.node_name} FAILED")
+
+    def _nontty_check_map_milestone(self, map_span_id: str) -> None:
+        """Log map progress at milestone percentages."""
+        state = self._nontty_map_states.get(map_span_id)
+        if state is None or state.total == 0:
+            return
+        pct = int(state.completed * 100 / state.total)
+        for milestone in _MAP_MILESTONES:
+            if pct >= milestone and milestone not in state.logged_milestones:
+                state.logged_milestones.add(milestone)
+                self._print(f"🗺️ {state.name}: {milestone}% ({state.completed}/{state.total})")
 
     def on_run_end(self, event: RunEndEvent) -> None:
         """Handle run end: advance map bars and show completion."""
@@ -244,31 +325,45 @@ class RichProgressProcessor(TypedEventProcessor):
         map_parent = span_info.map_parent
         if map_parent:
             map_info = self._spans.get(map_parent)
-            if map_info is not None and map_info.rich_task_id is not None:
-                self._progress.advance(map_info.rich_task_id, 1)
+            if map_info is not None:
+                if self._tty_mode and map_info.rich_task_id is not None:
+                    self._progress.advance(map_info.rich_task_id, 1)
 
-                # Track failures and update map bar description
-                if event.status == RunStatus.FAILED:
-                    map_info.failures += 1
-                    base_desc = self._make_description(
-                        f"{event.graph_name or 'Map'} Progress",
-                        map_info.depth,
-                        is_map=True,
-                    )
-                    self._progress.update(
-                        map_info.rich_task_id,
-                        description=f"{base_desc} [red]({map_info.failures} failed)[/red]",
-                    )
+                    if event.status == RunStatus.FAILED:
+                        map_info.failures += 1
+                        base_desc = self._make_description(
+                            f"{event.graph_name or 'Map'} Progress",
+                            map_info.depth,
+                            is_map=True,
+                        )
+                        self._progress.update(
+                            map_info.rich_task_id,
+                            description=f"{base_desc} [red]({map_info.failures} failed)[/red]",
+                        )
+                elif not self._tty_mode:
+                    # Non-TTY: update map state and check milestones
+                    nontty_state = self._nontty_map_states.get(map_parent)
+                    if nontty_state is not None:
+                        nontty_state.completed += 1
+                        self._nontty_check_map_milestone(map_parent)
 
         # If this is a root run (no parent), show completion
         if span_info.parent_span_id is None:
-            if event.status == RunStatus.COMPLETED:
-                self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
+            if self._tty_mode:
+                if event.status == RunStatus.COMPLETED:
+                    self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
+                else:
+                    self._progress.console.print(f"[bold red]✗ {event.graph_name or 'Run'} failed: {event.error}[/bold red]")
             else:
-                self._progress.console.print(f"[bold red]✗ {event.graph_name or 'Run'} failed: {event.error}[/bold red]")
+                name = event.graph_name or "Run"
+                if event.status == RunStatus.COMPLETED:
+                    self._print(f"✓ {name} completed!")
+                else:
+                    self._print(f"✗ {name} failed: {event.error}")
 
     def shutdown(self) -> None:
         """Stop the Rich progress display."""
         if self._started:
-            self._progress.stop()
+            if self._tty_mode:
+                self._progress.stop()
             self._started = False
