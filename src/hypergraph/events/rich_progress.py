@@ -119,8 +119,6 @@ class RichProgressProcessor(TypedEventProcessor):
 
         # Non-TTY state
         self._nontty_map_states: dict[str, _NonTTYMapState] = {}  # span_id -> state
-        self._nontty_node_count: int = 0
-        self._nontty_total_nodes: int | None = None
 
         if self._tty_mode:
             _require_rich()
@@ -281,7 +279,6 @@ class RichProgressProcessor(TypedEventProcessor):
         else:
             # Non-TTY: log node completion for non-map runs
             if not self._find_map_ancestor(span):
-                self._nontty_node_count += 1
                 self._print(f"✓ {event.node_name} completed")
 
         # Track node completions for map-item runs
