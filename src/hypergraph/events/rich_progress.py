@@ -302,7 +302,8 @@ class RichProgressProcessor(TypedEventProcessor):
                 current = self._progress.tasks[bar.rich_task_id].description
                 self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
         else:
-            self._print(f"✗ {event.node_name} FAILED")
+            if not self._find_map_ancestor(event.span_id):
+                self._print(f"✗ {event.node_name} FAILED")
 
     def _nontty_check_map_milestone(self, map_span_id: str) -> None:
         """Log map progress at milestone percentages."""
@@ -310,10 +311,17 @@ class RichProgressProcessor(TypedEventProcessor):
         if state is None or state.total == 0:
             return
         pct = int(state.completed * 100 / state.total)
-        for milestone in _MAP_MILESTONES:
-            if pct >= milestone and milestone not in state.logged_milestones:
-                state.logged_milestones.add(milestone)
-                self._print(f"🗺️ {state.name}: {milestone}% ({state.completed}/{state.total})")
+        # Find the highest milestone we've crossed but haven't logged
+        milestone_to_log = 0
+        for m in _MAP_MILESTONES:
+            if pct >= m and m not in state.logged_milestones:
+                milestone_to_log = max(milestone_to_log, m)
+        if milestone_to_log > 0:
+            # Mark all milestones up to this one as logged
+            for m in _MAP_MILESTONES:
+                if m <= milestone_to_log:
+                    state.logged_milestones.add(m)
+            self._print(f"🗺️ {state.name}: {milestone_to_log}% ({state.completed}/{state.total})")
 
     def on_run_end(self, event: RunEndEvent) -> None:
         """Handle run end: advance map bars and show completion."""
@@ -359,7 +367,8 @@ class RichProgressProcessor(TypedEventProcessor):
                 if event.status == RunStatus.COMPLETED:
                     self._print(f"✓ {name} completed!")
                 else:
-                    self._print(f"✗ {name} failed: {event.error}")
+                    error_msg = f": {event.error}" if event.error else ""
+                    self._print(f"✗ {name} failed{error_msg}")
 
     def shutdown(self) -> None:
         """Stop the Rich progress display."""
