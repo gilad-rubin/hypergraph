@@ -22,7 +22,7 @@ from hypergraph.events.types import (
 
 def _make_processor() -> tuple[RichProgressProcessor, MagicMock]:
     """Create a RichProgressProcessor with a mocked Progress object."""
-    proc = RichProgressProcessor(transient=True)
+    proc = RichProgressProcessor(transient=True, force_mode="tty")
     mock_progress = MagicMock()
     # Mock tasks list for description updates
     mock_progress.tasks = {}
