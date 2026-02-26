@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.runners._shared.helpers import _UNSET_SELECT
-from hypergraph.runners._shared.types import RunnerCapabilities, RunResult
+from hypergraph.runners._shared.types import ErrorHandling, RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -43,8 +43,10 @@ class BaseRunner(ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
+        error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -55,8 +57,12 @@ class BaseRunner(ABC):
             values: Optional input values dict
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
+            on_internal_override: How to handle non-conflicting internal input overrides.
             entrypoint: Optional explicit cycle entry point node name.
             max_iterations: Max iterations for cyclic graphs (None = default)
+            error_handling: How to handle node execution errors.
+                "raise" (default) re-raises the original exception.
+                "continue" returns RunResult with status=FAILED and partial values.
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)
 
@@ -73,8 +79,10 @@ class BaseRunner(ABC):
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
@@ -85,8 +93,13 @@ class BaseRunner(ABC):
             values: Optional input values dict (some should be lists for map_over)
             map_over: Parameter name(s) to iterate over
             map_mode: "zip" for parallel iteration, "product" for cartesian
+            clone: Deep-copy broadcast values per iteration.
+                False (default) = share by reference.
+                True = deep-copy all broadcast values.
+                list[str] = deep-copy only named params.
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
+            on_internal_override: How to handle non-conflicting internal input overrides.
             event_processors: Optional list of event processors to receive execution events
             **input_values: Input values shorthand (merged with values)
 

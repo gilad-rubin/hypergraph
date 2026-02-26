@@ -49,6 +49,12 @@ logs/security/
 
 .codex/
 
+# OpenClaw secrets (never commit)
+.openclaw/.env
+
+# Track OpenClaw skills and config, but not secrets
+!.openclaw/
+!.openclaw/**
+
 # Dev scratch directories
 viz-dev/
-.entire/

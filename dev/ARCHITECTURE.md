@@ -36,8 +36,8 @@ Graph construction and build-time validation.
 
 | File | Purpose |
 |------|---------|
-| `core.py` | `Graph` class — the build pipeline, `bind`/`select`/`unbind` |
-| `input_spec.py` | `InputSpec` — classifies inputs as required/optional/entrypoint |
+| `core.py` | `Graph` class — the build pipeline, `bind`/`select`/`unbind`/`with_entrypoint` |
+| `input_spec.py` | `InputSpec` — classifies inputs as required/optional/entrypoint. Also computes active subgraph scope from entrypoints and selection. |
 | `validation.py` | All build-time checks (names, edges, gates, types, conflicts) |
 | `_conflict.py` | Name conflict detection and resolution |
 | `_helpers.py` | Graph construction helpers |
@@ -49,6 +49,13 @@ Graph construction and build-time validation.
 4. Infer control edges (gate targets)
 5. Compute ordering edges (topological + cycle detection)
 6. Validate everything
+
+**InputSpec computation** depends on three dimensions configured via immutable copy methods:
+- `_bound` (from `bind()`) — which params have pre-filled values
+- `_selected` (from `select()`) — which outputs are requested (narrows active set backward from outputs)
+- `_entrypoints` (from `with_entrypoint()`) — where execution starts (narrows active set forward from entry nodes)
+
+All three are cleared in `_shallow_copy` → `inputs` cache invalidation.
 
 **Rule**: All structural errors must be caught at `Graph()` construction time, not during execution.
 
@@ -73,13 +80,13 @@ Execution engines. Template Method pattern with pluggable `NodeExecutor` per nod
 - `caching.py` — Cache key computation and lookup
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
-- `helpers.py` — Input resolution, output storage
+- `helpers.py` — Input resolution, output storage, active-set computation (`compute_active_node_set`), ready-node scheduling (`get_ready_nodes`)
 - `input_normalization.py` — Normalize user inputs for execution
 - `routing_validation.py` — Validate routing decisions at runtime
-- `template_sync.py` / `template_async.py` — Template Method base for superstep loops
+- `template_sync.py` / `template_async.py` — Template Method base for superstep loops. Threads runtime select and entrypoint config into validation.
 - `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`
 - `protocols.py` — `NodeExecutor` protocol
-- `validation.py` — Runner-level validation
+- `validation.py` — Runner-level validation, runtime select resolution, InputSpec scoping
 
 **Rule**: Sync and async runners have parallel implementations. Adding a feature to one means adding it to both.
 

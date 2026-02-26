@@ -49,6 +49,7 @@ def with_name(self, name: str) -> Self:
 - Internal modules: `_` prefix (`_callable.py`, `_rename.py`, `_conflict.py`, `_shared/`)
 - Public modules: no prefix
 - Everything in `__init__.py` with `__all__` is public API
+- **Cross-module internal APIs**: Functions within `_shared/` that are imported across sibling modules (e.g., `validation.py` → `template_sync.py`) should **not** have a `_` prefix. The underscore signals "don't depend on this" — if multiple modules already depend on it, drop the underscore. Example: `resolve_runtime_selected` (not `_resolve_runtime_selected`).
 
 ## Naming Conventions
 
@@ -57,7 +58,7 @@ def with_name(self, name: str) -> Self:
 | Node types | PascalCase, descriptive | `FunctionNode`, `GraphNode`, `RouteNode` |
 | Decorators | lowercase, verb-like | `@node`, `@route`, `@ifelse`, `@interrupt` |
 | Properties | snake_case, `@cached_property` when expensive | `input_spec`, `output_names` |
-| Internal helpers | `_` prefix | `_resolve_outputs()`, `_validate_names()` |
+| Internal helpers | `_` prefix (see [Module Naming](#module-naming) for `_shared/` exception) | `_resolve_outputs()`, `_validate_names()` |
 | Constants | UPPER_SNAKE_CASE | `END` |
 
 **Reserved characters**: `.` and `/` cannot appear in node or output names.

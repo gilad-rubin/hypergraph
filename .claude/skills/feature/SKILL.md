@@ -217,20 +217,11 @@ Task tool:
 
 ## Phase 4: PR
 
-Create a pull request using project conventions:
+Create a pull request following the template in `.github/PULL_REQUEST_TEMPLATE.md`. Fill in each section:
 
-```bash
-gh pr create --title "<concise title>" --body "$(cat <<'EOF'
-## Summary
-<1-3 bullet points from the plan>
-
-## Test plan
-<checklist from TDD spec>
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-EOF
-)"
-```
+- **Problem / Bug / Challenge** — from the plan's requirements/scope
+- **Before / After** — code snippets, API examples, or screenshots (especially for viz changes)
+- **Test Plan** — from the TDD spec
 
 Mark the PR task as `completed`.
 

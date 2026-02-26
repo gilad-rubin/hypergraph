@@ -34,6 +34,7 @@ When reviewing code changes:
 - [ ] Functions remain testable as plain Python (`node.func(x)` works)?
 - [ ] No unnecessary state mutation?
 - [ ] Composition used instead of configuration flags?
+- [ ] Active-set enforcement: does `with_entrypoint` / `select` properly scope both validation AND execution? (Not just one or the other)
 
 ### Code Quality
 - [ ] Error messages follow three-part structure? (Problem → Context → How to fix)

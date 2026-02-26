@@ -1,0 +1,129 @@
+// OpenClaw configuration for the hypergraph one-person dev team setup.
+// Full docs: https://docs.openclaw.ai/concepts/models
+//
+// SETUP REQUIRED:
+//   1. Copy .openclaw/.env.example to .openclaw/.env and fill in your API keys.
+//   2. Run `openclaw onboard --install-daemon` to install the gateway daemon.
+//   3. Set your notification channel (Telegram recommended) in the channels block below.
+//   4. Run `openclaw doctor` to verify the setup.
+{
+  // ─── Model providers ──────────────────────────────────────────────────────
+  // API keys are loaded from .openclaw/.env (see .env.example).
+  // Uncomment and configure the providers you want to use.
+  // "providers": {
+  //   "anthropic": { "apiKey": "$ANTHROPIC_API_KEY" },
+  //   "openai":    { "apiKey": "$OPENAI_API_KEY" },
+  //   "google":    { "apiKey": "$GEMINI_API_KEY" }
+  // },
+
+  // ─── Agent definitions ────────────────────────────────────────────────────
+  "agents": {
+    "defaults": {
+      // Shared workspace for all agents (can be overridden per-agent).
+      "workspace": "~/.openclaw/workspaces/hypergraph",
+      "compaction": {
+        "memoryFlush": {
+          "enabled": true,
+          "softThresholdTokens": 4000,
+          "systemPrompt": "Session nearing compaction. Store durable memories now.",
+          "prompt": "Write any lasting notes to memory/YYYY-MM-DD.md; reply with NO_REPLY if nothing to store."
+        }
+      }
+    },
+    "list": [
+      // ── Orchestrator (Zoe) ─────────────────────────────────────────────────
+      // The chief of staff. Holds business context, delegates to specialists.
+      // Receives all inbound messages by default (see bindings below).
+      {
+        "id": "orchestrator",
+        "name": "Zoe",
+        "model": "anthropic/claude-opus-4-6",
+        // Orchestrator has its own workspace so it can maintain long-term memory
+        // about the project, customer feedback, and architectural decisions.
+        "workspace": "./.openclaw/workspace",
+        "tools": {
+          // Full access: orchestrator needs to read files, run shell commands,
+          // interact with git/gh, and spawn sub-agents.
+          "allow": [
+            "group:core",
+            "group:plugins",
+            "sessions_spawn",
+            "sessions_send",
+            "sessions_list",
+            "sessions_history",
+            "session_status"
+          ]
+        }
+      },
+
+      // ── Planner (Claude-Planner) ────────────────────────────────────────────
+      // Breaks down feature requests into detailed, TDD-first implementation plans.
+      // Read-only access — it only needs to understand the codebase, not change it.
+      {
+        "id": "planner",
+        "name": "Claude-Planner",
+        "model": "anthropic/claude-sonnet-4-5",
+        "tools": {
+          "allow": ["read", "memory_search", "memory_get", "exec"]
+        }
+      },
+
+      // ── Coder (Codex-Agent) ─────────────────────────────────────────────────
+      // The workhorse. Writes code, runs tests, commits. Optimized for correctness.
+      // Uses GPT-5.3-Codex at high reasoning effort for best code quality.
+      {
+        "id": "coder",
+        "name": "Codex-Agent",
+        "model": "openai/gpt-5.3-codex-high",
+        "tools": {
+          "allow": [
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "exec",
+            "memory_search",
+            "memory_get"
+          ]
+        }
+      },
+
+      // ── Reviewer (Gemini-Reviewer) ──────────────────────────────────────────
+      // Deep code review with 1M-token context. Focuses on security, scalability,
+      // and adherence to the project's quality criteria.
+      {
+        "id": "reviewer",
+        "name": "Gemini-Reviewer",
+        "model": "google/gemini-2.5-pro",
+        "tools": {
+          "allow": ["read", "memory_search", "memory_get", "exec"]
+        }
+      }
+    ]
+  },
+
+  // ─── Routing bindings ─────────────────────────────────────────────────────
+  // All inbound messages go to the orchestrator (Zoe) by default.
+  // Add channel-specific bindings here if needed (e.g., route Telegram to Zoe,
+  // WhatsApp to a simpler agent).
+  "bindings": [
+    { "agentId": "orchestrator", "match": {} }
+  ],
+
+  // ─── Channels ─────────────────────────────────────────────────────────────
+  // Configure your notification channel. Telegram is recommended for PR alerts.
+  // Uncomment and fill in your bot token + chat ID.
+  // "channels": {
+  //   "telegram": {
+  //     "token": "$TELEGRAM_BOT_TOKEN"
+  //   }
+  // },
+
+  // ─── Skills ───────────────────────────────────────────────────────────────
+  // Skills are loaded from the workspace's skills/ directory by default.
+  // Project-level skills in .openclaw/skills/ are loaded automatically when
+  // the workspace is set to the project root.
+  "skills": {
+    "dirs": ["./.openclaw/skills"]
+  }
+}

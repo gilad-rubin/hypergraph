@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from hypergraph.exceptions import ExecutionError
 from hypergraph.runners._shared.helpers import (
     _UNSET_SELECT,
+    _validate_error_handling,
     _validate_on_missing,
     filter_outputs,
     generate_map_inputs,
@@ -20,6 +21,7 @@ from hypergraph.runners._shared.input_normalization import (
 )
 from hypergraph.runners._shared.types import ErrorHandling, GraphState, RunResult, RunStatus
 from hypergraph.runners._shared.validation import (
+    resolve_runtime_selected,
     validate_inputs,
     validate_map_compatible,
     validate_node_types,
@@ -115,8 +117,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
+        error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
@@ -130,8 +134,16 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
-        validate_inputs(graph, normalized_values, entrypoint=entrypoint)
+        effective_selected = resolve_runtime_selected(select, graph)
+        validate_inputs(
+            graph,
+            normalized_values,
+            entrypoint=entrypoint,
+            selected=effective_selected,
+            on_internal_override=on_internal_override,
+        )
         _validate_on_missing(on_missing)
+        _validate_error_handling(error_handling)
 
         max_iter = max_iterations or self.default_max_iterations
         dispatcher = self._create_dispatcher(event_processors)
@@ -179,6 +191,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
                 error=error,
             )
+
+            if error_handling == "raise":
+                raise error from None
+
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
@@ -197,8 +213,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         *,
         map_over: str | list[str],
         map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -215,9 +233,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
+        _validate_error_handling(error_handling)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
-        input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode))
+        input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
         if not input_variations:
             return []
 
@@ -239,7 +258,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
+                    on_internal_override=on_internal_override,
                     entrypoint=entrypoint,
+                    error_handling="continue",
                     event_processors=event_processors,
                     _parent_span_id=map_span_id,
                 )

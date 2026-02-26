@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
+from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners._shared.types import RunnerCapabilities
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
+    from hypergraph.graph.input_spec import InputSpec
     from hypergraph.nodes.base import HyperNode
+
+_VALID_ON_INTERNAL_OVERRIDE = ("ignore", "warn", "error")
 
 
 def validate_inputs(
@@ -18,53 +22,75 @@ def validate_inputs(
     values: dict[str, Any],
     *,
     entrypoint: str | None = None,
+    selected: tuple[str, ...] | None = None,
+    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
 ) -> None:
     """Validate that all required inputs are provided.
 
-    Follows a 5-step pipeline:
+    Follows a 6-step pipeline:
     1. Merge bound + provided (provided overwrites bound)
-    2. Warn about internal parameters
-    3. Bypass detection (considering merged values)
-    4. Cycle entry point matching
-    5. Completeness check
+    2. Validate internal override conflicts (compute vs inject)
+    3. Handle non-conflicting internal/unknown parameters by policy
+    4. Bypass detection (considering merged values)
+    5. Cycle entry point matching
+    6. Completeness check
 
     Args:
         graph: The graph to validate against
         values: The input values provided
         entrypoint: Optional explicit entry point node name for cycle
+        selected: Optional runtime output selection (narrows validation scope)
+        on_internal_override: Policy for non-conflicting internal/unknown inputs
 
     Raises:
         MissingInputError: If required inputs or cycle entry points are missing
         ValueError: If entrypoint is invalid or cycle entry is ambiguous
     """
-    inputs_spec = graph.inputs
+    _validate_on_internal_override(on_internal_override)
+    # Compute active scope once — the foundation for both InputSpec and conflict checks
+    active_nodes, active_subgraph = _resolve_active_scope(graph, selected)
+    inputs_spec = _resolve_effective_input_spec(graph, selected, active_scope=(active_nodes, active_subgraph))
+    cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
+
     # Step 1: Merge bound + provided
     merged = {**inputs_spec.bound, **values}
     provided = set(merged.keys())
 
-    # Step 2: Warn about internal edge-produced outputs
+    # Step 2/3: Internal/unknown parameter handling
+    from hypergraph.graph._helpers import get_edge_produced_values
+
     expected_inputs = set(inputs_spec.all)
-    interrupt_outputs = _get_interrupt_outputs(graph)
+    edge_produced = get_edge_produced_values(active_subgraph)
+    interrupt_outputs = _get_interrupt_outputs(active_nodes)
     unexpected = provided - expected_inputs - interrupt_outputs
-    if unexpected:
-        import warnings
+    internal_edge = unexpected & edge_produced
+    unknown = unexpected - edge_produced
 
-        warnings.warn(
-            f"Providing values for internal parameters: {sorted(unexpected)}. "
-            f"These are produced by graph edges and will override node outputs. "
-            f"Expected inputs: {sorted(expected_inputs)}",
-            UserWarning,
-            stacklevel=3,
-        )
+    conflict_errors = _find_internal_override_conflicts(
+        active_nodes=active_nodes,
+        provided=provided,
+        internal_edge=internal_edge,
+        cycle_ep_params=cycle_ep_params,
+    )
+    if conflict_errors:
+        raise ValueError("Invalid internal override configuration:\n" + "\n".join(conflict_errors))
 
-    # Step 3: Bypass detection (considering merged values)
-    bypassed_inputs = _find_bypassed_inputs(graph, provided)
+    _handle_internal_override_policy(
+        on_internal_override=on_internal_override,
+        internal_edge=internal_edge,
+        unknown=unknown,
+        expected_inputs=expected_inputs,
+        active_nodes=active_nodes,
+    )
 
-    # Step 4: Cycle entry point matching
+    # Step 4: Bypass detection (considering merged values)
+    bypassed_inputs = _find_bypassed_inputs(graph, provided, inputs_spec)
+
+    # Step 5: Cycle entry point matching
     if inputs_spec.entrypoints:
-        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint)
+        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint, inputs_spec)
 
-    # Step 5: Completeness check for required (acyclic) inputs
+    # Step 6: Completeness check for required (acyclic) inputs
     required = set(inputs_spec.required) - bypassed_inputs
     missing_required = required - provided
 
@@ -92,6 +118,7 @@ def _validate_cycle_entry(
     provided: set[str],
     bypassed: set[str],
     entrypoint: str | None,
+    inputs_spec: InputSpec,
 ) -> None:
     """Validate cycle entry points.
 
@@ -102,7 +129,7 @@ def _validate_cycle_entry(
         ValueError: If entrypoint is invalid, ambiguous, or mismatched.
         MissingInputError: If no entry point is satisfied for a cycle.
     """
-    ep = graph.inputs.entrypoints
+    ep = inputs_spec.entrypoints
 
     # If explicit entrypoint, validate it then check remaining cycles
     if entrypoint is not None:
@@ -329,12 +356,145 @@ def validate_map_compatible(graph: Graph) -> None:
         )
 
 
-def _get_interrupt_outputs(graph: Graph) -> set[str]:
-    """Get all output names produced by interrupt nodes in the graph."""
-    return {output for n in graph._nodes.values() if n.is_interrupt for output in n.outputs}
+def _validate_on_internal_override(policy: str) -> None:
+    """Validate on_internal_override parameter."""
+    if policy not in _VALID_ON_INTERNAL_OVERRIDE:
+        valid = ", ".join(_VALID_ON_INTERNAL_OVERRIDE)
+        raise ValueError(f"Invalid on_internal_override={policy!r}. Expected one of: {valid}")
 
 
-def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
+def _resolve_active_scope(
+    graph: Graph,
+    selected: tuple[str, ...] | None,
+) -> tuple[dict[str, HyperNode], Any]:
+    """Resolve active nodes and active subgraph for current entrypoint/selection."""
+    from hypergraph.graph.input_spec import _compute_active_scope
+
+    return _compute_active_scope(
+        graph._nodes,
+        graph._nx_graph,
+        entrypoints=graph._entrypoints,
+        selected=selected,
+    )
+
+
+def _get_interrupt_outputs(nodes: dict[str, HyperNode]) -> set[str]:
+    """Get output names produced by interrupt nodes in the active scope."""
+    return {output for n in nodes.values() if n.is_interrupt for output in n.outputs}
+
+
+def _find_internal_override_conflicts(
+    *,
+    active_nodes: dict[str, HyperNode],
+    provided: set[str],
+    internal_edge: set[str],
+    cycle_ep_params: set[str],
+) -> list[str]:
+    """Find hard conflicts where compute and inject modes are mixed."""
+    if not internal_edge:
+        return []
+
+    downstream_consumed = {param for node in active_nodes.values() for param in node.inputs}
+    conflicts: list[str] = []
+
+    for node in active_nodes.values():
+        node_outputs = set(node.outputs) - cycle_ep_params
+        injected_outputs = sorted(node_outputs & internal_edge)
+        if not injected_outputs:
+            continue
+
+        # Compute+inject is the stricter conflict — check first
+        if _node_is_runnable_from_seed_values(node, provided):
+            seeded_inputs = sorted(set(node.inputs) & provided)
+            if seeded_inputs:
+                conflicts.append(
+                    f"- Cannot mix compute and inject for node '{node.name}': "
+                    f"injected outputs {injected_outputs} and also seeded inputs {seeded_inputs}."
+                )
+            else:
+                defaults = sorted([p for p in node.inputs if node.has_default_for(p)])
+                conflicts.append(
+                    f"- Cannot mix compute and inject for node '{node.name}': "
+                    f"injected outputs {injected_outputs}, but defaults {defaults} make the node runnable."
+                )
+            continue
+
+        # Partial inject: some outputs injected but downstream needs others
+        consumed_for_node = (node_outputs & downstream_consumed) - cycle_ep_params
+        missing_consumed = sorted(consumed_for_node - provided)
+        if missing_consumed:
+            conflicts.append(
+                f"- Node '{node.name}': partial inject outputs {injected_outputs}, "
+                f"but downstream also needs {missing_consumed}. "
+                "Provide all consumed outputs or switch to compute mode."
+            )
+
+    return conflicts
+
+
+def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> bool:
+    """True when node can run from provided/bound/default values before execution."""
+    return all(param in provided or node.has_default_for(param) for param in node.inputs)
+
+
+def _handle_internal_override_policy(
+    *,
+    on_internal_override: Literal["ignore", "warn", "error"],
+    internal_edge: set[str],
+    unknown: set[str],
+    expected_inputs: set[str],
+    active_nodes: dict[str, HyperNode],
+) -> None:
+    """Apply policy for non-conflicting internal/unknown parameters."""
+    if not internal_edge and not unknown:
+        return
+    if on_internal_override == "ignore":
+        return
+
+    message = _build_internal_override_message(
+        internal_edge=internal_edge,
+        unknown=unknown,
+        expected_inputs=expected_inputs,
+        active_nodes=active_nodes,
+    )
+
+    if on_internal_override == "warn":
+        import warnings
+
+        warnings.warn(message, UserWarning, stacklevel=4)
+        return
+    raise ValueError(message)
+
+
+def _build_internal_override_message(
+    *,
+    internal_edge: set[str],
+    unknown: set[str],
+    expected_inputs: set[str],
+    active_nodes: dict[str, HyperNode],
+) -> str:
+    """Create a clear internal override message with producer mapping."""
+    unexpected = sorted(internal_edge | unknown)
+    message = [f"Providing values for internal parameters: {unexpected}."]
+
+    if internal_edge:
+        producers: list[str] = []
+        for output_name in sorted(internal_edge):
+            source_nodes = sorted(node.name for node in active_nodes.values() if output_name in node.outputs)
+            if source_nodes:
+                producers.append(f"{output_name} <- {', '.join(source_nodes)}")
+            else:
+                producers.append(f"{output_name} <- <unknown producer>")
+        message.append(f"Produced by active graph edges: {', '.join(producers)}.")
+
+    if unknown:
+        message.append(f"Not recognized in active graph scope: {sorted(unknown)}.")
+
+    message.append(f"Expected inputs: {sorted(expected_inputs)}")
+    return " ".join(message)
+
+
+def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSpec) -> set[str]:
     """Find inputs that belong to nodes fully bypassed by intermediate injection.
 
     A node is bypassed ONLY if ALL of its outputs that are consumed downstream
@@ -343,6 +503,11 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
 
     When a node is bypassed, its exclusive inputs (not needed by other nodes)
     can be removed from the required set.
+
+    Note: This iterates ``graph._nodes`` (the full graph), not just the active
+    subgraph. This is safe because bypassed inputs are subtracted from
+    ``inputs_spec.required``, which is already scoped to active nodes.
+    Extra bypassed inputs from inactive nodes are no-ops.
     """
     # Build output -> producer nodes mapping (handle mutex branches)
     output_to_nodes: dict[str, list[str]] = {}
@@ -357,7 +522,7 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
 
     # Cycle entry point params: providing these means bootstrapping a cycle,
     # NOT bypassing the producer node. Exclude from bypass check.
-    cycle_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
+    cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
 
     # A node is bypassed only if ALL its non-cycle consumed outputs are provided
     bypassed_nodes: set[str] = set()
@@ -392,6 +557,70 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str]) -> set[str]:
             bypassed_inputs -= set(node.inputs)
 
     return bypassed_inputs
+
+
+def resolve_runtime_selected(
+    select: Any,
+    graph: Graph,
+) -> tuple[str, ...] | None:
+    """Convert runtime select parameter into a tuple for validation.
+
+    Handles the ``_UNSET_SELECT`` sentinel, ``"**"``, single strings,
+    and lists.  Returns ``None`` when all outputs are requested (no
+    narrowing).
+    """
+    from hypergraph.runners._shared.helpers import _UNSET_SELECT
+
+    if select is _UNSET_SELECT:
+        # Fall back to graph-level selection
+        return graph.selected  # already tuple | None
+    if select == "**":
+        return None  # all outputs — no narrowing
+    if isinstance(select, str):
+        sel: tuple[str, ...] = (select,)
+    elif isinstance(select, list):
+        sel = tuple(select)
+    else:
+        # Unexpected type — treat as "no narrowing" rather than raising, since
+        # run() signature already constrains the type at the public API level.
+        return None
+
+    invalid = [n for n in sel if n not in graph.outputs]
+    if invalid:
+        valid_outputs = sorted(graph.outputs)
+        raise GraphConfigError(
+            f"Invalid select: {invalid} not in graph outputs.\n\n"
+            f"Valid outputs: {valid_outputs}\n\n"
+            f"How to fix: Check spelling or use select='**' to select all outputs."
+        )
+    return sel
+
+
+def _resolve_effective_input_spec(
+    graph: Graph,
+    selected: tuple[str, ...] | None,
+    *,
+    active_scope: tuple[dict[str, HyperNode], Any] | None = None,
+) -> InputSpec:
+    """Compute InputSpec scoped to runtime selection if different from graph config.
+
+    When the runner passes a runtime ``selected`` that differs from
+    ``graph.selected``, we recompute InputSpec so validation uses the
+    narrower scope. Otherwise, return the cached ``graph.inputs``.
+    """
+    if selected == graph.selected:
+        return graph.inputs
+
+    from hypergraph.graph.input_spec import compute_input_spec
+
+    return compute_input_spec(
+        graph._nodes,
+        graph._nx_graph,
+        graph._bound,
+        entrypoints=graph._entrypoints,
+        selected=selected,
+        _active_scope=active_scope,
+    )
 
 
 def validate_node_types(

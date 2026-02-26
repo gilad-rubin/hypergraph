@@ -336,6 +336,46 @@ class TestAsyncRunnerRun:
         assert "sum" in result
         assert "doubled" not in result
 
+    async def test_on_internal_override_policy_is_enforced(self):
+        """run() forwards on_internal_override policy into validation."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph([split, use_left, use_right])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="internal parameters"):
+            await runner.run(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="error",
+            )
+
+        result = await runner.run(
+            graph,
+            {"left": 100, "right": 200},
+            on_internal_override="ignore",
+        )
+        assert result["double_left"] == 200
+        assert result["double_right"] == 400
+
+        with pytest.warns(UserWarning, match="left <- split"):
+            await runner.run(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="warn",
+            )
+
     # Cycles
 
     async def test_cycle_executes_until_stable(self):
@@ -405,7 +445,7 @@ class TestAsyncRunnerRun:
             await runner.run(graph, {})
 
     async def test_node_exception_propagates(self):
-        """Node exceptions result in FAILED status."""
+        """Node exceptions propagate by default (error_handling='raise')."""
 
         @node(output_name="result")
         async def failing(x: int) -> int:
@@ -414,10 +454,8 @@ class TestAsyncRunnerRun:
         graph = Graph([failing])
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
+        with pytest.raises(ValueError, match="intentional error"):
+            await runner.run(graph, {"x": 5})
 
 
 class TestAsyncRunnerMap:
@@ -483,6 +521,50 @@ class TestAsyncRunnerMap:
         )
 
         assert [r["sum"] for r in results] == [11, 12]
+
+    async def test_map_forwards_on_internal_override_policy(self):
+        """map() forwards on_internal_override to per-item run() validation."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph([split, use_left, use_right])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="internal parameters"):
+            await runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+                on_internal_override="error",
+            )
+
+        results = await runner.map(
+            graph,
+            {"left": [100], "right": 200},
+            map_over="left",
+            on_internal_override="ignore",
+        )
+        assert len(results) == 1
+        assert results[0]["double_left"] == 200
+        assert results[0]["double_right"] == 400
+
+        with pytest.warns(UserWarning, match="left <- split"):
+            await runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+                on_internal_override="warn",
+            )
 
     async def test_map_runs_concurrently(self):
         """Map executions run concurrently."""

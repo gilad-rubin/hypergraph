@@ -261,6 +261,46 @@ class TestSyncRunnerRun:
 
         assert result["result"] == 15  # 5 + 10 (default)
 
+    def test_on_internal_override_policy_is_enforced(self):
+        """run() forwards on_internal_override policy into validation."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph([split, use_left, use_right])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.run(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="error",
+            )
+
+        result = runner.run(
+            graph,
+            {"left": 100, "right": 200},
+            on_internal_override="ignore",
+        )
+        assert result["double_left"] == 200
+        assert result["double_right"] == 400
+
+        with pytest.warns(UserWarning, match="left <- split"):
+            runner.run(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="warn",
+            )
+
     def test_input_overrides_bound(self):
         """Explicit input overrides bound value."""
         graph = Graph([add]).bind(a=5, b=10)
@@ -344,11 +384,8 @@ class TestSyncRunnerRun:
         graph = Graph([counter, always_continue])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"count": 0}, max_iterations=5)
-
-        # Should fail due to infinite loop
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, InfiniteLoopError)
+        with pytest.raises(InfiniteLoopError):
+            runner.run(graph, {"count": 0}, max_iterations=5)
 
     def test_cycle_raises_on_infinite_loop(self):
         """Infinite loop detected and reported."""
@@ -360,10 +397,8 @@ class TestSyncRunnerRun:
         graph = Graph([counter, always_continue])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"count": 0}, max_iterations=10)
-
-        assert result.status == RunStatus.FAILED
-        assert "10" in str(result.error)  # Max iterations in message
+        with pytest.raises(InfiniteLoopError, match="10"):
+            runner.run(graph, {"count": 0}, max_iterations=10)
 
     # Nested graphs
 
@@ -406,7 +441,7 @@ class TestSyncRunnerRun:
     # Errors
 
     def test_missing_input_raises(self):
-        """Missing required input causes FAILED status."""
+        """Missing required input raises MissingInputError."""
         graph = Graph([double])
         runner = SyncRunner()
 
@@ -423,7 +458,7 @@ class TestSyncRunnerRun:
             runner.run(graph, {"x": 5})
 
     def test_node_exception_propagates(self):
-        """Node exceptions result in FAILED status."""
+        """Node exceptions propagate by default (error_handling='raise')."""
 
         @node(output_name="result")
         def failing(x: int) -> int:
@@ -432,10 +467,8 @@ class TestSyncRunnerRun:
         graph = Graph([failing])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, ValueError)
+        with pytest.raises(ValueError, match="intentional error"):
+            runner.run(graph, {"x": 5})
 
     def test_node_exception_sets_failed_status(self):
         """Exception sets status to FAILED."""
@@ -447,9 +480,8 @@ class TestSyncRunnerRun:
         graph = Graph([failing])
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5})
-
-        assert result.status == RunStatus.FAILED
+        with pytest.raises(RuntimeError, match="test"):
+            runner.run(graph, {"x": 5})
 
 
 class TestSyncRunnerRunGenerators:
@@ -546,6 +578,50 @@ class TestSyncRunnerMap:
 
         with pytest.raises(ValueError, match="reserved runner options"):
             runner.map(graph, map_over="x", x=[1, 2], max_concurrency=1)
+
+    def test_map_forwards_on_internal_override_policy(self):
+        """map() forwards on_internal_override to per-item run() validation."""
+
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        graph = Graph([split, use_left, use_right])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+                on_internal_override="error",
+            )
+
+        results = runner.map(
+            graph,
+            {"left": [100], "right": 200},
+            map_over="left",
+            on_internal_override="ignore",
+        )
+        assert len(results) == 1
+        assert results[0]["double_left"] == 200
+        assert results[0]["double_right"] == 400
+
+        with pytest.warns(UserWarning, match="left <- split"):
+            runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+                on_internal_override="warn",
+            )
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""

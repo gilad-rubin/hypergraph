@@ -22,6 +22,27 @@ if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
 
 
+def compute_active_node_set(graph: Graph) -> set[str] | None:
+    """Compute active node names from graph's entrypoint config.
+
+    Returns None when no entrypoints are configured (all nodes active).
+    Delegates to input_spec._active_from_entrypoints to avoid duplicating
+    the forward-reachability logic.
+
+    Note: This only considers entrypoints, not select. This is intentional —
+    ``with_entrypoint()`` narrows *execution* (which nodes run), while
+    ``select()`` narrows *validation* (which inputs are required) and
+    *output filtering* (what run() returns). Use ``with_entrypoint()`` when
+    you need to skip upstream node execution entirely.
+    """
+    if graph.entrypoints_config is None:
+        return None
+
+    from hypergraph.graph.input_spec import _active_from_entrypoints
+
+    return _active_from_entrypoints(graph.entrypoints_config, graph._nodes, graph._nx_graph)
+
+
 class ValueSource(Enum):
     """Source of a parameter's value during graph execution."""
 
@@ -115,7 +136,12 @@ def get_value_source(
     raise KeyError(f"No value for input '{param}'")
 
 
-def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
+def get_ready_nodes(
+    graph: Graph,
+    state: GraphState,
+    *,
+    active_nodes: set[str] | None = None,
+) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
     A node is ready when:
@@ -123,10 +149,14 @@ def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
     2. The node hasn't been executed yet, OR
     3. The node was executed but its inputs have changed (stale)
     4. If controlled by a gate, the gate has routed to this node
+    5. If active_nodes is set, the node must be in the active set
 
     Args:
         graph: The graph being executed
         state: Current execution state
+        active_nodes: Optional set of node names to restrict scheduling to.
+            When set (from with_entrypoint), nodes outside this set are never
+            scheduled even if their inputs are available.
 
     Returns:
         List of nodes ready to execute
@@ -136,6 +166,8 @@ def get_ready_nodes(graph: Graph, state: GraphState) -> list[HyperNode]:
 
     ready = []
     for node in graph._nodes.values():
+        if active_nodes is not None and node.name not in active_nodes:
+            continue
         if _is_node_ready(node, graph, state, activated_nodes):
             ready.append(node)
 
@@ -600,6 +632,20 @@ def _validate_on_missing(on_missing: str) -> None:
         raise ValueError(f"Invalid on_missing={on_missing!r}. Expected one of: {', '.join(_VALID_ON_MISSING)}")
 
 
+_VALID_ERROR_HANDLING = ("raise", "continue")
+
+
+def _validate_error_handling(error_handling: str) -> None:
+    """Validate error_handling parameter eagerly (before execution)."""
+    if error_handling not in _VALID_ERROR_HANDLING:
+        valid = ", ".join(repr(v) for v in _VALID_ERROR_HANDLING)
+        raise ValueError(
+            f"Invalid error_handling={error_handling!r}.\n\n"
+            f"Valid options: {valid}\n\n"
+            f"How to fix: Pass error_handling='raise' or error_handling='continue'."
+        )
+
+
 def _handle_missing_outputs(
     missing: list[str],
     state: GraphState,
@@ -624,10 +670,39 @@ def _handle_missing_outputs(
         raise ValueError(msg)
 
 
+def _clone_value(value: Any, param_name: str) -> Any:
+    """Deep-copy a value for clone, with clone-specific error."""
+    try:
+        return copy.deepcopy(value)
+    except (TypeError, copy.Error) as e:
+        raise GraphConfigError(
+            f"Parameter '{param_name}' cannot be deep-copied for clone.\n\n"
+            f"Options:\n"
+            f"  1. Use clone=[...] to clone only specific params\n"
+            f"  2. Use .bind({param_name}=...) on the inner graph to share it\n"
+            f"     (bind values bypass clone entirely)\n\n"
+            f"Technical details: {e}"
+        ) from e
+
+
+def _maybe_clone_broadcast(
+    broadcast_values: dict[str, Any],
+    clone: bool | list[str],
+) -> dict[str, Any]:
+    """Clone broadcast values based on clone config."""
+    if clone is False:
+        return broadcast_values
+    if clone is True:
+        return {k: _clone_value(v, k) for k, v in broadcast_values.items()}
+    # clone is a list of param names
+    return {k: _clone_value(v, k) if k in clone else v for k, v in broadcast_values.items()}
+
+
 def generate_map_inputs(
     values: dict[str, Any],
     map_over: list[str],
     map_mode: str,
+    clone: bool | list[str] = False,
 ) -> Iterator[dict[str, Any]]:
     """Generate input dicts for each map iteration.
 
@@ -635,6 +710,10 @@ def generate_map_inputs(
         values: Input values dict
         map_over: Parameter names to iterate over
         map_mode: "zip" for parallel iteration, "product" for cartesian product
+        clone: Deep-copy broadcast values per iteration.
+            False = share by reference (default).
+            True = deep-copy all broadcast values.
+            list[str] = deep-copy only named params.
 
     Yields:
         Input dict for each iteration
@@ -646,9 +725,9 @@ def generate_map_inputs(
     broadcast_values = {k: v for k, v in values.items() if k not in map_over}
 
     if map_mode == "zip":
-        yield from _generate_zip_inputs(mapped_values, broadcast_values)
+        yield from _generate_zip_inputs(mapped_values, broadcast_values, clone)
     elif map_mode == "product":
-        yield from _generate_product_inputs(mapped_values, broadcast_values)
+        yield from _generate_product_inputs(mapped_values, broadcast_values, clone)
     else:
         raise ValueError(f"Unknown map_mode: {map_mode}")
 
@@ -656,6 +735,7 @@ def generate_map_inputs(
 def _generate_zip_inputs(
     mapped_values: dict[str, list],
     broadcast_values: dict[str, Any],
+    clone: bool | list[str] = False,
 ) -> Iterator[dict[str, Any]]:
     """Generate inputs for zip mode (parallel iteration)."""
     if not mapped_values:
@@ -673,7 +753,7 @@ def _generate_zip_inputs(
 
     for i in range(lengths[0]):
         yield {
-            **broadcast_values,
+            **_maybe_clone_broadcast(broadcast_values, clone),
             **{k: v[i] for k, v in mapped_values.items()},
         }
 
@@ -681,6 +761,7 @@ def _generate_zip_inputs(
 def _generate_product_inputs(
     mapped_values: dict[str, list],
     broadcast_values: dict[str, Any],
+    clone: bool | list[str] = False,
 ) -> Iterator[dict[str, Any]]:
     """Generate inputs for product mode (cartesian product)."""
     from itertools import product as iter_product
@@ -694,7 +775,7 @@ def _generate_product_inputs(
 
     for combo in iter_product(*value_lists):
         yield {
-            **broadcast_values,
+            **_maybe_clone_broadcast(broadcast_values, clone),
             **dict(zip(keys, combo, strict=False)),
         }
 

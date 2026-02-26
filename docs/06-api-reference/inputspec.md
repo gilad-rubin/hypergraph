@@ -2,29 +2,52 @@
 
 **InputSpec** describes what inputs a graph needs and how they must be provided.
 
-- **required** - Must provide at runtime (no default, not bound)
-- **optional** - Can omit (has default value)
-- **entrypoints** - Cycle entrypoints grouped by node
-- **bound** - Pre-filled via `graph.bind()`
+What counts as "required" depends on four dimensions that narrow the active subgraph:
+
+| Dimension | Method | Narrows from | Effect on `required` |
+|-----------|--------|-------------|---------------------|
+| **Entrypoint** (start) | `with_entrypoint(...)` | The front | Excludes upstream nodes |
+| **Select** (end) | `select(...)` | The back | Excludes nodes not needed for selected outputs |
+| **Bind** (pre-fill) | `bind(...)` | Individual params | Moves params from required to optional |
+| **Defaults** (fallback) | Function signatures | Individual params | Params with defaults are optional |
 
 ```python
 from hypergraph import node, Graph
 
-@node(output_name="doubled")
-def double(x: int) -> int:
-    return x * 2
+@node(output_name="embedding")
+def embed(text: str) -> list[float]:
+    return [0.1, 0.2, 0.3]
 
-@node(output_name="result")
-def add(doubled: int, offset: int = 10) -> int:
-    return doubled + offset
+@node(output_name="docs")
+def retrieve(embedding: list[float], top_k: int = 5) -> list[str]:
+    return ["doc1", "doc2"]
 
-g = Graph([double, add])
+@node(output_name="answer")
+def generate(docs: list[str], query: str) -> str:
+    return f"Answer based on {len(docs)} docs"
 
-# InputSpec categorizes parameters
-print(g.inputs.required)      # ('x',) - must provide
-print(g.inputs.optional)      # ('offset',) - has default
-print(g.inputs.entrypoints)  # {} - no cycles in this graph
-print(g.inputs.bound)         # {} - none bound
+g = Graph([embed, retrieve, generate])
+
+# Full graph: all inputs
+print(g.inputs.required)  # ('text', 'query')
+print(g.inputs.optional)  # ('top_k',)
+
+# Entrypoint narrows from the front
+g2 = g.with_entrypoint("retrieve")
+print(g2.inputs.required)  # ('embedding', 'query') - text no longer needed
+
+# Select narrows from the back
+g3 = g.select("docs")
+print(g3.inputs.required)  # ('text',) - query no longer needed
+
+# Bind pre-fills a value
+g4 = g.bind(query="What is RAG?")
+print(g4.inputs.required)  # ('text',)
+
+# All four compose
+configured = g.with_entrypoint("retrieve").select("answer").bind(top_k=10)
+print(configured.inputs.required)  # ('embedding', 'query')
+print(configured.inputs.optional)  # ('top_k',)
 ```
 
 ## The InputSpec Dataclass
@@ -112,7 +135,11 @@ print(bound.inputs.required)  # () - x is no longer required
 
 ## How Categories Are Determined
 
-The categorization follows the "edge cancels default" rule:
+Categorization happens in two phases:
+
+**Phase 1: Scope narrowing.** Determine which nodes are active using entrypoints (forward-reachable) and select (backward-reachable). Only active nodes contribute parameters to InputSpec.
+
+**Phase 2: Parameter classification.** For each parameter in the active subgraph, apply the "edge cancels default" rule:
 
 | Condition | Category |
 |-----------|----------|
@@ -121,6 +148,7 @@ The categorization follows the "edge cancels default" rule:
 | Has incoming edge from cycle | **entrypoint** (grouped by node) |
 | Has incoming edge from another node | Not in InputSpec |
 | Is bound via `bind()` | In `bound` dict, moves from required to optional |
+| Node excluded by `with_entrypoint()` or `select()` | Not in InputSpec |
 
 ### Edge Cancels Default
 
@@ -152,6 +180,41 @@ def update(state: dict, input: int) -> dict:
 g = Graph([update])
 print(g.inputs.required)      # ('input',)
 print(g.inputs.entrypoints)  # {'update': ('state',)}
+```
+
+### Scope Narrowing (Entrypoint and Select)
+
+`with_entrypoint()` and `select()` narrow which nodes are considered when computing InputSpec. Parameters from excluded nodes do not appear in `required`, `optional`, or `entrypoints`.
+
+```python
+from hypergraph import node, Graph
+
+@node(output_name="a_val")
+def step_a(x: int) -> int:
+    return x * 2
+
+@node(output_name="b_val")
+def step_b(a_val: int, y: int) -> int:
+    return a_val + y
+
+@node(output_name="c_val")
+def step_c(b_val: int) -> int:
+    return b_val * 3
+
+g = Graph([step_a, step_b, step_c])
+print(g.inputs.required)  # ('x', 'y')
+
+# Entrypoint: skip step_a, start at step_b
+g2 = g.with_entrypoint("step_b")
+print(g2.inputs.required)  # ('a_val', 'y') - a_val is now a user input
+
+# Select: only need b_val, not c_val
+g3 = g.select("b_val")
+print(g3.inputs.required)  # ('x', 'y') - same, since step_a is still needed
+
+# Both: start at step_b, only need b_val
+g4 = g.with_entrypoint("step_b").select("b_val")
+print(g4.inputs.required)  # ('a_val', 'y')
 ```
 
 ## Accessing InputSpec
@@ -301,8 +364,12 @@ Emit-only outputs (ordering signals from `emit=`) cannot be bound — they are i
 
 When multiple sources provide the same value, the runner uses: **EDGE > PROVIDED > BOUND > DEFAULT**
 
-- A node that CAN run WILL run, and its output overwrites any provided/bound value
-- Providing an output AND its producer's inputs triggers a warning (the producer will overwrite your value)
+- A node that CAN run WILL run (absent a compute/inject conflict), and its output overwrites any provided/bound value
+- Hard conflict rule: **either compute or inject, never both for the same node**
+  - Injecting a node's outputs while also making that node runnable raises `ValueError` unconditionally
+  - Partial injection of a multi-output producer is rejected when downstream still needs missing outputs
+- For non-conflicting internal overrides, `run(..., on_internal_override="ignore"|"warn"|"error")` controls policy (default: `"warn"`)
+  - `map(...)` inherits the same policy and applies it per iteration
 - Bound values bootstrap cycles: on the first iteration the bound value is used, then the cycle produces subsequent values
 
 ### Cycle entrypoints exclude certain parameters

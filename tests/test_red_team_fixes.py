@@ -52,7 +52,6 @@ class TestMutableDefaults:
         import threading
 
         from hypergraph.graph.validation import GraphConfigError
-        from hypergraph.runners._shared.types import RunStatus
 
         lock = threading.Lock()
 
@@ -66,11 +65,8 @@ class TestMutableDefaults:
         runner = SyncRunner()
 
         # Should fail with GraphConfigError (not warn and continue)
-        result = runner.run(graph, {"x": 5})
-        assert result.status == RunStatus.FAILED
-        assert isinstance(result.error, GraphConfigError)
-        assert "cannot be safely copied" in str(result.error)
-        assert ".bind()" in str(result.error)
+        with pytest.raises(GraphConfigError, match="cannot be safely copied"):
+            runner.run(graph, {"x": 5})
 
 
 # === Fix #2: Cycle termination off-by-one ===
@@ -152,13 +148,11 @@ class TestIntermediateInjection:
         assert result["end"] == "hello_mid_end"
 
     def test_multi_output_partial_injection_still_requires_upstream_inputs(self):
-        """Partial injection of multi-output node must still require its inputs.
+        """Partial injection of multi-output node is rejected early.
 
         If a node produces (left, right) and user only provides "left" but NOT "x",
-        validation should STILL require "x" because "right" is needed downstream.
-        The bug: current code marks split as bypassed if ANY output is provided.
+        validation rejects this contradictory configuration before execution.
         """
-        from hypergraph.exceptions import MissingInputError
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -175,9 +169,9 @@ class TestIntermediateInjection:
         graph = Graph(nodes=[split, use_left, use_right])
         runner = SyncRunner()
 
-        # Provide only "left" - but "right" is still needed from split!
-        # Should raise MissingInputError for "x"
-        with pytest.raises(MissingInputError, match="x"):
+        # Provide only "left" - but "right" is still needed from split.
+        # Reject as invalid internal override config.
+        with pytest.raises(ValueError, match="partial inject outputs"):
             runner.run(graph, {"left": 100})
 
     def test_multi_output_full_injection_skips_node(self):

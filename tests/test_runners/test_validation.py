@@ -122,6 +122,108 @@ class TestValidateInputs:
         assert set(exc_info.value.missing) == {"a", "b"}
 
 
+class TestInternalOverrideValidation:
+    """Tests for internal override policy and conflict checks."""
+
+    @staticmethod
+    def _make_split_graph() -> Graph:
+        @node(output_name=("left", "right"))
+        def split(x: int) -> tuple[int, int]:
+            return x, x + 1
+
+        @node(output_name="double_left")
+        def use_left(left: int) -> int:
+            return left * 2
+
+        @node(output_name="double_right")
+        def use_right(right: int) -> int:
+            return right * 2
+
+        return Graph([split, use_left, use_right])
+
+    def test_mixed_compute_and_inject_for_same_node_errors(self):
+        """Providing producer inputs + produced outputs is a hard conflict."""
+        graph = self._make_split_graph()
+        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+            validate_inputs(
+                graph,
+                {"left": 100, "x": 5},
+                on_internal_override="ignore",
+            )
+
+    def test_full_internal_injection_allowed_with_ignore(self):
+        """Non-conflicting internal injection is allowed with ignore policy."""
+        graph = self._make_split_graph()
+        validate_inputs(
+            graph,
+            {"left": 100, "right": 200},
+            on_internal_override="ignore",
+        )
+
+    def test_full_internal_injection_rejected_with_error_policy(self):
+        """Non-conflicting internal injection can be rejected via policy."""
+        graph = self._make_split_graph()
+        with pytest.raises(ValueError, match="internal parameters"):
+            validate_inputs(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="error",
+            )
+
+    def test_internal_override_warning_includes_producer_mapping(self):
+        """Warning text should identify which node produces each internal key."""
+        graph = self._make_split_graph()
+        with pytest.warns(UserWarning, match="left <- split"):
+            validate_inputs(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="warn",
+            )
+
+    def test_invalid_internal_override_policy_raises(self):
+        """Reject unknown policy values."""
+        graph = Graph([double])
+        with pytest.raises(ValueError, match="Invalid on_internal_override"):
+            validate_inputs(graph, {"x": 1}, on_internal_override="raise")  # type: ignore[arg-type]
+
+    def test_cycle_entrypoint_param_not_flagged_as_internal_override(self):
+        """Cycle entry point params are excluded from compute+inject conflict checks.
+
+        'count' is both produced by an edge (self-loop) and needed as a seed
+        value to bootstrap the cycle. Providing it should NOT be treated as an
+        internal override conflict.
+        """
+        graph = Graph([counter])
+        # 'count' is a cycle entrypoint param — should pass cleanly
+        validate_inputs(graph, {"count": 0}, on_internal_override="error")
+
+    def test_entrypoint_scope_treats_excluded_branch_output_as_root_input(self):
+        """Active-scope required roots are not treated as internal overrides."""
+
+        @node(output_name="x")
+        def a(seed: int) -> int:
+            return seed + 1
+
+        @node(output_name="b_out")
+        def b(x: int) -> int:
+            return x * 2
+
+        @node(output_name="c_out")
+        def c(x: int) -> int:
+            return x * 3
+
+        @node(output_name="e")
+        def e(b_out: int, c_out: int) -> int:
+            return b_out + c_out
+
+        graph = Graph([a, b, c, e]).with_entrypoint("b").select("e")
+        validate_inputs(
+            graph,
+            {"x": 10, "c_out": 99},
+            on_internal_override="error",
+        )
+
+
 class TestNormalizeInputs:
     """Tests for values + kwargs input normalization."""
 
