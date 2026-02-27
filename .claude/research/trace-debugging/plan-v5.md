@@ -835,12 +835,470 @@ Per spec: SyncRunner uses cache for durability. But timing metadata is always us
 
 ---
 
+## Phase 4: CLI — AI Agent-Friendly Debugging Interface
+
+### Motivation
+
+The SDK is powerful, but agents and CLI scripts shouldn't need to write Python to answer "what failed?" Every use case from UC1–UC8 should be a one-liner from the terminal.
+
+**Cross-framework landscape:**
+
+| Tool | CLI Query? | Agent-Friendly? | Filter Power |
+|------|:----------:|:---------------:|:------------:|
+| Temporal | `temporal workflow list --query "..."` | `--output json` | SQL-like (best) |
+| Prefect | `prefect flow-run ls --state Failed` | `--output json` | Flags only |
+| LangSmith | `langsmith-fetch traces` (time/count only) | MCP server | SDK only |
+| Hatchet | TUI only | No | SDK only |
+| **Hypergraph** | **`hypergraph workflows ls --status failed`** | **`--json` + MCP** | **Flags + `--where`** |
+
+**Hypergraph's unique advantage**: We know our own graph topology. We can filter by node name, node type (gate/function), branch taken, duration — dimensions that don't exist in any other framework's CLI.
+
+### Command Structure
+
+```
+hypergraph
+  workflows
+    ls          List workflows (filtered)
+    show        Show execution trace for a workflow
+    state       Show accumulated values at a point
+    steps       Show step records (detailed)
+    replay      Replay a workflow from a specific point
+    diff        Compare two workflow executions
+  graph
+    inspect     Show graph structure (nodes, edges, inputs)
+```
+
+### Command Reference
+
+#### `hypergraph workflows ls` — List workflows
+
+```bash
+# All workflows
+hypergraph workflows ls
+
+# Workflows (3 total)
+#
+#   ID                  Status     Steps  Duration  Created
+#   ──────────────────  ─────────  ─────  ────────  ───────────────────
+#   batch-2024-01-15    completed     12    4m32s   2024-01-15 09:00
+#   batch-2024-01-16    FAILED         8    2m10s   2024-01-16 09:00
+#   chat-session-42     active        24   12m05s   2024-01-16 14:30
+
+# Filter by status
+hypergraph workflows ls --status failed
+hypergraph workflows ls --status active --status completed
+
+# Filter by time
+hypergraph workflows ls --since "2024-01-15"
+hypergraph workflows ls --since "1h ago"
+hypergraph workflows ls --since "yesterday"
+
+# Filter by node behavior (unique to hypergraph!)
+hypergraph workflows ls --where "node:llm_call status=failed"
+hypergraph workflows ls --where "node:classify decision=account_support"
+hypergraph workflows ls --where "duration > 5m"
+
+# Combine filters
+hypergraph workflows ls --status failed --since "24h ago"
+
+# JSON output for agents
+hypergraph workflows ls --json
+hypergraph workflows ls --status failed --json | jq '.[].id'
+
+# Limit
+hypergraph workflows ls --limit 10
+```
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--status` | `completed\|failed\|active` | Filter by workflow status (repeatable) |
+| `--since` | datetime or relative | Only workflows created after this time |
+| `--until` | datetime or relative | Only workflows created before this time |
+| `--where` | string | Node-level filter (see below) |
+| `--limit` | int | Max results (default: 50) |
+| `--parent` | string | Only child workflows of this parent ID |
+| `--json` | flag | JSON output for piping/agents |
+| `--db` | path | Database path (default: `./workflows.db`) |
+
+**`--where` syntax** (the node-level filter — hypergraph's killer feature):
+
+```bash
+# Filter by node name and outcome
+--where "node:llm_call status=failed"      # Any workflow where llm_call failed
+--where "node:classify decision=detailed"  # Where classify routed to 'detailed'
+--where "node:embed duration > 1s"         # Where embed took over 1 second
+--where "node:* cached=true"               # Any cached node
+--where "duration > 5m"                    # Total workflow duration
+--where "steps > 20"                       # Workflows with many steps
+```
+
+---
+
+#### `hypergraph workflows show <id>` — Execution trace
+
+Maps to **UC1** (slow runs), **UC2** (failures), **UC3** (routing).
+
+```bash
+hypergraph workflows show batch-2024-01-16
+
+# Workflow: batch-2024-01-16 | FAILED | 8 steps | 2m10s
+#
+#   Step  Node          Duration  Status     Decision
+#   ────  ────────────  ────────  ─────────  ────────────────────────────
+#      0  embed           180ms   completed
+#      1  retrieve        820ms   completed
+#      2  classify        120ms   completed  → detailed_answer
+#      3  build_prompt     12ms   completed
+#      4  generate            —   FAILED: 503 Service Unavailable
+
+# JSON for agents
+hypergraph workflows show batch-2024-01-16 --json
+
+# Show only errors
+hypergraph workflows show batch-2024-01-16 --errors
+
+# Show specific superstep range
+hypergraph workflows show batch-2024-01-16 --superstep 2..4
+```
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--json` | flag | JSON output |
+| `--errors` | flag | Only show failed steps |
+| `--superstep` | `N` or `N..M` | Filter to superstep range |
+| `--node` | string | Filter to specific node name |
+| `--tree` | flag | Expand nested workflows inline |
+
+---
+
+#### `hypergraph workflows state <id>` — Intermediate values
+
+Maps to **UC4** (intermediate inspection) and **UC5** (yesterday's run).
+
+```bash
+# Full state (latest)
+hypergraph workflows state batch-2024-01-16
+
+# State: batch-2024-01-16 (through superstep 4)
+#
+#   Output           Type    Size     Superstep  Node
+#   ───────────────  ──────  ───────  ─────────  ────────────
+#   embedding        list    1536     0          embed
+#   retrieved_docs   list    3 items  1          retrieve
+#   category         str     16B      2          classify
+#   prompt           str     2.4KB    3          build_prompt
+#   answer           —       —        4          generate (FAILED)
+
+# State at a specific superstep (time travel!)
+hypergraph workflows state batch-2024-01-16 --superstep 2
+
+# Show actual values (not just summary — for debugging)
+hypergraph workflows state batch-2024-01-16 --superstep 2 --values
+
+# State: batch-2024-01-16 (through superstep 2)
+#
+#   embedding: [0.123, -0.456, 0.789, ...] (1536 floats)
+#   retrieved_docs:
+#     [0]: {"title": "Password Reset Guide", "content": "To reset your passw..."}
+#     [1]: {"title": "Account Recovery", "content": "If you've lost access..."}
+#     [2]: {"title": "Security FAQ", "content": "We recommend changing..."}
+#   category: "account_support"
+
+# Single value
+hypergraph workflows state batch-2024-01-16 --superstep 2 --key prompt
+# "Based on the following documents:\n1. Password Reset Guide..."
+
+# JSON output (agent gets full values)
+hypergraph workflows state batch-2024-01-16 --superstep 2 --json
+```
+
+**Flags:**
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--superstep` | int | State through this superstep (default: latest) |
+| `--values` | flag | Show actual values, not just type/size summary |
+| `--key` | string | Show single output value |
+| `--json` | flag | JSON output with full values |
+
+---
+
+#### `hypergraph workflows steps <id>` — Step records (detailed)
+
+For deep debugging — shows the full StepRecord data including input versions, timing, values.
+
+```bash
+hypergraph workflows steps batch-2024-01-16
+
+# Step [0] embed | completed | 180ms
+#   superstep: 0
+#   input_versions: {query: 1}
+#   values: {embedding: <list, 1536 items>}
+#   cached: false
+#   created_at: 2024-01-16 09:00:01.234
+#   completed_at: 2024-01-16 09:00:01.414
+#
+# Step [1] retrieve | completed | 820ms
+#   superstep: 1
+#   input_versions: {embedding: 1, top_k: 1}
+#   values: {retrieved_docs: <list, 3 items>}
+#   ...
+
+# Single step by node name
+hypergraph workflows steps batch-2024-01-16 --node retrieve
+
+# JSON for full programmatic access
+hypergraph workflows steps batch-2024-01-16 --json
+```
+
+---
+
+#### `hypergraph workflows replay <id>` — Replay from a point
+
+Maps to **UC8** (fork and retry).
+
+```bash
+# Replay from superstep 3 into a new workflow
+hypergraph workflows replay batch-2024-01-16 \
+  --from-superstep 3 \
+  --new-id batch-2024-01-16-retry
+
+# Replaying batch-2024-01-16 from superstep 3...
+# Created new workflow: batch-2024-01-16-retry
+# Reusing 3 completed steps, re-executing from superstep 3
+#
+# To run: await runner.run(graph, workflow_id="batch-2024-01-16-retry")
+
+# Replay and immediately run (requires graph module path)
+hypergraph workflows replay batch-2024-01-16 \
+  --from-superstep 3 \
+  --new-id batch-2024-01-16-retry \
+  --run my_module:graph
+```
+
+---
+
+#### `hypergraph workflows diff <id1> <id2>` — Compare executions
+
+For debugging regressions — compare two runs of the same graph.
+
+```bash
+hypergraph workflows diff batch-2024-01-15 batch-2024-01-16
+
+# Diff: batch-2024-01-15 vs batch-2024-01-16
+#
+#   Node          Run 1       Run 2       Delta
+#   ────────────  ──────────  ──────────  ─────────────────
+#   embed          180ms       180ms      same
+#   retrieve       420ms       820ms      +95% ⚠
+#   classify       115ms       120ms      same
+#   build_prompt    12ms        12ms      same
+#   generate      2800ms       FAILED     ← failure point
+#
+# Run 1: completed in 3.5s
+# Run 2: FAILED at step 4 (generate)
+```
+
+---
+
+#### `hypergraph graph inspect` — Graph structure
+
+Not about execution — shows the graph's static structure. Useful for agents understanding what they're debugging.
+
+```bash
+hypergraph graph inspect my_module:graph
+
+# Graph: rag_pipeline | 5 nodes | 6 edges
+#
+#   Node              Type      Inputs              Outputs
+#   ────────────────  ────────  ──────────────────  ────────────
+#   embed             function  query               embedding
+#   retrieve          function  embedding, top_k    retrieved_docs
+#   classify          route     query               category
+#   build_prompt      function  retrieved_docs, q…  prompt
+#   generate          function  prompt              answer
+#
+# Entrypoints: query
+# Required inputs: query
+# Optional inputs: top_k (default: 5)
+
+# JSON for agents
+hypergraph graph inspect my_module:graph --json
+```
+
+---
+
+### Use Case → CLI Mapping
+
+| Use Case | CLI Command |
+|----------|-------------|
+| UC1: "Why was my run slow?" | `hypergraph workflows show <id>` |
+| UC2: "What failed and why?" | `hypergraph workflows show <id> --errors` |
+| UC3: "What path did execution take?" | `hypergraph workflows show <id>` (Decision column) |
+| UC4: "What prompt went into the LLM?" | `hypergraph workflows state <id> --superstep 2 --values` |
+| UC5: "What happened yesterday?" | `hypergraph workflows ls --since yesterday` → `show` |
+| UC6: "All failed workflows" | `hypergraph workflows ls --status failed` |
+| UC7: AI agent debugging | Any command with `--json` piped to agent |
+| UC8: Fork and retry | `hypergraph workflows replay <id> --from-superstep 3` |
+
+### Nested Graphs — First-Class Support
+
+Nested graphs (via `graph.as_node()`) are a core hypergraph feature. The CLI, RunLog, and checkpointer must handle them naturally.
+
+**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag"`, grandchild `"order-123/rag/summarize"`.
+
+#### CLI: Nested workflow display
+
+```bash
+# Show parent — nested runs appear as single steps with child link
+hypergraph workflows show order-123
+
+# Workflow: order-123 | completed | 5 steps | 12.4s
+#
+#   Step  Node        Duration  Status     Child Workflow
+#   ────  ──────────  ────────  ─────────  ─────────────────
+#      0  preprocess    200ms   completed
+#      1  rag          8200ms   completed  → order-123/rag
+#      2  postprocess   150ms   completed
+
+# Drill into nested workflow — same commands, child ID
+hypergraph workflows show order-123/rag
+
+# Workflow: order-123/rag | completed | 3 steps | 8.1s
+#
+#   Step  Node       Duration  Status
+#   ────  ─────────  ────────  ─────────
+#      0  embed        180ms   completed
+#      1  retrieve     620ms   completed
+#      2  generate    7300ms   completed
+
+# Show full tree (all levels expanded)
+hypergraph workflows show order-123 --tree
+
+# Workflow: order-123 | completed | 12.4s
+#
+#   Step  Node                    Duration  Status
+#   ────  ──────────────────────  ────────  ─────────
+#      0  preprocess                200ms   completed
+#      1  rag/                     8200ms   completed
+#      1.0  rag/embed               180ms   completed
+#      1.1  rag/retrieve            620ms   completed
+#      1.2  rag/generate           7300ms   completed
+#      2  postprocess               150ms   completed
+
+# State of nested workflow
+hypergraph workflows state order-123/rag --superstep 1 --values
+
+# List child workflows
+hypergraph workflows ls --parent order-123
+```
+
+**`--tree` flag**: Expands nested workflows inline. Without it, nested workflows show as collapsed single steps with a link to drill into. With it, the full tree is shown with indented node paths.
+
+**`--parent` filter**: List only child workflows of a given parent. Useful for map operations where the parent spawns many children.
+
+#### RunLog: Nested execution
+
+```python
+result = await runner.run(outer_graph, values={...})
+
+# Parent log shows nested graphs as single entries
+print(result.log)
+# RunLog: outer | 12.4s | 3 nodes | 0 errors
+#
+#   Step  Node        Duration  Status     Child
+#   ────  ──────────  ────────  ─────────  ────────────
+#      0  preprocess    200ms   completed
+#      1  rag          8200ms   completed  (3 substeps)
+#      2  postprocess   150ms   completed
+
+# Drill into nested RunLog
+result["rag"].log
+# RunLog: rag | 8.1s | 3 nodes | 0 errors
+#
+#   Step  Node       Duration  Status
+#   ────  ─────────  ────────  ─────────
+#      0  embed        180ms   completed
+#      1  retrieve     620ms   completed
+#      2  generate    7300ms   completed
+
+# to_dict() includes nested logs
+result.log.to_dict()
+# {"steps": [..., {"node_name": "rag", "child_log": {"steps": [...]}}]}
+```
+
+#### Checkpointer: Nested persistence
+
+```python
+# Parent and child are separate workflows — standard checkpointer API
+parent_steps = await checkpointer.get_steps("order-123")
+child_steps = await checkpointer.get_steps("order-123/rag")
+
+# Parent state includes child outputs (flattened into parent namespace)
+parent_state = await checkpointer.get_state("order-123")
+parent_state["answer"]  # Output from rag/generate, surfaced to parent
+
+# Child state is isolated
+child_state = await checkpointer.get_state("order-123/rag")
+child_state["embedding"]  # Only visible inside rag
+```
+
+The key principle: **nested graphs are separate workflows with path-based IDs**. This is already in the persistence spec (`child_workflow_id` on StepRecord). The CLI and RunLog just need to surface the hierarchy naturally.
+
+---
+
+### Agent Workflow Example
+
+An AI agent debugging a failing pipeline would do:
+
+```bash
+# 1. Find the failing workflow
+hypergraph workflows ls --status failed --since "1h ago" --json
+
+# 2. See what happened
+hypergraph workflows show batch-2024-01-16 --json
+
+# 3. Inspect intermediate values at the failure point
+hypergraph workflows state batch-2024-01-16 --superstep 3 --json
+
+# 4. Check the graph structure to understand the pipeline
+hypergraph graph inspect my_module:graph --json
+
+# 5. Compare with a successful run
+hypergraph workflows diff batch-2024-01-15 batch-2024-01-16 --json
+
+# 6. Set up a replay
+hypergraph workflows replay batch-2024-01-16 --from-superstep 3 --new-id retry-1
+```
+
+All commands return structured JSON with `--json`. The agent never needs to parse human-formatted text.
+
+### Why CLI First (Not MCP)
+
+The CLI is the universal agent interface. Every AI coding tool — Claude Code, Cursor, Windsurf, Copilot — can run shell commands. MCP requires per-tool integration and is becoming less differentiated as agents get better at CLI usage.
+
+**The CLI IS the agent interface.** `--json` output + shell piping gives agents everything they need. An MCP server is a nice-to-have wrapper that can come later, and it would just call the same functions the CLI calls.
+
+### Implementation Notes
+
+- Built with `click` (already a dev dependency convention in Python CLIs)
+- `--db` flag defaults to `./workflows.db` (SQLite) — can point to any checkpointer
+- `--json` uses the same `to_dict()` methods from RunLog and StepRecord
+- Human display uses the same formatting logic from RunLog/Workflow `__str__`
+- Entry point: `hypergraph` command via `pyproject.toml` `[project.scripts]`
+
+---
+
 ## Deferred
 
 - **PostgresCheckpointer** — separate effort
 - **MapResult aggregate** — not needed for v1
 - **Value capture in RunLog** — use checkpointer for values
 - **Visual overlay** — coloring viz nodes by timing/status
-- **MCP server** — AI agent interface wrapping checkpointer
+- **MCP server** — thin wrapper over the same functions the CLI calls. Low priority — CLI covers the agent use case.
 - **DBOS alignment** — DBOSAsyncRunner has its own persistence
 - **Event field extensions** — events stay lightweight; StepRecord stores values
