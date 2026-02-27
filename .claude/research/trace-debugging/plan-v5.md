@@ -545,7 +545,7 @@ class NodeRecord:
     status: Literal["completed", "failed", "cached", "skipped"]
     error: str | None = None                       # error message if failed
     cached: bool = False                           # was this a cache hit?
-    decision: str | tuple[str, ...] | None = None  # gate routing decision
+    decision: str | list[str] | None = None  # gate routing decision (matches spec type)
 ```
 
 ### StepRecord fields (persistent trace — superset of NodeRecord):
@@ -566,10 +566,10 @@ class StepRecord:
     error: str | None
     pause: PauseInfo | None
 
-    # Trace (NEW — the 3 fields that make StepRecord trace-complete)
+    # Trace (NEW — 2 fields that make StepRecord trace-complete)
     duration_ms: float | None = None     # wall-clock execution time
     cached: bool = False                 # cache hit?
-    decision: str | tuple[str, ...] | None = None  # gate decision
+    # decision already exists in spec: str | list[str] | None
 
     # Metadata
     partial: bool = False
@@ -620,7 +620,19 @@ Before implementation, it's important to know what exists and what doesn't:
 | CLI entry point | **Does NOT exist** | No `[project.scripts]` in `pyproject.toml` |
 | `RunnerCapabilities.supports_checkpointing` | **Does NOT exist** | Must be added |
 
-**Implication**: Phase 1 (RunLog) is self-contained. Phase 3 (Checkpointer) requires adding `workflow_id` to runner signatures first.
+**Implication**: Phase 1 (RunLog) is self-contained. Phase 3 (Checkpointer) requires adding `workflow_id` to runner signatures first — this is Phase 2.5 work (see below).
+
+---
+
+## Phase 0: Prerequisites (before any implementation)
+
+Before starting Phase 1, verify these baseline assumptions with targeted tests:
+
+1. **Event ordering test**: Write a test confirming `RouteDecisionEvent` fires before `NodeEndEvent` (this is the ordering the collector depends on).
+2. **Dispatcher always-active**: Verify that prepending an internal processor activates the dispatcher even when no user processors exist.
+3. **NodeExecution data availability**: Confirm all data needed for NodeRecord (timing, cached flag, etc.) is accessible at the points where the collector will consume events.
+
+These are 3-5 small tests, not a large migration. They catch any assumption drift before building on it.
 
 ---
 
@@ -764,6 +776,21 @@ Add two fields to the `StepRecord` definition in specs:
 |------|--------|
 | `specs/reviewed/execution-types.md` | Add `duration_ms` and `cached` to StepRecord definition |
 | `specs/reviewed/checkpointer.md` | Document new fields |
+
+---
+
+## Phase 2.5: Runner API Migration (prerequisite for Phase 3)
+
+Add `workflow_id` to runner signatures and wire it through to `RunResult`:
+
+| File | Change |
+|------|--------|
+| `runners/base.py` | Add `workflow_id: str | None = None` to `run()` and `map()` signatures |
+| `runners/_shared/template_async.py` | Accept and propagate `workflow_id`, populate on `RunResult` |
+| `runners/_shared/template_sync.py` | Same |
+| `runners/_shared/types.py` | Add `supports_checkpointing: bool = False` to `RunnerCapabilities` |
+
+This is a **non-breaking, additive change** — `workflow_id` defaults to `None`, existing code continues to work. Tests should verify that `RunResult.workflow_id` is populated when provided.
 
 ---
 
@@ -945,12 +972,12 @@ hypergraph workflows ls --since "2024-01-15"
 hypergraph workflows ls --since "1h ago"
 hypergraph workflows ls --since "yesterday"
 
-# Filter by node behavior (unique to hypergraph!)
-hypergraph workflows ls --where "node:llm_call status=failed"
-hypergraph workflows ls --where "node:classify decision=account_support"
-hypergraph workflows ls --where "duration > 5m"
+# Filter by node behavior (v2 — unique to hypergraph!)
+# hypergraph workflows ls --where "node:llm_call status=failed"
+# hypergraph workflows ls --where "node:classify decision=account_support"
+# hypergraph workflows ls --where "duration > 5m"
 
-# Combine filters
+# Combine filters (v1)
 hypergraph workflows ls --status failed --since "24h ago"
 
 # JSON output for agents
@@ -974,7 +1001,7 @@ hypergraph workflows ls --limit 10
 | `--json` | flag | JSON output for piping/agents |
 | `--db` | path | Database path (default: `./workflows.db`) |
 
-**`--where` syntax** (the node-level filter — hypergraph's killer feature):
+**`--where` syntax** (v2 — node-level filter, deferred from v1):
 
 ```bash
 # Filter by node name and outcome
@@ -1195,15 +1222,15 @@ hypergraph graph inspect my_module:graph --json
 | UC5: "What happened yesterday?" | `hypergraph workflows ls --since yesterday` → `show` |
 | UC6: "All failed workflows" | `hypergraph workflows ls --status failed` |
 | UC7: AI agent debugging | Any command with `--json` piped to agent |
-| UC8: Fork and retry | `hypergraph workflows replay <id> --from-superstep 3` |
+| UC8: Fork and retry | `hypergraph workflows replay <id> --from-superstep 3` **(v2)** |
 
 ### Nested Graphs — First-Class Support
 
 Nested graphs (via `graph.as_node()`) are a core hypergraph feature. The CLI, RunLog, and checkpointer must handle them naturally.
 
-**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag@s1"` (where `s1` = superstep 1), grandchild `"order-123/rag@s1/summarize@s0"`.
+**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag@s1@s1"` (where `s1` = superstep 1), grandchild `"order-123/rag@s1@s1/summarize@s0"`.
 
-**Why the superstep suffix?** Without it, if a GraphNode executes multiple times (e.g., in a loop or map), both invocations would get the same workflow ID `"order-123/rag"`, causing step history to overwrite/mix. The `@sN` suffix disambiguates by invocation context. For map operations within a GraphNode, the map index is also included: `"order-123/rag@s1.i5"` (superstep 1, map item 5).
+**Why the superstep suffix?** Without it, if a GraphNode executes multiple times (e.g., in a loop or map), both invocations would get the same workflow ID `"order-123/rag@s1"`, causing step history to overwrite/mix. The `@sN` suffix disambiguates by invocation context. For map operations within a GraphNode, the map index is also included: `"order-123/rag@s1@s1.i5"` (superstep 1, map item 5).
 
 #### CLI: Nested workflow display
 
@@ -1216,13 +1243,13 @@ hypergraph workflows show order-123
 #   Step  Node        Duration  Status     Child Workflow
 #   ────  ──────────  ────────  ─────────  ─────────────────
 #      0  preprocess    200ms   completed
-#      1  rag          8200ms   completed  → order-123/rag
+#      1  rag          8200ms   completed  → order-123/rag@s1
 #      2  postprocess   150ms   completed
 
 # Drill into nested workflow — same commands, child ID
-hypergraph workflows show order-123/rag
+hypergraph workflows show order-123/rag@s1
 
-# Workflow: order-123/rag | completed | 3 steps | 8.1s
+# Workflow: order-123/rag@s1 | completed | 3 steps | 8.1s
 #
 #   Step  Node       Duration  Status
 #   ────  ─────────  ────────  ─────────
@@ -1245,7 +1272,7 @@ hypergraph workflows show order-123 --tree
 #      2  postprocess               150ms   completed
 
 # State of nested workflow
-hypergraph workflows state order-123/rag --superstep 1 --values
+hypergraph workflows state order-123/rag@s1 --superstep 1 --values
 
 # List child workflows
 hypergraph workflows ls --parent order-123
@@ -1290,14 +1317,14 @@ result.log.to_dict()
 ```python
 # Parent and child are separate workflows — standard checkpointer API
 parent_steps = await checkpointer.get_steps("order-123")
-child_steps = await checkpointer.get_steps("order-123/rag")
+child_steps = await checkpointer.get_steps("order-123/rag@s1")
 
 # Parent state includes child outputs (flattened into parent namespace)
 parent_state = await checkpointer.get_state("order-123")
 parent_state["answer"]  # Output from rag/generate, surfaced to parent
 
 # Child state is isolated
-child_state = await checkpointer.get_state("order-123/rag")
+child_state = await checkpointer.get_state("order-123/rag@s1")
 child_state["embedding"]  # Only visible inside rag
 ```
 
@@ -1386,3 +1413,15 @@ The CLI is the universal agent interface. Every AI coding tool — Claude Code, 
 | 8 | CLI v1 scope too broad | Scope | Split into v1 (`ls/show/state/steps/inspect`) and v2 (`replay/diff/prune/--where`). Added JSON schema versioning |
 
 **Additional Codex suggestion considered**: Option B (direct runner instrumentation vs event-processor collector). Decided to keep event-processor approach (Option A) because: (a) with the event ordering fix it's correct, (b) it follows Core Belief #9 (observability decoupled from execution), (c) it's less invasive to runner code. The collector being a TypedEventProcessor is consistent with RichProgressProcessor pattern.
+
+### Round 2: Codex Review (gpt-5.3-codex, session 019ca0c5)
+
+**VERDICT: REVISE** — 5 consistency issues from incomplete example updates.
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 | NodeRecord/StepRecord snippets still used `tuple[str, ...]` for decision | Fixed: all instances now use `str \| list[str] \| None` (matches spec) |
+| 2 | Nested workflow ID examples still used unsuffixed `order-123/rag` | Fixed: all instances now use `order-123/rag@s1` |
+| 3 | No explicit Phase 0 / migration sequence | Fixed: added Phase 0 (prerequisite tests) and Phase 2.5 (runner API migration) |
+| 4 | Memory-risk mitigation advisory only | Acknowledged — deferred item is sufficient for plan scope |
+| 5 | `--where` and `replay/diff` still shown as v1 | Fixed: `--where` examples marked as v2, UC8 marked `(v2)` |
