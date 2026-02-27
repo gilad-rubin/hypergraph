@@ -602,6 +602,28 @@ class StepRecord:
 
 Everything above is the *what* and *why*. Below is the *how*.
 
+## Current Codebase State (Grounding)
+
+Before implementation, it's important to know what exists and what doesn't:
+
+| What | Status | Where |
+|------|--------|-------|
+| `RunResult.workflow_id` field | Exists (optional, defaults to None) | `runners/_shared/types.py:162` |
+| `workflow_id` in runner `run()`/`map()` signatures | **Does NOT exist** | `runners/base.py:39` — must be added |
+| `workflow_id` population in templates | **Not populated** | `template_async.py:197` — always None |
+| `NodeEndEvent.duration_ms` | Exists | `events/types.py` |
+| `NodeEndEvent.cached` | Exists | `events/types.py` |
+| `RouteDecisionEvent.decision` | Exists | `events/types.py` |
+| `StepRecord` in code | **Does NOT exist** | Spec-only (`specs/reviewed/execution-types.md`) |
+| `Checkpointer` in code | **Does NOT exist** | Spec-only (`specs/reviewed/checkpointer.md`) |
+| `src/hypergraph/checkpointers/` | **Does NOT exist** | Must be created |
+| CLI entry point | **Does NOT exist** | No `[project.scripts]` in `pyproject.toml` |
+| `RunnerCapabilities.supports_checkpointing` | **Does NOT exist** | Must be added |
+
+**Implication**: Phase 1 (RunLog) is self-contained. Phase 3 (Checkpointer) requires adding `workflow_id` to runner signatures first.
+
+---
+
 ## Phase 1: In-Memory RunLog (always-on, zero-config)
 
 ### New Types
@@ -623,9 +645,11 @@ A `TypedEventProcessor` that passively listens to events already emitted during 
 | Event | Collector Action |
 |-------|-----------------|
 | `RunStartEvent` | Record start timestamp |
-| `NodeEndEvent` | Append `NodeRecord` (completed/cached) |
+| `RouteDecisionEvent` | **Buffer** decision keyed by `(node_name, superstep)` |
+| `NodeEndEvent` | Append `NodeRecord` (completed/cached), apply any buffered decision |
 | `NodeErrorEvent` | Append `NodeRecord` (failed) |
-| `RouteDecisionEvent` | Attach `decision` to most recent record for that node |
+
+**Event ordering note**: In the current codebase, `RouteDecisionEvent` is emitted *before* `NodeEndEvent` (see `sync/superstep.py:111-114`, `async_/superstep.py:144-147`). The collector must buffer decisions and apply them when the corresponding `NodeEndEvent` arrives. Keying by `(node_name, superstep)` ensures correct correlation even with concurrent node execution.
 
 The collector is **always prepended** to the dispatcher's processor list — even when no user processors exist. This means `dispatcher.active` must be `True` whenever the collector is present.
 
@@ -721,13 +745,16 @@ Workflow: batch-2024-01-16 | FAILED | 8 steps | 2m10s
 
 ## Phase 2: Extend StepRecord Spec with Trace Fields
 
-Add three fields to the `StepRecord` definition in specs:
+Add two fields to the `StepRecord` definition in specs:
 
 | Field | Type | Why |
 |-------|------|-----|
 | `duration_ms` | `float \| None` | Explicit timing beats deriving from nullable timestamps. Enables queries like "steps > 5s". |
 | `cached` | `bool` | Distinguishes cache hits from genuinely fast nodes (`duration_ms ≈ 0` is ambiguous). |
-| `decision` | `str \| tuple[str, ...] \| None` | Without it, can't reconstruct "why did execution take this path?" from step records alone. |
+
+**`decision` already exists.** StepRecord in `specs/reviewed/execution-types.md` already defines `decision: str | list[str] | None` (see line ~1428). This field is used for deterministic gate replay on resume. We reuse it as-is for trace/debugging — no changes needed.
+
+**Type alignment note**: The spec uses `str | list[str] | None` for `decision`. NodeRecord (in-memory) should match this type exactly — NOT `tuple[str, ...]`.
 
 **Spec-only change.** No code — StepRecord doesn't exist in code yet. These fields ship with the initial checkpointer implementation.
 
@@ -735,7 +762,7 @@ Add three fields to the `StepRecord` definition in specs:
 
 | File | Change |
 |------|--------|
-| `specs/reviewed/execution-types.md` | Add 3 fields to StepRecord definition |
+| `specs/reviewed/execution-types.md` | Add `duration_ms` and `cached` to StepRecord definition |
 | `specs/reviewed/checkpointer.md` | Document new fields |
 
 ---
@@ -771,7 +798,7 @@ The runner builds a `StepRecord` from data already available after each node exe
 | `workflow_id` | From `runner.run(workflow_id=...)` |
 | `superstep` | Loop counter in `_execute_graph_impl` |
 | `node_name` | `node.name` |
-| `index` | Auto-incrementing counter |
+| `index` | Deterministic: `(superstep, graph-constructor-order)`. Within a superstep, nodes are ordered by their position in the original `Graph([...])` constructor, not by task completion time. This ensures index is stable across reruns regardless of async timing. |
 | `status` | Success/failure/pause of the node |
 | `input_versions` | Already captured in `NodeExecution` |
 | `values` | Already captured in `NodeExecution.outputs` |
@@ -827,9 +854,9 @@ Per spec: SyncRunner uses cache for durability. But timing metadata is always us
 
 | Risk | Mitigation |
 |------|-----------|
-| RunLog overhead | O(nodes) list appends — negligible. Same cost as existing `NodeExecution`. |
+| RunLog overhead | O(nodes) per run — same cost as existing `NodeExecution`. For map operations, each item gets its own RunLog. At extreme scale (1M+ items via `map_mode="product"`), consider `RunLog(aggregate_only=True)` mode that stores only `NodeStats` (counts/timing) without individual `NodeRecord` entries. Default: full records. |
 | Dispatcher always-active | Collector is lightweight. Optimize: activate event emission only, not full processor pipeline. |
-| StepRecord serialization failures | JSON default + pluggable Serializer. Warn + skip value on failure (never crash execution). |
+| StepRecord serialization failures | JSON default + pluggable Serializer. **Fail the step on serialization error** — per spec, checkpointer = full durability, always (see `durable-execution.md:59-109`). Skipping values would corrupt resume semantics. Users must ensure outputs are serializable when using a checkpointer. |
 | Phase 3 scope creep | Deliver SQLite only. Resist Postgres/Redis until SQLite is solid. |
 | Large StepRecord values | Inherent to persistence. Document limits. Future: ArtifactRef (store blob elsewhere, pass pointer). |
 
@@ -855,6 +882,7 @@ The SDK is powerful, but agents and CLI scripts shouldn't need to write Python t
 
 ### Command Structure
 
+**v1 (ship with checkpointer):**
 ```
 hypergraph
   workflows
@@ -862,11 +890,35 @@ hypergraph
     show        Show execution trace for a workflow
     state       Show accumulated values at a point
     steps       Show step records (detailed)
-    replay      Replay a workflow from a specific point
-    diff        Compare two workflow executions
   graph
     inspect     Show graph structure (nodes, edges, inputs)
 ```
+
+**v2 (deferred — after v1 is solid):**
+```
+hypergraph
+  workflows
+    replay      Replay a workflow from a specific point
+    diff        Compare two workflow executions
+    prune       Delete old workflow records
+```
+
+**Deferred from CLI v1**: `--where` DSL (node-level filtering), `replay`, `diff`, `prune`. These are powerful but each involves significant design decisions. Ship `ls/show/state/steps/inspect` first with basic flags (`--status`, `--since`, `--json`), validate with real usage, then add power features.
+
+### JSON Output Contract
+
+All `--json` output includes a stable envelope:
+
+```json
+{
+  "schema_version": 1,
+  "command": "workflows.ls",
+  "generated_at": "2024-01-16T09:00:00Z",
+  "data": [...]
+}
+```
+
+This ensures agents can detect format changes across CLI versions. `schema_version` is bumped on breaking changes to the JSON structure. Non-breaking additions (new fields) don't bump the version.
 
 ### Command Reference
 
@@ -916,7 +968,7 @@ hypergraph workflows ls --limit 10
 | `--status` | `completed\|failed\|active` | Filter by workflow status (repeatable) |
 | `--since` | datetime or relative | Only workflows created after this time |
 | `--until` | datetime or relative | Only workflows created before this time |
-| `--where` | string | Node-level filter (see below) |
+| `--where` | string | Node-level filter — **v2** (see below) |
 | `--limit` | int | Max results (default: 50) |
 | `--parent` | string | Only child workflows of this parent ID |
 | `--json` | flag | JSON output for piping/agents |
@@ -1149,7 +1201,9 @@ hypergraph graph inspect my_module:graph --json
 
 Nested graphs (via `graph.as_node()`) are a core hypergraph feature. The CLI, RunLog, and checkpointer must handle them naturally.
 
-**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag"`, grandchild `"order-123/rag/summarize"`.
+**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag@s1"` (where `s1` = superstep 1), grandchild `"order-123/rag@s1/summarize@s0"`.
+
+**Why the superstep suffix?** Without it, if a GraphNode executes multiple times (e.g., in a loop or map), both invocations would get the same workflow ID `"order-123/rag"`, causing step history to overwrite/mix. The `@sN` suffix disambiguates by invocation context. For map operations within a GraphNode, the map index is also included: `"order-123/rag@s1.i5"` (superstep 1, map item 5).
 
 #### CLI: Nested workflow display
 
@@ -1268,14 +1322,20 @@ hypergraph workflows state batch-2024-01-16 --superstep 3 --json
 # 4. Check the graph structure to understand the pipeline
 hypergraph graph inspect my_module:graph --json
 
-# 5. Compare with a successful run
-hypergraph workflows diff batch-2024-01-15 batch-2024-01-16 --json
-
-# 6. Set up a replay
-hypergraph workflows replay batch-2024-01-16 --from-superstep 3 --new-id retry-1
+# 5. Get detailed step records for the failing node
+hypergraph workflows steps batch-2024-01-16 --node generate --json
 ```
 
-All commands return structured JSON with `--json`. The agent never needs to parse human-formatted text.
+All commands return structured JSON with `--json` and a stable `schema_version` envelope. The agent never needs to parse human-formatted text.
+
+**v2 additions for agents** (deferred):
+```bash
+# Compare with a successful run
+hypergraph workflows diff batch-2024-01-15 batch-2024-01-16 --json
+
+# Set up a replay
+hypergraph workflows replay batch-2024-01-16 --from-superstep 3 --new-id retry-1
+```
 
 ### Why CLI First (Not MCP)
 
@@ -1302,3 +1362,27 @@ The CLI is the universal agent interface. Every AI coding tool — Claude Code, 
 - **MCP server** — thin wrapper over the same functions the CLI calls. Low priority — CLI covers the agent use case.
 - **DBOS alignment** — DBOSAsyncRunner has its own persistence
 - **Event field extensions** — events stay lightweight; StepRecord stores values
+- **CLI v2 commands** — `replay`, `diff`, `prune`, `--where` DSL (node-level filtering)
+- **RunLog aggregate_only mode** — for extreme-scale map/product workloads (1M+ items), store only NodeStats without individual NodeRecords
+- **CLI pagination** — `--limit`, `--cursor` for large output streaming (NDJSON)
+
+---
+
+## Review Log
+
+### Round 1: Codex Review (gpt-5.3-codex, session 019ca0c5)
+
+**VERDICT: REVISE** — 8 findings, all addressed below.
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | RouteDecisionEvent fires BEFORE NodeEndEvent — collector would drop decisions | Bug | Fixed: buffer decisions keyed by `(node_name, superstep)`, apply on NodeEndEvent |
+| 2 | "Warn + skip value on serialization failure" breaks durability guarantee | Bug | Fixed: fail step on serialization error (per spec: checkpointer = full durability) |
+| 3 | Nested workflow ID collision when GraphNode runs multiple times | Bug | Fixed: include superstep suffix `@sN` in child workflow IDs |
+| 4 | Step index ordering underspecified for async concurrency | Gap | Fixed: deterministic ordering by `(superstep, graph-constructor-order)` |
+| 5 | Plan says StepRecord/decision don't exist — they do | Factual error | Fixed: Phase 2 scoped to `duration_ms` + `cached` only. Decision type aligned to `str \| list[str]` |
+| 6 | No workflow_id in runner signatures yet | Expected | Added "Current Codebase State" grounding table |
+| 7 | Memory risk understated for extreme map/product scale | Risk | Added aggregate_only mode note + deferred item |
+| 8 | CLI v1 scope too broad | Scope | Split into v1 (`ls/show/state/steps/inspect`) and v2 (`replay/diff/prune/--where`). Added JSON schema versioning |
+
+**Additional Codex suggestion considered**: Option B (direct runner instrumentation vs event-processor collector). Decided to keep event-processor approach (Option A) because: (a) with the event ordering fix it's correct, (b) it follows Core Belief #9 (observability decoupled from execution), (c) it's less invasive to runner code. The collector being a TypedEventProcessor is consistent with RichProgressProcessor pattern.
