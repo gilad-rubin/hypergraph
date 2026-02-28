@@ -1,12 +1,12 @@
 # Debug Workflows
 
-Three tools for understanding what happened during graph execution, from quick in-process inspection to cross-process persistence and CLI debugging.
+Three tools for running and understanding graph execution, from quick in-process inspection to cross-process persistence and CLI execution/debugging.
 
 | Tool | When to Use | Setup | Scope |
 |------|-------------|-------|-------|
 | **RunLog** | "What happened in this run?" | Zero — always on | In-process, current run |
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
-| **CLI** | "Show me the failing workflow" | `pip install hypergraph[cli]` | Terminal, any process |
+| **CLI** | "Run this graph" / "Show me the failing workflow" | `pip install hypergraph[cli]` | Terminal, any process |
 
 ## RunLog — Always-On Execution Trace
 
@@ -216,9 +216,9 @@ result = await runner.run(graph, {"x": 5})
 result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
 ```
 
-## CLI — Terminal Debugging Interface
+## CLI — Execute and Debug from the Terminal
 
-The CLI provides terminal-based workflow inspection, designed for both humans and AI agents.
+The CLI lets you run graphs and inspect workflows directly from the terminal, designed for both humans and AI agents.
 
 ### Install
 
@@ -229,21 +229,108 @@ pip install 'hypergraph[cli]'
 ### Quick Overview
 
 ```bash
-# What workflows exist?
+# Run a graph
+hypergraph run my_module:graph x=5
+
+# Map over multiple inputs
+hypergraph map my_module:graph --map-over x 'x=[1,2,3]'
+
+# List registered graphs
+hypergraph graph ls
+
+# Inspect graph structure
+hypergraph graph inspect my_module:graph
+
+# Debug persisted workflows
 hypergraph workflows ls
-
-# What happened in a specific run?
 hypergraph workflows show my-run-1
-
-# What values were produced?
 hypergraph workflows state my-run-1
-
-# Drill into one value
-hypergraph workflows state my-run-1 --key doubled
-
-# Detailed step records
-hypergraph workflows steps my-run-1
 ```
+
+### run — Execute a Graph
+
+```bash
+# Pass inputs as key=value
+hypergraph run my_module:graph x=5
+
+# Use JSON string or file for complex inputs
+hypergraph run my_module:graph --values '{"x": 5, "y": [1, 2]}'
+hypergraph run my_module:graph --values params.json
+
+# key=value args override --values
+hypergraph run my_module:graph --values params.json x=10
+
+# Select specific outputs
+hypergraph run my_module:graph x=5 --select doubled
+
+# JSON output
+hypergraph run my_module:graph x=5 --json
+
+# With checkpointing
+hypergraph run my_module:graph x=5 --db ./workflows.db --workflow-id exp-42
+
+# Verbose (shows timing and step count)
+hypergraph run my_module:graph x=5 --verbose
+```
+
+The runner is auto-detected: SyncRunner for sync-only graphs, AsyncRunner if the graph has async nodes or `--db` is used. Override with `--runner sync` or `--runner async`.
+
+### map — Batch Execution
+
+```bash
+# Map over a single parameter
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
+
+# Map over multiple parameters (zip mode)
+hypergraph map my_module:graph --map-over a,b --values '{"a": [1, 2], "b": [10, 20]}'
+
+# Cartesian product
+hypergraph map my_module:graph --map-over a,b --map-mode product \
+  --values '{"a": [1, 2], "b": [10, 20]}'
+
+# key=value args work too
+hypergraph map my_module:graph --map-over x 'x=[1,2,3]'
+```
+
+`map` defaults to `--error-handling continue` (CLI-friendly: see all results, don't abort on first failure). `run` defaults to `raise`.
+
+### Graph Registry — pyproject.toml Shortcuts
+
+Register graph names in `pyproject.toml` to avoid typing module paths:
+
+```toml
+[tool.hypergraph.graphs]
+pipeline = "my_module:graph"
+etl = "etl.main:pipeline"
+
+[tool.hypergraph]
+db = "./workflows.db"  # default --db for all commands
+```
+
+Then use short names everywhere:
+
+```bash
+hypergraph run pipeline x=5
+hypergraph map pipeline --map-over x 'x=[1,2,3]'
+hypergraph graph inspect pipeline
+```
+
+### graph ls — List Registered Graphs
+
+```bash
+hypergraph graph ls
+
+#   Registered graphs (2):
+#
+#   Name      Module Path
+#   ────────  ──────────────────
+#   etl       etl.main:pipeline
+#   pipeline  my_module:graph
+```
+
+### Workflow Debugging
+
+The following commands inspect persisted workflows (requires `--db` or a `db` setting in pyproject.toml).
 
 ### workflows show — Execution Trace
 
@@ -337,7 +424,9 @@ hypergraph workflows steps my-run-1 --json --output steps.json
 ### graph inspect — Static Structure
 
 ```bash
+# By module path or registered name
 hypergraph graph inspect my_module:graph
+hypergraph graph inspect pipeline
 
 # Graph: my_graph | 5 nodes | 6 edges
 #
@@ -362,6 +451,8 @@ hypergraph workflows ls --db /path/to/workflows.db
 
 | Question | Tool |
 |----------|------|
+| "I want to run a graph from the terminal" | CLI (`hypergraph run`) |
+| "I want to batch-run with different inputs" | CLI (`hypergraph map`) |
 | "What happened in the run I just finished?" | RunLog (`result.log`) |
 | "Which node was slowest?" | RunLog (`result.log.slowest()`) |
 | "What happened in yesterday's run?" | Checkpointer + CLI |

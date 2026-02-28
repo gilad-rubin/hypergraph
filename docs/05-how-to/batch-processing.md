@@ -296,6 +296,20 @@ result = await runner.run(outer, {"x": items}, workflow_id="batch-001")
 # $ hypergraph workflows state batch-001 --values
 ```
 
+### CLI batch execution
+
+You can also run batch operations directly from the terminal:
+
+```bash
+# Map over a parameter
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
+
+# With checkpointing
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --db ./workflows.db
+```
+
+See [Debug Workflows — CLI](debug-workflows.md#run--execute-a-graph) for full CLI reference.
+
 ## When to Use Map vs Loop
 
 | Use `runner.map()` or `map_over` | Use a Python loop |

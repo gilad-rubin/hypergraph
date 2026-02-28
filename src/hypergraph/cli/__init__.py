@@ -1,14 +1,16 @@
-"""Hypergraph CLI — AI agent-friendly debugging interface.
+"""Hypergraph CLI — execute graphs and debug workflows.
 
 Entry point for the `hypergraph` command. Requires ``pip install hypergraph[cli]``.
 
 Commands:
-    workflows       Inspect and manage workflow executions
+    run             Execute a graph with given inputs
+    map             Map a graph over multiple input values
+    graph ls        List registered graphs from pyproject.toml
+    graph inspect   Show graph structure (nodes, edges, inputs)
     workflows ls    List workflows with filters
     workflows show  Show execution trace for a workflow
     workflows state Show accumulated values at a point
     workflows steps Show detailed step records
-    graph inspect   Show graph structure (nodes, edges, inputs)
 """
 
 from __future__ import annotations
