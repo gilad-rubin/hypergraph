@@ -227,9 +227,9 @@ hypergraph workflows show support-router-run
 hypergraph workflows state support-router-run --step 0 --key query
 # "How do I reset my password?"
 
-# See all routing decisions across recent workflows
-hypergraph workflows ls --since "1h ago" --json | \
-  jq '.data[] | {id, decision: .steps[0].decision}'
+# See routing decision for a specific workflow
+hypergraph workflows show support-router-run --json | \
+  jq '{id: .data.id, decision: .data.steps[0].decision}'
 ```
 
 ---
@@ -1133,6 +1133,349 @@ Before implementation, it's important to know what exists and what doesn't:
 
 ---
 
+## Design Contract — Back-Pressure Through Tests
+
+**This is the enforcement mechanism.** Each phase has a set of integration tests that encode the plan's design decisions. Tests are written FIRST (TDD) at the start of each phase. A phase is complete only when all its tests pass. Critics verify against this contract.
+
+The tests use **mock nodes** that simulate real-world scenarios (slow LLMs, failing APIs, routing decisions, caching). This lets us exercise the full flow end-to-end without external dependencies.
+
+### Test Infrastructure: Mock Node Library
+
+```python
+# tests/test_run_log/conftest.py — reusable mock nodes for all tests
+
+@node
+def mock_embed(text: str) -> list[float]:
+    """Simulates an embedding call (fast, ~1ms)."""
+    time.sleep(0.001)
+    return [0.1, 0.2, 0.3] * 512  # 1536 floats
+
+@node
+def mock_llm(prompt: str) -> str:
+    """Simulates an LLM call (slow, ~10ms)."""
+    time.sleep(0.01)
+    return f"Response to: {prompt[:50]}"
+
+@node
+def mock_failing_llm(prompt: str) -> str:
+    """Simulates a failing LLM call."""
+    raise ConnectionError("504 Gateway Timeout")
+
+@node
+def mock_slow_llm(prompt: str) -> str:
+    """Simulates a very slow LLM call (~50ms)."""
+    time.sleep(0.05)
+    return "slow response"
+
+@route
+def mock_classifier(query: str) -> str:
+    """Routes to different handlers based on query content."""
+    if "password" in query.lower():
+        return "account_support"
+    return "general_support"
+
+@node
+def mock_format(text: str) -> str:
+    """Fast formatting node."""
+    return text.upper()
+```
+
+### Phase 1 Tests: RunLog (In-Memory, Always-On)
+
+These tests verify every RunLog example from the plan. Written before implementation, all should fail initially.
+
+#### Scenario 1: Basic timing inspection (UC1)
+
+```python
+def test_runlog_exists_after_run():
+    """UC1: result.log is always available after run()."""
+    graph = Graph([mock_embed, mock_llm, mock_format])
+    runner = SyncRunner()
+    result = runner.run(graph, values={"text": "hello", "prompt": "test"})
+
+    assert result.log is not None
+    assert isinstance(result.log, RunLog)
+
+def test_runlog_shows_per_node_timing():
+    """UC1: result.log.timing shows total ms per node."""
+    graph = Graph([mock_embed, mock_slow_llm, mock_format])
+    result = SyncRunner().run(graph, values={"text": "hello", "prompt": "test"})
+
+    timing = result.log.timing
+    assert "mock_slow_llm" in timing
+    assert timing["mock_slow_llm"] > timing["mock_format"]  # slow > fast
+
+def test_runlog_node_stats_aggregation():
+    """UC1: result.log.node_stats has correct counts and averages."""
+    graph = Graph([mock_embed, mock_llm])
+    results = SyncRunner().map(graph, values={"text": ["a", "b", "c"]}, map_over="text")
+
+    # Each item has its own RunLog
+    for r in results:
+        assert r.log is not None
+        stats = r.log.node_stats["mock_embed"]
+        assert stats.count == 1
+        assert stats.avg_ms > 0
+
+def test_runlog_summary_one_liner():
+    """Progressive Disclosure: result.log.summary() returns concise string."""
+    graph = Graph([mock_embed, mock_llm])
+    result = SyncRunner().run(graph, values={"text": "hello"})
+
+    summary = result.log.summary()
+    assert "mock_embed" in summary or "nodes" in summary
+    assert isinstance(summary, str)
+    assert len(summary) < 200  # one-liner, not a table
+```
+
+#### Scenario 2: Error inspection (UC2)
+
+```python
+def test_runlog_errors_returns_only_failures():
+    """UC2: result.log.errors filters to failed nodes only."""
+    graph = Graph([mock_embed, mock_failing_llm])
+    result = SyncRunner().run(graph, values={"text": "hello"}, error_handling="continue")
+
+    assert len(result.log.errors) == 1
+    assert result.log.errors[0].node_name == "mock_failing_llm"
+    assert result.log.errors[0].status == "failed"
+    assert "504 Gateway Timeout" in result.log.errors[0].error
+
+def test_runlog_each_map_item_has_own_log():
+    """UC2: Each map item gets its own RunLog."""
+    # Mix of passing and failing items
+    graph = Graph([mock_embed, mock_llm])
+    results = SyncRunner().map(
+        graph, values={"text": ["a", "b", "c"]}, map_over="text",
+        error_handling="continue",
+    )
+
+    for r in results:
+        assert r.log is not None
+        assert r.log.graph_name is not None
+```
+
+#### Scenario 3: Routing decisions (UC3)
+
+```python
+def test_runlog_captures_routing_decision():
+    """UC3: NodeRecord.decision shows the gate's routing choice."""
+    account_support = node(lambda query: f"Account help for: {query}", output_name="answer")
+    general_support = node(lambda query: f"General help for: {query}", output_name="answer")
+
+    graph = Graph([
+        mock_classifier,
+        account_support,
+        general_support,
+    ])
+    result = SyncRunner().run(graph, values={"query": "How do I reset my password?"})
+
+    # Find the classifier step
+    classifier_record = next(
+        r for r in result.log.steps if r.node_name == "mock_classifier"
+    )
+    assert classifier_record.decision == "account_support"
+
+def test_runlog_decision_buffered_correctly():
+    """Phase 0 prerequisite: RouteDecisionEvent fires before NodeEndEvent.
+    The collector must buffer decisions and apply on NodeEndEvent."""
+    # This test verifies the buffering mechanism works correctly
+    # (RouteDecisionEvent keyed by (node_name, superstep) → applied on NodeEndEvent)
+    graph = Graph([mock_classifier, ...])
+    result = SyncRunner().run(graph, values={"query": "password reset"})
+
+    record = next(r for r in result.log.steps if r.node_name == "mock_classifier")
+    assert record.decision is not None
+    assert record.status == "completed"  # both decision AND status set
+```
+
+#### Scenario 4: Cache hits (UC1 variant)
+
+```python
+def test_runlog_cached_nodes_marked():
+    """Cached nodes have cached=True in NodeRecord."""
+    graph = Graph([mock_embed, mock_llm])
+    runner = SyncRunner(cache=InMemoryCache())
+
+    # First run — no cache
+    r1 = runner.run(graph, values={"text": "hello"})
+    assert all(not r.cached for r in r1.log.steps)
+
+    # Second run — cache hit
+    r2 = runner.run(graph, values={"text": "hello"})
+    assert any(r.cached for r in r2.log.steps)
+```
+
+#### Scenario 5: Display formats (UC7 — AI agent)
+
+```python
+def test_runlog_str_is_formatted_table():
+    """UC7: str(result.log) produces human-readable table."""
+    graph = Graph([mock_embed, mock_llm, mock_format])
+    result = SyncRunner().run(graph, values={"text": "hello", "prompt": "test"})
+
+    output = str(result.log)
+    assert "RunLog:" in output
+    assert "mock_embed" in output
+    assert "mock_llm" in output
+    assert "completed" in output
+
+def test_runlog_to_dict_is_json_serializable():
+    """UC7: result.log.to_dict() can be JSON-serialized."""
+    import json
+    graph = Graph([mock_embed, mock_llm])
+    result = SyncRunner().run(graph, values={"text": "hello"})
+
+    d = result.log.to_dict()
+    json_str = json.dumps(d)  # must not raise
+    parsed = json.loads(json_str)
+    assert "steps" in parsed
+    assert len(parsed["steps"]) == 2
+
+def test_runlog_adaptive_layout_dag_vs_map():
+    """Display: step-by-step for DAG, stats table for map."""
+    graph = Graph([mock_embed, mock_llm])
+
+    # DAG: step-by-step (Step column)
+    r1 = SyncRunner().run(graph, values={"text": "hello"})
+    dag_output = str(r1.log)
+    assert "Step" in dag_output
+
+    # Map: stats (Runs column)
+    results = SyncRunner().map(graph, values={"text": ["a", "b", "c"]}, map_over="text")
+    # For map, each item has its own RunLog with step view
+    # The aggregate view (Runs/Avg) is for RunLog with multiple executions per node
+    for r in results:
+        assert "Step" in str(r.log)  # individual items show step view
+```
+
+#### Scenario 6: Async runner parity
+
+```python
+@pytest.mark.asyncio
+async def test_runlog_async_runner():
+    """RunLog works identically on AsyncRunner."""
+    graph = Graph([mock_embed, mock_llm])
+    result = await AsyncRunner().run(graph, values={"text": "hello"})
+
+    assert result.log is not None
+    assert len(result.log.steps) == 2
+    assert result.log.total_duration_ms > 0
+
+@pytest.mark.asyncio
+async def test_runlog_async_map():
+    """Each async map item has its own RunLog."""
+    graph = Graph([mock_embed, mock_llm])
+    results = await AsyncRunner().map(
+        graph, values={"text": ["a", "b"]}, map_over="text"
+    )
+    assert all(r.log is not None for r in results)
+```
+
+#### Structural invariants
+
+```python
+def test_noderecord_is_frozen():
+    """NodeRecord is immutable."""
+    graph = Graph([mock_embed])
+    result = SyncRunner().run(graph, values={"text": "hello"})
+
+    record = result.log.steps[0]
+    with pytest.raises(AttributeError):
+        record.node_name = "hacked"
+
+def test_runlog_steps_is_tuple():
+    """RunLog.steps is a tuple (immutable)."""
+    graph = Graph([mock_embed])
+    result = SyncRunner().run(graph, values={"text": "hello"})
+
+    assert isinstance(result.log.steps, tuple)
+
+def test_existing_tests_still_pass():
+    """All pre-existing tests continue to pass after RunLog integration.
+    This is enforced by running the full test suite, not a single test."""
+    # This is verified by: uv run pytest (must pass before PR)
+    pass
+```
+
+### Phase 1 Critic Checklist
+
+The plan reviewer verifies these after Phase 1 implementation:
+
+- [ ] `NodeRecord`, `NodeStats`, `RunLog` exist in `runners/_shared/types.py`
+- [ ] `_RunLogCollector` exists in `runners/_shared/run_log.py`
+- [ ] `RunResult` has `log: RunLog | None` field
+- [ ] Both `SyncRunner` and `AsyncRunner` produce RunLog on every `run()` and `map()` call
+- [ ] `RunLog` exported from `__init__.py`
+- [ ] RouteDecisionEvent buffering works (decision appears on correct NodeRecord)
+- [ ] Cached nodes marked with `cached=True`
+- [ ] `to_dict()` output matches the plan's JSON structure
+- [ ] `str(RunLog)` matches the plan's table format (step-by-step for DAG, stats for multi-execution)
+- [ ] `summary()` returns a concise one-liner
+- [ ] No existing tests broken
+- [ ] All Phase 1 tests pass: `uv run pytest tests/test_run_log/`
+
+### Phase 3 Tests: Checkpointer + Persistent Trace (future)
+
+These tests will be written at the start of Phase 3. Listed here as design anchors.
+
+```python
+# UC4: Intermediate value inspection
+async def test_checkpointer_get_state_at_step():
+    """UC4: get_state(workflow_id, superstep=N) returns accumulated values."""
+
+# UC5: Cross-process query
+async def test_checkpointer_survives_process_exit():
+    """UC5: Steps written to SQLite are readable in a new process."""
+
+# UC6: Workflow listing
+async def test_checkpointer_list_workflows_with_filter():
+    """UC6: list_workflows(status=FAILED) returns only failed."""
+
+# UC8: Live monitoring
+async def test_checkpointer_async_durability_live_query():
+    """UC8: Steps visible in another connection while workflow runs."""
+
+# UC9: Fork and retry
+async def test_checkpointer_fork_from_step():
+    """UC9: get_checkpoint + run with history resumes from step."""
+
+# Map persistence
+async def test_map_items_are_child_workflows():
+    """Map: each item creates a child workflow (parent/item-N)."""
+
+# Security
+async def test_pickle_serializer_requires_opt_in():
+    """PickleSerializer raises without allow_pickle=True."""
+```
+
+### Phase 4 Tests: CLI (future)
+
+```python
+# These test actual CLI output matches the plan's examples.
+# Written at Phase 4 start. Listed here as anchors.
+
+def test_cli_workflows_show_output_format():
+    """CLI: `workflows show` matches plan's table format."""
+
+def test_cli_workflows_state_progressive_disclosure():
+    """CLI: state command shows type/size by default, values with --values."""
+
+def test_cli_json_envelope_structure():
+    """CLI: --json output has schema_version, command, data envelope."""
+
+def test_cli_guidance_footers():
+    """CLI: truncated output includes 'To see more: ...' footer."""
+
+def test_cli_step_not_superstep_in_output():
+    """CLI: user-facing output uses 'step' not 'superstep'."""
+
+def test_cli_limit_default_20():
+    """CLI: default --limit is 20 for all list commands."""
+```
+
+---
+
 ## Phase 0: Prerequisites (before any implementation)
 
 Before starting Phase 1, verify these baseline assumptions with targeted tests:
@@ -1798,7 +2141,7 @@ hypergraph workflows show batch-2024-01-16 --step 2..4
 |------|------|-------------|
 | `--json` | flag | JSON output |
 | `--errors` | flag | Only show failed steps |
-| `--step` | `N` or `N..M` | Filter to step range (maps to internal superstep) |
+| `--step` | `N` or `N..M` | Filter to step range (sequential index — same as Step column) |
 | `--node` | string | Filter to specific node name |
 | `--full` | flag | Show full error tracebacks and values |
 | `--tree` | flag | Expand nested workflows inline |
@@ -2015,9 +2358,9 @@ hypergraph graph inspect my_module:graph --json
 
 Nested graphs (via `graph.as_node()`) are a core hypergraph feature. The CLI, RunLog, and checkpointer must handle them naturally.
 
-**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag@s1@s1"` (where `s1` = superstep 1), grandchild `"order-123/rag@s1@s1/summarize@s0"`.
+**Workflow ID convention**: Parent `"order-123"`, child `"order-123/rag@s1"` (where `@s1` = superstep 1 in the parent), grandchild `"order-123/rag@s1/summarize@s0"`.
 
-**Why the superstep suffix?** Without it, if a GraphNode executes multiple times (e.g., in a loop or map), both invocations would get the same workflow ID `"order-123/rag@s1"`, causing step history to overwrite/mix. The `@sN` suffix disambiguates by invocation context. For map operations within a GraphNode, the map index is also included: `"order-123/rag@s1@s1.i5"` (superstep 1, map item 5).
+**Why the superstep suffix?** Without it, if a GraphNode executes multiple times (e.g., in a loop), both invocations would get the same workflow ID `"order-123/rag"`, causing step history to overwrite/mix. The `@sN` suffix (N = superstep in the parent where this node ran) disambiguates by invocation context. For map operations, the map index is appended: `"order-123/rag@s1.i5"` (superstep 1, map item 5).
 
 #### CLI: Nested workflow display
 
@@ -2159,7 +2502,7 @@ The CLI is the universal agent interface. Every AI coding tool — Claude Code, 
 
 ### Implementation Notes
 
-- Built with `click` (already a dev dependency convention in Python CLIs)
+- Built with `typer` (type-hint-based CLI on top of Click) — add `typer>=0.9` to `[project.optional-dependencies]` under a `cli` extra: `pip install hypergraph[cli]`
 - `--db` flag defaults to `./workflows.db` (SQLite) — can point to any checkpointer
 - `--json` uses the same `to_dict()` methods from RunLog and StepRecord
 - Human display uses the same formatting logic from RunLog/Workflow `__str__`
@@ -2228,3 +2571,15 @@ The CLI is the universal agent interface. Every AI coding tool — Claude Code, 
 | 7 | CLI flag defaults inconsistent (10 vs 50) | Medium | Fixed: standardized to 20 across all defaults |
 | 8 | UC4 Python snippet undefined `checkpointer` | Low | Fixed: split to `checkpointer = SqliteCheckpointer(...)` then `runner = AsyncRunner(checkpointer=checkpointer)` |
 | 9 | "append-only" claim conflicts with interrupt update model | Low | Fixed: reworded to "append-only (except interrupt PAUSED→COMPLETED update-in-place)" |
+
+### Round 4: Codex Review (gpt-5.3-codex, session 019ca29b resume)
+
+**VERDICT: REVISE** — 5 findings (3 Medium, 2 Low). Max rounds reached; addressed directly.
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | UC3 JSON query uses `.steps[0].decision` but `ls` JSON shows `steps` as a count | Medium | Fixed: changed jq example to pipe from `workflows show <id> --json` instead of `ls --json` |
+| 2 | `--step` "maps to internal superstep" contradicts Design Principle 4 (step = sequential index) | Medium | Fixed: `--step` always means sequential index (same as Step column). CLI maps internally. |
+| 3 | Nested workflow ID convention `@s1@s1` conflicts with CLI examples using `@s1` | Medium | Fixed: normalized to `parent/node@sN` (single suffix = parent superstep). Map: `@sN.iM`. |
+| 4 | Spec migration step incomplete — old `parent/node` convention in multiple spec files | Low | Acknowledged: Phase 2 should include a full spec sweep (`grep -r 'parent/node' specs/`) |
+| 5 | CLI says Click but no dependency in plan | Low | Fixed: changed to `typer>=0.9` as `[cli]` optional extra in pyproject.toml |
