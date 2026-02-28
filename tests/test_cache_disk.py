@@ -87,13 +87,15 @@ class TestDiskCacheHMACIntegrity:
         assert value == {"result": 42}
 
     def test_tampered_value_rejected(self, tmp_path):
-        """Directly modifying the cached value causes HMAC mismatch."""
+        """Directly modifying the cached bytes causes HMAC mismatch."""
         cache_dir = str(tmp_path / "cache")
         cache = DiskCache(cache_dir)
         cache.set("k1", {"result": 42})
 
-        # Tamper: overwrite the value directly in the underlying diskcache
-        cache._cache.set("k1", {"result": 9999})
+        # Tamper: overwrite the raw bytes in the underlying diskcache
+        import pickle
+
+        cache._cache.set("k1", pickle.dumps({"result": 9999}))
 
         hit, value = cache.get("k1")
         assert hit is False
@@ -104,10 +106,24 @@ class TestDiskCacheHMACIntegrity:
         cache_dir = str(tmp_path / "cache")
         cache = DiskCache(cache_dir)
 
-        # Write value directly to underlying cache (no HMAC)
-        cache._cache.set("sneaky", {"payload": "evil"})
+        # Write raw bytes directly to underlying cache (no HMAC)
+        import pickle
+
+        cache._cache.set("sneaky", pickle.dumps({"payload": "evil"}))
 
         hit, value = cache.get("sneaky")
+        assert hit is False
+        assert value is None
+
+    def test_non_bytes_legacy_entry_rejected(self, tmp_path):
+        """Non-bytes entry (e.g. from pre-HMAC cache) is treated as a miss."""
+        cache_dir = str(tmp_path / "cache")
+        cache = DiskCache(cache_dir)
+
+        # Write a Python object directly (simulates pre-HMAC legacy entry)
+        cache._cache.set("legacy", {"payload": "old"})
+
+        hit, value = cache.get("legacy")
         assert hit is False
         assert value is None
 
@@ -141,6 +157,7 @@ class TestDiskCacheHMACIntegrity:
         assert hit is False
         assert value is None
 
+    @pytest.mark.skipif(os.name != "posix", reason="Unix file permissions only")
     def test_hmac_key_file_permissions(self, tmp_path):
         """HMAC key file has restrictive permissions (owner-only)."""
         cache_dir = str(tmp_path / "cache")
