@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
@@ -61,7 +61,9 @@ class SqliteCheckpointer(Checkpointer):
 
     Args:
         path: Path to SQLite database file.
-        policy: Checkpoint policy (default: async + full).
+        durability: When to write — "sync", "async" (default), or "exit".
+        retention: What to keep — "full" (default), "latest", or "windowed".
+        policy: Full CheckpointPolicy (overrides durability/retention if given).
         serializer: Value serializer (default: JSON).
 
     Example::
@@ -69,6 +71,9 @@ class SqliteCheckpointer(Checkpointer):
         checkpointer = SqliteCheckpointer("./workflows.db")
         runner = AsyncRunner(checkpointer=checkpointer)
         result = await runner.run(graph, {"x": 1}, workflow_id="wf-1")
+
+        # Customize durability inline
+        cp = SqliteCheckpointer("./workflows.db", durability="sync")
 
         # Query later
         state = await checkpointer.get_state("wf-1")
@@ -79,9 +84,18 @@ class SqliteCheckpointer(Checkpointer):
         self,
         path: str,
         *,
+        durability: Literal["sync", "async", "exit"] | None = None,
+        retention: Literal["full", "latest", "windowed"] | None = None,
         policy: CheckpointPolicy | None = None,
         serializer: Serializer | None = None,
     ):
+        if policy is not None and (durability is not None or retention is not None):
+            raise ValueError("Cannot pass both 'policy' and 'durability'/'retention'. Use one or the other.")
+        if policy is None and (durability is not None or retention is not None):
+            policy = CheckpointPolicy(
+                durability=durability or "async",
+                retention=retention or "full",
+            )
         super().__init__(policy=policy)
         self._path = path
         self._serializer = serializer or JsonSerializer()

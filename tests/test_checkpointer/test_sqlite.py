@@ -235,3 +235,26 @@ class TestPolicyIntegration:
         policy = CheckpointPolicy(durability="sync", retention="latest")
         cp = SqliteCheckpointer(":memory:", policy=policy)
         assert cp.policy.durability == "sync"
+
+    def test_durability_kwarg(self):
+        cp = SqliteCheckpointer(":memory:", durability="sync")
+        assert cp.policy.durability == "sync"
+        assert cp.policy.retention == "full"
+
+    def test_retention_kwarg(self):
+        cp = SqliteCheckpointer(":memory:", retention="latest")
+        assert cp.policy.durability == "async"
+        assert cp.policy.retention == "latest"
+
+    def test_both_kwargs(self):
+        cp = SqliteCheckpointer(":memory:", durability="sync", retention="latest")
+        assert cp.policy.durability == "sync"
+        assert cp.policy.retention == "latest"
+
+    def test_policy_and_kwargs_conflict(self):
+        with pytest.raises(ValueError, match="Cannot pass both"):
+            SqliteCheckpointer(
+                ":memory:",
+                policy=CheckpointPolicy(),
+                durability="sync",
+            )

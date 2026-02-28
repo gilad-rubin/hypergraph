@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 from hypergraph import END, AsyncRunner, Graph, ifelse, node
-from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
+from hypergraph.checkpointers import SqliteCheckpointer
 
 # ─── Graph definitions ───────────────────────────────────────────────
 
@@ -104,9 +104,7 @@ async def demo_2_checkpointer(db_path: str) -> None:
     """Use case 2: Persistent workflow history with SqliteCheckpointer."""
     section("2. Checkpointer — Durable Workflow Persistence")
 
-    cp = SqliteCheckpointer(db_path)
-    cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
+    cp = SqliteCheckpointer(db_path, durability="sync")
 
     runner = AsyncRunner(checkpointer=cp)
     graph = Graph([double, triple])
@@ -140,9 +138,7 @@ async def demo_3_error_tracing(db_path: str) -> None:
     """Use case 3: Error tracing — failed nodes get tracked."""
     section("3. Error Tracing — Failed Nodes + Partial Failures")
 
-    cp = SqliteCheckpointer(db_path)
-    cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
+    cp = SqliteCheckpointer(db_path, durability="sync")
 
     runner = AsyncRunner(checkpointer=cp)
 
@@ -178,9 +174,7 @@ async def demo_4_cyclic_workflow(db_path: str) -> None:
     """Use case 4: Cyclic workflow — re-executions tracked per superstep."""
     section("4. Cyclic Workflow — Loop Re-Execution Tracking")
 
-    cp = SqliteCheckpointer(db_path)
-    cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
+    cp = SqliteCheckpointer(db_path, durability="sync")
 
     runner = AsyncRunner(checkpointer=cp)
     graph = Graph([increment, check_done])
