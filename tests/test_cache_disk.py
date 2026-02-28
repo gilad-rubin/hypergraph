@@ -157,6 +157,19 @@ class TestDiskCacheHMACIntegrity:
         assert hit is False
         assert value is None
 
+    def test_wrong_type_hmac_rejected(self, tmp_path):
+        """HMAC entry with wrong type (bytes instead of str) is treated as miss."""
+        cache_dir = str(tmp_path / "cache")
+        cache = DiskCache(cache_dir)
+        cache.set("k1", {"result": 42})
+
+        # Tamper: store bytes instead of string for HMAC
+        cache._cache.set("k1" + DiskCache._HMAC_SUFFIX, b"not_a_string")
+
+        hit, value = cache.get("k1")
+        assert hit is False
+        assert value is None
+
     @pytest.mark.skipif(os.name != "posix", reason="Unix file permissions only")
     def test_hmac_key_file_permissions(self, tmp_path):
         """HMAC key file has restrictive permissions (owner-only)."""
