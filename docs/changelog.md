@@ -1,5 +1,33 @@
 # Changelog
 
+## Recent Merged PRs
+
+### [PR #61](https://github.com/gilad-rubin/hypergraph/pull/61) (Merged February 28, 2026) - DiskCache HMAC integrity hardening
+
+- Added HMAC-SHA256 signing for `DiskCache` payloads using a per-cache-directory secret key.
+- `DiskCache.get()` now verifies HMAC integrity **before** deserialization (`pickle.loads`), preventing untrusted/tampered payload deserialization.
+- Added atomic HMAC key initialization (`O_CREAT | O_EXCL`) to avoid race conditions when multiple processes initialize the same cache directory.
+- Added broader recovery behavior for corrupted or legacy cache entries:
+  - non-bytes payloads are evicted and treated as cache misses
+  - missing/invalid HMAC metadata is evicted and treated as cache misses
+  - deserialization failures evict the bad entry and return miss
+- Expanded disk cache integrity tests to cover tampering, key initialization races, and bad metadata handling.
+
+### [PR #59](https://github.com/gilad-rubin/hypergraph/pull/59) (Merged February 26, 2026) - Non-TTY progress fallback
+
+- Added non-TTY mode to `RichProgressProcessor` for CI/piped environments where live Rich bars are not appropriate.
+- Added milestone-based map progress logging at 10%, 25%, 50%, 75%, and 100%.
+- Added explicit mode control via `RichProgressProcessor(force_mode="auto" | "tty" | "non-tty")`.
+- Added non-TTY node start/end/failure plain-text logging for non-map runs.
+- Cleaned up non-TTY tracking internals after review (removed unused fields and simplified state).
+- Added dedicated tests for non-TTY behavior.
+
+### [PR #58](https://github.com/gilad-rubin/hypergraph/pull/58) (Merged February 25, 2026) - PR workflow and contributor docs updates
+
+- Added `.github/PULL_REQUEST_TEMPLATE.md` with a problem + before/after structure.
+- Updated internal skills and contributor instructions to reuse the PR template and reduce duplicated guidance.
+- Removed legacy "entire session" tracking guidance from project docs/instructions.
+
 ## February 2026
 
 ### Added

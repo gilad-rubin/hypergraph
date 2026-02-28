@@ -258,11 +258,20 @@ result = runner.run(graph, inputs, event_processors=[RichProgressProcessor()])
 
 ```python
 class RichProgressProcessor(TypedEventProcessor):
-    def __init__(self, *, transient: bool = True) -> None: ...
+    def __init__(
+        self,
+        *,
+        transient: bool = True,
+        force_mode: Literal["tty", "non-tty", "auto"] = "auto",
+    ) -> None: ...
 ```
 
 **Args:**
 - `transient` - If `True` (default), progress bars are removed after completion. Set to `False` to keep them visible.
+- `force_mode` - Controls output mode:
+  - `"auto"` (default): detect via `stdout.isatty()`
+  - `"tty"`: force Rich live bars
+  - `"non-tty"`: force plain-text milestone logging (useful for CI/log pipelines)
 
 ### Visual Output
 
@@ -293,6 +302,14 @@ class RichProgressProcessor(TypedEventProcessor):
 🗺️ scrape_graph Progress ━━━━━━━ 100% 50/50 (3 failed)
   📦 fetch ━━━━━━━━━━━━━━━━━━━━━ 100% 50/50
   📦 parse ━━━━━━━━━━━━━━━━━━━━━  94% 47/50
+```
+
+### Non-TTY Milestones
+
+In non-TTY mode, map progress is logged at fixed milestones (10%, 25%, 50%, 75%, 100%) instead of rendering live bars:
+
+```text
+[14:20:00] 🗺️ scrape_graph: 50% (50/100)
 ```
 
 ### Visual Conventions

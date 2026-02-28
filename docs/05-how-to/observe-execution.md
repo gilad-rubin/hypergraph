@@ -37,6 +37,32 @@ results = runner.map(graph, {"url": urls}, map_over="url",
   📦 parse ━━━━━━━━━━━━━━━━━━━━━  94% 47/50
 ```
 
+### Non-TTY Fallback (CI and Piped Logs)
+
+`RichProgressProcessor` auto-detects whether stdout is a TTY:
+
+- **TTY**: live Rich progress bars (default terminal experience)
+- **Non-TTY** (CI, redirected output): plain-text progress logs
+
+In non-TTY mode, map runs log milestone progress at **10%**, **25%**, **50%**, **75%**, and **100%**:
+
+```text
+[14:20:00] 🗺️ scrape_graph: 25% (25/100)
+[14:20:08] 🗺️ scrape_graph: 50% (50/100)
+```
+
+You can override auto-detection for testing/debugging:
+
+```python
+from hypergraph import RichProgressProcessor
+
+# Force plain-text mode even in a local terminal
+processor = RichProgressProcessor(force_mode="non-tty")
+
+# Force Rich live bars (useful in tests that provide a TTY-like stream)
+processor = RichProgressProcessor(force_mode="tty")
+```
+
 ## Custom Event Processors
 
 ### Collect All Events
