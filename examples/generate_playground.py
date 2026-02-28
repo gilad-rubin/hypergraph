@@ -75,12 +75,13 @@ class UseCase:
     category: str  # "tracing" | "persistence" | "map"
     status: str  # "ok" | "gap" | "defer"
     impl_note: str
-    multi_style: str  # "runner.map()" | "map_over" — which batch pattern this UC shows
 
     single_python: str  # Python code + output for single-item run
     single_cli: str  # CLI output for single-item (empty string if N/A)
-    multi_python: str  # Python code + output for multi-item run
-    multi_cli: str  # CLI output for multi-item (empty string if N/A)
+    mapped_python: str  # runner.map() variation
+    mapped_cli: str
+    nested_python: str  # map_over variation
+    nested_cli: str
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────
@@ -175,10 +176,10 @@ result = runner.run(graph, {{"x": 5}})
 >>> result.log.node_stats
 {fmt_node_stats(result.log.node_stats)}"""
 
-    # Multi — runner.map()
+    # Mapped — runner.map()
     results = runner.map(graph, {"x": [1, 2, 3, 4, 5]}, map_over="x")
     summaries = "\n".join(f"  [{i}] {r.log.summary()}" for i, r in enumerate(results))
-    multi = f"""\
+    mapped = f"""\
 # runner.map() returns MapResult — sequence with batch metadata
 results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 
@@ -192,6 +193,26 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 >>> for i, r in enumerate(results): print(r.log.summary())
 {summaries}"""
 
+    # Nested — map_over
+    inner = Graph([double, triple], name="pipeline")
+    outer = Graph([inner.as_node().map_over("x")])
+    result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
+    nested = f"""\
+# map_over — inner graph runs per item, ONE RunResult with list outputs
+inner = Graph([double, triple], name="pipeline")
+outer = Graph([inner.as_node().map_over("x")])
+result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
+
+>>> result["tripled"]
+{result_n["tripled"]}
+
+# One RunResult, one RunLog (the mapped step is a single node)
+>>> result.log.summary()
+'{result_n.log.summary()}'
+
+>>> result.log.timing
+{result_n.log.timing}"""
+
     return UseCase(
         id="uc1",
         label="UC1",
@@ -200,11 +221,12 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
         category="tracing",
         status="ok",
         impl_note="Fully implemented. RunLog is always-on, zero config.",
-        multi_style="runner.map()",
         single_python=single,
         single_cli="",
-        multi_python=multi,
-        multi_cli="",
+        mapped_python=mapped,
+        mapped_cli="",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -232,7 +254,7 @@ result = runner.run(graph, {{"x": 1}}, error_handling="continue")
 >>> print(result.log)
 {result.log}"""
 
-    # Multi — runner.map() with mixed success/failure
+    # Mapped — runner.map() with mixed success/failure
     @node(output_name="value")
     def maybe_fail(x: int) -> int:
         if x == 3:
@@ -246,7 +268,7 @@ result = runner.run(graph, {{"x": 1}}, error_handling="continue")
         map_over="x",
         error_handling="continue",
     )
-    multi = f"""\
+    mapped = f"""\
 # runner.map() with error_handling="continue" — failures don't stop the batch
 results = runner.map(
     fail_graph, {{"x": [1, 2, 3, 4, 5]}},
@@ -270,6 +292,26 @@ results = runner.map(
 >>> results.get("value", "N/A")
 {results.get("value", "N/A")}"""
 
+    # Nested — map_over (errors affect the whole step)
+    inner_fail = Graph([maybe_fail], name="checker")
+    outer_fail = Graph([inner_fail.as_node().map_over("x")])
+    result_n = runner.run(outer_fail, {"x": [1, 2, 3, 4, 5]}, error_handling="continue")
+    nested = f"""\
+# map_over — errors affect the whole step (no per-item isolation)
+inner = Graph([maybe_fail], name="checker")
+outer = Graph([inner.as_node().map_over("x")])
+result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
+
+>>> result.status
+{result_n.status}
+
+>>> result.log.summary()
+'{result_n.log.summary()}'
+
+# Compare: runner.map() isolates each item, map_over does not
+# With runner.map(): 4 succeed, 1 fails independently
+# With map_over: x=3 fails the entire mapped step"""
+
     return UseCase(
         id="uc2",
         label="UC2",
@@ -278,11 +320,12 @@ results = runner.map(
         category="tracing",
         status="ok",
         impl_note="Fully implemented. error_handling='continue' works in both run() and map().",
-        multi_style="runner.map()",
         single_python=single,
         single_cli="",
-        multi_python=multi,
-        multi_cli="",
+        mapped_python=mapped,
+        mapped_cli="",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -311,21 +354,14 @@ result = runner.run(graph, {{"count": 0}})
 >>> result.log.node_stats
 {fmt_node_stats(result.log.node_stats)}"""
 
-    # Multi — runner.map() on the cycle graph (each item gets its own RunLog)
+    # Mapped — runner.map() on the cycle graph (each item gets its own RunLog)
     results_m = runner.map(graph, {"count": [0, 1, 2]}, map_over="count")
-
-    def _fmt_decisions(r):
-        return [
-            s.decision if hasattr(s.decision, "__class__") and s.decision.__class__.__name__ == "type" else s.decision
-            for s in r.log.steps
-            if s.decision is not None
-        ]
 
     per_item = "\n".join(
         f"  [{i}] count={r['count']}, {len(r.log.steps)} steps, decisions: {[('→ END' if str(s.decision) == 'END' else f'→ {s.decision}') for s in r.log.steps if s.decision is not None]}"
         for i, r in enumerate(results_m)
     )
-    multi = f"""\
+    mapped = f"""\
 # runner.map() on a cyclic graph — each item gets its own RunLog with routing
 results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 
@@ -342,6 +378,26 @@ results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 >>> print(results[0].log)
 {results_m[0].log}"""
 
+    # Nested — map_over hides inner routing in one step
+    inner = Graph([increment, check_done], name="counter")
+    outer = Graph([inner.as_node().map_over("count")])
+    result_n = runner.run(outer, {"count": [0, 1, 2]})
+    nested = f"""\
+# map_over — inner routing is hidden, one step in the outer RunLog
+inner = Graph([increment, check_done], name="counter")
+outer = Graph([inner.as_node().map_over("count")])
+result = runner.run(outer, {{"count": [0, 1, 2]}})
+
+>>> result["count"]
+{result_n["count"]}
+
+# One RunResult with one step (the mapped GraphNode)
+>>> result.log.summary()
+'{result_n.log.summary()}'
+
+# Compare: runner.map() exposes per-item routing decisions
+# map_over collapses everything into a single step"""
+
     return UseCase(
         id="uc3",
         label="UC3",
@@ -350,11 +406,12 @@ results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
         category="tracing",
         status="ok",
         impl_note="Fully implemented. RunLog tracks routing decisions and re-executions.",
-        multi_style="runner.map()",
         single_python=single,
         single_cli="",
-        multi_python=multi,
-        multi_cli="",
+        mapped_python=mapped,
+        mapped_cli="",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -386,13 +443,30 @@ result = await runner.run(graph, {{"x": 5}}, workflow_id="uc4-single")
 
     single_cli = run_cli(["workflows", "state", "uc4-single", "--values", "--db", db_path])
 
-    # Multi — runner.map() doesn't checkpoint (by design), so show map_over instead
+    # Mapped — runner.map() is ephemeral (no checkpoints)
+    runner_sync = SyncRunner()
+    results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
+    mapped = f"""\
+# runner.map() is ephemeral — per-item RunLogs but no persistence
+runner_sync = SyncRunner()
+results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
+
+>>> results.summary()
+'{results_map.summary()}'
+
+>>> results["tripled"]
+{results_map["tripled"]}
+
+# Not checkpointed — cp.workflows() won't show these runs
+# Use map_over with a checkpointer for persistence"""
+
+    # Nested — map_over in a checkpointed run
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_m = await runner.run(outer, {"x": [5, 10, 15]}, workflow_id="uc4-multi")
     state_m = cp.state("uc4-multi")
     steps_m = cp.steps("uc4-multi")
-    multi = f"""\
+    nested = f"""\
 # map_over in a checkpointed run — the outer graph persists as one workflow
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
@@ -408,7 +482,7 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
 >>> cp.steps("uc4-multi")
 {fmt_step_records(steps_m)}"""
 
-    multi_cli = run_cli(["workflows", "state", "uc4-multi", "--values", "--db", db_path])
+    nested_cli = run_cli(["workflows", "state", "uc4-multi", "--values", "--db", db_path])
 
     await cp.close()
     return UseCase(
@@ -419,11 +493,12 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
         category="persistence",
         status="ok",
         impl_note="Fully implemented. Sync reads: cp.state(), cp.steps(), cp.checkpoint().",
-        multi_style="map_over",
         single_python=single,
         single_cli=f"$ hypergraph workflows state uc4-single --values --db <db>\n\n{single_cli}",
-        multi_python=multi,
-        multi_cli=f"$ hypergraph workflows state uc4-multi --values --db <db>\n\n{multi_cli}",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() runs are ephemeral — no CLI queries available",
+        nested_python=nested,
+        nested_cli=f"$ hypergraph workflows state uc4-multi --values --db <db>\n\n{nested_cli}",
     )
 
 
@@ -450,9 +525,27 @@ cp = SqliteCheckpointer("./workflows.db")
 
     single_cli = run_cli(["workflows", "ls", "--db", db_path])
 
-    # Multi — query the mapped workflow
+    # Mapped — runner.map() results aren't persisted
+    runner_sync = SyncRunner()
+    graph = Graph([double, triple])
+    results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
+    mapped = f"""\
+# runner.map() is ephemeral — results exist only in the current process
+results = runner.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
+
+>>> results.summary()
+'{results_map.summary()}'
+
+# After the process exits, these results are gone
+# cp.workflows() won't show runner.map() runs
+>>> cp.workflows()
+  {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}
+
+# Use map_over with a checkpointer for cross-process persistence"""
+
+    # Nested — query the mapped workflow
     state_m = cp.state("uc4-multi")
-    multi = f"""\
+    nested = f"""\
 # The mapped workflow is also queryable from a new process
 >>> cp.state("uc4-multi")
 {state_m}
@@ -460,7 +553,7 @@ cp = SqliteCheckpointer("./workflows.db")
 >>> cp.workflows()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}"""
 
-    multi_cli = run_cli(["workflows", "show", "uc4-multi", "--db", db_path])
+    nested_cli = run_cli(["workflows", "show", "uc4-multi", "--db", db_path])
 
     return UseCase(
         id="uc5",
@@ -470,11 +563,12 @@ cp = SqliteCheckpointer("./workflows.db")
         category="persistence",
         status="ok",
         impl_note="Fully implemented. Sync reads work from any process without async.",
-        multi_style="map_over",
         single_python=single,
         single_cli=f"$ hypergraph workflows ls --db <db>\n\n{single_cli}",
-        multi_python=multi,
-        multi_cli=f"$ hypergraph workflows show uc4-multi --db <db>\n\n{multi_cli}",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() runs are ephemeral — nothing to query from CLI",
+        nested_python=nested,
+        nested_cli=f"$ hypergraph workflows show uc4-multi --db <db>\n\n{nested_cli}",
     )
 
 
@@ -504,8 +598,43 @@ async def run_uc6(db_path: str) -> UseCase:
 
     single_cli = run_cli(["workflows", "--db", db_path])
 
-    # Multi — same dashboard shows both single and mapped workflows
-    multi = f"""\
+    # Mapped — runner.map() with MapResult.failures (in-process filtering)
+    @node(output_name="checked")
+    def flaky(x: int) -> int:
+        if x % 3 == 0:
+            raise ValueError(f"x={x} is banned")
+        return x * 10
+
+    runner_sync = SyncRunner()
+    flaky_graph = Graph([flaky])
+    results_map = runner_sync.map(
+        flaky_graph,
+        {"x": [1, 2, 3, 4, 5, 6]},
+        map_over="x",
+        error_handling="continue",
+    )
+    failure_errors = [f.error for f in results_map.failures]
+    mapped = f"""\
+# runner.map() — in-process filtering via MapResult (ephemeral)
+results = runner.map(
+    flaky_graph, {{"x": [1, 2, 3, 4, 5, 6]}},
+    map_over="x", error_handling="continue",
+)
+
+>>> results.summary()
+'{results_map.summary()}'
+
+>>> results.failed
+{results_map.failed}
+
+>>> [f.error for f in results.failures]
+{failure_errors}
+
+# In-process only — not persisted to checkpointer
+# For persistent failure tracking, use map_over with a checkpointer"""
+
+    # Nested — dashboard shows both single and mapped workflows
+    nested = f"""\
 # The dashboard shows all workflows — single runs and mapped runs
 >>> cp.workflows()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in all_wfs)}
@@ -513,7 +642,7 @@ async def run_uc6(db_path: str) -> UseCase:
 >>> cp.workflows(status=WorkflowStatus.COMPLETED)
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in cp2.workflows(status=WorkflowStatus.COMPLETED))}"""
 
-    multi_cli = run_cli(["workflows", "ls", "--status", "completed", "--db", db_path])
+    nested_cli = run_cli(["workflows", "ls", "--status", "completed", "--db", db_path])
 
     return UseCase(
         id="uc6",
@@ -523,11 +652,12 @@ async def run_uc6(db_path: str) -> UseCase:
         category="persistence",
         status="ok",
         impl_note="Fully implemented. Filter by status via Python API or CLI.",
-        multi_style="runner.map()",
         single_python=single,
         single_cli=f"$ hypergraph workflows --db <db>\n\n{single_cli}",
-        multi_python=multi,
-        multi_cli=f"$ hypergraph workflows ls --status completed --db <db>\n\n{multi_cli}",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() failures are ephemeral — use MapResult.failures in-process",
+        nested_python=nested,
+        nested_cli=f"$ hypergraph workflows ls --status completed --db <db>\n\n{nested_cli}",
     )
 
 
@@ -552,12 +682,12 @@ result = runner.run(graph, {{"x": 5}})
 
     single_cli = run_cli(["workflows", "--help"])
 
-    # Multi
+    # Mapped — runner.map() JSON export
     results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
     batch_json = json.dumps(results.to_dict(), indent=2, default=str)
     if len(batch_json) > 600:
         batch_json = batch_json[:600] + "\n  ... (truncated)"
-    multi = f"""\
+    mapped = f"""\
 results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
 
 # Batch-level JSON export (includes per-item metadata)
@@ -568,6 +698,26 @@ results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
 >>> [r.summary() for r in results]
 {[r.summary() for r in results]}"""
 
+    # Nested — map_over JSON (single RunResult)
+    inner = Graph([double, triple], name="pipeline")
+    outer = Graph([inner.as_node().map_over("x")])
+    result_n = runner.run(outer, {"x": [1, 2, 3]})
+    nested_json = json.dumps(result_n.log.to_dict(), indent=2, default=str)
+    if len(nested_json) > 600:
+        nested_json = nested_json[:600] + "\n  ... (truncated)"
+    nested = f"""\
+# map_over — one RunResult, one JSON trace
+inner = Graph([double, triple], name="pipeline")
+outer = Graph([inner.as_node().map_over("x")])
+result = runner.run(outer, {{"x": [1, 2, 3]}})
+
+>>> json.dumps(result.log.to_dict(), indent=2)
+{nested_json}
+
+# Compare: runner.map() gives N traces, map_over gives 1
+>>> result.summary()
+'{result_n.summary()}'"""
+
     return UseCase(
         id="uc7",
         label="UC7",
@@ -576,11 +726,12 @@ results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
         category="tracing",
         status="ok",
         impl_note="Fully implemented. .to_dict() for Python, --json for CLI.",
-        multi_style="runner.map()",
         single_python=single,
         single_cli=f"$ hypergraph workflows --help\n\n{single_cli}",
-        multi_python=multi,
-        multi_cli="# runner.map() results are ephemeral — use .to_dict() per item\n# For persistent JSON, use map_over with a checkpointer + CLI --json",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() results are ephemeral — use .to_dict() per item\n# For persistent JSON, use map_over with a checkpointer + CLI --json",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -612,7 +763,23 @@ cp2 = SqliteCheckpointer("./workflows.db")
 
     single_cli = run_cli(["workflows", "show", "uc8-live", "--db", db_path])
 
-    # Multi
+    # Mapped — runner.map() is ephemeral (no live query)
+    runner_sync = SyncRunner()
+    results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
+    mapped = f"""\
+# runner.map() is ephemeral — no live query from another process
+results = runner.map(graph, {{"x": [5, 10]}}, map_over="x")
+
+>>> results.summary()
+'{results_map.summary()}'
+
+>>> results["tripled"]
+{results_map["tripled"]}
+
+# Not checkpointed — can't query from CLI or another process
+# Durability modes only apply to checkpointer-backed runs"""
+
+    # Nested — map_over with durability="sync"
     cp3 = SqliteCheckpointer(db_path, durability="sync")
     runner3 = AsyncRunner(checkpointer=cp3)
     inner = Graph([double, triple], name="pipeline")
@@ -621,7 +788,7 @@ cp2 = SqliteCheckpointer("./workflows.db")
     state_m = cp3.state("uc8-multi")
     await cp3.close()
 
-    multi = f"""\
+    nested = f"""\
 # map_over with durability="sync" — each step visible immediately
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
@@ -630,7 +797,7 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
 >>> cp.state("uc8-multi")
 {state_m}"""
 
-    multi_cli = run_cli(["workflows", "show", "uc8-multi", "--db", db_path])
+    nested_cli = run_cli(["workflows", "show", "uc8-multi", "--db", db_path])
 
     return UseCase(
         id="uc8",
@@ -640,11 +807,12 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
         category="persistence",
         status="ok",
         impl_note="Fully implemented. Durability controls when data is queryable.",
-        multi_style="map_over",
         single_python=single,
         single_cli=f"$ hypergraph workflows show uc8-live --db <db>\n\n{single_cli}",
-        multi_python=multi,
-        multi_cli=f"$ hypergraph workflows show uc8-multi --db <db>\n\n{multi_cli}",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() is ephemeral — no CLI queries for live monitoring",
+        nested_python=nested,
+        nested_cli=f"$ hypergraph workflows show uc8-multi --db <db>\n\n{nested_cli}",
     )
 
 
@@ -676,7 +844,20 @@ result = await runner.run(
 
     single_cli = run_cli(["workflows", "state", "uc9-fork", "--values", "--db", db_path])
 
-    # Multi
+    # Mapped — runner.map() is ephemeral (can't fork/retry)
+    runner_sync = SyncRunner()
+    results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
+    mapped = f"""\
+# runner.map() is ephemeral — can't fork or retry from a checkpoint
+results = runner.map(graph, {{"x": [5, 10]}}, map_over="x")
+
+>>> results.summary()
+'{results_map.summary()}'
+
+# No checkpoint data — results exist only in-process
+# For fork-and-retry, use map_over with a checkpointer"""
+
+    # Nested — map_over with checkpoint
     cp2 = SqliteCheckpointer(db_path, durability="sync")
     runner2 = AsyncRunner(checkpointer=cp2)
     inner = Graph([double, triple], name="pipeline")
@@ -685,7 +866,7 @@ result = await runner.run(
     checkpoint_m = cp2.checkpoint("uc9-multi")
     await cp2.close()
 
-    multi = f"""\
+    nested = f"""\
 # checkpoint() works for mapped workflows too
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
@@ -695,7 +876,7 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
   values: {checkpoint_m.values}
   steps: {len(checkpoint_m.steps)}"""
 
-    multi_cli = run_cli(["workflows", "state", "uc9-multi", "--values", "--db", db_path])
+    nested_cli = run_cli(["workflows", "state", "uc9-multi", "--values", "--db", db_path])
 
     return UseCase(
         id="uc9",
@@ -705,11 +886,12 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
         category="persistence",
         status="defer",
         impl_note="Partially implemented. checkpoint() works; history= param deferred to v2.",
-        multi_style="map_over",
         single_python=single,
         single_cli=f"$ hypergraph workflows state uc9-fork --values --db <db>\n\n{single_cli}",
-        multi_python=multi,
-        multi_cli=f"$ hypergraph workflows state uc9-multi --values --db <db>\n\n{multi_cli}",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() runs are ephemeral — no checkpoints to fork from",
+        nested_python=nested,
+        nested_cli=f"$ hypergraph workflows state uc9-multi --values --db <db>\n\n{nested_cli}",
     )
 
 
@@ -731,9 +913,9 @@ result = runner.run(graph, {{"x": 5}})
 >>> result.log.summary()
 '{result.log.summary()}'"""
 
-    # Multi — runner.map()
+    # Mapped — runner.map()
     results = runner.map(graph, {"x": [1, 2, 3, 4, 5]}, map_over="x")
-    multi = f"""\
+    mapped = f"""\
 # runner.map() — run the same graph on multiple inputs
 results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 
@@ -758,6 +940,29 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 >>> results[0].log.summary()
 '{results[0].log.summary()}'"""
 
+    # Nested — map_over comparison
+    inner = Graph([double, triple], name="pipeline")
+    outer = Graph([inner.as_node().map_over("x")])
+    result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
+    nested = f"""\
+# map_over — same batch, different semantics
+inner = Graph([double, triple], name="pipeline")
+outer = Graph([inner.as_node().map_over("x")])
+result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
+
+>>> result["tripled"]
+{result_n["tripled"]}
+
+# ONE RunResult (not N) — outputs are lists
+>>> type(result).__name__
+'{type(result_n).__name__}'
+
+>>> result.log.summary()
+'{result_n.log.summary()}'
+
+# Compare: runner.map() = N RunResults with batch metadata
+#          map_over     = 1 RunResult with list outputs"""
+
     return UseCase(
         id="uc10",
         label="UC10",
@@ -766,11 +971,12 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
         category="map",
         status="ok",
         impl_note="Fully implemented. MapResult wraps per-item RunResults with batch metadata.",
-        multi_style="runner.map()",
         single_python=single,
         single_cli="",
-        multi_python=multi,
-        multi_cli="# runner.map() runs are ephemeral (not checkpointed)\n# Each result has .log for per-item tracing",
+        mapped_python=mapped,
+        mapped_cli="# runner.map() runs are ephemeral (not checkpointed)\n# Each result has .log for per-item tracing",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -794,10 +1000,28 @@ result = runner.run(outer, {{"x": 5}})
 >>> result.log.summary()
 '{result.log.summary()}'"""
 
-    # Multi — map_over
+    # Mapped — runner.map() on nested graph
+    outer_flat = Graph([inner.as_node()])
+    results_m = runner.map(outer_flat, {"x": [1, 2, 3, 4, 5]}, map_over="x")
+    mapped = f"""\
+# runner.map() on a nested graph — N independent runs
+outer = Graph([inner.as_node()])
+results = runner.map(outer, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
+
+>>> results.summary()
+'{results_m.summary()}'
+
+>>> results["tripled"]
+{results_m["tripled"]}
+
+# N RunResults, each with its own RunLog
+>>> results[0].log.summary()
+'{results_m[0].log.summary()}'"""
+
+    # Nested — map_over
     outer_m = Graph([inner.as_node().map_over("x")])
     result_m = runner.run(outer_m, {"x": [1, 2, 3, 4, 5]})
-    multi = f"""\
+    nested = f"""\
 # map_over — inner graph runs once per item, outputs become lists
 outer = Graph([inner.as_node().map_over("x")])
 result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
@@ -823,11 +1047,12 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
         category="map",
         status="ok",
         impl_note="Fully implemented. map_over wraps outputs in list[T] automatically.",
-        multi_style="map_over",
         single_python=single,
         single_cli="",
-        multi_python=multi,
-        multi_cli="",
+        mapped_python=mapped,
+        mapped_cli="",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -847,10 +1072,27 @@ result = runner.run(outer, {{"a": 10, "b": 20}})
 >>> result["sum"]
 {result["sum"]}"""
 
-    # Multi — product mode
+    # Mapped — runner.map() maps one param (no product mode)
+    results_m = runner.map(outer, {"a": [1, 2, 3], "b": 10}, map_over="a")
+    mapped = f"""\
+# runner.map() maps one param — b is shared across all items
+results = runner.map(outer, {{"a": [1, 2, 3], "b": 10}}, map_over="a")
+
+>>> results.summary()
+'{results_m.summary()}'
+
+>>> results["sum"]
+{results_m["sum"]}
+
+# runner.map() can't do cartesian product — use map_over for that"""
+
+    # Nested — product mode
     outer_p = Graph([inner.as_node().map_over("a", "b", mode="product")])
     result_p = runner.run(outer_p, {"a": [1, 2, 3], "b": [10, 20]})
-    multi = f"""\
+
+    outer_z = Graph([inner.as_node().map_over("a", "b")])
+    result_z = runner.run(outer_z, {"a": [1, 2], "b": [10, 20]})
+    nested = f"""\
 # mode="product" — cartesian product of mapped params
 outer = Graph([inner.as_node().map_over("a", "b", mode="product")])
 result = runner.run(outer, {{"a": [1, 2, 3], "b": [10, 20]}})
@@ -863,7 +1105,7 @@ result = runner.run(outer, {{"a": [1, 2, 3], "b": [10, 20]}})
 outer_zip = Graph([inner.as_node().map_over("a", "b")])
 result_zip = runner.run(outer_zip, {{"a": [1, 2], "b": [10, 20]}})
 >>> result_zip["sum"]
-{runner.run(Graph([inner.as_node().map_over("a", "b")]), {"a": [1, 2], "b": [10, 20]})["sum"]}"""
+{result_z["sum"]}"""
 
     return UseCase(
         id="uc12",
@@ -873,11 +1115,12 @@ result_zip = runner.run(outer_zip, {{"a": [1, 2], "b": [10, 20]}})
         category="map",
         status="ok",
         impl_note="Fully implemented. zip (default) for parallel, product for cartesian.",
-        multi_style="map_over",
         single_python=single,
         single_cli="",
-        multi_python=multi,
-        multi_cli="",
+        mapped_python=mapped,
+        mapped_cli="",
+        nested_python=nested,
+        nested_cli="",
     )
 
 
@@ -917,7 +1160,6 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 .pill-ok{background:#0d2818;color:var(--green)}
 .pill-gap{background:#3d1f00;color:var(--amber)}
 .pill-defer{background:#21162a;color:var(--purple)}
-.uc .map-tag{display:inline-block;font-size:8px;padding:1px 4px;border-radius:3px;background:#1a1a2e;color:var(--purple);font-weight:600;margin-left:4px}
 
 /* Main */
 .main{overflow-y:auto;padding:16px 20px 60px;display:flex;flex-direction:column;gap:12px}
@@ -926,7 +1168,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 .toggle-bar{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--border);align-self:flex-start}
 .toggle-btn{padding:6px 18px;font-size:12px;font-family:var(--sans);background:var(--card);color:var(--dim);border:none;cursor:pointer;font-weight:600;transition:all .12s}
 .toggle-btn.active{background:var(--blue);color:#0d1117}
-.toggle-btn:first-child{border-right:1px solid var(--border)}
+.toggle-btn + .toggle-btn{border-left:1px solid var(--border)}
 
 /* Section */
 .section{background:var(--card);border:1px solid var(--border);border-radius:8px}
@@ -978,12 +1220,11 @@ function renderSidebar() {
       const pill = uc.status === 'ok' ? '<span class="pill pill-ok">implemented</span>'
                  : uc.status === 'gap' ? '<span class="pill pill-gap">has gaps</span>'
                  : '<span class="pill pill-defer">v2 deferred</span>';
-      const mapTag = uc.multi_style ? `<span class="map-tag">${uc.multi_style}</span>` : '';
       h += `<div class="uc${cls}" onclick="select('${uc.id}')">
         <div class="uc-id">${uc.label}</div>
         <div class="uc-title">${uc.title}</div>
         <div class="uc-note">${uc.note}</div>
-        ${pill}${mapTag}
+        ${pill}
       </div>`;
     }
   }
@@ -997,7 +1238,7 @@ function render() {
   renderSidebar();
   const uc = UCS.find(u => u.id === state.uc);
   const m = document.getElementById('main');
-  const isSingle = state.view === 'single';
+  const v = state.view;
 
   const implCls = uc.status === 'ok' ? 'ok' : uc.status === 'gap' ? 'gap' : 'defer';
   const implLabel = uc.status === 'ok' ? 'Implemented' : uc.status === 'gap' ? 'Gap' : 'Deferred';
@@ -1008,19 +1249,26 @@ function render() {
   html += `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
     <h2 style="font-size:16px;color:var(--bright)">${uc.label}: ${uc.title}</h2>
     <div class="toggle-bar">
-      <button class="toggle-btn${isSingle ? ' active' : ''}" onclick="setView('single')">Single</button>
-      <button class="toggle-btn${!isSingle ? ' active' : ''}" onclick="setView('multi')">Multi</button>
+      <button class="toggle-btn${v === 'single' ? ' active' : ''}" onclick="setView('single')">Single</button>
+      <button class="toggle-btn${v === 'mapped' ? ' active' : ''}" onclick="setView('mapped')">Mapped</button>
+      <button class="toggle-btn${v === 'nested' ? ' active' : ''}" onclick="setView('nested')">Nested</button>
     </div>
   </div>`;
 
-  const pyCode = isSingle ? uc.single_python : uc.multi_python;
-  const cliCode = isSingle ? uc.single_cli : uc.multi_cli;
+  const pyCode = v === 'single' ? uc.single_python
+               : v === 'mapped' ? uc.mapped_python
+               : uc.nested_python;
+  const cliCode = v === 'single' ? uc.single_cli
+                : v === 'mapped' ? uc.mapped_cli
+                : uc.nested_cli;
 
   // Python section
   if (pyCode) {
-    const badge = isSingle
+    const badge = v === 'single'
       ? '<span class="badge" style="background:#0d2818;color:var(--green)">single item</span>'
-      : `<span class="badge" style="background:#21162a;color:var(--purple)">${uc.multi_style}</span>`;
+      : v === 'mapped'
+      ? '<span class="badge" style="background:#21162a;color:var(--purple)">runner.map()</span>'
+      : '<span class="badge" style="background:#0a2a2a;color:var(--cyan)">map_over</span>';
     html += `<div class="section">
       <div class="sec-hdr">
         <div class="dot" style="background:var(--green)"></div>
@@ -1063,7 +1311,7 @@ def generate_html(use_cases: list[UseCase]) -> str:
     for uc in use_cases:
         d = asdict(uc)
         # HTML-escape all code strings
-        for key in ("single_python", "single_cli", "multi_python", "multi_cli"):
+        for key in ("single_python", "single_cli", "mapped_python", "mapped_cli", "nested_python", "nested_cli"):
             d[key] = html.escape(d[key])
         ucs_data.append(d)
 
