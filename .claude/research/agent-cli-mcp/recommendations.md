@@ -1,6 +1,6 @@
 # Recommendations: Making Hypergraph Agent-Native
 
-> Based on research into [incur](incur.md) (CLI framework) and [Hatchet](hatchet.md) (workflow platform)
+> Based on research into [incur](incur.md) (CLI framework), [Hatchet](hatchet.md) (workflow platform), and [LangSmith](langsmith.md) (trace querying)
 > Date: 2026-02-28
 
 ## Goal
