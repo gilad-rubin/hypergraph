@@ -6,7 +6,7 @@ Three tools for running and understanding graph execution, from quick in-process
 |------|-------------|-------|-------|
 | **RunLog** | "What happened in this run?" | Zero — always on | In-process, current run |
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
-| **CLI** | "Run this graph" / "Show me the failing workflow" | `pip install hypergraph[cli]` | Terminal, any process |
+| **CLI** | "Run this graph" / "Show me the failing run" | `pip install hypergraph[cli]` | Terminal, any process |
 
 ## RunLog — Always-On Execution Trace
 
@@ -115,12 +115,12 @@ The batch pattern you choose affects what debugging data is available:
 |---|---|---|
 | **RunLog granularity** | Per-item RunLogs with full traces | One RunLog (batch = one step) |
 | **Error isolation** | Each item independent | One failure affects entire step |
-| **Checkpointing** | Ephemeral — not persisted | Persisted as one workflow |
+| **Checkpointing** | Ephemeral — not persisted | Persisted as one run |
 | **CLI access** | Not available | `hypergraph runs values <id>` |
 
 Use `runner.map()` when you need to debug individual items. Use `map_over` when you need persistence and CLI access.
 
-## Checkpointer — Persistent Workflow History
+## Checkpointer — Persistent Run History
 
 The Checkpointer persists every step to a database, enabling cross-process inspection, crash recovery, and time-travel debugging.
 
@@ -161,19 +161,25 @@ Every step is now persisted. You can inspect it from another process, another da
 cp = SqliteCheckpointer("./runs.db")
 
 # Sync reads — no await needed, works from any context
-cp.runs()                        # List all workflows
-cp.state("my-run-1")                  # {"doubled": 10, "tripled": 30}
+cp.runs()                             # List all runs
+cp.run("my-run-1")                    # Run metadata (status, duration, counts)
+cp.values("my-run-1")                 # {"doubled": 10, "tripled": 30}
 cp.steps("my-run-1")                  # Step records with timing
+cp.stats("my-run-1")                  # Per-node duration/frequency breakdown
 cp.checkpoint("my-run-1")             # Full snapshot (values + steps)
 
-# Filter by status
+# Filter by status, graph, or time
 cp.runs(status=WorkflowStatus.FAILED)
+cp.runs(graph_name="my_graph", since=datetime(2024, 1, 1))
+
+# Full-text search across step records
+cp.search_sync("generate")            # Match node names and errors
 
 # Time travel: state at a specific superstep
 cp.state("my-run-1", superstep=1)     # {"doubled": 10}
 ```
 
-The sync read methods (`workflows()`, `state()`, `steps()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
+The sync read methods (`runs()`, `run()`, `values()`, `steps()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
 
 ### Durability Modes
 
@@ -218,7 +224,7 @@ result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
 
 ## CLI — Execute and Debug from the Terminal
 
-The CLI lets you run graphs and inspect workflows directly from the terminal, designed for both humans and AI agents.
+The CLI lets you run graphs and inspect runs directly from the terminal, designed for both humans and AI agents.
 
 ### Install
 
@@ -241,10 +247,12 @@ hypergraph graph ls
 # Inspect graph structure
 hypergraph graph inspect my_module:graph
 
-# Debug persisted workflows
+# Debug persisted runs
 hypergraph runs ls
 hypergraph runs show my-run-1
 hypergraph runs values my-run-1
+hypergraph runs stats my-run-1
+hypergraph runs search "error"
 ```
 
 ### run — Execute a Graph
@@ -328,65 +336,132 @@ hypergraph graph ls
 #   pipeline  my_module:graph
 ```
 
-### Workflow Debugging
+### Run Debugging
 
-The following commands inspect persisted workflows (requires `--db` or a `db` setting in pyproject.toml).
+The following commands inspect persisted runs (requires `--db` or a `db` setting in pyproject.toml).
 
 ### runs show — Execution Trace
 
 ```bash
 hypergraph runs show my-run-1
 
-# Workflow: my-run-1 | completed | 2 steps | 0.3ms
+# Run: my-run-1 | completed | 2 steps | 0.3ms
 #
-#   Step  Node    Duration  Status     Decision
-#   ────  ──────  ────────  ─────────  ────────
-#      0  double     0.1ms  completed
-#      1  triple     0.1ms  completed
+#   Step  Node    Type          Duration  Status     Decision
+#   ────  ──────  ────────────  ────────  ─────────  ────────
+#      0  double  FunctionNode     0.1ms  completed
+#      1  triple  FunctionNode     0.1ms  completed
 #
-#   To see values at a step: hypergraph runs values my-run-1 --step N
-#   To save full trace:      hypergraph runs show my-run-1 --json --output trace.json
+#   → hypergraph runs values my-run-1            for output values
+#   → hypergraph runs stats my-run-1             for performance breakdown
+```
+
+Single-step drill-down:
+
+```bash
+hypergraph runs show my-run-1 --step 0
+
+# Step [0] double | completed | 0.1ms
+#   type: FunctionNode
+#   input_versions: {"x": 0}
+#   values: {'doubled': '<int, 2B>'}
+#   cached: False
+
+# Show the actual values:
+hypergraph runs show my-run-1 --step 0 --values
+```
+
+Filter to errors or specific nodes:
+
+```bash
+hypergraph runs show my-run-1 --errors          # Only failed steps
+hypergraph runs show my-run-1 --node generate   # Specific node
 ```
 
 ### runs values — Progressive Value Disclosure
 
-By default, `state` shows type and size only (protecting AI agent context windows from large embeddings):
+By default, `values` shows type and size only (protecting AI agent context windows from large embeddings):
 
 ```bash
 hypergraph runs values my-run-1
 
-# State: my-run-1 (through step 1)
+# Values: my-run-1 (through step 1)
 #
 #   Output   Type  Size  Step  Node
 #   ───────  ────  ────  ────  ──────
 #   doubled  int   10    0     double
 #   tripled  int   30    1     triple
 #
-#   Values hidden. Use --values to show, --key <name> for one value.
+#   → hypergraph runs values my-run-1 --key <name>  for a single value
+#   → hypergraph runs values my-run-1 --full        to show values inline
+#   → hypergraph runs values my-run-1 --json        for full JSON
 ```
 
 Drill in:
 
 ```bash
-# Show all values
-hypergraph runs values my-run-1 --values
+# Show all values inline
+hypergraph runs values my-run-1 --full
 
 # Show one value
 hypergraph runs values my-run-1 --key doubled
 # 10
+
+# Time-travel: state at a specific superstep
+hypergraph runs values my-run-1 --superstep 0
 ```
 
 ### runs ls — List and Filter
 
 ```bash
-# All workflows
+# All runs
 hypergraph runs ls
 
 # Only failures
 hypergraph runs ls --status failed
 
+# Filter by graph name or recency
+hypergraph runs ls --graph my_graph
+hypergraph runs ls --since 1h
+
 # Limit results
 hypergraph runs ls --limit 10
+```
+
+### runs steps — Detailed Step Records
+
+```bash
+# All steps in a run
+hypergraph runs steps my-run-1
+
+# Filter to a specific node
+hypergraph runs steps my-run-1 --node generate
+
+# With actual output values
+hypergraph runs steps my-run-1 --values --full
+```
+
+### runs search — Full-Text Search
+
+```bash
+# Search across all step records (node names and errors)
+hypergraph runs search "generate"
+
+# Limit to errors only
+hypergraph runs search "timeout" --field error
+```
+
+### runs stats — Performance Breakdown
+
+```bash
+hypergraph runs stats my-run-1
+
+# Stats: my-run-1 | completed
+#
+#   Node      Type          Runs  Total   Avg     Max     Errors  Cached
+#   ────────  ────────────  ────  ──────  ──────  ──────  ──────  ──────
+#   generate  FunctionNode  5     120ms   24ms    45ms    1       0
+#   embed     FunctionNode  5     15ms    3ms     5ms     0       3
 ```
 
 ### JSON Output for Agents
@@ -399,11 +474,11 @@ hypergraph runs show my-run-1 --json
 
 ```json
 {
-  "schema_version": 1,
-  "command": "workflows.show",
+  "schema_version": 2,
+  "command": "runs.show",
   "generated_at": "2024-01-16T09:00:00Z",
   "data": {
-    "workflow": {"id": "my-run-1", "status": "completed", ...},
+    "run": {"id": "my-run-1", "status": "completed", ...},
     "steps": [...]
   }
 }
@@ -415,7 +490,7 @@ The `schema_version` field ensures forward compatibility — agents can detect b
 
 ```bash
 # Dump full state to file (avoids flooding terminal)
-hypergraph runs values my-run-1 --values --output state.json
+hypergraph runs values my-run-1 --json --output state.json
 
 # Dump step records
 hypergraph runs steps my-run-1 --json --output steps.json
@@ -454,11 +529,12 @@ hypergraph runs ls --db /path/to/runs.db
 | "I want to run a graph from the terminal" | CLI (`hypergraph run`) |
 | "I want to batch-run with different inputs" | CLI (`hypergraph map`) |
 | "What happened in the run I just finished?" | RunLog (`result.log`) |
-| "Which node was slowest?" | RunLog (`result.log.slowest()`) |
+| "Which node was slowest?" | RunLog (`result.log.slowest()`) or CLI (`runs stats`) |
 | "What happened in yesterday's run?" | Checkpointer + CLI |
 | "What values were produced at step 3?" | CLI (`runs values --superstep 3`) |
-| "What failed workflows exist?" | CLI (`runs ls --status failed`) |
-| "I need to inspect from another process" | Checkpointer |
+| "What failed runs exist?" | CLI (`runs ls --status failed`) |
+| "Find all steps that hit a specific error" | CLI (`runs search "error message"`) |
+| "I need to inspect from another process" | Checkpointer sync reads |
 | "I need JSON for my monitoring system" | CLI (`--json`) or RunLog (`to_dict()`) |
 
 ## See Also

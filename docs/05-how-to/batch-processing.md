@@ -242,7 +242,7 @@ Two batch patterns, different tradeoffs. Both start from the same idea — **wri
 | **Returns** | `MapResult` (N `RunResult`s) | One `RunResult` with list outputs |
 | **Error isolation** | Per-item — failures don't affect other items | Whole step — one failure can fail the batch |
 | **Tracing** | Per-item RunLogs with full routing/timing | One RunLog (batch is a single step) |
-| **Checkpointing** | Ephemeral — not persisted | Persisted as one workflow step |
+| **Checkpointing** | Ephemeral — not persisted | Persisted as one run step |
 | **Product mode** | No — maps one parameter at a time | Yes — `mode="product"` for cartesian product |
 | **Use in pipelines** | Top-level batch processing | Step inside a larger graph |
 
@@ -305,7 +305,7 @@ You can also run batch operations directly from the terminal:
 hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
 
 # With checkpointing
-hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --db ./workflows.db
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --db ./runs.db
 ```
 
 See [Debug Workflows — CLI](debug-workflows.md#run--execute-a-graph) for full CLI reference.
