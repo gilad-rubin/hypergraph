@@ -164,6 +164,8 @@ Execute a graph multiple times with different inputs.
 
 **Returns:** [`MapResult`](#mapresult) wrapping per-iteration RunResults with batch metadata
 
+> **Note:** `map()` is **ephemeral** — results are not checkpointed, even when the runner has a checkpointer attached. For persistent batch results, use [`map_over`](../03-patterns/04-hierarchical.md) with a `workflow_id`.
+
 **Example:**
 
 ```python
@@ -346,6 +348,8 @@ async def map(
 ```
 
 Execute graph multiple times concurrently.
+
+> **Note:** `map()` is **ephemeral** — results are not checkpointed, even when the runner has a checkpointer attached. For persistent batch results, use [`map_over`](../03-patterns/04-hierarchical.md) with a `workflow_id`.
 
 **Args:**
 - `graph` - The graph to execute

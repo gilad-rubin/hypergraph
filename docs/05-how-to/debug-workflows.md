@@ -100,7 +100,25 @@ print(results.summary())  # "3 items | 3 completed | 12ms"
 # Per-item RunLogs
 for i, r in enumerate(results):
     print(f"Item {i}: {r.log.summary()}")
+
+# Failed items
+if results.failed:
+    for f in results.failures:
+        print(f"Failed: {f.error}")
 ```
+
+### runner.map() vs map_over for debugging
+
+The batch pattern you choose affects what debugging data is available:
+
+| | `runner.map()` | `map_over` |
+|---|---|---|
+| **RunLog granularity** | Per-item RunLogs with full traces | One RunLog (batch = one step) |
+| **Error isolation** | Each item independent | One failure affects entire step |
+| **Checkpointing** | Ephemeral — not persisted | Persisted as one workflow |
+| **CLI access** | Not available | `hypergraph workflows state <id>` |
+
+Use `runner.map()` when you need to debug individual items. Use `map_over` when you need persistence and CLI access.
 
 ## Checkpointer — Persistent Workflow History
 
@@ -140,27 +158,22 @@ Every step is now persisted. You can inspect it from another process, another da
 
 ```python
 # From any process that can access the DB file:
-checkpointer = SqliteCheckpointer("./workflows.db")
-await checkpointer.initialize()
+cp = SqliteCheckpointer("./workflows.db")
 
-# List all workflows
-workflows = await checkpointer.list_workflows()
-for wf in workflows:
-    print(f"{wf.id}: {wf.status.value}")
+# Sync reads — no await needed, works from any context
+cp.workflows()                        # List all workflows
+cp.state("my-run-1")                  # {"doubled": 10, "tripled": 30}
+cp.steps("my-run-1")                  # Step records with timing
+cp.checkpoint("my-run-1")             # Full snapshot (values + steps)
 
-# Get the accumulated state (all node outputs merged)
-state = await checkpointer.get_state("my-run-1")
-print(state)  # {"doubled": 10, "tripled": 30}
+# Filter by status
+cp.workflows(status=WorkflowStatus.FAILED)
 
 # Time travel: state at a specific superstep
-state_at_step1 = await checkpointer.get_state("my-run-1", superstep=1)
-print(state_at_step1)  # {"doubled": 10}
-
-# Get individual step records
-steps = await checkpointer.get_steps("my-run-1")
-for step in steps:
-    print(f"Step {step.index}: {step.node_name} ({step.duration_ms:.1f}ms)")
+cp.state("my-run-1", superstep=1)     # {"doubled": 10}
 ```
+
+The sync read methods (`workflows()`, `state()`, `steps()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
 
 ### Durability Modes
 
