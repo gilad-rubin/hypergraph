@@ -360,7 +360,70 @@ state_at_failure["prompt"]          # The assembled prompt — 50K tokens!
 
 ---
 
-### UC8: "Fork and retry from a specific point"
+### UC8: "Live monitoring — where are we and what happened so far?"
+
+**The scenario**: An AI agent kicks off a long-running workflow in a background process (or a separate service). From its main process, it wants to check progress, inspect intermediate results as they complete, and detect failures early — without waiting for the entire run to finish.
+
+**Before:**
+```python
+# No cross-process visibility. The agent can only:
+# 1. Wait for the process to finish
+# 2. Parse stdout/stderr logs (fragile)
+# 3. Implement custom IPC (file-based, socket, etc.)
+```
+
+**After — agent polls the CLI from its main process while the workflow runs:**
+```bash
+# Background: runner.run(graph, workflow_id="batch-500", checkpointer=SqliteCheckpointer("./db"))
+
+# 1. Check if the workflow has started and how far along it is
+hypergraph workflows show batch-500 --json
+# {"status": "active", "steps_completed": 3, "steps": [
+#   {"node_name": "embed", "duration_ms": 200, "status": "completed"},
+#   {"node_name": "retrieve", "duration_ms": 820, "status": "completed"},
+#   {"node_name": "classify", "duration_ms": 120, "status": "completed", "decision": "detailed"}
+# ]}
+
+# 2. Inspect intermediate values at the current point
+hypergraph workflows state batch-500 --json
+# {"embedding": [...], "retrieved_docs": [...], "category": "detailed"}
+# ^ Everything produced so far, even though generate hasn't started yet
+
+# 3. Later, check again — the agent sees new steps as they complete
+hypergraph workflows show batch-500 --json
+# {"status": "active", "steps_completed": 4, "steps": [..., {"node_name": "generate", ...}]}
+
+# 4. Detect failure immediately (don't wait for the full run)
+hypergraph workflows ls --status failed --json
+```
+
+**This works because:**
+- The checkpointer writes each step to SQLite as it completes (with `"sync"` or `"async"` durability)
+- SQLite WAL mode supports concurrent read/write across processes
+- The CLI queries the same SQLite file the runner writes to
+- The workflow status is `ACTIVE` until the run finishes, then `COMPLETED` or `FAILED`
+
+**Durability mode matters:**
+
+| Mode | Live query? | Use when |
+|------|:-----------:|----------|
+| `"sync"` (default) | **Yes** — immediate | Agent monitoring, production debugging |
+| `"async"` | **Yes** — sub-second delay | High-throughput pipelines where step write latency matters |
+| `"exit"` | **No** — nothing until done | Batch jobs where only final result matters |
+
+**Programmatic equivalent** (from the agent's own Python process):
+```python
+# Agent can also query the checkpointer directly (same DB file)
+checkpointer = SqliteCheckpointer("./db")  # read-only access
+steps = await checkpointer.get_steps("batch-500")
+state = await checkpointer.get_state("batch-500")
+workflow = await checkpointer.get_workflow("batch-500")
+print(workflow.status)  # WorkflowStatus.ACTIVE
+```
+
+---
+
+### UC9: "Fork and retry from a specific point"
 
 **The scenario**: A 5-step pipeline failed at step 4. Steps 1-3 were expensive (embeddings, API calls). You want to fix the code and retry from step 3, not re-run everything.
 
@@ -926,9 +989,9 @@ The runner builds a `StepRecord` from data already available after each node exe
 **StepRecord construction site**: Inside `run_superstep_async()` / `run_superstep_sync()`, right after the existing `NodeExecution` recording. All data is already there — the only new work is packaging it and calling `save_step()`.
 
 **Durability modes** (from CheckpointPolicy):
-- `"sync"`: `await save_step()` — block until written
-- `"async"`: Fire in background task
-- `"exit"`: Batch all records, write at run completion
+- `"sync"` (default): `await save_step()` — block until written. Enables live cross-process queries (UC8).
+- `"async"`: Fire in background task. Still enables live queries with sub-second delay.
+- `"exit"`: Batch all records, write at run completion. No live visibility — only for batch jobs where monitoring isn't needed.
 
 ### Additional Runner Changes
 
@@ -981,7 +1044,7 @@ Per spec: SyncRunner uses cache for durability. But timing metadata is always us
 
 ### Motivation
 
-The SDK is powerful, but agents and CLI scripts shouldn't need to write Python to answer "what failed?" Every use case from UC1–UC8 should be a one-liner from the terminal.
+The SDK is powerful, but agents and CLI scripts shouldn't need to write Python to answer "what failed?" Every use case from UC1–UC9 should be a one-liner from the terminal.
 
 **Cross-framework landscape:**
 
@@ -1226,7 +1289,7 @@ hypergraph workflows steps batch-2024-01-16 --json
 
 #### `hypergraph workflows replay <id>` — Replay from a point
 
-Maps to **UC8** (fork and retry).
+Maps to **UC9** (fork and retry).
 
 ```bash
 # Replay from superstep 3 into a new workflow
@@ -1310,7 +1373,8 @@ hypergraph graph inspect my_module:graph --json
 | UC5: "What happened yesterday?" | `hypergraph workflows ls --since yesterday` → `show` |
 | UC6: "All failed workflows" | `hypergraph workflows ls --status failed` |
 | UC7: AI agent debugging | Any command with `--json` piped to agent |
-| UC8: Fork and retry | `hypergraph workflows replay <id> --from-superstep 3` **(v2)** |
+| UC8: Live monitoring (background) | `hypergraph workflows show <id> --json` (poll while running) |
+| UC9: Fork and retry | `hypergraph workflows replay <id> --from-superstep 3` **(v2)** |
 
 ### Nested Graphs — First-Class Support
 
@@ -1512,4 +1576,4 @@ The CLI is the universal agent interface. Every AI coding tool — Claude Code, 
 | 2 | Nested workflow ID examples still used unsuffixed `order-123/rag` | Fixed: all instances now use `order-123/rag@s1` |
 | 3 | No explicit Phase 0 / migration sequence | Fixed: added Phase 0 (prerequisite tests) and Phase 2.5 (runner API migration) |
 | 4 | Memory-risk mitigation advisory only | Acknowledged — deferred item is sufficient for plan scope |
-| 5 | `--where` and `replay/diff` still shown as v1 | Fixed: `--where` examples marked as v2, UC8 marked `(v2)` |
+| 5 | `--where` and `replay/diff` still shown as v1 | Fixed: `--where` examples marked as v2, UC9 marked `(v2)` |
