@@ -138,11 +138,11 @@ def fmt_steps(steps) -> str:
     return "\n".join(lines)
 
 
-def fmt_inner_logs(inner_logs, indent: int = 2) -> str:
+def fmt_inner_logs(map_log, indent: int = 2) -> str:
     """Format inner RunLog summaries for display."""
     prefix = " " * indent
     lines = []
-    for i, log in enumerate(inner_logs):
+    for i, log in enumerate(map_log):
         lines.append(f"{prefix}[{i}] {log.graph_name}: {log.summary()}")
     return "\n".join(lines)
 
@@ -209,7 +209,7 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
     step_n = result_n.log.steps[0]
-    log0 = step_n.inner_logs[0]
+    log0 = step_n.log[0]
     nested = f"""\
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
@@ -224,10 +224,10 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> print(step.inner_logs[0])
+>>> print(step.log[0])
 {log0}
 
->>> step.inner_logs[0].timing
+>>> step.log[0].timing
 {log0.timing}"""
 
     return UseCase(
@@ -310,7 +310,7 @@ results = runner.map(
     outer_fail = Graph([inner_fail.as_node().map_over("x", error_handling="continue")])
     result_n = runner.run(outer_fail, {"x": [1, 2, 3, 4, 5]}, error_handling="continue")
     step_n = result_n.log.steps[0]
-    err_logs = [log for log in step_n.inner_logs if log.errors]
+    err_logs = [log for log in step_n.log if log.errors]
     nested = f"""\
 inner = Graph([maybe_fail], name="checker")
 outer = Graph([inner.as_node().map_over("x", error_handling="continue")])
@@ -326,8 +326,8 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
 >>> print(result.log)
 {result_n.log}
 
-# Drill into inner_logs — same RunLog API as Single
->>> failed = [log for log in result.log.steps[0].inner_logs if log.errors]
+# Drill into inner logs — same RunLog API as Single
+>>> failed = [log for log in result.log.steps[0].log if log.errors]
 >>> failed[0].errors[0].error
 '{err_logs[0].errors[0].error}'
 
@@ -396,14 +396,14 @@ results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 >>> results[0].log.node_stats
 {fmt_node_stats(r0_m.log.node_stats)}"""
 
-    # Nested — map_over with inner_logs revealing per-item routing
+    # Nested — map_over with .log revealing per-item routing
     inner = Graph([increment, check_done], name="counter")
     outer = Graph([inner.as_node().map_over("count")])
     result_n = runner.run(outer, {"count": [0, 1, 2]})
     step_n = result_n.log.steps[0]
-    log0_n = step_n.inner_logs[0]
+    log0_n = step_n.log[0]
     nested = f"""\
-# map_over — drill into per-item routing via inner_logs
+# map_over — drill into per-item routing via .log
 inner = Graph([increment, check_done], name="counter")
 outer = Graph([inner.as_node().map_over("count")])
 result = runner.run(outer, {{"count": [0, 1, 2]}})
@@ -420,10 +420,10 @@ result = runner.run(outer, {{"count": [0, 1, 2]}})
 
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> print(step.inner_logs[0])
+>>> print(step.log[0])
 {log0_n}
 
->>> step.inner_logs[0].node_stats
+>>> step.log[0].node_stats
 {fmt_node_stats(log0_n.node_stats)}"""
 
     return UseCase(
@@ -726,7 +726,7 @@ results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
 >>> [r.summary() for r in results]
 {[r.summary() for r in results]}"""
 
-    # Nested — map_over JSON with recursive inner_logs
+    # Nested — map_over JSON with recursive .log
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3]})
@@ -734,16 +734,16 @@ results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
     if len(nested_json) > 1400:
         nested_json = nested_json[:1400] + "\n  ... (truncated)"
     nested = f"""\
-# map_over — to_dict() includes recursive inner_logs
+# map_over — to_dict() includes recursive inner logs
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 result = runner.run(outer, {{"x": [1, 2, 3]}})
 
-# inner_logs appear in each step's JSON — full recursive trace
+# inner logs appear in each step's JSON — full recursive trace
 >>> json.dumps(result.log.to_dict(), indent=2)
 {nested_json}
 
-# Agents can parse inner_logs to inspect per-item execution
+# Agents can parse inner logs to inspect per-item execution
 >>> result.summary()
 '{result_n.summary()}'"""
 
@@ -973,7 +973,7 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
     step_n = result_n.log.steps[0]
-    log0_n = step_n.inner_logs[0]
+    log0_n = step_n.log[0]
     nested = f"""\
 # map_over — same batch, different semantics
 inner = Graph([double, triple], name="pipeline")
@@ -992,10 +992,10 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> print(step.inner_logs[0])
+>>> print(step.log[0])
 {log0_n}
 
->>> step.inner_logs[0].timing
+>>> step.log[0].timing
 {log0_n.timing}"""
 
     return UseCase(
@@ -1024,7 +1024,7 @@ def run_uc11() -> UseCase:
     outer = Graph([inner.as_node()])
     result = runner.run(outer, {"x": 5})
     step_s = result.log.steps[0]
-    log0_s = step_s.inner_logs[0]
+    log0_s = step_s.log
     single = f"""\
 # Nested graph: inner runs as a single node in outer
 inner = Graph([double, triple], name="pipeline")
@@ -1042,10 +1042,10 @@ result = runner.run(outer, {{"x": 5}})
 
 # Drill into inner execution
 >>> step = result.log.steps[0]
->>> print(step.inner_logs[0])
+>>> print(step.log)
 {log0_s}
 
->>> step.inner_logs[0].timing
+>>> step.log.timing
 {log0_s.timing}"""
 
     # Mapped — runner.map() on nested graph
@@ -1068,14 +1068,14 @@ results = runner.map(outer, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 >>> print(results[0].log)
 {r0_m.log}
 
->>> results[0].log.steps[0].inner_logs[0].timing
-{step0_m.inner_logs[0].timing}"""
+>>> results[0].log.steps[0].log.timing
+{step0_m.log.timing}"""
 
     # Nested — map_over
     outer_m = Graph([inner.as_node().map_over("x")])
     result_m = runner.run(outer_m, {"x": [1, 2, 3, 4, 5]})
     step_m = result_m.log.steps[0]
-    log0_m = step_m.inner_logs[0]
+    log0_m = step_m.log[0]
     nested = f"""\
 # map_over — inner graph runs once per item, outputs become lists
 outer = Graph([inner.as_node().map_over("x")])
@@ -1092,10 +1092,10 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> print(step.inner_logs[0])
+>>> print(step.log[0])
 {log0_m}
 
->>> step.inner_logs[0].timing
+>>> step.log[0].timing
 {log0_m.timing}"""
 
     return UseCase(
