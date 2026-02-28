@@ -407,8 +407,8 @@ hypergraph workflows ls --status failed --json
 
 | Mode | Live query? | Use when |
 |------|:-----------:|----------|
-| `"sync"` (default) | **Yes** — immediate | Agent monitoring, production debugging |
-| `"async"` | **Yes** — sub-second delay | High-throughput pipelines where step write latency matters |
+| `"async"` (default) | **Yes** — sub-second delay | Most use cases. Agent monitoring, production. |
+| `"sync"` | **Yes** — immediate | Crash-critical: can't afford losing the last step |
 | `"exit"` | **No** — nothing until done | Batch jobs where only final result matters |
 
 **Programmatic equivalent** (from the agent's own Python process):
@@ -989,9 +989,9 @@ The runner builds a `StepRecord` from data already available after each node exe
 **StepRecord construction site**: Inside `run_superstep_async()` / `run_superstep_sync()`, right after the existing `NodeExecution` recording. All data is already there — the only new work is packaging it and calling `save_step()`.
 
 **Durability modes** (from CheckpointPolicy):
-- `"sync"` (default): `await save_step()` — block until written. Enables live cross-process queries (UC8).
-- `"async"`: Fire in background task. Still enables live queries with sub-second delay.
-- `"exit"`: Batch all records, write at run completion. No live visibility — only for batch jobs where monitoring isn't needed.
+- `"async"` (default): Fire in background task. Enables live cross-process queries (UC8) with sub-second delay. Next step starts immediately without waiting for the write. This is what our checkpointer spec specifies as default, and matches the tradeoff LangGraph makes (write at each super-step, don't block execution).
+- `"sync"`: `await save_step()` — block until written. Guarantees step is durable before proceeding. Use when crash recovery is critical and you can't afford to lose the last step.
+- `"exit"`: Batch all records, write at run completion. No live visibility — only for batch jobs where monitoring isn't needed and you want minimal IO.
 
 ### Additional Runner Changes
 
@@ -1100,7 +1100,36 @@ This ensures agents can detect format changes across CLI versions. `schema_versi
 
 ### Command Reference
 
-#### `hypergraph workflows ls` — List workflows
+#### `hypergraph workflows` (no subcommand) — Quick status dashboard
+
+The bare command shows currently running workflows + the most recent completed/failed. This is the "what's going on right now?" view.
+
+```bash
+hypergraph workflows
+
+# Active (1 running)
+#
+#   ID              Steps    Duration  Started
+#   ──────────────  ───────  ────────  ───────────────────
+#   batch-500       3/5      1.1s      2024-01-16 14:30
+#
+# Recent (last 5)
+#
+#   ID                  Status     Steps  Duration  Created
+#   ──────────────────  ─────────  ─────  ────────  ───────────────────
+#   batch-2024-01-16    FAILED         8    2m10s   2024-01-16 09:00
+#   batch-2024-01-15    completed     12    4m32s   2024-01-15 09:00
+#   chat-session-42     completed     24   12m05s   2024-01-15 08:00
+
+# JSON output works here too
+hypergraph workflows --json
+```
+
+If nothing is running, the "Active" section is omitted. If there are no workflows at all, it says so.
+
+---
+
+#### `hypergraph workflows ls` — List workflows (with filters)
 
 ```bash
 # All workflows
