@@ -402,7 +402,8 @@ This maps to two layers:
 ```
 ┌──────────────────────────────────────────────────────┐
 │  Layer 1: RunLog (always-on, in-memory)              │
-│  Timing + status per node. On every RunResult.       │
+│  Timing + status per node. On every RunResult        │
+│  from run(), map(), and iter().                      │
 │  Zero config. Zero IO. O(nodes) memory.              │
 │  Answers: UC1, UC2, UC3, UC4 (timing), UC7 (in-proc)  │
 └───────────────────┬──────────────────────────────────┘
@@ -609,7 +610,7 @@ Before implementation, it's important to know what exists and what doesn't:
 | What | Status | Where |
 |------|--------|-------|
 | `RunResult.workflow_id` field | Exists (optional, defaults to None) | `runners/_shared/types.py:162` |
-| `workflow_id` in runner `run()`/`map()` signatures | **Does NOT exist** | `runners/base.py:39` — must be added |
+| `workflow_id` in runner `run()`/`map()`/`iter()` signatures | **Does NOT exist** | `runners/base.py:39` — must be added |
 | `workflow_id` population in templates | **Not populated** | `template_async.py:197` — always None |
 | `NodeEndEvent.duration_ms` | Exists | `events/types.py` |
 | `NodeEndEvent.cached` | Exists | `events/types.py` |
@@ -671,6 +672,8 @@ The collector is **always prepended** to the dispatcher's processor list — eve
 
 ### Runner Integration
 
+**Applies to all execution methods**: `run()`, `map()`, and in the future `iter()`. Every `RunResult` has a `.log` — this is not a map-specific feature.
+
 In both `_execute_graph_impl` (sync) and `_execute_graph_impl_async` (async):
 
 1. Create `_RunLogCollector` at start
@@ -678,7 +681,10 @@ In both `_execute_graph_impl` (sync) and `_execute_graph_impl_async` (async):
 3. Call `collector.set_superstep()` before each superstep iteration
 4. After execution: `result.log = collector.build(...)`
 
-**Map support**: Each map item creates its own collector → its own `RunLog` on its `RunResult`. No aggregate needed.
+**Per-method behavior**:
+- **`run()`**: Single RunLog on the single RunResult. This is the primary use case.
+- **`map()`**: Each map item gets its own collector → its own RunLog on its RunResult.
+- **`iter()` (future)**: RunLog builds incrementally, available on the final RunResult.
 
 ### Display & Formatting
 
@@ -785,7 +791,7 @@ Add `workflow_id` to runner signatures and wire it through to `RunResult`:
 
 | File | Change |
 |------|--------|
-| `runners/base.py` | Add `workflow_id: str | None = None` to `run()` and `map()` signatures |
+| `runners/base.py` | Add `workflow_id: str | None = None` to `run()`, `map()`, and `iter()` signatures |
 | `runners/_shared/template_async.py` | Accept and propagate `workflow_id`, populate on `RunResult` |
 | `runners/_shared/template_sync.py` | Same |
 | `runners/_shared/types.py` | Add `supports_checkpointing: bool = False` to `RunnerCapabilities` |
