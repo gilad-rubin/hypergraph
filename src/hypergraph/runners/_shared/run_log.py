@@ -57,6 +57,7 @@ class RunLogCollector(TypedEventProcessor):
                 span_id=event.span_id,
                 cached=event.cached,
                 decision=decision,
+                inner_logs=getattr(event, "inner_logs", ()),
             )
         )
 

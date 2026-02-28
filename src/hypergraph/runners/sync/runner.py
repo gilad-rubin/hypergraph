@@ -170,6 +170,7 @@ class SyncRunner(SyncRunnerTemplate):
         call so that nested graph runs know their parent span.
         """
         current_span_id: list[str | None] = [None]
+        last_inner_logs: list[tuple] = [()]
 
         def execute_node(
             node: HyperNode,
@@ -185,18 +186,22 @@ class SyncRunner(SyncRunnerTemplate):
 
             # For GraphNodeExecutor, pass context as params (not mutable state)
             if isinstance(executor, SyncGraphNodeExecutor):
-                return executor(
+                result = executor(
                     node,
                     state,
                     inputs,
                     event_processors=event_processors,
                     parent_span_id=current_span_id[0],
                 )
+                last_inner_logs[0] = executor.last_inner_logs
+                return result
 
+            last_inner_logs[0] = ()
             return executor(node, state, inputs)
 
-        # Expose mutable span_id holder so superstep can set it per-node
+        # Expose mutable holders so superstep can read/set per-node
         execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
+        execute_node.last_inner_logs = last_inner_logs  # type: ignore[attr-defined]
         return execute_node
 
     # Template hook implementations

@@ -113,6 +113,7 @@ class NodeEndEvent(BaseEvent):
     graph_name: str = ""
     duration_ms: float = 0.0
     cached: bool = False
+    inner_logs: tuple = ()  # tuple[RunLog, ...] at runtime; untyped to avoid import
 
 
 @dataclass(frozen=True)

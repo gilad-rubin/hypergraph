@@ -32,6 +32,7 @@ class AsyncGraphNodeExecutor:
             runner: The AsyncRunner that owns this executor
         """
         self.runner = runner
+        self.last_inner_logs: tuple = ()
 
     async def __call__(
         self,
@@ -76,6 +77,7 @@ class AsyncGraphNodeExecutor:
                 event_processors=event_processors,
                 _parent_span_id=parent_span_id,
             )
+            self.last_inner_logs = tuple(r.log for r in results if r.log is not None)
             return collect_as_lists(results, node, error_handling)
 
         result = await self.runner.run(
@@ -84,6 +86,7 @@ class AsyncGraphNodeExecutor:
             event_processors=event_processors,
             _parent_span_id=parent_span_id,
         )
+        self.last_inner_logs = (result.log,) if result.log is not None else ()
         return self._handle_nested_result(node, result)
 
     def _handle_nested_result(self, node: GraphNode, result: RunResult) -> dict[str, Any]:

@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, InMemoryCache, SyncRunner
+from hypergraph import AsyncRunner, Graph, InMemoryCache, SyncRunner, node
 
 from .conftest import (
     account_support,
@@ -292,3 +292,164 @@ class TestStructuralInvariants:
         assert result.log.total_duration_ms > 0
         # Should be at least ~50ms (mock_slow_llm sleeps 50ms)
         assert result.log.total_duration_ms >= 40
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7: Inner RunLogs for nested graphs
+# ---------------------------------------------------------------------------
+
+
+@node(output_name="doubled")
+def _double(x: int) -> int:
+    return x * 2
+
+
+@node(output_name="incremented")
+def _increment(doubled: int) -> int:
+    return doubled + 1
+
+
+class TestInnerLogs:
+    def test_simple_nested_graph_has_inner_log(self):
+        """A nested GraphNode produces 1 inner RunLog with correct steps."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node()])
+        result = SyncRunner().run(outer, {"x": 5})
+
+        assert result["doubled"] == 10
+        assert result.log is not None
+        assert len(result.log.steps) == 1
+
+        step = result.log.steps[0]
+        assert step.node_name == "inner"
+        assert len(step.inner_logs) == 1
+
+        inner_log = step.inner_logs[0]
+        assert inner_log.graph_name == "inner"
+        assert len(inner_log.steps) == 1
+        assert inner_log.steps[0].node_name == "_double"
+
+    def test_map_over_has_multiple_inner_logs(self):
+        """A map_over GraphNode produces N inner RunLogs (one per item)."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+        result = SyncRunner().run(outer, {"x": [1, 2, 3]})
+
+        step = result.log.steps[0]
+        assert len(step.inner_logs) == 3
+
+        for inner_log in step.inner_logs:
+            assert inner_log.graph_name == "inner"
+            assert len(inner_log.steps) == 1
+            assert inner_log.steps[0].node_name == "_double"
+
+    def test_deeply_nested_inner_logs(self):
+        """Inner logs propagate through multiple nesting levels."""
+        innermost = Graph([_double], name="innermost")
+        middle = Graph(
+            [innermost.as_node(), _increment.with_inputs(doubled="doubled")],
+            name="middle",
+        )
+        outer = Graph([middle.as_node()])
+        result = SyncRunner().run(outer, {"x": 5})
+
+        assert result["incremented"] == 11
+        # Outer has 1 step (middle)
+        assert len(result.log.steps) == 1
+        middle_step = result.log.steps[0]
+        assert len(middle_step.inner_logs) == 1
+
+        # Middle log has 2 steps (innermost + _increment)
+        middle_log = middle_step.inner_logs[0]
+        assert len(middle_log.steps) == 2
+
+        # The innermost GraphNode step has its own inner log
+        innermost_step = next(s for s in middle_log.steps if s.node_name == "innermost")
+        assert len(innermost_step.inner_logs) == 1
+        assert innermost_step.inner_logs[0].graph_name == "innermost"
+
+    def test_to_dict_includes_inner_logs(self):
+        """to_dict() recursively serializes inner_logs."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node()])
+        result = SyncRunner().run(outer, {"x": 5})
+
+        d = result.log.to_dict()
+        step_dict = d["steps"][0]
+        assert "inner_logs" in step_dict
+        assert len(step_dict["inner_logs"]) == 1
+
+        inner_log_dict = step_dict["inner_logs"][0]
+        assert inner_log_dict["graph_name"] == "inner"
+        assert len(inner_log_dict["steps"]) == 1
+
+        # Ensure JSON-serializable
+        json.dumps(d)
+
+    def test_str_shows_inner_annotation(self):
+        """__str__() shows '(N inner)' for steps with inner logs."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node()])
+        result = SyncRunner().run(outer, {"x": 5})
+
+        output = str(result.log)
+        assert "(1 inner)" in output
+
+    def test_non_nested_nodes_have_empty_inner_logs(self):
+        """Regular (non-GraphNode) steps have empty inner_logs."""
+        graph = Graph([_double])
+        result = SyncRunner().run(graph, {"x": 5})
+
+        for step in result.log.steps:
+            assert step.inner_logs == ()
+
+    @pytest.mark.asyncio
+    async def test_async_nested_graph_has_inner_log(self):
+        """Async runner also surfaces inner RunLogs."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node()])
+        result = await AsyncRunner().run(outer, {"x": 5})
+
+        assert result["doubled"] == 10
+        step = result.log.steps[0]
+        assert len(step.inner_logs) == 1
+        assert step.inner_logs[0].graph_name == "inner"
+
+    @pytest.mark.asyncio
+    async def test_async_map_over_has_multiple_inner_logs(self):
+        """Async runner surfaces N inner RunLogs for map_over."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node().map_over("x")])
+        result = await AsyncRunner().run(outer, {"x": [1, 2, 3]})
+
+        step = result.log.steps[0]
+        assert len(step.inner_logs) == 3
+
+
+# ---------------------------------------------------------------------------
+# Scenario 8: Duration rounding
+# ---------------------------------------------------------------------------
+
+
+class TestDurationRounding:
+    def test_node_record_duration_rounded(self):
+        """NodeRecord.duration_ms is rounded to DURATION_PRECISION decimals."""
+        graph = Graph([mock_embed, mock_llm])
+        result = SyncRunner().run(graph, {"text": "hello", "prompt": "test"})
+
+        for step in result.log.steps:
+            # Check that duration has at most 3 decimal places
+            text = f"{step.duration_ms:.10f}"
+            integer, decimal = text.split(".")
+            significant = decimal.rstrip("0")
+            assert len(significant) <= 3, f"Duration {step.duration_ms} has more than 3 decimal places"
+
+    def test_runlog_total_duration_rounded(self):
+        """RunLog.total_duration_ms is rounded to DURATION_PRECISION decimals."""
+        graph = Graph([mock_embed, mock_llm])
+        result = SyncRunner().run(graph, {"text": "hello", "prompt": "test"})
+
+        text = f"{result.log.total_duration_ms:.10f}"
+        integer, decimal = text.split(".")
+        significant = decimal.rstrip("0")
+        assert len(significant) <= 3, f"Total duration {result.log.total_duration_ms} has more than 3 decimal places"

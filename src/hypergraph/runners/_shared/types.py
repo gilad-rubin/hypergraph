@@ -15,6 +15,7 @@ _MAX_SEQUENCE_PREVIEW = 6
 _MAX_MAPPING_PREVIEW = 6
 _MAX_VALUE_REPR = 240
 _MAX_RUN_RESULT_REPR = 4_000
+DURATION_PRECISION = 3  # decimal places for duration_ms (microsecond precision)
 
 
 class RunStatus(Enum):
@@ -593,6 +594,10 @@ class NodeRecord:
     error: str | None = None
     cached: bool = False
     decision: str | list[str] | None = None
+    inner_logs: tuple[RunLog, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "duration_ms", round(self.duration_ms, DURATION_PRECISION))
 
 
 @dataclass(frozen=True)
@@ -652,6 +657,9 @@ class RunLog:
     total_duration_ms: float
     steps: tuple[NodeRecord, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "total_duration_ms", round(self.total_duration_ms, DURATION_PRECISION))
+
     @property
     def errors(self) -> tuple[NodeRecord, ...]:
         """Only failed steps."""
@@ -704,6 +712,7 @@ class RunLog:
                     "error": s.error,
                     "cached": s.cached,
                     "decision": s.decision,
+                    "inner_logs": [log.to_dict() for log in s.inner_logs] if s.inner_logs else [],
                 }
                 for s in self.steps
             ],
@@ -744,6 +753,8 @@ class RunLog:
             status = "completed" if step.status == "completed" else f"FAILED: {step.error or 'unknown'}"
             if step.cached:
                 status = "cached"
+            if step.inner_logs:
+                status += f" ({len(step.inner_logs)} inner)"
             row = [f"  {i:>4}", f"{step.node_name:<16}", f"{dur:<16}", status]
             if has_decisions:
                 decision_str = ""
