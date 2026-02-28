@@ -119,7 +119,7 @@ class Checkpointer(ABC):
         """List runs, optionally filtered by status."""
         ...
 
-    async def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
+    async def search_async(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS. Returns empty list if not supported."""
         return []
 

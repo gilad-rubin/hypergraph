@@ -175,13 +175,13 @@ cp.runs(status=WorkflowStatus.FAILED)
 cp.runs(graph_name="my_graph", since=datetime(2024, 1, 1))
 
 # Full-text search across step records
-cp.search_sync("generate")            # Match node names and errors
+cp.search("generate")                 # Match node names and errors
 
 # Time travel: state at a specific superstep
 cp.state("my-run-1", superstep=1)     # {"doubled": 10}
 ```
 
-The sync read methods (`runs()`, `run()`, `values()`, `steps()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
+The sync read methods (`runs()`, `run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
 
 ### Durability Modes
 

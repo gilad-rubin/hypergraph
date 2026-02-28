@@ -287,8 +287,8 @@ class SqliteCheckpointer(Checkpointer):
 
     _FTS_FIELDS = frozenset({"node_name", "error"})
 
-    async def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
-        """Search steps using FTS5."""
+    async def search_async(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
+        """Search steps using FTS5 (async)."""
         await self._ensure_db()
 
         if field is not None and field not in self._FTS_FIELDS:
@@ -464,8 +464,8 @@ class SqliteCheckpointer(Checkpointer):
         )
         return [self._row_to_run(row) for row in cursor.fetchall()]
 
-    def search_sync(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
-        """Search steps synchronously using FTS5."""
+    def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
+        """Search steps using FTS5 (sync)."""
         db = self._sync_db()
 
         if field is not None and field not in self._FTS_FIELDS:

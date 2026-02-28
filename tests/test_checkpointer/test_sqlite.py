@@ -380,7 +380,7 @@ class TestSearch:
         await checkpointer.save_step(_make_step(node_name="embed", index=0))
         await checkpointer.save_step(_make_step(node_name="retrieve", index=1, superstep=1))
 
-        results = checkpointer.search_sync("embed")
+        results = checkpointer.search("embed")
         assert len(results) == 1
         assert results[0].node_name == "embed"
 
@@ -389,7 +389,7 @@ class TestSearch:
         await checkpointer.create_run("wf-1")
         await checkpointer.save_step(_make_step(node_name="fail", index=0, status=StepStatus.FAILED, error="TimeoutError: connection timed out"))
 
-        results = checkpointer.search_sync("TimeoutError")
+        results = checkpointer.search("TimeoutError")
         assert len(results) == 1
         assert "TimeoutError" in results[0].error
 
@@ -398,7 +398,7 @@ class TestSearch:
         await checkpointer.create_run("wf-1")
         await checkpointer.save_step(_make_step(node_name="embed", index=0))
 
-        results = await checkpointer.search("embed")
+        results = await checkpointer.search_async("embed")
         assert len(results) == 1
 
     async def test_fts_consistent_after_multiple_saves(self, checkpointer):
@@ -410,11 +410,11 @@ class TestSearch:
         await checkpointer.save_step(_make_step(node_name="generate", superstep=1, index=2))
         await checkpointer.save_step(_make_step(node_name="evaluate", superstep=1, index=3))
 
-        results = checkpointer.search_sync("generate")
+        results = checkpointer.search("generate")
         assert len(results) == 2
         assert all(r.node_name == "generate" for r in results)
 
-        results = checkpointer.search_sync("evaluate")
+        results = checkpointer.search("evaluate")
         assert len(results) == 2
 
 

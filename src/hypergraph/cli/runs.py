@@ -442,7 +442,7 @@ def runs_search(
 ):
     """Search step records using full-text search."""
     cp = open_checkpointer(db)
-    results = cp.search_sync(query, field=field, limit=limit)
+    results = cp.search(query, field=field, limit=limit)
 
     if as_json:
         print_json("runs.search", [s.to_dict() for s in results], output)
