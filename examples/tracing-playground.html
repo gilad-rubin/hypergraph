@@ -252,10 +252,7 @@ result[<span class="str">"tripled"</span>]  <span class="cmt"># 30</span>
 <span class="cmt"># There's no record of intermediate node outputs.</span>`,
     after_python:`<span class="cmt"># Graph: double(x) -> triple(doubled), with checkpointer</span>
 
-cp = SqliteCheckpointer(db_path)
-cp.policy = CheckpointPolicy(durability=<span class="str">"sync"</span>, retention=<span class="str">"full"</span>)
-<span class="kw">await</span> cp.initialize()
-
+cp = SqliteCheckpointer(db_path, durability=<span class="str">"sync"</span>)
 runner = AsyncRunner(checkpointer=cp)
 result = <span class="kw">await</span> runner.run(graph, {<span class="str">"x"</span>: <span class="num">5</span>}, workflow_id=<span class="str">"demo-pipeline"</span>)
 
@@ -265,17 +262,17 @@ RunStatus.COMPLETED
 <span class="h">&gt;&gt;&gt; result['tripled']</span>
 <span class="num">30</span>
 
-<span class="cmt"># Query intermediate state after the run:</span>
-<span class="h">&gt;&gt;&gt; state = await cp.get_state("demo-pipeline")</span>
+<span class="cmt"># Query intermediate state after the run (sync — no await needed):</span>
+<span class="h">&gt;&gt;&gt; state = cp.state("demo-pipeline")</span>
 {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
 
 <span class="cmt"># Inspect individual step records:</span>
-<span class="h">&gt;&gt;&gt; steps = await cp.get_steps("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; steps = cp.steps("demo-pipeline")</span>
   [<span class="num">0</span>] <span class="node">double</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'doubled'</span>: <span class="num">10</span>}
   [<span class="num">1</span>] <span class="node">triple</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'tripled'</span>: <span class="num">30</span>}
 
 <span class="cmt"># Get a full checkpoint (state + steps):</span>
-<span class="h">&gt;&gt;&gt; checkpoint = await cp.get_checkpoint("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; checkpoint = cp.checkpoint("demo-pipeline")</span>
   values: {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
   steps: <span class="num">2</span>`,
     after_cli:`<span class="h">$ hypergraph workflows state demo-pipeline</span>
@@ -308,7 +305,7 @@ Step [<span class="num">1</span>] <span class="node">triple</span> | <span class
   input_versions: {<span class="str">'doubled'</span>: <span class="num">1</span>}
   values: {<span class="str">"tripled"</span>: <span class="num">30</span>}
   cached: False`,
-    impl_status:'ok', impl_note:'Fully implemented. get_state(), get_steps(), get_checkpoint() + CLI state/steps commands.',
+    impl_status:'ok', impl_note:'Fully implemented. Sync reads: cp.state(), cp.steps(), cp.checkpoint() + CLI state/steps commands.',
   },
   {
     id:'uc5', label:'UC5', title:'"What happened in yesterday\\\'s run?"',
@@ -319,20 +316,19 @@ Step [<span class="num">1</span>] <span class="node">triple</span> | <span class
 <span class="cmt"># You'd need to re-run with logging, or use an external</span>
 <span class="cmt"># observability tool.</span>`,
     after_python:`<span class="cmt"># The demo wrote workflows to a SQLite DB, then the process exited.</span>
-<span class="cmt"># In a NEW process, we can query everything:</span>
+<span class="cmt"># In a NEW process, we can query everything (sync — no async needed):</span>
 
 <span class="kw">from</span> <span class="fn">hypergraph.checkpointers</span> <span class="kw">import</span> SqliteCheckpointer
 
 cp = SqliteCheckpointer(<span class="str">"./workflows.db"</span>)
-<span class="kw">await</span> cp.initialize()
 
-<span class="h">&gt;&gt;&gt; workflows = await cp.list_workflows()</span>
+<span class="h">&gt;&gt;&gt; workflows = cp.workflows()</span>
 <span class="cmt"># Returns all workflows ever recorded</span>
 
-<span class="h">&gt;&gt;&gt; state = await cp.get_state("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; state = cp.state("demo-pipeline")</span>
 {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
 
-<span class="h">&gt;&gt;&gt; steps = await cp.get_steps("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; steps = cp.steps("demo-pipeline")</span>
   [<span class="num">0</span>] <span class="node">double</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'doubled'</span>: <span class="num">10</span>}
   [<span class="num">1</span>] <span class="node">triple</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'tripled'</span>: <span class="num">30</span>}`,
     after_cli:`<span class="h">$ hypergraph workflows ls --db ./workflows.db</span>
@@ -369,14 +365,14 @@ Workflow: <span class="fn">demo-pipeline</span> | <span class="ok">completed</sp
     status:'ok',
     before:`<span class="cmt"># No workflow registry. Each run is fire-and-forget.</span>
 <span class="cmt"># You'd need to build your own tracking on top.</span>`,
-    after_python:`<span class="cmt"># Python API: filter by status</span>
+    after_python:`<span class="cmt"># Python API: filter by status (sync reads)</span>
 
-<span class="h">&gt;&gt;&gt; workflows = await cp.list_workflows()</span>
+<span class="h">&gt;&gt;&gt; all_wfs = cp.workflows()</span>
 <span class="cmt"># Returns Workflow objects with .id, .status, .created_at</span>
 
-<span class="h">&gt;&gt;&gt; failed = await cp.list_workflows(status=WorkflowStatus.FAILED)</span>
+<span class="h">&gt;&gt;&gt; failed = cp.workflows(status=WorkflowStatus.FAILED)</span>
 <span class="kw">for</span> wf <span class="kw">in</span> failed:
-    steps = <span class="kw">await</span> cp.get_steps(wf.id)
+    steps = cp.steps(wf.id)
     failed_steps = [s <span class="kw">for</span> s <span class="kw">in</span> steps <span class="kw">if</span> s.status.value == <span class="str">"failed"</span>]
     print(f<span class="str">"{wf.id}: {len(failed_steps)} failed steps"</span>)
 
@@ -514,14 +510,13 @@ Workflow: <span class="fn">demo-partial-failure</span> | <span class="fail">FAIL
 <span class="cmt"># 2. Parse stdout/stderr logs (fragile)</span>
 <span class="cmt"># 3. Implement custom IPC (file-based, socket, etc.)</span>`,
     after_python:`<span class="cmt"># While a workflow is running in another process, you can query it.</span>
-<span class="cmt"># This works because SqliteCheckpointer uses WAL mode for concurrent access.</span>
+<span class="cmt"># Sync reads — no async needed. Just open and query.</span>
 
 cp = SqliteCheckpointer(<span class="str">"./workflows.db"</span>)
-<span class="kw">await</span> cp.initialize()
 
 <span class="cmt"># Query in-progress workflow</span>
-steps = <span class="kw">await</span> cp.get_steps(<span class="str">"running-workflow-id"</span>)
-state = <span class="kw">await</span> cp.get_state(<span class="str">"running-workflow-id"</span>)
+steps = cp.steps(<span class="str">"running-workflow-id"</span>)
+state = cp.state(<span class="str">"running-workflow-id"</span>)
 
 <span class="cmt"># Durability mode controls when data is visible:</span>
 <span class="d">Mode         Live query?   Use when</span>
@@ -531,10 +526,10 @@ state = <span class="kw">await</span> cp.get_state(<span class="str">"running-wo
 <span class="str">"exit"</span>       <span class="fail">No</span>            Batch jobs (final result only)
 
 <span class="cmt"># Real example from the demo: querying checkpointer after run</span>
-<span class="h">&gt;&gt;&gt; state = await cp.get_state("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; state = cp.state("demo-pipeline")</span>
 {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
 
-<span class="h">&gt;&gt;&gt; steps = await cp.get_steps("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; steps = cp.steps("demo-pipeline")</span>
   [<span class="num">0</span>] <span class="node">double</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'doubled'</span>: <span class="num">10</span>}
   [<span class="num">1</span>] <span class="node">triple</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'tripled'</span>: <span class="num">30</span>}`,
     after_cli:`<span class="cmt"># Poll from another terminal while workflow runs</span>
@@ -577,9 +572,9 @@ Workflow: <span class="fn">demo-cycle</span> | <span class="ok">completed</span>
     before:`<span class="cmt"># Use DiskCache to avoid re-computing cached nodes.</span>
 <span class="cmt"># But this only works with identical inputs and the same process.</span>
 <span class="cmt"># No way to fork from a specific point in history.</span>`,
-    after_python:`<span class="cmt"># get_checkpoint() WORKS today — it returns state + steps</span>
+    after_python:`<span class="cmt"># checkpoint() WORKS today — it returns state + steps (sync)</span>
 
-<span class="h">&gt;&gt;&gt; checkpoint = await cp.get_checkpoint("demo-pipeline")</span>
+<span class="h">&gt;&gt;&gt; checkpoint = cp.checkpoint("demo-pipeline")</span>
   values: {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
   steps: <span class="num">2</span>
 
@@ -623,9 +618,9 @@ State: <span class="fn">demo-pipeline</span> (through step <span class="num">1</
 Workflow: <span class="fn">demo-pipeline</span> | <span class="ok">completed</span> | <span class="num">2</span> steps | <span class="num">0ms</span>
 
 <span class="cmt"># Then manually fork via Python API:</span>
-<span class="cmt"># checkpoint = await cp.get_checkpoint("demo-pipeline")</span>
+<span class="cmt"># checkpoint = cp.checkpoint("demo-pipeline")</span>
 <span class="cmt"># result = await runner.run(graph, values={**checkpoint.values})</span>`,
-    impl_status:'defer', impl_note:'Deferred to v2. get_checkpoint() works today; history= param and CLI replay not yet built.',
+    impl_status:'defer', impl_note:'Deferred to v2. cp.checkpoint() works today; history= param and CLI replay not yet built.',
   },
 ];
 
