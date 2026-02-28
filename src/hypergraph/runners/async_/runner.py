@@ -37,6 +37,7 @@ from hypergraph.runners.async_.superstep import (
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -72,14 +73,22 @@ class AsyncRunner(AsyncRunnerTemplate):
         10
     """
 
-    def __init__(self, cache: CacheBackend | None = None):
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ):
         """Initialize AsyncRunner with its node executors.
 
         Args:
             cache: Optional cache backend for node result caching.
                 Nodes opt in with ``cache=True``.
+            checkpointer: Optional checkpointer for workflow persistence.
+                Enables save/resume, crash recovery, and cross-process queries.
+                Pass a workflow_id to run() to activate persistence.
         """
         self._cache = cache
+        self._checkpointer_instance = checkpointer
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -87,6 +96,11 @@ class AsyncRunner(AsyncRunnerTemplate):
             RouteNode: AsyncRouteNodeExecutor(),
             InterruptNode: AsyncInterruptNodeExecutor(),
         }
+
+    @property
+    def _checkpointer(self) -> Checkpointer | None:
+        """Checkpointer for workflow persistence."""
+        return self._checkpointer_instance
 
     @property
     def capabilities(self) -> RunnerCapabilities:
@@ -97,6 +111,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             supports_streaming=False,  # Phase 2
             returns_coroutine=True,
             supports_interrupts=True,
+            supports_checkpointing=self._checkpointer_instance is not None,
         )
 
     @property
@@ -120,6 +135,8 @@ class AsyncRunner(AsyncRunnerTemplate):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
+        step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -137,13 +154,41 @@ class AsyncRunner(AsyncRunnerTemplate):
         else:
             token = None
 
+        # Checkpointer setup — deterministic node ordering for index assignment
+        checkpointer = self._checkpointer_instance
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        step_counter = 0
+        node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
+        save_tasks: list[asyncio.Task[None]] = []
+
         try:
-            for _ in range(max_iterations):
+            for superstep_idx in range(max_iterations):
                 ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
 
                 if not ready_nodes:
                     break  # No more nodes to execute
 
+                if dispatcher.active:
+                    from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
+
+                    await dispatcher.emit_async(
+                        SuperstepStartEvent(
+                            run_id=run_id,
+                            span_id=_generate_span_id(),
+                            parent_span_id=run_span_id,
+                            graph_name=graph.name,
+                            superstep=superstep_idx,
+                        )
+                    )
+
+                # Track ready nodes and their prior input_versions for
+                # detecting re-executions (cycles) and failures
+                ready_node_names = [n.name for n in ready_nodes]
+                prev_input_versions = {
+                    name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
+                }
+
+                superstep_error: BaseException | None = None
                 try:
                     # Execute all ready nodes concurrently
                     # Concurrency controlled by shared semaphore in ContextVar
@@ -159,10 +204,30 @@ class AsyncRunner(AsyncRunnerTemplate):
                         run_id=run_id,
                         run_span_id=run_span_id,
                     )
-                except ExecutionError:
-                    raise
+                except ExecutionError as e:
+                    superstep_error = e
+                    state = e.partial_state  # type: ignore[assignment]
                 except Exception as e:
-                    raise ExecutionError(e, state) from e
+                    superstep_error = ExecutionError(e, state)
+
+                # Save step records for executed nodes (even on failure)
+                if has_checkpointer:
+                    step_counter = await self._save_superstep_records(
+                        checkpointer,
+                        workflow_id,
+                        superstep_idx,
+                        state,
+                        ready_node_names,
+                        prev_input_versions,
+                        node_order,
+                        step_counter,
+                        step_buffer,
+                        save_tasks,
+                        superstep_error,
+                    )
+
+                if superstep_error is not None:
+                    raise superstep_error
 
             else:
                 # Loop completed without break = hit max_iterations
@@ -176,11 +241,118 @@ class AsyncRunner(AsyncRunnerTemplate):
             pause._partial_state = state  # type: ignore[attr-defined]
             raise
         finally:
+            # Await any background save tasks before returning
+            if save_tasks:
+                results = await asyncio.gather(*save_tasks, return_exceptions=True)
+                failures = [r for r in results if isinstance(r, BaseException)]
+                if failures:
+                    import logging
+
+                    logger = logging.getLogger("hypergraph.checkpointers")
+                    if len(failures) == len(results):
+                        logger.error(
+                            "All %d async step saves failed for workflow %s — no steps persisted: %s",
+                            len(failures),
+                            workflow_id,
+                            failures[0],
+                        )
+                    else:
+                        for f in failures:
+                            logger.warning("Async step save failed: %s", f)
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
 
         return state
+
+    async def _save_superstep_records(
+        self,
+        checkpointer: Checkpointer,
+        workflow_id: str,
+        superstep_idx: int,
+        state: GraphState,
+        ready_node_names: list[str],
+        prev_input_versions: dict[str, dict[str, int]],
+        node_order: dict[str, int],
+        step_counter: int,
+        step_buffer: list[Any] | None,
+        save_tasks: list[asyncio.Task[None]],
+        superstep_error: BaseException | None = None,
+    ) -> int:
+        """Build StepRecords for nodes scheduled in this superstep.
+
+        Uses ready_node_names (not set-diff on node_executions keys) so that
+        cyclic re-executions are captured. Distinguishes fresh vs stale entries
+        via input_versions comparison to correctly mark failed nodes.
+        """
+        from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
+
+        sorted_names = sorted(ready_node_names, key=lambda name: node_order.get(name, 0))
+
+        for name in sorted_names:
+            execution = state.node_executions.get(name)
+            now = _utcnow()
+
+            if execution is not None:
+                # Check if this is a fresh execution or a stale copy from a prior superstep.
+                # A cyclic node is "ready" because ≥1 input version changed, so fresh
+                # re-executions always have different input_versions than the stale copy.
+                is_fresh = name not in prev_input_versions or execution.input_versions != prev_input_versions[name]
+                if is_fresh:
+                    record = StepRecord(
+                        workflow_id=workflow_id,
+                        superstep=superstep_idx,
+                        node_name=name,
+                        index=step_counter,
+                        status=StepStatus.COMPLETED,
+                        input_versions=execution.input_versions,
+                        values=execution.outputs,
+                        duration_ms=execution.duration_ms,
+                        cached=execution.cached,
+                        decision=_normalize_decision(state.routing_decisions.get(name)),
+                        created_at=now,
+                        completed_at=now,
+                    )
+                elif superstep_error is not None:
+                    # Stale entry — node was scheduled but failed during re-execution
+                    record = StepRecord(
+                        workflow_id=workflow_id,
+                        superstep=superstep_idx,
+                        node_name=name,
+                        index=step_counter,
+                        status=StepStatus.FAILED,
+                        input_versions=execution.input_versions,
+                        error=_extract_error_message(superstep_error),
+                        created_at=now,
+                    )
+                else:
+                    continue
+            elif superstep_error is not None:
+                # No prior execution — node failed on first attempt
+                record = StepRecord(
+                    workflow_id=workflow_id,
+                    superstep=superstep_idx,
+                    node_name=name,
+                    index=step_counter,
+                    status=StepStatus.FAILED,
+                    input_versions={},
+                    error=_extract_error_message(superstep_error),
+                    created_at=now,
+                )
+            else:
+                continue
+
+            step_counter += 1
+            durability = checkpointer.policy.durability
+            if durability == "sync":
+                await checkpointer.save_step(record)
+            elif durability == "async":
+                save_tasks.append(asyncio.create_task(checkpointer.save_step(record)))
+            elif step_buffer is not None:
+                # "exit" mode — buffer for flushing after run completes
+                step_buffer.append(record)
+
+        return step_counter
 
     def _make_execute_node(
         self,
@@ -293,7 +465,35 @@ class AsyncRunner(AsyncRunnerTemplate):
 
 
 # ------------------------------------------------------------------
-# Event helpers (module-level to keep the class focused)
+# Helpers (module-level to keep the class focused)
+# ------------------------------------------------------------------
+
+
+def _extract_error_message(error: BaseException) -> str:
+    """Extract a human-readable error message from a (possibly wrapped) exception."""
+    cause = error.__cause__ if error.__cause__ is not None else error
+    return str(cause)
+
+
+def _normalize_decision(decision: Any) -> str | list[str] | None:
+    """Convert routing decision to a JSON-serializable form.
+
+    Gate nodes store the END sentinel (a class) as a decision value.
+    This converts it to the string "END" for persistence.
+    """
+    if decision is None:
+        return None
+    from hypergraph.nodes.gate import END as _END
+
+    if decision is _END:
+        return "END"
+    if isinstance(decision, list):
+        return [("END" if d is _END else d) for d in decision]
+    return decision
+
+
+# ------------------------------------------------------------------
+# Event helpers
 # ------------------------------------------------------------------
 
 

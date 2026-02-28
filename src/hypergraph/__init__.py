@@ -1,6 +1,11 @@
 """Hypergraph - A hierarchical and modular graph workflow framework."""
 
 from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
+from hypergraph.checkpointers import (
+    Checkpointer,
+    CheckpointPolicy,
+    SqliteCheckpointer,
+)
 from hypergraph.events import (
     AsyncEventProcessor,
     BaseEvent,
@@ -16,6 +21,7 @@ from hypergraph.events import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    SuperstepStartEvent,
     TypedEventProcessor,
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
@@ -44,7 +50,10 @@ from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
     ErrorHandling,
+    NodeRecord,
+    NodeStats,
     PauseInfo,
+    RunLog,
     RunResult,
     RunStatus,
     SyncRunner,
@@ -81,8 +90,13 @@ __all__ = [
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",
+    # RunLog
+    "RunLog",
+    "NodeRecord",
+    "NodeStats",
     # Events
     "BaseEvent",
+    "SuperstepStartEvent",
     "Event",
     "EventDispatcher",
     "EventProcessor",
@@ -102,4 +116,8 @@ __all__ = [
     "CacheBackend",
     "InMemoryCache",
     "DiskCache",
+    # Checkpointing
+    "Checkpointer",
+    "CheckpointPolicy",
+    "SqliteCheckpointer",
 ]

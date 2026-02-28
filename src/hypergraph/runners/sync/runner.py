@@ -109,11 +109,24 @@ class SyncRunner(SyncRunnerTemplate):
         state = initialize_state(graph, values)
         active_nodes = compute_active_node_set(graph)
 
-        for _ in range(max_iterations):
+        for superstep_idx in range(max_iterations):
             ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
 
             if not ready_nodes:
                 break  # No more nodes to execute
+
+            if dispatcher.active:
+                from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
+
+                dispatcher.emit(
+                    SuperstepStartEvent(
+                        run_id=run_id,
+                        span_id=_generate_span_id(),
+                        parent_span_id=run_span_id,
+                        graph_name=graph.name,
+                        superstep=superstep_idx,
+                    )
+                )
 
             try:
                 # Execute all ready nodes

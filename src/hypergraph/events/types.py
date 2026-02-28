@@ -182,6 +182,19 @@ class InterruptEvent(BaseEvent):
 
 
 @dataclass(frozen=True)
+class SuperstepStartEvent(BaseEvent):
+    """Emitted at the start of each superstep (parallel execution round).
+
+    Attributes:
+        graph_name: Name of the graph being executed.
+        superstep: Zero-indexed superstep number.
+    """
+
+    graph_name: str = ""
+    superstep: int = 0
+
+
+@dataclass(frozen=True)
 class StopRequestedEvent(BaseEvent):
     """Emitted when a stop is requested on a workflow.
 
@@ -200,6 +213,7 @@ Event = (
     | CacheHitEvent
     | NodeErrorEvent
     | RouteDecisionEvent
+    | SuperstepStartEvent
     | InterruptEvent
     | StopRequestedEvent
 )

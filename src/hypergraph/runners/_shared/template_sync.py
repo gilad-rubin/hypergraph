@@ -19,6 +19,7 @@ from hypergraph.runners._shared.input_normalization import (
     ASYNC_RUN_RESERVED_OPTION_NAMES,
     normalize_inputs,
 )
+from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import ErrorHandling, GraphState, RunResult, RunStatus
 from hypergraph.runners._shared.validation import (
     resolve_runtime_selected,
@@ -122,6 +123,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         max_iterations: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -146,7 +148,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         _validate_error_handling(error_handling)
 
         max_iter = max_iterations or self.default_max_iterations
-        dispatcher = self._create_dispatcher(event_processors)
+        collector = RunLogCollector()
+        all_processors = [collector] + (event_processors or [])
+        dispatcher = self._create_dispatcher(all_processors)
         run_id, run_span_id = self._emit_run_start_sync(dispatcher, graph, _parent_span_id)
         start_time = time.time()
 
@@ -161,10 +165,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 event_processors=event_processors,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
+            total_duration_ms = (time.time() - start_time) * 1000
             result = RunResult(
                 values=output_values,
                 status=RunStatus.COMPLETED,
                 run_id=run_id,
+                workflow_id=workflow_id,
+                log=collector.build(graph.name, run_id, total_duration_ms),
             )
             self._emit_run_end_sync(
                 dispatcher,
@@ -195,12 +202,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             if error_handling == "raise":
                 raise error from None
 
+            total_duration_ms = (time.time() - start_time) * 1000
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
+                workflow_id=workflow_id,
                 error=error,
+                log=collector.build(graph.name, run_id, total_duration_ms),
             )
         finally:
             if _parent_span_id is None and dispatcher.active:
@@ -220,6 +230,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         entrypoint: str | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
