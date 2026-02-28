@@ -1098,6 +1098,94 @@ All `--json` output includes a stable envelope:
 
 This ensures agents can detect format changes across CLI versions. `schema_version` is bumped on breaking changes to the JSON structure. Non-breaking additions (new fields) don't bump the version.
 
+### Progressive Disclosure in CLI Output — Don't Spam the Context Window
+
+**This is a hard requirement.** AI agents have limited context windows. A 1000-item map run or an embedding vector in `--values` output can blow the context budget in a single command. Every CLI command must have guardrails.
+
+**Principle: Show summaries by default. Drill into details explicitly.**
+
+#### Default truncation rules
+
+| Data type | Default display | Full access |
+|-----------|----------------|-------------|
+| Workflow list | Last 10 (not 50) | `--limit N` |
+| Step list | First 20 steps | `--limit N` or `--all` |
+| Values (state) | Type + size only (`list, 1536 items`) | `--values` to show content |
+| Large values | Truncated to 200 chars with `…` | `--key <name>` for single value, `--full` for all |
+| Embedding vectors | `[0.123, -0.456, ...] (1536 floats)` | `--key embedding --full` |
+| Map run items | Stats summary (count/avg/errors) | `--item N` to drill into one |
+| Error tracebacks | Last line only | `--errors --full` for full traceback |
+
+#### Output size cap
+
+All human-readable output has a **max line cap** (default: 100 lines). If output exceeds this:
+
+```
+# ... 83 more steps (use --limit or --all to see more)
+```
+
+JSON output (`--json`) is NOT capped — agents that explicitly ask for JSON are expected to handle large output (pipe to file, jq, etc.).
+
+#### Dump to file for large results
+
+```bash
+# Dump full state to file instead of stdout
+hypergraph workflows state batch-500 --values --output state.json
+
+# Then grep/jq/read at leisure
+jq '.prompt' state.json
+grep "embedding" state.json | head -5
+```
+
+The `--output FILE` flag writes JSON to disk and prints a one-liner confirmation:
+```
+Wrote state for batch-500 (through superstep 4) to state.json (24KB)
+```
+
+#### Agent-friendly pagination
+
+```bash
+# First page
+hypergraph workflows steps batch-1000-items --limit 20 --json
+
+# Next page
+hypergraph workflows steps batch-1000-items --limit 20 --offset 20 --json
+```
+
+Agents iterate with `--limit` + `--offset`. The JSON envelope includes `"total": 1000, "offset": 0, "limit": 20, "has_more": true` so the agent knows whether to fetch more.
+
+#### Example: what an agent ACTUALLY sees
+
+```bash
+# Agent runs this:
+hypergraph workflows state batch-500
+
+# Agent sees this (compact, fits in context):
+# State: batch-500 (through superstep 3, ACTIVE)
+#
+#   Output           Type    Size        Superstep  Node
+#   ───────────────  ──────  ──────────  ─────────  ────────────
+#   embedding        list    1536 items  0          embed
+#   retrieved_docs   list    3 items     1          retrieve
+#   category         str     16B         2          classify
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+
+# Agent drills in:
+hypergraph workflows state batch-500 --key category
+# "account_support"
+
+# Agent drills into a big one:
+hypergraph workflows state batch-500 --key retrieved_docs
+# [
+#   {"title": "Password Reset Guide", "content": "To reset your passw…"},
+#   {"title": "Account Recovery", "content": "If you've lost access…"},
+#   {"title": "Security FAQ", "content": "We recommend changing…"}
+# ]
+```
+
+The agent never gets a 1536-float embedding vector unless it explicitly asks for it.
+
 ### Command Reference
 
 #### `hypergraph workflows` (no subcommand) — Quick status dashboard
