@@ -147,3 +147,4 @@ The auto-format hook means agents never need to manually run ruff — code is al
 - **CI**: lint + test matrix (Python 3.10-3.13) on every push/PR to master
 - **Build-time validation**: Graph() catches structural errors at construction, not runtime
 - **Tests**: `uv run pytest` must pass before any PR — the `/feature` skill enforces this
+- **PR template**: Every PR must follow `.github/PULL_REQUEST_TEMPLATE.md` — include Problem/Bug/Challenge, concrete Before/After code examples, and a Test Plan checklist. Read the template before creating any PR.
