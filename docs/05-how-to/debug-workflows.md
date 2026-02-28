@@ -158,6 +158,8 @@ Every step is now persisted. You can inspect it from another process, another da
 
 ```python
 # From any process that can access the DB file:
+from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+
 cp = SqliteCheckpointer("./runs.db")
 
 # Sync reads — no await needed, works from any context
@@ -389,8 +391,8 @@ hypergraph runs values my-run-1
 #
 #   Output   Type  Size  Step  Node
 #   ───────  ────  ────  ────  ──────
-#   doubled  int   10    0     double
-#   tripled  int   30    1     triple
+#   doubled  int   2B    0     double
+#   tripled  int   2B    1     triple
 #
 #   → hypergraph runs values my-run-1 --key <name>  for a single value
 #   → hypergraph runs values my-run-1 --full        to show values inline
