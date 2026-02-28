@@ -138,6 +138,15 @@ def fmt_steps(steps) -> str:
     return "\n".join(lines)
 
 
+def fmt_inner_logs(inner_logs, indent: int = 2) -> str:
+    """Format inner RunLog summaries for display."""
+    prefix = " " * indent
+    lines = []
+    for i, log in enumerate(inner_logs):
+        lines.append(f"{prefix}[{i}] {log.graph_name}: {log.summary()}")
+    return "\n".join(lines)
+
+
 def fmt_step_records(steps) -> str:
     """Format StepRecord objects from checkpointer."""
     lines = []
@@ -197,6 +206,7 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
+    step_n = result_n.log.steps[0]
     nested = f"""\
 # map_over — inner graph runs per item, ONE RunResult with list outputs
 inner = Graph([double, triple], name="pipeline")
@@ -206,12 +216,22 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 >>> result["tripled"]
 {result_n["tripled"]}
 
-# One RunResult, one RunLog (the mapped step is a single node)
+# Outer RunLog shows one step (the mapped GraphNode)
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
->>> result.log.timing
-{result_n.log.timing}"""
+# Drill into inner runs via step.inner_logs
+>>> step = result.log.steps[0]
+>>> len(step.inner_logs)
+{len(step_n.inner_logs)}
+
+# Each inner_log is a full RunLog — per-item timing visible
+>>> for i, log in enumerate(step.inner_logs): print(f"  [{{i}}] {{log.summary()}}")
+{fmt_inner_logs(step_n.inner_logs)}
+
+# Drill into one inner log's timing
+>>> step.inner_logs[0].timing
+{step_n.inner_logs[0].timing}"""
 
     return UseCase(
         id="uc1",
@@ -292,25 +312,36 @@ results = runner.map(
 >>> results.get("value", "N/A")
 {results.get("value", "N/A")}"""
 
-    # Nested — map_over (errors affect the whole step)
+    # Nested — map_over with error_handling="continue"
     inner_fail = Graph([maybe_fail], name="checker")
-    outer_fail = Graph([inner_fail.as_node().map_over("x")])
+    outer_fail = Graph([inner_fail.as_node().map_over("x", error_handling="continue")])
     result_n = runner.run(outer_fail, {"x": [1, 2, 3, 4, 5]}, error_handling="continue")
+    step_n = result_n.log.steps[0]
+    err_logs = [log for log in step_n.inner_logs if log.errors]
     nested = f"""\
-# map_over — errors affect the whole step (no per-item isolation)
+# map_over with error_handling="continue" — errors visible via inner_logs
 inner = Graph([maybe_fail], name="checker")
-outer = Graph([inner.as_node().map_over("x")])
+outer = Graph([inner.as_node().map_over("x", error_handling="continue")])
 result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
 
 >>> result.status
 {result_n.status}
 
->>> result.log.summary()
-'{result_n.log.summary()}'
+>>> result["value"]
+{result_n["value"]}
 
-# Compare: runner.map() isolates each item, map_over does not
-# With runner.map(): 4 succeed, 1 fails independently
-# With map_over: x=3 fails the entire mapped step"""
+# Drill into inner_logs to see which items failed
+>>> step = result.log.steps[0]
+>>> for i, log in enumerate(step.inner_logs): print(f"  [{{i}}] {{log.summary()}}")
+{fmt_inner_logs(step_n.inner_logs)}
+
+# Find and inspect the failure
+>>> failed = [log for log in step.inner_logs if log.errors]
+>>> failed[0].errors[0].error
+'{err_logs[0].errors[0].error}'
+
+# Compare: runner.map() gives MapResult.failures for batch-level filtering
+#          map_over gives step.inner_logs for per-item drill-down"""
 
     return UseCase(
         id="uc2",
@@ -378,12 +409,18 @@ results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 >>> print(results[0].log)
 {results_m[0].log}"""
 
-    # Nested — map_over hides inner routing in one step
+    # Nested — map_over with inner_logs revealing per-item routing
     inner = Graph([increment, check_done], name="counter")
     outer = Graph([inner.as_node().map_over("count")])
     result_n = runner.run(outer, {"count": [0, 1, 2]})
+    step_n = result_n.log.steps[0]
+    per_item_decisions = "\n".join(
+        f"  [{i}] steps={len(log.steps)}, "
+        f"decisions={[('→ END' if str(s.decision) == 'END' else f'→ {s.decision}') for s in log.steps if s.decision is not None]}"
+        for i, log in enumerate(step_n.inner_logs)
+    )
     nested = f"""\
-# map_over — inner routing is hidden, one step in the outer RunLog
+# map_over — drill into per-item routing via inner_logs
 inner = Graph([increment, check_done], name="counter")
 outer = Graph([inner.as_node().map_over("count")])
 result = runner.run(outer, {{"count": [0, 1, 2]}})
@@ -391,12 +428,20 @@ result = runner.run(outer, {{"count": [0, 1, 2]}})
 >>> result["count"]
 {result_n["count"]}
 
-# One RunResult with one step (the mapped GraphNode)
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
-# Compare: runner.map() exposes per-item routing decisions
-# map_over collapses everything into a single step"""
+# inner_logs reveal per-item routing decisions (no longer hidden!)
+>>> step = result.log.steps[0]
+>>> for i, log in enumerate(step.inner_logs):
+...     decisions = [s.decision for s in log.steps if s.decision]
+...     print(f"  [{{i}}] {{len(log.steps)}} steps, decisions={{decisions}}")
+{per_item_decisions}
+
+# count=0 loops 3× (increment→check→increment→check→increment→check→END)
+# count=2 loops 1× (increment→check→END)
+>>> print(step.inner_logs[0])
+{step_n.inner_logs[0]}"""
 
     return UseCase(
         id="uc3",
@@ -698,23 +743,24 @@ results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
 >>> [r.summary() for r in results]
 {[r.summary() for r in results]}"""
 
-    # Nested — map_over JSON (single RunResult)
+    # Nested — map_over JSON with recursive inner_logs
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3]})
     nested_json = json.dumps(result_n.log.to_dict(), indent=2, default=str)
-    if len(nested_json) > 600:
-        nested_json = nested_json[:600] + "\n  ... (truncated)"
+    if len(nested_json) > 1400:
+        nested_json = nested_json[:1400] + "\n  ... (truncated)"
     nested = f"""\
-# map_over — one RunResult, one JSON trace
+# map_over — to_dict() includes recursive inner_logs
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 result = runner.run(outer, {{"x": [1, 2, 3]}})
 
+# inner_logs appear in each step's JSON — full recursive trace
 >>> json.dumps(result.log.to_dict(), indent=2)
 {nested_json}
 
-# Compare: runner.map() gives N traces, map_over gives 1
+# Agents can parse inner_logs to inspect per-item execution
 >>> result.summary()
 '{result_n.summary()}'"""
 
@@ -944,6 +990,7 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
+    step_n = result_n.log.steps[0]
     nested = f"""\
 # map_over — same batch, different semantics
 inner = Graph([double, triple], name="pipeline")
@@ -960,8 +1007,16 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
+# Drill into per-item execution via inner_logs
+>>> step = result.log.steps[0]
+>>> len(step.inner_logs)
+{len(step_n.inner_logs)}
+
+>>> for i, log in enumerate(step.inner_logs): print(f"  [{{i}}] {{log.summary()}}")
+{fmt_inner_logs(step_n.inner_logs)}
+
 # Compare: runner.map() = N RunResults with batch metadata
-#          map_over     = 1 RunResult with list outputs"""
+#          map_over     = 1 RunResult + inner_logs for drill-down"""
 
     return UseCase(
         id="uc10",
@@ -988,6 +1043,7 @@ def run_uc11() -> UseCase:
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node()])
     result = runner.run(outer, {"x": 5})
+    step_s = result.log.steps[0]
     single = f"""\
 # Nested graph: inner runs as a single node in outer
 inner = Graph([double, triple], name="pipeline")
@@ -998,7 +1054,12 @@ result = runner.run(outer, {{"x": 5}})
 {result["tripled"]}
 
 >>> result.log.summary()
-'{result.log.summary()}'"""
+'{result.log.summary()}'
+
+# Even a simple nested graph gets inner_logs (1 inner RunLog)
+>>> step = result.log.steps[0]
+>>> step.inner_logs[0].summary()
+'{step_s.inner_logs[0].summary()}'"""
 
     # Mapped — runner.map() on nested graph
     outer_flat = Graph([inner.as_node()])
@@ -1021,6 +1082,7 @@ results = runner.map(outer, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
     # Nested — map_over
     outer_m = Graph([inner.as_node().map_over("x")])
     result_m = runner.run(outer_m, {"x": [1, 2, 3, 4, 5]})
+    step_m = result_m.log.steps[0]
     nested = f"""\
 # map_over — inner graph runs once per item, outputs become lists
 outer = Graph([inner.as_node().map_over("x")])
@@ -1032,12 +1094,21 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 >>> result["tripled"]
 {result_m["tripled"]}
 
-# Unlike runner.map(), this is ONE run with ONE RunResult
->>> result.status
-{result_m.status}
-
+# ONE run, ONE RunResult, but inner_logs gives full per-item visibility
 >>> result.log.summary()
-'{result_m.log.summary()}'"""
+'{result_m.log.summary()}'
+
+# print() shows the "(N inner)" annotation
+>>> print(result.log)
+{result_m.log}
+
+# Drill into any inner run
+>>> step = result.log.steps[0]
+>>> len(step.inner_logs)
+{len(step_m.inner_logs)}
+
+>>> step.inner_logs[0].timing
+{step_m.inner_logs[0].timing}"""
 
     return UseCase(
         id="uc11",
@@ -1089,6 +1160,7 @@ results = runner.map(outer, {{"a": [1, 2, 3], "b": 10}}, map_over="a")
     # Nested — product mode
     outer_p = Graph([inner.as_node().map_over("a", "b", mode="product")])
     result_p = runner.run(outer_p, {"a": [1, 2, 3], "b": [10, 20]})
+    step_p = result_p.log.steps[0]
 
     outer_z = Graph([inner.as_node().map_over("a", "b")])
     result_z = runner.run(outer_z, {"a": [1, 2], "b": [10, 20]})
@@ -1100,6 +1172,11 @@ result = runner.run(outer, {{"a": [1, 2, 3], "b": [10, 20]}})
 # 3 × 2 = 6 combinations
 >>> result["sum"]
 {result_p["sum"]}
+
+# inner_logs has one RunLog per combination
+>>> step = result.log.steps[0]
+>>> len(step.inner_logs)
+{len(step_p.inner_logs)}
 
 # zip mode (default) requires equal-length lists
 outer_zip = Graph([inner.as_node().map_over("a", "b")])
