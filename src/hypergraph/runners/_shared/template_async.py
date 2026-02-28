@@ -20,6 +20,7 @@ from hypergraph.runners._shared.input_normalization import (
     ASYNC_RUN_RESERVED_OPTION_NAMES,
     normalize_inputs,
 )
+from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import (
     ErrorHandling,
     GraphState,
@@ -174,7 +175,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _validate_error_handling(error_handling)
 
         max_iter = max_iterations or self.default_max_iterations
-        dispatcher = self._create_dispatcher(event_processors)
+        collector = RunLogCollector()
+        all_processors = [collector] + (event_processors or [])
+        dispatcher = self._create_dispatcher(all_processors)
         run_id, run_span_id = await self._emit_run_start_async(
             dispatcher,
             graph,
@@ -194,10 +197,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 event_processors=event_processors,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
+            total_duration_ms = (time.time() - start_time) * 1000
             result = RunResult(
                 values=output_values,
                 status=RunStatus.COMPLETED,
                 run_id=run_id,
+                log=collector.build(graph.name, run_id, total_duration_ms),
             )
             await self._emit_run_end_async(
                 dispatcher,
@@ -211,11 +216,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
+            total_duration_ms = (time.time() - start_time) * 1000
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
                 run_id=run_id,
                 pause=pause.pause_info,
+                log=collector.build(graph.name, run_id, total_duration_ms),
             )
         except Exception as e:
             error = e
@@ -237,12 +244,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if error_handling == "raise":
                 raise error from None
 
+            total_duration_ms = (time.time() - start_time) * 1000
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
                 error=error,
+                log=collector.build(graph.name, run_id, total_duration_ms),
             )
         finally:
             if _parent_span_id is None and dispatcher.active:

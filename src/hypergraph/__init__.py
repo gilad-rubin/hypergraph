@@ -16,6 +16,7 @@ from hypergraph.events import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    SuperstepStartEvent,
     TypedEventProcessor,
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
@@ -44,7 +45,10 @@ from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
     ErrorHandling,
+    NodeRecord,
+    NodeStats,
     PauseInfo,
+    RunLog,
     RunResult,
     RunStatus,
     SyncRunner,
@@ -81,8 +85,13 @@ __all__ = [
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",
+    # RunLog
+    "RunLog",
+    "NodeRecord",
+    "NodeStats",
     # Events
     "BaseEvent",
+    "SuperstepStartEvent",
     "Event",
     "EventDispatcher",
     "EventProcessor",

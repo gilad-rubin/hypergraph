@@ -154,6 +154,7 @@ class RunResult:
         workflow_id: Optional workflow identifier for tracking related runs
         error: Exception if status is FAILED, else None
         pause: PauseInfo if status is PAUSED, else None
+        log: RunLog with execution trace (timing, status, routing), or None
     """
 
     values: dict[str, Any]
@@ -162,6 +163,7 @@ class RunResult:
     workflow_id: str | None = None
     error: BaseException | None = None
     pause: PauseInfo | None = None
+    log: RunLog | None = None
 
     @property
     def paused(self) -> bool:
@@ -375,3 +377,197 @@ class GraphState:
             },
             routing_decisions=dict(self.routing_decisions),
         )
+
+
+# ---------------------------------------------------------------------------
+# RunLog types — always-on execution trace
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NodeRecord:
+    """Record of a single node execution within a run.
+
+    Attributes:
+        node_name: Name of the executed node.
+        superstep: Parallel execution round (0-indexed).
+        duration_ms: Wall-clock execution time in milliseconds.
+        status: "completed" or "failed".
+        span_id: Correlates with OTel traces.
+        error: Error message if status is "failed".
+        cached: Whether this was a cache hit.
+        decision: Gate routing decision, if this was a gate node.
+    """
+
+    node_name: str
+    superstep: int
+    duration_ms: float
+    status: Literal["completed", "failed"]
+    span_id: str
+    error: str | None = None
+    cached: bool = False
+    decision: str | list[str] | None = None
+
+
+@dataclass(frozen=True)
+class NodeStats:
+    """Aggregate statistics for a node across executions.
+
+    Produced by RunLog.node_stats — immutable after creation.
+    """
+
+    count: int = 0
+    total_ms: float = 0.0
+    errors: int = 0
+    cached: int = 0
+
+    @property
+    def avg_ms(self) -> float:
+        """Average execution time in milliseconds."""
+        return self.total_ms / self.count if self.count > 0 else 0.0
+
+
+def _format_duration(ms: float) -> str:
+    """Format milliseconds into human-readable duration."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f}s"
+    minutes = int(ms // 60_000)
+    seconds = (ms % 60_000) / 1000
+    return f"{minutes}m{seconds:04.1f}s"
+
+
+def _compute_node_stats(steps: tuple[NodeRecord, ...]) -> dict[str, NodeStats]:
+    """Aggregate per-node stats from step records."""
+    accumulators: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        acc = accumulators.setdefault(step.node_name, {"count": 0, "total_ms": 0.0, "errors": 0, "cached": 0})
+        acc["count"] += 1
+        acc["total_ms"] += step.duration_ms
+        if step.status == "failed":
+            acc["errors"] += 1
+        if step.cached:
+            acc["cached"] += 1
+    return {name: NodeStats(**vals) for name, vals in accumulators.items()}
+
+
+@dataclass(frozen=True)
+class RunLog:
+    """Immutable execution trace, available on every RunResult.
+
+    Provides progressive disclosure: summary() for one-liner,
+    node_stats for aggregates, steps for full trace, to_dict()
+    for JSON serialization.
+    """
+
+    graph_name: str
+    run_id: str
+    total_duration_ms: float
+    steps: tuple[NodeRecord, ...]
+
+    @property
+    def errors(self) -> tuple[NodeRecord, ...]:
+        """Only failed steps."""
+        return tuple(s for s in self.steps if s.status == "failed")
+
+    @property
+    def timing(self) -> dict[str, float]:
+        """Total ms per node name."""
+        result: dict[str, float] = {}
+        for step in self.steps:
+            result[step.node_name] = result.get(step.node_name, 0.0) + step.duration_ms
+        return result
+
+    @property
+    def node_stats(self) -> dict[str, NodeStats]:
+        """Aggregate statistics per node name."""
+        return _compute_node_stats(self.steps)
+
+    def summary(self) -> str:
+        """One-line overview string."""
+        n_errors = len(self.errors)
+        n_nodes = len({s.node_name for s in self.steps})
+        slowest = max(self.timing.items(), key=lambda x: x[1]) if self.timing else ("", 0)
+        parts = [
+            f"{n_nodes} nodes",
+            _format_duration(self.total_duration_ms),
+            f"{n_errors} errors" if n_errors else "0 errors",
+        ]
+        if slowest[1] > 0:
+            parts.append(f"slowest: {slowest[0]} ({_format_duration(slowest[1])})")
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with only primitive types.
+
+        Returns only str, int, float, bool, None, list, dict.
+        This is intentionally shallow — no complex objects.
+        """
+        return {
+            "graph_name": self.graph_name,
+            "run_id": self.run_id,
+            "total_duration_ms": self.total_duration_ms,
+            "steps": [
+                {
+                    "node_name": s.node_name,
+                    "superstep": s.superstep,
+                    "duration_ms": s.duration_ms,
+                    "status": s.status,
+                    "span_id": s.span_id,
+                    "error": s.error,
+                    "cached": s.cached,
+                    "decision": s.decision,
+                }
+                for s in self.steps
+            ],
+            "node_stats": {
+                name: {
+                    "count": stats.count,
+                    "total_ms": stats.total_ms,
+                    "avg_ms": stats.avg_ms,
+                    "errors": stats.errors,
+                    "cached": stats.cached,
+                }
+                for name, stats in self.node_stats.items()
+            },
+        }
+
+    def __str__(self) -> str:
+        """Formatted table output for terminal / print()."""
+        n_errors = len(self.errors)
+        header = (
+            f"RunLog: {self.graph_name} | "
+            f"{_format_duration(self.total_duration_ms)} | "
+            f"{len({s.node_name for s in self.steps})} nodes | "
+            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+        )
+
+        has_decisions = any(s.decision is not None for s in self.steps)
+        lines = [header, ""]
+
+        # Column headers
+        cols = ["  Step", "Node", "Duration", "Status"]
+        if has_decisions:
+            cols.append("Decision")
+        lines.append("  ".join(f"{c:<16}" for c in cols).rstrip())
+        lines.append("  ".join("─" * 16 for _ in cols))
+
+        for i, step in enumerate(self.steps):
+            dur = _format_duration(step.duration_ms) if step.status != "failed" or step.duration_ms > 0 else "—"
+            status = "completed" if step.status == "completed" else f"FAILED: {step.error or 'unknown'}"
+            if step.cached:
+                status = "cached"
+            row = [f"  {i:>4}", f"{step.node_name:<16}", f"{dur:<16}", status]
+            if has_decisions:
+                decision_str = ""
+                if step.decision is not None:
+                    decision_str = "→ " + ", ".join(step.decision) if isinstance(step.decision, list) else f"→ {step.decision}"
+                row.append(decision_str)
+            lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        """Concise repr for REPL/debugger."""
+        return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)})"
