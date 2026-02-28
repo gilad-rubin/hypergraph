@@ -24,6 +24,7 @@ from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import (
     ErrorHandling,
     GraphState,
+    MapResult,
     PauseExecution,
     RunResult,
     RunStatus,
@@ -310,7 +311,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
-    ) -> list[RunResult]:
+    ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
         normalized_values = normalize_inputs(
             values,
@@ -326,7 +327,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
         if not input_variations:
-            return []
+            return MapResult(
+                results=(),
+                run_id=None,
+                total_duration_ms=0,
+                map_over=tuple(map_over_list),
+                map_mode=map_mode,
+                graph_name=graph.name or "",
+            )
         if max_concurrency is None and len(input_variations) > MAX_UNBOUNDED_MAP_TASKS:
             raise ValueError(
                 f"Too many map tasks without a concurrency limit: {len(input_variations)}. "
@@ -427,7 +435,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 start_time,
                 _parent_span_id,
             )
-            return results
+            total_duration_ms = (time.time() - start_time) * 1000
+            return MapResult(
+                results=tuple(results),
+                run_id=map_run_id,
+                total_duration_ms=total_duration_ms,
+                map_over=tuple(map_over_list),
+                map_mode=map_mode,
+                graph_name=graph.name or "",
+            )
         except Exception as e:
             await self._emit_run_end_async(
                 dispatcher,

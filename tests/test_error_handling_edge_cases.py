@@ -164,13 +164,13 @@ class TestMapEmptyInput:
         graph = Graph([double_fail_on_odd])
         runner = SyncRunner()
         results = runner.map(graph, values={"x": []}, map_over="x", error_handling="raise")
-        assert results == []
+        assert len(results) == 0
 
     def test_sync_empty_continue(self):
         graph = Graph([double_fail_on_odd])
         runner = SyncRunner()
         results = runner.map(graph, values={"x": []}, map_over="x", error_handling="continue")
-        assert results == []
+        assert len(results) == 0
 
 
 class TestMapProductMode:

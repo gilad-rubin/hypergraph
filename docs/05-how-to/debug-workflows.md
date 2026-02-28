@@ -89,11 +89,15 @@ log_dict = result.log.to_dict()
 
 ### RunLog with map()
 
-For `runner.map()`, each individual result has its own RunLog:
+`runner.map()` returns a `MapResult` with a batch-level summary and per-item RunLogs:
 
 ```python
 results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
 
+# Batch-level overview
+print(results.summary())  # "3 items | 3 completed | 12ms"
+
+# Per-item RunLogs
 for i, r in enumerate(results):
     print(f"Item {i}: {r.log.summary()}")
 ```

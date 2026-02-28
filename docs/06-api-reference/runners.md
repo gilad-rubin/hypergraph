@@ -142,7 +142,7 @@ def map(
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
-) -> list[RunResult]: ...
+) -> MapResult: ...
 ```
 
 Execute a graph multiple times with different inputs.
@@ -162,7 +162,7 @@ Execute a graph multiple times with different inputs.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 - `**input_values` - Input shorthand (merged with `values`)
 
-**Returns:** List of `RunResult`, one per iteration
+**Returns:** [`MapResult`](#mapresult) wrapping per-iteration RunResults with batch metadata
 
 **Example:**
 
@@ -173,6 +173,10 @@ results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
 # kwargs shorthand
 results = runner.map(graph, map_over="x", x=[1, 2, 3])
 
+# Batch-level metadata
+print(results.summary())   # "3 items | 3 completed | 12ms"
+print(results["doubled"])  # [2, 4, 6] — collect values across items
+
 # Multiple parameters with zip
 results = runner.map(
     graph,
@@ -181,23 +185,15 @@ results = runner.map(
     map_mode="zip",  # (1,10), (2,20)
 )
 
-# Cartesian product
-results = runner.map(
-    graph,
-    {"a": [1, 2], "b": [10, 20]},
-    map_over=["a", "b"],
-    map_mode="product",  # (1,10), (1,20), (2,10), (2,20)
-)
-
-# Continue on errors — collect partial results
+# Continue on errors — aggregate status
 results = runner.map(
     graph,
     {"x": [1, 2, 3]},
     map_over="x",
     error_handling="continue",
 )
-successes = [r for r in results if r.status == RunStatus.COMPLETED]
-failures = [r for r in results if r.status == RunStatus.FAILED]
+if results.failed:
+    print(f"{len(results.failures)} items failed")
 ```
 
 ### capabilities
@@ -346,7 +342,7 @@ async def map(
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     **input_values: Any,
-) -> list[RunResult]: ...
+) -> MapResult: ...
 ```
 
 Execute graph multiple times concurrently.
@@ -452,8 +448,9 @@ class RunResult:
 ### Convenience Properties
 
 ```python
-result.paused     # True if status == PAUSED
 result.completed  # True if status == COMPLETED
+result.paused     # True if status == PAUSED
+result.failed     # True if status == FAILED
 ```
 
 ### Dict-like Access
@@ -485,6 +482,66 @@ if result.status == RunStatus.FAILED:
 ```
 
 This is useful for debugging — you can inspect which nodes completed successfully.
+
+### Progressive Disclosure
+
+```python
+# One-line summary
+result.summary()   # "3 nodes | 12ms | 0 errors | slowest: generate (8ms)"
+
+# JSON-serializable metadata (no raw values or exception objects)
+result.to_dict()   # {"status": "completed", "run_id": "run-abc", "log": {...}}
+```
+
+---
+
+## MapResult
+
+Result of a batch `map()` execution. Wraps individual `RunResult` items with batch-level metadata.
+
+Supports read-only sequence protocol — `len()`, `iter()`, `[int]` work; mutable list ops do not.
+
+```python
+from hypergraph import MapResult
+
+results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+
+# Sequence protocol (backward compatible)
+len(results)     # 3
+results[0]       # RunResult
+for r in results: ...
+
+# String key access — collect values across items
+results["doubled"]           # [2, 4, 6]
+results.get("doubled", 0)   # [2, 4, 6] (with default for missing)
+
+# Aggregate status
+results.status       # RunStatus.COMPLETED (or FAILED if any failed)
+results.completed    # True if all completed
+results.failed       # True if any failed
+results.failures     # List of failed RunResult items
+
+# Progressive disclosure
+results.summary()    # "3 items | 3 completed | 12ms"
+results.to_dict()    # JSON-serializable batch metadata + per-item results
+```
+
+### Attributes
+
+```python
+@dataclass(frozen=True)
+class MapResult:
+    results: tuple[RunResult, ...]   # Individual results
+    run_id: str | None               # None for empty maps
+    total_duration_ms: float         # Wall-clock batch time
+    map_over: tuple[str, ...]        # Parameter names iterated
+    map_mode: str                    # "zip" or "product"
+    graph_name: str                  # Name of the executed graph
+```
+
+### Status Precedence
+
+`FAILED > PAUSED > COMPLETED`. If any item failed, the batch status is FAILED. Empty batch → COMPLETED.
 
 ---
 

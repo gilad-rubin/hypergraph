@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any, Literal
@@ -175,6 +176,36 @@ class RunResult:
         """Whether execution completed successfully."""
         return self.status == RunStatus.COMPLETED
 
+    @property
+    def failed(self) -> bool:
+        """Whether execution failed."""
+        return self.status == RunStatus.FAILED
+
+    def summary(self) -> str:
+        """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
+        if self.log:
+            return self.log.summary()
+        if self.error:
+            return f"{self.status.value}: {type(self.error).__name__}: {self.error}"
+        return self.status.value
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with status, run_id, and log.
+
+        Does NOT include raw values or error objects — only metadata.
+        Use result.values directly for output access.
+        """
+        d: dict[str, Any] = {
+            "status": self.status.value,
+            "run_id": self.run_id,
+            "workflow_id": self.workflow_id,
+        }
+        if self.log:
+            d["log"] = self.log.to_dict()
+        if self.error:
+            d["error"] = f"{type(self.error).__name__}: {self.error}"
+        return d
+
     def __getitem__(self, key: str) -> Any:
         """Dict-like access to values."""
         return self.values[key]
@@ -207,6 +238,156 @@ class RunResult:
             pretty_printer.text("RunResult(...)")
             return
         pretty_printer.text(repr(self))
+
+
+@dataclass(frozen=True)
+class MapResult:
+    """Result of a batch map() execution.
+
+    Wraps individual RunResult items with batch-level metadata.
+    Supports read-only sequence protocol: len(), iter(), indexing.
+    String key access collects values across items:
+        results["doubled"] → [2, 4, None, 6, 8]
+        (None for failed items whose outputs are missing)
+    """
+
+    results: tuple[RunResult, ...]
+    run_id: str | None  # None for empty (no-op) maps
+    total_duration_ms: float
+    map_over: tuple[str, ...]
+    map_mode: str  # "zip" | "product"
+    graph_name: str
+
+    # --- Sequence protocol (read-only backward compat) ---
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __bool__(self) -> bool:
+        return len(self.results) > 0
+
+    def __reversed__(self):
+        return reversed(self.results)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.results[key]
+        if isinstance(key, slice):
+            return list(self.results[key])
+        if isinstance(key, str):
+            return [r.get(key) for r in self.results]
+        raise TypeError(f"indices must be integers, slices, or strings, not {type(key).__name__}")
+
+    def __contains__(self, item):
+        return item in self.results
+
+    def __eq__(self, other):
+        if isinstance(other, MapResult):
+            return self.results == other.results
+        if isinstance(other, list):
+            return list(self.results) == other
+        return NotImplemented
+
+    # --- Aggregate properties ---
+
+    @property
+    def status(self) -> RunStatus:
+        """Precedence: FAILED > PAUSED > COMPLETED.
+        Empty → COMPLETED (vacuous truth, same as empty batch)."""
+        if any(r.status == RunStatus.FAILED for r in self.results):
+            return RunStatus.FAILED
+        if any(r.status == RunStatus.PAUSED for r in self.results):
+            return RunStatus.PAUSED
+        return RunStatus.COMPLETED
+
+    @property
+    def completed(self) -> bool:
+        """True if all items completed (or empty)."""
+        return self.status == RunStatus.COMPLETED
+
+    @property
+    def paused(self) -> bool:
+        """True if any item is paused (and none failed)."""
+        return self.status == RunStatus.PAUSED
+
+    @property
+    def failed(self) -> bool:
+        """True if any item failed."""
+        return self.status == RunStatus.FAILED
+
+    @property
+    def failures(self) -> list[RunResult]:
+        """Only failed items."""
+        return [r for r in self.results if r.status == RunStatus.FAILED]
+
+    def get(self, key: str, default: Any = None) -> list[Any]:
+        """Collect values across items with a default.
+        results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
+        return [r.get(key, default) for r in self.results]
+
+    # --- Progressive disclosure ---
+
+    def summary(self) -> str:
+        """One-liner: '5 items | 4 completed, 1 failed | 12ms'"""
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
+        parts = [f"{n} items"]
+        status_parts = []
+        if n_completed:
+            status_parts.append(f"{n_completed} completed")
+        if n_failed:
+            status_parts.append(f"{n_failed} failed")
+        if n_paused:
+            status_parts.append(f"{n_paused} paused")
+        if status_parts:
+            parts.append(", ".join(status_parts))
+        parts.append(_format_duration(self.total_duration_ms))
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable batch metadata + per-item results."""
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        return {
+            "run_id": self.run_id,
+            "total_duration_ms": self.total_duration_ms,
+            "map_over": list(self.map_over),
+            "map_mode": self.map_mode,
+            "graph_name": self.graph_name,
+            "item_count": len(self.results),
+            "completed_count": n_completed,
+            "failed_count": n_failed,
+            "items": [item.to_dict() for item in self.results],
+        }
+
+    def __repr__(self) -> str:
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        parts = []
+        if n_completed:
+            parts.append(f"{n_completed} completed")
+        if n_failed:
+            parts.append(f"{n_failed} failed")
+        n_paused = n - n_completed - n_failed
+        if n_paused:
+            parts.append(f"{n_paused} paused")
+        status = ", ".join(parts) if parts else "empty"
+        return f"MapResult({n} items: {status}, {_format_duration(self.total_duration_ms)}, map_over={self.map_over!r})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        if cycle:
+            pretty_printer.text("MapResult(...)")
+            return
+        pretty_printer.text(repr(self))
+
+
+Sequence.register(MapResult)
 
 
 @dataclass

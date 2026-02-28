@@ -3,6 +3,7 @@
 from hypergraph.runners._shared.types import (
     ErrorHandling,
     GraphState,
+    MapResult,
     NodeExecution,
     NodeRecord,
     NodeStats,
@@ -24,6 +25,7 @@ __all__ = [
     "PauseExecution",
     "PauseInfo",
     "RunResult",
+    "MapResult",
     "RunLog",
     "NodeRecord",
     "NodeStats",

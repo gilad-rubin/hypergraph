@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -781,7 +781,7 @@ def _generate_product_inputs(
 
 
 def collect_as_lists(
-    results: list[RunResult],
+    results: Sequence[RunResult],
     node: GraphNode,
     error_handling: ErrorHandling = "raise",
 ) -> dict[str, list]:

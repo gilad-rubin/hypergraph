@@ -151,6 +151,25 @@ batch_pipeline = Graph([
 ])
 ```
 
+## Working with MapResult
+
+`runner.map()` returns a `MapResult` — a read-only sequence with batch-level metadata and aggregate accessors. It's fully backward compatible: `len()`, iteration, and indexing all work as before.
+
+```python
+results = runner.map(graph, {"text": texts}, map_over="text")
+
+# Quick overview
+print(results.summary())    # "5 items | 5 completed | 42ms"
+
+# Collect values across all items by key
+word_counts = results["word_count"]  # [2, 2, 2]
+
+# Batch metadata
+results.run_id              # Unique batch ID
+results.total_duration_ms   # Wall-clock time for the entire batch
+results.map_over            # ("text",)
+```
+
 ## Error Handling
 
 Control what happens when individual items fail using the `error_handling` parameter.
@@ -166,11 +185,9 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 
 ### Continue on Error
 
-Use `error_handling="continue"` to collect all results, including failures. This is useful in production when occasional bad data shouldn't block the entire batch:
+Use `error_handling="continue"` to collect all results, including failures. `MapResult` provides aggregate status and filtering:
 
 ```python
-from hypergraph import RunStatus
-
 results = runner.map(
     graph,
     {"text": texts},
@@ -178,16 +195,22 @@ results = runner.map(
     error_handling="continue",
 )
 
+# Aggregate status
+if results.failed:
+    print(f"{len(results.failures)} items failed out of {len(results)}")
+
+# Collect values with None for failures
+results["result"]                  # [value, value, None, value, ...]
+
+# Collect with a custom default
+results.get("result", "N/A")      # [value, value, "N/A", value, ...]
+
+# Iterate individual results
 for r in results:
-    if r.status == RunStatus.FAILED:
+    if r.failed:
         print(f"Error: {r.error}")
     else:
         print(f"Success: {r['result']}")
-
-# Summary
-successes = [r for r in results if r.status == RunStatus.COMPLETED]
-failures = [r for r in results if r.status == RunStatus.FAILED]
-print(f"{len(successes)} succeeded, {len(failures)} failed")
 ```
 
 ### Error Handling in Nested Graphs

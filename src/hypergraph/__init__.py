@@ -50,6 +50,7 @@ from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
     ErrorHandling,
+    MapResult,
     NodeRecord,
     NodeStats,
     PauseInfo,
@@ -83,6 +84,7 @@ __all__ = [
     "ErrorHandling",
     "PauseInfo",
     "RunResult",
+    "MapResult",
     "RunStatus",
     # Errors
     "RenameError",
