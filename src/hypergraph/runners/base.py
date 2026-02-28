@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.runners._shared.helpers import _UNSET_SELECT
-from hypergraph.runners._shared.types import ErrorHandling, RunnerCapabilities, RunResult
+from hypergraph.runners._shared.types import ErrorHandling, MapResult, RunnerCapabilities, RunResult
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -85,7 +85,7 @@ class BaseRunner(ABC):
         on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         event_processors: list[EventProcessor] | None = None,
         **input_values: Any,
-    ) -> list[RunResult]:
+    ) -> MapResult:
         """Execute a graph multiple times with different inputs.
 
         Args:
@@ -104,6 +104,6 @@ class BaseRunner(ABC):
             **input_values: Input values shorthand (merged with values)
 
         Returns:
-            List of RunResult, one per iteration
+            MapResult wrapping per-iteration RunResults with batch metadata
         """
         ...

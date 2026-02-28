@@ -95,7 +95,7 @@ async def run_superstep_async(
 
     async def execute_one(
         node: HyperNode,
-    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int]]:
+    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         input_versions = {param: state.get_version(param) for param in node.inputs}
@@ -118,7 +118,7 @@ async def run_superstep_async(
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
                 await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
-            return node, outputs, input_versions, wait_for_versions
+            return node, outputs, input_versions, wait_for_versions, 0.0, True
 
         # Emit NodeStartEvent
         node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
@@ -136,6 +136,12 @@ async def run_superstep_async(
 
             duration_ms = (time.time() - node_start) * 1000
 
+            # Capture inner logs from nested graph execution (if any)
+            inner_logs: tuple = ()
+            if hasattr(execute_node, "last_inner_logs"):
+                inner_logs = execute_node.last_inner_logs[0]  # type: ignore[attr-defined]
+                execute_node.last_inner_logs[0] = ()  # type: ignore[attr-defined]
+
             # Store result in cache
             if cache is not None and cache_key:
                 store_in_cache(node, outputs, new_state, cache, cache_key)
@@ -144,9 +150,9 @@ async def run_superstep_async(
                 route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
-                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms))
+                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=inner_logs))
 
-            return node, outputs, input_versions, wait_for_versions
+            return node, outputs, input_versions, wait_for_versions, duration_ms, False
         except Exception:
             if active:
                 await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
@@ -164,7 +170,7 @@ async def run_superstep_async(
             if first_error is None:
                 first_error = result
             continue
-        node, outputs, input_versions, wait_for_versions = result
+        node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
         for name, value in outputs.items():
             new_state.update_value(name, value)
         new_state.node_executions[node.name] = NodeExecution(
@@ -172,6 +178,8 @@ async def run_superstep_async(
             input_versions=input_versions,
             outputs=outputs,
             wait_for_versions=wait_for_versions,
+            duration_ms=duration_ms,
+            cached=cached,
         )
 
     if first_error is not None:

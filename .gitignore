@@ -25,6 +25,8 @@ specs/deprecated/*
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+!.claude/research/
+!.claude/research/**
 
 # Documentation manager cache
 .doc-manager/cache/*

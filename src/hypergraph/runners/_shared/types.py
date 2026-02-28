@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any, Literal
@@ -14,6 +15,7 @@ _MAX_SEQUENCE_PREVIEW = 6
 _MAX_MAPPING_PREVIEW = 6
 _MAX_VALUE_REPR = 240
 _MAX_RUN_RESULT_REPR = 4_000
+DURATION_PRECISION = 3  # decimal places for duration_ms (microsecond precision)
 
 
 class RunStatus(Enum):
@@ -154,6 +156,7 @@ class RunResult:
         workflow_id: Optional workflow identifier for tracking related runs
         error: Exception if status is FAILED, else None
         pause: PauseInfo if status is PAUSED, else None
+        log: RunLog with execution trace (timing, status, routing), or None
     """
 
     values: dict[str, Any]
@@ -162,6 +165,7 @@ class RunResult:
     workflow_id: str | None = None
     error: BaseException | None = None
     pause: PauseInfo | None = None
+    log: RunLog | None = None
 
     @property
     def paused(self) -> bool:
@@ -172,6 +176,36 @@ class RunResult:
     def completed(self) -> bool:
         """Whether execution completed successfully."""
         return self.status == RunStatus.COMPLETED
+
+    @property
+    def failed(self) -> bool:
+        """Whether execution failed."""
+        return self.status == RunStatus.FAILED
+
+    def summary(self) -> str:
+        """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
+        if self.log:
+            return self.log.summary()
+        if self.error:
+            return f"{self.status.value}: {type(self.error).__name__}: {self.error}"
+        return self.status.value
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with status, run_id, and log.
+
+        Does NOT include raw values or error objects — only metadata.
+        Use result.values directly for output access.
+        """
+        d: dict[str, Any] = {
+            "status": self.status.value,
+            "run_id": self.run_id,
+            "workflow_id": self.workflow_id,
+        }
+        if self.log:
+            d["log"] = self.log.to_dict()
+        if self.error:
+            d["error"] = f"{type(self.error).__name__}: {self.error}"
+        return d
 
     def __getitem__(self, key: str) -> Any:
         """Dict-like access to values."""
@@ -205,6 +239,165 @@ class RunResult:
             pretty_printer.text("RunResult(...)")
             return
         pretty_printer.text(repr(self))
+
+
+@dataclass(frozen=True)
+class MapResult:
+    """Result of a batch map() execution.
+
+    Wraps individual RunResult items with batch-level metadata.
+    Supports read-only sequence protocol: len(), iter(), indexing.
+    String key access collects values across items:
+        results["doubled"] → [2, 4, None, 6, 8]
+        (None for failed items whose outputs are missing)
+    """
+
+    results: tuple[RunResult, ...]
+    run_id: str | None  # None for empty (no-op) maps
+    total_duration_ms: float
+    map_over: tuple[str, ...]
+    map_mode: str  # "zip" | "product"
+    graph_name: str
+
+    # --- Sequence protocol (read-only backward compat) ---
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __bool__(self) -> bool:
+        return len(self.results) > 0
+
+    def __reversed__(self):
+        return reversed(self.results)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.results[key]
+        if isinstance(key, slice):
+            return list(self.results[key])
+        if isinstance(key, str):
+            return [r.get(key) for r in self.results]
+        raise TypeError(f"indices must be integers, slices, or strings, not {type(key).__name__}")
+
+    def __contains__(self, item):
+        return item in self.results
+
+    def __eq__(self, other):
+        if isinstance(other, MapResult):
+            return self.results == other.results
+        if isinstance(other, list):
+            return list(self.results) == other
+        return NotImplemented
+
+    # --- Aggregate properties ---
+
+    @property
+    def status(self) -> RunStatus:
+        """Precedence: FAILED > PAUSED > COMPLETED.
+        Empty → COMPLETED (vacuous truth, same as empty batch)."""
+        if any(r.status == RunStatus.FAILED for r in self.results):
+            return RunStatus.FAILED
+        if any(r.status == RunStatus.PAUSED for r in self.results):
+            return RunStatus.PAUSED
+        return RunStatus.COMPLETED
+
+    @property
+    def completed(self) -> bool:
+        """True if all items completed (or empty)."""
+        return self.status == RunStatus.COMPLETED
+
+    @property
+    def paused(self) -> bool:
+        """True if any item is paused (and none failed)."""
+        return self.status == RunStatus.PAUSED
+
+    @property
+    def failed(self) -> bool:
+        """True if any item failed."""
+        return self.status == RunStatus.FAILED
+
+    @property
+    def failures(self) -> list[RunResult]:
+        """Only failed items."""
+        return [r for r in self.results if r.status == RunStatus.FAILED]
+
+    @property
+    def log(self) -> MapLog:
+        """Batch-level execution trace."""
+        return MapLog(
+            graph_name=self.graph_name,
+            total_duration_ms=self.total_duration_ms,
+            items=tuple(r.log for r in self.results if r.log is not None),
+        )
+
+    def get(self, key: str, default: Any = None) -> list[Any]:
+        """Collect values across items with a default.
+        results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
+        return [r.get(key, default) for r in self.results]
+
+    # --- Progressive disclosure ---
+
+    def summary(self) -> str:
+        """One-liner: '5 items | 4 completed, 1 failed | 12ms'"""
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
+        parts = [f"{n} items"]
+        status_parts = []
+        if n_completed:
+            status_parts.append(f"{n_completed} completed")
+        if n_failed:
+            status_parts.append(f"{n_failed} failed")
+        if n_paused:
+            status_parts.append(f"{n_paused} paused")
+        if status_parts:
+            parts.append(", ".join(status_parts))
+        parts.append(_format_duration(self.total_duration_ms))
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable batch metadata + per-item results."""
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        return {
+            "run_id": self.run_id,
+            "total_duration_ms": self.total_duration_ms,
+            "map_over": list(self.map_over),
+            "map_mode": self.map_mode,
+            "graph_name": self.graph_name,
+            "item_count": len(self.results),
+            "completed_count": n_completed,
+            "failed_count": n_failed,
+            "items": [item.to_dict() for item in self.results],
+        }
+
+    def __repr__(self) -> str:
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        parts = []
+        if n_completed:
+            parts.append(f"{n_completed} completed")
+        if n_failed:
+            parts.append(f"{n_failed} failed")
+        n_paused = n - n_completed - n_failed
+        if n_paused:
+            parts.append(f"{n_paused} paused")
+        status = ", ".join(parts) if parts else "empty"
+        return f"MapResult({n} items: {status}, {_format_duration(self.total_duration_ms)}, map_over={self.map_over!r})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        if cycle:
+            pretty_printer.text("MapResult(...)")
+            return
+        pretty_printer.text(repr(self))
+
+
+Sequence.register(MapResult)
 
 
 @dataclass
@@ -285,6 +478,7 @@ class RunnerCapabilities:
     supports_streaming: bool = False
     returns_coroutine: bool = False
     supports_interrupts: bool = False
+    supports_checkpointing: bool = False
 
 
 @dataclass
@@ -298,12 +492,16 @@ class NodeExecution:
         input_versions: Version numbers of inputs at execution time
         outputs: Output values produced
         wait_for_versions: Version numbers of wait_for names at execution time
+        duration_ms: Wall-clock execution time in milliseconds
+        cached: Whether this execution was a cache hit
     """
 
     node_name: str
     input_versions: dict[str, int]
     outputs: dict[str, Any]
     wait_for_versions: dict[str, int] = field(default_factory=dict)
+    duration_ms: float = 0.0
+    cached: bool = False
 
 
 @dataclass
@@ -375,3 +573,340 @@ class GraphState:
             },
             routing_decisions=dict(self.routing_decisions),
         )
+
+
+# ---------------------------------------------------------------------------
+# RunLog types — always-on execution trace
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NodeRecord:
+    """Record of a single node execution within a run.
+
+    Attributes:
+        node_name: Name of the executed node.
+        superstep: Parallel execution round (0-indexed).
+        duration_ms: Wall-clock execution time in milliseconds.
+        status: "completed" or "failed".
+        span_id: Correlates with OTel traces.
+        error: Error message if status is "failed".
+        cached: Whether this was a cache hit.
+        decision: Gate routing decision, if this was a gate node.
+    """
+
+    node_name: str
+    superstep: int
+    duration_ms: float
+    status: Literal["completed", "failed"]
+    span_id: str
+    error: str | None = None
+    cached: bool = False
+    decision: str | list[str] | None = None
+    _inner_logs: tuple[RunLog, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "duration_ms", round(self.duration_ms, DURATION_PRECISION))
+
+    @property
+    def log(self) -> RunLog | MapLog | None:
+        """Drill into nested execution traces.
+
+        Returns RunLog for single inner, MapLog for multiple, None for leaf nodes.
+        """
+        if not self._inner_logs:
+            return None
+        if len(self._inner_logs) == 1:
+            return self._inner_logs[0]
+        return MapLog(
+            graph_name=self._inner_logs[0].graph_name,
+            total_duration_ms=sum(log.total_duration_ms for log in self._inner_logs),
+            items=self._inner_logs,
+        )
+
+
+@dataclass(frozen=True)
+class NodeStats:
+    """Aggregate statistics for a node across executions.
+
+    Produced by RunLog.node_stats — immutable after creation.
+    """
+
+    count: int = 0
+    total_ms: float = 0.0
+    errors: int = 0
+    cached: int = 0
+
+    @property
+    def avg_ms(self) -> float:
+        """Average execution time in milliseconds."""
+        return self.total_ms / self.count if self.count > 0 else 0.0
+
+
+def _format_duration(ms: float) -> str:
+    """Format milliseconds into human-readable duration."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f}s"
+    minutes = int(ms // 60_000)
+    seconds = (ms % 60_000) / 1000
+    return f"{minutes}m{seconds:04.1f}s"
+
+
+def _compute_node_stats(steps: tuple[NodeRecord, ...]) -> dict[str, NodeStats]:
+    """Aggregate per-node stats from step records."""
+    accumulators: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        acc = accumulators.setdefault(step.node_name, {"count": 0, "total_ms": 0.0, "errors": 0, "cached": 0})
+        acc["count"] += 1
+        acc["total_ms"] += step.duration_ms
+        if step.status == "failed":
+            acc["errors"] += 1
+        if step.cached:
+            acc["cached"] += 1
+    return {name: NodeStats(**vals) for name, vals in accumulators.items()}
+
+
+@dataclass(frozen=True)
+class RunLog:
+    """Immutable execution trace, available on every RunResult.
+
+    Provides progressive disclosure: summary() for one-liner,
+    node_stats for aggregates, steps for full trace, to_dict()
+    for JSON serialization.
+    """
+
+    graph_name: str
+    run_id: str
+    total_duration_ms: float
+    steps: tuple[NodeRecord, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "total_duration_ms", round(self.total_duration_ms, DURATION_PRECISION))
+
+    @property
+    def errors(self) -> tuple[NodeRecord, ...]:
+        """Only failed steps."""
+        return tuple(s for s in self.steps if s.status == "failed")
+
+    @property
+    def timing(self) -> dict[str, float]:
+        """Total ms per node name."""
+        result: dict[str, float] = {}
+        for step in self.steps:
+            result[step.node_name] = result.get(step.node_name, 0.0) + step.duration_ms
+        return result
+
+    @property
+    def node_stats(self) -> dict[str, NodeStats]:
+        """Aggregate statistics per node name."""
+        return _compute_node_stats(self.steps)
+
+    def summary(self) -> str:
+        """One-line overview string."""
+        n_errors = len(self.errors)
+        n_nodes = len({s.node_name for s in self.steps})
+        slowest = max(self.timing.items(), key=lambda x: x[1]) if self.timing else ("", 0)
+        parts = [
+            f"{n_nodes} nodes",
+            _format_duration(self.total_duration_ms),
+            f"{n_errors} errors" if n_errors else "0 errors",
+        ]
+        if slowest[1] > 0:
+            parts.append(f"slowest: {slowest[0]} ({_format_duration(slowest[1])})")
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with only primitive types.
+
+        Returns only str, int, float, bool, None, list, dict.
+        This is intentionally shallow — no complex objects.
+        """
+        return {
+            "graph_name": self.graph_name,
+            "run_id": self.run_id,
+            "total_duration_ms": self.total_duration_ms,
+            "steps": [
+                {
+                    "node_name": s.node_name,
+                    "superstep": s.superstep,
+                    "duration_ms": s.duration_ms,
+                    "status": s.status,
+                    "span_id": s.span_id,
+                    "error": s.error,
+                    "cached": s.cached,
+                    "decision": s.decision,
+                    "inner_log": s.log.to_dict() if s._inner_logs else None,
+                }
+                for s in self.steps
+            ],
+            "node_stats": {
+                name: {
+                    "count": stats.count,
+                    "total_ms": stats.total_ms,
+                    "avg_ms": stats.avg_ms,
+                    "errors": stats.errors,
+                    "cached": stats.cached,
+                }
+                for name, stats in self.node_stats.items()
+            },
+        }
+
+    def __str__(self) -> str:
+        """Formatted table output for terminal / print()."""
+        n_errors = len(self.errors)
+        header = (
+            f"RunLog: {self.graph_name} | "
+            f"{_format_duration(self.total_duration_ms)} | "
+            f"{len({s.node_name for s in self.steps})} nodes | "
+            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+        )
+
+        has_decisions = any(s.decision is not None for s in self.steps)
+        lines = [header, ""]
+
+        # Column headers
+        cols = ["  Step", "Node", "Duration", "Status"]
+        if has_decisions:
+            cols.append("Decision")
+        lines.append("  ".join(f"{c:<16}" for c in cols).rstrip())
+        lines.append("  ".join("─" * 16 for _ in cols))
+
+        for i, step in enumerate(self.steps):
+            dur = _format_duration(step.duration_ms) if step.status != "failed" or step.duration_ms > 0 else "—"
+            status = "completed" if step.status == "completed" else f"FAILED: {step.error or 'unknown'}"
+            if step.cached:
+                status = "cached"
+            if step._inner_logs:
+                status += f" ({len(step._inner_logs)} inner)"
+            row = [f"  {i:>4}", f"{step.node_name:<16}", f"{dur:<16}", status]
+            if has_decisions:
+                decision_str = ""
+                if step.decision is not None:
+                    decision_str = "→ " + ", ".join(step.decision) if isinstance(step.decision, list) else f"→ {step.decision}"
+                row.append(decision_str)
+            lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
+
+        nested = [i for i, s in enumerate(self.steps) if s._inner_logs]
+        if nested:
+            lines.append("")
+            if len(nested) == 1:
+                lines.append(f"  → .steps[{nested[0]}].log for inner trace")
+            else:
+                lines.append(f"  → .steps[i].log for inner traces (i={nested})")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        """Concise repr for REPL/debugger."""
+        return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        """Show full table in IPython/Jupyter notebooks."""
+        if cycle:
+            pretty_printer.text("RunLog(...)")
+            return
+        pretty_printer.text(str(self))
+
+
+# ---------------------------------------------------------------------------
+# MapLog — batch-level execution trace
+# ---------------------------------------------------------------------------
+
+_MAX_MAP_LOG_ROWS = 20
+
+
+@dataclass(frozen=True)
+class MapLog:
+    """Batch-level execution trace for map() or map_over.
+
+    Progressive disclosure: summary() → print() → [i] for per-item drill-down.
+    """
+
+    graph_name: str
+    total_duration_ms: float
+    items: tuple[RunLog, ...]
+
+    @property
+    def errors(self) -> tuple[NodeRecord, ...]:
+        """All failed NodeRecords across all items."""
+        return tuple(record for log in self.items for record in log.errors)
+
+    @property
+    def node_stats(self) -> dict[str, NodeStats]:
+        """Aggregate stats across all items (cross-item bottleneck analysis)."""
+        all_steps = tuple(step for log in self.items for step in log.steps)
+        return _compute_node_stats(all_steps)
+
+    def summary(self) -> str:
+        """One-liner: '5 items | 5 completed | 2ms | 0 errors'."""
+        n = len(self.items)
+        n_completed = sum(1 for log in self.items if not log.errors)
+        n_errors = len(self.errors)
+        parts = [
+            f"{n} items",
+            f"{n_completed} completed",
+            _format_duration(self.total_duration_ms),
+            f"{n_errors} errors",
+        ]
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict."""
+        return {
+            "graph_name": self.graph_name,
+            "total_duration_ms": self.total_duration_ms,
+            "items": [log.to_dict() for log in self.items],
+        }
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> RunLog:
+        return self.items[index]
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __str__(self) -> str:
+        """Per-item table with footer."""
+        n_errors = len(self.errors)
+        header = (
+            f"MapLog: {self.graph_name} | "
+            f"{len(self.items)} items | "
+            f"{_format_duration(self.total_duration_ms)} | "
+            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+        )
+        lines = [header, ""]
+
+        cols = ["  Item", "Duration", "Status", "Nodes"]
+        lines.append("  ".join(f"{c:<16}" for c in cols).rstrip())
+        lines.append("  ".join("─" * 16 for _ in cols))
+
+        display_items = self.items[:_MAX_MAP_LOG_ROWS]
+        for i, log in enumerate(display_items):
+            dur = _format_duration(log.total_duration_ms)
+            status = "FAILED" if log.errors else "completed"
+            n_nodes = len({s.node_name for s in log.steps})
+            row = [f"  {i:>4}", f"{dur:<16}", f"{status:<16}", str(n_nodes)]
+            lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
+
+        remaining = len(self.items) - len(display_items)
+        if remaining > 0:
+            lines.append(f"  ... and {remaining} more items")
+
+        lines.append("")
+        lines.append("  → [i] for per-item trace")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"MapLog(graph={self.graph_name!r}, items={len(self.items)}, duration={_format_duration(self.total_duration_ms)})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        """Show table in IPython/Jupyter notebooks."""
+        if cycle:
+            pretty_printer.text("MapLog(...)")
+            return
+        pretty_printer.text(str(self))

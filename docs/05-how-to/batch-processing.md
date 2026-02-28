@@ -151,6 +151,31 @@ batch_pipeline = Graph([
 ])
 ```
 
+## Working with MapResult
+
+`runner.map()` returns a `MapResult` — a read-only sequence with batch-level metadata and aggregate accessors. It's fully backward compatible: `len()`, iteration, and indexing all work as before.
+
+```python
+results = runner.map(graph, {"text": texts}, map_over="text")
+
+# Quick overview
+print(results.summary())    # "5 items | 5 completed | 42ms"
+
+# Collect values across all items by key
+word_counts = results["word_count"]  # [2, 2, 2]
+
+# Collect with a default for failed items
+word_counts = results.get("word_count", 0)  # [2, 2, 0, 2, ...]
+
+# Batch metadata
+results.run_id              # Unique batch ID
+results.total_duration_ms   # Wall-clock time for the entire batch
+results.map_over            # ("text",)
+
+# JSON-serializable export (for logging, dashboards, agents)
+results.to_dict()           # Full batch metadata + per-item results
+```
+
 ## Error Handling
 
 Control what happens when individual items fail using the `error_handling` parameter.
@@ -166,11 +191,9 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 
 ### Continue on Error
 
-Use `error_handling="continue"` to collect all results, including failures. This is useful in production when occasional bad data shouldn't block the entire batch:
+Use `error_handling="continue"` to collect all results, including failures. `MapResult` provides aggregate status and filtering:
 
 ```python
-from hypergraph import RunStatus
-
 results = runner.map(
     graph,
     {"text": texts},
@@ -178,16 +201,22 @@ results = runner.map(
     error_handling="continue",
 )
 
+# Aggregate status
+if results.failed:
+    print(f"{len(results.failures)} items failed out of {len(results)}")
+
+# Collect values with None for failures
+results["result"]                  # [value, value, None, value, ...]
+
+# Collect with a custom default
+results.get("result", "N/A")      # [value, value, "N/A", value, ...]
+
+# Iterate individual results
 for r in results:
-    if r.status == RunStatus.FAILED:
+    if r.failed:
         print(f"Error: {r.error}")
     else:
         print(f"Success: {r['result']}")
-
-# Summary
-successes = [r for r in results if r.status == RunStatus.COMPLETED]
-failures = [r for r in results if r.status == RunStatus.FAILED]
-print(f"{len(successes)} succeeded, {len(failures)} failed")
 ```
 
 ### Error Handling in Nested Graphs
@@ -204,10 +233,87 @@ result = runner.run(batch, {"path": "data.txt"})
 # None entries correspond to failed items
 ```
 
+## runner.map() vs map_over
+
+Two batch patterns, different tradeoffs. Both start from the same idea — **write logic for one item, scale to many** — but they give different guarantees:
+
+| | `runner.map()` | `map_over` |
+|---|---|---|
+| **Returns** | `MapResult` (N `RunResult`s) | One `RunResult` with list outputs |
+| **Error isolation** | Per-item — failures don't affect other items | Whole step — one failure can fail the batch |
+| **Tracing** | Per-item RunLogs with full routing/timing | One RunLog (batch is a single step) |
+| **Checkpointing** | Ephemeral — not persisted | Persisted as one run step |
+| **Product mode** | Yes — `map_mode="product"` with multi-key `map_over` | Yes — `mode="product"` for cartesian product |
+| **Use in pipelines** | Top-level batch processing | Step inside a larger graph |
+
+### When to use runner.map()
+
+```python
+# Independent items where failures should be isolated
+results = runner.map(graph, {"url": urls}, map_over="url", error_handling="continue")
+
+# results.failures → only failed items
+# results["data"] → [value, value, None, value, ...]
+```
+
+- Processing independent items (scraping, embedding, classification)
+- When you need per-item RunLogs for debugging
+- Ephemeral batch jobs that don't need persistence
+- Quick fan-out over a single parameter
+
+### When to use map_over
+
+```python
+# Batch step inside a larger pipeline
+inner = Graph([embed, classify], name="processor")
+pipeline = Graph([
+    load_items,
+    inner.as_node().map_over("item"),  # Fan out
+    aggregate,
+])
+result = runner.run(pipeline, {"path": "data.csv"})
+```
+
+- Batch step inside a larger pipeline (load → process_all → aggregate)
+- When you need checkpoint persistence for the batch
+- Cartesian product mode (`mode="product"`)
+- When the batch is part of a nested graph hierarchy
+
+### Persistence note
+
+`runner.map()` is **ephemeral** — results exist only in-process. If you're using a checkpointer and need batch results to persist across process restarts, use `map_over` with a `workflow_id`:
+
+```python
+# Ephemeral — gone after process exits
+results = runner.map(graph, {"x": items}, map_over="x")
+
+# Persistent — queryable from CLI or another process
+inner = Graph([process], name="pipeline")
+outer = Graph([inner.as_node().map_over("x")])
+result = await runner.run(outer, {"x": items}, workflow_id="batch-001")
+
+# Later, from CLI:
+# $ hypergraph runs values batch-001
+```
+
+### CLI batch execution
+
+You can also run batch operations directly from the terminal:
+
+```bash
+# Map over a parameter
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
+
+# With checkpointing
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --db ./runs.db
+```
+
+See [Debug Workflows — CLI](debug-workflows.md#run--execute-a-graph) for full CLI reference.
+
 ## When to Use Map vs Loop
 
-| Use `runner.map()` | Use a Python loop |
-|-------------------|-------------------|
+| Use `runner.map()` or `map_over` | Use a Python loop |
+|----------------------------------|-------------------|
 | Same graph, different inputs | Different graphs per item |
 | Want parallel execution | Need sequential dependencies |
 | Processing a collection | One-off processing |

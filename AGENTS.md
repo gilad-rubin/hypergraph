@@ -45,14 +45,33 @@ src/hypergraph/
   runners/             # Execution engines
     base.py            #   BaseRunner (shared interface)
     _shared/           #   Common utilities (caching, events, gate execution, routing, templates)
+      types.py         #     RunResult, RunLog, NodeRecord, NodeStats, GraphState, RunStatus
+      run_log.py       #     RunLogCollector (event-processor-based trace builder)
     sync/              #   SyncRunner + per-node-type executors
-    async_/            #   AsyncRunner + per-node-type executors
+    async_/            #   AsyncRunner + per-node-type executors (+ checkpointer integration)
 
   events/              # Observability (decoupled from execution)
     types.py           #   Event dataclasses (NodeStart, NodeEnd, RouteDecision, etc.)
     dispatcher.py      #   EventDispatcher
     processor.py       #   EventProcessor, AsyncEventProcessor, TypedEventProcessor
     rich_progress.py   #   RichProgressProcessor
+    otel.py            #   OpenTelemetryProcessor (OTel span export)
+
+  checkpointers/       # Persistent run history (optional: pip install hypergraph[checkpoint])
+    types.py           #   StepRecord, Run, Checkpoint, StepStatus, WorkflowStatus
+    base.py            #   Checkpointer ABC, CheckpointPolicy
+    serializers.py     #   JsonSerializer, PickleSerializer
+    sqlite.py          #   SqliteCheckpointer (aiosqlite backend, v2 schema)
+    _migrate.py        #   Schema migration (v1→v2) and auto-detection
+
+  cli/                 # CLI: execute graphs and inspect runs (optional: pip install hypergraph[cli])
+    __init__.py        #   App entry point (hypergraph command)
+    run_cmd.py         #   run/map commands (graph execution from terminal)
+    _config.py         #   pyproject.toml [tool.hypergraph] registry
+    runs.py            #   runs ls/show/values/steps/search/stats commands
+    graph_cmd.py       #   graph inspect/ls commands, graph loading
+    _format.py         #   Table formatting, JSON envelope, CTAs, value truncation
+    _db.py             #   Database access helpers
 
   viz/                 # Graph visualization (HTML, Mermaid)
     renderer/          #   Edge/node precomputation, scope resolution
@@ -97,6 +116,8 @@ Conventional commits with scopes: `feat(graph):`, `fix(runners):`, `test(viz):`,
 | Setup & workflow | [dev/CONTRIBUTING.md](dev/CONTRIBUTING.md) |
 | Documentation guidelines | [docs/AGENTS.md](docs/AGENTS.md) |
 | Visualization system | [src/hypergraph/viz/AGENTS.md](src/hypergraph/viz/AGENTS.md) |
+| Debugging & tracing | [docs/05-how-to/debug-workflows.md](docs/05-how-to/debug-workflows.md) |
+| Execution tracing plan | [.claude/research/trace-debugging/plan-v5.md](.claude/research/trace-debugging/plan-v5.md) |
 | Design specs | `specs/reviewed/`, `specs/not_reviewed/` |
 
 ## Hooks (Automatic)
@@ -129,3 +150,4 @@ The auto-format hook means agents never need to manually run ruff — code is al
 - **CI**: lint + test matrix (Python 3.10-3.13) on every push/PR to master
 - **Build-time validation**: Graph() catches structural errors at construction, not runtime
 - **Tests**: `uv run pytest` must pass before any PR — the `/feature` skill enforces this
+- **PR template**: Every PR must follow `.github/PULL_REQUEST_TEMPLATE.md` — include Problem/Bug/Challenge, concrete Before/After code examples, and a Test Plan checklist. Read the template before creating any PR.

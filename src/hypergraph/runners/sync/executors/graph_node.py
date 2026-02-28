@@ -28,6 +28,7 @@ class SyncGraphNodeExecutor:
             runner: The SyncRunner that owns this executor
         """
         self.runner = runner
+        self.last_inner_logs: tuple = ()
 
     def __call__(
         self,
@@ -69,6 +70,7 @@ class SyncGraphNodeExecutor:
                 event_processors=event_processors,
                 _parent_span_id=parent_span_id,
             )
+            self.last_inner_logs = tuple(r.log for r in results if r.log is not None)
             return collect_as_lists(results, node, error_handling)
 
         result = self.runner.run(
@@ -77,4 +79,5 @@ class SyncGraphNodeExecutor:
             event_processors=event_processors,
             _parent_span_id=parent_span_id,
         )
+        self.last_inner_logs = (result.log,) if result.log is not None else ()
         return node.map_outputs_from_original(result.values)
