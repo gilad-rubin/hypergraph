@@ -8,7 +8,7 @@ import pytest
 
 from hypergraph import Graph, MapResult, RunResult, RunStatus, node
 from hypergraph.runners import AsyncRunner, SyncRunner
-from hypergraph.runners._shared.types import RunLog
+from hypergraph.runners._shared.types import MapLog, NodeRecord, NodeStats, RunLog
 
 # === Fixtures ===
 
@@ -508,3 +508,223 @@ class TestAsyncRunnerMapResult:
         assert isinstance(results, MapResult)
         assert len(results) == 0
         assert results.run_id is None
+
+
+# === MapLog Unit Tests ===
+
+
+def _make_run_log(
+    graph_name: str = "test",
+    steps: tuple[NodeRecord, ...] | None = None,
+    duration: float = 1.0,
+) -> RunLog:
+    if steps is None:
+        steps = (
+            NodeRecord(
+                node_name="a",
+                superstep=0,
+                duration_ms=0.5,
+                status="completed",
+                span_id="span-1",
+            ),
+        )
+    return RunLog(
+        graph_name=graph_name,
+        run_id="run-123",
+        total_duration_ms=duration,
+        steps=steps,
+    )
+
+
+def _make_failed_run_log() -> RunLog:
+    return RunLog(
+        graph_name="test",
+        run_id="run-456",
+        total_duration_ms=2.0,
+        steps=(
+            NodeRecord(
+                node_name="a",
+                superstep=0,
+                duration_ms=1.0,
+                status="completed",
+                span_id="span-1",
+            ),
+            NodeRecord(
+                node_name="b",
+                superstep=1,
+                duration_ms=1.0,
+                status="failed",
+                span_id="span-2",
+                error="ValueError: boom",
+            ),
+        ),
+    )
+
+
+class TestMapLog:
+    def test_map_result_has_log(self):
+        """results.log returns a MapLog."""
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r, r])
+        assert isinstance(mr.log, MapLog)
+
+    def test_map_log_summary(self):
+        """summary() is a one-liner with item count, completed, duration, errors."""
+        log = _make_run_log(duration=1.0)
+        failed_log = _make_failed_run_log()
+        r_ok = _make_result(log=log)
+        r_fail = _make_result(status=RunStatus.FAILED, error=ValueError("x"), log=failed_log)
+        mr = _make_map_result([r_ok, r_fail, r_ok], total_duration_ms=4.0)
+
+        s = mr.log.summary()
+        assert "3 items" in s
+        assert "2 completed" in s
+        assert "4ms" in s
+        assert "1 errors" in s
+
+    def test_map_log_str_table(self):
+        """str() shows per-item rows with indices."""
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r, r], total_duration_ms=2.0)
+
+        output = str(mr.log)
+        assert "MapLog:" in output
+        assert "2 items" in output
+        assert "completed" in output
+
+    def test_map_log_str_footer(self):
+        """str() footer contains [i] guidance."""
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r])
+
+        output = str(mr.log)
+        assert "[i]" in output
+
+    def test_map_log_errors(self):
+        """errors aggregates failed NodeRecords across items."""
+        log_ok = _make_run_log()
+        log_fail = _make_failed_run_log()
+        r_ok = _make_result(log=log_ok)
+        r_fail = _make_result(status=RunStatus.FAILED, error=ValueError("x"), log=log_fail)
+        mr = _make_map_result([r_ok, r_fail])
+
+        errors = mr.log.errors
+        assert len(errors) == 1
+        assert errors[0].node_name == "b"
+        assert errors[0].status == "failed"
+
+    def test_map_log_node_stats(self):
+        """node_stats aggregates across all items."""
+        log = _make_run_log(
+            steps=(
+                NodeRecord(node_name="a", superstep=0, duration_ms=1.0, status="completed", span_id="s1"),
+                NodeRecord(node_name="b", superstep=1, duration_ms=2.0, status="completed", span_id="s2"),
+            ),
+            duration=3.0,
+        )
+        r = _make_result(log=log)
+        mr = _make_map_result([r, r, r])
+
+        stats = mr.log.node_stats
+        assert isinstance(stats["a"], NodeStats)
+        assert stats["a"].count == 3
+        assert stats["b"].count == 3
+        assert stats["b"].total_ms == 6.0
+
+    def test_map_log_indexing(self):
+        """results.log[i] returns RunLog."""
+        log1 = _make_run_log(graph_name="g1")
+        log2 = _make_run_log(graph_name="g2")
+        r1 = _make_result(log=log1)
+        r2 = _make_result(log=log2)
+        mr = _make_map_result([r1, r2])
+
+        assert isinstance(mr.log[0], RunLog)
+        assert mr.log[0].graph_name == "g1"
+        assert mr.log[1].graph_name == "g2"
+
+    def test_map_log_len(self):
+        """len() matches item count."""
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r, r, r])
+
+        assert len(mr.log) == 3
+
+    def test_map_log_to_dict(self):
+        """to_dict() is JSON serializable."""
+        import json
+
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r])
+
+        d = mr.log.to_dict()
+        assert d["graph_name"] == "test"
+        assert len(d["items"]) == 1
+        json.dumps(d)  # must not raise
+
+    def test_map_log_repr(self):
+        """repr is concise."""
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r, r])
+
+        r_str = repr(mr.log)
+        assert "MapLog" in r_str
+        assert "items=2" in r_str
+
+    def test_map_log_empty(self):
+        """Empty MapResult produces empty MapLog."""
+        mr = _make_map_result([])
+        ml = mr.log
+        assert len(ml) == 0
+        assert ml.errors == ()
+        assert ml.summary().startswith("0 items")
+
+    def test_map_log_repr_pretty(self):
+        """_repr_pretty_ outputs the table (same as str)."""
+        log = _make_run_log()
+        r = _make_result(log=log)
+        mr = _make_map_result([r])
+
+        class FakePP:
+            def __init__(self):
+                self.result = ""
+
+            def text(self, s):
+                self.result = s
+
+        pp = FakePP()
+        mr.log._repr_pretty_(pp, cycle=False)
+        assert pp.result == str(mr.log)
+
+        pp2 = FakePP()
+        mr.log._repr_pretty_(pp2, cycle=True)
+        assert pp2.result == "MapLog(...)"
+
+
+class TestSyncRunnerMapLog:
+    """Integration: SyncRunner.map() → results.log."""
+
+    def test_map_produces_map_log(self):
+        graph = Graph([double], name="pipeline")
+        runner = SyncRunner()
+        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+
+        ml = results.log
+        assert isinstance(ml, MapLog)
+        assert len(ml) == 3
+        assert ml.graph_name == "pipeline"
+
+    def test_map_log_drill_down(self):
+        graph = Graph([double])
+        runner = SyncRunner()
+        results = runner.map(graph, {"x": [1, 2]}, map_over="x")
+
+        item_log = results.log[0]
+        assert isinstance(item_log, RunLog)
+        assert len(item_log.steps) >= 1

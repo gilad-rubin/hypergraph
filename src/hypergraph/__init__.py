@@ -50,6 +50,7 @@ from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
     ErrorHandling,
+    MapLog,
     MapResult,
     NodeRecord,
     NodeStats,
@@ -94,6 +95,7 @@ __all__ = [
     "IncompatibleRunnerError",
     # RunLog
     "RunLog",
+    "MapLog",
     "NodeRecord",
     "NodeStats",
     # Events

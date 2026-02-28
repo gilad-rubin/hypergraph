@@ -235,6 +235,26 @@ class TestDisplayFormats:
         assert "RunLog" in r
         assert len(r) < 200
 
+    def test_runlog_repr_pretty_shows_table(self):
+        """_repr_pretty_ outputs the full table (same as str)."""
+        graph = Graph([mock_embed, mock_llm])
+        result = SyncRunner().run(graph, {"text": "hello", "prompt": "test"})
+
+        class FakePP:
+            def __init__(self):
+                self.result = ""
+
+            def text(self, s):
+                self.result = s
+
+        pp = FakePP()
+        result.log._repr_pretty_(pp, cycle=False)
+        assert pp.result == str(result.log)
+
+        pp2 = FakePP()
+        result.log._repr_pretty_(pp2, cycle=True)
+        assert pp2.result == "RunLog(...)"
+
 
 # ---------------------------------------------------------------------------
 # Scenario 6: Async runner parity
@@ -310,8 +330,8 @@ def _increment(doubled: int) -> int:
 
 
 class TestInnerLogs:
-    def test_simple_nested_graph_has_inner_log(self):
-        """A nested GraphNode produces 1 inner RunLog with correct steps."""
+    def test_simple_nested_step_returns_run_log(self):
+        """A nested GraphNode step.log returns a single RunLog."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
         result = SyncRunner().run(outer, {"x": 5})
@@ -322,29 +342,42 @@ class TestInnerLogs:
 
         step = result.log.steps[0]
         assert step.node_name == "inner"
-        assert len(step.inner_logs) == 1
 
-        inner_log = step.inner_logs[0]
-        assert inner_log.graph_name == "inner"
-        assert len(inner_log.steps) == 1
-        assert inner_log.steps[0].node_name == "_double"
+        from hypergraph.runners._shared.types import RunLog
 
-    def test_map_over_has_multiple_inner_logs(self):
-        """A map_over GraphNode produces N inner RunLogs (one per item)."""
+        assert isinstance(step.log, RunLog)
+        assert step.log.graph_name == "inner"
+        assert len(step.log.steps) == 1
+        assert step.log.steps[0].node_name == "_double"
+
+    def test_map_over_step_returns_map_log(self):
+        """A map_over GraphNode step.log returns a MapLog when N inner."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
         result = SyncRunner().run(outer, {"x": [1, 2, 3]})
 
         step = result.log.steps[0]
-        assert len(step.inner_logs) == 3
 
-        for inner_log in step.inner_logs:
-            assert inner_log.graph_name == "inner"
-            assert len(inner_log.steps) == 1
-            assert inner_log.steps[0].node_name == "_double"
+        from hypergraph.runners._shared.types import MapLog
+
+        assert isinstance(step.log, MapLog)
+        assert len(step.log) == 3
+
+        for item_log in step.log:
+            assert item_log.graph_name == "inner"
+            assert len(item_log.steps) == 1
+            assert item_log.steps[0].node_name == "_double"
+
+    def test_regular_step_log_is_none(self):
+        """Regular (non-GraphNode) steps have log=None."""
+        graph = Graph([_double])
+        result = SyncRunner().run(graph, {"x": 5})
+
+        for step in result.log.steps:
+            assert step.log is None
 
     def test_deeply_nested_inner_logs(self):
-        """Inner logs propagate through multiple nesting levels."""
+        """Inner logs propagate through multiple nesting levels via .log."""
         innermost = Graph([_double], name="innermost")
         middle = Graph(
             [innermost.as_node(), _increment.with_inputs(doubled="doubled")],
@@ -354,32 +387,26 @@ class TestInnerLogs:
         result = SyncRunner().run(outer, {"x": 5})
 
         assert result["incremented"] == 11
-        # Outer has 1 step (middle)
-        assert len(result.log.steps) == 1
-        middle_step = result.log.steps[0]
-        assert len(middle_step.inner_logs) == 1
-
-        # Middle log has 2 steps (innermost + _increment)
-        middle_log = middle_step.inner_logs[0]
+        # Outer step → middle RunLog
+        middle_log = result.log.steps[0].log
         assert len(middle_log.steps) == 2
 
-        # The innermost GraphNode step has its own inner log
+        # Middle step → innermost RunLog
         innermost_step = next(s for s in middle_log.steps if s.node_name == "innermost")
-        assert len(innermost_step.inner_logs) == 1
-        assert innermost_step.inner_logs[0].graph_name == "innermost"
+        assert innermost_step.log.graph_name == "innermost"
 
-    def test_to_dict_includes_inner_logs(self):
-        """to_dict() recursively serializes inner_logs."""
+    def test_to_dict_includes_inner_log(self):
+        """to_dict() serializes inner_log via .log accessor."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
         result = SyncRunner().run(outer, {"x": 5})
 
         d = result.log.to_dict()
         step_dict = d["steps"][0]
-        assert "inner_logs" in step_dict
-        assert len(step_dict["inner_logs"]) == 1
+        assert "inner_log" in step_dict
+        assert step_dict["inner_log"] is not None
 
-        inner_log_dict = step_dict["inner_logs"][0]
+        inner_log_dict = step_dict["inner_log"]
         assert inner_log_dict["graph_name"] == "inner"
         assert len(inner_log_dict["steps"]) == 1
 
@@ -395,35 +422,43 @@ class TestInnerLogs:
         output = str(result.log)
         assert "(1 inner)" in output
 
-    def test_non_nested_nodes_have_empty_inner_logs(self):
-        """Regular (non-GraphNode) steps have empty inner_logs."""
-        graph = Graph([_double])
-        result = SyncRunner().run(graph, {"x": 5})
+    def test_str_shows_footer_hint(self):
+        """__str__() footer has .steps[i].log drill-down hint."""
+        inner = Graph([_double], name="inner")
+        outer = Graph([inner.as_node()])
+        result = SyncRunner().run(outer, {"x": 5})
 
-        for step in result.log.steps:
-            assert step.inner_logs == ()
+        output = str(result.log)
+        assert ".steps[0].log" in output
 
     @pytest.mark.asyncio
     async def test_async_nested_graph_has_inner_log(self):
-        """Async runner also surfaces inner RunLogs."""
+        """Async runner also surfaces inner RunLogs via .log."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
         result = await AsyncRunner().run(outer, {"x": 5})
 
         assert result["doubled"] == 10
         step = result.log.steps[0]
-        assert len(step.inner_logs) == 1
-        assert step.inner_logs[0].graph_name == "inner"
+
+        from hypergraph.runners._shared.types import RunLog
+
+        assert isinstance(step.log, RunLog)
+        assert step.log.graph_name == "inner"
 
     @pytest.mark.asyncio
-    async def test_async_map_over_has_multiple_inner_logs(self):
-        """Async runner surfaces N inner RunLogs for map_over."""
+    async def test_async_map_over_step_returns_map_log(self):
+        """Async runner step.log returns MapLog for map_over."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
         result = await AsyncRunner().run(outer, {"x": [1, 2, 3]})
 
         step = result.log.steps[0]
-        assert len(step.inner_logs) == 3
+
+        from hypergraph.runners._shared.types import MapLog
+
+        assert isinstance(step.log, MapLog)
+        assert len(step.log) == 3
 
 
 # ---------------------------------------------------------------------------

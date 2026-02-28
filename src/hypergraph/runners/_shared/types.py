@@ -324,6 +324,15 @@ class MapResult:
         """Only failed items."""
         return [r for r in self.results if r.status == RunStatus.FAILED]
 
+    @property
+    def log(self) -> MapLog:
+        """Batch-level execution trace."""
+        return MapLog(
+            graph_name=self.graph_name,
+            total_duration_ms=self.total_duration_ms,
+            items=tuple(r.log for r in self.results if r.log is not None),
+        )
+
     def get(self, key: str, default: Any = None) -> list[Any]:
         """Collect values across items with a default.
         results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
@@ -594,10 +603,26 @@ class NodeRecord:
     error: str | None = None
     cached: bool = False
     decision: str | list[str] | None = None
-    inner_logs: tuple[RunLog, ...] = ()
+    _inner_logs: tuple[RunLog, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "duration_ms", round(self.duration_ms, DURATION_PRECISION))
+
+    @property
+    def log(self) -> RunLog | MapLog | None:
+        """Drill into nested execution traces.
+
+        Returns RunLog for single inner, MapLog for multiple, None for leaf nodes.
+        """
+        if not self._inner_logs:
+            return None
+        if len(self._inner_logs) == 1:
+            return self._inner_logs[0]
+        return MapLog(
+            graph_name=self._inner_logs[0].graph_name,
+            total_duration_ms=sum(log.total_duration_ms for log in self._inner_logs),
+            items=self._inner_logs,
+        )
 
 
 @dataclass(frozen=True)
@@ -712,7 +737,7 @@ class RunLog:
                     "error": s.error,
                     "cached": s.cached,
                     "decision": s.decision,
-                    "inner_logs": [log.to_dict() for log in s.inner_logs] if s.inner_logs else [],
+                    "inner_log": s.log.to_dict() if s._inner_logs else None,
                 }
                 for s in self.steps
             ],
@@ -753,8 +778,8 @@ class RunLog:
             status = "completed" if step.status == "completed" else f"FAILED: {step.error or 'unknown'}"
             if step.cached:
                 status = "cached"
-            if step.inner_logs:
-                status += f" ({len(step.inner_logs)} inner)"
+            if step._inner_logs:
+                status += f" ({len(step._inner_logs)} inner)"
             row = [f"  {i:>4}", f"{step.node_name:<16}", f"{dur:<16}", status]
             if has_decisions:
                 decision_str = ""
@@ -763,8 +788,125 @@ class RunLog:
                 row.append(decision_str)
             lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
 
+        nested = [i for i, s in enumerate(self.steps) if s._inner_logs]
+        if nested:
+            lines.append("")
+            if len(nested) == 1:
+                lines.append(f"  → .steps[{nested[0]}].log for inner trace")
+            else:
+                lines.append(f"  → .steps[i].log for inner traces (i={nested})")
+
         return "\n".join(lines)
 
     def __repr__(self) -> str:
         """Concise repr for REPL/debugger."""
         return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        """Show full table in IPython/Jupyter notebooks."""
+        if cycle:
+            pretty_printer.text("RunLog(...)")
+            return
+        pretty_printer.text(str(self))
+
+
+# ---------------------------------------------------------------------------
+# MapLog — batch-level execution trace
+# ---------------------------------------------------------------------------
+
+_MAX_MAP_LOG_ROWS = 20
+
+
+@dataclass(frozen=True)
+class MapLog:
+    """Batch-level execution trace for map() or map_over.
+
+    Progressive disclosure: summary() → print() → [i] for per-item drill-down.
+    """
+
+    graph_name: str
+    total_duration_ms: float
+    items: tuple[RunLog, ...]
+
+    @property
+    def errors(self) -> tuple[NodeRecord, ...]:
+        """All failed NodeRecords across all items."""
+        return tuple(record for log in self.items for record in log.errors)
+
+    @property
+    def node_stats(self) -> dict[str, NodeStats]:
+        """Aggregate stats across all items (cross-item bottleneck analysis)."""
+        all_steps = tuple(step for log in self.items for step in log.steps)
+        return _compute_node_stats(all_steps)
+
+    def summary(self) -> str:
+        """One-liner: '5 items | 5 completed | 2ms | 0 errors'."""
+        n = len(self.items)
+        n_completed = sum(1 for log in self.items if not log.errors)
+        n_errors = len(self.errors)
+        parts = [
+            f"{n} items",
+            f"{n_completed} completed",
+            _format_duration(self.total_duration_ms),
+            f"{n_errors} errors",
+        ]
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict."""
+        return {
+            "graph_name": self.graph_name,
+            "total_duration_ms": self.total_duration_ms,
+            "items": [log.to_dict() for log in self.items],
+        }
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> RunLog:
+        return self.items[index]
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __str__(self) -> str:
+        """Per-item table with footer."""
+        n_errors = len(self.errors)
+        header = (
+            f"MapLog: {self.graph_name} | "
+            f"{len(self.items)} items | "
+            f"{_format_duration(self.total_duration_ms)} | "
+            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+        )
+        lines = [header, ""]
+
+        cols = ["  Item", "Duration", "Status", "Nodes"]
+        lines.append("  ".join(f"{c:<16}" for c in cols).rstrip())
+        lines.append("  ".join("─" * 16 for _ in cols))
+
+        display_items = self.items[:_MAX_MAP_LOG_ROWS]
+        for i, log in enumerate(display_items):
+            dur = _format_duration(log.total_duration_ms)
+            status = "FAILED" if log.errors else "completed"
+            n_nodes = len({s.node_name for s in log.steps})
+            row = [f"  {i:>4}", f"{dur:<16}", f"{status:<16}", str(n_nodes)]
+            lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
+
+        remaining = len(self.items) - len(display_items)
+        if remaining > 0:
+            lines.append(f"  ... and {remaining} more items")
+
+        lines.append("")
+        lines.append("  → [i] for per-item trace")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"MapLog(graph={self.graph_name!r}, items={len(self.items)}, duration={_format_duration(self.total_duration_ms)})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        """Show table in IPython/Jupyter notebooks."""
+        if cycle:
+            pretty_printer.text("MapLog(...)")
+            return
+        pretty_printer.text(str(self))
