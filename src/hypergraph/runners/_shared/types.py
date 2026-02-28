@@ -301,12 +301,16 @@ class NodeExecution:
         input_versions: Version numbers of inputs at execution time
         outputs: Output values produced
         wait_for_versions: Version numbers of wait_for names at execution time
+        duration_ms: Wall-clock execution time in milliseconds
+        cached: Whether this execution was a cache hit
     """
 
     node_name: str
     input_versions: dict[str, int]
     outputs: dict[str, Any]
     wait_for_versions: dict[str, int] = field(default_factory=dict)
+    duration_ms: float = 0.0
+    cached: bool = False
 
 
 @dataclass

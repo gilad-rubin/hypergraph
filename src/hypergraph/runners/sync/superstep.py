@@ -133,12 +133,18 @@ def run_superstep_sync(
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
+        # Determine duration and cache status for this node
+        node_duration = 0.0 if cached_outputs is not None else duration_ms
+        node_cached = cached_outputs is not None
+
         # Record execution
         new_state.node_executions[node.name] = NodeExecution(
             node_name=node.name,
             input_versions=input_versions,
             outputs=outputs,
             wait_for_versions=wait_for_versions,
+            duration_ms=node_duration,
+            cached=node_cached,
         )
 
     return new_state

@@ -1,6 +1,11 @@
 """Hypergraph - A hierarchical and modular graph workflow framework."""
 
 from hypergraph.cache import CacheBackend, DiskCache, InMemoryCache
+from hypergraph.checkpointers import (
+    Checkpointer,
+    CheckpointPolicy,
+    SqliteCheckpointer,
+)
 from hypergraph.events import (
     AsyncEventProcessor,
     BaseEvent,
@@ -111,4 +116,8 @@ __all__ = [
     "CacheBackend",
     "InMemoryCache",
     "DiskCache",
+    # Checkpointing
+    "Checkpointer",
+    "CheckpointPolicy",
+    "SqliteCheckpointer",
 ]

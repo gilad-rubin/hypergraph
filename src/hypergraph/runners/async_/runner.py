@@ -37,6 +37,7 @@ from hypergraph.runners.async_.superstep import (
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -72,14 +73,22 @@ class AsyncRunner(AsyncRunnerTemplate):
         10
     """
 
-    def __init__(self, cache: CacheBackend | None = None):
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ):
         """Initialize AsyncRunner with its node executors.
 
         Args:
             cache: Optional cache backend for node result caching.
                 Nodes opt in with ``cache=True``.
+            checkpointer: Optional checkpointer for workflow persistence.
+                Enables save/resume, crash recovery, and cross-process queries.
+                Pass a workflow_id to run() to activate persistence.
         """
         self._cache = cache
+        self._checkpointer_instance = checkpointer
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -87,6 +96,11 @@ class AsyncRunner(AsyncRunnerTemplate):
             RouteNode: AsyncRouteNodeExecutor(),
             InterruptNode: AsyncInterruptNodeExecutor(),
         }
+
+    @property
+    def _checkpointer(self) -> Checkpointer | None:
+        """Checkpointer for workflow persistence."""
+        return self._checkpointer_instance
 
     @property
     def capabilities(self) -> RunnerCapabilities:
@@ -97,6 +111,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             supports_streaming=False,  # Phase 2
             returns_coroutine=True,
             supports_interrupts=True,
+            supports_checkpointing=self._checkpointer_instance is not None,
         )
 
     @property
@@ -120,6 +135,8 @@ class AsyncRunner(AsyncRunnerTemplate):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
+        step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -136,6 +153,13 @@ class AsyncRunner(AsyncRunnerTemplate):
             token = set_concurrency_limiter(semaphore)
         else:
             token = None
+
+        # Checkpointer setup — deterministic node ordering for index assignment
+        checkpointer = self._checkpointer_instance
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        step_counter = 0
+        node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
+        save_tasks: list[asyncio.Task[None]] = []
 
         try:
             for superstep_idx in range(max_iterations):
@@ -157,6 +181,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                         )
                     )
 
+                # Track which nodes executed before this superstep
+                prev_executed = set(state.node_executions.keys())
+
                 try:
                     # Execute all ready nodes concurrently
                     # Concurrency controlled by shared semaphore in ContextVar
@@ -177,6 +204,20 @@ class AsyncRunner(AsyncRunnerTemplate):
                 except Exception as e:
                     raise ExecutionError(e, state) from e
 
+                # Save step records for newly executed nodes
+                if has_checkpointer:
+                    step_counter = await self._save_superstep_records(
+                        checkpointer,
+                        workflow_id,
+                        superstep_idx,
+                        state,
+                        prev_executed,
+                        node_order,
+                        step_counter,
+                        step_buffer,
+                        save_tasks,
+                    )
+
             else:
                 # Loop completed without break = hit max_iterations
                 if get_ready_nodes(graph, state, active_nodes=active_nodes):
@@ -189,11 +230,64 @@ class AsyncRunner(AsyncRunnerTemplate):
             pause._partial_state = state  # type: ignore[attr-defined]
             raise
         finally:
+            # Await any background save tasks before returning
+            if save_tasks:
+                await asyncio.gather(*save_tasks, return_exceptions=True)
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
 
         return state
+
+    async def _save_superstep_records(
+        self,
+        checkpointer: Checkpointer,
+        workflow_id: str,
+        superstep_idx: int,
+        state: GraphState,
+        prev_executed: set[str],
+        node_order: dict[str, int],
+        step_counter: int,
+        step_buffer: list[Any] | None,
+        save_tasks: list[asyncio.Task[None]],
+    ) -> int:
+        """Build StepRecords for newly executed nodes and save them."""
+        from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
+
+        new_names = sorted(
+            set(state.node_executions.keys()) - prev_executed,
+            key=lambda name: node_order.get(name, 0),
+        )
+
+        for name in new_names:
+            execution = state.node_executions[name]
+            now = _utcnow()
+            record = StepRecord(
+                workflow_id=workflow_id,
+                superstep=superstep_idx,
+                node_name=name,
+                index=step_counter,
+                status=StepStatus.COMPLETED,
+                input_versions=execution.input_versions,
+                values=execution.outputs,
+                duration_ms=execution.duration_ms,
+                cached=execution.cached,
+                decision=state.routing_decisions.get(name),
+                created_at=now,
+                completed_at=now,
+            )
+            step_counter += 1
+
+            durability = checkpointer.policy.durability
+            if durability == "sync":
+                await checkpointer.save_step(record)
+            elif durability == "async":
+                save_tasks.append(asyncio.create_task(checkpointer.save_step(record)))
+            elif step_buffer is not None:
+                # "exit" mode — buffer for flushing after run completes
+                step_buffer.append(record)
+
+        return step_counter
 
     def _make_execute_node(
         self,

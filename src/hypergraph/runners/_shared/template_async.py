@@ -63,6 +63,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         """Default max iterations for cyclic graphs."""
         ...
 
+    @property
+    def _checkpointer(self) -> Any:
+        """Override to provide a checkpointer. Returns None by default."""
+        return None
+
     @abstractmethod
     async def _execute_graph_impl_async(
         self,
@@ -75,6 +80,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
+        step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -186,6 +193,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         )
         start_time = time.time()
 
+        # Checkpointer lifecycle — create workflow if present
+        checkpointer = self._checkpointer
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        if has_checkpointer:
+            await checkpointer.create_workflow(workflow_id, graph_name=graph.name)
+
+        # Step buffer for "exit" durability — records are flushed after run completes
+        step_buffer: list[Any] = []
+
         try:
             state = await self._execute_graph_impl_async(
                 graph,
@@ -196,6 +212,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 run_span_id=run_span_id,
                 event_processors=event_processors,
+                workflow_id=workflow_id,
+                step_buffer=step_buffer,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
@@ -214,11 +232,19 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 start_time,
                 _parent_span_id,
             )
+            # Flush buffered steps ("exit" mode) and mark workflow completed
+            if has_checkpointer:
+                for record in step_buffer:
+                    await checkpointer.save_step(record)
+                from hypergraph.checkpointers.types import WorkflowStatus
+
+                await checkpointer.update_workflow_status(workflow_id, WorkflowStatus.COMPLETED)
             return result
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
+            # Workflow stays ACTIVE when paused (can be resumed)
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
@@ -243,6 +269,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
                 error=error,
             )
+
+            if has_checkpointer:
+                from hypergraph.checkpointers.types import WorkflowStatus as _WS
+
+                await checkpointer.update_workflow_status(workflow_id, _WS.FAILED)
 
             if error_handling == "raise":
                 raise error from None
