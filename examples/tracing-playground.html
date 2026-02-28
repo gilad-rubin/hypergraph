@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hypergraph Execution Tracing — Use Case Explorer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--panel:#161b22;--card:#1c2128;--hover:#262c36;
+  --border:#30363d;--text:#c9d1d9;--dim:#8b949e;--bright:#f0f6fc;
+  --blue:#58a6ff;--green:#3fb950;--red:#f85149;--amber:#d29922;
+  --purple:#bc8cff;--cyan:#39d2c0;
+  --mono:'SF Mono','Cascadia Code','JetBrains Mono',Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh;overflow:hidden}
+.app{display:grid;grid-template-columns:280px 1fr;grid-template-rows:auto 1fr;height:100vh}
+
+/* Header */
+.hdr{grid-column:1/-1;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--panel);display:flex;align-items:center;gap:12px}
+.hdr h1{font-size:15px;font-weight:600;color:var(--bright)}
+.hdr .tag{font-size:10px;padding:2px 8px;border-radius:10px;background:#1f3a5f;color:var(--blue);font-weight:500}
+.hdr .sub{margin-left:auto;font-size:11px;color:var(--dim)}
+
+/* Sidebar */
+.side{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;padding:12px}
+.side-label{font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--dim);margin:12px 0 6px 4px}
+.side-label:first-child{margin-top:4px}
+
+.uc{padding:8px 10px;border-radius:6px;cursor:pointer;border:1px solid transparent;margin-bottom:2px;transition:all .12s}
+.uc:hover{background:var(--hover)}
+.uc.active{background:var(--card);border-color:var(--blue)}
+.uc .uc-id{font-size:10px;font-weight:700;color:var(--dim);margin-bottom:1px}
+.uc .uc-title{font-size:12px;font-weight:600;color:var(--bright);line-height:1.3}
+.uc .uc-note{font-size:10px;color:var(--dim);margin-top:2px}
+.uc .pill{display:inline-block;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600;margin-top:3px}
+.pill-ok{background:#0d2818;color:var(--green)}
+.pill-gap{background:#3d1f00;color:var(--amber)}
+.pill-defer{background:#21162a;color:var(--purple)}
+
+/* Main */
+.main{overflow-y:auto;padding:16px 20px 60px;display:flex;flex-direction:column;gap:12px}
+
+/* Before / After toggle */
+.toggle-bar{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--border);align-self:flex-start}
+.toggle-btn{padding:6px 18px;font-size:12px;font-family:var(--sans);background:var(--card);color:var(--dim);border:none;cursor:pointer;font-weight:600;transition:all .12s}
+.toggle-btn.active{background:var(--blue);color:#0d1117}
+.toggle-btn:first-child{border-right:1px solid var(--border)}
+
+/* Section */
+.section{background:var(--card);border:1px solid var(--border);border-radius:8px}
+.section.hidden{display:none}
+.sec-hdr{padding:8px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.sec-hdr .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.sec-hdr h3{font-size:12px;font-weight:600;color:var(--bright)}
+.sec-hdr .badge{font-size:9px;padding:1px 6px;border-radius:3px;margin-left:auto;font-weight:600}
+
+pre.code{font-family:var(--mono);font-size:11.5px;line-height:1.55;padding:12px 14px;overflow-x:auto;white-space:pre;color:var(--text);max-height:520px;overflow-y:auto}
+
+/* Syntax */
+.kw{color:var(--purple)}.fn{color:var(--blue)}.str{color:var(--green)}.num{color:var(--amber)}
+.cmt{color:#6e7681}.op{color:var(--red)}.node{color:var(--cyan)}.ok{color:var(--green)}
+.fail{color:var(--red);font-weight:600}.dec{color:var(--amber)}.h{color:var(--bright);font-weight:600}
+.d{color:#6e7681}
+
+/* Source tag */
+.src{display:inline-block;font-size:9px;padding:1px 6px;border-radius:3px;background:#1a1a2e;color:var(--purple);font-weight:600;margin-left:8px}
+
+/* Prompt */
+.prompt{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.prompt-hdr{padding:6px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center}
+.prompt-hdr h3{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)}
+.copy-btn{margin-left:auto;padding:3px 10px;font-size:10px;font-family:var(--sans);background:#1f3a5f;color:var(--blue);border:none;border-radius:5px;cursor:pointer;font-weight:600;transition:all .12s}
+.copy-btn:hover{background:var(--blue);color:#0d1117}
+.copy-btn.copied{background:#0d2818;color:var(--green)}
+.prompt-body{padding:10px 14px;font-size:12px;line-height:1.5;color:var(--text);white-space:normal;word-wrap:break-word;font-family:var(--mono)}
+
+/* Implementation note */
+.impl-note{padding:10px 14px;font-size:11px;line-height:1.5;border-top:1px solid var(--border)}
+.impl-note .label{font-weight:700;margin-right:4px}
+.impl-note.gap{background:#1a1400;color:var(--amber)}
+.impl-note.ok{background:#0a1a0e;color:var(--green)}
+.impl-note.defer{background:#150e1e;color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="hdr">
+  <h1>Hypergraph Execution Tracing</h1>
+  <span class="tag">plan-v5</span>
+  <span class="sub">Use Cases — real output from <code>uv run python examples/tracing_demo.py</code></span>
+</div>
+<div class="side" id="sidebar"></div>
+<div class="main" id="main"></div>
+</div>
+<script>
+const UCS = [
+  {
+    id:'uc1', label:'UC1', title:'"Why was my run slow?"',
+    note:'RunLog timing, node_stats, summary',
+    status:'ok',
+    before:`<span class="cmt"># No built-in way to answer this. You'd need to:</span>
+<span class="cmt"># 1. Write a custom EventProcessor before running</span>
+<span class="cmt"># 2. Manually track timestamps in on_node_end()</span>
+<span class="cmt"># 3. Aggregate and analyze yourself</span>
+<span class="cmt"># 4. Hope you set it up before the slow run happened</span>`,
+    after_python:`<span class="cmt"># Graph: double(x) -> triple(doubled)</span>
+<span class="cmt"># Zero config — RunLog is always on every RunResult</span>
+
+result = <span class="kw">await</span> runner.run(graph, {<span class="str">"x"</span>: <span class="num">5</span>})
+
+<span class="h">&gt;&gt;&gt; result.log.summary()</span>
+<span class="str">'2 nodes | 0ms | 0 errors | slowest: double (0ms)'</span>
+
+<span class="h">&gt;&gt;&gt; print(result.log)</span>
+RunLog: None | <span class="num">0ms</span> | <span class="num">2</span> nodes | <span class="ok">0 errors</span>
+
+  <span class="d">Step            Node              Duration          Status</span>
+<span class="d">────────────────  ────────────────  ────────────────  ────────────────</span>
+     <span class="num">0</span>            <span class="node">double</span>            <span class="num">0ms</span>               <span class="ok">completed</span>
+     <span class="num">1</span>            <span class="node">triple</span>            <span class="num">0ms</span>               <span class="ok">completed</span>
+
+<span class="h">&gt;&gt;&gt; result.log.timing</span>
+{<span class="str">'double'</span>: <span class="num">0.010013580322265625</span>, <span class="str">'triple'</span>: <span class="num">0.005245208740234375</span>}
+
+<span class="h">&gt;&gt;&gt; result.log.node_stats</span>
+  <span class="node">double</span>: count=<span class="num">1</span>, avg=<span class="num">0.0ms</span>, errors=<span class="num">0</span>
+  <span class="node">triple</span>: count=<span class="num">1</span>, avg=<span class="num">0.0ms</span>, errors=<span class="num">0</span>`,
+    after_cli:`<span class="h">$ hypergraph workflows show demo-pipeline</span>
+
+Workflow: <span class="fn">demo-pipeline</span> | <span class="ok">completed</span> | <span class="num">2</span> steps | <span class="num">0ms</span>
+
+  <span class="d">Step  Node    Duration  Status     Decision</span>
+  <span class="d">────  ──────  ────────  ─────────  ────────</span>
+     <span class="num">0</span>  <span class="node">double</span>       <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">1</span>  <span class="node">triple</span>       <span class="num">0ms</span>  <span class="ok">completed</span>
+
+  <span class="d">To see values at a superstep: hypergraph workflows state demo-pipeline --superstep N</span>
+  <span class="d">To see error details:    hypergraph workflows steps demo-pipeline --node &lt;name&gt;</span>
+  <span class="d">To save full trace:      hypergraph workflows show demo-pipeline --json --output trace.json</span>`,
+    impl_status:'ok', impl_note:'Fully implemented. RunLog is always on every RunResult — zero config.',
+  },
+  {
+    id:'uc2', label:'UC2', title:'"What failed and why?"',
+    note:'Error tracking, partial failures, result.log.errors',
+    status:'ok',
+    before:`<span class="cmt"># Parallel nodes: succeed_a and fail_b run together</span>
+<span class="cmt"># fail_b raises RuntimeError("b failed")</span>
+<span class="cmt"># With error_handling="continue", succeed_a still runs</span>
+<span class="cmt"># But how do you know WHICH node failed?</span>`,
+    after_python:`<span class="cmt"># Graph: succeed_a(x) + fail_b(x) in parallel, error_handling="continue"</span>
+
+result = <span class="kw">await</span> runner.run(graph, {<span class="str">"x"</span>: <span class="num">1</span>}, error_handling=<span class="str">"continue"</span>)
+
+<span class="h">&gt;&gt;&gt; result.status</span>
+RunStatus.FAILED
+
+<span class="h">&gt;&gt;&gt; result.log.summary()</span>
+<span class="str">'2 nodes | 3ms | 1 errors | slowest: fail_b (0ms)'</span>
+
+<span class="h">&gt;&gt;&gt; result.log.errors</span>
+  <span class="node">fail_b</span>: <span class="fail">b failed</span>
+
+<span class="h">&gt;&gt;&gt; print(result.log)</span>
+RunLog: None | <span class="num">3ms</span> | <span class="num">2</span> nodes | <span class="fail">1 error</span>
+
+  <span class="d">Step            Node              Duration          Status</span>
+<span class="d">────────────────  ────────────────  ────────────────  ────────────────</span>
+     <span class="num">0</span>            <span class="node">succeed_a</span>         <span class="num">0ms</span>               <span class="ok">completed</span>
+     <span class="num">1</span>            <span class="node">fail_b</span>            <span class="num">0ms</span>               <span class="fail">FAILED: b failed</span>`,
+    after_cli:`<span class="cmt"># Checkpointer preserves both the success and the failure</span>
+
+<span class="h">$ hypergraph workflows show demo-partial-failure</span>
+
+Workflow: <span class="fn">demo-partial-failure</span> | <span class="fail">FAILED</span> | <span class="num">2</span> steps | <span class="num">0ms</span>
+
+  <span class="d">Step  Node       Duration  Status            Decision</span>
+  <span class="d">────  ─────────  ────────  ────────────────  ────────</span>
+     <span class="num">0</span>  <span class="node">succeed_a</span>       <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">1</span>  <span class="node">fail_b</span>            —  <span class="fail">FAILED: b failed</span>
+
+<span class="cmt"># Checkpointer step records show values for success, error for failure:</span>
+  [<span class="num">0</span>] <span class="node">succeed_a</span>: <span class="ok">completed</span> -> {<span class="str">'a_out'</span>: <span class="num">2</span>}
+  [<span class="num">1</span>] <span class="node">fail_b</span>: <span class="fail">failed</span> -- <span class="fail">b failed</span>`,
+    impl_status:'ok', impl_note:'Fully implemented. Failed nodes get FAILED StepRecords. Siblings preserved via error_handling="continue".',
+  },
+  {
+    id:'uc3', label:'UC3', title:'"What path did execution take?"',
+    note:'Gate routing decisions, cyclic re-execution tracking',
+    status:'ok',
+    before:`<span class="cmt"># Cyclic graph: increment -> check_done (ifelse gate)</span>
+<span class="cmt"># check_done routes to END when count >= 3, else back to increment</span>
+<span class="cmt"># No built-in way to see which route was taken at each step</span>`,
+    after_python:`<span class="cmt"># Graph: increment(count) -> check_done(count) [ifelse: END or increment]</span>
+
+result = <span class="kw">await</span> runner.run(graph, {<span class="str">"count"</span>: <span class="num">0</span>})
+
+<span class="h">&gt;&gt;&gt; result['count']</span>
+<span class="num">3</span>
+
+<span class="h">&gt;&gt;&gt; print(result.log)</span>
+RunLog: None | <span class="num">9ms</span> | <span class="num">2</span> nodes | <span class="ok">0 errors</span>
+
+  <span class="d">Step            Node              Duration          Status            Decision</span>
+<span class="d">────────────────  ────────────────  ────────────────  ────────────────  ────────────────</span>
+     <span class="num">0</span>            <span class="node">check_done</span>        <span class="num">0ms</span>               <span class="ok">completed</span>         <span class="dec">-> increment</span>
+     <span class="num">1</span>            <span class="node">increment</span>         <span class="num">0ms</span>               <span class="ok">completed</span>
+     <span class="num">2</span>            <span class="node">check_done</span>        <span class="num">0ms</span>               <span class="ok">completed</span>         <span class="dec">-> increment</span>
+     <span class="num">3</span>            <span class="node">increment</span>         <span class="num">0ms</span>               <span class="ok">completed</span>
+     <span class="num">4</span>            <span class="node">check_done</span>        <span class="num">0ms</span>               <span class="ok">completed</span>         <span class="dec">-> increment</span>
+     <span class="num">5</span>            <span class="node">increment</span>         <span class="num">0ms</span>               <span class="ok">completed</span>
+     <span class="num">6</span>            <span class="node">check_done</span>        <span class="num">0ms</span>               <span class="ok">completed</span>         <span class="dec">-> END</span>
+
+<span class="h">&gt;&gt;&gt; result.log.node_stats</span>
+  <span class="node">check_done</span>: executed <span class="num">4</span>x, total=<span class="num">0.0ms</span>
+  <span class="node">increment</span>: executed <span class="num">3</span>x, total=<span class="num">0.0ms</span>`,
+    after_cli:`<span class="h">$ hypergraph workflows show demo-cycle</span>
+
+Workflow: <span class="fn">demo-cycle</span> | <span class="ok">completed</span> | <span class="num">7</span> steps | <span class="num">0ms</span>
+
+  <span class="d">Step  Node        Duration  Status     Decision</span>
+  <span class="d">────  ──────────  ────────  ─────────  ───────────</span>
+     <span class="num">0</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> increment</span>
+     <span class="num">1</span>  <span class="node">increment</span>        <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">2</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> increment</span>
+     <span class="num">3</span>  <span class="node">increment</span>        <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">4</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> increment</span>
+     <span class="num">5</span>  <span class="node">increment</span>        <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">6</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> END</span>
+
+<span class="cmt"># Each re-execution is a separate superstep in the checkpointer:</span>
+  [superstep <span class="num">0</span>] <span class="node">check_done</span>: {}, decision=<span class="dec">increment</span>
+  [superstep <span class="num">1</span>] <span class="node">increment</span>: {<span class="str">'count'</span>: <span class="num">1</span>}
+  [superstep <span class="num">2</span>] <span class="node">check_done</span>: {}, decision=<span class="dec">increment</span>
+  [superstep <span class="num">3</span>] <span class="node">increment</span>: {<span class="str">'count'</span>: <span class="num">2</span>}
+  [superstep <span class="num">4</span>] <span class="node">check_done</span>: {}, decision=<span class="dec">increment</span>
+  [superstep <span class="num">5</span>] <span class="node">increment</span>: {<span class="str">'count'</span>: <span class="num">3</span>}
+  [superstep <span class="num">6</span>] <span class="node">check_done</span>: {}, decision=<span class="dec">END</span>`,
+    impl_status:'ok', impl_note:'Fully implemented. NodeRecord.decision + superstep tracking in both RunLog and Checkpointer.',
+  },
+  {
+    id:'uc4', label:'UC4', title:'"What prompt went into the LLM?"',
+    note:'Intermediate value inspection via Checkpointer',
+    status:'ok',
+    before:`<span class="cmt"># You can see the final output:</span>
+result[<span class="str">"tripled"</span>]  <span class="cmt"># 30</span>
+
+<span class="cmt"># But you CAN'T see intermediate values:</span>
+<span class="cmt"># - What was "doubled" between double() and triple()?</span>
+<span class="cmt"># - What inputs did each node receive?</span>
+<span class="cmt"># There's no record of intermediate node outputs.</span>`,
+    after_python:`<span class="cmt"># Graph: double(x) -> triple(doubled), with checkpointer</span>
+
+cp = SqliteCheckpointer(db_path)
+cp.policy = CheckpointPolicy(durability=<span class="str">"sync"</span>, retention=<span class="str">"full"</span>)
+<span class="kw">await</span> cp.initialize()
+
+runner = AsyncRunner(checkpointer=cp)
+result = <span class="kw">await</span> runner.run(graph, {<span class="str">"x"</span>: <span class="num">5</span>}, workflow_id=<span class="str">"demo-pipeline"</span>)
+
+<span class="h">&gt;&gt;&gt; result.status</span>
+RunStatus.COMPLETED
+
+<span class="h">&gt;&gt;&gt; result['tripled']</span>
+<span class="num">30</span>
+
+<span class="cmt"># Query intermediate state after the run:</span>
+<span class="h">&gt;&gt;&gt; state = await cp.get_state("demo-pipeline")</span>
+{<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
+
+<span class="cmt"># Inspect individual step records:</span>
+<span class="h">&gt;&gt;&gt; steps = await cp.get_steps("demo-pipeline")</span>
+  [<span class="num">0</span>] <span class="node">double</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'doubled'</span>: <span class="num">10</span>}
+  [<span class="num">1</span>] <span class="node">triple</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'tripled'</span>: <span class="num">30</span>}
+
+<span class="cmt"># Get a full checkpoint (state + steps):</span>
+<span class="h">&gt;&gt;&gt; checkpoint = await cp.get_checkpoint("demo-pipeline")</span>
+  values: {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
+  steps: <span class="num">2</span>`,
+    after_cli:`<span class="h">$ hypergraph workflows state demo-pipeline</span>
+
+State: <span class="fn">demo-pipeline</span> (through step <span class="num">1</span>)
+
+  <span class="d">Output   Type  Size  Step  Node</span>
+  <span class="d">───────  ────  ────  ────  ──────</span>
+  <span class="node">doubled</span>  int   10       <span class="num">0</span>  <span class="node">double</span>
+  <span class="node">tripled</span>  int   30       <span class="num">1</span>  <span class="node">triple</span>
+
+  <span class="d">Values hidden. Use --values to show, --key &lt;name&gt; for one value.</span>
+  <span class="d">To save to file: --output state.json</span>
+
+<span class="h">$ hypergraph workflows state demo-pipeline --values</span>
+
+State: <span class="fn">demo-pipeline</span> (through step <span class="num">1</span>)
+
+  <span class="node">doubled</span>: <span class="num">10</span>
+  <span class="node">tripled</span>: <span class="num">30</span>
+
+<span class="h">$ hypergraph workflows steps demo-pipeline --values</span>
+
+Step [<span class="num">0</span>] <span class="node">double</span> | <span class="ok">completed</span> | <span class="num">0ms</span>
+  input_versions: {<span class="str">'x'</span>: <span class="num">1</span>}
+  values: {<span class="str">"doubled"</span>: <span class="num">10</span>}
+  cached: False
+
+Step [<span class="num">1</span>] <span class="node">triple</span> | <span class="ok">completed</span> | <span class="num">0ms</span>
+  input_versions: {<span class="str">'doubled'</span>: <span class="num">1</span>}
+  values: {<span class="str">"tripled"</span>: <span class="num">30</span>}
+  cached: False`,
+    impl_status:'ok', impl_note:'Fully implemented. get_state(), get_steps(), get_checkpoint() + CLI state/steps commands.',
+  },
+  {
+    id:'uc5', label:'UC5', title:'"What happened in yesterday\\\'s run?"',
+    note:'Cross-process persistence — query after process exits',
+    status:'gap',
+    before:`<span class="cmt"># Impossible. No persistent record of execution.</span>
+<span class="cmt"># The process finished, RunLog is gone.</span>
+<span class="cmt"># You'd need to re-run with logging, or use an external</span>
+<span class="cmt"># observability tool.</span>`,
+    after_python:`<span class="cmt"># The demo wrote workflows to a SQLite DB, then the process exited.</span>
+<span class="cmt"># In a NEW process, we can query everything:</span>
+
+<span class="kw">from</span> <span class="fn">hypergraph.checkpointers</span> <span class="kw">import</span> SqliteCheckpointer
+
+cp = SqliteCheckpointer(<span class="str">"./workflows.db"</span>)
+<span class="kw">await</span> cp.initialize()
+
+<span class="h">&gt;&gt;&gt; workflows = await cp.list_workflows()</span>
+<span class="cmt"># Returns all workflows ever recorded</span>
+
+<span class="h">&gt;&gt;&gt; state = await cp.get_state("demo-pipeline")</span>
+{<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
+
+<span class="h">&gt;&gt;&gt; steps = await cp.get_steps("demo-pipeline")</span>
+  [<span class="num">0</span>] <span class="node">double</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'doubled'</span>: <span class="num">10</span>}
+  [<span class="num">1</span>] <span class="node">triple</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'tripled'</span>: <span class="num">30</span>}`,
+    after_cli:`<span class="h">$ hypergraph workflows ls --db ./workflows.db</span>
+
+Workflows (<span class="num">3</span> total)
+
+  <span class="d">ID                    Status     Created</span>
+  <span class="d">────────────────────  ─────────  ────────────────</span>
+  <span class="node">demo-cycle</span>            <span class="ok">completed</span>  2026-02-28 07:50
+  <span class="node">demo-partial-failure</span>  <span class="fail">FAILED</span>     2026-02-28 07:50
+  <span class="node">demo-pipeline</span>         <span class="ok">completed</span>  2026-02-28 07:50
+
+  <span class="d">To inspect a workflow: hypergraph workflows show &lt;id&gt;</span>
+  <span class="d">To filter: --status, --limit N</span>
+
+<span class="h">$ hypergraph workflows show demo-pipeline --db ./workflows.db</span>
+
+Workflow: <span class="fn">demo-pipeline</span> | <span class="ok">completed</span> | <span class="num">2</span> steps | <span class="num">0ms</span>
+
+  <span class="d">Step  Node    Duration  Status     Decision</span>
+  <span class="d">────  ──────  ────────  ─────────  ────────</span>
+     <span class="num">0</span>  <span class="node">double</span>       <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">1</span>  <span class="node">triple</span>       <span class="num">0ms</span>  <span class="ok">completed</span>
+
+<span class="cmt"># Gap: --since flag not yet implemented</span>
+<span class="fail">$ hypergraph workflows ls --since yesterday   # NOT IMPLEMENTED</span>
+<span class="fail">$ hypergraph workflows ls --since "1h ago"    # NOT IMPLEMENTED</span>
+<span class="cmt"># Workaround: list all, filter visually or with --json + jq</span>`,
+    impl_status:'gap', impl_note:'Core persistence works (query old workflows from new process). Gap: --since flag not yet in CLI.',
+  },
+  {
+    id:'uc6', label:'UC6', title:'"Show me all failed workflows"',
+    note:'Dashboard, ls --status, workflow listing',
+    status:'ok',
+    before:`<span class="cmt"># No workflow registry. Each run is fire-and-forget.</span>
+<span class="cmt"># You'd need to build your own tracking on top.</span>`,
+    after_python:`<span class="cmt"># Python API: filter by status</span>
+
+<span class="h">&gt;&gt;&gt; workflows = await cp.list_workflows()</span>
+<span class="cmt"># Returns Workflow objects with .id, .status, .created_at</span>
+
+<span class="h">&gt;&gt;&gt; failed = await cp.list_workflows(status=WorkflowStatus.FAILED)</span>
+<span class="kw">for</span> wf <span class="kw">in</span> failed:
+    steps = <span class="kw">await</span> cp.get_steps(wf.id)
+    failed_steps = [s <span class="kw">for</span> s <span class="kw">in</span> steps <span class="kw">if</span> s.status.value == <span class="str">"failed"</span>]
+    print(f<span class="str">"{wf.id}: {len(failed_steps)} failed steps"</span>)
+
+<span class="cmt"># Output:</span>
+demo-partial-failure: <span class="num">1</span> failed steps`,
+    after_cli:`<span class="cmt"># Dashboard (no subcommand) — overview of all workflows</span>
+
+<span class="h">$ hypergraph workflows --db ./workflows.db</span>
+
+Active (<span class="num">0</span> running)
+
+Recent (last <span class="num">3</span>)
+
+  <span class="d">ID                    Status     Steps  Created</span>
+  <span class="d">────────────────────  ─────────  ─────  ────────────────</span>
+  <span class="node">demo-cycle</span>            <span class="ok">completed</span>      <span class="num">7</span>  2026-02-28 07:50
+  <span class="node">demo-partial-failure</span>  <span class="fail">FAILED</span>         <span class="num">2</span>  2026-02-28 07:50
+  <span class="node">demo-pipeline</span>         <span class="ok">completed</span>      <span class="num">2</span>  2026-02-28 07:50
+
+<span class="cmt"># Filter to just failures:</span>
+
+<span class="h">$ hypergraph workflows ls --status failed --db ./workflows.db</span>
+
+Workflows (<span class="num">1</span> total)
+  <span class="d">ID                    Status  Created</span>
+  <span class="d">────────────────────  ──────  ────────────────</span>
+  <span class="node">demo-partial-failure</span>  <span class="fail">FAILED</span>  2026-02-28 07:50
+
+<span class="cmt"># Drill into the failure:</span>
+
+<span class="h">$ hypergraph workflows show demo-partial-failure --db ./workflows.db</span>
+
+Workflow: <span class="fn">demo-partial-failure</span> | <span class="fail">FAILED</span> | <span class="num">2</span> steps | <span class="num">0ms</span>
+
+  <span class="d">Step  Node       Duration  Status            Decision</span>
+  <span class="d">────  ─────────  ────────  ────────────────  ────────</span>
+     <span class="num">0</span>  <span class="node">succeed_a</span>       <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">1</span>  <span class="node">fail_b</span>            —  <span class="fail">FAILED: b failed</span>`,
+    impl_status:'ok', impl_note:'Fully implemented. Dashboard, ls --status, show with error details.',
+  },
+  {
+    id:'uc7', label:'UC7', title:'AI Agent Debugging a Workflow',
+    note:'Structured JSON for agents, to_dict(), --json',
+    status:'ok',
+    before:`<span class="cmt"># Agent would need to:</span>
+<span class="cmt"># 1. Ask user to add EventProcessors</span>
+<span class="cmt"># 2. Re-run the failing pipeline</span>
+<span class="cmt"># 3. Parse unstructured log output</span>
+<span class="cmt"># 4. Hope the relevant data was captured</span>`,
+    after_python:`<span class="cmt"># Machine-readable — agent can parse programmatically</span>
+
+<span class="h">&gt;&gt;&gt; result.log.to_dict()</span>
+{
+  <span class="str">"graph_name"</span>: null,
+  <span class="str">"run_id"</span>: <span class="str">"run-526a553c2cfb"</span>,
+  <span class="str">"total_duration_ms"</span>: <span class="num">0.39005279541015625</span>,
+  <span class="str">"steps"</span>: [
+    {
+      <span class="str">"node_name"</span>: <span class="str">"double"</span>,
+      <span class="str">"superstep"</span>: <span class="num">0</span>,
+      <span class="str">"duration_ms"</span>: <span class="num">0.015020370483398438</span>,
+      <span class="str">"status"</span>: <span class="str">"completed"</span>,
+      <span class="str">"span_id"</span>: <span class="str">"64fac1fbf13944f3"</span>,
+      <span class="str">"error"</span>: null,
+      <span class="str">"cached"</span>: false,
+      <span class="str">"decision"</span>: null
+    },
+    {
+      <span class="str">"node_name"</span>: <span class="str">"triple"</span>,
+      <span class="str">"superstep"</span>: <span class="num">1</span>,
+      <span class="str">"duration_ms"</span>: <span class="num">0.0030994415283203125</span>,
+      <span class="str">"status"</span>: <span class="str">"completed"</span>,
+      <span class="str">"span_id"</span>: <span class="str">"237948283e114832"</span>,
+      <span class="str">"error"</span>: null,
+      <span class="str">"cached"</span>: false,
+      <span class="str">"decision"</span>: null
+    }
+  ],
+  <span class="str">"node_stats"</span>: {
+    <span class="str">"double"</span>: {<span class="str">"count"</span>: <span class="num">1</span>, <span class="str">"total_ms"</span>: <span class="num">0.015</span>, <span class="str">"avg_ms"</span>: <span class="num">0.015</span>, <span class="str">"errors"</span>: <span class="num">0</span>, <span class="str">"cached"</span>: <span class="num">0</span>},
+    <span class="str">"triple"</span>: {<span class="str">"count"</span>: <span class="num">1</span>, <span class="str">"total_ms"</span>: <span class="num">0.003</span>, <span class="str">"avg_ms"</span>: <span class="num">0.003</span>, <span class="str">"errors"</span>: <span class="num">0</span>, <span class="str">"cached"</span>: <span class="num">0</span>}
+  }
+}`,
+    after_cli:`<span class="cmt"># CLI --json returns a versioned envelope — stable for agents</span>
+
+<span class="h">$ hypergraph workflows show demo-pipeline --json --db ./workflows.db</span>
+
+{
+  <span class="str">"schema_version"</span>: <span class="num">1</span>,
+  <span class="str">"command"</span>: <span class="str">"workflows.show"</span>,
+  <span class="str">"generated_at"</span>: <span class="str">"2026-02-28T07:50:54.992368+00:00"</span>,
+  <span class="str">"data"</span>: {
+    <span class="str">"workflow"</span>: {
+      <span class="str">"id"</span>: <span class="str">"demo-pipeline"</span>,
+      <span class="str">"status"</span>: <span class="str">"completed"</span>,
+      <span class="str">"created_at"</span>: <span class="str">"2026-02-28T07:50:53.243199+00:00"</span>,
+      <span class="str">"completed_at"</span>: <span class="str">"2026-02-28T07:50:53.245340+00:00"</span>
+    },
+    <span class="str">"steps"</span>: [
+      {
+        <span class="str">"workflow_id"</span>: <span class="str">"demo-pipeline"</span>,
+        <span class="str">"superstep"</span>: <span class="num">0</span>,
+        <span class="str">"node_name"</span>: <span class="str">"double"</span>,
+        <span class="str">"status"</span>: <span class="str">"completed"</span>,
+        <span class="str">"input_versions"</span>: {<span class="str">"x"</span>: <span class="num">1</span>},
+        <span class="str">"values"</span>: {<span class="str">"doubled"</span>: <span class="num">10</span>},
+        <span class="str">"duration_ms"</span>: <span class="num">0.0069141387939453125</span>,
+        <span class="str">"cached"</span>: false,
+        <span class="str">"decision"</span>: null,
+        <span class="str">"error"</span>: null
+      },
+      {
+        <span class="str">"workflow_id"</span>: <span class="str">"demo-pipeline"</span>,
+        <span class="str">"superstep"</span>: <span class="num">1</span>,
+        <span class="str">"node_name"</span>: <span class="str">"triple"</span>,
+        <span class="str">"status"</span>: <span class="str">"completed"</span>,
+        <span class="str">"input_versions"</span>: {<span class="str">"doubled"</span>: <span class="num">1</span>},
+        <span class="str">"values"</span>: {<span class="str">"tripled"</span>: <span class="num">30</span>},
+        <span class="str">"duration_ms"</span>: <span class="num">0.0040531158447265625</span>,
+        <span class="str">"cached"</span>: false,
+        <span class="str">"decision"</span>: null,
+        <span class="str">"error"</span>: null
+      }
+    ]
+  }
+}`,
+    impl_status:'ok', impl_note:'Fully implemented. to_dict() for Python, --json envelope for CLI. schema_version for stability.',
+  },
+  {
+    id:'uc8', label:'UC8', title:'"Live monitoring — where are we?"',
+    note:'Poll CLI while workflow runs, ACTIVE status, durability modes',
+    status:'ok',
+    before:`<span class="cmt"># No cross-process visibility. The agent can only:</span>
+<span class="cmt"># 1. Wait for the process to finish</span>
+<span class="cmt"># 2. Parse stdout/stderr logs (fragile)</span>
+<span class="cmt"># 3. Implement custom IPC (file-based, socket, etc.)</span>`,
+    after_python:`<span class="cmt"># While a workflow is running in another process, you can query it.</span>
+<span class="cmt"># This works because SqliteCheckpointer uses WAL mode for concurrent access.</span>
+
+cp = SqliteCheckpointer(<span class="str">"./workflows.db"</span>)
+<span class="kw">await</span> cp.initialize()
+
+<span class="cmt"># Query in-progress workflow</span>
+steps = <span class="kw">await</span> cp.get_steps(<span class="str">"running-workflow-id"</span>)
+state = <span class="kw">await</span> cp.get_state(<span class="str">"running-workflow-id"</span>)
+
+<span class="cmt"># Durability mode controls when data is visible:</span>
+<span class="d">Mode         Live query?   Use when</span>
+<span class="d">───────────  ───────────   ───────────────────────────</span>
+<span class="str">"async"</span>      <span class="ok">Yes</span>           Most use cases (default)
+<span class="str">"sync"</span>       <span class="ok">Yes</span>           Crash-critical
+<span class="str">"exit"</span>       <span class="fail">No</span>            Batch jobs (final result only)
+
+<span class="cmt"># Real example from the demo: querying checkpointer after run</span>
+<span class="h">&gt;&gt;&gt; state = await cp.get_state("demo-pipeline")</span>
+{<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
+
+<span class="h">&gt;&gt;&gt; steps = await cp.get_steps("demo-pipeline")</span>
+  [<span class="num">0</span>] <span class="node">double</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'doubled'</span>: <span class="num">10</span>}
+  [<span class="num">1</span>] <span class="node">triple</span>: <span class="ok">completed</span> (<span class="num">0.0ms</span>) -> {<span class="str">'tripled'</span>: <span class="num">30</span>}`,
+    after_cli:`<span class="cmt"># Poll from another terminal while workflow runs</span>
+<span class="cmt"># The dashboard shows active vs completed workflows</span>
+
+<span class="h">$ hypergraph workflows --db ./workflows.db</span>
+
+Active (<span class="num">0</span> running)
+
+Recent (last <span class="num">3</span>)
+
+  <span class="d">ID                    Status     Steps  Created</span>
+  <span class="d">────────────────────  ─────────  ─────  ────────────────</span>
+  <span class="node">demo-cycle</span>            <span class="ok">completed</span>      <span class="num">7</span>  2026-02-28 07:50
+  <span class="node">demo-partial-failure</span>  <span class="fail">FAILED</span>         <span class="num">2</span>  2026-02-28 07:50
+  <span class="node">demo-pipeline</span>         <span class="ok">completed</span>      <span class="num">2</span>  2026-02-28 07:50
+
+<span class="cmt"># If a workflow were currently running, it would appear under "Active"</span>
+<span class="cmt"># with status ACTIVE and a step count that increases as you poll.</span>
+
+<span class="h">$ hypergraph workflows show demo-cycle --db ./workflows.db</span>
+
+Workflow: <span class="fn">demo-cycle</span> | <span class="ok">completed</span> | <span class="num">7</span> steps | <span class="num">0ms</span>
+
+  <span class="d">Step  Node        Duration  Status     Decision</span>
+  <span class="d">────  ──────────  ────────  ─────────  ───────────</span>
+     <span class="num">0</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> increment</span>
+     <span class="num">1</span>  <span class="node">increment</span>        <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">2</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> increment</span>
+     <span class="num">3</span>  <span class="node">increment</span>        <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">4</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> increment</span>
+     <span class="num">5</span>  <span class="node">increment</span>        <span class="num">0ms</span>  <span class="ok">completed</span>
+     <span class="num">6</span>  <span class="node">check_done</span>       <span class="num">0ms</span>  <span class="ok">completed</span>  <span class="dec">-> END</span>`,
+    impl_status:'ok', impl_note:'Fully implemented. ACTIVE status, durability modes, SQLite WAL for concurrent read/write.',
+  },
+  {
+    id:'uc9', label:'UC9', title:'"Fork and retry from a specific point"',
+    note:'Checkpoint replay — reuse expensive steps',
+    status:'defer',
+    before:`<span class="cmt"># Use DiskCache to avoid re-computing cached nodes.</span>
+<span class="cmt"># But this only works with identical inputs and the same process.</span>
+<span class="cmt"># No way to fork from a specific point in history.</span>`,
+    after_python:`<span class="cmt"># get_checkpoint() WORKS today — it returns state + steps</span>
+
+<span class="h">&gt;&gt;&gt; checkpoint = await cp.get_checkpoint("demo-pipeline")</span>
+  values: {<span class="str">'doubled'</span>: <span class="num">10</span>, <span class="str">'tripled'</span>: <span class="num">30</span>}
+  steps: <span class="num">2</span>
+
+<span class="cmt"># You can use checkpoint.values as inputs to a new run:</span>
+result = <span class="kw">await</span> runner.run(
+    updated_graph,
+    values={**checkpoint.values},
+    workflow_id=<span class="str">"demo-pipeline-retry"</span>,
+)
+
+<span class="cmt"># What's NOT yet implemented:</span>
+<span class="fail">result = await runner.run(
+    graph,
+    values={**checkpoint.values},
+    history=checkpoint.steps,  # NOT YET IMPLEMENTED
+)</span>
+<span class="cmt"># The history= parameter would enable true fork-and-retry,</span>
+<span class="cmt"># preserving the step history in the new workflow.</span>
+<span class="cmt"># Plan explicitly marks this as v2.</span>`,
+    after_cli:`<span class="cmt"># CLI replay command is explicitly deferred to v2</span>
+
+<span class="fail">$ hypergraph workflows replay demo-pipeline \\
+    --from-superstep 0 \\
+    --new-id demo-pipeline-retry</span>
+
+<span class="cmt"># NOT IMPLEMENTED (v2 command)</span>
+
+<span class="cmt"># What you CAN do today:</span>
+
+<span class="h">$ hypergraph workflows state demo-pipeline --db ./workflows.db</span>
+
+State: <span class="fn">demo-pipeline</span> (through step <span class="num">1</span>)
+
+  <span class="d">Output   Type  Size  Step  Node</span>
+  <span class="d">───────  ────  ────  ────  ──────</span>
+  <span class="node">doubled</span>  int   10       <span class="num">0</span>  <span class="node">double</span>
+  <span class="node">tripled</span>  int   30       <span class="num">1</span>  <span class="node">triple</span>
+
+<span class="h">$ hypergraph workflows show demo-pipeline --db ./workflows.db</span>
+
+Workflow: <span class="fn">demo-pipeline</span> | <span class="ok">completed</span> | <span class="num">2</span> steps | <span class="num">0ms</span>
+
+<span class="cmt"># Then manually fork via Python API:</span>
+<span class="cmt"># checkpoint = await cp.get_checkpoint("demo-pipeline")</span>
+<span class="cmt"># result = await runner.run(graph, values={**checkpoint.values})</span>`,
+    impl_status:'defer', impl_note:'Deferred to v2. get_checkpoint() works today; history= param and CLI replay not yet built.',
+  },
+];
+
+let state = { uc: 'uc1', view: 'after' };
+
+function renderSidebar() {
+  const sb = document.getElementById('sidebar');
+  let h = '<div class="side-label">Use Cases (from plan-v5)</div>';
+  for (const uc of UCS) {
+    const cls = state.uc === uc.id ? ' active' : '';
+    const pill = uc.status === 'ok' ? '<span class="pill pill-ok">implemented</span>'
+               : uc.status === 'gap' ? '<span class="pill pill-gap">has gaps</span>'
+               : '<span class="pill pill-defer">v2 deferred</span>';
+    h += `<div class="uc${cls}" onclick="select('${uc.id}')">
+      <div class="uc-id">${uc.label}</div>
+      <div class="uc-title">${uc.title}</div>
+      <div class="uc-note">${uc.note}</div>
+      ${pill}
+    </div>`;
+  }
+  sb.innerHTML = h;
+}
+
+function select(id) { state.uc = id; render(); }
+function setView(v) { state.view = v; render(); }
+
+function render() {
+  renderSidebar();
+  const uc = UCS.find(u => u.id === state.uc);
+  const m = document.getElementById('main');
+  const isBefore = state.view === 'before';
+
+  const implCls = uc.impl_status === 'ok' ? 'ok' : uc.impl_status === 'gap' ? 'gap' : 'defer';
+  const implLabel = uc.impl_status === 'ok' ? 'Implemented' : uc.impl_status === 'gap' ? 'Gap' : 'Deferred';
+
+  let html = '';
+
+  // Title
+  html += `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <h2 style="font-size:16px;color:var(--bright)">${uc.label}: ${uc.title}</h2>
+    <div class="toggle-bar">
+      <button class="toggle-btn${isBefore ? ' active' : ''}" onclick="setView('before')">Before</button>
+      <button class="toggle-btn${!isBefore ? ' active' : ''}" onclick="setView('after')">After</button>
+    </div>
+  </div>`;
+
+  if (isBefore) {
+    html += `<div class="section">
+      <div class="sec-hdr"><div class="dot" style="background:var(--red)"></div><h3>Before (no tracing)</h3></div>
+      <pre class="code">${uc.before}</pre>
+    </div>`;
+  } else {
+    // Python API
+    html += `<div class="section">
+      <div class="sec-hdr">
+        <div class="dot" style="background:var(--green)"></div>
+        <h3>After — Python API</h3>
+        <span class="badge" style="background:#0d2818;color:var(--green)">in-process</span>
+        <span class="src">real output</span>
+      </div>
+      <pre class="code">${uc.after_python}</pre>
+    </div>`;
+
+    // CLI
+    html += `<div class="section">
+      <div class="sec-hdr">
+        <div class="dot" style="background:var(--red)"></div>
+        <h3>After — CLI</h3>
+        <span class="badge" style="background:#2a1215;color:var(--red)">post-hoc</span>
+        <span class="src">real output</span>
+      </div>
+      <pre class="code">${uc.after_cli}</pre>
+    </div>`;
+  }
+
+  // Implementation note
+  html += `<div class="section">
+    <div class="impl-note ${implCls}">
+      <span class="label">${implLabel}:</span> ${uc.impl_note}
+    </div>
+  </div>`;
+
+  // Prompt
+  const promptText = isBefore
+    ? `Show me the problem: ${uc.title} — what developers face today without execution tracing in Hypergraph.`
+    : `Show me how Hypergraph's execution tracing solves ${uc.title} using both the Python API (RunLog, Checkpointer) and the CLI (hypergraph workflows).`;
+
+  html += `<div class="prompt">
+    <div class="prompt-hdr"><h3>Prompt</h3><button class="copy-btn" onclick="copyPrompt()">Copy</button></div>
+    <div class="prompt-body" id="prompt">${promptText}</div>
+  </div>`;
+
+  m.innerHTML = html;
+}
+
+function copyPrompt() {
+  const t = document.getElementById('prompt').textContent;
+  navigator.clipboard.writeText(t).then(() => {
+    const b = document.querySelector('.copy-btn');
+    b.textContent = 'Copied!'; b.classList.add('copied');
+    setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('copied'); }, 1200);
+  });
+}
+
+render();
+</script>
+</body>
+</html>
