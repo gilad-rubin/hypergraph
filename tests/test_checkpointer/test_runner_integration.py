@@ -232,3 +232,16 @@ class TestRunnerCheckpointIntegration:
         steps = await checkpointer.get_steps("wf-types")
         for step in steps:
             assert step.node_type == "FunctionNode"
+
+    async def test_run_stats_populated(self, checkpointer):
+        """Run record gets node_count and error_count from execution."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([double, triple])
+
+        await runner.run(graph, {"x": 5}, workflow_id="wf-stats")
+
+        run = await checkpointer.get_run("wf-stats")
+        assert run.node_count == 2
+        assert run.error_count == 0
+        assert run.duration_ms > 0

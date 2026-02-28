@@ -239,8 +239,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     await checkpointer.save_step(record)
                 from hypergraph.checkpointers.types import WorkflowStatus
 
-                step_count = len(collector._steps) if hasattr(collector, "_steps") else 0
-                error_count = sum(1 for s in (collector._steps if hasattr(collector, "_steps") else []) if getattr(s, "status", "") == "failed")
+                step_count = len(collector._records)
+                error_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,
                     WorkflowStatus.COMPLETED,

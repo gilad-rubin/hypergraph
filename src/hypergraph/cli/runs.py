@@ -50,7 +50,7 @@ def runs_dashboard(
         else:
             print("No runs found.")
             print(f"\n  Database: {db}")
-            print("  To create runs, run a graph with workflow_id parameter.")
+            print("  To create runs, use: runner.run(graph, inputs, workflow_id='my-run')")
         return
 
     active = [r for r in all_runs if r.status.value == "active"]

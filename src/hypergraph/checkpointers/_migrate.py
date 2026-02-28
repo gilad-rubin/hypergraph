@@ -98,7 +98,7 @@ _CREATE_RUNS = """
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     graph_name TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'running',
+    status TEXT NOT NULL DEFAULT 'active',
     duration_ms REAL,
     node_count INTEGER DEFAULT 0,
     error_count INTEGER DEFAULT 0,

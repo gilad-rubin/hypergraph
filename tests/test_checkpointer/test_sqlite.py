@@ -401,6 +401,22 @@ class TestSearch:
         results = await checkpointer.search("embed")
         assert len(results) == 1
 
+    async def test_fts_consistent_after_multiple_saves(self, checkpointer):
+        """FTS index stays consistent when steps are saved across supersteps."""
+        await checkpointer.create_run("wf-1")
+        # Simulate a cyclic graph: same node appears in multiple supersteps
+        await checkpointer.save_step(_make_step(node_name="generate", superstep=0, index=0))
+        await checkpointer.save_step(_make_step(node_name="evaluate", superstep=0, index=1))
+        await checkpointer.save_step(_make_step(node_name="generate", superstep=1, index=2))
+        await checkpointer.save_step(_make_step(node_name="evaluate", superstep=1, index=3))
+
+        results = checkpointer.search_sync("generate")
+        assert len(results) == 2
+        assert all(r.node_name == "generate" for r in results)
+
+        results = checkpointer.search_sync("evaluate")
+        assert len(results) == 2
+
 
 class TestMigration:
     def test_fresh_db_gets_v2_schema(self, tmp_path):
