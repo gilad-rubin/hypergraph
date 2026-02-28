@@ -218,16 +218,17 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
+# print() reveals "(5 inner)" — there's more inside this step
+>>> print(result.log)
+{result_n.log}
+
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
 >>> print(step.inner_logs[0])
 {log0}
 
 >>> step.inner_logs[0].timing
-{log0.timing}
-
->>> step.inner_logs[0].node_stats
-{fmt_node_stats(log0.node_stats)}"""
+{log0.timing}"""
 
     return UseCase(
         id="uc1",
@@ -321,6 +322,10 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
+# print() reveals "(5 inner)" — there's more inside this step
+>>> print(result.log)
+{result_n.log}
+
 # Drill into inner_logs — same RunLog API as Single
 >>> failed = [log for log in result.log.steps[0].inner_logs if log.errors]
 >>> failed[0].errors[0].error
@@ -408,6 +413,10 @@ result = runner.run(outer, {{"count": [0, 1, 2]}})
 
 >>> result.log.summary()
 '{result_n.log.summary()}'
+
+# print() reveals "(3 inner)" — there's more inside this step
+>>> print(result.log)
+{result_n.log}
 
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
@@ -976,6 +985,10 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 
 >>> result.log.summary()
 '{result_n.log.summary()}'
+
+# print() reveals "(5 inner)" — there's more inside this step
+>>> print(result.log)
+{result_n.log}
 
 # Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
