@@ -1168,7 +1168,7 @@ hypergraph workflows ls --limit 10
 
 #### `hypergraph workflows show <id>` — Execution trace
 
-Maps to **UC1** (slow runs), **UC2** (failures), **UC3** (routing).
+Maps to **UC1** (slow runs), **UC2** (failures), **UC3** (routing), **UC8** (live monitoring).
 
 ```bash
 hypergraph workflows show batch-2024-01-16
@@ -1182,7 +1182,26 @@ hypergraph workflows show batch-2024-01-16
 #      2  classify        120ms   completed  → detailed_answer
 #      3  build_prompt     12ms   completed
 #      4  generate            —   FAILED: 503 Service Unavailable
+```
 
+**Active workflow (UC8 — still running, polled from another process):**
+
+```bash
+hypergraph workflows show batch-500
+
+# Workflow: batch-500 | ACTIVE | 3/5 steps | 1.1s (running)
+#
+#   Step  Node        Duration  Status     Decision
+#   ────  ──────────  ────────  ─────────  ────────────────
+#      0  embed         200ms   completed
+#      1  retrieve      820ms   completed
+#      2  classify      120ms   completed  → detailed
+#      ·  generate          ·   running...
+```
+
+The display adapts to active workflows: header shows `ACTIVE` and `3/5 steps` (completed/total from graph), the currently executing node shows as `running...`, and the elapsed time ticks up on each poll. When the workflow finishes, re-running the same command shows the final state.
+
+```bash
 # JSON for agents
 hypergraph workflows show batch-2024-01-16 --json
 
@@ -1207,7 +1226,7 @@ hypergraph workflows show batch-2024-01-16 --superstep 2..4
 
 #### `hypergraph workflows state <id>` — Intermediate values
 
-Maps to **UC4** (intermediate inspection) and **UC5** (yesterday's run).
+Maps to **UC4** (intermediate inspection), **UC5** (yesterday's run), and **UC8** (live monitoring).
 
 ```bash
 # Full state (latest)
@@ -1222,7 +1241,25 @@ hypergraph workflows state batch-2024-01-16
 #   category         str     16B      2          classify
 #   prompt           str     2.4KB    3          build_prompt
 #   answer           —       —        4          generate (FAILED)
+```
 
+**Active workflow (UC8 — partial state, more coming):**
+
+```bash
+hypergraph workflows state batch-500
+
+# State: batch-500 (through superstep 2, ACTIVE)
+#
+#   Output           Type    Size     Superstep  Node
+#   ───────────────  ──────  ───────  ─────────  ────────────
+#   embedding        list    1536     0          embed
+#   retrieved_docs   list    3 items  1          retrieve
+#   category         str     16B      2          classify
+```
+
+For active workflows, `state` shows everything produced so far. Each poll reveals new outputs as nodes complete.
+
+```bash
 # State at a specific superstep (time travel!)
 hypergraph workflows state batch-2024-01-16 --superstep 2
 
