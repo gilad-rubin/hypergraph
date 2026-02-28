@@ -6,14 +6,16 @@ Uses CliRunner to test command output without subprocess overhead.
 import json
 
 import pytest
-from typer.testing import CliRunner
 
-from hypergraph import AsyncRunner, Graph, node
-from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
-from hypergraph.cli import create_app
-
-# Skip all if aiosqlite is not installed
+# Skip all if optional dependencies are not installed
+typer = pytest.importorskip("typer")
 aiosqlite = pytest.importorskip("aiosqlite")
+
+from typer.testing import CliRunner  # noqa: E402
+
+from hypergraph import AsyncRunner, Graph, node  # noqa: E402
+from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer  # noqa: E402
+from hypergraph.cli import create_app  # noqa: E402
 
 
 @node(output_name="doubled")
