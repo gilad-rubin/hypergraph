@@ -414,7 +414,7 @@ async def run_uc4(db_path: str) -> UseCase:
 
     # Single
     await runner.run(graph, {"x": 5}, workflow_id="uc4-single")
-    state = cp.state("uc4-single")
+    state = cp.values("uc4-single")
     steps = cp.steps("uc4-single")
     single = f"""\
 cp = SqliteCheckpointer("./runs.db", durability="sync")
@@ -422,7 +422,7 @@ runner = AsyncRunner(checkpointer=cp)
 result = await runner.run(graph, {{"x": 5}}, workflow_id="uc4-single")
 
 # Sync reads — no await needed
->>> cp.state("uc4-single")
+>>> cp.values("uc4-single")
 {state}
 
 >>> cp.steps("uc4-single")
@@ -455,7 +455,7 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_m = await runner.run(outer, {"x": [5, 10, 15]}, workflow_id="uc4-multi")
-    state_m = cp.state("uc4-multi")
+    state_m = cp.values("uc4-multi")
     steps_m = cp.steps("uc4-multi")
     nested = f"""\
 # map_over in a checkpointed run — the outer graph persists as one run
@@ -467,7 +467,7 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
 {result_m["tripled"]}
 
 # The run contains one step (the mapped GraphNode)
->>> cp.state("uc4-multi")
+>>> cp.values("uc4-multi")
 {state_m}
 
 >>> cp.steps("uc4-multi")
@@ -483,7 +483,7 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
         note="Intermediate values via checkpointer",
         category="persistence",
         status="ok",
-        impl_note="Fully implemented. Sync reads: cp.state(), cp.steps(), cp.checkpoint().",
+        impl_note="Fully implemented. Sync reads: cp.values(), cp.steps(), cp.checkpoint().",
         single_python=single,
         single_cli=f"$ hypergraph runs values uc4-single --values --db <db>\n\n{single_cli}",
         mapped_python=mapped,
@@ -499,7 +499,7 @@ async def run_uc5(db_path: str) -> UseCase:
     cp = SqliteCheckpointer(db_path)
 
     wfs = cp.runs()
-    state = cp.state("uc4-single")
+    state = cp.values("uc4-single")
     steps = cp.steps("uc4-single")
     single = f"""\
 # In a NEW process — query old runs (sync, no await)
@@ -508,7 +508,7 @@ cp = SqliteCheckpointer("./runs.db")
 >>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}
 
->>> cp.state("uc4-single")
+>>> cp.values("uc4-single")
 {state}
 
 >>> cp.steps("uc4-single")
@@ -535,10 +535,10 @@ results = runner.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 # Use map_over with a checkpointer for cross-process persistence"""
 
     # Nested — query the mapped run
-    state_m = cp.state("uc4-multi")
+    state_m = cp.values("uc4-multi")
     nested = f"""\
 # The mapped run is also queryable from a new process
->>> cp.state("uc4-multi")
+>>> cp.values("uc4-multi")
 {state_m}
 
 >>> cp.runs()
@@ -734,7 +734,7 @@ async def run_uc8(db_path: str) -> UseCase:
     graph = Graph([double, triple])
     await runner.run(graph, {"x": 5}, workflow_id="uc8-live")
 
-    state = cp.state("uc8-live")
+    state = cp.values("uc8-live")
     await cp.close()
 
     single = f"""\
@@ -745,7 +745,7 @@ await runner.run(graph, {{"x": 5}}, workflow_id="uc8-live")
 
 # Query from another process while running (or after)
 cp2 = SqliteCheckpointer("./runs.db")
->>> cp2.state("uc8-live")
+>>> cp2.values("uc8-live")
 {state}
 
 # Durability modes control when data is visible:
@@ -777,7 +777,7 @@ results = runner.map(graph, {{"x": [5, 10]}}, map_over="x")
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     await runner3.run(outer, {"x": [5, 10]}, workflow_id="uc8-multi")
-    state_m = cp3.state("uc8-multi")
+    state_m = cp3.values("uc8-multi")
     await cp3.close()
 
     nested = f"""\
@@ -786,7 +786,7 @@ inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
 
->>> cp.state("uc8-multi")
+>>> cp.values("uc8-multi")
 {state_m}"""
 
     nested_cli = run_cli(["runs", "show", "uc8-multi", "--db", db_path])
