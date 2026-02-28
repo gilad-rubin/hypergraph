@@ -390,45 +390,101 @@ result = await runner.run(
 
 ## The Two-Layer Architecture
 
-The use cases above reveal two distinct needs:
+The use cases above reveal three independent axes, not two:
 
-| Need | Data | Lifetime | Config |
-|------|------|----------|--------|
-| "Why was this run slow?" | Timing, status, routing | Current process | None |
-| "What happened yesterday?" | Everything above + values | Across processes | Checkpointer |
+| Axis | Purpose | Data | Config | Backend examples |
+|------|---------|------|--------|------------------|
+| **In-process observability** | "Why was this run slow?" | Timing, status, routing | None (always on) | RunLog |
+| **External observability** | "Show me in Logfire/Datadog" | Same, streamed to external tool | EventProcessor | Logfire, Datadog, Jaeger, custom |
+| **Durability + queryable history** | "What happened yesterday?" / resume | Full I/O + timing + status | Checkpointer | SQLite (built-in), DBOS, Postgres |
 
-This maps to two layers:
+**These are independent.** Users opt into each axis separately:
+
+```python
+# 1. Observability only — no persistence, no external tools
+runner = AsyncRunner()
+result = await runner.run(graph, values={...})
+print(result.log)  # RunLog always works. Zero config.
+
+# 2. Add external observability — stream to Logfire/OTel
+runner = AsyncRunner(processors=[OpenTelemetryProcessor()])
+# Events stream to your OTel backend. RunLog still works.
+
+# 3. Add durability — our CLI + resume + crash recovery
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./db"))
+# CLI works, resume works. No external dashboard.
+
+# 4. All three — full stack
+runner = AsyncRunner(
+    checkpointer=SqliteCheckpointer("./db"),
+    processors=[OpenTelemetryProcessor()],
+)
+# RunLog + OTel export + CLI + resume. Everything.
+
+# 5. DBOS — brings its own durability + observability
+runner = DBOSAsyncRunner()
+# DBOS handles persistence + its own dashboard.
+# RunLog still works. Our CLI does NOT (data is in DBOS, not our checkpointer).
+```
+
+**Architecture — the three axes:**
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Layer 1: RunLog (always-on, in-memory)              │
-│  Timing + status per node. On every RunResult        │
-│  from run(), map(), and iter().                      │
-│  Zero config. Zero IO. O(nodes) memory.              │
-│  Answers: UC1, UC2, UC3, UC4 (timing), UC7 (in-proc)  │
-└───────────────────┬──────────────────────────────────┘
-                    │ same execution, more data
-                    ▼
-┌──────────────────────────────────────────────────────┐
-│  Layer 2: StepRecord via Checkpointer (persistent)   │
-│  Full I/O + timing + status + routing. In SQLite/PG. │
-│  Requires config. Survives crashes.                  │
-│  Answers: UC4 (values), UC5, UC6, UC7 (cross), UC8   │
-└──────────────────────────────────────────────────────┘
+Runner
+  │
+  ├── Events ──► RunLog (in-memory, always-on)           ← Axis 1
+  │         └──► EventProcessor[]                         ← Axis 2
+  │                ├── OpenTelemetryProcessor (opt-in)
+  │                ├── RichProgressProcessor
+  │                └── Custom processors
+  │
+  └── Steps ──► Checkpointer (persistent, opt-in)        ← Axis 3
+                  ├── SqliteCheckpointer (built-in)
+                  ├── DBOS (via DBOSAsyncRunner)
+                  └── Custom backends
 ```
 
-**RunLog** is a strict subset of **StepRecord**. Both capture the same execution — RunLog stores timing metadata (O(nodes)), StepRecord adds full values (O(data)).
+### OTel Compatibility: By Construction, Not By Dependency
 
-**Why not just the checkpointer?** Because:
-- Not everyone wants to configure a database path
-- `result.log.summary()` should work on your first `pip install`
-- In-memory metadata is negligible; persisting LLM response values is not
+Our events and types are **OTel-compatible by design** — they use `span_id`, `parent_span_id`, `duration_ms`, `cached`, and a span hierarchy that maps directly to OTel's trace model. But we do NOT depend on the OTel SDK. This is deliberate:
 
-**Why not just RunLog?** Because:
-- It dies with the process
-- Can't query yesterday's run
-- Can't fork from a specific point
-- AI agent debugging needs cross-process access
+- **Zero deps for the common case.** `pip install hypergraph` gives you RunLog + Checkpointer with no telemetry baggage.
+- **Opt-in OTel export.** `pip install hypergraph[otel]` adds the OTel SDK and enables `OpenTelemetryProcessor` — a thin mapping layer that converts our events to OTel spans.
+- **Any OTel backend.** Once exported, traces flow to Logfire, Jaeger, Datadog, Honeycomb — whatever the user configures in their OTel collector.
+
+The mapping is trivial because our data model was designed for it:
+
+| hypergraph | OTel Span |
+|------------|-----------|
+| `span_id` | `span_id` |
+| `parent_span_id` | `parent_span_id` |
+| `NodeStartEvent` | span start |
+| `NodeEndEvent` | span end |
+| `duration_ms` | span duration |
+| `cached`, `node_name`, `decision` | span attributes |
+| `RouteDecisionEvent` | span event (annotation) |
+
+**StepRecord also carries `span_id`** so users can correlate checkpointer data (values, intermediate state) with OTel traces in their external dashboard. The span_id is the join key between "what happened" (OTel) and "what values flowed" (checkpointer).
+
+### Why Durability and Debugging Share the Checkpointer
+
+The plan's CLI (`hypergraph workflows show/state/steps`) queries the Checkpointer. This means the debugging story and the durability story share one backend. This is intentional:
+
+1. **The data is identical.** What you need for debugging (intermediate values, step history, timing) IS what StepRecord stores for resume. A separate trace store would duplicate it.
+2. **External tools have their own dashboards.** Logfire users query Logfire. Datadog users query Datadog. Our CLI serves users who DON'T want an external platform.
+3. **Same backend, two read patterns.** `save_step()` writes for resume. `get_steps()` reads for debugging. Same data, different consumers.
+
+**What if you use DBOS for durability?** Then DBOS provides its own debugging tools. Our CLI won't see that data (it queries our Checkpointer). RunLog still works in-process. If you also want OTel, add an `OpenTelemetryProcessor` alongside the DBOS runner.
+
+### Why NOT Just Use OTel For Everything?
+
+| Concern | Why custom is better |
+|---------|---------------------|
+| **Always-on, zero config** | OTel SDK requires setup (provider, exporter, sampler). RunLog works on `pip install`. |
+| **Framework-aware data** | Routing decisions, superstep structure, seed values — OTel doesn't model these natively. They'd be flattened to string attributes. |
+| **Bidirectional persistence** | OTel is write-only (export spans). Checkpointer is bidirectional (load state for resume). |
+| **Dependency weight** | `opentelemetry-api` + `opentelemetry-sdk` is significant. Not everyone wants it. |
+| **Offline / local-first** | SQLite checkpointer works without any network. OTel backends typically need a collector. |
 
 ---
 
@@ -544,6 +600,7 @@ class NodeRecord:
     superstep: int                                 # 0, 1, 2, ...
     duration_ms: float                             # wall-clock ms
     status: Literal["completed", "failed", "cached", "skipped"]
+    span_id: str                                   # correlates with OTel traces
     error: str | None = None                       # error message if failed
     cached: bool = False                           # was this a cache hit?
     decision: str | list[str] | None = None  # gate routing decision (matches spec type)
@@ -567,9 +624,10 @@ class StepRecord:
     error: str | None
     pause: PauseInfo | None
 
-    # Trace (NEW — 2 fields that make StepRecord trace-complete)
+    # Trace (NEW — 3 fields that make StepRecord trace-complete)
     duration_ms: float | None = None     # wall-clock execution time
     cached: bool = False                 # cache hit?
+    span_id: str | None = None           # join key to OTel traces
     # decision already exists in spec: str | list[str] | None
 
     # Metadata
@@ -759,16 +817,40 @@ Workflow: batch-2024-01-16 | FAILED | 8 steps | 2m10s
 
 **Not changing**: Event types, superstep execution, node executors, cache, graph construction, validation.
 
+### Phase 1b: Built-in OpenTelemetryProcessor (opt-in)
+
+Ship an `OpenTelemetryProcessor` as a built-in EventProcessor behind an optional dependency:
+
+```bash
+pip install hypergraph[otel]  # adds opentelemetry-api + opentelemetry-sdk
+```
+
+```python
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+runner = AsyncRunner(processors=[OpenTelemetryProcessor()])
+```
+
+The processor is a thin mapping layer (~50 lines) that converts our events to OTel spans. It already exists as a spec example in `observability.md` — this promotes it to real, tested code.
+
+| File | Contents |
+|------|----------|
+| `events/otel.py` | `OpenTelemetryProcessor` — converts events to OTel spans |
+| `pyproject.toml` | Add `[project.optional-dependencies] otel = ["opentelemetry-api", "opentelemetry-sdk"]` |
+
+**Not a hard dependency.** Import is guarded: if `opentelemetry` isn't installed, importing `OpenTelemetryProcessor` raises a clear error with install instructions.
+
 ---
 
 ## Phase 2: Extend StepRecord Spec with Trace Fields
 
-Add two fields to the `StepRecord` definition in specs:
+Add three fields to the `StepRecord` definition in specs:
 
 | Field | Type | Why |
 |-------|------|-----|
 | `duration_ms` | `float \| None` | Explicit timing beats deriving from nullable timestamps. Enables queries like "steps > 5s". |
 | `cached` | `bool` | Distinguishes cache hits from genuinely fast nodes (`duration_ms ≈ 0` is ambiguous). |
+| `span_id` | `str \| None` | Join key to OTel traces. Enables: "show me the Logfire trace for the step that failed" by correlating checkpointer data with external observability. Copied from the `NodeEndEvent.span_id` at save time. |
 
 **`decision` already exists.** StepRecord in `specs/reviewed/execution-types.md` already defines `decision: str | list[str] | None` (see line ~1428). This field is used for deterministic gate replay on resume. We reuse it as-is for trace/debugging — no changes needed.
 
@@ -780,7 +862,7 @@ Add two fields to the `StepRecord` definition in specs:
 
 | File | Change |
 |------|--------|
-| `specs/reviewed/execution-types.md` | Add `duration_ms` and `cached` to StepRecord definition |
+| `specs/reviewed/execution-types.md` | Add `duration_ms`, `cached`, and `span_id` to StepRecord definition |
 | `specs/reviewed/checkpointer.md` | Document new fields |
 
 ---
