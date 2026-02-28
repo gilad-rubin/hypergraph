@@ -272,10 +272,14 @@ class SqliteCheckpointer(Checkpointer):
         rows = await cursor.fetchall()
         return [self._row_to_run(row) for row in rows]
 
+    _FTS_FIELDS = frozenset({"node_name", "error"})
+
     async def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS5."""
         await self._ensure_db()
 
+        if field is not None and field not in self._FTS_FIELDS:
+            raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
         fts_query = f"{field}:{query}" if field else query
 
         cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
@@ -358,8 +362,12 @@ class SqliteCheckpointer(Checkpointer):
         if self._sync_conn is None:
             import sqlite3
 
-            self._sync_conn = sqlite3.connect(self._path)
-            ensure_schema(self._sync_conn)
+            # WAL mode allows concurrent readers alongside async writes
+            # without "database is locked" errors
+            conn = sqlite3.connect(self._path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            ensure_schema(conn)
+            self._sync_conn = conn
         return self._sync_conn
 
     def state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
@@ -447,6 +455,8 @@ class SqliteCheckpointer(Checkpointer):
         """Search steps synchronously using FTS5."""
         db = self._sync_db()
 
+        if field is not None and field not in self._FTS_FIELDS:
+            raise ValueError(f"Invalid search field: {field!r}. Must be one of {sorted(self._FTS_FIELDS)}")
         fts_query = f"{field}:{query}" if field else query
 
         # Use aliased column refs that match _STEPS_COLS order

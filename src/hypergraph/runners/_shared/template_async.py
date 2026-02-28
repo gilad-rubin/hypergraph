@@ -282,6 +282,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if has_checkpointer:
                 from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
+                # Flush buffered steps so partial execution is preserved on failure
+                for record in step_buffer:
+                    await checkpointer.save_step(record)
                 await checkpointer.update_run_status(workflow_id, _WS.FAILED)
 
             if error_handling == "raise":

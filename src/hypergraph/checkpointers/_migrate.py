@@ -41,31 +41,38 @@ def migrate_v1_to_v2(conn: Any) -> None:
     - Renames 'workflow_id' → 'run_id' in steps (via table rebuild)
     - Adds FTS5 and indexes
     - Sets schema version to 2
+
+    All steps run inside a single explicit transaction.  Python's sqlite3 module
+    auto-commits before DDL statements when isolation_level != None (the default),
+    so we switch to manual-commit mode for the duration to ensure atomicity.
     """
     logger.warning("Migrating checkpointer database from schema v1 to v2. This renames 'workflows' to 'runs' and adds indexes.")
 
-    # Rename workflows → runs and add new columns
-    conn.execute("ALTER TABLE workflows RENAME TO runs")
-    _add_column_if_missing(conn, "runs", "duration_ms", "REAL")
-    _add_column_if_missing(conn, "runs", "node_count", "INTEGER DEFAULT 0")
-    _add_column_if_missing(conn, "runs", "error_count", "INTEGER DEFAULT 0")
-    _add_column_if_missing(conn, "runs", "parent_run_id", "TEXT")
-    _add_column_if_missing(conn, "runs", "config", "TEXT")
+    prev_isolation = conn.isolation_level
+    conn.isolation_level = None  # manual-commit mode — DDL no longer auto-commits
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("ALTER TABLE workflows RENAME TO runs")
+        _add_column_if_missing(conn, "runs", "duration_ms", "REAL")
+        _add_column_if_missing(conn, "runs", "node_count", "INTEGER DEFAULT 0")
+        _add_column_if_missing(conn, "runs", "error_count", "INTEGER DEFAULT 0")
+        _add_column_if_missing(conn, "runs", "parent_run_id", "TEXT")
+        _add_column_if_missing(conn, "runs", "config", "TEXT")
 
-    # Rebuild steps table to rename workflow_id → run_id and add new columns
-    _rebuild_steps_table(conn)
+        _rebuild_steps_table(conn)
+        _create_v2_indexes(conn)
+        _create_fts(conn)
 
-    # Create indexes and FTS
-    _create_v2_indexes(conn)
-    _create_fts(conn)
-
-    # Record schema version
-    conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
-    conn.execute("DELETE FROM _schema_version")
-    conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-    conn.commit()
-
-    logger.info("Migration to schema v2 complete.")
+        conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
+        conn.execute("DELETE FROM _schema_version")
+        conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+        conn.execute("COMMIT")
+        logger.info("Migration to schema v2 complete.")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.isolation_level = prev_isolation
 
 
 def create_v2_schema(conn: Any) -> None:

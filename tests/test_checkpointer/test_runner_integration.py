@@ -245,3 +245,20 @@ class TestRunnerCheckpointIntegration:
         assert run.node_count == 2
         assert run.error_count == 0
         assert run.duration_ms > 0
+
+    async def test_exit_durability_flushes_steps_on_failure(self, checkpointer):
+        """With durability='exit', buffered steps are flushed even when run fails."""
+        checkpointer.policy = CheckpointPolicy(durability="exit", retention="latest")
+        runner = AsyncRunner(checkpointer=checkpointer)
+
+        @node(output_name="always_fails")
+        def always_fails(x: int) -> int:
+            raise ValueError("intentional failure")
+
+        graph = Graph([always_fails])
+        await runner.run(graph, {"x": 5}, workflow_id="wf-fail", error_handling="continue")
+
+        steps = await checkpointer.get_steps("wf-fail")
+        assert len(steps) == 1
+        assert steps[0].node_name == "always_fails"
+        assert steps[0].status == StepStatus.FAILED
