@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
-from hypergraph.checkpointers.types import StepRecord, StepStatus, Workflow, WorkflowStatus
+from hypergraph.checkpointers.types import Checkpoint, StepRecord, StepStatus, Workflow, WorkflowStatus
 
 
 def _require_aiosqlite() -> Any:
@@ -100,6 +100,7 @@ class SqliteCheckpointer(Checkpointer):
         self._path = path
         self._serializer = serializer or JsonSerializer()
         self._db: Any = None
+        self._sync_conn: Any = None
         self._aiosqlite = _require_aiosqlite()
 
     async def initialize(self) -> None:
@@ -111,7 +112,10 @@ class SqliteCheckpointer(Checkpointer):
         await self._db.commit()
 
     async def close(self) -> None:
-        """Close database connection."""
+        """Close database connections."""
+        if self._sync_conn is not None:
+            self._sync_conn.close()
+            self._sync_conn = None
         if self._db is not None:
             await self._db.close()
             self._db = None
@@ -295,4 +299,112 @@ class SqliteCheckpointer(Checkpointer):
             graph_name=row[2],
             created_at=datetime.fromisoformat(row[3]),
             completed_at=datetime.fromisoformat(row[4]) if row[4] else None,
+        )
+
+    # === Sync Reads ===
+
+    def _sync_db(self):
+        """Open a sync sqlite3 connection (lazy, cached).
+
+        Creates tables if needed so sync reads work even before async initialize().
+        """
+        if self._sync_conn is None:
+            import sqlite3
+
+            self._sync_conn = sqlite3.connect(self._path)
+            self._sync_conn.execute(_CREATE_WORKFLOWS)
+            self._sync_conn.execute(_CREATE_STEPS)
+            self._sync_conn.execute(_CREATE_STEPS_IDX)
+            self._sync_conn.commit()
+        return self._sync_conn
+
+    def state(self, workflow_id: str, *, superstep: int | None = None) -> dict[str, Any]:
+        """Get accumulated state synchronously.
+
+        Same as ``get_state`` but uses stdlib ``sqlite3`` — no await needed.
+
+        Example::
+
+            cp = SqliteCheckpointer("./workflows.db")
+            state = cp.state("wf-1")
+        """
+        db = self._sync_db()
+        if superstep is not None:
+            cursor = db.execute(
+                "SELECT values_data FROM steps WHERE workflow_id = ? AND superstep <= ? ORDER BY idx",
+                (workflow_id, superstep),
+            )
+        else:
+            cursor = db.execute(
+                "SELECT values_data FROM steps WHERE workflow_id = ? ORDER BY idx",
+                (workflow_id,),
+            )
+
+        state: dict[str, Any] = {}
+        for (values_blob,) in cursor:
+            if values_blob is not None:
+                values = self._serializer.deserialize(values_blob)
+                if values:
+                    state.update(values)
+        return state
+
+    def steps(self, workflow_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+        """Get step records synchronously.
+
+        Same as ``get_steps`` but uses stdlib ``sqlite3`` — no await needed.
+        """
+        db = self._sync_db()
+        if superstep is not None:
+            cursor = db.execute(
+                "SELECT * FROM steps WHERE workflow_id = ? AND superstep <= ? ORDER BY idx",
+                (workflow_id, superstep),
+            )
+        else:
+            cursor = db.execute(
+                "SELECT * FROM steps WHERE workflow_id = ? ORDER BY idx",
+                (workflow_id,),
+            )
+        return [self._row_to_step(row) for row in cursor.fetchall()]
+
+    def workflow(self, workflow_id: str) -> Workflow | None:
+        """Get workflow metadata synchronously.
+
+        Same as ``get_workflow`` but uses stdlib ``sqlite3`` — no await needed.
+        """
+        db = self._sync_db()
+        cursor = db.execute(
+            "SELECT id, status, graph_name, created_at, completed_at FROM workflows WHERE id = ?",
+            (workflow_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_workflow(row)
+
+    def workflows(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Workflow]:
+        """List workflows synchronously.
+
+        Same as ``list_workflows`` but uses stdlib ``sqlite3`` — no await needed.
+        """
+        db = self._sync_db()
+        if status is not None:
+            cursor = db.execute(
+                "SELECT id, status, graph_name, created_at, completed_at FROM workflows WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status.value, limit),
+            )
+        else:
+            cursor = db.execute(
+                "SELECT id, status, graph_name, created_at, completed_at FROM workflows ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [self._row_to_workflow(row) for row in cursor.fetchall()]
+
+    def checkpoint(self, workflow_id: str, *, superstep: int | None = None) -> Checkpoint:
+        """Get a checkpoint synchronously.
+
+        Same as ``get_checkpoint`` but uses stdlib ``sqlite3`` — no await needed.
+        """
+        return Checkpoint(
+            values=self.state(workflow_id, superstep=superstep),
+            steps=self.steps(workflow_id, superstep=superstep),
         )

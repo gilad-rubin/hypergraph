@@ -114,20 +114,20 @@ async def demo_2_checkpointer(db_path: str) -> None:
     print(f">>> result['tripled'] = {result['tripled']}")
     print(f">>> result.log.summary() → {result.log.summary()}")
 
-    # Query the checkpointer directly
-    print("\n--- Querying checkpointer after run ---")
+    # Query the checkpointer directly — sync reads, no await needed
+    print("\n--- Querying checkpointer (sync reads) ---")
 
-    state = await cp.get_state("demo-pipeline")
-    print("\n>>> checkpointer.get_state('demo-pipeline')")
+    state = cp.state("demo-pipeline")
+    print("\n>>> cp.state('demo-pipeline')")
     print(f"  {state}")
 
-    steps = await cp.get_steps("demo-pipeline")
-    print("\n>>> checkpointer.get_steps('demo-pipeline')")
+    steps = cp.steps("demo-pipeline")
+    print("\n>>> cp.steps('demo-pipeline')")
     for s in steps:
         print(f"  [{s.index}] {s.node_name}: {s.status.value} ({s.duration_ms:.1f}ms) → {s.values}")
 
-    checkpoint = await cp.get_checkpoint("demo-pipeline")
-    print("\n>>> checkpointer.get_checkpoint('demo-pipeline')")
+    checkpoint = cp.checkpoint("demo-pipeline")
+    print("\n>>> cp.checkpoint('demo-pipeline')")
     print(f"  values: {checkpoint.values}")
     print(f"  steps: {len(checkpoint.steps)}")
 
@@ -156,9 +156,9 @@ async def demo_3_error_tracing(db_path: str) -> None:
     print("\n>>> print(result.log)")
     print(result.log)
 
-    # Verify in checkpointer
-    steps = await cp.get_steps("demo-partial-failure")
-    print("\n--- Checkpointer step records ---")
+    # Verify in checkpointer — sync reads
+    steps = cp.steps("demo-partial-failure")
+    print("\n--- Checkpointer step records (sync) ---")
     for s in steps:
         status_line = f"  [{s.index}] {s.node_name}: {s.status.value}"
         if s.error:
@@ -190,9 +190,9 @@ async def demo_4_cyclic_workflow(db_path: str) -> None:
     for name, stats in result.log.node_stats.items():
         print(f"  {name}: executed {stats.count}x, total={stats.total_ms:.1f}ms")
 
-    # Checkpointer shows each re-execution as a separate step
-    steps = await cp.get_steps("demo-cycle")
-    print("\n--- Checkpointer: each re-execution is a separate step record ---")
+    # Checkpointer shows each re-execution as a separate step — sync reads
+    steps = cp.steps("demo-cycle")
+    print("\n--- Checkpointer: each re-execution is a separate step record (sync) ---")
     for s in steps:
         decision = f", decision={s.decision}" if s.decision else ""
         print(f"  [superstep {s.superstep}] {s.node_name}: {s.values}{decision}")

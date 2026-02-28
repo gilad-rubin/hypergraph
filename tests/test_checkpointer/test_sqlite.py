@@ -258,3 +258,79 @@ class TestPolicyIntegration:
                 policy=CheckpointPolicy(),
                 durability="sync",
             )
+
+
+class TestSyncReads:
+    """Sync read methods use stdlib sqlite3 — no await needed."""
+
+    async def test_state(self, checkpointer):
+        """Sync state() returns same results as async get_state()."""
+        await checkpointer.create_workflow("wf-1")
+        await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0, values={"x": 1}))
+        await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"y": 2}))
+        await checkpointer.save_step(_make_step(superstep=2, node_name="c", index=2, values={"z": 3}))
+
+        assert checkpointer.state("wf-1") == {"x": 1, "y": 2, "z": 3}
+        assert checkpointer.state("wf-1", superstep=1) == {"x": 1, "y": 2}
+
+    async def test_steps(self, checkpointer):
+        """Sync steps() returns same records as async get_steps()."""
+        await checkpointer.create_workflow("wf-1")
+        await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0))
+        await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1))
+        await checkpointer.save_step(_make_step(superstep=2, node_name="c", index=2))
+
+        steps = checkpointer.steps("wf-1")
+        assert len(steps) == 3
+        assert [s.node_name for s in steps] == ["a", "b", "c"]
+
+        steps_filtered = checkpointer.steps("wf-1", superstep=1)
+        assert len(steps_filtered) == 2
+
+    async def test_workflow(self, checkpointer):
+        """Sync workflow() returns same metadata as async get_workflow()."""
+        await checkpointer.create_workflow("wf-1", graph_name="test_graph")
+
+        wf = checkpointer.workflow("wf-1")
+        assert wf is not None
+        assert wf.id == "wf-1"
+        assert wf.graph_name == "test_graph"
+        assert wf.status == WorkflowStatus.ACTIVE
+
+        assert checkpointer.workflow("nonexistent") is None
+
+    async def test_workflows(self, checkpointer):
+        """Sync workflows() returns same list as async list_workflows()."""
+        await checkpointer.create_workflow("wf-1")
+        await checkpointer.create_workflow("wf-2")
+        await checkpointer.update_workflow_status("wf-1", WorkflowStatus.COMPLETED)
+
+        all_wfs = checkpointer.workflows()
+        assert len(all_wfs) == 2
+
+        completed = checkpointer.workflows(status=WorkflowStatus.COMPLETED)
+        assert len(completed) == 1
+        assert completed[0].id == "wf-1"
+
+    async def test_checkpoint(self, checkpointer):
+        """Sync checkpoint() composes state + steps."""
+        await checkpointer.create_workflow("wf-1")
+        await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0, values={"x": 1}))
+        await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"y": 2}))
+
+        cp = checkpointer.checkpoint("wf-1")
+        assert cp.values == {"x": 1, "y": 2}
+        assert len(cp.steps) == 2
+
+        cp_at_0 = checkpointer.checkpoint("wf-1", superstep=0)
+        assert cp_at_0.values == {"x": 1}
+        assert len(cp_at_0.steps) == 1
+
+    def test_sync_reads_before_async_init(self, tmp_path):
+        """Sync reads on a fresh db with no data return empty results."""
+        cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
+        # Tables don't exist yet — sync reader opens a connection but the db is empty
+        assert cp.state("wf-1") == {}
+        assert cp.steps("wf-1") == []
+        assert cp.workflow("wf-1") is None
+        assert cp.workflows() == []
