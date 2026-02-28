@@ -151,6 +151,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -202,6 +203,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 values=output_values,
                 status=RunStatus.COMPLETED,
                 run_id=run_id,
+                workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
             )
             await self._emit_run_end_async(
@@ -221,6 +223,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 values=partial_values,
                 status=RunStatus.PAUSED,
                 run_id=run_id,
+                workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
             )
@@ -250,6 +253,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
+                workflow_id=workflow_id,
                 error=error,
                 log=collector.build(graph.name, run_id, total_duration_ms),
             )
@@ -272,6 +276,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> list[RunResult]:

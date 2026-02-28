@@ -287,6 +287,7 @@ class RunnerCapabilities:
     supports_streaming: bool = False
     returns_coroutine: bool = False
     supports_interrupts: bool = False
+    supports_checkpointing: bool = False
 
 
 @dataclass

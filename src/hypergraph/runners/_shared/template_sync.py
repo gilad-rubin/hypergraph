@@ -123,6 +123,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         max_iterations: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
@@ -169,6 +170,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 values=output_values,
                 status=RunStatus.COMPLETED,
                 run_id=run_id,
+                workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
             )
             self._emit_run_end_sync(
@@ -206,6 +208,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 values=partial_values,
                 status=RunStatus.FAILED,
                 run_id=run_id,
+                workflow_id=workflow_id,
                 error=error,
                 log=collector.build(graph.name, run_id, total_duration_ms),
             )
@@ -227,6 +230,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         entrypoint: str | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         **input_values: Any,
     ) -> list[RunResult]:
