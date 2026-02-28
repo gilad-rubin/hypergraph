@@ -69,10 +69,10 @@ def workflows_dashboard(
             # Human-readable dashboard
             if active:
                 print(f"\nActive ({len(active)} running)\n")
-                _print_workflow_table(active, cp)
+                await _print_workflow_table(active, cp)
             if recent:
                 print(f"\nRecent (last {len(recent)})\n")
-                _print_workflow_table(recent, cp)
+                await _print_workflow_table(recent, cp)
 
             # Guidance footer
             print("\n  To inspect a workflow: hypergraph workflows show <id>")
@@ -84,17 +84,12 @@ def workflows_dashboard(
     run_async(_run())
 
 
-def _print_workflow_table(workflows, cp) -> None:
+async def _print_workflow_table(workflows, cp) -> None:
     """Print a table of workflows with step count info."""
-
-    async def _get_step_counts():
-        counts = {}
-        for wf in workflows:
-            steps = await cp.get_steps(wf.id)
-            counts[wf.id] = len(steps)
-        return counts
-
-    step_counts = run_async(_get_step_counts())
+    step_counts = {}
+    for wf in workflows:
+        steps = await cp.get_steps(wf.id)
+        step_counts[wf.id] = len(steps)
 
     headers = ["ID", "Status", "Steps", "Created"]
     rows = []
@@ -236,7 +231,7 @@ def workflows_show(
             # Guidance footer
             if wf.status.value == "active":
                 print("\n  Workflow is still running. Re-run this command to see new steps.")
-            print(f"\n  To see values at a step: hypergraph workflows state {workflow_id} --step N")
+            print(f"\n  To see values at a superstep: hypergraph workflows state {workflow_id} --superstep N")
             print(f"  To see error details:    hypergraph workflows steps {workflow_id} --node <name>")
             print(f"  To save full trace:      hypergraph workflows show {workflow_id} --json --output trace.json")
         finally:
@@ -249,7 +244,7 @@ def workflows_show(
 def workflows_state(
     workflow_id: Annotated[str, typer.Argument(help="Workflow ID")],
     db: DbOption = "./workflows.db",
-    step: Annotated[int | None, typer.Option("--step", help="State through this step (default: latest)")] = None,
+    step: Annotated[int | None, typer.Option("--superstep", help="State through this superstep (default: latest)")] = None,
     show_values: Annotated[bool, typer.Option("--values", help="Show actual values")] = False,
     key: Annotated[str | None, typer.Option("--key", help="Show single output value")] = None,
     full: Annotated[bool, typer.Option("--full", help="Don't truncate large values")] = False,
@@ -290,7 +285,7 @@ def workflows_state(
                 return
 
             # Status header
-            step_label = f"through step {step}" if step is not None else f"through step {len(steps) - 1}" if steps else "no steps"
+            step_label = f"through superstep {step}" if step is not None else f"through step {len(steps) - 1}" if steps else "no steps"
             status_note = f", {format_status(wf.status.value)}" if wf.status.value == "active" else ""
             print(f"\nState: {workflow_id} ({step_label}{status_note})\n")
 

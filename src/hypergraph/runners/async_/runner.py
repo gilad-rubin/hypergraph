@@ -184,6 +184,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 # Track which nodes executed before this superstep
                 prev_executed = set(state.node_executions.keys())
 
+                superstep_error: BaseException | None = None
                 try:
                     # Execute all ready nodes concurrently
                     # Concurrency controlled by shared semaphore in ContextVar
@@ -199,12 +200,13 @@ class AsyncRunner(AsyncRunnerTemplate):
                         run_id=run_id,
                         run_span_id=run_span_id,
                     )
-                except ExecutionError:
-                    raise
+                except ExecutionError as e:
+                    superstep_error = e
+                    state = e.partial_state  # type: ignore[assignment]
                 except Exception as e:
-                    raise ExecutionError(e, state) from e
+                    superstep_error = ExecutionError(e, state)
 
-                # Save step records for newly executed nodes
+                # Save step records for newly executed nodes (even on failure)
                 if has_checkpointer:
                     step_counter = await self._save_superstep_records(
                         checkpointer,
@@ -217,6 +219,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                         step_buffer,
                         save_tasks,
                     )
+
+                if superstep_error is not None:
+                    raise superstep_error
 
             else:
                 # Loop completed without break = hit max_iterations
@@ -232,7 +237,12 @@ class AsyncRunner(AsyncRunnerTemplate):
         finally:
             # Await any background save tasks before returning
             if save_tasks:
-                await asyncio.gather(*save_tasks, return_exceptions=True)
+                results = await asyncio.gather(*save_tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, BaseException):
+                        import logging
+
+                        logging.getLogger("hypergraph.checkpointers").warning("Async step save failed: %s", r)
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)

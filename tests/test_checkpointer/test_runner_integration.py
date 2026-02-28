@@ -42,7 +42,7 @@ def triple(doubled: int) -> int:
 class TestRunnerCheckpointIntegration:
     async def test_sync_durability_persists_steps(self, checkpointer):
         """With durability='sync', steps are persisted after each superstep."""
-        checkpointer._policy = CheckpointPolicy(durability="sync", retention="full")
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
@@ -79,7 +79,7 @@ class TestRunnerCheckpointIntegration:
 
     async def test_state_reconstruction(self, checkpointer):
         """get_state folds all step values into a dict."""
-        checkpointer._policy = CheckpointPolicy(durability="sync", retention="full")
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
@@ -110,7 +110,7 @@ class TestRunnerCheckpointIntegration:
 
     async def test_step_records_have_duration(self, checkpointer):
         """Step records include duration_ms > 0 for executed nodes."""
-        checkpointer._policy = CheckpointPolicy(durability="sync", retention="full")
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
@@ -122,7 +122,7 @@ class TestRunnerCheckpointIntegration:
 
     async def test_checkpoint_snapshot(self, checkpointer):
         """get_checkpoint returns both state and steps."""
-        checkpointer._policy = CheckpointPolicy(durability="sync", retention="full")
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
@@ -134,7 +134,7 @@ class TestRunnerCheckpointIntegration:
 
     async def test_exit_durability_flushes_at_end(self, checkpointer):
         """With durability='exit', steps are buffered and flushed after the run."""
-        checkpointer._policy = CheckpointPolicy(durability="exit", retention="latest")
+        checkpointer.policy = CheckpointPolicy(durability="exit", retention="latest")
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 

@@ -26,10 +26,17 @@ class Serializer(ABC):
 
 
 class JsonSerializer(Serializer):
-    """JSON serializer (default). Safe, human-readable, inspectable."""
+    """JSON serializer (default). Safe, human-readable, inspectable.
+
+    By default, raises TypeError on non-JSON-serializable types.
+    Pass ``lossy=True`` to fall back to ``str()`` for unsupported types.
+    """
+
+    def __init__(self, *, lossy: bool = False):
+        self._default = str if lossy else None
 
     def serialize(self, value: Any) -> bytes:
-        return json.dumps(value, default=str).encode("utf-8")
+        return json.dumps(value, default=self._default).encode("utf-8")
 
     def deserialize(self, data: bytes) -> Any:
         return json.loads(data.decode("utf-8"))

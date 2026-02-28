@@ -15,10 +15,18 @@ class TestJsonSerializer:
         s = JsonSerializer()
         assert s.deserialize(s.serialize(None)) is None
 
-    def test_non_serializable_uses_str(self):
-        """Non-JSON types fall back to str() via default=str."""
+    def test_non_serializable_raises_by_default(self):
+        """Non-JSON types raise TypeError by default (strict mode)."""
         s = JsonSerializer()
-        # datetime would normally fail JSON serialization
+        from datetime import datetime, timezone
+
+        data = {"ts": datetime(2024, 1, 1, tzinfo=timezone.utc)}
+        with pytest.raises(TypeError):
+            s.serialize(data)
+
+    def test_lossy_mode_uses_str(self):
+        """With lossy=True, non-JSON types fall back to str()."""
+        s = JsonSerializer(lossy=True)
         from datetime import datetime, timezone
 
         data = {"ts": datetime(2024, 1, 1, tzinfo=timezone.utc)}

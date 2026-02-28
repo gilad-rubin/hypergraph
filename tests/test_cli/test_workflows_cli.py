@@ -38,7 +38,7 @@ def db_path(tmp_path):
 async def populated_db(db_path):
     """Create a DB with a completed workflow."""
     cp = SqliteCheckpointer(db_path)
-    cp._policy = CheckpointPolicy(durability="sync", retention="full")
+    cp.policy = CheckpointPolicy(durability="sync", retention="full")
     await cp.initialize()
 
     r = AsyncRunner(checkpointer=cp)
