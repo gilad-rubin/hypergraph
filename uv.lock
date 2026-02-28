@@ -1376,6 +1376,10 @@ cache = [
 checkpoint = [
     { name = "aiosqlite" },
 ]
+cli = [
+    { name = "aiosqlite" },
+    { name = "typer" },
+]
 daft = [
     { name = "daft" },
 ]
@@ -1436,6 +1440,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", marker = "extra == 'checkpoint'", specifier = ">=0.20.0" },
+    { name = "aiosqlite", marker = "extra == 'cli'", specifier = ">=0.20.0" },
     { name = "cloudpickle", marker = "extra == 'modal'", specifier = ">=3.0.0" },
     { name = "colbert-ai", marker = "extra == 'examples'", specifier = ">=0.2.22" },
     { name = "daft", marker = "extra == 'all'", specifier = ">=0.6.11" },
@@ -1472,8 +1477,9 @@ requires-dist = [
     { name = "rich", marker = "extra == 'telemetry'", specifier = ">=13.0.0" },
     { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.67.1" },
     { name = "tqdm", marker = "extra == 'telemetry'", specifier = ">=4.67.1" },
+    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },
 ]
-provides-extras = ["batch", "daft", "viz", "notebook", "cache", "checkpoint", "otel", "progress", "telemetry", "all", "modal", "examples", "dev"]
+provides-extras = ["batch", "daft", "viz", "notebook", "cache", "checkpoint", "cli", "otel", "progress", "telemetry", "all", "modal", "examples", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
