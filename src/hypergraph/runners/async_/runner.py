@@ -181,8 +181,12 @@ class AsyncRunner(AsyncRunnerTemplate):
                         )
                     )
 
-                # Track which nodes executed before this superstep
-                prev_executed = set(state.node_executions.keys())
+                # Track ready nodes and their prior input_versions for
+                # detecting re-executions (cycles) and failures
+                ready_node_names = [n.name for n in ready_nodes]
+                prev_input_versions = {
+                    name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
+                }
 
                 superstep_error: BaseException | None = None
                 try:
@@ -206,18 +210,20 @@ class AsyncRunner(AsyncRunnerTemplate):
                 except Exception as e:
                     superstep_error = ExecutionError(e, state)
 
-                # Save step records for newly executed nodes (even on failure)
+                # Save step records for executed nodes (even on failure)
                 if has_checkpointer:
                     step_counter = await self._save_superstep_records(
                         checkpointer,
                         workflow_id,
                         superstep_idx,
                         state,
-                        prev_executed,
+                        ready_node_names,
+                        prev_input_versions,
                         node_order,
                         step_counter,
                         step_buffer,
                         save_tasks,
+                        superstep_error,
                     )
 
                 if superstep_error is not None:
@@ -238,11 +244,21 @@ class AsyncRunner(AsyncRunnerTemplate):
             # Await any background save tasks before returning
             if save_tasks:
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)
-                for r in results:
-                    if isinstance(r, BaseException):
-                        import logging
+                failures = [r for r in results if isinstance(r, BaseException)]
+                if failures:
+                    import logging
 
-                        logging.getLogger("hypergraph.checkpointers").warning("Async step save failed: %s", r)
+                    logger = logging.getLogger("hypergraph.checkpointers")
+                    if len(failures) == len(results):
+                        logger.error(
+                            "All %d async step saves failed for workflow %s — no steps persisted: %s",
+                            len(failures),
+                            workflow_id,
+                            failures[0],
+                        )
+                    else:
+                        for f in failures:
+                            logger.warning("Async step save failed: %s", f)
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
@@ -255,39 +271,78 @@ class AsyncRunner(AsyncRunnerTemplate):
         workflow_id: str,
         superstep_idx: int,
         state: GraphState,
-        prev_executed: set[str],
+        ready_node_names: list[str],
+        prev_input_versions: dict[str, dict[str, int]],
         node_order: dict[str, int],
         step_counter: int,
         step_buffer: list[Any] | None,
         save_tasks: list[asyncio.Task[None]],
+        superstep_error: BaseException | None = None,
     ) -> int:
-        """Build StepRecords for newly executed nodes and save them."""
+        """Build StepRecords for nodes scheduled in this superstep.
+
+        Uses ready_node_names (not set-diff on node_executions keys) so that
+        cyclic re-executions are captured. Distinguishes fresh vs stale entries
+        via input_versions comparison to correctly mark failed nodes.
+        """
         from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
 
-        new_names = sorted(
-            set(state.node_executions.keys()) - prev_executed,
-            key=lambda name: node_order.get(name, 0),
-        )
+        sorted_names = sorted(ready_node_names, key=lambda name: node_order.get(name, 0))
 
-        for name in new_names:
-            execution = state.node_executions[name]
+        for name in sorted_names:
+            execution = state.node_executions.get(name)
             now = _utcnow()
-            record = StepRecord(
-                workflow_id=workflow_id,
-                superstep=superstep_idx,
-                node_name=name,
-                index=step_counter,
-                status=StepStatus.COMPLETED,
-                input_versions=execution.input_versions,
-                values=execution.outputs,
-                duration_ms=execution.duration_ms,
-                cached=execution.cached,
-                decision=state.routing_decisions.get(name),
-                created_at=now,
-                completed_at=now,
-            )
-            step_counter += 1
 
+            if execution is not None:
+                # Check if this is a fresh execution or a stale copy from a prior superstep.
+                # A cyclic node is "ready" because ≥1 input version changed, so fresh
+                # re-executions always have different input_versions than the stale copy.
+                is_fresh = name not in prev_input_versions or execution.input_versions != prev_input_versions[name]
+                if is_fresh:
+                    record = StepRecord(
+                        workflow_id=workflow_id,
+                        superstep=superstep_idx,
+                        node_name=name,
+                        index=step_counter,
+                        status=StepStatus.COMPLETED,
+                        input_versions=execution.input_versions,
+                        values=execution.outputs,
+                        duration_ms=execution.duration_ms,
+                        cached=execution.cached,
+                        decision=_normalize_decision(state.routing_decisions.get(name)),
+                        created_at=now,
+                        completed_at=now,
+                    )
+                elif superstep_error is not None:
+                    # Stale entry — node was scheduled but failed during re-execution
+                    record = StepRecord(
+                        workflow_id=workflow_id,
+                        superstep=superstep_idx,
+                        node_name=name,
+                        index=step_counter,
+                        status=StepStatus.FAILED,
+                        input_versions=execution.input_versions,
+                        error=_extract_error_message(superstep_error),
+                        created_at=now,
+                    )
+                else:
+                    continue
+            elif superstep_error is not None:
+                # No prior execution — node failed on first attempt
+                record = StepRecord(
+                    workflow_id=workflow_id,
+                    superstep=superstep_idx,
+                    node_name=name,
+                    index=step_counter,
+                    status=StepStatus.FAILED,
+                    input_versions={},
+                    error=_extract_error_message(superstep_error),
+                    created_at=now,
+                )
+            else:
+                continue
+
+            step_counter += 1
             durability = checkpointer.policy.durability
             if durability == "sync":
                 await checkpointer.save_step(record)
@@ -410,7 +465,35 @@ class AsyncRunner(AsyncRunnerTemplate):
 
 
 # ------------------------------------------------------------------
-# Event helpers (module-level to keep the class focused)
+# Helpers (module-level to keep the class focused)
+# ------------------------------------------------------------------
+
+
+def _extract_error_message(error: BaseException) -> str:
+    """Extract a human-readable error message from a (possibly wrapped) exception."""
+    cause = error.__cause__ if error.__cause__ is not None else error
+    return str(cause)
+
+
+def _normalize_decision(decision: Any) -> str | list[str] | None:
+    """Convert routing decision to a JSON-serializable form.
+
+    Gate nodes store the END sentinel (a class) as a decision value.
+    This converts it to the string "END" for persistence.
+    """
+    if decision is None:
+        return None
+    from hypergraph.nodes.gate import END as _END
+
+    if decision is _END:
+        return "END"
+    if isinstance(decision, list):
+        return [("END" if d is _END else d) for d in decision]
+    return decision
+
+
+# ------------------------------------------------------------------
+# Event helpers
 # ------------------------------------------------------------------
 
 

@@ -143,3 +143,80 @@ class TestRunnerCheckpointIntegration:
         # Steps should be flushed after the run completes
         steps = await checkpointer.get_steps("wf-exit")
         assert len(steps) == 2
+
+    async def test_failed_node_persists_step_record(self, checkpointer):
+        """A node that raises gets a FAILED step record."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="boom")
+        def explode(x: int) -> int:
+            raise ValueError("kaboom")
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([explode])
+
+        result = await runner.run(graph, {"x": 1}, workflow_id="wf-fail", error_handling="continue")
+        assert result.status.value == "failed"
+
+        # Workflow should be marked FAILED
+        wf = await checkpointer.get_workflow("wf-fail")
+        assert wf is not None
+        assert wf.status == WorkflowStatus.FAILED
+
+        # The failed node should have a FAILED step record
+        steps = await checkpointer.get_steps("wf-fail")
+        assert len(steps) == 1
+        assert steps[0].node_name == "explode"
+        assert steps[0].status == StepStatus.FAILED
+        assert "kaboom" in steps[0].error
+
+    async def test_partial_failure_persists_siblings(self, checkpointer):
+        """When one of several parallel nodes fails, completed siblings get COMPLETED records."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="a_out")
+        def succeed_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b_out")
+        def fail_b(x: int) -> int:
+            raise RuntimeError("b failed")
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([succeed_a, fail_b])
+
+        result = await runner.run(graph, {"x": 1}, workflow_id="wf-partial", error_handling="continue")
+        assert result.status.value == "failed"
+
+        steps = await checkpointer.get_steps("wf-partial")
+        statuses = {s.node_name: s.status for s in steps}
+        # succeed_a should be COMPLETED, fail_b should be FAILED
+        assert statuses["succeed_a"] == StepStatus.COMPLETED
+        assert statuses["fail_b"] == StepStatus.FAILED
+
+    async def test_cyclic_re_execution_persists(self, checkpointer):
+        """Cyclic nodes that re-execute get new step records per superstep."""
+        from hypergraph import END, ifelse
+
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="count")
+        def increment(count: int) -> int:
+            return count + 1
+
+        @ifelse(when_true=END, when_false="increment")
+        def check_done(count: int) -> bool:
+            return count >= 3
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([increment, check_done])
+
+        await runner.run(graph, {"count": 0}, workflow_id="wf-cycle")
+
+        steps = await checkpointer.get_steps("wf-cycle")
+        # increment runs multiple times (count: 0→1, 1→2, 2→3)
+        increment_steps = [s for s in steps if s.node_name == "increment"]
+        assert len(increment_steps) >= 2, f"Expected ≥2 increment steps, got {len(increment_steps)}: {steps}"
+        # Each re-execution should have a different superstep
+        supersteps = {s.superstep for s in increment_steps}
+        assert len(supersteps) == len(increment_steps), "Each re-execution should be in a distinct superstep"
