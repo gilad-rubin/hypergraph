@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 # JSON envelope version — bump on breaking changes to JSON structure
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Default limits
 DEFAULT_LIMIT = 20
@@ -154,3 +154,31 @@ def print_lines(lines: list[str], max_lines: int = MAX_LINES) -> None:
             print(line)
         remaining = len(lines) - max_lines
         print(f"\n  # ... {remaining} more lines (use --limit or --all to control)")
+
+
+def print_ctas(ctas: list[str]) -> None:
+    """Print context-aware next-step suggestions after command output."""
+    print()
+    for cta in ctas:
+        print(f"  → {cta}")
+
+
+_SINCE_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def parse_since(since_str: str) -> datetime:
+    """Parse a human-friendly time delta into a UTC datetime.
+
+    Supports: 30s, 5m, 1h, 7d, 2w.
+    """
+    import re
+    from datetime import timedelta
+
+    match = re.fullmatch(r"(\d+)([smhdw])", since_str.strip())
+    if not match:
+        raise ValueError(f"Invalid --since value: '{since_str}'. Use e.g. 30s, 5m, 1h, 7d, 2w.")
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    seconds = amount * _SINCE_UNITS[unit]
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds)

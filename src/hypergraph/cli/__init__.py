@@ -1,4 +1,4 @@
-"""Hypergraph CLI — execute graphs and debug workflows.
+"""Hypergraph CLI — execute graphs and inspect runs.
 
 Entry point for the `hypergraph` command. Requires ``pip install hypergraph[cli]``.
 
@@ -7,10 +7,12 @@ Commands:
     map             Map a graph over multiple input values
     graph ls        List registered graphs from pyproject.toml
     graph inspect   Show graph structure (nodes, edges, inputs)
-    workflows ls    List workflows with filters
-    workflows show  Show execution trace for a workflow
-    workflows state Show accumulated values at a point
-    workflows steps Show detailed step records
+    runs ls         List runs with filters
+    runs show       Show execution trace for a run
+    runs values     Show accumulated output values
+    runs steps      Show detailed step records
+    runs search     Full-text search across step records
+    runs stats      Per-node performance statistics
 """
 
 from __future__ import annotations
@@ -35,14 +37,14 @@ def create_app():
 
     from hypergraph.cli.graph_cmd import app as graph_app
     from hypergraph.cli.run_cmd import register_commands
-    from hypergraph.cli.workflows import app as workflows_app
+    from hypergraph.cli.runs import app as runs_app
 
     app = typer.Typer(
         name="hypergraph",
-        help="Hypergraph workflow debugging CLI.",
+        help="Hypergraph graph execution and debugging CLI.",
         no_args_is_help=True,
     )
-    app.add_typer(workflows_app, name="workflows")
+    app.add_typer(runs_app, name="runs")
     app.add_typer(graph_app, name="graph")
     register_commands(app)
 

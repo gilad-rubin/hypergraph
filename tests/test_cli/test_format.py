@@ -73,7 +73,7 @@ class TestTruncateValue:
 class TestJsonEnvelope:
     def test_structure(self):
         env = json_envelope("test.cmd", {"key": "value"})
-        assert env["schema_version"] == 1
+        assert env["schema_version"] == 2
         assert env["command"] == "test.cmd"
         assert "generated_at" in env
         assert env["data"] == {"key": "value"}

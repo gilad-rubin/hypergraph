@@ -293,7 +293,7 @@ outer = Graph([inner.as_node().map_over("x")])
 result = await runner.run(outer, {"x": items}, workflow_id="batch-001")
 
 # Later, from CLI:
-# $ hypergraph workflows state batch-001 --values
+# $ hypergraph runs values batch-001
 ```
 
 ### CLI batch execution

@@ -417,7 +417,7 @@ async def run_uc4(db_path: str) -> UseCase:
     state = cp.state("uc4-single")
     steps = cp.steps("uc4-single")
     single = f"""\
-cp = SqliteCheckpointer("./workflows.db", durability="sync")
+cp = SqliteCheckpointer("./runs.db", durability="sync")
 runner = AsyncRunner(checkpointer=cp)
 result = await runner.run(graph, {{"x": 5}}, workflow_id="uc4-single")
 
@@ -432,7 +432,7 @@ result = await runner.run(graph, {{"x": 5}}, workflow_id="uc4-single")
   values: {cp.checkpoint("uc4-single").values}
   steps: {len(cp.checkpoint("uc4-single").steps)}"""
 
-    single_cli = run_cli(["workflows", "state", "uc4-single", "--values", "--db", db_path])
+    single_cli = run_cli(["runs", "values", "uc4-single", "--values", "--db", db_path])
 
     # Mapped — runner.map() is ephemeral (no checkpoints)
     runner_sync = SyncRunner()
@@ -448,7 +448,7 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 >>> results["tripled"]
 {results_map["tripled"]}
 
-# Not checkpointed — cp.workflows() won't show these runs
+# Not checkpointed — cp.runs() won't show these runs
 # Use map_over with a checkpointer for persistence"""
 
     # Nested — map_over in a checkpointed run
@@ -458,7 +458,7 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
     state_m = cp.state("uc4-multi")
     steps_m = cp.steps("uc4-multi")
     nested = f"""\
-# map_over in a checkpointed run — the outer graph persists as one workflow
+# map_over in a checkpointed run — the outer graph persists as one run
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
@@ -466,14 +466,14 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
 >>> result["tripled"]
 {result_m["tripled"]}
 
-# The workflow contains one step (the mapped GraphNode)
+# The run contains one step (the mapped GraphNode)
 >>> cp.state("uc4-multi")
 {state_m}
 
 >>> cp.steps("uc4-multi")
 {fmt_step_records(steps_m)}"""
 
-    nested_cli = run_cli(["workflows", "state", "uc4-multi", "--values", "--db", db_path])
+    nested_cli = run_cli(["runs", "values", "uc4-multi", "--values", "--db", db_path])
 
     await cp.close()
     return UseCase(
@@ -485,11 +485,11 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
         status="ok",
         impl_note="Fully implemented. Sync reads: cp.state(), cp.steps(), cp.checkpoint().",
         single_python=single,
-        single_cli=f"$ hypergraph workflows state uc4-single --values --db <db>\n\n{single_cli}",
+        single_cli=f"$ hypergraph runs values uc4-single --values --db <db>\n\n{single_cli}",
         mapped_python=mapped,
         mapped_cli="# runner.map() runs are ephemeral — no CLI queries available",
         nested_python=nested,
-        nested_cli=f"$ hypergraph workflows state uc4-multi --values --db <db>\n\n{nested_cli}",
+        nested_cli=f"$ hypergraph runs values uc4-multi --values --db <db>\n\n{nested_cli}",
     )
 
 
@@ -498,14 +498,14 @@ async def run_uc5(db_path: str) -> UseCase:
     # Data already written by UC4. Simulate querying from a "new process".
     cp = SqliteCheckpointer(db_path)
 
-    wfs = cp.workflows()
+    wfs = cp.runs()
     state = cp.state("uc4-single")
     steps = cp.steps("uc4-single")
     single = f"""\
-# In a NEW process — query old workflows (sync, no await)
-cp = SqliteCheckpointer("./workflows.db")
+# In a NEW process — query old runs (sync, no await)
+cp = SqliteCheckpointer("./runs.db")
 
->>> cp.workflows()
+>>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}
 
 >>> cp.state("uc4-single")
@@ -514,7 +514,7 @@ cp = SqliteCheckpointer("./workflows.db")
 >>> cp.steps("uc4-single")
 {fmt_step_records(steps)}"""
 
-    single_cli = run_cli(["workflows", "ls", "--db", db_path])
+    single_cli = run_cli(["runs", "ls", "--db", db_path])
 
     # Mapped — runner.map() results aren't persisted
     runner_sync = SyncRunner()
@@ -528,23 +528,23 @@ results = runner.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 '{results_map.summary()}'
 
 # After the process exits, these results are gone
-# cp.workflows() won't show runner.map() runs
->>> cp.workflows()
+# cp.runs() won't show runner.map() runs
+>>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}
 
 # Use map_over with a checkpointer for cross-process persistence"""
 
-    # Nested — query the mapped workflow
+    # Nested — query the mapped run
     state_m = cp.state("uc4-multi")
     nested = f"""\
-# The mapped workflow is also queryable from a new process
+# The mapped run is also queryable from a new process
 >>> cp.state("uc4-multi")
 {state_m}
 
->>> cp.workflows()
+>>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}"""
 
-    nested_cli = run_cli(["workflows", "show", "uc4-multi", "--db", db_path])
+    nested_cli = run_cli(["runs", "show", "uc4-multi", "--db", db_path])
 
     return UseCase(
         id="uc5",
@@ -555,17 +555,17 @@ results = runner.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
         status="ok",
         impl_note="Fully implemented. Sync reads work from any process without async.",
         single_python=single,
-        single_cli=f"$ hypergraph workflows ls --db <db>\n\n{single_cli}",
+        single_cli=f"$ hypergraph runs ls --db <db>\n\n{single_cli}",
         mapped_python=mapped,
         mapped_cli="# runner.map() runs are ephemeral — nothing to query from CLI",
         nested_python=nested,
-        nested_cli=f"$ hypergraph workflows show uc4-multi --db <db>\n\n{nested_cli}",
+        nested_cli=f"$ hypergraph runs show uc4-multi --db <db>\n\n{nested_cli}",
     )
 
 
 async def run_uc6(db_path: str) -> UseCase:
-    """UC6: Show me all failed workflows — Dashboard."""
-    # Create a failed workflow
+    """UC6: Show me all failed runs — Dashboard."""
+    # Create a failed run
     cp = SqliteCheckpointer(db_path, durability="sync")
     runner = AsyncRunner(checkpointer=cp)
     graph = Graph([succeed_a, fail_b])
@@ -573,21 +573,21 @@ async def run_uc6(db_path: str) -> UseCase:
     await cp.close()
 
     cp2 = SqliteCheckpointer(db_path)
-    all_wfs = cp2.workflows()
-    failed = cp2.workflows(status=WorkflowStatus.FAILED)
+    all_wfs = cp2.runs()
+    failed = cp2.runs(status=WorkflowStatus.FAILED)
 
     single = f"""\
->>> cp.workflows()
+>>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in all_wfs)}
 
->>> cp.workflows(status=WorkflowStatus.FAILED)
+>>> cp.runs(status=WorkflowStatus.FAILED)
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in failed)}
 
-# Drill into the failed workflow
+# Drill into the failed run
 >>> cp.steps("{failed[0].id}" if failed else "???")
-{fmt_step_records(cp2.steps(failed[0].id)) if failed else "  (no failed workflows)"}"""
+{fmt_step_records(cp2.steps(failed[0].id)) if failed else "  (no failed runs)"}"""
 
-    single_cli = run_cli(["workflows", "--db", db_path])
+    single_cli = run_cli(["runs", "--db", db_path])
 
     # Mapped — runner.map() with MapResult.failures (in-process filtering)
     @node(output_name="checked")
@@ -624,31 +624,31 @@ results = runner.map(
 # In-process only — not persisted to checkpointer
 # For persistent failure tracking, use map_over with a checkpointer"""
 
-    # Nested — dashboard shows both single and mapped workflows
+    # Nested — dashboard shows both single and mapped runs
     nested = f"""\
-# The dashboard shows all workflows — single runs and mapped runs
->>> cp.workflows()
+# The dashboard shows all runs — single and mapped
+>>> cp.runs()
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in all_wfs)}
 
->>> cp.workflows(status=WorkflowStatus.COMPLETED)
-  {chr(10).join(f"  {w.id}: {w.status.value}" for w in cp2.workflows(status=WorkflowStatus.COMPLETED))}"""
+>>> cp.runs(status=WorkflowStatus.COMPLETED)
+  {chr(10).join(f"  {w.id}: {w.status.value}" for w in cp2.runs(status=WorkflowStatus.COMPLETED))}"""
 
-    nested_cli = run_cli(["workflows", "ls", "--status", "completed", "--db", db_path])
+    nested_cli = run_cli(["runs", "ls", "--status", "completed", "--db", db_path])
 
     return UseCase(
         id="uc6",
         label="UC6",
-        title='"Show me all failed workflows"',
+        title='"Show me all failed runs"',
         note="Dashboard, status filtering",
         category="persistence",
         status="ok",
         impl_note="Fully implemented. Filter by status via Python API or CLI.",
         single_python=single,
-        single_cli=f"$ hypergraph workflows --db <db>\n\n{single_cli}",
+        single_cli=f"$ hypergraph runs --db <db>\n\n{single_cli}",
         mapped_python=mapped,
         mapped_cli="# runner.map() failures are ephemeral — use MapResult.failures in-process",
         nested_python=nested,
-        nested_cli=f"$ hypergraph workflows ls --status completed --db <db>\n\n{nested_cli}",
+        nested_cli=f"$ hypergraph runs ls --status completed --db <db>\n\n{nested_cli}",
     )
 
 
@@ -671,7 +671,7 @@ result = runner.run(graph, {{"x": 5}})
 >>> json.dumps(result.log.to_dict(), indent=2)
 {json_pretty}"""
 
-    single_cli = run_cli(["workflows", "--help"])
+    single_cli = run_cli(["runs", "--help"])
 
     # Mapped — runner.map() JSON export
     results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
@@ -719,7 +719,7 @@ result = runner.run(outer, {{"x": [1, 2, 3]}})
         status="ok",
         impl_note="Fully implemented. .to_dict() for Python, --json for CLI.",
         single_python=single,
-        single_cli=f"$ hypergraph workflows --help\n\n{single_cli}",
+        single_cli=f"$ hypergraph runs --help\n\n{single_cli}",
         mapped_python=mapped,
         mapped_cli="# runner.map() results are ephemeral — use .to_dict() per item\n# For persistent JSON, use map_over with a checkpointer + CLI --json",
         nested_python=nested,
@@ -739,12 +739,12 @@ async def run_uc8(db_path: str) -> UseCase:
 
     single = f"""\
 # durability="sync" — data visible immediately for live queries
-cp = SqliteCheckpointer("./workflows.db", durability="sync")
+cp = SqliteCheckpointer("./runs.db", durability="sync")
 runner = AsyncRunner(checkpointer=cp)
 await runner.run(graph, {{"x": 5}}, workflow_id="uc8-live")
 
 # Query from another process while running (or after)
-cp2 = SqliteCheckpointer("./workflows.db")
+cp2 = SqliteCheckpointer("./runs.db")
 >>> cp2.state("uc8-live")
 {state}
 
@@ -753,7 +753,7 @@ cp2 = SqliteCheckpointer("./workflows.db")
 #   "sync"   — block until written (crash-safe)
 #   "exit"   — only at run completion (fastest)"""
 
-    single_cli = run_cli(["workflows", "show", "uc8-live", "--db", db_path])
+    single_cli = run_cli(["runs", "show", "uc8-live", "--db", db_path])
 
     # Mapped — runner.map() is ephemeral (no live query)
     runner_sync = SyncRunner()
@@ -789,7 +789,7 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
 >>> cp.state("uc8-multi")
 {state_m}"""
 
-    nested_cli = run_cli(["workflows", "show", "uc8-multi", "--db", db_path])
+    nested_cli = run_cli(["runs", "show", "uc8-multi", "--db", db_path])
 
     return UseCase(
         id="uc8",
@@ -800,11 +800,11 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc8-multi")
         status="ok",
         impl_note="Fully implemented. Durability controls when data is queryable.",
         single_python=single,
-        single_cli=f"$ hypergraph workflows show uc8-live --db <db>\n\n{single_cli}",
+        single_cli=f"$ hypergraph runs show uc8-live --db <db>\n\n{single_cli}",
         mapped_python=mapped,
         mapped_cli="# runner.map() is ephemeral — no CLI queries for live monitoring",
         nested_python=nested,
-        nested_cli=f"$ hypergraph workflows show uc8-multi --db <db>\n\n{nested_cli}",
+        nested_cli=f"$ hypergraph runs show uc8-multi --db <db>\n\n{nested_cli}",
     )
 
 
@@ -834,7 +834,7 @@ result = await runner.run(
 # NOT YET: history= parameter for true fork-and-retry
 # result = await runner.run(graph, values=..., history=checkpoint.steps)"""
 
-    single_cli = run_cli(["workflows", "state", "uc9-fork", "--values", "--db", db_path])
+    single_cli = run_cli(["runs", "values", "uc9-fork", "--values", "--db", db_path])
 
     # Mapped — runner.map() is ephemeral (can't fork/retry)
     runner_sync = SyncRunner()
@@ -859,7 +859,7 @@ results = runner.map(graph, {{"x": [5, 10]}}, map_over="x")
     await cp2.close()
 
     nested = f"""\
-# checkpoint() works for mapped workflows too
+# checkpoint() works for mapped runs too
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
@@ -868,7 +868,7 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
   values: {checkpoint_m.values}
   steps: {len(checkpoint_m.steps)}"""
 
-    nested_cli = run_cli(["workflows", "state", "uc9-multi", "--values", "--db", db_path])
+    nested_cli = run_cli(["runs", "values", "uc9-multi", "--values", "--db", db_path])
 
     return UseCase(
         id="uc9",
@@ -879,11 +879,11 @@ await runner.run(outer, {{"x": [5, 10]}}, workflow_id="uc9-multi")
         status="defer",
         impl_note="Partially implemented. checkpoint() works; history= param deferred to v2.",
         single_python=single,
-        single_cli=f"$ hypergraph workflows state uc9-fork --values --db <db>\n\n{single_cli}",
+        single_cli=f"$ hypergraph runs values uc9-fork --values --db <db>\n\n{single_cli}",
         mapped_python=mapped,
         mapped_cli="# runner.map() runs are ephemeral — no checkpoints to fork from",
         nested_python=nested,
-        nested_cli=f"$ hypergraph workflows state uc9-multi --values --db <db>\n\n{nested_cli}",
+        nested_cli=f"$ hypergraph runs values uc9-multi --values --db <db>\n\n{nested_cli}",
     )
 
 

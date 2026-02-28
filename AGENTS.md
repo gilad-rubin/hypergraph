@@ -57,17 +57,20 @@ src/hypergraph/
     rich_progress.py   #   RichProgressProcessor
     otel.py            #   OpenTelemetryProcessor (OTel span export)
 
-  checkpointers/       # Persistent workflow history (optional: pip install hypergraph[checkpoint])
-    types.py           #   StepRecord, Workflow, Checkpoint, StepStatus, WorkflowStatus
+  checkpointers/       # Persistent run history (optional: pip install hypergraph[checkpoint])
+    types.py           #   StepRecord, Run, Checkpoint, StepStatus, WorkflowStatus
     base.py            #   Checkpointer ABC, CheckpointPolicy
     serializers.py     #   JsonSerializer, PickleSerializer
-    sqlite.py          #   SqliteCheckpointer (aiosqlite backend)
+    sqlite.py          #   SqliteCheckpointer (aiosqlite backend, v2 schema)
+    _migrate.py        #   Schema migration (v1→v2) and auto-detection
 
-  cli/                 # Debugging CLI (optional: pip install hypergraph[cli])
+  cli/                 # CLI: execute graphs and inspect runs (optional: pip install hypergraph[cli])
     __init__.py        #   App entry point (hypergraph command)
-    workflows.py       #   workflows ls/show/state/steps commands
-    graph_cmd.py       #   graph inspect command
-    _format.py         #   Table formatting, JSON envelope, value truncation
+    run_cmd.py         #   run/map commands (graph execution from terminal)
+    _config.py         #   pyproject.toml [tool.hypergraph] registry
+    runs.py            #   runs ls/show/values/steps/search/stats commands
+    graph_cmd.py       #   graph inspect/ls commands, graph loading
+    _format.py         #   Table formatting, JSON envelope, CTAs, value truncation
     _db.py             #   Database access helpers
 
   viz/                 # Graph visualization (HTML, Mermaid)

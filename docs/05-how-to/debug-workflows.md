@@ -116,7 +116,7 @@ The batch pattern you choose affects what debugging data is available:
 | **RunLog granularity** | Per-item RunLogs with full traces | One RunLog (batch = one step) |
 | **Error isolation** | Each item independent | One failure affects entire step |
 | **Checkpointing** | Ephemeral — not persisted | Persisted as one workflow |
-| **CLI access** | Not available | `hypergraph workflows state <id>` |
+| **CLI access** | Not available | `hypergraph runs values <id>` |
 
 Use `runner.map()` when you need to debug individual items. Use `map_over` when you need persistence and CLI access.
 
@@ -145,7 +145,7 @@ def triple(doubled: int) -> int:
 graph = Graph([double, triple])
 
 # Create a checkpointer (SQLite database)
-checkpointer = SqliteCheckpointer("./workflows.db")
+checkpointer = SqliteCheckpointer("./runs.db")
 runner = AsyncRunner(checkpointer=checkpointer)
 
 # Run with a workflow_id to enable persistence
@@ -158,16 +158,16 @@ Every step is now persisted. You can inspect it from another process, another da
 
 ```python
 # From any process that can access the DB file:
-cp = SqliteCheckpointer("./workflows.db")
+cp = SqliteCheckpointer("./runs.db")
 
 # Sync reads — no await needed, works from any context
-cp.workflows()                        # List all workflows
+cp.runs()                        # List all workflows
 cp.state("my-run-1")                  # {"doubled": 10, "tripled": 30}
 cp.steps("my-run-1")                  # Step records with timing
 cp.checkpoint("my-run-1")             # Full snapshot (values + steps)
 
 # Filter by status
-cp.workflows(status=WorkflowStatus.FAILED)
+cp.runs(status=WorkflowStatus.FAILED)
 
 # Time travel: state at a specific superstep
 cp.state("my-run-1", superstep=1)     # {"doubled": 10}
@@ -183,17 +183,17 @@ The `CheckpointPolicy` controls when steps are written to the database:
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
 
 # Default: async — steps saved in background tasks (fastest)
-cp = SqliteCheckpointer("./workflows.db")
+cp = SqliteCheckpointer("./runs.db")
 
 # Sync: steps saved immediately after each superstep (safest)
 cp = SqliteCheckpointer(
-    "./workflows.db",
+    "./runs.db",
     policy=CheckpointPolicy(durability="sync"),
 )
 
 # Exit: steps buffered, flushed once after the run (lowest overhead)
 cp = SqliteCheckpointer(
-    "./workflows.db",
+    "./runs.db",
     policy=CheckpointPolicy(durability="exit", retention="latest"),
 )
 ```
@@ -242,9 +242,9 @@ hypergraph graph ls
 hypergraph graph inspect my_module:graph
 
 # Debug persisted workflows
-hypergraph workflows ls
-hypergraph workflows show my-run-1
-hypergraph workflows state my-run-1
+hypergraph runs ls
+hypergraph runs show my-run-1
+hypergraph runs values my-run-1
 ```
 
 ### run — Execute a Graph
@@ -267,7 +267,7 @@ hypergraph run my_module:graph x=5 --select doubled
 hypergraph run my_module:graph x=5 --json
 
 # With checkpointing
-hypergraph run my_module:graph x=5 --db ./workflows.db --workflow-id exp-42
+hypergraph run my_module:graph x=5 --db ./runs.db --workflow-id exp-42
 
 # Verbose (shows timing and step count)
 hypergraph run my_module:graph x=5 --verbose
@@ -304,7 +304,7 @@ pipeline = "my_module:graph"
 etl = "etl.main:pipeline"
 
 [tool.hypergraph]
-db = "./workflows.db"  # default --db for all commands
+db = "./runs.db"  # default --db for all commands
 ```
 
 Then use short names everywhere:
@@ -332,10 +332,10 @@ hypergraph graph ls
 
 The following commands inspect persisted workflows (requires `--db` or a `db` setting in pyproject.toml).
 
-### workflows show — Execution Trace
+### runs show — Execution Trace
 
 ```bash
-hypergraph workflows show my-run-1
+hypergraph runs show my-run-1
 
 # Workflow: my-run-1 | completed | 2 steps | 0.3ms
 #
@@ -344,16 +344,16 @@ hypergraph workflows show my-run-1
 #      0  double     0.1ms  completed
 #      1  triple     0.1ms  completed
 #
-#   To see values at a step: hypergraph workflows state my-run-1 --step N
-#   To save full trace:      hypergraph workflows show my-run-1 --json --output trace.json
+#   To see values at a step: hypergraph runs values my-run-1 --step N
+#   To save full trace:      hypergraph runs show my-run-1 --json --output trace.json
 ```
 
-### workflows state — Progressive Value Disclosure
+### runs values — Progressive Value Disclosure
 
 By default, `state` shows type and size only (protecting AI agent context windows from large embeddings):
 
 ```bash
-hypergraph workflows state my-run-1
+hypergraph runs values my-run-1
 
 # State: my-run-1 (through step 1)
 #
@@ -369,24 +369,24 @@ Drill in:
 
 ```bash
 # Show all values
-hypergraph workflows state my-run-1 --values
+hypergraph runs values my-run-1 --values
 
 # Show one value
-hypergraph workflows state my-run-1 --key doubled
+hypergraph runs values my-run-1 --key doubled
 # 10
 ```
 
-### workflows ls — List and Filter
+### runs ls — List and Filter
 
 ```bash
 # All workflows
-hypergraph workflows ls
+hypergraph runs ls
 
 # Only failures
-hypergraph workflows ls --status failed
+hypergraph runs ls --status failed
 
 # Limit results
-hypergraph workflows ls --limit 10
+hypergraph runs ls --limit 10
 ```
 
 ### JSON Output for Agents
@@ -394,7 +394,7 @@ hypergraph workflows ls --limit 10
 Every command supports `--json` for machine-readable output with a stable envelope:
 
 ```bash
-hypergraph workflows show my-run-1 --json
+hypergraph runs show my-run-1 --json
 ```
 
 ```json
@@ -415,10 +415,10 @@ The `schema_version` field ensures forward compatibility — agents can detect b
 
 ```bash
 # Dump full state to file (avoids flooding terminal)
-hypergraph workflows state my-run-1 --values --output state.json
+hypergraph runs values my-run-1 --values --output state.json
 
 # Dump step records
-hypergraph workflows steps my-run-1 --json --output steps.json
+hypergraph runs steps my-run-1 --json --output steps.json
 ```
 
 ### graph inspect — Static Structure
@@ -444,7 +444,7 @@ hypergraph graph inspect pipeline
 All commands accept `--db` to point to a specific database:
 
 ```bash
-hypergraph workflows ls --db /path/to/workflows.db
+hypergraph runs ls --db /path/to/runs.db
 ```
 
 ## Choosing the Right Tool
@@ -456,8 +456,8 @@ hypergraph workflows ls --db /path/to/workflows.db
 | "What happened in the run I just finished?" | RunLog (`result.log`) |
 | "Which node was slowest?" | RunLog (`result.log.slowest()`) |
 | "What happened in yesterday's run?" | Checkpointer + CLI |
-| "What values were produced at step 3?" | CLI (`workflows state --step 3`) |
-| "What failed workflows exist?" | CLI (`workflows ls --status failed`) |
+| "What values were produced at step 3?" | CLI (`runs values --superstep 3`) |
+| "What failed workflows exist?" | CLI (`runs ls --status failed`) |
 | "I need to inspect from another process" | Checkpointer |
 | "I need JSON for my monitoring system" | CLI (`--json`) or RunLog (`to_dict()`) |
 
