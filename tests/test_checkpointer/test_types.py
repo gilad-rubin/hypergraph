@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph.checkpointers import CheckpointPolicy, StepRecord, StepStatus, Workflow, WorkflowStatus
+from hypergraph.checkpointers import CheckpointPolicy, Run, StepRecord, StepStatus, WorkflowStatus
 
 
 class TestCheckpointPolicy:
@@ -45,7 +45,7 @@ class TestCheckpointPolicy:
 class TestStepRecord:
     def test_frozen(self):
         record = StepRecord(
-            workflow_id="wf-1",
+            run_id="wf-1",
             superstep=0,
             node_name="embed",
             index=0,
@@ -57,7 +57,7 @@ class TestStepRecord:
 
     def test_to_dict(self):
         record = StepRecord(
-            workflow_id="wf-1",
+            run_id="wf-1",
             superstep=0,
             node_name="embed",
             index=0,
@@ -68,14 +68,14 @@ class TestStepRecord:
             cached=True,
         )
         d = record.to_dict()
-        assert d["workflow_id"] == "wf-1"
+        assert d["run_id"] == "wf-1"
         assert d["status"] == "completed"
         assert d["values"] == {"embedding": [1, 2, 3]}
         assert d["cached"] is True
 
     def test_defaults(self):
         record = StepRecord(
-            workflow_id="wf-1",
+            run_id="wf-1",
             superstep=0,
             node_name="embed",
             index=0,
@@ -87,13 +87,42 @@ class TestStepRecord:
         assert record.cached is False
         assert record.decision is None
         assert record.error is None
-        assert record.child_workflow_id is None
+        assert record.child_run_id is None
+        assert record.node_type is None
+
+    def test_node_type_field(self):
+        record = StepRecord(
+            run_id="wf-1",
+            superstep=0,
+            node_name="embed",
+            index=0,
+            status=StepStatus.COMPLETED,
+            input_versions={},
+            node_type="FunctionNode",
+        )
+        assert record.node_type == "FunctionNode"
+        assert record.to_dict()["node_type"] == "FunctionNode"
 
 
-class TestWorkflow:
+class TestRun:
     def test_to_dict(self):
-        wf = Workflow(id="wf-1", status=WorkflowStatus.ACTIVE, graph_name="my_graph")
-        d = wf.to_dict()
+        r = Run(id="wf-1", status=WorkflowStatus.ACTIVE, graph_name="my_graph")
+        d = r.to_dict()
         assert d["id"] == "wf-1"
         assert d["status"] == "active"
         assert d["graph_name"] == "my_graph"
+
+    def test_new_fields(self):
+        r = Run(
+            id="wf-1",
+            status=WorkflowStatus.COMPLETED,
+            duration_ms=150.5,
+            node_count=3,
+            error_count=1,
+            parent_run_id="wf-parent",
+        )
+        d = r.to_dict()
+        assert d["duration_ms"] == 150.5
+        assert d["node_count"] == 3
+        assert d["error_count"] == 1
+        assert d["parent_run_id"] == "wf-parent"

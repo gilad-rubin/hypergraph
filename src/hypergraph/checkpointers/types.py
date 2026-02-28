@@ -1,4 +1,4 @@
-"""Checkpointer types for workflow persistence."""
+"""Checkpointer types for run persistence."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class StepStatus(Enum):
 
 
 class WorkflowStatus(Enum):
-    """Status of a workflow."""
+    """Status of a run (kept as WorkflowStatus to avoid collision with runners.RunStatus)."""
 
     ACTIVE = "active"
     COMPLETED = "completed"
@@ -35,25 +35,9 @@ class StepRecord:
     Contains both metadata and output values. The checkpointer
     saves each StepRecord atomically — either all data is saved
     or nothing.
-
-    Attributes:
-        workflow_id: Workflow this step belongs to.
-        superstep: Parallel execution round (0-indexed).
-        node_name: Name of the executed node.
-        index: Global sequential index across all supersteps.
-        status: Whether the node completed or failed.
-        input_versions: Version numbers of inputs consumed.
-        values: Output values produced by the node.
-        duration_ms: Wall-clock execution time.
-        cached: Whether this was a cache hit.
-        decision: Gate routing decision, if applicable.
-        error: Error message if status is FAILED.
-        created_at: When execution started.
-        completed_at: When execution finished.
-        child_workflow_id: For nested graphs (GraphNode).
     """
 
-    workflow_id: str
+    run_id: str
     superstep: int
     node_name: str
     index: int
@@ -64,14 +48,15 @@ class StepRecord:
     cached: bool = False
     decision: str | list[str] | None = None
     error: str | None = None
+    node_type: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
     completed_at: datetime | None = None
-    child_workflow_id: str | None = None
+    child_run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict with only primitive types."""
         return {
-            "workflow_id": self.workflow_id,
+            "run_id": self.run_id,
             "superstep": self.superstep,
             "node_name": self.node_name,
             "index": self.index,
@@ -82,19 +67,25 @@ class StepRecord:
             "cached": self.cached,
             "decision": self.decision,
             "error": self.error,
+            "node_type": self.node_type,
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "child_workflow_id": self.child_workflow_id,
+            "child_run_id": self.child_run_id,
         }
 
 
 @dataclass
-class Workflow:
-    """Workflow metadata record."""
+class Run:
+    """Run metadata record."""
 
     id: str
     status: WorkflowStatus
     graph_name: str | None = None
+    duration_ms: float | None = None
+    node_count: int = 0
+    error_count: int = 0
+    parent_run_id: str | None = None
+    config: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=_utcnow)
     completed_at: datetime | None = None
 
@@ -104,6 +95,11 @@ class Workflow:
             "id": self.id,
             "status": self.status.value,
             "graph_name": self.graph_name,
+            "duration_ms": self.duration_ms,
+            "node_count": self.node_count,
+            "error_count": self.error_count,
+            "parent_run_id": self.parent_run_id,
+            "config": self.config,
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
         }
@@ -111,7 +107,7 @@ class Workflow:
 
 @dataclass
 class Checkpoint:
-    """Point-in-time snapshot for forking workflows.
+    """Point-in-time snapshot for forking runs.
 
     Combines accumulated state and step history at a given superstep.
     """

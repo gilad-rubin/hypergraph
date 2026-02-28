@@ -223,6 +223,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                         step_counter,
                         step_buffer,
                         save_tasks,
+                        graph,
                         superstep_error,
                     )
 
@@ -277,6 +278,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         step_counter: int,
         step_buffer: list[Any] | None,
         save_tasks: list[asyncio.Task[None]],
+        graph: Graph,
         superstep_error: BaseException | None = None,
     ) -> int:
         """Build StepRecords for nodes scheduled in this superstep.
@@ -292,6 +294,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         for name in sorted_names:
             execution = state.node_executions.get(name)
             now = _utcnow()
+            node_type = type(graph._nodes[name]).__name__ if graph and name in graph._nodes else None
 
             if execution is not None:
                 # Check if this is a fresh execution or a stale copy from a prior superstep.
@@ -300,7 +303,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 is_fresh = name not in prev_input_versions or execution.input_versions != prev_input_versions[name]
                 if is_fresh:
                     record = StepRecord(
-                        workflow_id=workflow_id,
+                        run_id=workflow_id,
                         superstep=superstep_idx,
                         node_name=name,
                         index=step_counter,
@@ -310,19 +313,21 @@ class AsyncRunner(AsyncRunnerTemplate):
                         duration_ms=execution.duration_ms,
                         cached=execution.cached,
                         decision=_normalize_decision(state.routing_decisions.get(name)),
+                        node_type=node_type,
                         created_at=now,
                         completed_at=now,
                     )
                 elif superstep_error is not None:
                     # Stale entry — node was scheduled but failed during re-execution
                     record = StepRecord(
-                        workflow_id=workflow_id,
+                        run_id=workflow_id,
                         superstep=superstep_idx,
                         node_name=name,
                         index=step_counter,
                         status=StepStatus.FAILED,
                         input_versions=execution.input_versions,
                         error=_extract_error_message(superstep_error),
+                        node_type=node_type,
                         created_at=now,
                     )
                 else:
@@ -330,13 +335,14 @@ class AsyncRunner(AsyncRunnerTemplate):
             elif superstep_error is not None:
                 # No prior execution — node failed on first attempt
                 record = StepRecord(
-                    workflow_id=workflow_id,
+                    run_id=workflow_id,
                     superstep=superstep_idx,
                     node_name=name,
                     index=step_counter,
                     status=StepStatus.FAILED,
                     input_versions={},
                     error=_extract_error_message(superstep_error),
+                    node_type=node_type,
                     created_at=now,
                 )
             else:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 
-from hypergraph.checkpointers.types import Checkpoint, StepRecord, Workflow, WorkflowStatus
+from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, WorkflowStatus
 
 
 @dataclass
@@ -24,7 +24,7 @@ class CheckpointPolicy:
             "latest" — only materialized latest state.
             "windowed" — keep last N supersteps.
         window: Supersteps to keep (required if retention="windowed").
-        ttl: Auto-expire completed workflows after this duration.
+        ttl: Auto-expire completed runs after this duration.
     """
 
     durability: Literal["sync", "async", "exit"] = "async"
@@ -44,13 +44,13 @@ class CheckpointPolicy:
 
 
 class Checkpointer(ABC):
-    """Base class for workflow persistence.
+    """Base class for run persistence.
 
     Steps are the source of truth. State is computed from steps.
-    Implementations store workflow steps and provide state retrieval.
+    Implementations store run steps and provide state retrieval.
 
     The runner calls save_step() after each node completes, and
-    create_workflow/update_workflow_status for lifecycle management.
+    create_run/update_run_status for lifecycle management.
     """
 
     def __init__(self, policy: CheckpointPolicy | None = None):
@@ -63,24 +63,32 @@ class Checkpointer(ABC):
         """Save a step atomically.
 
         Uses upsert semantics with unique constraint on
-        (workflow_id, superstep, node_name).
+        (run_id, superstep, node_name).
         """
         ...
 
     @abstractmethod
-    async def create_workflow(self, workflow_id: str, *, graph_name: str | None = None) -> Workflow:
-        """Create a new workflow record. Called by runner at run start."""
+    async def create_run(self, run_id: str, *, graph_name: str | None = None) -> Run:
+        """Create a new run record. Called by runner at run start."""
         ...
 
     @abstractmethod
-    async def update_workflow_status(self, workflow_id: str, status: WorkflowStatus) -> None:
-        """Update workflow status (ACTIVE, COMPLETED, or FAILED)."""
+    async def update_run_status(
+        self,
+        run_id: str,
+        status: WorkflowStatus,
+        *,
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None:
+        """Update run status (ACTIVE, COMPLETED, or FAILED) with optional stats."""
         ...
 
     # === Read Operations ===
 
     @abstractmethod
-    async def get_state(self, workflow_id: str, *, superstep: int | None = None) -> dict[str, Any]:
+    async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Get accumulated state through a superstep.
 
         State is computed by folding step values. superstep=None means latest.
@@ -88,28 +96,32 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def get_steps(self, workflow_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
         """Get step records through a superstep (None = all)."""
         ...
 
-    async def get_checkpoint(self, workflow_id: str, *, superstep: int | None = None) -> Checkpoint:
-        """Get a checkpoint for forking workflows.
+    async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
+        """Get a checkpoint for forking runs.
 
         Default implementation calls get_state + get_steps.
         """
-        values = await self.get_state(workflow_id, superstep=superstep)
-        steps = await self.get_steps(workflow_id, superstep=superstep)
+        values = await self.get_state(run_id, superstep=superstep)
+        steps = await self.get_steps(run_id, superstep=superstep)
         return Checkpoint(values=values, steps=steps)
 
     @abstractmethod
-    async def get_workflow(self, workflow_id: str) -> Workflow | None:
-        """Get workflow metadata. Returns None if not found."""
+    async def get_run(self, run_id: str) -> Run | None:
+        """Get run metadata. Returns None if not found."""
         ...
 
     @abstractmethod
-    async def list_workflows(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Workflow]:
-        """List workflows, optionally filtered by status."""
+    async def list_runs(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Run]:
+        """List runs, optionally filtered by status."""
         ...
+
+    async def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
+        """Search steps using FTS. Returns empty list if not supported."""
+        return []
 
     # === Lifecycle ===
 

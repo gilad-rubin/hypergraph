@@ -194,11 +194,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         )
         start_time = time.time()
 
-        # Checkpointer lifecycle — create workflow if present
+        # Checkpointer lifecycle — create run if present
         checkpointer = self._checkpointer
         has_checkpointer = checkpointer is not None and workflow_id is not None
         if has_checkpointer:
-            await checkpointer.create_workflow(workflow_id, graph_name=graph.name)
+            await checkpointer.create_run(workflow_id, graph_name=graph.name)
 
         # Step buffer for "exit" durability — records are flushed after run completes
         step_buffer: list[Any] = []
@@ -233,13 +233,21 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 start_time,
                 _parent_span_id,
             )
-            # Flush buffered steps ("exit" mode) and mark workflow completed
+            # Flush buffered steps ("exit" mode) and mark run completed
             if has_checkpointer:
                 for record in step_buffer:
                     await checkpointer.save_step(record)
                 from hypergraph.checkpointers.types import WorkflowStatus
 
-                await checkpointer.update_workflow_status(workflow_id, WorkflowStatus.COMPLETED)
+                step_count = len(collector._steps) if hasattr(collector, "_steps") else 0
+                error_count = sum(1 for s in (collector._steps if hasattr(collector, "_steps") else []) if getattr(s, "status", "") == "failed")
+                await checkpointer.update_run_status(
+                    workflow_id,
+                    WorkflowStatus.COMPLETED,
+                    duration_ms=total_duration_ms,
+                    node_count=step_count,
+                    error_count=error_count,
+                )
             return result
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
@@ -274,7 +282,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if has_checkpointer:
                 from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
-                await checkpointer.update_workflow_status(workflow_id, _WS.FAILED)
+                await checkpointer.update_run_status(workflow_id, _WS.FAILED)
 
             if error_handling == "raise":
                 raise error from None

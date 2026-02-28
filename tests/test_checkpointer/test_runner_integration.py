@@ -50,10 +50,10 @@ class TestRunnerCheckpointIntegration:
 
         assert result["tripled"] == 30
 
-        # Verify workflow was created and completed
-        wf = await checkpointer.get_workflow("wf-1")
-        assert wf is not None
-        assert wf.status == WorkflowStatus.COMPLETED
+        # Verify run was created and completed
+        r = await checkpointer.get_run("wf-1")
+        assert r is not None
+        assert r.status == WorkflowStatus.COMPLETED
 
         # Verify steps were persisted
         steps = await checkpointer.get_steps("wf-1")
@@ -96,9 +96,9 @@ class TestRunnerCheckpointIntegration:
         result = await runner.run(graph, {"x": 1})
         assert result["tripled"] == 6
 
-        # No workflows should have been created
-        workflows = await checkpointer.list_workflows()
-        assert len(workflows) == 0
+        # No runs should have been created
+        run_list = await checkpointer.list_runs()
+        assert len(run_list) == 0
 
     async def test_no_checkpointer_runs_normally(self):
         """Runner without checkpointer still works, even with workflow_id."""
@@ -158,10 +158,10 @@ class TestRunnerCheckpointIntegration:
         result = await runner.run(graph, {"x": 1}, workflow_id="wf-fail", error_handling="continue")
         assert result.status.value == "failed"
 
-        # Workflow should be marked FAILED
-        wf = await checkpointer.get_workflow("wf-fail")
-        assert wf is not None
-        assert wf.status == WorkflowStatus.FAILED
+        # Run should be marked FAILED
+        r = await checkpointer.get_run("wf-fail")
+        assert r is not None
+        assert r.status == WorkflowStatus.FAILED
 
         # The failed node should have a FAILED step record
         steps = await checkpointer.get_steps("wf-fail")
@@ -220,3 +220,15 @@ class TestRunnerCheckpointIntegration:
         # Each re-execution should have a different superstep
         supersteps = {s.superstep for s in increment_steps}
         assert len(supersteps) == len(increment_steps), "Each re-execution should be in a distinct superstep"
+
+    async def test_step_records_have_node_type(self, checkpointer):
+        """Step records include the node type from the graph."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([double, triple])
+
+        await runner.run(graph, {"x": 5}, workflow_id="wf-types")
+
+        steps = await checkpointer.get_steps("wf-types")
+        for step in steps:
+            assert step.node_type == "FunctionNode"

@@ -1,4 +1,4 @@
-"""Checkpointer package for workflow persistence.
+"""Checkpointer package for run persistence.
 
 Provides the ``Checkpointer`` ABC, ``SqliteCheckpointer`` implementation,
 and supporting types for durable workflow execution.
@@ -9,9 +9,9 @@ from hypergraph.checkpointers.serializers import JsonSerializer, PickleSerialize
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
     Checkpoint,
+    Run,
     StepRecord,
     StepStatus,
-    Workflow,
     WorkflowStatus,
 )
 
@@ -21,10 +21,10 @@ __all__ = [
     "Checkpoint",
     "JsonSerializer",
     "PickleSerializer",
+    "Run",
     "Serializer",
     "SqliteCheckpointer",
     "StepRecord",
     "StepStatus",
-    "Workflow",
     "WorkflowStatus",
 ]

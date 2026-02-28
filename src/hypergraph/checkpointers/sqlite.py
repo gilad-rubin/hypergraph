@@ -6,9 +6,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from hypergraph.checkpointers._migrate import ensure_schema
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
-from hypergraph.checkpointers.types import Checkpoint, StepRecord, StepStatus, Workflow, WorkflowStatus
+from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, StepStatus, WorkflowStatus
+
+# Explicit column lists for SELECT queries — avoids column-order bugs after migration
+_RUNS_COLS = "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, parent_run_id, config"
+_STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at"
 
 
 def _require_aiosqlite() -> Any:
@@ -21,41 +26,8 @@ def _require_aiosqlite() -> Any:
         raise ImportError("SqliteCheckpointer requires aiosqlite. Install it with: pip install hypergraph[checkpoint]") from None
 
 
-_CREATE_WORKFLOWS = """
-CREATE TABLE IF NOT EXISTS workflows (
-    id TEXT PRIMARY KEY,
-    status TEXT NOT NULL DEFAULT 'active',
-    graph_name TEXT,
-    created_at TEXT NOT NULL,
-    completed_at TEXT
-)
-"""
-
-_CREATE_STEPS = """
-CREATE TABLE IF NOT EXISTS steps (
-    workflow_id TEXT NOT NULL,
-    superstep INTEGER NOT NULL,
-    node_name TEXT NOT NULL,
-    idx INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    input_versions TEXT,
-    values_data BLOB,
-    duration_ms REAL NOT NULL DEFAULT 0.0,
-    cached INTEGER NOT NULL DEFAULT 0,
-    decision TEXT,
-    error TEXT,
-    created_at TEXT NOT NULL,
-    completed_at TEXT,
-    child_workflow_id TEXT,
-    UNIQUE(workflow_id, superstep, node_name)
-)
-"""
-
-_CREATE_STEPS_IDX = "CREATE INDEX IF NOT EXISTS idx_steps_workflow ON steps(workflow_id, idx)"
-
-
 class SqliteCheckpointer(Checkpointer):
-    """SQLite-based workflow persistence.
+    """SQLite-based run persistence.
 
     Best for: local development, single-server deployments, simple production.
 
@@ -68,16 +40,13 @@ class SqliteCheckpointer(Checkpointer):
 
     Example::
 
-        checkpointer = SqliteCheckpointer("./workflows.db")
+        checkpointer = SqliteCheckpointer("./runs.db")
         runner = AsyncRunner(checkpointer=checkpointer)
-        result = await runner.run(graph, {"x": 1}, workflow_id="wf-1")
-
-        # Customize durability inline
-        cp = SqliteCheckpointer("./workflows.db", durability="sync")
+        result = await runner.run(graph, {"x": 1}, workflow_id="run-1")
 
         # Query later
-        state = await checkpointer.get_state("wf-1")
-        steps = await checkpointer.get_steps("wf-1")
+        state = await checkpointer.get_state("run-1")
+        steps = await checkpointer.get_steps("run-1")
     """
 
     def __init__(
@@ -106,10 +75,23 @@ class SqliteCheckpointer(Checkpointer):
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""
         self._db = await self._aiosqlite.connect(self._path)
-        await self._db.execute(_CREATE_WORKFLOWS)
-        await self._db.execute(_CREATE_STEPS)
-        await self._db.execute(_CREATE_STEPS_IDX)
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        # Run migration/creation synchronously through the async connection
+        conn = await self._db.execute("SELECT 1")  # ensure connection is open
+        await conn.close()
+        # Use a sync connection for schema setup (ensure_schema uses sync sqlite3)
+        self._ensure_sync_schema()
         await self._db.commit()
+
+    def _ensure_sync_schema(self) -> None:
+        """Set up schema using sync connection (migration logic is sync)."""
+        import sqlite3
+
+        conn = sqlite3.connect(self._path)
+        try:
+            ensure_schema(conn)
+        finally:
+            conn.close()
 
     async def close(self) -> None:
         """Close database connections."""
@@ -138,21 +120,22 @@ class SqliteCheckpointer(Checkpointer):
         await self._db.execute(
             """
             INSERT INTO steps (
-                workflow_id, superstep, node_name, idx, status,
+                run_id, superstep, node_name, step_index, status,
                 input_versions, values_data, duration_ms, cached,
-                decision, error, created_at, completed_at, child_workflow_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(workflow_id, superstep, node_name) DO UPDATE SET
+                decision, error, node_type, created_at, completed_at, child_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
                 status = excluded.status,
                 values_data = excluded.values_data,
                 duration_ms = excluded.duration_ms,
                 cached = excluded.cached,
                 decision = excluded.decision,
                 error = excluded.error,
+                node_type = excluded.node_type,
                 completed_at = excluded.completed_at
             """,
             (
-                record.workflow_id,
+                record.run_id,
                 record.superstep,
                 record.node_name,
                 record.index,
@@ -163,49 +146,74 @@ class SqliteCheckpointer(Checkpointer):
                 int(record.cached),
                 decision_json,
                 record.error,
+                record.node_type,
                 record.created_at.isoformat(),
                 record.completed_at.isoformat() if record.completed_at else None,
-                record.child_workflow_id,
+                record.child_run_id,
             ),
         )
         await self._db.commit()
 
-    async def create_workflow(self, workflow_id: str, *, graph_name: str | None = None) -> Workflow:
-        """Create a new workflow record."""
+    async def create_run(self, run_id: str, *, graph_name: str | None = None) -> Run:
+        """Create a new run record."""
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         await self._db.execute(
-            "INSERT INTO workflows (id, status, graph_name, created_at) VALUES (?, ?, ?, ?)",
-            (workflow_id, WorkflowStatus.ACTIVE.value, graph_name, now.isoformat()),
+            "INSERT INTO runs (id, status, graph_name, created_at) VALUES (?, ?, ?, ?)",
+            (run_id, WorkflowStatus.ACTIVE.value, graph_name or "", now.isoformat()),
         )
         await self._db.commit()
-        return Workflow(id=workflow_id, status=WorkflowStatus.ACTIVE, graph_name=graph_name, created_at=now)
+        return Run(id=run_id, status=WorkflowStatus.ACTIVE, graph_name=graph_name, created_at=now)
 
-    async def update_workflow_status(self, workflow_id: str, status: WorkflowStatus) -> None:
-        """Update workflow status."""
+    async def update_run_status(
+        self,
+        run_id: str,
+        status: WorkflowStatus,
+        *,
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None:
+        """Update run status with optional stats."""
         await self._ensure_db()
         completed_at = datetime.now(timezone.utc).isoformat() if status != WorkflowStatus.ACTIVE else None
+
+        # Build SET clause dynamically based on what's provided
+        sets = ["status = ?", "completed_at = ?"]
+        params: list[Any] = [status.value, completed_at]
+
+        if duration_ms is not None:
+            sets.append("duration_ms = ?")
+            params.append(duration_ms)
+        if node_count is not None:
+            sets.append("node_count = ?")
+            params.append(node_count)
+        if error_count is not None:
+            sets.append("error_count = ?")
+            params.append(error_count)
+
+        params.append(run_id)
         await self._db.execute(
-            "UPDATE workflows SET status = ?, completed_at = ? WHERE id = ?",
-            (status.value, completed_at, workflow_id),
+            f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
+            params,
         )
         await self._db.commit()
 
     # === Read ===
 
-    async def get_state(self, workflow_id: str, *, superstep: int | None = None) -> dict[str, Any]:
+    async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Compute state by folding step values in index order."""
         await self._ensure_db()
 
         if superstep is not None:
             cursor = await self._db.execute(
-                "SELECT values_data FROM steps WHERE workflow_id = ? AND superstep <= ? ORDER BY idx",
-                (workflow_id, superstep),
+                "SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                (run_id, superstep),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT values_data FROM steps WHERE workflow_id = ? ORDER BY idx",
-                (workflow_id,),
+                "SELECT values_data FROM steps WHERE run_id = ? ORDER BY step_index",
+                (run_id,),
             )
 
         state: dict[str, Any] = {}
@@ -216,89 +224,128 @@ class SqliteCheckpointer(Checkpointer):
                     state.update(values)
         return state
 
-    async def get_steps(self, workflow_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+    async def get_steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
         """Get step records in execution order."""
         await self._ensure_db()
 
         if superstep is not None:
             cursor = await self._db.execute(
-                "SELECT * FROM steps WHERE workflow_id = ? AND superstep <= ? ORDER BY idx",
-                (workflow_id, superstep),
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                (run_id, superstep),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM steps WHERE workflow_id = ? ORDER BY idx",
-                (workflow_id,),
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY step_index",
+                (run_id,),
             )
 
         rows = await cursor.fetchall()
         return [self._row_to_step(row) for row in rows]
 
-    async def get_workflow(self, workflow_id: str) -> Workflow | None:
-        """Get workflow metadata."""
+    async def get_run(self, run_id: str) -> Run | None:
+        """Get run metadata."""
         await self._ensure_db()
         cursor = await self._db.execute(
-            "SELECT id, status, graph_name, created_at, completed_at FROM workflows WHERE id = ?",
-            (workflow_id,),
+            f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?",
+            (run_id,),
         )
         row = await cursor.fetchone()
         if row is None:
             return None
-        return self._row_to_workflow(row)
+        return self._row_to_run(row)
 
-    async def list_workflows(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Workflow]:
-        """List workflows, optionally filtered by status."""
+    async def list_runs(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Run]:
+        """List runs, optionally filtered by status."""
         await self._ensure_db()
 
         if status is not None:
             cursor = await self._db.execute(
-                "SELECT id, status, graph_name, created_at, completed_at FROM workflows WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                f"SELECT {_RUNS_COLS} FROM runs WHERE status = ? ORDER BY created_at DESC LIMIT ?",
                 (status.value, limit),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT id, status, graph_name, created_at, completed_at FROM workflows ORDER BY created_at DESC LIMIT ?",
+                f"SELECT {_RUNS_COLS} FROM runs ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             )
 
         rows = await cursor.fetchall()
-        return [self._row_to_workflow(row) for row in rows]
+        return [self._row_to_run(row) for row in rows]
+
+    async def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
+        """Search steps using FTS5."""
+        await self._ensure_db()
+
+        fts_query = f"{field}:{query}" if field else query
+
+        cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
+        cursor = await self._db.execute(
+            f"""
+            SELECT {cols} FROM steps s
+            JOIN steps_fts fts ON s.id = fts.rowid
+            WHERE steps_fts MATCH ?
+            ORDER BY s.created_at DESC
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_step(row) for row in rows]
 
     # === Internal ===
 
     def _row_to_step(self, row: tuple[Any, ...]) -> StepRecord:
-        """Convert a database row to StepRecord."""
-        values_blob = row[6]
+        """Convert a v2 database row to StepRecord.
+
+        v2 columns: id, run_id, step_index, superstep, node_name, node_type,
+                     status, duration_ms, cached, error, decision,
+                     input_versions, values_data, child_run_id,
+                     created_at, completed_at
+        """
+        values_blob = row[12]
         values = self._serializer.deserialize(values_blob) if values_blob is not None else None
-        input_versions = json.loads(row[5]) if row[5] else {}
-        decision_raw = row[9]
+        input_versions = json.loads(row[11]) if row[11] else {}
+        decision_raw = row[10]
         decision = json.loads(decision_raw) if decision_raw else None
 
         return StepRecord(
-            workflow_id=row[0],
-            superstep=row[1],
-            node_name=row[2],
-            index=row[3],
-            status=StepStatus(row[4]),
+            run_id=row[1],
+            superstep=row[3],
+            node_name=row[4],
+            index=row[2],
+            status=StepStatus(row[6]),
             input_versions=input_versions,
             values=values,
             duration_ms=row[7],
             cached=bool(row[8]),
             decision=decision,
-            error=row[10],
-            created_at=datetime.fromisoformat(row[11]),
-            completed_at=datetime.fromisoformat(row[12]) if row[12] else None,
-            child_workflow_id=row[13],
+            error=row[9],
+            node_type=row[5],
+            created_at=datetime.fromisoformat(row[14]),
+            completed_at=datetime.fromisoformat(row[15]) if row[15] else None,
+            child_run_id=row[13],
         )
 
-    def _row_to_workflow(self, row: tuple[Any, ...]) -> Workflow:
-        """Convert a database row to Workflow."""
-        return Workflow(
+    def _row_to_run(self, row: tuple[Any, ...]) -> Run:
+        """Convert a v2 database row to Run.
+
+        v2 columns: id, graph_name, status, duration_ms, node_count,
+                     error_count, created_at, completed_at, parent_run_id, config
+        """
+        config_raw = row[9] if len(row) > 9 else None
+        config = json.loads(config_raw) if config_raw else None
+
+        return Run(
             id=row[0],
-            status=WorkflowStatus(row[1]),
-            graph_name=row[2],
-            created_at=datetime.fromisoformat(row[3]),
-            completed_at=datetime.fromisoformat(row[4]) if row[4] else None,
+            graph_name=row[1] or None,
+            status=WorkflowStatus(row[2]),
+            duration_ms=row[3],
+            node_count=row[4] or 0,
+            error_count=row[5] or 0,
+            created_at=datetime.fromisoformat(row[6]),
+            completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            parent_run_id=row[8],
+            config=config,
         )
 
     # === Sync Reads ===
@@ -306,38 +353,30 @@ class SqliteCheckpointer(Checkpointer):
     def _sync_db(self):
         """Open a sync sqlite3 connection (lazy, cached).
 
-        Creates tables if needed so sync reads work even before async initialize().
+        Creates/migrates schema if needed so sync reads work standalone.
         """
         if self._sync_conn is None:
             import sqlite3
 
             self._sync_conn = sqlite3.connect(self._path)
-            self._sync_conn.execute(_CREATE_WORKFLOWS)
-            self._sync_conn.execute(_CREATE_STEPS)
-            self._sync_conn.execute(_CREATE_STEPS_IDX)
-            self._sync_conn.commit()
+            ensure_schema(self._sync_conn)
         return self._sync_conn
 
-    def state(self, workflow_id: str, *, superstep: int | None = None) -> dict[str, Any]:
+    def state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
         """Get accumulated state synchronously.
 
         Same as ``get_state`` but uses stdlib ``sqlite3`` — no await needed.
-
-        Example::
-
-            cp = SqliteCheckpointer("./workflows.db")
-            state = cp.state("wf-1")
         """
         db = self._sync_db()
         if superstep is not None:
             cursor = db.execute(
-                "SELECT values_data FROM steps WHERE workflow_id = ? AND superstep <= ? ORDER BY idx",
-                (workflow_id, superstep),
+                "SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                (run_id, superstep),
             )
         else:
             cursor = db.execute(
-                "SELECT values_data FROM steps WHERE workflow_id = ? ORDER BY idx",
-                (workflow_id,),
+                "SELECT values_data FROM steps WHERE run_id = ? ORDER BY step_index",
+                (run_id,),
             )
 
         state: dict[str, Any] = {}
@@ -348,63 +387,123 @@ class SqliteCheckpointer(Checkpointer):
                     state.update(values)
         return state
 
-    def steps(self, workflow_id: str, *, superstep: int | None = None) -> list[StepRecord]:
-        """Get step records synchronously.
-
-        Same as ``get_steps`` but uses stdlib ``sqlite3`` — no await needed.
-        """
+    def steps(self, run_id: str, *, superstep: int | None = None) -> list[StepRecord]:
+        """Get step records synchronously."""
         db = self._sync_db()
         if superstep is not None:
             cursor = db.execute(
-                "SELECT * FROM steps WHERE workflow_id = ? AND superstep <= ? ORDER BY idx",
-                (workflow_id, superstep),
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                (run_id, superstep),
             )
         else:
             cursor = db.execute(
-                "SELECT * FROM steps WHERE workflow_id = ? ORDER BY idx",
-                (workflow_id,),
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY step_index",
+                (run_id,),
             )
         return [self._row_to_step(row) for row in cursor.fetchall()]
 
-    def workflow(self, workflow_id: str) -> Workflow | None:
-        """Get workflow metadata synchronously.
-
-        Same as ``get_workflow`` but uses stdlib ``sqlite3`` — no await needed.
-        """
+    def run(self, run_id: str) -> Run | None:
+        """Get run metadata synchronously."""
         db = self._sync_db()
-        cursor = db.execute(
-            "SELECT id, status, graph_name, created_at, completed_at FROM workflows WHERE id = ?",
-            (workflow_id,),
-        )
+        cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))
         row = cursor.fetchone()
         if row is None:
             return None
-        return self._row_to_workflow(row)
+        return self._row_to_run(row)
 
-    def workflows(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Workflow]:
-        """List workflows synchronously.
-
-        Same as ``list_workflows`` but uses stdlib ``sqlite3`` — no await needed.
-        """
+    def runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        graph_name: str | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[Run]:
+        """List runs synchronously with optional filters."""
         db = self._sync_db()
+        conditions = []
+        params: list[Any] = []
+
         if status is not None:
-            cursor = db.execute(
-                "SELECT id, status, graph_name, created_at, completed_at FROM workflows WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                (status.value, limit),
-            )
-        else:
-            cursor = db.execute(
-                "SELECT id, status, graph_name, created_at, completed_at FROM workflows ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
-        return [self._row_to_workflow(row) for row in cursor.fetchall()]
+            conditions.append("status = ?")
+            params.append(status.value)
+        if graph_name is not None:
+            conditions.append("graph_name = ?")
+            params.append(graph_name)
+        if since is not None:
+            conditions.append("created_at >= ?")
+            params.append(since.isoformat())
 
-    def checkpoint(self, workflow_id: str, *, superstep: int | None = None) -> Checkpoint:
-        """Get a checkpoint synchronously.
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
 
-        Same as ``get_checkpoint`` but uses stdlib ``sqlite3`` — no await needed.
-        """
+        cursor = db.execute(
+            f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        )
+        return [self._row_to_run(row) for row in cursor.fetchall()]
+
+    def search_sync(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
+        """Search steps synchronously using FTS5."""
+        db = self._sync_db()
+
+        fts_query = f"{field}:{query}" if field else query
+
+        # Use aliased column refs that match _STEPS_COLS order
+        cols = ", ".join(f"s.{c.strip()}" for c in _STEPS_COLS.split(","))
+        cursor = db.execute(
+            f"""
+            SELECT {cols} FROM steps s
+            JOIN steps_fts fts ON s.id = fts.rowid
+            WHERE steps_fts MATCH ?
+            ORDER BY s.created_at DESC
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        )
+        return [self._row_to_step(row) for row in cursor.fetchall()]
+
+    def values(self, run_id: str, *, key: str | None = None) -> dict[str, Any]:
+        """Get run output values synchronously. Optionally filter to a single key."""
+        full_state = self.state(run_id)
+        if key is not None:
+            return {key: full_state[key]} if key in full_state else {}
+        return full_state
+
+    def stats(self, run_id: str) -> dict[str, Any]:
+        """Get per-node duration/frequency stats for a run."""
+        db = self._sync_db()
+        cursor = db.execute(
+            """
+            SELECT node_name, node_type,
+                   COUNT(*) as executions,
+                   SUM(duration_ms) as total_ms,
+                   AVG(duration_ms) as avg_ms,
+                   MAX(duration_ms) as max_ms,
+                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as errors,
+                   SUM(cached) as cache_hits
+            FROM steps WHERE run_id = ?
+            GROUP BY node_name
+            ORDER BY total_ms DESC
+            """,
+            (run_id,),
+        )
+        return {
+            row[0]: {
+                "node_type": row[1],
+                "executions": row[2],
+                "total_ms": row[3],
+                "avg_ms": round(row[4], 3) if row[4] else 0,
+                "max_ms": row[5],
+                "errors": row[6],
+                "cache_hits": row[7],
+            }
+            for row in cursor.fetchall()
+        }
+
+    def checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
+        """Get a checkpoint synchronously."""
         return Checkpoint(
-            values=self.state(workflow_id, superstep=superstep),
-            steps=self.steps(workflow_id, superstep=superstep),
+            values=self.state(run_id, superstep=superstep),
+            steps=self.steps(run_id, superstep=superstep),
         )
