@@ -115,9 +115,13 @@ def runs_ls(
     from hypergraph.checkpointers import WorkflowStatus
 
     filter_kwargs: dict = {"limit": limit}
+    if graph:
+        filter_kwargs["graph_name"] = graph
+    if since:
+        filter_kwargs["since"] = parse_since(since)
 
     if status:
-        # When status filter is given, query per-status and merge
+        # When status filter is given, query per-status and merge (preserving graph/since)
         run_list = []
         for s in status:
             try:
@@ -126,12 +130,8 @@ def runs_ls(
                 print(f"Error: Unknown status '{s}'. Use: active, completed, failed")
                 raise typer.Exit(1) from e
             run_list.extend(cp.runs(status=ws, **filter_kwargs))
-        run_list = run_list[:limit]
+        run_list = sorted(run_list, key=lambda r: r.created_at or "", reverse=True)[:limit]
     else:
-        if graph:
-            filter_kwargs["graph_name"] = graph
-        if since:
-            filter_kwargs["since"] = parse_since(since)
         run_list = cp.runs(**filter_kwargs)
 
     if as_json:
@@ -416,7 +416,7 @@ def runs_steps(
         return
 
     for s in step_list:
-        _print_step_detail(s, show_values and full)
+        _print_step_detail(s, show_values)
 
     shown = len(step_list)
     if shown < total:

@@ -499,6 +499,35 @@ class TestMigration:
         assert steps[0].run_id == "wf-old"
         assert steps[0].values == {"doubled": 10}
 
+    def test_v1_migration_backfills_fts(self, tmp_path):
+        """FTS index is populated for pre-migration rows after v1→v2 migration."""
+        import sqlite3
+
+        db_path = str(tmp_path / "v1_fts.db")
+        conn = sqlite3.connect(db_path)
+        # Create minimal v1 schema with a step row
+        conn.execute(
+            "CREATE TABLE workflows (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', graph_name TEXT, created_at TEXT NOT NULL, completed_at TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE steps (workflow_id TEXT NOT NULL, superstep INTEGER NOT NULL, node_name TEXT NOT NULL, idx INTEGER NOT NULL, status TEXT NOT NULL, input_versions TEXT, values_data BLOB, duration_ms REAL NOT NULL DEFAULT 0.0, cached INTEGER NOT NULL DEFAULT 0, decision TEXT, error TEXT, created_at TEXT NOT NULL, completed_at TEXT, child_workflow_id TEXT, UNIQUE(workflow_id, superstep, node_name))"
+        )
+        conn.execute("INSERT INTO workflows (id, status, graph_name, created_at) VALUES ('wf1', 'completed', 'test', '2024-01-01T00:00:00')")
+        conn.execute(
+            "INSERT INTO steps (workflow_id, superstep, node_name, idx, status, duration_ms, cached, created_at) VALUES ('wf1', 0, 'embed', 0, 'completed', 10.0, 0, '2024-01-01T00:00:00')"
+        )
+        conn.commit()
+        conn.close()
+
+        cp = SqliteCheckpointer(db_path)
+        # Trigger migration by accessing sync DB
+        cp.runs()
+
+        # FTS search should find the migrated step
+        results = cp.search_sync("embed")
+        assert len(results) == 1
+        assert results[0].node_name == "embed"
+
     def test_migration_idempotent(self, tmp_path):
         """Running migration twice doesn't break anything."""
         import sqlite3

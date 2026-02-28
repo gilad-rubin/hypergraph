@@ -243,7 +243,7 @@ Two batch patterns, different tradeoffs. Both start from the same idea — **wri
 | **Error isolation** | Per-item — failures don't affect other items | Whole step — one failure can fail the batch |
 | **Tracing** | Per-item RunLogs with full routing/timing | One RunLog (batch is a single step) |
 | **Checkpointing** | Ephemeral — not persisted | Persisted as one run step |
-| **Product mode** | No — maps one parameter at a time | Yes — `mode="product"` for cartesian product |
+| **Product mode** | Yes — `map_mode="product"` with multi-key `map_over` | Yes — `mode="product"` for cartesian product |
 | **Use in pipelines** | Top-level batch processing | Step inside a larger graph |
 
 ### When to use runner.map()

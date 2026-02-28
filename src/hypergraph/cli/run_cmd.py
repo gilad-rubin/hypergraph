@@ -47,12 +47,17 @@ def _load_values_source(source: str) -> dict[str, Any]:
     path = Path(source)
     if path.is_file():
         with open(path) as f:
-            return json.load(f)
-    try:
-        return json.loads(source)
-    except json.JSONDecodeError:
-        print(f"Error: '{source}' is not valid JSON and not a file path")
-        raise typer.Exit(1) from None
+            data = json.load(f)
+    else:
+        try:
+            data = json.loads(source)
+        except json.JSONDecodeError:
+            print(f"Error: '{source}' is not valid JSON and not a file path")
+            raise typer.Exit(1) from None
+    if not isinstance(data, dict):
+        print(f"Error: --values must be a JSON object (got {type(data).__name__})")
+        raise typer.Exit(1)
+    return data
 
 
 def _resolve_values(values_option: str | None, extra_args: list[str]) -> dict[str, Any]:

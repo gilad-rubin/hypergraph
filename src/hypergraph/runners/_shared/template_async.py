@@ -285,7 +285,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 # Flush buffered steps so partial execution is preserved on failure
                 for record in step_buffer:
                     await checkpointer.save_step(record)
-                await checkpointer.update_run_status(workflow_id, _WS.FAILED)
+                total_duration_ms_fail = (time.time() - start_time) * 1000
+                fail_count = len(collector._records)
+                err_count = sum(1 for r in collector._records if r.status == "failed")
+                await checkpointer.update_run_status(
+                    workflow_id,
+                    _WS.FAILED,
+                    duration_ms=total_duration_ms_fail,
+                    node_count=fail_count,
+                    error_count=err_count,
+                )
 
             if error_handling == "raise":
                 raise error from None

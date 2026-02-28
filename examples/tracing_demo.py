@@ -117,8 +117,8 @@ async def demo_2_checkpointer(db_path: str) -> None:
     # Query the checkpointer directly — sync reads, no await needed
     print("\n--- Querying checkpointer (sync reads) ---")
 
-    state = cp.state("demo-pipeline")
-    print("\n>>> cp.state('demo-pipeline')")
+    state = cp.values("demo-pipeline")
+    print("\n>>> cp.values('demo-pipeline')")
     print(f"  {state}")
 
     steps = cp.steps("demo-pipeline")
@@ -204,26 +204,26 @@ async def demo_5_cli(db_path: str) -> None:
     """Use case 5: CLI inspection — post-hoc debugging."""
     section("5. CLI — Post-Hoc Workflow Inspection")
 
-    print(">>> hypergraph workflows ls --db <db>")
-    print(run_cli(["workflows", "ls", "--db", db_path]))
+    print(">>> hypergraph runs ls --db <db>")
+    print(run_cli(["runs", "ls", "--db", db_path]))
 
-    print(">>> hypergraph workflows show demo-pipeline --db <db>")
-    print(run_cli(["workflows", "show", "demo-pipeline", "--db", db_path]))
+    print(">>> hypergraph runs show demo-pipeline --db <db>")
+    print(run_cli(["runs", "show", "demo-pipeline", "--db", db_path]))
 
-    print(">>> hypergraph workflows state demo-pipeline --db <db>")
-    print(run_cli(["workflows", "state", "demo-pipeline", "--db", db_path]))
+    print(">>> hypergraph runs values demo-pipeline --db <db>")
+    print(run_cli(["runs", "values", "demo-pipeline", "--db", db_path]))
 
-    print(">>> hypergraph workflows state demo-pipeline --values --db <db>")
-    print(run_cli(["workflows", "state", "demo-pipeline", "--values", "--db", db_path]))
+    print(">>> hypergraph runs values demo-pipeline --full --db <db>")
+    print(run_cli(["runs", "values", "demo-pipeline", "--full", "--db", db_path]))
 
-    print(">>> hypergraph workflows show demo-partial-failure --db <db>")
-    print(run_cli(["workflows", "show", "demo-partial-failure", "--db", db_path]))
+    print(">>> hypergraph runs show demo-partial-failure --db <db>")
+    print(run_cli(["runs", "show", "demo-partial-failure", "--db", db_path]))
 
-    print(">>> hypergraph workflows show demo-cycle --db <db>")
-    print(run_cli(["workflows", "show", "demo-cycle", "--db", db_path]))
+    print(">>> hypergraph runs show demo-cycle --db <db>")
+    print(run_cli(["runs", "show", "demo-cycle", "--db", db_path]))
 
-    print(">>> hypergraph workflows steps demo-cycle --values --db <db>")
-    print(run_cli(["workflows", "steps", "demo-cycle", "--values", "--db", db_path]))
+    print(">>> hypergraph runs steps demo-cycle --values --db <db>")
+    print(run_cli(["runs", "steps", "demo-cycle", "--values", "--db", db_path]))
 
 
 async def demo_6_json_export(db_path: str) -> None:
@@ -237,8 +237,8 @@ async def demo_6_json_export(db_path: str) -> None:
     print(">>> json.dumps(result.log.to_dict(), indent=2)")
     print(json.dumps(result.log.to_dict(), indent=2))
 
-    print("\n>>> hypergraph workflows show demo-pipeline --json --db <db>")
-    output = run_cli(["workflows", "show", "demo-pipeline", "--json", "--db", db_path])
+    print("\n>>> hypergraph runs show demo-pipeline --json --db <db>")
+    output = run_cli(["runs", "show", "demo-pipeline", "--json", "--db", db_path])
     # Pretty-print the JSON
     try:
         parsed = json.loads(output)

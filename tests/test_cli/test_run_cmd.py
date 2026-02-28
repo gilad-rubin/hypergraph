@@ -65,8 +65,7 @@ class TestConfigResolution:
         empty.mkdir()
         # Walk up should eventually not find anything in tmp_path context
         # Use a path deep enough that it won't find the real project
-        assert find_pyproject(empty) is None or find_pyproject(empty) is not None
-        # The real test is that it doesn't crash
+        assert find_pyproject(empty) is None
 
     def test_load_config_with_graphs(self, tmp_path):
         pyproject = tmp_path / "pyproject.toml"

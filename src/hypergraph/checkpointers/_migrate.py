@@ -63,6 +63,12 @@ def migrate_v1_to_v2(conn: Any) -> None:
         _create_v2_indexes(conn)
         _create_fts(conn)
 
+        # Backfill FTS index for rows copied before triggers were created
+        conn.execute("""
+            INSERT INTO steps_fts(rowid, node_name, error)
+            SELECT id, node_name, error FROM steps
+        """)
+
         conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
         conn.execute("DELETE FROM _schema_version")
         conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
