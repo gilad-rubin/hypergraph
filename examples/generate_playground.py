@@ -177,17 +177,16 @@ result = runner.run(graph, {{"x": 5}})
 
     # Multi — runner.map()
     results = runner.map(graph, {"x": [1, 2, 3, 4, 5]}, map_over="x")
-    outputs = [r["tripled"] for r in results]
     summaries = "\n".join(f"  [{i}] {r.log.summary()}" for i, r in enumerate(results))
     multi = f"""\
-# runner.map() returns list[RunResult] — one per item
+# runner.map() returns MapResult — sequence with batch metadata
 results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 
->>> len(results)
-{len(results)}
+>>> results.summary()
+'{results.summary()}'
 
->>> [r["tripled"] for r in results]
-{outputs}
+>>> results["tripled"]
+{results["tripled"]}
 
 # Each item gets its own RunLog with timing
 >>> for i, r in enumerate(results): print(r.log.summary())
@@ -247,8 +246,6 @@ result = runner.run(graph, {{"x": 1}}, error_handling="continue")
         map_over="x",
         error_handling="continue",
     )
-    statuses = [r.status.value for r in results]
-    values = [r["value"] if r.status.value == "completed" else f"FAILED: {r.error}" for r in results]
     multi = f"""\
 # runner.map() with error_handling="continue" — failures don't stop the batch
 results = runner.map(
@@ -256,15 +253,22 @@ results = runner.map(
     map_over="x", error_handling="continue",
 )
 
->>> [r.status.value for r in results]
-{statuses}
+>>> results.summary()
+'{results.summary()}'
 
->>> [r["value"] if r.completed else f"FAILED: {{r.error}}" for r in results]
-{values}
+>>> results.failed
+{results.failed}
 
-# Failed items have their own RunLog with error details
->>> results[2].log.errors[0].error
-'{results[2].log.errors[0].error if results[2].log.errors else "N/A"}'"""
+>>> results.failures[0].error
+{results.failures[0].error!r}
+
+# String key access — None for failed items
+>>> results["value"]
+{results["value"]}
+
+# Or with a custom default
+>>> results.get("value", "N/A")
+{results.get("value", "N/A")}"""
 
     return UseCase(
         id="uc2",
@@ -307,22 +311,36 @@ result = runner.run(graph, {{"count": 0}})
 >>> result.log.node_stats
 {fmt_node_stats(result.log.node_stats)}"""
 
-    # Multi — map_over on the cycle graph
-    inner = Graph([increment, check_done], name="counter")
-    outer = Graph([inner.as_node().map_over("count")])
-    result_m = runner.run(outer, {"count": [0, 1, 2]})
+    # Multi — runner.map() on the cycle graph (each item gets its own RunLog)
+    results_m = runner.map(graph, {"count": [0, 1, 2]}, map_over="count")
+
+    def _fmt_decisions(r):
+        return [
+            s.decision if hasattr(s.decision, "__class__") and s.decision.__class__.__name__ == "type" else s.decision
+            for s in r.log.steps
+            if s.decision is not None
+        ]
+
+    per_item = "\n".join(
+        f"  [{i}] count={r['count']}, {len(r.log.steps)} steps, decisions: {[('→ END' if str(s.decision) == 'END' else f'→ {s.decision}') for s in r.log.steps if s.decision is not None]}"
+        for i, r in enumerate(results_m)
+    )
     multi = f"""\
-# map_over on a cyclic graph — each item loops independently
-inner = Graph([increment, check_done], name="counter")
-outer = Graph([inner.as_node().map_over("count")])
-result = runner.run(outer, {{"count": [0, 1, 2]}})
+# runner.map() on a cyclic graph — each item gets its own RunLog with routing
+results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 
->>> result["count"]
-{result_m["count"]}
+>>> results.summary()
+'{results_m.summary()}'
 
-# Starting from 0: loops 3 times. From 2: loops once. From 3+: exits immediately.
->>> result.log.summary()
-'{result_m.log.summary()}'"""
+>>> results["count"]
+{results_m["count"]}
+
+# Per-item routing decisions visible (count=0 loops 3×, count=2 loops 1×)
+{per_item}
+
+# Drill into one item's full trace
+>>> print(results[0].log)
+{results_m[0].log}"""
 
     return UseCase(
         id="uc3",
@@ -332,7 +350,7 @@ result = runner.run(outer, {{"count": [0, 1, 2]}})
         category="tracing",
         status="ok",
         impl_note="Fully implemented. RunLog tracks routing decisions and re-executions.",
-        multi_style="map_over",
+        multi_style="runner.map()",
         single_python=single,
         single_cli="",
         multi_python=multi,
@@ -536,15 +554,19 @@ result = runner.run(graph, {{"x": 5}})
 
     # Multi
     results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+    batch_json = json.dumps(results.to_dict(), indent=2, default=str)
+    if len(batch_json) > 600:
+        batch_json = batch_json[:600] + "\n  ... (truncated)"
     multi = f"""\
 results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
 
-# Each result has its own JSON-serializable log
->>> len(results)
-{len(results)}
+# Batch-level JSON export (includes per-item metadata)
+>>> json.dumps(results.to_dict(), indent=2)
+{batch_json}
 
->>> [r.log.to_dict()["summary"] for r in results]
-{[r.log.to_dict().get("summary", r.log.summary()) for r in results]}"""
+# Per-item summaries via RunResult.summary()
+>>> [r.summary() for r in results]
+{[r.summary() for r in results]}"""
 
     return UseCase(
         id="uc7",
@@ -711,35 +733,39 @@ result = runner.run(graph, {{"x": 5}})
 
     # Multi — runner.map()
     results = runner.map(graph, {"x": [1, 2, 3, 4, 5]}, map_over="x")
-    outputs = [r["tripled"] for r in results]
     multi = f"""\
 # runner.map() — run the same graph on multiple inputs
 results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 
->>> type(results)
-list[RunResult]  # one per input
+>>> type(results).__name__
+'{type(results).__name__}'
 
->>> [r["tripled"] for r in results]
-{outputs}
+>>> results.summary()
+'{results.summary()}'
 
->>> [r.status.value for r in results]
-{[r.status.value for r in results]}
+# String key access — collect values across all items
+>>> results["tripled"]
+{results["tripled"]}
+
+# Batch metadata
+>>> results.run_id
+'{results.run_id}'
+
+>>> results.total_duration_ms
+{results.total_duration_ms:.1f}
 
 # Each item has its own RunLog
 >>> results[0].log.summary()
-'{results[0].log.summary()}'
-
->>> results[4].log.summary()
-'{results[4].log.summary()}'"""
+'{results[0].log.summary()}'"""
 
     return UseCase(
         id="uc10",
         label="UC10",
         title='"Process a batch of items"',
-        note="runner.map() → list[RunResult]",
+        note="runner.map() → MapResult",
         category="map",
         status="ok",
-        impl_note="Fully implemented. Each map iteration is independent with its own RunLog.",
+        impl_note="Fully implemented. MapResult wraps per-item RunResults with batch metadata.",
         multi_style="runner.map()",
         single_python=single,
         single_cli="",
