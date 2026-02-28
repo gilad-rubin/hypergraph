@@ -187,51 +187,47 @@ result = runner.run(graph, {{"x": 5}})
 
     # Mapped — runner.map()
     results = runner.map(graph, {"x": [1, 2, 3, 4, 5]}, map_over="x")
-    summaries = "\n".join(f"  [{i}] {r.log.summary()}" for i, r in enumerate(results))
+    r0 = results[0]
     mapped = f"""\
-# runner.map() returns MapResult — sequence with batch metadata
 results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 
 >>> results.summary()
 '{results.summary()}'
 
->>> results["tripled"]
-{results["tripled"]}
+# Drill into one item — same RunLog API as Single
+>>> print(results[0].log)
+{r0.log}
 
-# Each item gets its own RunLog with timing
->>> for i, r in enumerate(results): print(r.log.summary())
-{summaries}"""
+>>> results[0].log.timing
+{r0.log.timing}
+
+>>> results[0].log.node_stats
+{fmt_node_stats(r0.log.node_stats)}"""
 
     # Nested — map_over
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
     step_n = result_n.log.steps[0]
+    log0 = step_n.inner_logs[0]
     nested = f"""\
-# map_over — inner graph runs per item, ONE RunResult with list outputs
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 
->>> result["tripled"]
-{result_n["tripled"]}
-
-# Outer RunLog shows one step (the mapped GraphNode)
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
-# Drill into inner runs via step.inner_logs
+# Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> len(step.inner_logs)
-{len(step_n.inner_logs)}
+>>> print(step.inner_logs[0])
+{log0}
 
-# Each inner_log is a full RunLog — per-item timing visible
->>> for i, log in enumerate(step.inner_logs): print(f"  [{{i}}] {{log.summary()}}")
-{fmt_inner_logs(step_n.inner_logs)}
-
-# Drill into one inner log's timing
 >>> step.inner_logs[0].timing
-{step_n.inner_logs[0].timing}"""
+{log0.timing}
+
+>>> step.inner_logs[0].node_stats
+{fmt_node_stats(log0.node_stats)}"""
 
     return UseCase(
         id="uc1",
@@ -288,29 +284,25 @@ result = runner.run(graph, {{"x": 1}}, error_handling="continue")
         map_over="x",
         error_handling="continue",
     )
+    r_failed = results.failures[0]
     mapped = f"""\
-# runner.map() with error_handling="continue" — failures don't stop the batch
 results = runner.map(
     fail_graph, {{"x": [1, 2, 3, 4, 5]}},
     map_over="x", error_handling="continue",
 )
 
+>>> results.status
+{results.status}
+
 >>> results.summary()
 '{results.summary()}'
 
->>> results.failed
-{results.failed}
+# Drill into the failed item — same RunLog API as Single
+>>> results.failures[0].log.errors
+  {r_failed.log.errors[0].node_name}: {r_failed.log.errors[0].error}
 
->>> results.failures[0].error
-{results.failures[0].error!r}
-
-# String key access — None for failed items
->>> results["value"]
-{results["value"]}
-
-# Or with a custom default
->>> results.get("value", "N/A")
-{results.get("value", "N/A")}"""
+>>> print(results.failures[0].log)
+{r_failed.log}"""
 
     # Nested — map_over with error_handling="continue"
     inner_fail = Graph([maybe_fail], name="checker")
@@ -319,7 +311,6 @@ results = runner.map(
     step_n = result_n.log.steps[0]
     err_logs = [log for log in step_n.inner_logs if log.errors]
     nested = f"""\
-# map_over with error_handling="continue" — errors visible via inner_logs
 inner = Graph([maybe_fail], name="checker")
 outer = Graph([inner.as_node().map_over("x", error_handling="continue")])
 result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
@@ -327,21 +318,16 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
 >>> result.status
 {result_n.status}
 
->>> result["value"]
-{result_n["value"]}
+>>> result.log.summary()
+'{result_n.log.summary()}'
 
-# Drill into inner_logs to see which items failed
->>> step = result.log.steps[0]
->>> for i, log in enumerate(step.inner_logs): print(f"  [{{i}}] {{log.summary()}}")
-{fmt_inner_logs(step_n.inner_logs)}
-
-# Find and inspect the failure
->>> failed = [log for log in step.inner_logs if log.errors]
+# Drill into inner_logs — same RunLog API as Single
+>>> failed = [log for log in result.log.steps[0].inner_logs if log.errors]
 >>> failed[0].errors[0].error
 '{err_logs[0].errors[0].error}'
 
-# Compare: runner.map() gives MapResult.failures for batch-level filtering
-#          map_over gives step.inner_logs for per-item drill-down"""
+>>> print(failed[0])
+{err_logs[0]}"""
 
     return UseCase(
         id="uc2",
@@ -387,11 +373,7 @@ result = runner.run(graph, {{"count": 0}})
 
     # Mapped — runner.map() on the cycle graph (each item gets its own RunLog)
     results_m = runner.map(graph, {"count": [0, 1, 2]}, map_over="count")
-
-    per_item = "\n".join(
-        f"  [{i}] count={r['count']}, {len(r.log.steps)} steps, decisions: {[('→ END' if str(s.decision) == 'END' else f'→ {s.decision}') for s in r.log.steps if s.decision is not None]}"
-        for i, r in enumerate(results_m)
-    )
+    r0_m = results_m[0]
     mapped = f"""\
 # runner.map() on a cyclic graph — each item gets its own RunLog with routing
 results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
@@ -402,23 +384,19 @@ results = runner.map(graph, {{"count": [0, 1, 2]}}, map_over="count")
 >>> results["count"]
 {results_m["count"]}
 
-# Per-item routing decisions visible (count=0 loops 3×, count=2 loops 1×)
-{per_item}
-
-# Drill into one item's full trace
+# Drill into one item — same RunLog API as Single
 >>> print(results[0].log)
-{results_m[0].log}"""
+{r0_m.log}
+
+>>> results[0].log.node_stats
+{fmt_node_stats(r0_m.log.node_stats)}"""
 
     # Nested — map_over with inner_logs revealing per-item routing
     inner = Graph([increment, check_done], name="counter")
     outer = Graph([inner.as_node().map_over("count")])
     result_n = runner.run(outer, {"count": [0, 1, 2]})
     step_n = result_n.log.steps[0]
-    per_item_decisions = "\n".join(
-        f"  [{i}] steps={len(log.steps)}, "
-        f"decisions={[('→ END' if str(s.decision) == 'END' else f'→ {s.decision}') for s in log.steps if s.decision is not None]}"
-        for i, log in enumerate(step_n.inner_logs)
-    )
+    log0_n = step_n.inner_logs[0]
     nested = f"""\
 # map_over — drill into per-item routing via inner_logs
 inner = Graph([increment, check_done], name="counter")
@@ -431,17 +409,13 @@ result = runner.run(outer, {{"count": [0, 1, 2]}})
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
-# inner_logs reveal per-item routing decisions (no longer hidden!)
+# Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> for i, log in enumerate(step.inner_logs):
-...     decisions = [s.decision for s in log.steps if s.decision]
-...     print(f"  [{{i}}] {{len(log.steps)}} steps, decisions={{decisions}}")
-{per_item_decisions}
-
-# count=0 loops 3× (increment→check→increment→check→increment→check→END)
-# count=2 loops 1× (increment→check→END)
 >>> print(step.inner_logs[0])
-{step_n.inner_logs[0]}"""
+{log0_n}
+
+>>> step.inner_logs[0].node_stats
+{fmt_node_stats(log0_n.node_stats)}"""
 
     return UseCase(
         id="uc3",
@@ -957,40 +931,40 @@ result = runner.run(graph, {{"x": 5}})
 {result["tripled"]}
 
 >>> result.log.summary()
-'{result.log.summary()}'"""
+'{result.log.summary()}'
+
+>>> print(result.log)
+{result.log}
+
+>>> result.log.timing
+{result.log.timing}"""
 
     # Mapped — runner.map()
     results = runner.map(graph, {"x": [1, 2, 3, 4, 5]}, map_over="x")
+    r0 = results[0]
     mapped = f"""\
 # runner.map() — run the same graph on multiple inputs
 results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 
->>> type(results).__name__
-'{type(results).__name__}'
-
 >>> results.summary()
 '{results.summary()}'
 
-# String key access — collect values across all items
 >>> results["tripled"]
 {results["tripled"]}
 
-# Batch metadata
->>> results.run_id
-'{results.run_id}'
+# Drill into one item — same RunLog API as Single
+>>> print(results[0].log)
+{r0.log}
 
->>> results.total_duration_ms
-{results.total_duration_ms:.1f}
-
-# Each item has its own RunLog
->>> results[0].log.summary()
-'{results[0].log.summary()}'"""
+>>> results[0].log.timing
+{r0.log.timing}"""
 
     # Nested — map_over comparison
     inner = Graph([double, triple], name="pipeline")
     outer = Graph([inner.as_node().map_over("x")])
     result_n = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
     step_n = result_n.log.steps[0]
+    log0_n = step_n.inner_logs[0]
     nested = f"""\
 # map_over — same batch, different semantics
 inner = Graph([double, triple], name="pipeline")
@@ -1000,23 +974,16 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 >>> result["tripled"]
 {result_n["tripled"]}
 
-# ONE RunResult (not N) — outputs are lists
->>> type(result).__name__
-'{type(result_n).__name__}'
-
 >>> result.log.summary()
 '{result_n.log.summary()}'
 
-# Drill into per-item execution via inner_logs
+# Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> len(step.inner_logs)
-{len(step_n.inner_logs)}
+>>> print(step.inner_logs[0])
+{log0_n}
 
->>> for i, log in enumerate(step.inner_logs): print(f"  [{{i}}] {{log.summary()}}")
-{fmt_inner_logs(step_n.inner_logs)}
-
-# Compare: runner.map() = N RunResults with batch metadata
-#          map_over     = 1 RunResult + inner_logs for drill-down"""
+>>> step.inner_logs[0].timing
+{log0_n.timing}"""
 
     return UseCase(
         id="uc10",
@@ -1044,6 +1011,7 @@ def run_uc11() -> UseCase:
     outer = Graph([inner.as_node()])
     result = runner.run(outer, {"x": 5})
     step_s = result.log.steps[0]
+    log0_s = step_s.inner_logs[0]
     single = f"""\
 # Nested graph: inner runs as a single node in outer
 inner = Graph([double, triple], name="pipeline")
@@ -1056,14 +1024,22 @@ result = runner.run(outer, {{"x": 5}})
 >>> result.log.summary()
 '{result.log.summary()}'
 
-# Even a simple nested graph gets inner_logs (1 inner RunLog)
+>>> print(result.log)
+{result.log}
+
+# Drill into inner execution
 >>> step = result.log.steps[0]
->>> step.inner_logs[0].summary()
-'{step_s.inner_logs[0].summary()}'"""
+>>> print(step.inner_logs[0])
+{log0_s}
+
+>>> step.inner_logs[0].timing
+{log0_s.timing}"""
 
     # Mapped — runner.map() on nested graph
     outer_flat = Graph([inner.as_node()])
     results_m = runner.map(outer_flat, {"x": [1, 2, 3, 4, 5]}, map_over="x")
+    r0_m = results_m[0]
+    step0_m = r0_m.log.steps[0]
     mapped = f"""\
 # runner.map() on a nested graph — N independent runs
 outer = Graph([inner.as_node()])
@@ -1075,40 +1051,39 @@ results = runner.map(outer, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 >>> results["tripled"]
 {results_m["tripled"]}
 
-# N RunResults, each with its own RunLog
->>> results[0].log.summary()
-'{results_m[0].log.summary()}'"""
+# Drill into one item — same RunLog API as Single
+>>> print(results[0].log)
+{r0_m.log}
+
+>>> results[0].log.steps[0].inner_logs[0].timing
+{step0_m.inner_logs[0].timing}"""
 
     # Nested — map_over
     outer_m = Graph([inner.as_node().map_over("x")])
     result_m = runner.run(outer_m, {"x": [1, 2, 3, 4, 5]})
     step_m = result_m.log.steps[0]
+    log0_m = step_m.inner_logs[0]
     nested = f"""\
 # map_over — inner graph runs once per item, outputs become lists
 outer = Graph([inner.as_node().map_over("x")])
 result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}})
 
->>> result["doubled"]
-{result_m["doubled"]}
-
 >>> result["tripled"]
 {result_m["tripled"]}
 
-# ONE run, ONE RunResult, but inner_logs gives full per-item visibility
 >>> result.log.summary()
 '{result_m.log.summary()}'
 
-# print() shows the "(N inner)" annotation
 >>> print(result.log)
 {result_m.log}
 
-# Drill into any inner run
+# Drill into one inner run — same RunLog API as Single
 >>> step = result.log.steps[0]
->>> len(step.inner_logs)
-{len(step_m.inner_logs)}
+>>> print(step.inner_logs[0])
+{log0_m}
 
 >>> step.inner_logs[0].timing
-{step_m.inner_logs[0].timing}"""
+{log0_m.timing}"""
 
     return UseCase(
         id="uc11",
@@ -1141,10 +1116,17 @@ outer = Graph([inner.as_node()])
 result = runner.run(outer, {{"a": 10, "b": 20}})
 
 >>> result["sum"]
-{result["sum"]}"""
+{result["sum"]}
+
+>>> result.log.summary()
+'{result.log.summary()}'
+
+>>> print(result.log)
+{result.log}"""
 
     # Mapped — runner.map() maps one param (no product mode)
     results_m = runner.map(outer, {"a": [1, 2, 3], "b": 10}, map_over="a")
+    r0_m = results_m[0]
     mapped = f"""\
 # runner.map() maps one param — b is shared across all items
 results = runner.map(outer, {{"a": [1, 2, 3], "b": 10}}, map_over="a")
@@ -1155,12 +1137,13 @@ results = runner.map(outer, {{"a": [1, 2, 3], "b": 10}}, map_over="a")
 >>> results["sum"]
 {results_m["sum"]}
 
-# runner.map() can't do cartesian product — use map_over for that"""
+# Drill into one item — same RunLog API as Single
+>>> print(results[0].log)
+{r0_m.log}"""
 
     # Nested — product mode
     outer_p = Graph([inner.as_node().map_over("a", "b", mode="product")])
     result_p = runner.run(outer_p, {"a": [1, 2, 3], "b": [10, 20]})
-    step_p = result_p.log.steps[0]
 
     outer_z = Graph([inner.as_node().map_over("a", "b")])
     result_z = runner.run(outer_z, {"a": [1, 2], "b": [10, 20]})
@@ -1173,10 +1156,11 @@ result = runner.run(outer, {{"a": [1, 2, 3], "b": [10, 20]}})
 >>> result["sum"]
 {result_p["sum"]}
 
-# inner_logs has one RunLog per combination
->>> step = result.log.steps[0]
->>> len(step.inner_logs)
-{len(step_p.inner_logs)}
+>>> result.log.summary()
+'{result_p.log.summary()}'
+
+>>> print(result.log)
+{result_p.log}
 
 # zip mode (default) requires equal-length lists
 outer_zip = Graph([inner.as_node().map_over("a", "b")])
