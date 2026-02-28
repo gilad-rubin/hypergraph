@@ -2,7 +2,7 @@
 
 ## Recent Merged PRs
 
-### PR #61 (Merged February 28, 2026) - DiskCache HMAC integrity hardening
+### [PR #61](https://github.com/gilad-rubin/hypergraph/pull/61) (Merged February 28, 2026) - DiskCache HMAC integrity hardening
 
 - Added HMAC-SHA256 signing for `DiskCache` payloads using a per-cache-directory secret key.
 - `DiskCache.get()` now verifies HMAC integrity **before** deserialization (`pickle.loads`), preventing untrusted/tampered payload deserialization.
@@ -13,7 +13,7 @@
   - deserialization failures evict the bad entry and return miss
 - Expanded disk cache integrity tests to cover tampering, key initialization races, and bad metadata handling.
 
-### PR #59 (Merged February 26, 2026) - Non-TTY progress fallback
+### [PR #59](https://github.com/gilad-rubin/hypergraph/pull/59) (Merged February 26, 2026) - Non-TTY progress fallback
 
 - Added non-TTY mode to `RichProgressProcessor` for CI/piped environments where live Rich bars are not appropriate.
 - Added milestone-based map progress logging at 10%, 25%, 50%, 75%, and 100%.
@@ -22,7 +22,7 @@
 - Cleaned up non-TTY tracking internals after review (removed unused fields and simplified state).
 - Added dedicated tests for non-TTY behavior.
 
-### PR #58 (Merged February 25, 2026) - PR workflow and contributor docs updates
+### [PR #58](https://github.com/gilad-rubin/hypergraph/pull/58) (Merged February 25, 2026) - PR workflow and contributor docs updates
 
 - Added `.github/PULL_REQUEST_TEMPLATE.md` with a problem + before/after structure.
 - Updated internal skills and contributor instructions to reuse the PR template and reduce duplicated guidance.
