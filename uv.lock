@@ -1378,6 +1378,7 @@ checkpoint = [
 ]
 cli = [
     { name = "aiosqlite" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
 ]
 daft = [
@@ -1475,6 +1476,7 @@ requires-dist = [
     { name = "rich", marker = "extra == 'all'", specifier = ">=13.0.0" },
     { name = "rich", marker = "extra == 'progress'", specifier = ">=13.0.0" },
     { name = "rich", marker = "extra == 'telemetry'", specifier = ">=13.0.0" },
+    { name = "tomli", marker = "python_full_version < '3.11' and extra == 'cli'", specifier = ">=2.0" },
     { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.67.1" },
     { name = "tqdm", marker = "extra == 'telemetry'", specifier = ">=4.67.1" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },

@@ -32,6 +32,7 @@ def create_app():
     import typer
 
     from hypergraph.cli.graph_cmd import app as graph_app
+    from hypergraph.cli.run_cmd import register_commands
     from hypergraph.cli.workflows import app as workflows_app
 
     app = typer.Typer(
@@ -41,6 +42,7 @@ def create_app():
     )
     app.add_typer(workflows_app, name="workflows")
     app.add_typer(graph_app, name="graph")
+    register_commands(app)
 
     return app
 
