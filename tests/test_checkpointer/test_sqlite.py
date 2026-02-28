@@ -432,101 +432,10 @@ class TestMigration:
         assert "runs" in tables
         assert "steps" in tables
         assert "_schema_version" in tables
-        assert "workflows" not in tables
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         assert version == 2
         conn.close()
-
-    def test_v1_db_migrated_to_v2(self, tmp_path):
-        """A v1 database is automatically migrated when accessed."""
-        import sqlite3
-
-        db_path = str(tmp_path / "v1.db")
-        conn = sqlite3.connect(db_path)
-        # Create v1 schema manually
-        conn.execute("""
-            CREATE TABLE workflows (
-                id TEXT PRIMARY KEY,
-                status TEXT NOT NULL DEFAULT 'active',
-                graph_name TEXT,
-                created_at TEXT NOT NULL,
-                completed_at TEXT
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE steps (
-                workflow_id TEXT NOT NULL,
-                superstep INTEGER NOT NULL,
-                node_name TEXT NOT NULL,
-                idx INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                input_versions TEXT,
-                values_data BLOB,
-                duration_ms REAL NOT NULL DEFAULT 0.0,
-                cached INTEGER NOT NULL DEFAULT 0,
-                decision TEXT,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                completed_at TEXT,
-                child_workflow_id TEXT,
-                UNIQUE(workflow_id, superstep, node_name)
-            )
-        """)
-        conn.execute(
-            "INSERT INTO workflows (id, status, graph_name, created_at) VALUES (?, ?, ?, ?)",
-            ("wf-old", "completed", "test_graph", "2024-01-01T00:00:00"),
-        )
-        conn.execute(
-            """INSERT INTO steps (workflow_id, superstep, node_name, idx, status,
-               input_versions, values_data, duration_ms, cached, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            ("wf-old", 0, "double", 0, "completed", '{"x": 1}', b'{"doubled": 10}', 42.0, 0, "2024-01-01T00:00:00"),
-        )
-        conn.commit()
-        conn.close()
-
-        # Open with SqliteCheckpointer — should auto-migrate
-        cp = SqliteCheckpointer(db_path)
-        run_list = cp.runs()
-        assert len(run_list) == 1
-        assert run_list[0].id == "wf-old"
-        assert run_list[0].graph_name == "test_graph"
-
-        steps = cp.steps("wf-old")
-        assert len(steps) == 1
-        assert steps[0].node_name == "double"
-        assert steps[0].run_id == "wf-old"
-        assert steps[0].values == {"doubled": 10}
-
-    def test_v1_migration_backfills_fts(self, tmp_path):
-        """FTS index is populated for pre-migration rows after v1→v2 migration."""
-        import sqlite3
-
-        db_path = str(tmp_path / "v1_fts.db")
-        conn = sqlite3.connect(db_path)
-        # Create minimal v1 schema with a step row
-        conn.execute(
-            "CREATE TABLE workflows (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', graph_name TEXT, created_at TEXT NOT NULL, completed_at TEXT)"
-        )
-        conn.execute(
-            "CREATE TABLE steps (workflow_id TEXT NOT NULL, superstep INTEGER NOT NULL, node_name TEXT NOT NULL, idx INTEGER NOT NULL, status TEXT NOT NULL, input_versions TEXT, values_data BLOB, duration_ms REAL NOT NULL DEFAULT 0.0, cached INTEGER NOT NULL DEFAULT 0, decision TEXT, error TEXT, created_at TEXT NOT NULL, completed_at TEXT, child_workflow_id TEXT, UNIQUE(workflow_id, superstep, node_name))"
-        )
-        conn.execute("INSERT INTO workflows (id, status, graph_name, created_at) VALUES ('wf1', 'completed', 'test', '2024-01-01T00:00:00')")
-        conn.execute(
-            "INSERT INTO steps (workflow_id, superstep, node_name, idx, status, duration_ms, cached, created_at) VALUES ('wf1', 0, 'embed', 0, 'completed', 10.0, 0, '2024-01-01T00:00:00')"
-        )
-        conn.commit()
-        conn.close()
-
-        cp = SqliteCheckpointer(db_path)
-        # Trigger migration by accessing sync DB
-        cp.runs()
-
-        # FTS search should find the migrated step
-        results = cp.search_sync("embed")
-        assert len(results) == 1
-        assert results[0].node_name == "embed"
 
     def test_migration_idempotent(self, tmp_path):
         """Running migration twice doesn't break anything."""
@@ -541,3 +450,37 @@ class TestMigration:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         assert version == 2
         conn.close()
+
+    def test_unknown_schema_version_raises(self, tmp_path):
+        """ensure_schema raises for schema versions newer than the current install."""
+        import sqlite3
+
+        from hypergraph.checkpointers._migrate import ensure_schema
+
+        db_path = str(tmp_path / "future.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE _schema_version (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO _schema_version VALUES (999)")
+        conn.commit()
+
+        with pytest.raises(ValueError, match="Unsupported database schema version 999"):
+            ensure_schema(conn)
+        conn.close()
+
+    def test_parse_dt_z_suffix(self):
+        """_parse_dt handles Z suffix for Python 3.10 compatibility."""
+        from datetime import timezone
+
+        from hypergraph.checkpointers.sqlite import _parse_dt
+
+        dt = _parse_dt("2024-01-15T10:30:00.123Z")
+        assert dt is not None
+        assert dt.tzinfo == timezone.utc
+        assert dt.year == 2024 and dt.month == 1 and dt.day == 15
+
+    def test_parse_dt_none_returns_none(self):
+        """_parse_dt returns None for None or empty string."""
+        from hypergraph.checkpointers.sqlite import _parse_dt
+
+        assert _parse_dt(None) is None
+        assert _parse_dt("") is None

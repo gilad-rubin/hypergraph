@@ -1,26 +1,18 @@
-"""Schema migration for checkpointer databases.
-
-Detects schema version and migrates from v1 (workflows/steps with BLOB)
-to v2 (runs/steps with FTS5 and proper indexes).
-"""
+"""Schema management for checkpointer databases."""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
-
-logger = logging.getLogger("hypergraph.checkpointers")
 
 SCHEMA_VERSION = 2
 
 
 def detect_schema_version(conn: Any) -> int:
-    """Detect the schema version of an existing database.
+    """Return the schema version of an existing database.
 
     Returns:
         0 — empty database (no tables)
-        1 — v1 schema (workflows + steps tables, no _schema_version)
-        2 — v2 schema (_schema_version table present with version=2)
+        2 — current v2 schema (_schema_version table with version=2)
     """
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
@@ -28,57 +20,7 @@ def detect_schema_version(conn: Any) -> int:
         row = conn.execute("SELECT version FROM _schema_version").fetchone()
         return row[0] if row else 0
 
-    if "workflows" in tables:
-        return 1
-
     return 0
-
-
-def migrate_v1_to_v2(conn: Any) -> None:
-    """Migrate a v1 database to v2.
-
-    - Renames 'workflows' → 'runs', adds new columns
-    - Renames 'workflow_id' → 'run_id' in steps (via table rebuild)
-    - Adds FTS5 and indexes
-    - Sets schema version to 2
-
-    All steps run inside a single explicit transaction.  Python's sqlite3 module
-    auto-commits before DDL statements when isolation_level != None (the default),
-    so we switch to manual-commit mode for the duration to ensure atomicity.
-    """
-    logger.warning("Migrating checkpointer database from schema v1 to v2. This renames 'workflows' to 'runs' and adds indexes.")
-
-    prev_isolation = conn.isolation_level
-    conn.isolation_level = None  # manual-commit mode — DDL no longer auto-commits
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        conn.execute("ALTER TABLE workflows RENAME TO runs")
-        _add_column_if_missing(conn, "runs", "duration_ms", "REAL")
-        _add_column_if_missing(conn, "runs", "node_count", "INTEGER DEFAULT 0")
-        _add_column_if_missing(conn, "runs", "error_count", "INTEGER DEFAULT 0")
-        _add_column_if_missing(conn, "runs", "parent_run_id", "TEXT")
-        _add_column_if_missing(conn, "runs", "config", "TEXT")
-
-        _rebuild_steps_table(conn)
-        _create_v2_indexes(conn)
-        _create_fts(conn)
-
-        # Backfill FTS index for rows copied before triggers were created
-        conn.execute("""
-            INSERT INTO steps_fts(rowid, node_name, error)
-            SELECT id, node_name, error FROM steps
-        """)
-
-        conn.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
-        conn.execute("DELETE FROM _schema_version")
-        conn.execute("INSERT INTO _schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-        conn.execute("COMMIT")
-        logger.info("Migration to schema v2 complete.")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.isolation_level = prev_isolation
 
 
 def create_v2_schema(conn: Any) -> None:
@@ -94,15 +36,15 @@ def create_v2_schema(conn: Any) -> None:
 
 
 def ensure_schema(conn: Any) -> None:
-    """Detect schema version and create/migrate as needed."""
+    """Detect schema version and create schema if the database is empty."""
     version = detect_schema_version(conn)
 
     if version == SCHEMA_VERSION:
         return
     if version == 0:
         create_v2_schema(conn)
-    elif version == 1:
-        migrate_v1_to_v2(conn)
+    else:
+        raise ValueError(f"Unsupported database schema version {version} (current: {SCHEMA_VERSION}). Please upgrade hypergraph.")
 
 
 # === SQL Definitions ===
@@ -184,43 +126,3 @@ def _create_fts(conn: Any) -> None:
             VALUES ('delete', old.id, old.node_name, old.error);
         END
     """)
-
-
-def _add_column_if_missing(conn: Any, table: str, column: str, col_type: str) -> None:
-    """Add a column to a table if it doesn't already exist."""
-    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    if column not in existing:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-
-
-def _rebuild_steps_table(conn: Any) -> None:
-    """Rebuild steps table to rename columns and add new ones.
-
-    SQLite doesn't support RENAME COLUMN before 3.25, so we rebuild.
-    """
-    # Check if the old schema has 'workflow_id' or already 'run_id'
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
-    has_old_schema = "workflow_id" in columns
-
-    if not has_old_schema:
-        # Already has run_id — just add missing columns
-        _add_column_if_missing(conn, "steps", "node_type", "TEXT")
-        _add_column_if_missing(conn, "steps", "id", "INTEGER")
-        return
-
-    # Full rebuild: rename columns workflow_id → run_id, idx → step_index,
-    # child_workflow_id → child_run_id, add node_type and autoincrement id
-    conn.execute("ALTER TABLE steps RENAME TO _steps_old")
-    conn.execute(_CREATE_STEPS)
-
-    conn.execute("""
-        INSERT INTO steps (run_id, step_index, superstep, node_name, status,
-                          duration_ms, cached, error, decision, input_versions,
-                          values_data, child_run_id, created_at, completed_at)
-        SELECT workflow_id, idx, superstep, node_name, status,
-               duration_ms, cached, error, decision, input_versions,
-               values_data, child_workflow_id, created_at, completed_at
-        FROM _steps_old
-    """)
-
-    conn.execute("DROP TABLE _steps_old")

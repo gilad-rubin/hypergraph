@@ -16,6 +16,19 @@ _RUNS_COLS = "id, graph_name, status, duration_ms, node_count, error_count, crea
 _STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at"
 
 
+def _parse_dt(value: str | None) -> datetime | None:
+    """Parse an ISO datetime string, normalising the UTC 'Z' suffix.
+
+    ``datetime.fromisoformat`` only accepts 'Z' on Python 3.11+; SQLite always
+    emits Z-suffixed timestamps, so we normalise to '+00:00' for 3.10 compat.
+    """
+    if not value:
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
+
+
 def _require_aiosqlite() -> Any:
     """Import aiosqlite with a clear error message if not installed."""
     try:
@@ -325,8 +338,8 @@ class SqliteCheckpointer(Checkpointer):
             decision=decision,
             error=row[9],
             node_type=row[5],
-            created_at=datetime.fromisoformat(row[14]),
-            completed_at=datetime.fromisoformat(row[15]) if row[15] else None,
+            created_at=_parse_dt(row[14]),
+            completed_at=_parse_dt(row[15]),
             child_run_id=row[13],
         )
 
@@ -346,8 +359,8 @@ class SqliteCheckpointer(Checkpointer):
             duration_ms=row[3],
             node_count=row[4] or 0,
             error_count=row[5] or 0,
-            created_at=datetime.fromisoformat(row[6]),
-            completed_at=datetime.fromisoformat(row[7]) if row[7] else None,
+            created_at=_parse_dt(row[6]),
+            completed_at=_parse_dt(row[7]),
             parent_run_id=row[8],
             config=config,
         )
