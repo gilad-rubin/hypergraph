@@ -281,7 +281,8 @@ results[5]["retrieved_docs"]  # IF this was a selected output
 **After — with checkpointer (full intermediate inspection):**
 
 ```python
-runner = AsyncRunner(checkpointer=SqliteCheckpointer("./workflows.db"))
+checkpointer = SqliteCheckpointer("./workflows.db")
+runner = AsyncRunner(checkpointer=checkpointer)
 results = await runner.map(
     graph, values={"queries": queries}, map_over="query",
     workflow_id="batch-50-queries",  # enables persistence
@@ -507,7 +508,7 @@ hypergraph workflows
 #
 #   ID              Steps    Duration  Started
 #   ──────────────  ───────  ────────  ───────────────────
-#   batch-500       3/5      1.1s      2024-01-16 14:30
+#   batch-500   3 completed   1.1s     2024-01-16 14:30
 #
 # Recent (last 5)
 #
@@ -671,21 +672,22 @@ hypergraph workflows
 
 # Active (1 running)
 #
-#   ID          Steps    Duration  Started
-#   ──────────  ───────  ────────  ───────────────────
-#   batch-500   3/5      1.1s      2024-01-16 14:30
+#   ID          Steps        Duration  Started
+#   ──────────  ───────────  ────────  ───────────────────
+#   batch-500   3 completed   1.1s     2024-01-16 14:30
 
 # 2. See completed steps so far
 hypergraph workflows show batch-500
 
-# Workflow: batch-500 | ACTIVE | 3/5 steps | 1.1s (running)
+# Workflow: batch-500 | ACTIVE | 3 completed steps | 1.1s elapsed
 #
 #   Step  Node        Duration  Status     Decision
 #   ────  ──────────  ────────  ─────────  ────────────────
 #      0  embed         200ms   completed
 #      1  retrieve      820ms   completed
 #      2  classify      120ms   completed  → detailed
-#      ·  generate          ·   running...
+#
+# Workflow is still running. Re-run this command to see new steps.
 
 # 3. Check intermediate values so far (type/size summary)
 hypergraph workflows state batch-500
@@ -944,7 +946,7 @@ The plan's CLI (`hypergraph workflows show/state/steps`) queries the Checkpointe
 | **Hatchet** | Four timestamps per step (created, assigned, started, completed) | StepRecord has `created_at`, `completed_at`, `duration_ms` |
 | **LangGraph** | Checkpoints power resume AND time-travel AND debugging | Same `get_state(superstep=N)` does debugging and resume |
 | **LangGraph** | No native per-node timing (needs LangSmith) | RunLog provides timing by default — better than LangGraph's base offering |
-| **Temporal** | Append-only event history is the universal primitive | Steps are append-only. History is immutable. |
+| **Temporal** | Append-only event history is the universal primitive | Steps are append-only (except interrupt PAUSED→COMPLETED update-in-place). History is otherwise immutable. |
 | **All three** | Execution data always captured by default | RunLog is always-on. StepRecord written when checkpointer present. |
 | **All three** | Same data serves multiple purposes | StepRecord powers resume + debugging + time travel + forking |
 | **All three** | Progressive disclosure: summary → detail → raw | `result.log.summary()` → `result.log.steps` → `checkpointer.get_steps()` |
@@ -1192,6 +1194,8 @@ In both `_execute_graph_impl` (sync) and `_execute_graph_impl_async` (async):
 - **`map()`**: Each map item gets its own collector → its own RunLog on its RunResult.
 - **`iter()` (future)**: RunLog builds incrementally, available on the final RunResult.
 
+**Map persistence model**: When a checkpointer is configured and `workflow_id` is provided to `map()`, each map item becomes a **child workflow** with ID `"{workflow_id}/item-{index}"`. This is the same nested workflow pattern used by `graph.as_node()`. The CLI command `hypergraph workflows ls --parent batch-50-queries` lists all items. Individual items are inspected via `hypergraph workflows show batch-50-queries/item-5`. The parent workflow ID tracks the overall map operation (status, total items, timing).
+
 ### Display & Formatting
 
 RunLog, Workflow, and list[Workflow] all have rich display out of the box. No manual iteration needed.
@@ -1311,7 +1315,7 @@ Add three fields to the `StepRecord` definition in specs:
 | File | Change |
 |------|--------|
 | `specs/reviewed/execution-types.md` | Add `duration_ms`, `cached`, and `span_id` to StepRecord definition |
-| `specs/reviewed/checkpointer.md` | Document new fields |
+| `specs/reviewed/checkpointer.md` | Document new fields. Also update nested workflow ID convention from `parent/node` to `parent/node@sN` with rationale (matches plan's collision-prevention design). |
 
 ---
 
@@ -1340,7 +1344,7 @@ This is a **non-breaking, additive change** — `workflow_id` defaults to `None`
 | `base.py` | `Checkpointer` ABC, `CheckpointPolicy` |
 | `types.py` | `StepRecord`, `StepStatus`, `Workflow`, `WorkflowStatus`, `Checkpoint` |
 | `sqlite.py` | `SqliteCheckpointer` |
-| `serializers.py` | `Serializer` ABC, `JsonSerializer`, `PickleSerializer` |
+| `serializers.py` | `Serializer` ABC, `JsonSerializer`, `PickleSerializer` (**unsafe opt-in** — requires explicit `allow_pickle=True` due to arbitrary code execution risk on deserialization; CLI/state inspection paths always use JSON) |
 
 ### SqliteCheckpointer Internals
 
@@ -1524,7 +1528,7 @@ This ensures agents can detect format changes across CLI versions. `schema_versi
 
 | Data type | Default display | Full access |
 |-----------|----------------|-------------|
-| Workflow list | Last 10 (not 50) | `--limit N` |
+| Workflow list | Last 20 | `--limit N` |
 | Step list | First 20 steps | `--limit N` or `--all` |
 | Values (state) | Type + size only (`list, 1536 items`) | `--values` to show content |
 | Large values | Truncated to 200 chars with `…` | `--key <name>` for single value, `--full` for all |
@@ -1616,7 +1620,7 @@ hypergraph workflows
 #
 #   ID              Steps    Duration  Started
 #   ──────────────  ───────  ────────  ───────────────────
-#   batch-500       3/5      1.1s      2024-01-16 14:30
+#   batch-500   3 completed   1.1s     2024-01-16 14:30
 #
 # Recent (last 5)
 #
@@ -1701,7 +1705,7 @@ hypergraph workflows ls --status failed --since "24h ago"
 
 # JSON output for agents
 hypergraph workflows ls --json
-hypergraph workflows ls --status failed --json | jq '.[].id'
+hypergraph workflows ls --status failed --json | jq '.data[].id'
 
 # Limit
 hypergraph workflows ls --limit 10
@@ -1715,9 +1719,10 @@ hypergraph workflows ls --limit 10
 | `--since` | datetime or relative | Only workflows created after this time |
 | `--until` | datetime or relative | Only workflows created before this time |
 | `--where` | string | Node-level filter — **v2** (see below) |
-| `--limit` | int | Max results (default: 50) |
+| `--limit` | int | Max results (default: 20) |
 | `--parent` | string | Only child workflows of this parent ID |
 | `--json` | flag | JSON output for piping/agents |
+| `--output` | path | Write JSON to file instead of stdout |
 | `--db` | path | Database path (default: `./workflows.db`) |
 
 **`--where` syntax** (v2 — node-level filter, deferred from v1):
@@ -1761,17 +1766,20 @@ hypergraph workflows show batch-2024-01-16
 ```bash
 hypergraph workflows show batch-500
 
-# Workflow: batch-500 | ACTIVE | 3/5 steps | 1.1s (running)
+# Workflow: batch-500 | ACTIVE | 3 completed steps | 1.1s elapsed
 #
 #   Step  Node        Duration  Status     Decision
 #   ────  ──────────  ────────  ─────────  ────────────────
 #      0  embed         200ms   completed
 #      1  retrieve      820ms   completed
 #      2  classify      120ms   completed  → detailed
-#      ·  generate          ·   running...
+#
+# Workflow is still running. Re-run this command to see new steps.
 ```
 
-The display adapts to active workflows: header shows `ACTIVE` and `3/5 steps` (completed/total from graph), the currently executing node shows as `running...`, and the elapsed time ticks up on each poll. When the workflow finishes, re-running the same command shows the final state.
+The display adapts to active workflows: header shows `ACTIVE` and "N completed steps" (only steps where `save_step()` has persisted — we don't track in-flight nodes in the checkpointer). When the workflow finishes, re-running the same command shows the final state with `completed` status.
+
+**Design note**: We deliberately don't show `running...` or `3/5` progress because the checkpointer only persists *completed* steps. To show in-flight nodes, we'd need a separate heartbeat/inflight table — this is deferred. The agent simply polls `show` periodically and sees new steps appear.
 
 ```bash
 # JSON for agents
@@ -1794,6 +1802,7 @@ hypergraph workflows show batch-2024-01-16 --step 2..4
 | `--node` | string | Filter to specific node name |
 | `--full` | flag | Show full error tracebacks and values |
 | `--tree` | flag | Expand nested workflows inline |
+| `--output` | path | Write JSON to file instead of stdout |
 
 ---
 
@@ -1913,9 +1922,9 @@ hypergraph workflows steps batch-2024-01-16 --json
 
 ---
 
-#### `hypergraph workflows replay <id>` — Replay from a point
+#### `hypergraph workflows replay <id>` — Replay from a point **(v2 — deferred)**
 
-Maps to **UC9** (fork and retry).
+Maps to **UC9** (fork and retry). **This is a v2 command — not included in the initial CLI release.**
 
 ```bash
 # Replay from superstep 3 into a new workflow
@@ -1938,7 +1947,7 @@ hypergraph workflows replay batch-2024-01-16 \
 
 ---
 
-#### `hypergraph workflows diff <id1> <id2>` — Compare executions
+#### `hypergraph workflows diff <id1> <id2>` — Compare executions **(v2 — deferred)**
 
 For debugging regressions — compare two runs of the same graph.
 
@@ -2203,3 +2212,19 @@ The CLI is the universal agent interface. Every AI coding tool — Claude Code, 
 | 3 | No explicit Phase 0 / migration sequence | Fixed: added Phase 0 (prerequisite tests) and Phase 2.5 (runner API migration) |
 | 4 | Memory-risk mitigation advisory only | Acknowledged — deferred item is sufficient for plan scope |
 | 5 | `--where` and `replay/diff` still shown as v1 | Fixed: `--where` examples marked as v2, UC9 marked `(v2)` |
+
+### Round 3: Codex Review (gpt-5.3-codex, session 019ca29b)
+
+**VERDICT: REVISE** — 9 findings, all addressed below.
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | UC8 `running...` / `3/5` not achievable — checkpointer only has completed steps | High | Fixed: downgraded to "N completed steps", removed `running...` row. Added design note explaining limitation. |
+| 2 | Map/batch workflow representation underspecified | High | Fixed: explicitly defined Option A — each map item is a child workflow (`{parent}/item-{index}`). Added to Runner Integration section. |
+| 3 | PickleSerializer security risk — no trust boundary | High | Fixed: marked as **unsafe opt-in** requiring `allow_pickle=True`. CLI always uses JSON. |
+| 4 | JSON `jq` examples break on envelope wrapping | Medium | Fixed: `jq '.[].id'` → `jq '.data[].id'` everywhere |
+| 5 | v1/v2 command scope still leaks in command reference | Medium | Fixed: `replay` and `diff` headers labeled `(v2 — deferred)` |
+| 6 | Nested workflow `@sN` convention conflicts with specs | Medium | Acknowledged: spec update added to Phase 2 files changed table |
+| 7 | CLI flag defaults inconsistent (10 vs 50) | Medium | Fixed: standardized to 20 across all defaults |
+| 8 | UC4 Python snippet undefined `checkpointer` | Low | Fixed: split to `checkpointer = SqliteCheckpointer(...)` then `runner = AsyncRunner(checkpointer=checkpointer)` |
+| 9 | "append-only" claim conflicts with interrupt update model | Low | Fixed: reworded to "append-only (except interrupt PAUSED→COMPLETED update-in-place)" |
