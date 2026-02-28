@@ -172,7 +172,7 @@ hypergraph workflows show batch-200-items --errors
 # Drill into the failing item's intermediate state
 hypergraph workflows state batch-200-items/item-12 --values
 
-# State: batch-200-items/item-12 (through superstep 1)
+# State: batch-200-items/item-12 (through step 1)
 #
 #   embedding: [0.123, -0.456, ...] (1536 floats)
 #   query: "How do I cancel my subscription?"
@@ -224,7 +224,7 @@ hypergraph workflows show support-router-run
 #      2  format_response      45ms   completed
 
 # Verify the decision values — what was the input that triggered this route?
-hypergraph workflows state support-router-run --superstep 0 --key query
+hypergraph workflows state support-router-run --step 0 --key query
 # "How do I reset my password?"
 
 # See all routing decisions across recent workflows
@@ -332,9 +332,9 @@ hypergraph workflows show batch-50-queries/item-5
 # Step 2: Summary of state — what type/size is each output?
 hypergraph workflows state batch-50-queries/item-5
 
-# State: batch-50-queries/item-5 (through superstep 3)
+# State: batch-50-queries/item-5 (through step 3)
 #
-#   Output           Type    Size        Superstep  Node
+#   Output           Type    Size        Step  Node
 #   ───────────────  ──────  ──────────  ─────────  ────────────
 #   embedding        list    1536 items  0          embed
 #   retrieved_docs   list    3 items     1          retrieve
@@ -344,7 +344,7 @@ hypergraph workflows state batch-50-queries/item-5
 # Values hidden. Use --values to show, --key <name> for one value.
 
 # Step 3: Drill into what the retriever returned
-hypergraph workflows state batch-50-queries/item-5 --superstep 1 --key retrieved_docs
+hypergraph workflows state batch-50-queries/item-5 --step 1 --key retrieved_docs
 # [
 #   {"title": "Password Reset Guide", "content": "To reset your passw…"},
 #   {"title": "Account Recovery", "content": "If you've lost access…"},
@@ -353,12 +353,12 @@ hypergraph workflows state batch-50-queries/item-5 --superstep 1 --key retrieved
 # ^ Aha — wrong documents were retrieved!
 
 # Step 4: See the full prompt that went to the LLM
-hypergraph workflows state batch-50-queries/item-5 --superstep 2 --key prompt
+hypergraph workflows state batch-50-queries/item-5 --step 2 --key prompt
 # "Based on the following documents:\n1. Password Reset Guide..."
 
 # Step 5: Dump everything to file for deeper analysis
 hypergraph workflows state batch-50-queries/item-5 --values --output item5-state.json
-# Wrote state for batch-50-queries/item-5 (through superstep 3) to item5-state.json (12KB)
+# Wrote state for batch-50-queries/item-5 (through step 3) to item5-state.json (12KB)
 ```
 
 The CLI mirrors the progressive disclosure from the Python API: overview → type/size summary → single key → full dump to file. An agent never sees a 1536-float embedding unless it explicitly asks.
@@ -437,11 +437,11 @@ hypergraph workflows show batch-2024-01-15
 #   ... 7 more steps (use --limit or --all to see more)
 
 # Step 3: Inspect intermediate values at a specific point
-hypergraph workflows state batch-2024-01-15 --superstep 2
+hypergraph workflows state batch-2024-01-15 --step 2
 
-# State: batch-2024-01-15 (through superstep 2)
+# State: batch-2024-01-15 (through step 2)
 #
-#   Output           Type    Size        Superstep  Node
+#   Output           Type    Size        Step  Node
 #   ───────────────  ──────  ──────────  ─────────  ────────────
 #   embedding        list    1536 items  0          embed
 #   retrieved_docs   list    5 items     1          retrieve
@@ -450,7 +450,7 @@ hypergraph workflows state batch-2024-01-15 --superstep 2
 # Values hidden. Use --values to show, --key <name> for one value.
 
 # Step 4: Drill into the actual data
-hypergraph workflows state batch-2024-01-15 --superstep 2 --key retrieved_docs
+hypergraph workflows state batch-2024-01-15 --step 2 --key retrieved_docs
 # [
 #   {"title": "Password Reset Guide", "content": "To reset your passw…"},
 #   ...
@@ -622,9 +622,9 @@ hypergraph workflows show failing-workflow-123
 # Agent step 3: Check state overview — what's large?
 hypergraph workflows state failing-workflow-123
 
-# State: failing-workflow-123 (through superstep 2)
+# State: failing-workflow-123 (through step 2)
 #
-#   Output           Type    Size        Superstep  Node
+#   Output           Type    Size        Step  Node
 #   ───────────────  ──────  ──────────  ─────────  ────────────
 #   embedding        list    1536 items  0          embed
 #   retrieved_docs   list    12 items    1          retrieve     ← 12 docs!
@@ -641,7 +641,7 @@ hypergraph workflows steps failing-workflow-123 --json
 
 # Agent step 6: Save full state to file for detailed analysis
 hypergraph workflows state failing-workflow-123 --values --output debug-state.json
-# Wrote state for failing-workflow-123 (through superstep 2) to debug-state.json (54KB)
+# Wrote state for failing-workflow-123 (through step 2) to debug-state.json (54KB)
 ```
 
 The agent workflow: `ls --json` (find) → `show` (overview) → `state` (type/size) → `--key` (drill) → `--output` (save). Progressive disclosure keeps each step compact for the context window.
@@ -690,9 +690,9 @@ hypergraph workflows show batch-500
 # 3. Check intermediate values so far (type/size summary)
 hypergraph workflows state batch-500
 
-# State: batch-500 (through superstep 2, ACTIVE)
+# State: batch-500 (through step 2, ACTIVE)
 #
-#   Output           Type    Size        Superstep  Node
+#   Output           Type    Size        Step  Node
 #   ───────────────  ──────  ──────────  ─────────  ────────────
 #   embedding        list    1536 items  0          embed
 #   retrieved_docs   list    3 items     1          retrieve
@@ -808,11 +808,11 @@ hypergraph workflows show order-456
 #      4  validate            —   skipped
 
 # Step 2: Verify the state at step 2 (before the failure) is good
-hypergraph workflows state order-456 --superstep 2
+hypergraph workflows state order-456 --step 2
 
-# State: order-456 (through superstep 2)
+# State: order-456 (through step 2)
 #
-#   Output           Type    Size     Superstep  Node
+#   Output           Type    Size     Step  Node
 #   ───────────────  ──────  ───────  ─────────  ────────────
 #   embedding        list    1536     0          embed
 #   retrieved_docs   list    5 items  1          retrieve
@@ -1443,6 +1443,37 @@ The SDK is powerful, but agents and CLI scripts shouldn't need to write Python t
 
 **Hypergraph's unique advantage**: We know our own graph topology. We can filter by node name, node type (gate/function), branch taken, duration — dimensions that don't exist in any other framework's CLI.
 
+### CLI Design Principles
+
+**1. One command = 80% of what you need.** Every command's default output should answer the most common question without extra flags. An agent should rarely need more than one command to understand the situation.
+
+**2. Every output is self-documenting.** When output is truncated or summarized, the footer always tells you the next command to run. An agent never has to guess how to drill down — the output tells it.
+
+**3. `--help` on every command.** Every command and subcommand has `--help` with usage, flags, and examples. An agent can always run `hypergraph workflows show --help` to discover flags.
+
+**4. Terminology: "step" not "superstep" in user-facing output.** Internally, hypergraph uses "superstep" (a parallel execution round where all ready nodes execute). But in CLI and RunLog output, the column is labeled **"Step"** — a sequential index (0, 1, 2, ...) that simply means "what ran in what order." The technical term "superstep" only appears in the `--json` output (as a field) and in `steps` detail view for users who need to understand parallel execution. This avoids confusing agents and users who just want to know "step 3 failed."
+
+**5. Smart summaries with context.** Default output includes:
+- A **header line** with status, duration, counts (one-glance overview)
+- A **table** with the most useful columns for that command
+- A **footer** with guidance: how to see more, how to drill down, how to save
+
+**6. Consistent flag vocabulary across all commands:**
+
+| Flag | Meaning | Available on |
+|------|---------|-------------|
+| `--json` | Machine-readable JSON output | All commands |
+| `--help` | Usage, flags, examples | All commands |
+| `--values` | Show actual data (not just type/size) | `state` |
+| `--key <name>` | Show one specific value | `state` |
+| `--full` | Don't truncate (show full content) | `state`, `steps`, `show` |
+| `--output FILE` | Write JSON to file instead of stdout | All commands |
+| `--node <name>` | Filter to a specific node | `show`, `steps` |
+| `--errors` | Show only failed steps | `show` |
+| `--limit N` | Max results/rows | `ls`, `show`, `steps` |
+| `--all` | Show everything (override default limit) | `show`, `steps` |
+| `--db PATH` | Database path (default: `./workflows.db`) | All commands |
+
 ### Command Structure
 
 **v1 (ship with checkpointer):**
@@ -1524,7 +1555,7 @@ grep "embedding" state.json | head -5
 
 The `--output FILE` flag writes JSON to disk and prints a one-liner confirmation:
 ```
-Wrote state for batch-500 (through superstep 4) to state.json (24KB)
+Wrote state for batch-500 (through step 4) to state.json (24KB)
 ```
 
 #### Agent-friendly pagination
@@ -1546,15 +1577,16 @@ Agents iterate with `--limit` + `--offset`. The JSON envelope includes `"total":
 hypergraph workflows state batch-500
 
 # Agent sees this (compact, fits in context):
-# State: batch-500 (through superstep 3, ACTIVE)
+# State: batch-500 (through step 2, ACTIVE)
 #
-#   Output           Type    Size        Superstep  Node
-#   ───────────────  ──────  ──────────  ─────────  ────────────
-#   embedding        list    1536 items  0          embed
-#   retrieved_docs   list    3 items     1          retrieve
-#   category         str     16B         2          classify
+#   Output           Type    Size        Step  Node
+#   ───────────────  ──────  ──────────  ────  ────────────
+#   embedding        list    1536 items  0     embed
+#   retrieved_docs   list    3 items     1     retrieve
+#   category         str     16B         2     classify
 #
 # Values hidden. Use --values to show, --key <name> for one value.
+# To save full state to file: --output state.json
 
 # Agent drills in:
 hypergraph workflows state batch-500 --key category
@@ -1593,12 +1625,43 @@ hypergraph workflows
 #   batch-2024-01-16    FAILED         8    2m10s   2024-01-16 09:00
 #   batch-2024-01-15    completed     12    4m32s   2024-01-15 09:00
 #   chat-session-42     completed     24   12m05s   2024-01-15 08:00
+#
+# To inspect a workflow: hypergraph workflows show <id>
+# To see all workflows: hypergraph workflows ls
+# To filter failures:   hypergraph workflows ls --status failed
 
 # JSON output works here too
 hypergraph workflows --json
 ```
 
 If nothing is running, the "Active" section is omitted. If there are no workflows at all, it says so.
+
+**`--help` example:**
+```bash
+hypergraph workflows --help
+
+# Usage: hypergraph workflows [COMMAND] [OPTIONS]
+#
+# Inspect and manage workflow executions.
+#
+# Commands:
+#   (no command)  Quick status dashboard (active + recent)
+#   ls            List workflows with filters
+#   show          Show execution trace for a workflow
+#   state         Show accumulated values at a point in execution
+#   steps         Show detailed step records
+#
+# Options:
+#   --db PATH     Database path (default: ./workflows.db)
+#   --json        Output as JSON
+#   --help        Show this help
+#
+# Examples:
+#   hypergraph workflows                          # Dashboard
+#   hypergraph workflows ls --status failed       # Failed workflows
+#   hypergraph workflows show batch-500           # Execution trace
+#   hypergraph workflows state batch-500 --key x  # Inspect value
+```
 
 ---
 
@@ -1615,6 +1678,9 @@ hypergraph workflows ls
 #   batch-2024-01-15    completed     12    4m32s   2024-01-15 09:00
 #   batch-2024-01-16    FAILED         8    2m10s   2024-01-16 09:00
 #   chat-session-42     active        24   12m05s   2024-01-16 14:30
+#
+# To inspect a workflow: hypergraph workflows show <id>
+# To filter: --status, --since | To page: --limit N --offset N
 
 # Filter by status
 hypergraph workflows ls --status failed
@@ -1684,6 +1750,10 @@ hypergraph workflows show batch-2024-01-16
 #      2  classify        120ms   completed  → detailed_answer
 #      3  build_prompt     12ms   completed
 #      4  generate            —   FAILED: 503 Service Unavailable
+#
+# To see values at a step: hypergraph workflows state batch-2024-01-16 --step 3
+# To see error details:    hypergraph workflows steps batch-2024-01-16 --node generate
+# To save full trace:      hypergraph workflows show batch-2024-01-16 --json --output trace.json
 ```
 
 **Active workflow (UC8 — still running, polled from another process):**
@@ -1710,8 +1780,8 @@ hypergraph workflows show batch-2024-01-16 --json
 # Show only errors
 hypergraph workflows show batch-2024-01-16 --errors
 
-# Show specific superstep range
-hypergraph workflows show batch-2024-01-16 --superstep 2..4
+# Show specific step range
+hypergraph workflows show batch-2024-01-16 --step 2..4
 ```
 
 **Flags:**
@@ -1720,8 +1790,9 @@ hypergraph workflows show batch-2024-01-16 --superstep 2..4
 |------|------|-------------|
 | `--json` | flag | JSON output |
 | `--errors` | flag | Only show failed steps |
-| `--superstep` | `N` or `N..M` | Filter to superstep range |
+| `--step` | `N` or `N..M` | Filter to step range (maps to internal superstep) |
 | `--node` | string | Filter to specific node name |
+| `--full` | flag | Show full error tracebacks and values |
 | `--tree` | flag | Expand nested workflows inline |
 
 ---
@@ -1734,15 +1805,19 @@ Maps to **UC4** (intermediate inspection), **UC5** (yesterday's run), and **UC8*
 # Full state (latest)
 hypergraph workflows state batch-2024-01-16
 
-# State: batch-2024-01-16 (through superstep 4)
+# State: batch-2024-01-16 (through step 4)
 #
-#   Output           Type    Size     Superstep  Node
-#   ───────────────  ──────  ───────  ─────────  ────────────
-#   embedding        list    1536     0          embed
-#   retrieved_docs   list    3 items  1          retrieve
-#   category         str     16B      2          classify
-#   prompt           str     2.4KB    3          build_prompt
-#   answer           —       —        4          generate (FAILED)
+#   Output           Type    Size     Step  Node
+#   ───────────────  ──────  ───────  ────  ────────────
+#   embedding        list    1536     0     embed
+#   retrieved_docs   list    3 items  1     retrieve
+#   category         str     16B      2     classify
+#   prompt           str     2.4KB    3     build_prompt
+#   answer           —       —        4     generate (FAILED)
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+# To see state at a specific step: --step N
+# To save to file: --output state.json
 ```
 
 **Active workflow (UC8 — partial state, more coming):**
@@ -1750,25 +1825,28 @@ hypergraph workflows state batch-2024-01-16
 ```bash
 hypergraph workflows state batch-500
 
-# State: batch-500 (through superstep 2, ACTIVE)
+# State: batch-500 (through step 2, ACTIVE)
 #
-#   Output           Type    Size     Superstep  Node
-#   ───────────────  ──────  ───────  ─────────  ────────────
-#   embedding        list    1536     0          embed
-#   retrieved_docs   list    3 items  1          retrieve
-#   category         str     16B      2          classify
+#   Output           Type    Size     Step  Node
+#   ───────────────  ──────  ───────  ────  ────────────
+#   embedding        list    1536     0     embed
+#   retrieved_docs   list    3 items  1     retrieve
+#   category         str     16B      2     classify
+#
+# Workflow is still running. Re-run to see new outputs.
+# To see values: --values | To drill into one: --key <name>
 ```
 
 For active workflows, `state` shows everything produced so far. Each poll reveals new outputs as nodes complete.
 
 ```bash
-# State at a specific superstep (time travel!)
-hypergraph workflows state batch-2024-01-16 --superstep 2
+# State at a specific step (time travel!)
+hypergraph workflows state batch-2024-01-16 --step 2
 
 # Show actual values (not just summary — for debugging)
-hypergraph workflows state batch-2024-01-16 --superstep 2 --values
+hypergraph workflows state batch-2024-01-16 --step 2 --values
 
-# State: batch-2024-01-16 (through superstep 2)
+# State: batch-2024-01-16 (through step 2)
 #
 #   embedding: [0.123, -0.456, 0.789, ...] (1536 floats)
 #   retrieved_docs:
@@ -1776,23 +1854,28 @@ hypergraph workflows state batch-2024-01-16 --superstep 2 --values
 #     [1]: {"title": "Account Recovery", "content": "If you've lost access..."}
 #     [2]: {"title": "Security FAQ", "content": "We recommend changing..."}
 #   category: "account_support"
+#
+# To see a single value: --key <name>
+# To save to file: --output state.json
 
 # Single value
-hypergraph workflows state batch-2024-01-16 --superstep 2 --key prompt
+hypergraph workflows state batch-2024-01-16 --step 2 --key prompt
 # "Based on the following documents:\n1. Password Reset Guide..."
 
 # JSON output (agent gets full values)
-hypergraph workflows state batch-2024-01-16 --superstep 2 --json
+hypergraph workflows state batch-2024-01-16 --step 2 --json
 ```
 
 **Flags:**
 
 | Flag | Type | Description |
 |------|------|-------------|
-| `--superstep` | int | State through this superstep (default: latest) |
+| `--step` | int | State through this step (default: latest) |
 | `--values` | flag | Show actual values, not just type/size summary |
 | `--key` | string | Show single output value |
+| `--full` | flag | Don't truncate large values |
 | `--json` | flag | JSON output with full values |
+| `--output` | path | Write JSON to file instead of stdout |
 
 ---
 
@@ -1804,7 +1887,6 @@ For deep debugging — shows the full StepRecord data including input versions, 
 hypergraph workflows steps batch-2024-01-16
 
 # Step [0] embed | completed | 180ms
-#   superstep: 0
 #   input_versions: {query: 1}
 #   values: {embedding: <list, 1536 items>}
 #   cached: false
@@ -1812,10 +1894,13 @@ hypergraph workflows steps batch-2024-01-16
 #   completed_at: 2024-01-16 09:00:01.414
 #
 # Step [1] retrieve | completed | 820ms
-#   superstep: 1
 #   input_versions: {embedding: 1, top_k: 1}
 #   values: {retrieved_docs: <list, 3 items>}
 #   ...
+#
+# Showing 2 of 5 steps. Use --all to see all, --node <name> to filter.
+# To see actual values: --values | To see full error traces: --full
+# To save all step records: --json --output steps.json
 
 # Single step by node name
 hypergraph workflows steps batch-2024-01-16 --node retrieve
@@ -1823,6 +1908,8 @@ hypergraph workflows steps batch-2024-01-16 --node retrieve
 # JSON for full programmatic access
 hypergraph workflows steps batch-2024-01-16 --json
 ```
+
+**Note on "step" terminology**: In `steps` detail view, `Step [0]` is the step index — a sequential ID for ordering. Internally, hypergraph executes nodes in *supersteps* (parallel rounds), so multiple nodes may share the same superstep number. The `--json` output includes both `index` (step) and `superstep` (parallel round) for users who need to understand concurrency. Most users only need the step index.
 
 ---
 
@@ -1908,7 +1995,7 @@ hypergraph graph inspect my_module:graph --json
 | UC1: "Why was my run slow?" | `hypergraph workflows show <id>` |
 | UC2: "What failed and why?" | `hypergraph workflows show <id> --errors` |
 | UC3: "What path did execution take?" | `hypergraph workflows show <id>` (Decision column) |
-| UC4: "What prompt went into the LLM?" | `hypergraph workflows state <id> --superstep 2 --values` |
+| UC4: "What prompt went into the LLM?" | `hypergraph workflows state <id> --step 2 --key prompt` |
 | UC5: "What happened yesterday?" | `hypergraph workflows ls --since yesterday` → `show` |
 | UC6: "All failed workflows" | `hypergraph workflows ls --status failed` |
 | UC7: AI agent debugging | Any command with `--json` piped to agent |
@@ -1963,7 +2050,7 @@ hypergraph workflows show order-123 --tree
 #      2  postprocess               150ms   completed
 
 # State of nested workflow
-hypergraph workflows state order-123/rag@s1 --superstep 1 --values
+hypergraph workflows state order-123/rag@s1 --step 1 --values
 
 # List child workflows
 hypergraph workflows ls --parent order-123
@@ -2035,7 +2122,7 @@ hypergraph workflows ls --status failed --since "1h ago" --json
 hypergraph workflows show batch-2024-01-16 --json
 
 # 3. Inspect intermediate values at the failure point
-hypergraph workflows state batch-2024-01-16 --superstep 3 --json
+hypergraph workflows state batch-2024-01-16 --step 3 --json
 
 # 4. Check the graph structure to understand the pipeline
 hypergraph graph inspect my_module:graph --json
