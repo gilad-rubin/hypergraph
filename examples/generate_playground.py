@@ -102,48 +102,10 @@ def strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
-def fmt_dict(d: dict, indent: int = 0) -> str:
-    """Format a dict for display, one key per line if many."""
-    prefix = " " * indent
-    if len(d) <= 3:
-        return repr(d)
-    lines = ["{"]
-    for k, v in d.items():
-        lines.append(f"{prefix}  {k!r}: {v!r},")
-    lines.append(f"{prefix}}}")
-    return "\n".join(lines)
-
-
 def fmt_node_stats(stats: dict) -> str:
     lines = []
     for name, s in stats.items():
         lines.append(f"  {name}: count={s.count}, avg={s.avg_ms:.1f}ms, errors={s.errors}")
-    return "\n".join(lines)
-
-
-def fmt_steps(steps) -> str:
-    lines = []
-    for s in steps:
-        decision = ""
-        if hasattr(s, "decision") and s.decision is not None:
-            decision = f", decision={s.decision}"
-        error = ""
-        if hasattr(s, "error") and s.error:
-            error = f", error={s.error}"
-        status = s.status if isinstance(s.status, str) else s.status.value
-        vals = ""
-        if hasattr(s, "values") and s.values is not None:
-            vals = f" → {s.values}"
-        lines.append(f"  [{s.index}] {s.node_name}: {status} ({s.duration_ms:.1f}ms){vals}{decision}{error}")
-    return "\n".join(lines)
-
-
-def fmt_inner_logs(map_log, indent: int = 2) -> str:
-    """Format inner RunLog summaries for display."""
-    prefix = " " * indent
-    lines = []
-    for i, log in enumerate(map_log):
-        lines.append(f"{prefix}[{i}] {log.graph_name}: {log.summary()}")
     return "\n".join(lines)
 
 
@@ -194,15 +156,16 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 >>> results.summary()
 '{results.summary()}'
 
-# Drill into one item — same RunLog API as Single
->>> print(results[0].log)
-{r0.log}
+# results.log → MapLog (batch overview)
+>>> print(results.log)
+{results.log}
 
->>> results[0].log.timing
+# Drill into one item — same RunLog API as Single
+>>> results.log[0].timing
 {r0.log.timing}
 
->>> results[0].log.node_stats
-{fmt_node_stats(r0.log.node_stats)}"""
+>>> results.log.node_stats  # aggregate across ALL items
+{fmt_node_stats(results.log.node_stats)}"""
 
     # Nested — map_over
     inner = Graph([double, triple], name="pipeline")
@@ -326,7 +289,7 @@ result = runner.run(outer, {{"x": [1, 2, 3, 4, 5]}}, error_handling="continue")
 >>> print(result.log)
 {result_n.log}
 
-# Drill into inner logs — same RunLog API as Single
+# Drill into step.log — same RunLog API as Single
 >>> failed = [log for log in result.log.steps[0].log if log.errors]
 >>> failed[0].errors[0].error
 '{err_logs[0].errors[0].error}'
@@ -734,16 +697,16 @@ results = runner.map(graph, {{"x": [1, 2, 3]}}, map_over="x")
     if len(nested_json) > 1400:
         nested_json = nested_json[:1400] + "\n  ... (truncated)"
     nested = f"""\
-# map_over — to_dict() includes recursive inner logs
+# map_over — to_dict() includes recursive inner_log for each step
 inner = Graph([double, triple], name="pipeline")
 outer = Graph([inner.as_node().map_over("x")])
 result = runner.run(outer, {{"x": [1, 2, 3]}})
 
-# inner logs appear in each step's JSON — full recursive trace
+# each step's JSON has inner_log — full recursive trace
 >>> json.dumps(result.log.to_dict(), indent=2)
 {nested_json}
 
-# Agents can parse inner logs to inspect per-item execution
+# Agents can parse inner_log to inspect per-item execution
 >>> result.summary()
 '{result_n.summary()}'"""
 
@@ -961,11 +924,12 @@ results = runner.map(graph, {{"x": [1, 2, 3, 4, 5]}}, map_over="x")
 >>> results["tripled"]
 {results["tripled"]}
 
-# Drill into one item — same RunLog API as Single
->>> print(results[0].log)
-{r0.log}
+# results.log → MapLog (batch overview)
+>>> print(results.log)
+{results.log}
 
->>> results[0].log.timing
+# Drill into one item — same RunLog API as Single
+>>> results.log[0].timing
 {r0.log.timing}"""
 
     # Nested — map_over comparison
