@@ -72,6 +72,40 @@ result.log.timing
 # {"embed": 9000, "llm_call": 468000, "format": 2400, "validate": 720}
 ```
 
+**CLI equivalent (requires checkpointer):**
+```bash
+# See execution trace — timing jumps out immediately
+hypergraph workflows show batch-50-queries
+
+# Workflow: batch-50-queries | completed | 4 nodes | 8m12s
+#
+#   Node        Runs   Total    Avg     Errors  Cached
+#   ──────────  ─────  ───────  ──────  ──────  ──────
+#   embed         50    9.0s    180ms        0       0
+#   llm_call      50   7m48s   9360ms        0       0  ← bottleneck
+#   format        50    2.4s     48ms        0       0
+#   validate      50    0.7s     14ms        0       0
+
+# Drill into the slow node's individual step records
+hypergraph workflows steps batch-50-queries --node llm_call
+
+# Step [1] llm_call | completed | 9360ms
+#   superstep: 1
+#   input_versions: {prompt: 1}
+#   values: <hidden> (use --values to show)
+#   cached: false
+#
+# ... 49 more steps (use --limit or --all to see more)
+
+# JSON for agents / CI assertions
+hypergraph workflows show batch-50-queries --json
+# {"schema_version": 1, "command": "workflows.show", ...}
+
+# Save full step data to file for offline analysis
+hypergraph workflows steps batch-50-queries --json --output steps.json
+# Wrote 50 steps for batch-50-queries to steps.json (128KB)
+```
+
 ---
 
 ### UC2: "What failed and why?"
@@ -112,6 +146,43 @@ for r in failed:
 # ...
 ```
 
+**CLI equivalent (requires checkpointer):**
+```bash
+# Find workflows with failures
+hypergraph workflows ls --status failed
+
+# Workflows (1 total)
+#
+#   ID                    Status  Steps  Duration  Created
+#   ────────────────────  ──────  ─────  ────────  ───────────────────
+#   batch-200-items       FAILED      7    3m45s   2024-01-16 09:00
+
+# See which steps failed
+hypergraph workflows show batch-200-items --errors
+
+# Workflow: batch-200-items | FAILED | 200 items | 7 errors
+#
+#   Step  Node       Item  Duration  Status
+#   ────  ─────────  ────  ────────  ──────────────────────────────────
+#     51  llm_call     12       —    FAILED: 504 Gateway Timeout
+#     97  llm_call     23       —    FAILED: 504 Gateway Timeout
+#    145  llm_call     45       —    FAILED: RateLimitError
+#   ... 4 more errors (use --all to see all)
+
+# Drill into the failing item's intermediate state
+hypergraph workflows state batch-200-items/item-12 --values
+
+# State: batch-200-items/item-12 (through superstep 1)
+#
+#   embedding: [0.123, -0.456, ...] (1536 floats)
+#   query: "How do I cancel my subscription?"
+#
+# Values shown. Use --key <name> for a single value.
+
+# JSON for agent to reason over failures programmatically
+hypergraph workflows show batch-200-items --errors --json
+```
+
 ---
 
 ### UC3: "What path did execution take?"
@@ -137,6 +208,28 @@ print(result.log)
 #      0  classify            120ms   completed  → account_support
 #      1  account_support    2400ms   completed
 #      2  format_response      45ms   completed
+```
+
+**CLI equivalent (requires checkpointer):**
+```bash
+# See routing decisions in the Decision column
+hypergraph workflows show support-router-run
+
+# Workflow: support-router-run | completed | 3 steps | 2.6s
+#
+#   Step  Node              Duration  Status     Decision
+#   ────  ────────────────  ────────  ─────────  ─────────────────
+#      0  classify            120ms   completed  → account_support
+#      1  account_support    2400ms   completed
+#      2  format_response      45ms   completed
+
+# Verify the decision values — what was the input that triggered this route?
+hypergraph workflows state support-router-run --superstep 0 --key query
+# "How do I reset my password?"
+
+# See all routing decisions across recent workflows
+hypergraph workflows ls --since "1h ago" --json | \
+  jq '.data[] | {id, decision: .steps[0].decision}'
 ```
 
 ---
@@ -222,6 +315,54 @@ print(retrieve_step.input_versions)  # {"query": 1, "embedding": 1}
 
 **The key insight**: RunLog answers "what happened?" (timing, status, routing). Checkpointer answers "what data flowed?" (intermediate values at every step). This is why persistence is the key enabler for deep debugging.
 
+**CLI equivalent:**
+```bash
+# Step 1: See the execution trace — timing looks normal
+hypergraph workflows show batch-50-queries/item-5
+
+# Workflow: batch-50-queries/item-5 | completed | 4 steps | 3.2s
+#
+#   Step  Node          Duration  Status
+#   ────  ────────────  ────────  ─────────
+#      0  embed           180ms   completed
+#      1  retrieve        220ms   completed
+#      2  build_prompt     12ms   completed
+#      3  generate       2800ms   completed
+
+# Step 2: Summary of state — what type/size is each output?
+hypergraph workflows state batch-50-queries/item-5
+
+# State: batch-50-queries/item-5 (through superstep 3)
+#
+#   Output           Type    Size        Superstep  Node
+#   ───────────────  ──────  ──────────  ─────────  ────────────
+#   embedding        list    1536 items  0          embed
+#   retrieved_docs   list    3 items     1          retrieve
+#   prompt           str     2.4KB       2          build_prompt
+#   answer           str     340B        3          generate
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+
+# Step 3: Drill into what the retriever returned
+hypergraph workflows state batch-50-queries/item-5 --superstep 1 --key retrieved_docs
+# [
+#   {"title": "Password Reset Guide", "content": "To reset your passw…"},
+#   {"title": "Account Recovery", "content": "If you've lost access…"},
+#   {"title": "Security FAQ", "content": "We recommend changing…"}
+# ]
+# ^ Aha — wrong documents were retrieved!
+
+# Step 4: See the full prompt that went to the LLM
+hypergraph workflows state batch-50-queries/item-5 --superstep 2 --key prompt
+# "Based on the following documents:\n1. Password Reset Guide..."
+
+# Step 5: Dump everything to file for deeper analysis
+hypergraph workflows state batch-50-queries/item-5 --values --output item5-state.json
+# Wrote state for batch-50-queries/item-5 (through superstep 3) to item5-state.json (12KB)
+```
+
+The CLI mirrors the progressive disclosure from the Python API: overview → type/size summary → single key → full dump to file. An agent never sees a 1536-float embedding unless it explicitly asks.
+
 ---
 
 ### UC5: "What happened in yesterday's run?"
@@ -269,6 +410,55 @@ classify_step.values    # {"category": "detailed_answer"}
 classify_step.decision  # "detailed_answer"
 ```
 
+**CLI equivalent:**
+```bash
+# Step 1: Find yesterday's runs
+hypergraph workflows ls --since yesterday
+
+# Workflows (2 total)
+#
+#   ID                  Status     Steps  Duration  Created
+#   ──────────────────  ─────────  ─────  ────────  ───────────────────
+#   batch-2024-01-15    completed     12    4m32s   2024-01-15 09:00
+#   batch-2024-01-15b   completed      8    1m20s   2024-01-15 14:00
+
+# Step 2: See what happened in that run
+hypergraph workflows show batch-2024-01-15
+
+# Workflow: batch-2024-01-15 | completed | 12 steps | 4m32s
+#
+#   Step  Node          Duration  Status     Decision
+#   ────  ────────────  ────────  ─────────  ────────────────────
+#      0  embed           180ms   completed
+#      1  retrieve        820ms   completed
+#      2  classify        120ms   completed  → detailed_answer
+#      3  build_prompt     12ms   completed
+#      4  generate       3100ms   completed
+#   ... 7 more steps (use --limit or --all to see more)
+
+# Step 3: Inspect intermediate values at a specific point
+hypergraph workflows state batch-2024-01-15 --superstep 2
+
+# State: batch-2024-01-15 (through superstep 2)
+#
+#   Output           Type    Size        Superstep  Node
+#   ───────────────  ──────  ──────────  ─────────  ────────────
+#   embedding        list    1536 items  0          embed
+#   retrieved_docs   list    5 items     1          retrieve
+#   category         str     16B         2          classify
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+
+# Step 4: Drill into the actual data
+hypergraph workflows state batch-2024-01-15 --superstep 2 --key retrieved_docs
+# [
+#   {"title": "Password Reset Guide", "content": "To reset your passw…"},
+#   ...
+# ]
+```
+
+Yesterday's process is long gone, but everything is in SQLite. The same progressive disclosure: summary → type overview → single value.
+
 ---
 
 ### UC6: "Show me all failed workflows"
@@ -306,6 +496,57 @@ for wf in failed:
 #      0  embed           180ms   completed
 #      1  retrieve        820ms   completed
 #      2  llm_call            —   FAILED: 503 Service Unavailable
+```
+
+**CLI equivalent:**
+```bash
+# Quick status dashboard — what's running, what's recent?
+hypergraph workflows
+
+# Active (1 running)
+#
+#   ID              Steps    Duration  Started
+#   ──────────────  ───────  ────────  ───────────────────
+#   batch-500       3/5      1.1s      2024-01-16 14:30
+#
+# Recent (last 5)
+#
+#   ID                  Status     Steps  Duration  Created
+#   ──────────────────  ─────────  ─────  ────────  ───────────────────
+#   batch-2024-01-16    FAILED         8    2m10s   2024-01-16 09:00
+#   batch-2024-01-15    completed     12    4m32s   2024-01-15 09:00
+
+# Filter to failures only
+hypergraph workflows ls --status failed
+
+# Workflows (1 total)
+#
+#   ID                  Status  Steps  Duration  Created
+#   ──────────────────  ──────  ─────  ────────  ───────────────────
+#   batch-2024-01-16    FAILED      8    2m10s   2024-01-16 09:00
+
+# Drill into the failure — see which step broke
+hypergraph workflows show batch-2024-01-16 --errors
+
+# Workflow: batch-2024-01-16 | FAILED | 8 steps | 2m10s
+#
+#   Step  Node      Duration  Status
+#   ────  ────────  ────────  ─────────────────────────────────
+#      2  llm_call      —     FAILED: 503 Service Unavailable
+
+# Full error traceback
+hypergraph workflows steps batch-2024-01-16 --node llm_call --full
+
+# Step [2] llm_call | FAILED | 0ms
+#   superstep: 2
+#   error: 503 Service Unavailable
+#   traceback:
+#     File "pipeline.py", line 42, in llm_call
+#       response = client.chat.completions.create(...)
+#     httpx.HTTPStatusError: 503 Service Unavailable
+
+# JSON for automated alerting
+hypergraph workflows ls --status failed --since "24h ago" --json
 ```
 
 ---
@@ -358,6 +599,53 @@ state_at_failure["retrieved_docs"]  # The actual documents
 state_at_failure["prompt"]          # The assembled prompt — 50K tokens!
 ```
 
+**CLI equivalent — full agent debugging session:**
+```bash
+# Agent step 1: Find the failing workflow
+hypergraph workflows ls --status failed --since "1h ago" --json
+
+# {"schema_version": 1, "command": "workflows.ls", "data": [
+#   {"id": "failing-workflow-123", "status": "failed", "steps": 3, "duration_ms": 4200}
+# ], "total": 1, "has_more": false}
+
+# Agent step 2: See what happened (human-readable — agent pastes into chat)
+hypergraph workflows show failing-workflow-123
+
+# Workflow: failing-workflow-123 | FAILED | 3 steps | 4.2s
+#
+#   Step  Node       Duration  Status
+#   ────  ─────────  ────────  ──────────────────────────────────
+#      0  embed        200ms   completed
+#      1  retrieve     800ms   completed
+#      2  generate    3100ms   FAILED: Context window exceeded
+
+# Agent step 3: Check state overview — what's large?
+hypergraph workflows state failing-workflow-123
+
+# State: failing-workflow-123 (through superstep 2)
+#
+#   Output           Type    Size        Superstep  Node
+#   ───────────────  ──────  ──────────  ─────────  ────────────
+#   embedding        list    1536 items  0          embed
+#   retrieved_docs   list    12 items    1          retrieve     ← 12 docs!
+#   prompt           str     52KB        1          retrieve     ← 52KB prompt!
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+
+# Agent step 4: Confirm the hypothesis — prompt is too large
+hypergraph workflows state failing-workflow-123 --key prompt | wc -c
+# 53248  ← 52KB prompt, that's why context window exceeded
+
+# Agent step 5: Get structured data for programmatic reasoning
+hypergraph workflows steps failing-workflow-123 --json
+
+# Agent step 6: Save full state to file for detailed analysis
+hypergraph workflows state failing-workflow-123 --values --output debug-state.json
+# Wrote state for failing-workflow-123 (through superstep 2) to debug-state.json (54KB)
+```
+
+The agent workflow: `ls --json` (find) → `show` (overview) → `state` (type/size) → `--key` (drill) → `--output` (save). Progressive disclosure keeps each step compact for the context window.
+
 ---
 
 ### UC8: "Live monitoring — where are we and what happened so far?"
@@ -373,28 +661,83 @@ state_at_failure["prompt"]          # The assembled prompt — 50K tokens!
 ```
 
 **After — agent polls the CLI from its main process while the workflow runs:**
+
+*Human-readable output (agent pastes into chat):*
 ```bash
 # Background: runner.run(graph, workflow_id="batch-500", checkpointer=SqliteCheckpointer("./db"))
 
-# 1. Check if the workflow has started and how far along it is
-hypergraph workflows show batch-500 --json
-# {"status": "active", "steps_completed": 3, "steps": [
-#   {"node_name": "embed", "duration_ms": 200, "status": "completed"},
-#   {"node_name": "retrieve", "duration_ms": 820, "status": "completed"},
-#   {"node_name": "classify", "duration_ms": 120, "status": "completed", "decision": "detailed"}
-# ]}
+# 1. Quick status — is it running? How far along?
+hypergraph workflows
 
-# 2. Inspect intermediate values at the current point
+# Active (1 running)
+#
+#   ID          Steps    Duration  Started
+#   ──────────  ───────  ────────  ───────────────────
+#   batch-500   3/5      1.1s      2024-01-16 14:30
+
+# 2. See completed steps so far
+hypergraph workflows show batch-500
+
+# Workflow: batch-500 | ACTIVE | 3/5 steps | 1.1s (running)
+#
+#   Step  Node        Duration  Status     Decision
+#   ────  ──────────  ────────  ─────────  ────────────────
+#      0  embed         200ms   completed
+#      1  retrieve      820ms   completed
+#      2  classify      120ms   completed  → detailed
+#      ·  generate          ·   running...
+
+# 3. Check intermediate values so far (type/size summary)
+hypergraph workflows state batch-500
+
+# State: batch-500 (through superstep 2, ACTIVE)
+#
+#   Output           Type    Size        Superstep  Node
+#   ───────────────  ──────  ──────────  ─────────  ────────────
+#   embedding        list    1536 items  0          embed
+#   retrieved_docs   list    3 items     1          retrieve
+#   category         str     16B         2          classify
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+
+# 4. Drill into a specific value while it's running
+hypergraph workflows state batch-500 --key category
+# "detailed"
+
+# 5. Poll again later — new steps appear
+hypergraph workflows show batch-500
+
+# Workflow: batch-500 | completed | 5 steps | 4.8s
+#
+#   Step  Node        Duration  Status     Decision
+#   ────  ──────────  ────────  ─────────  ────────────────
+#      0  embed         200ms   completed
+#      1  retrieve      820ms   completed
+#      2  classify      120ms   completed  → detailed
+#      3  generate     3400ms   completed
+#      4  format         45ms   completed
+
+# 6. Detect failures early (don't wait for the full run)
+hypergraph workflows ls --status failed
+```
+
+*JSON output (agent reasons programmatically):*
+```bash
+# Same commands with --json for structured data
+hypergraph workflows show batch-500 --json
+# {"schema_version": 1, "command": "workflows.show", "data": {
+#   "id": "batch-500", "status": "active", "steps_completed": 3,
+#   "steps": [
+#     {"node_name": "embed", "duration_ms": 200, "status": "completed"},
+#     {"node_name": "retrieve", "duration_ms": 820, "status": "completed"},
+#     {"node_name": "classify", "duration_ms": 120, "status": "completed", "decision": "detailed"}
+#   ]
+# }}
+
 hypergraph workflows state batch-500 --json
-# {"embedding": [...], "retrieved_docs": [...], "category": "detailed"}
-# ^ Everything produced so far, even though generate hasn't started yet
-
-# 3. Later, check again — the agent sees new steps as they complete
-hypergraph workflows show batch-500 --json
-# {"status": "active", "steps_completed": 4, "steps": [..., {"node_name": "generate", ...}]}
-
-# 4. Detect failure immediately (don't wait for the full run)
-hypergraph workflows ls --status failed --json
+# {"schema_version": 1, "command": "workflows.state", "data": {
+#   "embedding": "...(1536 items)", "retrieved_docs": [...], "category": "detailed"
+# }}
 ```
 
 **This works because:**
@@ -448,6 +791,48 @@ result = await runner.run(
 )
 # Steps 1-3 outputs are already in the state — only steps 4-5 re-execute
 ```
+
+**CLI equivalent (v2 — deferred):**
+```bash
+# Step 1: See where the failure happened
+hypergraph workflows show order-456
+
+# Workflow: order-456 | FAILED | 5 steps | 6.2s
+#
+#   Step  Node          Duration  Status
+#   ────  ────────────  ────────  ──────────────────────────────────
+#      0  embed           180ms   completed
+#      1  retrieve        420ms   completed
+#      2  build_prompt     12ms   completed
+#      3  generate            —   FAILED: ValueError: Invalid JSON
+#      4  validate            —   skipped
+
+# Step 2: Verify the state at step 2 (before the failure) is good
+hypergraph workflows state order-456 --superstep 2
+
+# State: order-456 (through superstep 2)
+#
+#   Output           Type    Size     Superstep  Node
+#   ───────────────  ──────  ───────  ─────────  ────────────
+#   embedding        list    1536     0          embed
+#   retrieved_docs   list    5 items  1          retrieve
+#   prompt           str     2.4KB    2          build_prompt
+#
+# Values hidden. Use --values to show, --key <name> for one value.
+
+# Step 3: Fork from superstep 2 and retry (v2 command)
+hypergraph workflows replay order-456 \
+  --from-superstep 2 \
+  --new-id order-456-retry
+
+# Replaying order-456 from superstep 2...
+# Created new workflow: order-456-retry
+# Reusing 3 completed steps, re-executing from superstep 3
+#
+# To run: await runner.run(graph, workflow_id="order-456-retry")
+```
+
+Note: `replay` is a v2 CLI command (deferred). In v1, fork-and-retry is available via the Python API only.
 
 ---
 
