@@ -242,7 +242,7 @@ Two batch patterns, different tradeoffs. Both start from the same idea — **wri
 | **Returns** | `MapResult` (N `RunResult`s) | One `RunResult` with list outputs |
 | **Error isolation** | Per-item — failures don't affect other items | Whole step — one failure can fail the batch |
 | **Tracing** | Per-item RunLogs with full routing/timing | One RunLog (batch is a single step) |
-| **Checkpointing** | Ephemeral — not persisted | Persisted as one run step |
+| **Checkpointing** | Parent batch run + per-item child runs | Persisted as one run step |
 | **Product mode** | Yes — `map_mode="product"` with multi-key `map_over` | Yes — `mode="product"` for cartesian product |
 | **Use in pipelines** | Top-level batch processing | Step inside a larger graph |
 
@@ -258,8 +258,8 @@ results = runner.map(graph, {"url": urls}, map_over="url", error_handling="conti
 
 - Processing independent items (scraping, embedding, classification)
 - When you need per-item RunLogs for debugging
-- Ephemeral batch jobs that don't need persistence
 - Quick fan-out over a single parameter
+- With `workflow_id`: persisted batch with per-item child runs
 
 ### When to use map_over
 
@@ -279,22 +279,42 @@ result = runner.run(pipeline, {"path": "data.csv"})
 - Cartesian product mode (`mode="product"`)
 - When the batch is part of a nested graph hierarchy
 
-### Persistence note
+### Checkpointing with map()
 
-`runner.map()` is **ephemeral** — results exist only in-process. If you're using a checkpointer and need batch results to persist across process restarts, use `map_over` with a `workflow_id`:
+Pass a `workflow_id` to `runner.map()` to persist batch results. This creates a parent batch run and per-item child runs:
 
 ```python
-# Ephemeral — gone after process exits
-results = runner.map(graph, {"x": items}, map_over="x")
+from hypergraph import SyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
 
-# Persistent — queryable from CLI or another process
-inner = Graph([process], name="pipeline")
-outer = Graph([inner.as_node().map_over("x")])
-result = await runner.run(outer, {"x": items}, workflow_id="batch-001")
+cp = SqliteCheckpointer("./runs.db")
+runner = SyncRunner(checkpointer=cp)
 
-# Later, from CLI:
-# $ hypergraph runs values batch-001
+results = runner.map(
+    graph,
+    {"x": [1, 2, 3]},
+    map_over="x",
+    workflow_id="batch-001",
+)
+# Creates:
+#   batch-001    (parent batch run)
+#   batch-001/0  (child — x=1)
+#   batch-001/1  (child — x=2)
+#   batch-001/2  (child — x=3)
+
+# Query later
+cp.runs(parent_run_id="batch-001")  # list child runs
+cp.values("batch-001/1")            # values for item 1
 ```
+
+From the CLI:
+
+```bash
+hypergraph runs ls --parent batch-001
+hypergraph runs show batch-001/1
+```
+
+Without `workflow_id`, `runner.map()` still works but results exist only in-process.
 
 ### CLI batch execution
 
@@ -304,8 +324,8 @@ You can also run batch operations directly from the terminal:
 # Map over a parameter
 hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
 
-# With checkpointing
-hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --db ./runs.db
+# With checkpointing (requires --workflow-id to activate persistence)
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --workflow-id batch-001 --db ./runs.db
 ```
 
 See [Debug Workflows — CLI](debug-workflows.md#run--execute-a-graph) for full CLI reference.

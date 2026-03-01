@@ -115,10 +115,10 @@ The batch pattern you choose affects what debugging data is available:
 |---|---|---|
 | **RunLog granularity** | Per-item RunLogs with full traces | One RunLog (batch = one step) |
 | **Error isolation** | Each item independent | One failure affects entire step |
-| **Checkpointing** | Ephemeral — not persisted | Persisted as one run |
-| **CLI access** | Not available | `hypergraph runs values <id>` |
+| **Checkpointing** | Parent + per-item child runs | Persisted as one run step |
+| **CLI access** | `runs ls --parent <batch-id>` | `hypergraph runs values <id>` |
 
-Use `runner.map()` when you need to debug individual items. Use `map_over` when you need persistence and CLI access.
+Both patterns now support checkpointing. `runner.map()` creates a hierarchical structure (parent batch run + child runs per item), while `map_over` records the batch as a single step within the parent run.
 
 ## Checkpointer — Persistent Run History
 
@@ -153,6 +153,19 @@ result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
 ```
 
 Every step is now persisted. You can inspect it from another process, another day, or via the CLI.
+
+Both `SyncRunner` and `AsyncRunner` support checkpointing:
+
+```python
+from hypergraph import SyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
+
+cp = SqliteCheckpointer("./runs.db")
+runner = SyncRunner(checkpointer=cp)
+result = runner.run(graph, {"x": 5}, workflow_id="my-run-1")
+```
+
+`SyncRunner` writes steps synchronously via the `SyncCheckpointerProtocol`. `SqliteCheckpointer` implements this out of the box.
 
 ### Inspecting Persisted State
 
@@ -222,6 +235,99 @@ result = await runner.run(graph, {"x": 5})
 
 # With checkpointing
 result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
+```
+
+### Hierarchical Checkpointing
+
+When you use nested graphs or `runner.map()` with a `workflow_id`, hypergraph automatically creates a parent-child run hierarchy. This lets you drill into specific sub-runs without losing the big picture.
+
+#### Nested Graphs
+
+A `GraphNode` step automatically creates a child run with the ID `{workflow_id}/{node_name}`:
+
+```python
+from hypergraph import Graph, SyncRunner, node
+from hypergraph.checkpointers import SqliteCheckpointer
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+@node(output_name="tripled")
+def triple(doubled: int) -> int:
+    return doubled * 3
+
+inner = Graph([double], name="inner")
+outer = Graph([inner.as_node(name="embed"), triple], name="outer")
+
+cp = SqliteCheckpointer("./runs.db")
+runner = SyncRunner(checkpointer=cp)
+result = runner.run(outer, {"x": 5}, workflow_id="pipeline-001")
+
+# Two runs are created:
+#   pipeline-001       (parent — outer graph)
+#   pipeline-001/embed (child — inner graph)
+
+# The parent's step record for "embed" includes a child_run_id
+steps = cp.steps("pipeline-001")
+embed_step = [s for s in steps if s.node_name == "embed"][0]
+print(embed_step.child_run_id)  # "pipeline-001/embed"
+
+# Drill into the child run
+cp.values("pipeline-001/embed")  # {"doubled": 10}
+```
+
+#### Batch Runs with map()
+
+`runner.map()` creates a parent batch run and per-item child runs with IDs `{workflow_id}/{index}`:
+
+```python
+results = runner.map(
+    graph,
+    {"x": [1, 2, 3]},
+    map_over="x",
+    workflow_id="batch-001",
+)
+# Creates:
+#   batch-001    (parent batch run)
+#   batch-001/0  (child — x=1)
+#   batch-001/1  (child — x=2)
+#   batch-001/2  (child — x=3)
+```
+
+#### Querying the Hierarchy
+
+```python
+# Top-level runs only (default for CLI)
+cp.runs(parent_run_id=None)
+
+# Children of a specific run
+cp.runs(parent_run_id="batch-001")
+
+# All runs (including children)
+cp.runs()
+```
+
+> **Note**: The Python API and CLI have different defaults for hierarchy filtering.
+> `cp.runs()` returns all runs (including children) for backward compatibility,
+> while `hypergraph runs ls` defaults to top-level only. Use `--all` to see everything.
+
+### Default Database Location
+
+The `resolve_db_path()` function determines the database path using a priority chain:
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | Explicit `--db` flag or parameter | `SqliteCheckpointer("./my.db")` |
+| 2 | `HYPERGRAPH_DB` environment variable | `export HYPERGRAPH_DB=./runs.db` |
+| 3 | `[tool.hypergraph] db` in pyproject.toml | `db = "./runs.db"` |
+| 4 | Convention (if `[tool.hypergraph]` section exists) | `.hypergraph/runs.db` |
+
+This means you can set it once in pyproject.toml and never think about it again:
+
+```toml
+[tool.hypergraph]
+db = "./runs.db"
 ```
 
 ## CLI — Execute and Debug from the Terminal
@@ -358,6 +464,23 @@ hypergraph runs show my-run-1
 #   → hypergraph runs stats my-run-1             for performance breakdown
 ```
 
+For runs with nested graphs, the step table includes a `Child Run` column linking to the child run ID. For batch parents, a children summary is shown:
+
+```bash
+hypergraph runs show pipeline-001
+
+# Run: pipeline-001 (outer) | completed | 2 steps | 5.3ms
+#
+#   Step  Node    Type       Duration  Status     Child Run
+#   ────  ──────  ─────────  ────────  ─────────  ──────────────────
+#      0  embed   GraphNode     3.1ms  completed  pipeline-001/embed
+#      1  triple  FunctionNode  0.1ms  completed  —
+#
+#   Children: 1 (1 completed, 0 failed)
+#
+#   → hypergraph runs ls --parent pipeline-001   to list child runs
+```
+
 Single-step drill-down:
 
 ```bash
@@ -415,9 +538,17 @@ hypergraph runs values my-run-1 --superstep 0
 
 ### runs ls — List and Filter
 
+By default, `runs ls` shows top-level runs only (no children). Use `--parent` or `--all` to navigate the hierarchy.
+
 ```bash
-# All runs
+# Top-level runs (default)
 hypergraph runs ls
+
+# Children of a specific run
+hypergraph runs ls --parent batch-001
+
+# All runs including children
+hypergraph runs ls --all
 
 # Only failures
 hypergraph runs ls --status failed
@@ -535,6 +666,8 @@ hypergraph runs ls --db /path/to/runs.db
 | "What happened in yesterday's run?" | Checkpointer + CLI |
 | "What values were produced at step 3?" | CLI (`runs values --superstep 3`) |
 | "What failed runs exist?" | CLI (`runs ls --status failed`) |
+| "What did the nested graph produce?" | CLI (`runs show <id>` + `runs ls --parent <id>`) |
+| "What happened in batch item 5?" | CLI (`runs show <batch-id>/5`) |
 | "Find all steps that hit a specific error" | CLI (`runs search "error message"`) |
 | "I need to inspect from another process" | Checkpointer sync reads |
 | "I need JSON for my monitoring system" | CLI (`--json`) or RunLog (`to_dict()`) |

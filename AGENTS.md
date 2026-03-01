@@ -53,7 +53,8 @@ src/hypergraph/
     _shared/           #   Common utilities (caching, events, gate execution, routing, templates)
       types.py         #     RunResult, RunLog, NodeRecord, NodeStats, GraphState, RunStatus
       run_log.py       #     RunLogCollector (event-processor-based trace builder)
-    sync/              #   SyncRunner + per-node-type executors
+      checkpoint_helpers.py  #  Pure StepRecord builder (shared by sync + async)
+    sync/              #   SyncRunner + per-node-type executors (+ checkpointer integration)
     async_/            #   AsyncRunner + per-node-type executors (+ checkpointer integration)
 
   events/              # Observability (decoupled from execution)
@@ -66,14 +67,15 @@ src/hypergraph/
   checkpointers/       # Persistent run history (optional: pip install hypergraph[checkpoint])
     types.py           #   StepRecord, Run, Checkpoint, StepStatus, WorkflowStatus
     base.py            #   Checkpointer ABC, CheckpointPolicy
+    protocols.py       #   SyncCheckpointerProtocol (sync write ops for SyncRunner)
     serializers.py     #   JsonSerializer, PickleSerializer
-    sqlite.py          #   SqliteCheckpointer (aiosqlite backend, v2 schema)
+    sqlite.py          #   SqliteCheckpointer (aiosqlite backend, v2 schema, sync writes)
     _migrate.py        #   Schema migration (v1→v2) and auto-detection
 
   cli/                 # CLI: execute graphs and inspect runs (optional: pip install hypergraph[cli])
     __init__.py        #   App entry point (hypergraph command)
     run_cmd.py         #   run/map commands (graph execution from terminal)
-    _config.py         #   pyproject.toml [tool.hypergraph] registry
+    _config.py         #   pyproject.toml [tool.hypergraph] registry, resolve_db_path()
     runs.py            #   runs ls/show/values/steps/search/stats commands
     graph_cmd.py       #   graph inspect/ls commands, graph loading
     _format.py         #   Table formatting, JSON envelope, CTAs, value truncation
