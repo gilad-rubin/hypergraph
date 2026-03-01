@@ -320,8 +320,9 @@ class RichProgressProcessor(TypedEventProcessor):
             bar = self._node_bars.get(key)
             if bar is not None:
                 current = self._progress.tasks[bar.rich_task_id].description
-                self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
-                self._refresh()
+                if "FAILED" not in current:
+                    self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
+                    self._refresh()
         else:
             if not self._find_map_ancestor(event.span_id):
                 self._print(f"✗ {event.node_name} FAILED")
