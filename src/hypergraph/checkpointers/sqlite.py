@@ -88,6 +88,72 @@ class SqliteCheckpointer(Checkpointer):
         self._sync_conn: Any = None
         self._aiosqlite = _require_aiosqlite()
 
+    def _db_stats(self) -> dict[str, Any]:
+        """Gather quick DB stats for display (uses sync connection)."""
+        import os
+
+        stats: dict[str, Any] = {"path": self._path}
+        try:
+            stats["size_bytes"] = os.path.getsize(self._path)
+        except OSError:
+            stats["size_bytes"] = None
+        try:
+            db = self._sync_db()
+            (stats["run_count"],) = db.execute("SELECT COUNT(*) FROM runs").fetchone()
+            (stats["step_count"],) = db.execute("SELECT COUNT(*) FROM steps").fetchone()
+        except Exception:
+            stats["run_count"] = None
+            stats["step_count"] = None
+        return stats
+
+    def __repr__(self) -> str:
+        from hypergraph._utils import plural
+
+        try:
+            stats = self._db_stats()
+            parts = [f"SqliteCheckpointer: {self._path}"]
+            if stats["run_count"] is not None:
+                parts.append(plural(stats["run_count"], "run"))
+                parts.append(plural(stats["step_count"], "step"))
+            return " | ".join(parts)
+        except Exception:
+            return f"SqliteCheckpointer: {self._path}"
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import html_detail, html_kv, html_panel
+        from hypergraph._utils import plural
+
+        try:
+            stats = self._db_stats()
+        except Exception:
+            return f"<code>SqliteCheckpointer: {self._path}</code>"
+
+        kvs = [html_kv("Path", f"<code>{stats['path']}</code>")]
+        if stats["size_bytes"] is not None:
+            size_mb = stats["size_bytes"] / (1024 * 1024)
+            kvs.append(html_kv("Size", f"{size_mb:.1f} MB" if size_mb >= 1 else f"{stats['size_bytes'] / 1024:.0f} KB"))
+        if stats["run_count"] is not None:
+            kvs.append(html_kv("Runs", str(stats["run_count"])))
+            kvs.append(html_kv("Steps", str(stats["step_count"])))
+        body = " &nbsp;|&nbsp; ".join(kvs)
+
+        # Collapsible recent runs
+        try:
+            recent = self.runs(limit=5)
+            if recent:
+                body += html_detail(f"Recent runs ({plural(len(recent), 'shown')})", recent._repr_html_())
+        except Exception:
+            pass
+
+        # API hints
+        body += (
+            '<div style="color:#6b7280; font-size:0.85em; margin-top:8px">'
+            "Explore: <code>.runs()</code> <code>.steps(run_id)</code> "
+            "<code>.search(query)</code> <code>.stats(run_id)</code>"
+            "</div>"
+        )
+        return html_panel("SqliteCheckpointer", body)
+
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""
         self._db = await self._aiosqlite.connect(self._path)

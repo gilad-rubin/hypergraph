@@ -6,7 +6,10 @@ All styles are inline (no <style> tags — some renderers strip them).
 
 from __future__ import annotations
 
-from hypergraph._utils import format_datetime, format_duration_ms
+import html as _html
+from typing import Any
+
+from hypergraph._utils import format_datetime, format_duration_ms, plural
 
 # ---------------------------------------------------------------------------
 # Color palette
@@ -15,6 +18,7 @@ from hypergraph._utils import format_datetime, format_duration_ms
 STATUS_COLORS: dict[str, str] = {
     "completed": "#059669",
     "failed": "#dc2626",
+    "partial": "#d97706",
     "cached": "#2563eb",
     "active": "#d97706",
     "paused": "#7c3aed",
@@ -23,6 +27,7 @@ STATUS_COLORS: dict[str, str] = {
 _BADGE_BG: dict[str, str] = {
     "completed": "#ecfdf5",
     "failed": "#fef2f2",
+    "partial": "#fffbeb",
     "cached": "#eff6ff",
     "active": "#fffbeb",
     "paused": "#f5f3ff",
@@ -118,3 +123,80 @@ def datetime_html(dt) -> str:
     """Format datetime for HTML display."""
     text = format_datetime(dt)
     return f'<span style="color:#6b7280; font-size:0.85em">{text}</span>'
+
+
+# ---------------------------------------------------------------------------
+# Value rendering
+# ---------------------------------------------------------------------------
+
+_MAX_VALUE_LEN = 200
+_MAX_ITEMS = 8
+
+
+def _compact_html(value: Any) -> str:
+    """Render a single Python value as compact, HTML-safe text."""
+    if value is None:
+        return '<span style="color:#6b7280">None</span>'
+
+    if isinstance(value, str):
+        if len(value) <= _MAX_VALUE_LEN:
+            return f"<code>{_html.escape(repr(value))}</code>"
+        preview = repr(value[:_MAX_VALUE_LEN])
+        return f'<code>{_html.escape(preview)}…</code> <span style="color:#6b7280">(len={len(value)})</span>'
+
+    if isinstance(value, (int, float, bool)):
+        return f"<code>{value!r}</code>"
+
+    # numpy-like arrays
+    shape = getattr(value, "shape", None)
+    if shape is not None and hasattr(value, "dtype"):
+        dtype = getattr(value, "dtype", None)
+        return f"<code>&lt;{type(value).__name__} shape={shape!r} dtype={dtype!r}&gt;</code>"
+
+    # dict preview
+    if isinstance(value, dict):
+        n = len(value)
+        if n == 0:
+            return "<code>{}</code>"
+        keys = ", ".join(_html.escape(repr(k)) for k in list(value)[:4])
+        suffix = f" … (+{n - 4})" if n > 4 else ""
+        return f'<code>{{{keys}{suffix}}}</code> <span style="color:#6b7280">({plural(n, "key")})</span>'
+
+    # list/tuple preview
+    if isinstance(value, (list, tuple)):
+        n = len(value)
+        bracket = "[]" if isinstance(value, list) else "()"
+        if n == 0:
+            return f"<code>{bracket}</code>"
+        return f'<code>{bracket[0]}…{bracket[1]}</code> <span style="color:#6b7280">({plural(n, "item")})</span>'
+
+    # fallback
+    text = repr(value)
+    if len(text) > _MAX_VALUE_LEN:
+        text = text[:_MAX_VALUE_LEN] + "…"
+    return f"<code>{_html.escape(text)}</code>"
+
+
+def values_html(values: dict[str, Any], *, max_items: int = _MAX_ITEMS) -> str:
+    """Render a dict as a compact key-value table.
+
+    Used for progressive disclosure of RunResult.values, Checkpoint.values, etc.
+    Shows first `max_items` entries with smart value truncation.
+    """
+    if not values:
+        return '<span style="color:#6b7280; font-style:italic">no values</span>'
+    items = list(values.items())
+    rows = [[f"<code>{_html.escape(str(k))}</code>", _compact_html(v)] for k, v in items[:max_items]]
+    table = html_table(["Key", "Value"], rows)
+    if len(items) > max_items:
+        table += f'<div style="color:#6b7280; font-size:0.85em; margin-top:4px">… and {plural(len(items) - max_items, "more key")}</div>'
+    return table
+
+
+def error_html(error: BaseException | str | None) -> str:
+    """Render an error as styled HTML."""
+    if error is None:
+        return ""
+    text = f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error)
+    escaped = _html.escape(text)
+    return f'<div style="color:#dc2626; {_FONT}; font-size:0.85em; padding:4px 8px; background:#fef2f2; {_RADIUS}; margin-top:4px"><b>Error:</b> {escaped}</div>'

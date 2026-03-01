@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from hypergraph._repr import _compact_html, error_html, values_html
 from hypergraph._utils import format_datetime, format_duration_ms
 from hypergraph.checkpointers.types import (
     Checkpoint,
@@ -14,7 +15,7 @@ from hypergraph.checkpointers.types import (
     StepTable,
     WorkflowStatus,
 )
-from hypergraph.runners._shared.types import NodeRecord, NodeStats, RunLog
+from hypergraph.runners._shared.types import MapResult, NodeRecord, NodeStats, RunLog, RunResult, RunStatus
 
 # ---------------------------------------------------------------------------
 # format_duration_ms
@@ -348,3 +349,213 @@ class TestGraphRepr:
         assert "<table" in html
         assert "step" in html
         assert "simple" in html
+
+
+# ---------------------------------------------------------------------------
+# Value rendering helpers
+# ---------------------------------------------------------------------------
+
+
+class TestCompactHtml:
+    def test_none(self):
+        assert "None" in _compact_html(None)
+
+    def test_int(self):
+        assert "42" in _compact_html(42)
+
+    def test_string(self):
+        html = _compact_html("hello")
+        assert "hello" in html
+        assert "<code>" in html
+
+    def test_long_string_truncated(self):
+        long_str = "a" * 300
+        html = _compact_html(long_str)
+        assert "len=300" in html
+
+    def test_dict(self):
+        html = _compact_html({"a": 1, "b": 2})
+        assert "2 keys" in html
+
+    def test_list(self):
+        html = _compact_html([1, 2, 3])
+        assert "3 items" in html
+
+    def test_empty_dict(self):
+        assert "{}" in _compact_html({})
+
+    def test_empty_list(self):
+        assert "[]" in _compact_html([])
+
+
+class TestValuesHtml:
+    def test_basic(self):
+        html = values_html({"x": 42, "name": "hello"})
+        assert "<table" in html
+        assert "x" in html
+        assert "42" in html
+
+    def test_empty(self):
+        html = values_html({})
+        assert "no values" in html
+
+    def test_truncated(self):
+        big = {f"key_{i}": i for i in range(20)}
+        html = values_html(big, max_items=5)
+        assert "more key" in html
+
+    def test_html_escaping(self):
+        html = values_html({"x": "<script>alert(1)</script>"})
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+
+class TestErrorHtml:
+    def test_exception(self):
+        html = error_html(ValueError("boom"))
+        assert "ValueError" in html
+        assert "boom" in html
+
+    def test_none(self):
+        assert error_html(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# PARTIAL status
+# ---------------------------------------------------------------------------
+
+
+class TestPartialStatus:
+    def _make_result(self, status=RunStatus.COMPLETED, error=None):
+        return RunResult(values={}, status=status, error=error)
+
+    def test_mixed_is_partial(self):
+        mr = MapResult(
+            results=(self._make_result(), self._make_result(RunStatus.FAILED, ValueError("x"))),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        assert mr.status == RunStatus.PARTIAL
+        assert mr.partial is True
+        assert mr.failed is True  # any() check
+
+    def test_all_failed(self):
+        mr = MapResult(
+            results=(
+                self._make_result(RunStatus.FAILED, ValueError("a")),
+                self._make_result(RunStatus.FAILED, ValueError("b")),
+            ),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        assert mr.status == RunStatus.FAILED
+        assert mr.partial is False
+
+    def test_partial_badge_in_html(self):
+        mr = MapResult(
+            results=(self._make_result(), self._make_result(RunStatus.FAILED, ValueError("x"))),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        html = mr._repr_html_()
+        assert "partial" in html
+
+
+# ---------------------------------------------------------------------------
+# Progressive disclosure
+# ---------------------------------------------------------------------------
+
+
+class TestRunResultProgressiveDisclosure:
+    def test_values_collapsible(self):
+        r = RunResult(values={"x": 42, "name": "hello"}, status=RunStatus.COMPLETED)
+        html = r._repr_html_()
+        assert "<details" in html
+        assert "Values" in html
+        assert "x" in html
+
+    def test_no_values_section_when_empty(self):
+        r = RunResult(values={}, status=RunStatus.COMPLETED)
+        html = r._repr_html_()
+        # No collapsible values section for empty dict
+        assert "Values (0 keys)" not in html
+
+    def test_log_collapsible(self):
+        log = RunLog(
+            graph_name="test",
+            run_id="r-1",
+            total_duration_ms=100.0,
+            steps=(NodeRecord(node_name="a", superstep=0, duration_ms=50.0, status="completed", span_id="s1"),),
+        )
+        r = RunResult(values={"result": 42}, status=RunStatus.COMPLETED, log=log)
+        html = r._repr_html_()
+        assert "Execution log" in html
+
+    def test_error_shown(self):
+        r = RunResult(values={}, status=RunStatus.FAILED, error=ValueError("boom"))
+        html = r._repr_html_()
+        assert "ValueError" in html
+        assert "boom" in html
+
+
+class TestMapResultProgressiveDisclosure:
+    def _make_result(self, status=RunStatus.COMPLETED, error=None):
+        return RunResult(values={}, status=status, error=error)
+
+    def test_per_item_breakdown_collapsible(self):
+        mr = MapResult(
+            results=(self._make_result(), self._make_result()),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        html = mr._repr_html_()
+        assert "<details" in html
+        assert "Per-item breakdown" in html
+
+    def test_shows_error_type_for_failed_items(self):
+        mr = MapResult(
+            results=(self._make_result(), self._make_result(RunStatus.FAILED, ValueError("boom"))),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        html = mr._repr_html_()
+        assert "ValueError" in html
+
+
+# ---------------------------------------------------------------------------
+# SqliteCheckpointer repr
+# ---------------------------------------------------------------------------
+
+
+class TestSqliteCheckpointerRepr:
+    def test_repr(self):
+        from hypergraph.checkpointers.sqlite import SqliteCheckpointer
+
+        cp = SqliteCheckpointer(":memory:")
+        r = repr(cp)
+        assert "SqliteCheckpointer" in r
+        assert "0 runs" in r
+
+    def test_repr_html(self):
+        from hypergraph.checkpointers.sqlite import SqliteCheckpointer
+
+        cp = SqliteCheckpointer(":memory:")
+        html = cp._repr_html_()
+        assert "SqliteCheckpointer" in html
+        assert "Runs" in html
+        assert ".runs()" in html

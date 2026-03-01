@@ -251,17 +251,30 @@ class TestMapResultAggregateStatus:
         assert mr.failed is False
         assert mr.paused is False
 
-    def test_any_failed(self):
+    def test_mixed_completed_and_failed_is_partial(self):
+        """When some succeed and some fail, status is PARTIAL (not FAILED)."""
         items = [
             _make_result(),
             _make_result(status=RunStatus.FAILED, error=ValueError("x")),
         ]
         mr = _make_map_result(items)
-        assert mr.status == RunStatus.FAILED
-        assert mr.failed is True
+        assert mr.status == RunStatus.PARTIAL
+        assert mr.partial is True
+        assert mr.failed is True  # .failed checks any(), not .status
         assert mr.completed is False
 
-    def test_failed_takes_precedence_over_paused(self):
+    def test_all_failed_is_failed(self):
+        """FAILED only when every item failed."""
+        items = [
+            _make_result(status=RunStatus.FAILED, error=ValueError("a")),
+            _make_result(status=RunStatus.FAILED, error=ValueError("b")),
+        ]
+        mr = _make_map_result(items)
+        assert mr.status == RunStatus.FAILED
+        assert mr.failed is True
+        assert mr.partial is False
+
+    def test_failed_and_paused_no_completed(self):
         items = [
             _make_result(status=RunStatus.PAUSED),
             _make_result(status=RunStatus.FAILED, error=ValueError("x")),
