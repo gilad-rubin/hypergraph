@@ -25,6 +25,7 @@ from hypergraph.runners.sync.superstep import run_superstep_sync
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -56,20 +57,33 @@ class SyncRunner(SyncRunnerTemplate):
         10
     """
 
-    def __init__(self, cache: CacheBackend | None = None):
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ):
         """Initialize SyncRunner with its node executors.
 
         Args:
             cache: Optional cache backend for node result caching.
                 Nodes opt in with ``cache=True``.
+            checkpointer: Optional checkpointer for workflow persistence.
+                Must implement SyncCheckpointerProtocol (e.g. SqliteCheckpointer).
+                Pass a workflow_id to run() to activate persistence.
         """
         self._cache = cache
+        self._checkpointer_instance = checkpointer
         self._executors: dict[type[HyperNode], NodeExecutor] = {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
             IfElseNode: SyncIfElseNodeExecutor(),
             RouteNode: SyncRouteNodeExecutor(),
         }
+
+    @property
+    def _checkpointer(self) -> Checkpointer | None:
+        """Checkpointer for workflow persistence."""
+        return self._checkpointer_instance
 
     @property
     def capabilities(self) -> RunnerCapabilities:
@@ -79,6 +93,7 @@ class SyncRunner(SyncRunnerTemplate):
             supports_async_nodes=False,
             supports_streaming=False,
             returns_coroutine=False,
+            supports_checkpointing=self._checkpointer_instance is not None,
         )
 
     @property
@@ -101,6 +116,8 @@ class SyncRunner(SyncRunnerTemplate):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
+        step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -108,6 +125,11 @@ class SyncRunner(SyncRunnerTemplate):
         """
         state = initialize_state(graph, values)
         active_nodes = compute_active_node_set(graph)
+
+        # Checkpointer setup — deterministic node ordering for index assignment
+        sync_cp = _get_checkpoint_writer(self._checkpointer_instance, workflow_id)
+        step_counter = 0
+        node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
         for superstep_idx in range(max_iterations):
             ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
@@ -128,6 +150,13 @@ class SyncRunner(SyncRunnerTemplate):
                     )
                 )
 
+            # Track ready nodes and prior input_versions for checkpoint helpers
+            ready_node_names = [n.name for n in ready_nodes]
+            prev_input_versions = {
+                name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
+            }
+
+            superstep_error: BaseException | None = None
             try:
                 # Execute all ready nodes
                 state = run_superstep_sync(
@@ -141,10 +170,30 @@ class SyncRunner(SyncRunnerTemplate):
                     run_id=run_id,
                     run_span_id=run_span_id,
                 )
-            except ExecutionError:
-                raise
+            except ExecutionError as e:
+                superstep_error = e
+                state = e.partial_state  # type: ignore[assignment]
             except Exception as e:
-                raise ExecutionError(e, state) from e
+                superstep_error = ExecutionError(e, state)
+
+            # Save step records for executed nodes (even on failure)
+            if sync_cp:
+                step_counter = _save_superstep_sync(
+                    sync_cp,
+                    workflow_id,
+                    superstep_idx,
+                    state,
+                    ready_node_names,
+                    prev_input_versions,
+                    node_order,
+                    step_counter,
+                    step_buffer,
+                    graph,
+                    superstep_error,
+                )
+
+            if superstep_error is not None:
+                raise superstep_error
 
         else:
             # Loop completed without break = hit max_iterations
@@ -256,6 +305,60 @@ class SyncRunner(SyncRunnerTemplate):
     def _shutdown_dispatcher_sync(self, dispatcher: EventDispatcher) -> None:
         """Shut down dispatcher for top-level sync runs."""
         dispatcher.shutdown()
+
+
+# ------------------------------------------------------------------
+# Checkpoint helpers (module-level to keep the class focused)
+# ------------------------------------------------------------------
+
+
+def _get_checkpoint_writer(checkpointer: Any, workflow_id: str | None) -> Any:
+    """Return the sync checkpointer if active, else None."""
+    if checkpointer is None or workflow_id is None:
+        return None
+    from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
+
+    return checkpointer if isinstance(checkpointer, SyncCheckpointerProtocol) else None
+
+
+def _save_superstep_sync(
+    sync_cp: Any,
+    workflow_id: str,
+    superstep_idx: int,
+    state: GraphState,
+    ready_node_names: list[str],
+    prev_input_versions: dict[str, dict[str, int]],
+    node_order: dict[str, int],
+    step_counter: int,
+    step_buffer: list[Any] | None,
+    graph: Any,
+    superstep_error: BaseException | None,
+) -> int:
+    """Build StepRecords and dispatch to sync durability mode."""
+    from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
+
+    records, step_counter = build_superstep_records(
+        workflow_id=workflow_id,
+        superstep_idx=superstep_idx,
+        state=state,
+        ready_node_names=ready_node_names,
+        prev_input_versions=prev_input_versions,
+        node_order=node_order,
+        step_counter=step_counter,
+        graph=graph,
+        superstep_error=superstep_error,
+    )
+
+    # SyncRunner durability: "sync" and "async" both write immediately (no event loop).
+    # "exit" buffers for flushing after run completes.
+    durability = sync_cp.policy.durability
+    for record in records:
+        if durability == "exit" and step_buffer is not None:
+            step_buffer.append(record)
+        else:
+            sync_cp.save_step_sync(record)
+
+    return step_counter
 
 
 # ------------------------------------------------------------------

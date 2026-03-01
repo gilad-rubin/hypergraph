@@ -37,6 +37,16 @@ if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
 
 
+def _validate_workflow_id(workflow_id: str | None, parent_run_id: str | None) -> None:
+    """Reject user-provided workflow_id containing '/' (reserved for hierarchy)."""
+    if workflow_id and "/" in workflow_id and parent_run_id is None:
+        raise ValueError(
+            f"workflow_id cannot contain '/': {workflow_id!r}. "
+            "The '/' character is reserved for hierarchical run IDs "
+            "(nested graphs, map items). Choose a different workflow_id."
+        )
+
+
 class SyncRunnerTemplate(BaseRunner, ABC):
     """Template implementation for sync run/map lifecycle."""
 
@@ -52,6 +62,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         """Default max iterations for cyclic graphs."""
         ...
 
+    @property
+    def _checkpointer(self) -> Any:
+        """Override to provide a checkpointer. Returns None by default."""
+        return None
+
     @abstractmethod
     def _execute_graph_impl(
         self,
@@ -63,6 +78,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
+        step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -111,6 +128,27 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         """Shut down dispatcher."""
         ...
 
+    def _get_sync_checkpointer(self, workflow_id: str | None) -> Any:
+        """Return sync checkpointer if workflow_id is provided, else None.
+
+        Validates that the checkpointer supports sync writes via the
+        SyncCheckpointerProtocol.
+        """
+        checkpointer = self._checkpointer
+        if checkpointer is None or workflow_id is None:
+            return None
+
+        from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
+
+        if not isinstance(checkpointer, SyncCheckpointerProtocol):
+            raise TypeError(
+                f"{type(checkpointer).__name__} does not support sync writes "
+                f"(missing SyncCheckpointerProtocol). SyncRunner requires a checkpointer "
+                f"that implements create_run_sync/save_step_sync/update_run_status_sync. "
+                f"SqliteCheckpointer supports this."
+            )
+        return checkpointer
+
     def run(
         self,
         graph: Graph,
@@ -125,6 +163,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
+        _parent_run_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -146,6 +185,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         )
         _validate_on_missing(on_missing)
         _validate_error_handling(error_handling)
+        _validate_workflow_id(workflow_id, _parent_run_id)
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()
@@ -153,6 +193,17 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         dispatcher = self._create_dispatcher(all_processors)
         run_id, run_span_id = self._emit_run_start_sync(dispatcher, graph, _parent_span_id)
         start_time = time.time()
+
+        # Checkpointer lifecycle
+        sync_cp = self._get_sync_checkpointer(workflow_id)
+        if sync_cp is not None:
+            sync_cp.create_run_sync(
+                workflow_id,
+                graph_name=graph.name,
+                parent_run_id=_parent_run_id,
+            )
+
+        step_buffer: list[Any] = []
 
         try:
             state = self._execute_graph_impl(
@@ -163,6 +214,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 run_span_id=run_span_id,
                 event_processors=event_processors,
+                workflow_id=workflow_id,
+                step_buffer=step_buffer,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
@@ -181,6 +234,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 start_time,
                 _parent_span_id,
             )
+            # Flush buffered steps and mark run completed
+            if sync_cp is not None:
+                _flush_and_complete(sync_cp, workflow_id, step_buffer, collector, total_duration_ms)
             return result
         except Exception as e:
             error = e
@@ -198,6 +254,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
                 error=error,
             )
+
+            # Flush buffered steps and mark run failed
+            if sync_cp is not None:
+                _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time)
 
             if error_handling == "raise":
                 raise error from None
@@ -232,6 +292,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
+        _parent_run_id: str | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -245,6 +306,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
         _validate_error_handling(error_handling)
+        _validate_workflow_id(workflow_id, _parent_run_id)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
@@ -268,9 +330,19 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         )
         start_time = time.time()
 
+        # Create parent batch run if checkpointing
+        sync_cp = self._get_sync_checkpointer(workflow_id)
+        if sync_cp is not None:
+            sync_cp.create_run_sync(
+                workflow_id,
+                graph_name=graph.name,
+                parent_run_id=_parent_run_id,
+            )
+
         try:
             results = []
-            for variation_inputs in input_variations:
+            for idx, variation_inputs in enumerate(input_variations):
+                child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
                 result = self.run(
                     graph,
                     variation_inputs,
@@ -280,7 +352,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     entrypoint=entrypoint,
                     error_handling="continue",
                     event_processors=event_processors,
+                    workflow_id=child_workflow_id,
                     _parent_span_id=map_span_id,
+                    _parent_run_id=workflow_id,
                 )
                 results.append(result)
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
@@ -295,6 +369,20 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
             )
             total_duration_ms = (time.time() - start_time) * 1000
+
+            # Complete parent batch run
+            if sync_cp is not None:
+                from hypergraph.checkpointers.types import WorkflowStatus
+
+                error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
+                sync_cp.update_run_status_sync(
+                    workflow_id,
+                    WorkflowStatus.COMPLETED,
+                    duration_ms=total_duration_ms,
+                    node_count=len(results),
+                    error_count=error_count,
+                )
+
             return MapResult(
                 results=tuple(results),
                 run_id=map_run_id,
@@ -313,7 +401,54 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
                 error=e,
             )
+            # Mark parent batch run as failed
+            if sync_cp is not None:
+                from hypergraph.checkpointers.types import WorkflowStatus as _WS
+
+                total_ms = (time.time() - start_time) * 1000
+                sync_cp.update_run_status_sync(
+                    workflow_id,
+                    _WS.FAILED,
+                    duration_ms=total_ms,
+                    node_count=len(results),
+                    error_count=len(results),
+                )
             raise
         finally:
             if _parent_span_id is None and dispatcher.active:
                 self._shutdown_dispatcher_sync(dispatcher)
+
+
+def _flush_and_complete(sync_cp: Any, workflow_id: str, step_buffer: list, collector: RunLogCollector, total_duration_ms: float) -> None:
+    """Flush buffered steps and mark run completed."""
+    for record in step_buffer:
+        sync_cp.save_step_sync(record)
+    from hypergraph.checkpointers.types import WorkflowStatus
+
+    step_count = len(collector._records)
+    error_count = sum(1 for r in collector._records if r.status == "failed")
+    sync_cp.update_run_status_sync(
+        workflow_id,
+        WorkflowStatus.COMPLETED,
+        duration_ms=total_duration_ms,
+        node_count=step_count,
+        error_count=error_count,
+    )
+
+
+def _flush_and_fail(sync_cp: Any, workflow_id: str, step_buffer: list, collector: RunLogCollector, start_time: float) -> None:
+    """Flush buffered steps and mark run failed."""
+    for record in step_buffer:
+        sync_cp.save_step_sync(record)
+    from hypergraph.checkpointers.types import WorkflowStatus as _WS
+
+    total_ms = (time.time() - start_time) * 1000
+    fail_count = len(collector._records)
+    err_count = sum(1 for r in collector._records if r.status == "failed")
+    sync_cp.update_run_status_sync(
+        workflow_id,
+        _WS.FAILED,
+        duration_ms=total_ms,
+        node_count=fail_count,
+        error_count=err_count,
+    )
