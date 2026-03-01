@@ -17,6 +17,7 @@ class HypergraphConfig:
 
     graphs: dict[str, str] = field(default_factory=dict)
     db: str | None = None
+    has_section: bool = False
 
 
 def find_pyproject(start: Path | None = None) -> Path | None:
@@ -56,4 +57,37 @@ def load_config(start: Path | None = None) -> HypergraphConfig:
     return HypergraphConfig(
         graphs=section.get("graphs", {}),
         db=section.get("db"),
+        has_section=True,
     )
+
+
+def resolve_db_path(explicit: str | None = None) -> str:
+    """Resolve the database path using a priority chain.
+
+    Resolution order (highest priority first):
+    1. Explicit argument (--db flag or direct parameter)
+    2. HYPERGRAPH_DB environment variable
+    3. [tool.hypergraph] db key in pyproject.toml
+    4. Convention: .hypergraph/runs.db (only if [tool.hypergraph] section exists)
+
+    Raises:
+        SystemExit: If no database path can be resolved
+    """
+    import os
+
+    if explicit:
+        return explicit
+
+    env_db = os.environ.get("HYPERGRAPH_DB")
+    if env_db:
+        return env_db
+
+    config = load_config()
+    if config.db:
+        return config.db
+
+    # Convention path — only if [tool.hypergraph] exists (signal of intent)
+    if config.has_section:
+        return ".hypergraph/runs.db"
+
+    raise SystemExit("No database found. Set --db, HYPERGRAPH_DB env var, or add [tool.hypergraph] to pyproject.toml. See docs for details.")

@@ -24,7 +24,7 @@ from hypergraph.cli._format import (
 app = typer.Typer(help="Inspect and manage graph runs.")
 
 # Common options
-DbOption = Annotated[str, typer.Option("--db", help="Database path")]
+DbOption = Annotated[str | None, typer.Option("--db", help="Database path")]
 JsonFlag = Annotated[bool, typer.Option("--json", help="Output as JSON")]
 OutputOption = Annotated[str | None, typer.Option("--output", help="Write JSON to file")]
 LimitOption = Annotated[int, typer.Option("--limit", help="Max results")]
@@ -33,7 +33,7 @@ LimitOption = Annotated[int, typer.Option("--limit", help="Max results")]
 @app.callback(invoke_without_command=True)
 def runs_dashboard(
     ctx: typer.Context,
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     as_json: JsonFlag = False,
     output: OutputOption = None,
 ):
@@ -42,7 +42,7 @@ def runs_dashboard(
         return
 
     cp = open_checkpointer(db)
-    all_runs = cp.runs()
+    all_runs = cp.runs(parent_run_id=None)
 
     if not all_runs:
         if as_json:
@@ -102,15 +102,17 @@ def _print_run_table(run_list, cp) -> None:
 
 @app.command("ls")
 def runs_ls(
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     status: Annotated[list[str] | None, typer.Option("--status", help="Filter by status (repeatable)")] = None,
     graph: Annotated[str | None, typer.Option("--graph", help="Filter by graph name")] = None,
     since: Annotated[str | None, typer.Option("--since", help="Filter by time (e.g. 1h, 7d, 2w)")] = None,
+    parent: Annotated[str | None, typer.Option("--parent", help="Show children of this run")] = None,
+    show_all: Annotated[bool, typer.Option("--all", help="Show all runs (including children)")] = False,
     limit: LimitOption = DEFAULT_LIMIT,
     as_json: JsonFlag = False,
     output: OutputOption = None,
 ):
-    """List runs with filters."""
+    """List runs with filters. Shows top-level runs by default."""
     cp = open_checkpointer(db)
     from hypergraph.checkpointers import WorkflowStatus
 
@@ -119,6 +121,13 @@ def runs_ls(
         filter_kwargs["graph_name"] = graph
     if since:
         filter_kwargs["since"] = parse_since(since)
+
+    # Hierarchy filtering: --parent takes precedence, --all shows everything,
+    # default shows top-level only
+    if parent:
+        filter_kwargs["parent_run_id"] = parent
+    elif not show_all:
+        filter_kwargs["parent_run_id"] = None
 
     if status:
         # When status filter is given, query per-status and merge (preserving graph/since)
@@ -158,18 +167,19 @@ def runs_ls(
     lines = print_table(headers, rows)
     print_lines(lines)
 
-    print_ctas(
-        [
-            "hypergraph runs show <id>      to inspect a run",
-            "hypergraph runs ls --graph <name> --since 1h  to narrow results",
-        ]
-    )
+    ctas = [
+        "hypergraph runs show <id>           to inspect a run",
+        "hypergraph runs ls --graph <name>   to narrow results",
+    ]
+    if not show_all and not parent:
+        ctas.append("hypergraph runs ls --all            to include child runs")
+    print_ctas(ctas)
 
 
 @app.command("show")
 def runs_show(
     run_id: Annotated[str, typer.Argument(help="Run ID to show")],
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     step: Annotated[int | None, typer.Option("--step", help="Show specific step by index")] = None,
     show_values: Annotated[bool, typer.Option("--values", help="Show step output values")] = False,
     errors_only: Annotated[bool, typer.Option("--errors", help="Only show failed steps")] = False,
@@ -225,10 +235,16 @@ def runs_show(
     graph_label = f" ({r.graph_name})" if r.graph_name else ""
     print(f"\nRun: {r.id}{graph_label} | {status_str} | {len(step_list)} steps | {format_duration(total_ms)}\n")
 
+    # Check for child runs (batch parent or nested graph parent)
+    children = cp.runs(parent_run_id=run_id)
+
     if not step_list:
         print("  No steps recorded.")
     else:
+        has_child_runs = any(s.child_run_id for s in step_list)
         headers = ["Step", "Node", "Type", "Duration", "Status", "Decision"]
+        if has_child_runs:
+            headers.append("Child Run")
         rows = []
         for s in step_list:
             decision = ""
@@ -240,25 +256,34 @@ def runs_show(
                 error_line = s.error if isinstance(s.error, str) else str(s.error)
                 status_display = f"FAILED: {error_line[:60]}"
 
-            rows.append(
-                [
-                    str(s.index),
-                    s.node_name,
-                    s.node_type or "—",
-                    format_duration(s.duration_ms),
-                    status_display,
-                    decision,
-                ]
-            )
+            row = [
+                str(s.index),
+                s.node_name,
+                s.node_type or "—",
+                format_duration(s.duration_ms),
+                status_display,
+                decision,
+            ]
+            if has_child_runs:
+                row.append(s.child_run_id or "—")
+            rows.append(row)
 
         lines = print_table(headers, rows)
         print_lines(lines)
+
+    # Show children summary for batch parents
+    if children:
+        completed = sum(1 for c in children if c.status.value == "completed")
+        failed = sum(1 for c in children if c.status.value == "failed")
+        print(f"\n  Children: {len(children)} ({completed} completed, {failed} failed)")
 
     # CTAs
     ctas = [
         f"hypergraph runs values {run_id}            for output values",
         f"hypergraph runs stats {run_id}             for performance breakdown",
     ]
+    if children:
+        ctas.insert(0, f"hypergraph runs ls --parent {run_id}   to list child runs")
     if any(s.status.value == "failed" for s in step_list):
         ctas.insert(0, f"hypergraph runs show {run_id} --errors   for failures only")
     if r.status.value == "active":
@@ -300,7 +325,7 @@ def _print_step_detail(s, show_values: bool) -> None:
 @app.command("values")
 def runs_values(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     superstep: Annotated[int | None, typer.Option("--superstep", help="State through this superstep")] = None,
     key: Annotated[str | None, typer.Option("--key", help="Show single output value")] = None,
     full: Annotated[bool, typer.Option("--full", help="Don't truncate large values")] = False,
@@ -379,7 +404,7 @@ def runs_values(
 @app.command("steps")
 def runs_steps(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     node: Annotated[str | None, typer.Option("--node", help="Filter to specific node")] = None,
     show_values: Annotated[bool, typer.Option("--values", help="Show actual values")] = False,
     full: Annotated[bool, typer.Option("--full", help="Don't truncate values/errors")] = False,
@@ -434,7 +459,7 @@ def runs_steps(
 @app.command("search")
 def runs_search(
     query: Annotated[str, typer.Argument(help="Search query (matches node names and errors)")],
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     field: Annotated[str | None, typer.Option("--field", help="Limit search to field (node_name or error)")] = None,
     limit: LimitOption = DEFAULT_LIMIT,
     as_json: JsonFlag = False,
@@ -479,7 +504,7 @@ def runs_search(
 @app.command("stats")
 def runs_stats(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
-    db: DbOption = "./runs.db",
+    db: DbOption = None,
     as_json: JsonFlag = False,
     output: OutputOption = None,
 ):
