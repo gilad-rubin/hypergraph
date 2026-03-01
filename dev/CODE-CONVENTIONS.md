@@ -106,3 +106,18 @@ class NodeStartEvent(BaseEvent):
 | `IncompatibleRunnerError` | Run-time: runner can't handle graph features |
 | `ExecutionError` | Run-time: wraps node exception with partial state |
 | `RenameError` | Build-time: invalid rename operation |
+
+## Repr Conventions
+
+Every user-facing type has two representations:
+- `__repr__` — clean one-liner plain text (terminals, logging, piping)
+- `_repr_html_` — styled HTML (Jupyter, VS Code, Colab)
+
+Rules:
+- `__repr__` must be scannable: type name, key fields, pipe-separated
+- `_repr_html_` uses inline CSS (no `<style>` tags — stripped by some renderers)
+- Enums show `.value` (`"completed"`), never `<Enum.X: 'y'>`
+- Durations formatted via `format_duration_ms()` from `_utils.py`
+- Datetimes formatted as `YYYY-MM-DD HH:MM` via `format_datetime()`
+- Collections (`RunTable`, `StepTable`) render as tables in both contexts
+- HTML helpers live in `_repr.py` — import from there, don't inline HTML in types

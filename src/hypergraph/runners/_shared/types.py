@@ -240,6 +240,27 @@ class RunResult:
             return
         pretty_printer.text(repr(self))
 
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import html_kv, html_panel, status_badge
+
+        kvs = [
+            html_kv("Status", status_badge(self.status.value)),
+        ]
+        if self.log:
+            from hypergraph._repr import duration_html
+
+            kvs.append(html_kv("Duration", duration_html(self.log.total_duration_ms)))
+            kvs.append(html_kv("Nodes", str(len({s.node_name for s in self.log.steps}))))
+            n_errors = len(self.log.errors)
+            if n_errors:
+                kvs.append(html_kv("Errors", f'<span style="color:#dc2626">{n_errors}</span>'))
+        if self.error:
+            kvs.append(html_kv("Error", f"<code>{type(self.error).__name__}: {self.error}</code>"))
+        body = " &nbsp;|&nbsp; ".join(kvs)
+        if self.log:
+            body += "<br><br>" + self.log._repr_html_()
+        return html_panel(f"RunResult: {self.run_id}", body)
+
 
 @dataclass(frozen=True)
 class MapResult:
@@ -341,7 +362,7 @@ class MapResult:
     # --- Progressive disclosure ---
 
     def summary(self) -> str:
-        """One-liner: '5 items | 4 completed, 1 failed | 12ms'"""
+        """One-liner: '5 items | 4 completed, 1 failed | avg 42ms/item'"""
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
@@ -356,7 +377,11 @@ class MapResult:
             status_parts.append(f"{n_paused} paused")
         if status_parts:
             parts.append(", ".join(status_parts))
-        parts.append(_format_duration(self.total_duration_ms))
+        if n_completed > 0:
+            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
+            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
+            avg = completed_ms / n_completed
+            parts.append(f"avg {_format_duration(avg)}/item")
         return " | ".join(parts)
 
     def to_dict(self) -> dict[str, Any]:
@@ -388,13 +413,43 @@ class MapResult:
         if n_paused:
             parts.append(f"{n_paused} paused")
         status = ", ".join(parts) if parts else "empty"
-        return f"MapResult({n} items: {status}, {_format_duration(self.total_duration_ms)}, map_over={self.map_over!r})"
+        avg_part = ""
+        if n_completed > 0:
+            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
+            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
+            avg = completed_ms / n_completed
+            avg_part = f", avg {_format_duration(avg)}/item"
+        return f"MapResult({n} items: {status}{avg_part}, map_over={self.map_over!r})"
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         if cycle:
             pretty_printer.text("MapResult(...)")
             return
         pretty_printer.text(repr(self))
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import html_kv, html_panel, status_badge
+
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        kvs = [
+            html_kv("Items", str(n)),
+            html_kv("Status", status_badge(self.status.value)),
+        ]
+        if n_completed:
+            kvs.append(html_kv("Completed", str(n_completed)))
+        if n_failed:
+            kvs.append(html_kv("Failed", f'<span style="color:#dc2626">{n_failed}</span>'))
+        if n_completed > 0:
+            from hypergraph._repr import duration_html
+
+            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
+            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
+            avg = completed_ms / n_completed
+            kvs.append(html_kv("Avg/item", duration_html(avg)))
+        body = " &nbsp;|&nbsp; ".join(kvs)
+        return html_panel(f"MapResult: {self.graph_name} ({n} items)", body)
 
 
 Sequence.register(MapResult)
@@ -608,6 +663,16 @@ class NodeRecord:
     def __post_init__(self) -> None:
         object.__setattr__(self, "duration_ms", round(self.duration_ms, DURATION_PRECISION))
 
+    def __repr__(self) -> str:
+        status = "cached" if self.cached else self.status
+        parts = [f"NodeRecord: {self.node_name}", status, _format_duration(self.duration_ms), f"superstep {self.superstep}"]
+        if self.error:
+            parts.append(f"error: {self.error[:60]}")
+        if self.decision is not None:
+            d = ", ".join(self.decision) if isinstance(self.decision, list) else self.decision
+            parts.append(f"-> {d}")
+        return " | ".join(parts)
+
     @property
     def log(self) -> RunLog | MapLog | None:
         """Drill into nested execution traces.
@@ -638,20 +703,33 @@ class NodeStats:
     cached: int = 0
 
     @property
+    def succeeded(self) -> int:
+        """Executions that completed without cache hit."""
+        return self.count - self.errors - self.cached
+
+    @property
     def avg_ms(self) -> float:
-        """Average execution time in milliseconds."""
-        return self.total_ms / self.count if self.count > 0 else 0.0
+        """Average execution time for succeeded (non-cached) runs."""
+        return self.total_ms / self.succeeded if self.succeeded > 0 else 0.0
+
+    def __repr__(self) -> str:
+        parts = []
+        if self.succeeded:
+            parts.append(f"{self.succeeded} succeeded")
+        if self.errors:
+            parts.append(f"{self.errors} errors")
+        if self.cached:
+            parts.append(f"{self.cached} cached")
+        if self.succeeded:
+            parts.append(f"avg {_format_duration(self.avg_ms)}")
+        return f"NodeStats: {', '.join(parts)}" if parts else "NodeStats: empty"
 
 
 def _format_duration(ms: float) -> str:
     """Format milliseconds into human-readable duration."""
-    if ms < 1000:
-        return f"{ms:.0f}ms"
-    if ms < 60_000:
-        return f"{ms / 1000:.1f}s"
-    minutes = int(ms // 60_000)
-    seconds = (ms % 60_000) / 1000
-    return f"{minutes}m{seconds:04.1f}s"
+    from hypergraph._utils import format_duration_ms
+
+    return format_duration_ms(ms)
 
 
 def _compute_node_stats(steps: tuple[NodeRecord, ...]) -> dict[str, NodeStats]:
@@ -809,6 +887,34 @@ class RunLog:
             return
         pretty_printer.text(str(self))
 
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import duration_html, html_panel, html_table, status_badge
+
+        headers = ["Step", "Node", "Status", "Duration"]
+        has_decisions = any(s.decision is not None for s in self.steps)
+        if has_decisions:
+            headers.append("Decision")
+        rows = []
+        for i, step in enumerate(self.steps):
+            status = "cached" if step.cached else step.status
+            dur = duration_html(step.duration_ms)
+            row = [str(i), f"<code>{step.node_name}</code>", status_badge(status), dur]
+            if has_decisions:
+                if step.decision is not None:
+                    d = ", ".join(step.decision) if isinstance(step.decision, list) else step.decision
+                    row.append(f"&rarr; {d}")
+                else:
+                    row.append("")
+            rows.append(row)
+        n_errors = len(self.errors)
+        title = (
+            f"RunLog: {self.graph_name} &nbsp; "
+            f"{duration_html(self.total_duration_ms)} &nbsp; "
+            f"{len({s.node_name for s in self.steps})} nodes &nbsp; "
+            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+        )
+        return html_panel(title, html_table(headers, rows))
+
 
 # ---------------------------------------------------------------------------
 # MapLog — batch-level execution trace
@@ -840,16 +946,22 @@ class MapLog:
         return _compute_node_stats(all_steps)
 
     def summary(self) -> str:
-        """One-liner: '5 items | 5 completed | 2ms | 0 errors'."""
+        """One-liner: '5 items | 5 completed, 0 errors | avg 42ms/item'."""
         n = len(self.items)
-        n_completed = sum(1 for log in self.items if not log.errors)
+        n_succeeded = sum(1 for log in self.items if not log.errors)
         n_errors = len(self.errors)
-        parts = [
-            f"{n} items",
-            f"{n_completed} completed",
-            _format_duration(self.total_duration_ms),
-            f"{n_errors} errors",
-        ]
+        parts = [f"{n} items"]
+        status_parts = []
+        if n_succeeded:
+            status_parts.append(f"{n_succeeded} completed")
+        if n_errors:
+            status_parts.append(f"{n_errors} errors")
+        if status_parts:
+            parts.append(", ".join(status_parts))
+        if n_succeeded > 0:
+            succeeded_items = [log for log in self.items if not log.errors]
+            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+            parts.append(f"avg {_format_duration(avg)}/item")
         return " | ".join(parts)
 
     def to_dict(self) -> dict[str, Any]:
@@ -872,11 +984,17 @@ class MapLog:
     def __str__(self) -> str:
         """Per-item table with footer."""
         n_errors = len(self.errors)
+        n_succeeded = sum(1 for log in self.items if not log.errors)
+        avg_part = ""
+        if n_succeeded > 0:
+            succeeded_items = [log for log in self.items if not log.errors]
+            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+            avg_part = f" | avg {_format_duration(avg)}/item"
         header = (
             f"MapLog: {self.graph_name} | "
-            f"{len(self.items)} items | "
-            f"{_format_duration(self.total_duration_ms)} | "
+            f"{len(self.items)} items ({n_succeeded} succeeded) | "
             f"{n_errors} error{'s' if n_errors != 1 else ''}"
+            f"{avg_part}"
         )
         lines = [header, ""]
 
@@ -910,3 +1028,23 @@ class MapLog:
             pretty_printer.text("MapLog(...)")
             return
         pretty_printer.text(str(self))
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import duration_html, html_panel, html_table, status_badge
+
+        headers = ["Item", "Duration", "Status", "Nodes"]
+        rows = []
+        for i, log in enumerate(self.items[:_MAX_MAP_LOG_ROWS]):
+            status = "failed" if log.errors else "completed"
+            n_nodes = len({s.node_name for s in log.steps})
+            rows.append([str(i), duration_html(log.total_duration_ms), status_badge(status), str(n_nodes)])
+        n_succeeded = sum(1 for log in self.items if not log.errors)
+        avg_part = ""
+        if n_succeeded > 0:
+            succeeded_items = [log for log in self.items if not log.errors]
+            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+            avg_part = f" &nbsp; avg {duration_html(avg)}/item"
+        remaining = len(self.items) - len(rows)
+        footer = f" (+{remaining} more)" if remaining > 0 else ""
+        title = f"MapLog: {self.graph_name} ({len(self.items)} items){footer}{avg_part}"
+        return html_panel(title, html_table(headers, rows))

@@ -690,6 +690,67 @@ class Graph:
 
         return GraphNode(self, name=name)
 
+    def __repr__(self) -> str:
+        n_nodes = len(self._nodes)
+        n_edges = self._nx_graph.number_of_edges()
+        props = []
+        if self.has_cycles:
+            props.append("cycles")
+        if self.has_async_nodes:
+            props.append("async")
+        if self.has_interrupts:
+            props.append("interrupts")
+        prop_str = f" | {', '.join(props)}" if props else " | no cycles"
+        name = self._name or "unnamed"
+        return f"Graph: {name} | {n_nodes} nodes | {n_edges} edges{prop_str}"
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import html_detail, html_panel, html_table, status_badge
+
+        n_nodes = len(self._nodes)
+        n_edges = self._nx_graph.number_of_edges()
+        name = self._name or "unnamed"
+
+        # Node table
+        headers = ["Node", "Type", "Inputs", "Outputs"]
+        rows = []
+        for node_name, node in self._nodes.items():
+            node_type = type(node).__name__
+            inputs = ", ".join(f"<code>{i}</code>" for i in node.inputs[:6])
+            if len(node.inputs) > 6:
+                inputs += f" (+{len(node.inputs) - 6})"
+            outputs = ", ".join(f"<code>{o}</code>" for o in node.outputs[:6])
+            if len(node.outputs) > 6:
+                outputs += f" (+{len(node.outputs) - 6})"
+            rows.append([f"<code>{node_name}</code>", node_type, inputs or "—", outputs or "—"])
+
+        table_html = html_table(headers, rows)
+
+        # Properties
+        props = []
+        if self.has_cycles:
+            props.append(status_badge("active").replace("active", "cycles"))
+        if self.has_async_nodes:
+            props.append(status_badge("cached").replace("cached", "async"))
+        if self.has_interrupts:
+            props.append(status_badge("paused").replace("paused", "interrupts"))
+        if not props:
+            props.append(status_badge("completed").replace("completed", "DAG"))
+        prop_html = " ".join(props)
+
+        body = f"{prop_html} &nbsp; <b>{n_edges}</b> edges<br><br>{table_html}"
+
+        # Collapsible visualization (if viz module is available)
+        try:
+            widget = self.visualize()
+            if hasattr(widget, "_repr_html_"):
+                viz_html = widget._repr_html_()
+                body += html_detail("Show interactive graph", viz_html)
+        except (ImportError, Exception):
+            pass
+
+        return html_panel(f"Graph: {name} ({n_nodes} nodes)", body)
+
     def visualize(
         self,
         *,

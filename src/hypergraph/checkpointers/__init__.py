@@ -11,8 +11,10 @@ from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
     Checkpoint,
     Run,
+    RunTable,
     StepRecord,
     StepStatus,
+    StepTable,
     WorkflowStatus,
 )
 
@@ -23,10 +25,12 @@ __all__ = [
     "JsonSerializer",
     "PickleSerializer",
     "Run",
+    "RunTable",
     "Serializer",
     "SqliteCheckpointer",
     "StepRecord",
     "StepStatus",
+    "StepTable",
     "SyncCheckpointerProtocol",
     "WorkflowStatus",
 ]

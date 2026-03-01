@@ -9,7 +9,7 @@ from typing import Any, Literal
 from hypergraph.checkpointers._migrate import ensure_schema
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
-from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, StepStatus, WorkflowStatus
+from hypergraph.checkpointers.types import Checkpoint, Run, RunTable, StepRecord, StepStatus, StepTable, WorkflowStatus
 
 # Explicit column lists for SELECT queries — avoids column-order bugs after migration
 _RUNS_COLS = "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, parent_run_id, config"
@@ -268,7 +268,7 @@ class SqliteCheckpointer(Checkpointer):
             )
 
         rows = await cursor.fetchall()
-        return [self._row_to_step(row) for row in rows]
+        return StepTable(self._row_to_step(row) for row in rows)
 
     async def get_run_async(self, run_id: str) -> Run | None:
         """Get run metadata."""
@@ -298,7 +298,7 @@ class SqliteCheckpointer(Checkpointer):
             )
 
         rows = await cursor.fetchall()
-        return [self._row_to_run(row) for row in rows]
+        return RunTable(self._row_to_run(row) for row in rows)
 
     _FTS_FIELDS = frozenset({"node_name", "error"})
 
@@ -322,7 +322,7 @@ class SqliteCheckpointer(Checkpointer):
             (fts_query, limit),
         )
         rows = await cursor.fetchall()
-        return [self._row_to_step(row) for row in rows]
+        return StepTable(self._row_to_step(row) for row in rows)
 
     # === Internal ===
 
@@ -436,7 +436,7 @@ class SqliteCheckpointer(Checkpointer):
                 f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY step_index",
                 (run_id,),
             )
-        return [self._row_to_step(row) for row in cursor.fetchall()]
+        return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def get_run(self, run_id: str) -> Run | None:
         """Get run metadata synchronously."""
@@ -491,7 +491,7 @@ class SqliteCheckpointer(Checkpointer):
             f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC LIMIT ?",
             params,
         )
-        return [self._row_to_run(row) for row in cursor.fetchall()]
+        return RunTable(self._row_to_run(row) for row in cursor.fetchall())
 
     def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS5 (sync)."""
@@ -513,7 +513,7 @@ class SqliteCheckpointer(Checkpointer):
             """,
             (fts_query, limit),
         )
-        return [self._row_to_step(row) for row in cursor.fetchall()]
+        return StepTable(self._row_to_step(row) for row in cursor.fetchall())
 
     def values(self, run_id: str, *, key: str | None = None) -> dict[str, Any]:
         """Get run output values synchronously. Optionally filter to a single key."""

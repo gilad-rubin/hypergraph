@@ -306,7 +306,8 @@ class TestMapResultProgressiveDisclosure:
         assert "3 items" in s
         assert "2 completed" in s
         assert "1 failed" in s
-        assert "123ms" in s
+        assert "avg" in s
+        assert "/item" in s
 
     def test_to_dict_envelope(self):
         items = [_make_result()]
@@ -570,7 +571,7 @@ class TestMapLog:
         assert isinstance(mr.log, MapLog)
 
     def test_map_log_summary(self):
-        """summary() is a one-liner with item count, completed, duration, errors."""
+        """summary() is a one-liner with item count, completed, avg/item."""
         log = _make_run_log(duration=1.0)
         failed_log = _make_failed_run_log()
         r_ok = _make_result(log=log)
@@ -580,8 +581,9 @@ class TestMapLog:
         s = mr.log.summary()
         assert "3 items" in s
         assert "2 completed" in s
-        assert "4ms" in s
         assert "1 errors" in s
+        assert "avg" in s
+        assert "/item" in s
 
     def test_map_log_str_table(self):
         """str() shows per-item rows with indices."""

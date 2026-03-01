@@ -44,25 +44,20 @@ def print_json(command: str, data: Any, output: str | None = None) -> None:
 
 def format_duration(ms: float | None) -> str:
     """Format milliseconds into human-readable duration."""
-    if ms is None or ms == 0:
+    from hypergraph._utils import format_duration_ms
+
+    if ms == 0:
         return "—"
-    if ms < 1000:
-        return f"{ms:.0f}ms"
-    seconds = ms / 1000
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes = int(seconds // 60)
-    remaining = seconds % 60
-    return f"{minutes}m{remaining:04.1f}s"
+    return format_duration_ms(ms)
 
 
 def format_datetime(dt: datetime | str | None) -> str:
     """Format datetime for display."""
-    if dt is None:
-        return "—"
     if isinstance(dt, str):
         return dt[:19]  # Trim microseconds
-    return dt.strftime("%Y-%m-%d %H:%M")
+    from hypergraph._utils import format_datetime as _fmt_dt
+
+    return _fmt_dt(dt)
 
 
 def format_status(status: str) -> str:
