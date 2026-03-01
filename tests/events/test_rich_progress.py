@@ -307,7 +307,8 @@ class TestNodeError:
 
         mock.update.assert_called()
         desc_arg = mock.update.call_args.kwargs.get("description", "")
-        assert "FAILED" in desc_arg
+        assert "1 failed" in desc_arg
+        mock.advance.assert_called()
 
 
 # ---------------------------------------------------------------------------

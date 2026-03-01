@@ -50,6 +50,8 @@ class _NodeBarInfo:
 
     rich_task_id: Any = None  # Rich TaskID
     total: int = 0
+    failures: int = 0
+    base_description: str = ""  # Without failure suffix, for clean rebuilds
 
 
 # Key type for node bar lookups: (graph_name, node_name, depth)
@@ -194,7 +196,7 @@ class RichProgressProcessor(TypedEventProcessor):
     def _icon(self, depth: int, is_map: bool = False) -> str:
         """Return the appropriate icon for the given depth."""
         if is_map:
-            return "🗺️ "
+            return "🗺️"
         if depth > 0:
             return "🌳"
         return "📦"
@@ -262,9 +264,11 @@ class RichProgressProcessor(TypedEventProcessor):
 
         info = self._get_span(span)
         info.parent_span_id = parent
-        # Node depth = run depth (parent is the run span)
+        # Node depth = run depth, +1 if inside a map (so nodes indent under the map bar)
         parent_info = self._spans.get(parent) if parent else None
         node_depth = parent_info.depth if parent_info else 0
+        if parent_info and parent_info.map_parent:
+            node_depth += 1
         info.depth = node_depth
 
         key: _NodeKey = (event.graph_name, event.node_name, node_depth)
@@ -275,7 +279,7 @@ class RichProgressProcessor(TypedEventProcessor):
             if bar is None:
                 desc = self._make_description(event.node_name, node_depth)
                 task_id = self._progress.add_task(desc, total=total)
-                self._node_bars[key] = _NodeBarInfo(rich_task_id=task_id, total=total)
+                self._node_bars[key] = _NodeBarInfo(rich_task_id=task_id, total=total, base_description=desc)
                 self._refresh()
             elif bar.total < total:
                 bar.total = total
@@ -311,7 +315,7 @@ class RichProgressProcessor(TypedEventProcessor):
                 parent_info.node_count += 1
 
     def on_node_error(self, event: NodeErrorEvent) -> None:
-        """Handle node error: mark bar as failed."""
+        """Handle node error: advance bar and update failure count."""
         if self._tty_mode:
             span_info = self._spans.get(event.span_id)
             node_depth = span_info.depth if span_info else 0
@@ -319,10 +323,13 @@ class RichProgressProcessor(TypedEventProcessor):
             key: _NodeKey = (event.graph_name, event.node_name, node_depth)
             bar = self._node_bars.get(key)
             if bar is not None:
-                current = self._progress.tasks[bar.rich_task_id].description
-                if "FAILED" not in current:
-                    self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
-                    self._refresh()
+                bar.failures += 1
+                self._progress.advance(bar.rich_task_id, 1)
+                self._progress.update(
+                    bar.rich_task_id,
+                    description=f"{bar.base_description} [red]({bar.failures} failed)[/red]",
+                )
+                self._refresh()
         else:
             if not self._find_map_ancestor(event.span_id):
                 self._print(f"✗ {event.node_name} FAILED")
