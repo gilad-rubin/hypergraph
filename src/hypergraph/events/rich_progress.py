@@ -149,7 +149,7 @@ class RichProgressProcessor(TypedEventProcessor):
     def __init__(
         self,
         *,
-        transient: bool = True,
+        transient: bool = False,
         force_mode: Literal["tty", "notebook", "non-tty", "auto"] = "auto",
     ) -> None:
         """Initialize the progress processor.
