@@ -120,13 +120,13 @@ class SqliteCheckpointer(Checkpointer):
             return f"SqliteCheckpointer: {self._path}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, html_detail, html_kv, html_panel
+        from hypergraph._repr import MUTED_COLOR, _code, html_detail, html_kv, html_panel, theme_wrap
         from hypergraph._utils import plural
 
         try:
             stats = self._db_stats()
         except Exception:
-            return _code(f"SqliteCheckpointer: {self._path}")
+            return theme_wrap(_code(f"SqliteCheckpointer: {self._path}"))
 
         kvs = [html_kv("Path", _code(str(stats["path"])))]
         if stats["size_bytes"] is not None:
@@ -147,12 +147,12 @@ class SqliteCheckpointer(Checkpointer):
 
         # API hints
         body += (
-            '<div style="color:#6b7280; font-size:0.85em; margin-top:8px">'
+            f'<div style="color:{MUTED_COLOR}; font-size:0.85em; margin-top:8px">'
             f"Explore: {_code('.runs()')} {_code('.steps(run_id)')} "
             f"{_code('.search(query)')} {_code('.stats(run_id)')}"
             "</div>"
         )
-        return html_panel("SqliteCheckpointer", body)
+        return theme_wrap(html_panel("SqliteCheckpointer", body))
 
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""

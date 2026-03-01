@@ -66,15 +66,15 @@ class StepRecord:
         return " | ".join(parts)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, status_badge
+        from hypergraph._repr import ERROR_COLOR, MUTED_COLOR, duration_html, status_badge, theme_wrap
 
         status = "cached" if self.cached else self.status.value
         dur = duration_html(self.duration_ms) if self.duration_ms > 0 else ""
-        error = f' <span style="color:#dc2626; font-size:0.85em">{self.error[:80]}</span>' if self.error else ""
-        return (
+        error = f' <span style="color:{ERROR_COLOR}; font-size:0.85em">{self.error[:80]}</span>' if self.error else ""
+        return theme_wrap(
             f'<span style="font-family:ui-monospace,monospace; font-size:0.9em">'
             f"<b>[{self.index}] {self.node_name}</b> {status_badge(status)} {dur}"
-            f' <span style="color:#6b7280">superstep {self.superstep}</span>'
+            f' <span style="color:{MUTED_COLOR}">superstep {self.superstep}</span>'
             f"{error}</span>"
         )
 
@@ -131,7 +131,17 @@ class Run:
         return " | ".join(parts)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, datetime_html, duration_html, html_kv, html_panel, status_badge
+        from hypergraph._repr import (
+            ERROR_COLOR,
+            MUTED_COLOR,
+            _code,
+            datetime_html,
+            duration_html,
+            html_kv,
+            html_panel,
+            status_badge,
+            theme_wrap,
+        )
 
         kvs = [
             html_kv("Status", status_badge(self.status.value)),
@@ -140,15 +150,15 @@ class Run:
         if self.node_count:
             kvs.append(html_kv("Steps", str(self.node_count)))
         if self.error_count:
-            kvs.append(html_kv("Errors", f'<span style="color:#dc2626; font-weight:600">{self.error_count}</span>'))
+            kvs.append(html_kv("Errors", f'<span style="color:{ERROR_COLOR}; font-weight:600">{self.error_count}</span>'))
         if self.parent_run_id:
             kvs.append(html_kv("Parent", _code(self.parent_run_id)))
         kvs.append(html_kv("Created", datetime_html(self.created_at)))
         title = f"Run: {self.id}"
         if self.graph_name:
-            title += f' <span style="color:#6b7280; font-weight:400">({self.graph_name})</span>'
+            title += f' <span style="color:{MUTED_COLOR}; font-weight:400">({self.graph_name})</span>'
         body = " &nbsp;|&nbsp; ".join(kvs)
-        return html_panel(title, body)
+        return theme_wrap(html_panel(title, body))
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict."""
@@ -180,13 +190,13 @@ class Checkpoint:
         return f"Checkpoint: {plural(len(self.values), 'value')}, {plural(len(self.steps), 'step')}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, html_panel
+        from hypergraph._repr import _code, html_panel, theme_wrap
 
         keys = ", ".join(_code(k) for k in sorted(self.values.keys())[:10])
         if len(self.values) > 10:
             keys += f" ... (+{len(self.values) - 10} more)"
         body = f"<b>{len(self.values)}</b> values: {keys}<br><b>{len(self.steps)}</b> steps"
-        return html_panel("Checkpoint", body)
+        return theme_wrap(html_panel("Checkpoint", body))
 
 
 class RunTable(list):
@@ -205,10 +215,10 @@ class RunTable(list):
         return "\n".join(lines)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, duration_html, html_table, status_badge
+        from hypergraph._repr import ERROR_COLOR, MUTED_COLOR, _code, duration_html, html_table, status_badge, theme_wrap
 
         if not self:
-            return '<div style="color:#6b7280; font-family:ui-monospace,monospace">RunTable: (empty)</div>'
+            return theme_wrap(f'<div style="color:{MUTED_COLOR}; font-family:ui-monospace,monospace">RunTable: (empty)</div>')
         headers = ["ID", "Graph", "Status", "Duration", "Steps", "Errors"]
         rows = []
         for run in self:
@@ -219,10 +229,10 @@ class RunTable(list):
                     status_badge(run.status.value),
                     duration_html(run.duration_ms),
                     str(run.node_count) if run.node_count else "—",
-                    f'<span style="color:#dc2626">{run.error_count}</span>' if run.error_count else "0",
+                    f'<span style="color:{ERROR_COLOR}">{run.error_count}</span>' if run.error_count else "0",
                 ]
             )
-        return html_table(headers, rows, title=plural(len(self), "run"))
+        return theme_wrap(html_table(headers, rows, title=plural(len(self), "run")))
 
 
 class StepTable(list):
@@ -240,10 +250,10 @@ class StepTable(list):
         return "\n".join(lines)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, duration_html, html_table, status_badge
+        from hypergraph._repr import MUTED_COLOR, _code, duration_html, html_table, status_badge, theme_wrap
 
         if not self:
-            return '<div style="color:#6b7280; font-family:ui-monospace,monospace">StepTable: (empty)</div>'
+            return theme_wrap(f'<div style="color:{MUTED_COLOR}; font-family:ui-monospace,monospace">StepTable: (empty)</div>')
         headers = ["#", "Node", "Status", "Duration", "Superstep"]
         rows = []
         for step in self:
@@ -257,4 +267,4 @@ class StepTable(list):
                     str(step.superstep),
                 ]
             )
-        return html_table(headers, rows, title=plural(len(self), "step"))
+        return theme_wrap(html_table(headers, rows, title=plural(len(self), "step")))

@@ -496,7 +496,9 @@ class RichProgressProcessor(TypedEventProcessor):
         # If this is a root run (no parent), show completion
         if span_info.parent_span_id is None:
             self._flush_refresh()
-            if self._tty_mode:
+            if self._notebook:
+                self._display_themed_completion(event)
+            elif self._tty_mode:
                 if event.status == RunStatus.COMPLETED:
                     self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
                 else:
@@ -508,6 +510,28 @@ class RichProgressProcessor(TypedEventProcessor):
                 else:
                     error_msg = f": {event.error}" if event.error else ""
                     self._print(f"✗ {name} failed{error_msg}")
+
+    def _display_themed_completion(self, event: RunEndEvent) -> None:
+        """Display themed completion message in notebooks.
+
+        Uses CSS light-dark() so the message adapts to the notebook's
+        dark/light theme automatically.
+        """
+        from IPython.display import HTML, display
+
+        from hypergraph._repr import STATUS_COLORS, theme_wrap
+
+        _font = "font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace"
+        name = event.graph_name or "Run"
+        if event.status == RunStatus.COMPLETED:
+            color = STATUS_COLORS["completed"]
+            msg = f"✓ {name} completed!"
+        else:
+            color = STATUS_COLORS["failed"]
+            error_text = f": {event.error}" if event.error else ""
+            msg = f"✗ {name} failed{error_text}"
+        html = f'<div style="{_font}; color:{color}; font-weight:700; padding:4px 0">{msg}</div>'
+        display(HTML(theme_wrap(html)))
 
     def shutdown(self) -> None:
         """Stop the Rich progress display."""

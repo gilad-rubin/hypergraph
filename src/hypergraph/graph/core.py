@@ -707,7 +707,7 @@ class Graph:
         return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, html_detail, html_panel, html_table, status_badge
+        from hypergraph._repr import _code, html_detail, html_panel, html_table, status_badge, theme_wrap
         from hypergraph._utils import plural
 
         n_nodes = len(self._nodes)
@@ -752,7 +752,7 @@ class Graph:
         except (ImportError, Exception):
             pass
 
-        return html_panel(f"Graph: {name} ({plural(n_nodes, 'node')})", body)
+        return theme_wrap(html_panel(f"Graph: {name} ({plural(n_nodes, 'node')})", body))
 
     def visualize(
         self,

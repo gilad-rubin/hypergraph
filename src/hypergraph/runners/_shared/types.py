@@ -245,12 +245,14 @@ class RunResult:
 
     def _repr_html_(self) -> str:
         from hypergraph._repr import (
+            ERROR_COLOR,
             duration_html,
             error_html,
             html_detail,
             html_kv,
             html_panel,
             status_badge,
+            theme_wrap,
             values_html,
         )
 
@@ -260,7 +262,7 @@ class RunResult:
             kvs.append(html_kv("Nodes", str(len({s.node_name for s in self.log.steps}))))
             n_errors = len(self.log.errors)
             if n_errors:
-                kvs.append(html_kv("Errors", f'<span style="color:#dc2626">{n_errors}</span>'))
+                kvs.append(html_kv("Errors", f'<span style="color:{ERROR_COLOR}">{n_errors}</span>'))
         kvs.append(html_kv("Values", plural(len(self.values), "key")))
         body = " &nbsp;|&nbsp; ".join(kvs)
         if self.error:
@@ -269,7 +271,7 @@ class RunResult:
             body += html_detail(f"Values ({plural(len(self.values), 'key')})", values_html(self.values))
         if self.log:
             body += html_detail("Execution Log", self.log._repr_html_())
-        return html_panel(f"RunResult: {self.run_id}", body)
+        return theme_wrap(html_panel(f"RunResult: {self.run_id}", body))
 
 
 @dataclass(frozen=True)
@@ -451,7 +453,7 @@ class MapResult:
         pretty_printer.text(repr(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_detail, html_kv, html_panel, status_badge
+        from hypergraph._repr import ERROR_COLOR, duration_html, html_detail, html_kv, html_panel, status_badge, theme_wrap
 
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
@@ -463,7 +465,7 @@ class MapResult:
         if n_completed:
             kvs.append(html_kv("Completed", str(n_completed)))
         if n_failed:
-            kvs.append(html_kv("Failed", f'<span style="color:#dc2626">{n_failed}</span>'))
+            kvs.append(html_kv("Failed", f'<span style="color:{ERROR_COLOR}">{n_failed}</span>'))
         if n_completed > 0:
             completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
@@ -476,7 +478,7 @@ class MapResult:
         items_html = _map_items_drilldown(self.results, max_items)
         body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", items_html)
 
-        return html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body)
+        return theme_wrap(html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body))
 
 
 def _map_items_drilldown(results: tuple[RunResult, ...], max_items: int = 30) -> str:
@@ -486,18 +488,18 @@ def _map_items_drilldown(results: tuple[RunResult, ...], max_items: int = 30) ->
     Expanding reveals the full RunResult HTML with values, execution log,
     and nested graph traces — clickable all the way down.
     """
-    from hypergraph._repr import duration_html, html_detail, status_badge
+    from hypergraph._repr import ERROR_COLOR, MUTED_COLOR, duration_html, html_detail, status_badge
 
     parts: list[str] = []
     for i, r in enumerate(results[:max_items]):
         dur = duration_html(r.log.total_duration_ms) if r.log else "—"
-        err_label = f' — <span style="color:#dc2626">{type(r.error).__name__}</span>' if r.error else ""
+        err_label = f' — <span style="color:{ERROR_COLOR}">{type(r.error).__name__}</span>' if r.error else ""
         summary = f"Item {i}: {status_badge(r.status.value)} {dur}{err_label}"
         # Render the full RunResult HTML inside each item's expandable section
         parts.append(html_detail(summary, r._repr_html_()))
     if len(results) > max_items:
         remaining = len(results) - max_items
-        parts.append(f'<div style="color:#6b7280; font-size:0.85em; margin-top:4px">… and {plural(remaining, "more item")}</div>')
+        parts.append(f'<div style="color:{MUTED_COLOR}; font-size:0.85em; margin-top:4px">… and {plural(remaining, "more item")}</div>')
     return "".join(parts)
 
 
@@ -937,7 +939,7 @@ class RunLog:
         pretty_printer.text(str(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, duration_html, html_panel, html_table, status_badge
+        from hypergraph._repr import _code, duration_html, html_panel, html_table, status_badge, theme_wrap
 
         headers = ["Step", "Node", "Status", "Duration"]
         has_decisions = any(s.decision is not None for s in self.steps)
@@ -962,7 +964,7 @@ class RunLog:
             f"{plural(len({s.node_name for s in self.steps}), 'node')} &nbsp; "
             f"{plural(n_errors, 'error')}"
         )
-        return html_panel(title, html_table(headers, rows))
+        return theme_wrap(html_panel(title, html_table(headers, rows)))
 
 
 # ---------------------------------------------------------------------------
@@ -1074,7 +1076,7 @@ class MapLog:
         pretty_printer.text(str(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_panel, html_table, status_badge
+        from hypergraph._repr import duration_html, html_panel, html_table, status_badge, theme_wrap
 
         headers = ["Item", "Duration", "Status", "Nodes"]
         rows = []
@@ -1091,4 +1093,4 @@ class MapLog:
         remaining = len(self.items) - len(rows)
         footer = f" (+{remaining} more)" if remaining > 0 else ""
         title = f"MapLog: {self.graph_name} ({plural(len(self.items), 'item')}){footer}{avg_part}"
-        return html_panel(title, html_table(headers, rows))
+        return theme_wrap(html_panel(title, html_table(headers, rows)))
