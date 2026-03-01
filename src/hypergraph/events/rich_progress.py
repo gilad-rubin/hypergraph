@@ -54,6 +54,7 @@ class _NodeBarInfo:
     succeeded: int = 0
     cached: int = 0
     failures: int = 0
+    total_duration_ms: float = 0.0  # Sum of non-cached durations (for avg)
     name: str = ""
     depth: int = 0
     map_span_id: str | None = None  # Parent map span (for tree chars)
@@ -88,8 +89,21 @@ def _timestamp() -> str:
     return datetime.now().strftime("[%H:%M:%S]")
 
 
-def _format_stats(*, succeeded: int = 0, failures: int = 0, cached: int = 0) -> str:
-    """Build a compact stats string like '95✓ 5✗ 10◉'. Only non-zero counts shown."""
+def _format_duration(ms: float) -> str:
+    """Format milliseconds as a human-readable duration."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    return f"{ms / 1000:.1f}s"
+
+
+def _format_stats(
+    *,
+    succeeded: int = 0,
+    failures: int = 0,
+    cached: int = 0,
+    avg_ms: float | None = None,
+) -> str:
+    """Build a compact stats string like '95✓ 5✗ 10◉ ~45ms'. Only non-zero counts shown."""
     parts: list[str] = []
     if succeeded:
         parts.append(f"{succeeded}✓")
@@ -97,6 +111,8 @@ def _format_stats(*, succeeded: int = 0, failures: int = 0, cached: int = 0) -> 
         parts.append(f"[red]{failures}✗[/red]")
     if cached:
         parts.append(f"{cached}◉")
+    if avg_ms is not None:
+        parts.append(f"~{_format_duration(avg_ms)}")
     return " ".join(parts)
 
 
@@ -258,7 +274,10 @@ class RichProgressProcessor(TypedEventProcessor):
 
     def _update_node_stats(self, bar: _NodeBarInfo) -> None:
         """Recompute and push the stats field for a node bar."""
-        stats = _format_stats(succeeded=bar.succeeded, failures=bar.failures, cached=bar.cached)
+        # Show average duration only for multi-item bars (maps), excluding cached
+        non_cached = bar.succeeded + bar.failures
+        avg_ms = bar.total_duration_ms / non_cached if non_cached > 1 else None
+        stats = _format_stats(succeeded=bar.succeeded, failures=bar.failures, cached=bar.cached, avg_ms=avg_ms)
         self._progress.update(bar.rich_task_id, stats=stats)
 
     def _update_map_stats(self, map_info: _SpanInfo) -> None:
@@ -370,6 +389,7 @@ class RichProgressProcessor(TypedEventProcessor):
                     bar.cached += 1
                 else:
                     bar.succeeded += 1
+                    bar.total_duration_ms += event.duration_ms
                 self._progress.advance(bar.rich_task_id, 1)
                 self._update_node_stats(bar)
                 self._refresh()
