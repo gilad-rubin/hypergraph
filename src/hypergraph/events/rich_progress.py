@@ -31,6 +31,20 @@ def _require_rich() -> None:
         ) from None
 
 
+def _patch_rich_jupyter() -> None:
+    """Add adaptive text color to Rich's Jupyter ``<pre>`` for dark notebooks."""
+    import rich.jupyter as rj
+
+    if getattr(rj, "_hypergraph_patched", False):
+        return
+    rj.JUPYTER_HTML_FORMAT = (
+        '<pre style="white-space:pre;overflow-x:auto;line-height:normal;'
+        "font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace;"
+        'color-scheme:light dark;color:light-dark(#111827,#d1d5db)">{code}</pre>\n'
+    )
+    rj._hypergraph_patched = True  # type: ignore[attr-defined]
+
+
 @dataclass
 class _SpanInfo:
     """Tracking state for a single span (run or node)."""
@@ -234,6 +248,8 @@ class RichProgressProcessor(TypedEventProcessor):
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
         if not self._started:
+            if self._notebook:
+                _patch_rich_jupyter()
             if self._tty_mode:
                 self._progress.start()
             self._started = True
