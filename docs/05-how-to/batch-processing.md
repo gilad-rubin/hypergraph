@@ -316,6 +316,72 @@ hypergraph runs show batch-001/1
 
 Without `workflow_id`, `runner.map()` still works but results exist only in-process.
 
+### Resuming Runs
+
+When you call `run()` with a `workflow_id` and a checkpointer, the runner loads prior state from the checkpoint and merges it into the current inputs. Runtime values always win over checkpoint values:
+
+```python
+from hypergraph import Graph, node, AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+@node(output_name="tripled")
+def triple(doubled: int) -> int:
+    return doubled * 3
+
+cp = SqliteCheckpointer("./runs.db")
+runner = AsyncRunner(checkpointer=cp)
+
+# Step 1: produce 'doubled'
+await runner.run(Graph([double]), {"x": 5}, workflow_id="my-workflow")
+
+# Step 2: 'doubled' comes from checkpoint — no need to provide it
+result = await runner.run(Graph([triple]), workflow_id="my-workflow")
+assert result["tripled"] == 30
+```
+
+This is useful for multi-step workflows where each step builds on prior results, and for resuming after failures without re-computing everything.
+
+**How merge works:**
+- Only graph input values (required, optional, seeds) are loaded from the checkpoint
+- Intermediate edge-produced values are NOT loaded — they're re-computed during execution
+- Runtime values always override checkpoint values
+
+### Resuming Batches
+
+When you re-run `map()` with the same `workflow_id`, completed items are automatically skipped. Only failed or unfinished items are re-executed:
+
+```python
+# First run: item x=20 fails
+results = await runner.map(
+    graph,
+    {"x": [10, 20, 30]},
+    map_over="x",
+    workflow_id="batch-retry",
+    error_handling="continue",
+)
+# batch-retry/0 → COMPLETED
+# batch-retry/1 → FAILED (x=20 error)
+# batch-retry/2 → COMPLETED
+
+# Fix the bug, then re-run with the same workflow_id
+results = await runner.map(
+    graph,
+    {"x": [10, 20, 30]},
+    map_over="x",
+    workflow_id="batch-retry",
+    error_handling="continue",
+)
+# batch-retry/0 → skipped (already COMPLETED)
+# batch-retry/1 → re-executed (was FAILED)
+# batch-retry/2 → skipped (already COMPLETED)
+```
+
+This makes it safe to retry large batches — you only pay for the items that actually need re-processing.
+
 ### CLI batch execution
 
 You can also run batch operations directly from the terminal:

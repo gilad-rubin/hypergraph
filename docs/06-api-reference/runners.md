@@ -36,11 +36,16 @@ print(result["doubled"])  # 10
 
 ```python
 class SyncRunner:
-    def __init__(self, cache: CacheBackend | None = None) -> None: ...
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ) -> None: ...
 ```
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
+- `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. Enables resume for `run()` and `map()` when used with `workflow_id`. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
 
 ### run()
 
@@ -57,6 +62,7 @@ def run(
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    workflow_id: str | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -82,6 +88,7 @@ Execute a graph once.
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. When set with a checkpointer, enables: (1) persisting run state, (2) resuming from prior state on re-run with the same ID. See [Resuming Runs](../05-how-to/batch-processing.md#resuming-runs).
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
@@ -123,6 +130,15 @@ result = runner.run(graph, {"x": 5}, error_handling="continue")
 if result.status == RunStatus.FAILED:
     print(result.error)        # the original exception
     print(result.values)       # outputs from nodes that completed before the failure
+
+# Resume from checkpoint — second run merges prior state
+from hypergraph.checkpointers import SqliteCheckpointer
+cp = SqliteCheckpointer("./runs.db")
+runner = SyncRunner(checkpointer=cp)
+
+runner.run(graph_step1, {"x": 5}, workflow_id="my-workflow")
+# Later: step2 gets 'doubled' from checkpoint, no need to provide it
+result = runner.run(graph_step2, workflow_id="my-workflow")
 ```
 
 ### map()
@@ -141,6 +157,7 @@ def map(
     entrypoint: str | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    workflow_id: str | None = None,
     **input_values: Any,
 ) -> MapResult: ...
 ```
@@ -160,11 +177,10 @@ Execute a graph multiple times with different inputs.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** [`MapResult`](#mapresult) wrapping per-iteration RunResults with batch metadata
-
-> **Note:** `map()` is **ephemeral** — results are not checkpointed, even when the runner has a checkpointer attached. For persistent batch results, use [`map_over`](../03-patterns/04-hierarchical.md) with a `workflow_id`.
 
 **Example:**
 
@@ -243,11 +259,16 @@ result = await runner.run(graph, {"url": "https://api.example.com"})
 
 ```python
 class AsyncRunner:
-    def __init__(self, cache: CacheBackend | None = None) -> None: ...
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ) -> None: ...
 ```
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
+- `checkpointer` — Optional checkpointer for persistent run history. Enables resume for `run()` and `map()` when used with `workflow_id`. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
 
 ### run()
 
@@ -265,6 +286,7 @@ async def run(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    workflow_id: str | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -284,6 +306,7 @@ Execute a graph asynchronously.
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. See [Resuming Runs](../05-how-to/batch-processing.md#resuming-runs).
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
@@ -343,13 +366,12 @@ async def map(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    workflow_id: str | None = None,
     **input_values: Any,
 ) -> MapResult: ...
 ```
 
 Execute graph multiple times concurrently.
-
-> **Note:** `map()` is **ephemeral** — results are not checkpointed, even when the runner has a checkpointer attached. For persistent batch results, use [`map_over`](../03-patterns/04-hierarchical.md) with a `workflow_id`.
 
 **Args:**
 - `graph` - The graph to execute
@@ -365,6 +387,7 @@ Execute graph multiple times concurrently.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Example:**
@@ -687,8 +710,9 @@ When collecting inputs for a node, values are resolved in this order:
 
 1. **Edge value** - Output from upstream node
 2. **Input value** - Provided via `values` or kwargs shorthand
-3. **Bound value** - From `graph.bind()`
-4. **Function default** - From function signature
+3. **Checkpoint value** - Loaded from prior run state (when using `workflow_id` + checkpointer)
+4. **Bound value** - From `graph.bind()`
+5. **Function default** - From function signature
 
 ```python
 @node(output_name="result")
@@ -699,9 +723,12 @@ graph = Graph([process]).bind(x=5)  # bound=5
 
 # Edge value wins (if exists)
 # Then input value: runner.run(graph, {"x": 3})  → x=3
+# Then checkpoint value (if workflow_id + checkpointer)
 # Then bound value: runner.run(graph, {})        → x=5
 # Then default: (if no bind) runner.run(graph, {}) → x=10
 ```
+
+> **Note:** Checkpoint values only apply to graph inputs (required, optional, seeds). Intermediate edge-produced values are always re-computed during execution.
 
 ### Cyclic Graphs
 
