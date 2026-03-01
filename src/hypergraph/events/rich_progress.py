@@ -56,9 +56,24 @@ class _NodeBarInfo:
 _NodeKey = tuple[str, str, int]
 
 
-def _is_tty() -> bool:
-    """Check if stdout is a TTY."""
-    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+def _is_notebook() -> bool:
+    """Detect if running inside a Jupyter/IPython notebook kernel."""
+    try:
+        from IPython import get_ipython
+
+        shell = get_ipython()
+        return shell is not None and "zmq" in type(shell).__module__
+    except (ImportError, NameError):
+        return False
+
+
+def _detect_mode() -> Literal["tty", "notebook", "non-tty"]:
+    """Detect output mode: TTY terminal, Jupyter notebook, or plain text."""
+    if _is_notebook():
+        return "notebook"
+    if hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+        return "tty"
+    return "non-tty"
 
 
 def _timestamp() -> str:
@@ -100,18 +115,17 @@ class RichProgressProcessor(TypedEventProcessor):
         self,
         *,
         transient: bool = True,
-        force_mode: Literal["tty", "non-tty", "auto"] = "auto",
+        force_mode: Literal["tty", "notebook", "non-tty", "auto"] = "auto",
     ) -> None:
         """Initialize the progress processor.
 
         Args:
             transient: If True, remove progress bars after completion.
-            force_mode: Force TTY or non-TTY mode. "auto" detects via isatty().
+            force_mode: Force output mode. "auto" detects environment.
         """
-        if force_mode == "auto":
-            self._tty_mode = _is_tty()
-        else:
-            self._tty_mode = force_mode == "tty"
+        mode = _detect_mode() if force_mode == "auto" else force_mode
+        self._tty_mode = mode in ("tty", "notebook")
+        self._notebook = mode == "notebook"
 
         self._spans: dict[str, _SpanInfo] = {}
         self._node_bars: dict[_NodeKey, _NodeBarInfo] = {}
@@ -145,6 +159,11 @@ class RichProgressProcessor(TypedEventProcessor):
     def _print(self, msg: str) -> None:
         """Print a plain-text message (non-TTY mode)."""
         print(f"{_timestamp()} {msg}", flush=True)
+
+    def _refresh(self) -> None:
+        """Explicit refresh for notebook mode (auto-refresh is disabled in Jupyter)."""
+        if self._notebook and self._progress is not None:
+            self._progress.refresh()
 
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
@@ -224,6 +243,7 @@ class RichProgressProcessor(TypedEventProcessor):
             if self._tty_mode:
                 desc = self._make_description(f"{event.graph_name or 'Map'} Progress", info.depth, is_map=True)
                 info.rich_task_id = self._progress.add_task(desc, total=event.map_size)
+                self._refresh()
             else:
                 name = event.graph_name or "Map"
                 self._nontty_map_states[span] = _NonTTYMapState(total=event.map_size, name=name)
@@ -256,9 +276,11 @@ class RichProgressProcessor(TypedEventProcessor):
                 desc = self._make_description(event.node_name, node_depth)
                 task_id = self._progress.add_task(desc, total=total)
                 self._node_bars[key] = _NodeBarInfo(rich_task_id=task_id, total=total)
+                self._refresh()
             elif bar.total < total:
                 bar.total = total
                 self._progress.update(bar.rich_task_id, total=total)
+                self._refresh()
         else:
             # Non-TTY: log node start only for non-map runs (map items are tracked via milestones)
             if not self._find_map_ancestor(span):
@@ -276,6 +298,7 @@ class RichProgressProcessor(TypedEventProcessor):
             bar = self._node_bars.get(key)
             if bar is not None:
                 self._progress.advance(bar.rich_task_id, 1)
+                self._refresh()
         else:
             # Non-TTY: log node completion for non-map runs
             if not self._find_map_ancestor(span):
@@ -298,6 +321,7 @@ class RichProgressProcessor(TypedEventProcessor):
             if bar is not None:
                 current = self._progress.tasks[bar.rich_task_id].description
                 self._progress.update(bar.rich_task_id, description=f"{current} [red]FAILED[/red]")
+                self._refresh()
         else:
             if not self._find_map_ancestor(event.span_id):
                 self._print(f"✗ {event.node_name} FAILED")
@@ -345,6 +369,7 @@ class RichProgressProcessor(TypedEventProcessor):
                             map_info.rich_task_id,
                             description=f"{base_desc} [red]({map_info.failures} failed)[/red]",
                         )
+                    self._refresh()
                 elif not self._tty_mode:
                     # Non-TTY: update map state and check milestones
                     nontty_state = self._nontty_map_states.get(map_parent)

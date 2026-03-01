@@ -152,14 +152,20 @@ class TestNonTTYAutoDetect:
     """Test auto-detection of TTY mode."""
 
     def test_auto_detects_nontty(self):
-        with patch("hypergraph.events.rich_progress._is_tty", return_value=False):
+        with patch("hypergraph.events.rich_progress._detect_mode", return_value="non-tty"):
             proc = RichProgressProcessor(force_mode="auto")
             assert proc._tty_mode is False
 
     def test_auto_detects_tty(self):
-        with patch("hypergraph.events.rich_progress._is_tty", return_value=True):
+        with patch("hypergraph.events.rich_progress._detect_mode", return_value="tty"):
             proc = RichProgressProcessor(force_mode="auto")
             assert proc._tty_mode is True
+
+    def test_auto_detects_notebook(self):
+        with patch("hypergraph.events.rich_progress._detect_mode", return_value="notebook"):
+            proc = RichProgressProcessor(force_mode="auto")
+            assert proc._tty_mode is True
+            assert proc._notebook is True
 
     def test_force_nontty(self):
         proc = RichProgressProcessor(force_mode="non-tty")
