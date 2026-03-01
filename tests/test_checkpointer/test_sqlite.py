@@ -48,18 +48,18 @@ class TestRunLifecycle:
         assert r.status == WorkflowStatus.ACTIVE
         assert r.graph_name == "test_graph"
 
-        fetched = await checkpointer.get_run("wf-1")
+        fetched = await checkpointer.get_run_async("wf-1")
         assert fetched is not None
         assert fetched.id == "wf-1"
         assert fetched.status == WorkflowStatus.ACTIVE
 
     async def test_get_nonexistent(self, checkpointer):
-        assert await checkpointer.get_run("nope") is None
+        assert await checkpointer.get_run_async("nope") is None
 
     async def test_update_status(self, checkpointer):
         await checkpointer.create_run("wf-1")
         await checkpointer.update_run_status("wf-1", WorkflowStatus.COMPLETED)
-        r = await checkpointer.get_run("wf-1")
+        r = await checkpointer.get_run_async("wf-1")
         assert r.status == WorkflowStatus.COMPLETED
         assert r.completed_at is not None
 
@@ -72,7 +72,7 @@ class TestRunLifecycle:
             node_count=3,
             error_count=1,
         )
-        r = await checkpointer.get_run("wf-1")
+        r = await checkpointer.get_run_async("wf-1")
         assert r.duration_ms == 150.5
         assert r.node_count == 3
         assert r.error_count == 1
@@ -236,7 +236,7 @@ class TestLazyInit:
         cp = SqliteCheckpointer(str(tmp_path / "lazy.db"))
         # No explicit initialize() call
         await cp.create_run("wf-1")
-        r = await cp.get_run("wf-1")
+        r = await cp.get_run_async("wf-1")
         assert r is not None
         await cp.close()
 
@@ -307,13 +307,13 @@ class TestSyncReads:
         """Sync run() returns same metadata as async get_run()."""
         await checkpointer.create_run("wf-1", graph_name="test_graph")
 
-        r = checkpointer.run("wf-1")
+        r = checkpointer.get_run("wf-1")
         assert r is not None
         assert r.id == "wf-1"
         assert r.graph_name == "test_graph"
         assert r.status == WorkflowStatus.ACTIVE
 
-        assert checkpointer.run("nonexistent") is None
+        assert checkpointer.get_run("nonexistent") is None
 
     async def test_runs(self, checkpointer):
         """Sync runs() returns same list as async list_runs()."""
@@ -347,7 +347,7 @@ class TestSyncReads:
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         assert cp.state("wf-1") == {}
         assert cp.steps("wf-1") == []
-        assert cp.run("wf-1") is None
+        assert cp.get_run("wf-1") is None
         assert cp.runs() == []
 
     async def test_stats(self, checkpointer):

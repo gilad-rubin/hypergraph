@@ -189,7 +189,7 @@ def runs_show(
 ):
     """Show execution trace for a run."""
     cp = open_checkpointer(db)
-    r = cp.run(run_id)
+    r = cp.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
@@ -334,7 +334,7 @@ def runs_values(
 ):
     """Show accumulated output values for a run."""
     cp = open_checkpointer(db)
-    r = cp.run(run_id)
+    r = cp.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
@@ -415,7 +415,7 @@ def runs_steps(
 ):
     """Show detailed step records."""
     cp = open_checkpointer(db)
-    r = cp.run(run_id)
+    r = cp.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
@@ -510,7 +510,7 @@ def runs_stats(
 ):
     """Show per-node performance statistics for a run."""
     cp = open_checkpointer(db)
-    r = cp.run(run_id)
+    r = cp.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)

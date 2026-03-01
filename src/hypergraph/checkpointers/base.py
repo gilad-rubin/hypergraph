@@ -116,7 +116,7 @@ class Checkpointer(ABC):
         return Checkpoint(values=values, steps=steps)
 
     @abstractmethod
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run_async(self, run_id: str) -> Run | None:
         """Get run metadata. Returns None if not found."""
         ...
 

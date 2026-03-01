@@ -270,7 +270,7 @@ class SqliteCheckpointer(Checkpointer):
         rows = await cursor.fetchall()
         return [self._row_to_step(row) for row in rows]
 
-    async def get_run(self, run_id: str) -> Run | None:
+    async def get_run_async(self, run_id: str) -> Run | None:
         """Get run metadata."""
         await self._ensure_db()
         cursor = await self._db.execute(
@@ -438,7 +438,7 @@ class SqliteCheckpointer(Checkpointer):
             )
         return [self._row_to_step(row) for row in cursor.fetchall()]
 
-    def run(self, run_id: str) -> Run | None:
+    def get_run(self, run_id: str) -> Run | None:
         """Get run metadata synchronously."""
         db = self._sync_db()
         cursor = db.execute(f"SELECT {_RUNS_COLS} FROM runs WHERE id = ?", (run_id,))

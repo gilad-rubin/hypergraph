@@ -51,7 +51,7 @@ class TestRunnerCheckpointIntegration:
         assert result["tripled"] == 30
 
         # Verify run was created and completed
-        r = await checkpointer.get_run("wf-1")
+        r = await checkpointer.get_run_async("wf-1")
         assert r is not None
         assert r.status == WorkflowStatus.COMPLETED
 
@@ -159,7 +159,7 @@ class TestRunnerCheckpointIntegration:
         assert result.status.value == "failed"
 
         # Run should be marked FAILED
-        r = await checkpointer.get_run("wf-fail")
+        r = await checkpointer.get_run_async("wf-fail")
         assert r is not None
         assert r.status == WorkflowStatus.FAILED
 
@@ -241,7 +241,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"x": 5}, workflow_id="wf-stats")
 
-        run = await checkpointer.get_run("wf-stats")
+        run = await checkpointer.get_run_async("wf-stats")
         assert run.node_count == 2
         assert run.error_count == 0
         assert run.duration_ms > 0

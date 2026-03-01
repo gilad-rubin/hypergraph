@@ -75,7 +75,7 @@ class TestAsyncMapCheckpointing:
 
         await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="batch-stats")
 
-        run = await async_cp.get_run("batch-stats")
+        run = await async_cp.get_run_async("batch-stats")
         assert run.status.value == "completed"
         assert run.node_count == 2
 
@@ -98,7 +98,7 @@ class TestAsyncMapCheckpointing:
         assert len(child_runs) == 3
 
         # Item 1 failed
-        failed = await async_cp.get_run("batch-fail/1")
+        failed = await async_cp.get_run_async("batch-fail/1")
         assert failed.status.value == "failed"
 
     async def test_top_level_only_filter(self, async_cp):

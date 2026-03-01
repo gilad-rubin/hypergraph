@@ -177,7 +177,7 @@ cp = SqliteCheckpointer("./runs.db")
 
 # Sync reads — no await needed, works from any context
 cp.runs()                             # List all runs
-cp.run("my-run-1")                    # Run metadata (status, duration, counts)
+cp.get_run("my-run-1")                # Run metadata (status, duration, counts)
 cp.values("my-run-1")                 # {"doubled": 10, "tripled": 30}
 cp.steps("my-run-1")                  # Step records with timing
 cp.stats("my-run-1")                  # Per-node duration/frequency breakdown
