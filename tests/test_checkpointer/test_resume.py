@@ -117,16 +117,14 @@ class TestAsyncRunResume:
 
         # First run: count goes 0 → 1 → 2 → 3
         await runner.run(graph, {"count": 0}, workflow_id="cycle-1")
-        first_calls = call_count
 
         # Reset counter
         call_count = 0
 
-        # Resume: checkpoint has count=3, gate immediately exits
+        # Resume: checkpoint has count=3, gate immediately exits — no increments needed
         result = await runner.run(graph, workflow_id="cycle-1")
         assert result["count"] >= 3
-        # Should need fewer increments since checkpoint provides count=3
-        assert call_count <= first_calls
+        assert call_count == 0
 
     async def test_no_checkpointer_resume_is_noop(self):
         """Without a checkpointer, workflow_id doesn't trigger resume behavior."""

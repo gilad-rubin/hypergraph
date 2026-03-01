@@ -179,8 +179,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         # Checkpoint resume: load prior state and merge graph-input values.
         # Only merge values the graph expects as inputs (required, optional, seeds) —
         # intermediate edge-produced values are NOT merged (they'll be re-computed).
+        # Guard: skip for map() children (_validation_ctx is set) — they don't need resume merge.
         sync_cp = self._get_sync_checkpointer(workflow_id)
-        if sync_cp is not None:
+        if sync_cp is not None and _validation_ctx is None:
             checkpoint_state = sync_cp.state(workflow_id)
             if checkpoint_state:
                 graph_input_names = set(graph.inputs.all)
@@ -371,6 +372,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         RunResult(
                             values=state,
                             status=RunStatus.COMPLETED,
+                            run_id=child_workflow_id,
                             workflow_id=child_workflow_id,
                         )
                     )

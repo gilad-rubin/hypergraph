@@ -187,9 +187,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         # Checkpoint resume: load prior state and merge graph-input values.
         # Only merge values the graph expects as inputs (required, optional, seeds) —
         # intermediate edge-produced values are NOT merged (they'll be re-computed).
+        # Guard: skip for map() children (_validation_ctx is set) — they don't need resume merge.
         checkpointer = self._checkpointer
         has_checkpointer = checkpointer is not None and workflow_id is not None
-        if has_checkpointer:
+        if has_checkpointer and _validation_ctx is None:
             checkpoint_state = await checkpointer.get_state(workflow_id)
             if checkpoint_state:
                 graph_input_names = set(graph.inputs.all)
@@ -417,7 +418,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             )
 
         # Resume: find completed child runs to skip
-        completed_indices = await _get_completed_child_indices(checkpointer, workflow_id, has_checkpointer)
+        completed_indices = await _get_completed_child_indices(checkpointer, workflow_id)
 
         existing_limiter = self._get_concurrency_limiter()
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
@@ -432,6 +433,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 return RunResult(
                     values=state,
                     status=RunStatus.COMPLETED,
+                    run_id=child_workflow_id,
                     workflow_id=child_workflow_id,
                 )
 
@@ -574,13 +576,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 async def _get_completed_child_indices(
     checkpointer: Any,
     workflow_id: str | None,
-    has_checkpointer: bool,
 ) -> set[int]:
     """Query checkpoint for completed child runs and return their indices.
 
     Only COMPLETED items are skipped — FAILED and ACTIVE items are re-executed.
     """
-    if not has_checkpointer:
+    if checkpointer is None or workflow_id is None:
         return set()
 
     from hypergraph.checkpointers.types import WorkflowStatus
