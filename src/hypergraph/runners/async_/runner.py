@@ -197,7 +197,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                         state,
                         ready_nodes,
                         values,
-                        self._make_execute_node(event_processors),
+                        self._make_execute_node(event_processors, workflow_id=workflow_id),
                         max_concurrency,
                         cache=self._cache,
                         dispatcher=dispatcher,
@@ -310,12 +310,13 @@ class AsyncRunner(AsyncRunnerTemplate):
     def _make_execute_node(
         self,
         event_processors: list[EventProcessor] | None,
+        workflow_id: str | None = None,
     ) -> AsyncNodeExecutor:
         """Create an async node executor closure that carries event context.
 
         The superstep calls execute_node(node, state, inputs). For GraphNode
-        executors, we need to pass event_processors and parent_span_id so
-        nested graphs propagate events. This closure captures that context.
+        executors, we need to pass event_processors, parent_span_id, and
+        workflow_id so nested graphs propagate events and checkpointing.
 
         The superstep sets ``execute_node.current_span_id`` before each
         call so that nested graph runs know their parent span.
@@ -343,6 +344,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                     inputs,
                     event_processors=event_processors,
                     parent_span_id=current_span_id[0],
+                    workflow_id=workflow_id,
                 )
                 last_inner_logs[0] = executor.last_inner_logs
                 return result

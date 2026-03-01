@@ -12,6 +12,7 @@ from hypergraph.runners._shared.helpers import (
     _UNSET_SELECT,
     _validate_error_handling,
     _validate_on_missing,
+    _validate_workflow_id,
     filter_outputs,
     generate_map_inputs,
 )
@@ -161,6 +162,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
+        _parent_run_id: str | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -182,6 +184,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         )
         _validate_on_missing(on_missing)
         _validate_error_handling(error_handling)
+        _validate_workflow_id(workflow_id, _parent_run_id)
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()
@@ -198,7 +201,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         checkpointer = self._checkpointer
         has_checkpointer = checkpointer is not None and workflow_id is not None
         if has_checkpointer:
-            await checkpointer.create_run(workflow_id, graph_name=graph.name)
+            await checkpointer.create_run(
+                workflow_id,
+                graph_name=graph.name,
+                parent_run_id=_parent_run_id,
+            )
 
         # Step buffer for "exit" durability — records are flushed after run completes
         step_buffer: list[Any] = []
@@ -330,6 +337,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
+        _parent_run_id: str | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -343,6 +351,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
         _validate_error_handling(error_handling)
+        _validate_workflow_id(workflow_id, _parent_run_id)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
@@ -371,11 +380,22 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         )
         start_time = time.time()
 
+        # Create parent batch run if checkpointing
+        checkpointer = self._checkpointer
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        if has_checkpointer:
+            await checkpointer.create_run(
+                workflow_id,
+                graph_name=graph.name,
+                parent_run_id=_parent_run_id,
+            )
+
         existing_limiter = self._get_concurrency_limiter()
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
 
-        async def _run_map_item(variation_inputs: dict[str, Any]) -> RunResult:
+        async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, always returning RunResult."""
+            child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
             try:
                 return await self.run(
                     graph,
@@ -387,7 +407,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     max_concurrency=max_concurrency,
                     error_handling="continue",
                     event_processors=event_processors,
+                    workflow_id=child_workflow_id,
                     _parent_span_id=map_span_id,
+                    _parent_run_id=workflow_id,
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
@@ -401,7 +423,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         try:
             if max_concurrency is None:
-                tasks = [_run_map_item(v) for v in input_variations]
+                tasks = [_run_map_item(idx, v) for idx, v in enumerate(input_variations)]
                 gathered = await asyncio.gather(*tasks, return_exceptions=True)
                 results: list[RunResult] = []
                 for item in gathered:
@@ -428,7 +450,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                             idx, v = queue.get_nowait()
                         except asyncio.QueueEmpty:
                             return
-                        result = await _run_map_item(v)
+                        result = await _run_map_item(idx, v)
                         results_list.append(result)
                         order.append(idx)
                         if error_handling == "raise" and result.status == RunStatus.FAILED:
@@ -456,6 +478,20 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
             )
             total_duration_ms = (time.time() - start_time) * 1000
+
+            # Complete parent batch run
+            if has_checkpointer:
+                from hypergraph.checkpointers.types import WorkflowStatus
+
+                error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
+                await checkpointer.update_run_status(
+                    workflow_id,
+                    WorkflowStatus.COMPLETED,
+                    duration_ms=total_duration_ms,
+                    node_count=len(results),
+                    error_count=error_count,
+                )
+
             return MapResult(
                 results=tuple(results),
                 run_id=map_run_id,
@@ -474,6 +510,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 _parent_span_id,
                 error=e,
             )
+            # Mark parent batch run as failed
+            if has_checkpointer:
+                from hypergraph.checkpointers.types import WorkflowStatus as _WS
+
+                total_ms = (time.time() - start_time) * 1000
+                await checkpointer.update_run_status(
+                    workflow_id,
+                    _WS.FAILED,
+                    duration_ms=total_ms,
+                )
             raise
         finally:
             if token is not None:

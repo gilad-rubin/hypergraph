@@ -646,6 +646,20 @@ def _validate_error_handling(error_handling: str) -> None:
         )
 
 
+def _validate_workflow_id(workflow_id: str | None, parent_run_id: str | None) -> None:
+    """Reject user-provided workflow_id containing '/' (reserved for hierarchy).
+
+    Only validates user-initiated calls (parent_run_id is None). Internal child
+    calls from GraphNode executors legitimately use '/' in hierarchical IDs.
+    """
+    if workflow_id and "/" in workflow_id and parent_run_id is None:
+        raise ValueError(
+            f"workflow_id cannot contain '/': {workflow_id!r}. "
+            "The '/' character is reserved for hierarchical run IDs "
+            "(nested graphs, map items). Choose a different workflow_id."
+        )
+
+
 def _handle_missing_outputs(
     missing: list[str],
     state: GraphState,
