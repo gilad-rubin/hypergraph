@@ -281,81 +281,28 @@ class AsyncRunner(AsyncRunnerTemplate):
         graph: Graph,
         superstep_error: BaseException | None = None,
     ) -> int:
-        """Build StepRecords for nodes scheduled in this superstep.
+        """Build StepRecords and dispatch to the appropriate durability mode."""
+        from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
 
-        Uses ready_node_names (not set-diff on node_executions keys) so that
-        cyclic re-executions are captured. Distinguishes fresh vs stale entries
-        via input_versions comparison to correctly mark failed nodes.
-        """
-        from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
+        records, step_counter = build_superstep_records(
+            workflow_id=workflow_id,
+            superstep_idx=superstep_idx,
+            state=state,
+            ready_node_names=ready_node_names,
+            prev_input_versions=prev_input_versions,
+            node_order=node_order,
+            step_counter=step_counter,
+            graph=graph,
+            superstep_error=superstep_error,
+        )
 
-        sorted_names = sorted(ready_node_names, key=lambda name: node_order.get(name, 0))
-
-        for name in sorted_names:
-            execution = state.node_executions.get(name)
-            now = _utcnow()
-            node_type = type(graph._nodes[name]).__name__ if graph and name in graph._nodes else None
-
-            if execution is not None:
-                # Check if this is a fresh execution or a stale copy from a prior superstep.
-                # A cyclic node is "ready" because ≥1 input version changed, so fresh
-                # re-executions always have different input_versions than the stale copy.
-                is_fresh = name not in prev_input_versions or execution.input_versions != prev_input_versions[name]
-                if is_fresh:
-                    record = StepRecord(
-                        run_id=workflow_id,
-                        superstep=superstep_idx,
-                        node_name=name,
-                        index=step_counter,
-                        status=StepStatus.COMPLETED,
-                        input_versions=execution.input_versions,
-                        values=execution.outputs,
-                        duration_ms=execution.duration_ms,
-                        cached=execution.cached,
-                        decision=_normalize_decision(state.routing_decisions.get(name)),
-                        node_type=node_type,
-                        created_at=now,
-                        completed_at=now,
-                    )
-                elif superstep_error is not None:
-                    # Stale entry — node was scheduled but failed during re-execution
-                    record = StepRecord(
-                        run_id=workflow_id,
-                        superstep=superstep_idx,
-                        node_name=name,
-                        index=step_counter,
-                        status=StepStatus.FAILED,
-                        input_versions=execution.input_versions,
-                        error=_extract_error_message(superstep_error),
-                        node_type=node_type,
-                        created_at=now,
-                    )
-                else:
-                    continue
-            elif superstep_error is not None:
-                # No prior execution — node failed on first attempt
-                record = StepRecord(
-                    run_id=workflow_id,
-                    superstep=superstep_idx,
-                    node_name=name,
-                    index=step_counter,
-                    status=StepStatus.FAILED,
-                    input_versions={},
-                    error=_extract_error_message(superstep_error),
-                    node_type=node_type,
-                    created_at=now,
-                )
-            else:
-                continue
-
-            step_counter += 1
-            durability = checkpointer.policy.durability
+        durability = checkpointer.policy.durability
+        for record in records:
             if durability == "sync":
                 await checkpointer.save_step(record)
             elif durability == "async":
                 save_tasks.append(asyncio.create_task(checkpointer.save_step(record)))
             elif step_buffer is not None:
-                # "exit" mode — buffer for flushing after run completes
                 step_buffer.append(record)
 
         return step_counter
@@ -473,34 +420,6 @@ class AsyncRunner(AsyncRunnerTemplate):
     def _reset_concurrency_limiter(self, token: Any) -> None:
         """Reset shared concurrency limiter using context token."""
         reset_concurrency_limiter(token)
-
-
-# ------------------------------------------------------------------
-# Helpers (module-level to keep the class focused)
-# ------------------------------------------------------------------
-
-
-def _extract_error_message(error: BaseException) -> str:
-    """Extract a human-readable error message from a (possibly wrapped) exception."""
-    cause = error.__cause__ if error.__cause__ is not None else error
-    return str(cause)
-
-
-def _normalize_decision(decision: Any) -> str | list[str] | None:
-    """Convert routing decision to a JSON-serializable form.
-
-    Gate nodes store the END sentinel (a class) as a decision value.
-    This converts it to the string "END" for persistence.
-    """
-    if decision is None:
-        return None
-    from hypergraph.nodes.gate import END as _END
-
-    if decision is _END:
-        return "END"
-    if isinstance(decision, list):
-        return [("END" if d is _END else d) for d in decision]
-    return decision
 
 
 # ------------------------------------------------------------------
