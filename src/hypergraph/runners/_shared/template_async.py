@@ -176,9 +176,29 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
         )
 
+        # Structural validation (doesn't depend on values)
         if _validation_ctx is None:
             validate_runner_compatibility(graph, self.capabilities)
             validate_node_types(graph, self.supported_node_types)
+            _validate_on_missing(on_missing)
+            _validate_error_handling(error_handling)
+            _validate_workflow_id(workflow_id, _parent_run_id)
+
+        # Checkpoint resume: load prior state and merge graph-input values.
+        # Only merge values the graph expects as inputs (required, optional, seeds) —
+        # intermediate edge-produced values are NOT merged (they'll be re-computed).
+        checkpointer = self._checkpointer
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        if has_checkpointer:
+            checkpoint_state = await checkpointer.get_state(workflow_id)
+            if checkpoint_state:
+                graph_input_names = set(graph.inputs.all)
+                checkpoint_inputs = {k: v for k, v in checkpoint_state.items() if k in graph_input_names}
+                if checkpoint_inputs:
+                    normalized_values = {**checkpoint_inputs, **normalized_values}
+
+        # Value validation (after merge so checkpoint-provided params are visible)
+        if _validation_ctx is None:
             effective_selected = resolve_runtime_selected(select, graph)
             validate_inputs(
                 graph,
@@ -187,9 +207,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 selected=effective_selected,
                 on_internal_override=on_internal_override,
             )
-            _validate_on_missing(on_missing)
-            _validate_error_handling(error_handling)
-            _validate_workflow_id(workflow_id, _parent_run_id)
         else:
             validate_item_inputs(_validation_ctx, normalized_values, on_internal_override=on_internal_override)
 
@@ -204,9 +221,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         )
         start_time = time.time()
 
-        # Checkpointer lifecycle — create run if present
-        checkpointer = self._checkpointer
-        has_checkpointer = checkpointer is not None and workflow_id is not None
+        # Checkpointer lifecycle — upsert run record
         if has_checkpointer:
             await checkpointer.create_run(
                 workflow_id,
@@ -401,12 +416,25 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 parent_run_id=_parent_run_id,
             )
 
+        # Resume: find completed child runs to skip
+        completed_indices = await _get_completed_child_indices(checkpointer, workflow_id, has_checkpointer)
+
         existing_limiter = self._get_concurrency_limiter()
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
 
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
-            """Execute one map variation, always returning RunResult."""
+            """Execute one map variation, or restore from checkpoint if completed."""
             child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
+
+            # Skip completed items — restore result from checkpoint
+            if idx in completed_indices and has_checkpointer:
+                state = await checkpointer.get_state(child_workflow_id)
+                return RunResult(
+                    values=state,
+                    status=RunStatus.COMPLETED,
+                    workflow_id=child_workflow_id,
+                )
+
             try:
                 return await self.run(
                     graph,
@@ -541,3 +569,28 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 self._reset_concurrency_limiter(token)
             if _parent_span_id is None and dispatcher.active:
                 await self._shutdown_dispatcher_async(dispatcher)
+
+
+async def _get_completed_child_indices(
+    checkpointer: Any,
+    workflow_id: str | None,
+    has_checkpointer: bool,
+) -> set[int]:
+    """Query checkpoint for completed child runs and return their indices.
+
+    Only COMPLETED items are skipped — FAILED and ACTIVE items are re-executed.
+    """
+    if not has_checkpointer:
+        return set()
+
+    from hypergraph.checkpointers.types import WorkflowStatus
+
+    child_runs = await checkpointer.list_runs(parent_run_id=workflow_id)
+    completed: set[int] = set()
+    for run in child_runs:
+        if run.status != WorkflowStatus.COMPLETED:
+            continue
+        suffix = run.id.removeprefix(f"{workflow_id}/")
+        if suffix.isdigit():
+            completed.add(int(suffix))
+    return completed

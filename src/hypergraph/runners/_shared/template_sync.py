@@ -168,9 +168,28 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
         )
 
+        # Structural validation (doesn't depend on values)
         if _validation_ctx is None:
             validate_runner_compatibility(graph, self.capabilities)
             validate_node_types(graph, self.supported_node_types)
+            _validate_on_missing(on_missing)
+            _validate_error_handling(error_handling)
+            _validate_workflow_id(workflow_id, _parent_run_id)
+
+        # Checkpoint resume: load prior state and merge graph-input values.
+        # Only merge values the graph expects as inputs (required, optional, seeds) —
+        # intermediate edge-produced values are NOT merged (they'll be re-computed).
+        sync_cp = self._get_sync_checkpointer(workflow_id)
+        if sync_cp is not None:
+            checkpoint_state = sync_cp.state(workflow_id)
+            if checkpoint_state:
+                graph_input_names = set(graph.inputs.all)
+                checkpoint_inputs = {k: v for k, v in checkpoint_state.items() if k in graph_input_names}
+                if checkpoint_inputs:
+                    normalized_values = {**checkpoint_inputs, **normalized_values}
+
+        # Value validation (after merge so checkpoint-provided params are visible)
+        if _validation_ctx is None:
             effective_selected = resolve_runtime_selected(select, graph)
             validate_inputs(
                 graph,
@@ -179,9 +198,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 selected=effective_selected,
                 on_internal_override=on_internal_override,
             )
-            _validate_on_missing(on_missing)
-            _validate_error_handling(error_handling)
-            _validate_workflow_id(workflow_id, _parent_run_id)
         else:
             validate_item_inputs(_validation_ctx, normalized_values, on_internal_override=on_internal_override)
 
@@ -192,8 +208,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         run_id, run_span_id = self._emit_run_start_sync(dispatcher, graph, _parent_span_id)
         start_time = time.time()
 
-        # Checkpointer lifecycle
-        sync_cp = self._get_sync_checkpointer(workflow_id)
+        # Checkpointer lifecycle — upsert run record
         if sync_cp is not None:
             sync_cp.create_run_sync(
                 workflow_id,
@@ -341,10 +356,26 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 parent_run_id=_parent_run_id,
             )
 
+        # Resume: find completed child runs to skip
+        completed_indices = _get_completed_child_indices_sync(sync_cp, workflow_id)
+
         try:
             results = []
             for idx, variation_inputs in enumerate(input_variations):
                 child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
+
+                # Skip completed items — restore result from checkpoint
+                if idx in completed_indices and sync_cp is not None:
+                    state = sync_cp.state(child_workflow_id)
+                    results.append(
+                        RunResult(
+                            values=state,
+                            status=RunStatus.COMPLETED,
+                            workflow_id=child_workflow_id,
+                        )
+                    )
+                    continue
+
                 result = self.run(
                     graph,
                     variation_inputs,
@@ -456,3 +487,27 @@ def _flush_and_fail(sync_cp: Any, workflow_id: str, step_buffer: list, collector
         node_count=fail_count,
         error_count=err_count,
     )
+
+
+def _get_completed_child_indices_sync(
+    sync_cp: Any,
+    workflow_id: str | None,
+) -> set[int]:
+    """Query checkpoint for completed child runs and return their indices (sync).
+
+    Only COMPLETED items are skipped — FAILED and ACTIVE items are re-executed.
+    """
+    if sync_cp is None or workflow_id is None:
+        return set()
+
+    from hypergraph.checkpointers.types import WorkflowStatus
+
+    child_runs = sync_cp.runs(parent_run_id=workflow_id)
+    completed: set[int] = set()
+    for run in child_runs:
+        if run.status != WorkflowStatus.COMPLETED:
+            continue
+        suffix = run.id.removeprefix(f"{workflow_id}/")
+        if suffix.isdigit():
+            completed.add(int(suffix))
+    return completed

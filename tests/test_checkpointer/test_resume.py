@@ -203,13 +203,11 @@ class TestAsyncMapResume:
 
     async def test_map_reruns_failed_items(self, checkpointer):
         """Failed items are re-executed on resume (only COMPLETED are skipped)."""
-        attempt = 0
+        should_fail = True
 
         @node(output_name="result")
         def flaky(x: int) -> int:
-            nonlocal attempt
-            attempt += 1
-            if x == 20 and attempt <= 1:
+            if x == 20 and should_fail:
                 raise ValueError("transient failure")
             return x * 2
 
@@ -227,8 +225,8 @@ class TestAsyncMapResume:
         statuses = [r.status for r in result1.results]
         assert statuses[1] == RunStatus.FAILED  # x=20 failed
 
-        # Reset attempt counter (flaky now succeeds)
-        attempt = 10  # past the failure threshold
+        # Now make it succeed
+        should_fail = False
 
         # Resume: x=10 and x=30 skip (completed), x=20 re-runs (was failed)
         result2 = await runner.map(
@@ -320,13 +318,11 @@ class TestSyncMapResume:
 
     def test_map_reruns_failed_items(self, sync_checkpointer):
         """Sync mirror: failed items are re-executed on resume."""
-        attempt = 0
+        should_fail = True
 
         @node(output_name="result")
         def flaky(x: int) -> int:
-            nonlocal attempt
-            attempt += 1
-            if x == 20 and attempt <= 1:
+            if x == 20 and should_fail:
                 raise ValueError("transient failure")
             return x * 2
 
@@ -342,7 +338,7 @@ class TestSyncMapResume:
         )
         assert result1.results[1].status == RunStatus.FAILED
 
-        attempt = 10
+        should_fail = False
         result2 = runner.map(
             graph,
             {"x": [10, 20, 30]},
