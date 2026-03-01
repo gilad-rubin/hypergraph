@@ -243,12 +243,22 @@ class SqliteCheckpointer(Checkpointer):
         graph_name: str | None = None,
         parent_run_id: str | None = None,
     ) -> Run:
-        """Create a new run record."""
+        """Create or reset a run record (upsert)."""
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         await self._db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)",
-            (run_id, WorkflowStatus.ACTIVE.value, graph_name or "", now.isoformat(), parent_run_id),
+            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?",
+            (
+                run_id,
+                WorkflowStatus.ACTIVE.value,
+                graph_name or "",
+                now.isoformat(),
+                parent_run_id,
+                WorkflowStatus.ACTIVE.value,
+                graph_name or "",
+                parent_run_id,
+            ),
         )
         await self._db.commit()
         return Run(
@@ -348,21 +358,33 @@ class SqliteCheckpointer(Checkpointer):
             return None
         return self._row_to_run(row)
 
-    async def list_runs(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Run]:
-        """List runs, optionally filtered by status."""
+    async def list_runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        parent_run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Run]:
+        """List runs, optionally filtered by status and/or parent."""
         await self._ensure_db()
 
-        if status is not None:
-            cursor = await self._db.execute(
-                f"SELECT {_RUNS_COLS} FROM runs WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                (status.value, limit),
-            )
-        else:
-            cursor = await self._db.execute(
-                f"SELECT {_RUNS_COLS} FROM runs ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
+        conditions: list[str] = []
+        params: list[Any] = []
 
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status.value)
+        if parent_run_id is not None:
+            conditions.append("parent_run_id = ?")
+            params.append(parent_run_id)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+
+        cursor = await self._db.execute(
+            f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        )
         rows = await cursor.fetchall()
         return RunTable(self._row_to_run(row) for row in rows)
 
@@ -635,12 +657,22 @@ class SqliteCheckpointer(Checkpointer):
         graph_name: str | None = None,
         parent_run_id: str | None = None,
     ) -> Run:
-        """Create a new run record synchronously."""
+        """Create or reset a run record synchronously (upsert)."""
         db = self._sync_db()
         now = datetime.now(timezone.utc)
         db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)",
-            (run_id, WorkflowStatus.ACTIVE.value, graph_name or "", now.isoformat(), parent_run_id),
+            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?",
+            (
+                run_id,
+                WorkflowStatus.ACTIVE.value,
+                graph_name or "",
+                now.isoformat(),
+                parent_run_id,
+                WorkflowStatus.ACTIVE.value,
+                graph_name or "",
+                parent_run_id,
+            ),
         )
         db.commit()
         return Run(

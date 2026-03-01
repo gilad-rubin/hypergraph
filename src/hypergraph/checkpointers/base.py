@@ -75,7 +75,11 @@ class Checkpointer(ABC):
         graph_name: str | None = None,
         parent_run_id: str | None = None,
     ) -> Run:
-        """Create a new run record. Called by runner at run start."""
+        """Create or reset a run record (upsert). Called by runner at run start.
+
+        If a run with this ID already exists, reset it to ACTIVE status.
+        This allows re-running with the same workflow_id after interruption.
+        """
         ...
 
     @abstractmethod
@@ -121,8 +125,20 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def list_runs(self, *, status: WorkflowStatus | None = None, limit: int = 100) -> list[Run]:
-        """List runs, optionally filtered by status."""
+    async def list_runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        parent_run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[Run]:
+        """List runs, optionally filtered by status and/or parent.
+
+        Args:
+            status: Filter to runs with this status (None = all).
+            parent_run_id: Filter to children of this run (None = no filter).
+            limit: Max results to return.
+        """
         ...
 
     async def search_async(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
