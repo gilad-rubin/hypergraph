@@ -15,6 +15,9 @@ from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, StepStat
 _RUNS_COLS = "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, parent_run_id, config"
 _STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at"
 
+# Sentinel for "parameter not provided" — distinct from None (which means "top-level only")
+_UNSET = object()
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     """Parse an ISO datetime string, normalising the UTC 'Z' suffix.
@@ -167,16 +170,28 @@ class SqliteCheckpointer(Checkpointer):
         )
         await self._db.commit()
 
-    async def create_run(self, run_id: str, *, graph_name: str | None = None) -> Run:
+    async def create_run(
+        self,
+        run_id: str,
+        *,
+        graph_name: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> Run:
         """Create a new run record."""
         await self._ensure_db()
         now = datetime.now(timezone.utc)
         await self._db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at) VALUES (?, ?, ?, ?)",
-            (run_id, WorkflowStatus.ACTIVE.value, graph_name or "", now.isoformat()),
+            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)",
+            (run_id, WorkflowStatus.ACTIVE.value, graph_name or "", now.isoformat(), parent_run_id),
         )
         await self._db.commit()
-        return Run(id=run_id, status=WorkflowStatus.ACTIVE, graph_name=graph_name, created_at=now)
+        return Run(
+            id=run_id,
+            status=WorkflowStatus.ACTIVE,
+            graph_name=graph_name,
+            parent_run_id=parent_run_id,
+            created_at=now,
+        )
 
     async def update_run_status(
         self,
@@ -438,9 +453,17 @@ class SqliteCheckpointer(Checkpointer):
         status: WorkflowStatus | None = None,
         graph_name: str | None = None,
         since: datetime | None = None,
+        parent_run_id: str | None | object = _UNSET,
         limit: int = 100,
     ) -> list[Run]:
-        """List runs synchronously with optional filters."""
+        """List runs synchronously with optional filters.
+
+        Args:
+            parent_run_id: Filter by parent relationship.
+                Not provided (default) → all runs (backward compat).
+                None → top-level only (no parent).
+                "X" → children of run X.
+        """
         db = self._sync_db()
         conditions = []
         params: list[Any] = []
@@ -454,6 +477,12 @@ class SqliteCheckpointer(Checkpointer):
         if since is not None:
             conditions.append("created_at >= ?")
             params.append(since.isoformat())
+        if parent_run_id is not _UNSET:
+            if parent_run_id is None:
+                conditions.append("parent_run_id IS NULL")
+            else:
+                conditions.append("parent_run_id = ?")
+                params.append(parent_run_id)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
@@ -530,3 +559,105 @@ class SqliteCheckpointer(Checkpointer):
             values=self.state(run_id, superstep=superstep),
             steps=self.steps(run_id, superstep=superstep),
         )
+
+    # === Sync Writes (SyncCheckpointerProtocol) ===
+
+    def create_run_sync(
+        self,
+        run_id: str,
+        *,
+        graph_name: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> Run:
+        """Create a new run record synchronously."""
+        db = self._sync_db()
+        now = datetime.now(timezone.utc)
+        db.execute(
+            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)",
+            (run_id, WorkflowStatus.ACTIVE.value, graph_name or "", now.isoformat(), parent_run_id),
+        )
+        db.commit()
+        return Run(
+            id=run_id,
+            status=WorkflowStatus.ACTIVE,
+            graph_name=graph_name,
+            parent_run_id=parent_run_id,
+            created_at=now,
+        )
+
+    def save_step_sync(self, record: StepRecord) -> None:
+        """Save a step with upsert semantics synchronously."""
+        db = self._sync_db()
+        values_blob = self._serializer.serialize(record.values) if record.values is not None else None
+        input_versions_json = json.dumps(record.input_versions)
+        decision_json = json.dumps(record.decision) if record.decision is not None else None
+
+        db.execute(
+            """
+            INSERT INTO steps (
+                run_id, superstep, node_name, step_index, status,
+                input_versions, values_data, duration_ms, cached,
+                decision, error, node_type, created_at, completed_at, child_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
+                status = excluded.status,
+                values_data = excluded.values_data,
+                duration_ms = excluded.duration_ms,
+                cached = excluded.cached,
+                decision = excluded.decision,
+                error = excluded.error,
+                node_type = excluded.node_type,
+                completed_at = excluded.completed_at
+            """,
+            (
+                record.run_id,
+                record.superstep,
+                record.node_name,
+                record.index,
+                record.status.value,
+                input_versions_json,
+                values_blob,
+                record.duration_ms,
+                int(record.cached),
+                decision_json,
+                record.error,
+                record.node_type,
+                record.created_at.isoformat(),
+                record.completed_at.isoformat() if record.completed_at else None,
+                record.child_run_id,
+            ),
+        )
+        db.commit()
+
+    def update_run_status_sync(
+        self,
+        run_id: str,
+        status: WorkflowStatus,
+        *,
+        duration_ms: float | None = None,
+        node_count: int | None = None,
+        error_count: int | None = None,
+    ) -> None:
+        """Update run status with optional stats synchronously."""
+        db = self._sync_db()
+        completed_at = datetime.now(timezone.utc).isoformat() if status != WorkflowStatus.ACTIVE else None
+
+        sets = ["status = ?", "completed_at = ?"]
+        params: list[Any] = [status.value, completed_at]
+
+        if duration_ms is not None:
+            sets.append("duration_ms = ?")
+            params.append(duration_ms)
+        if node_count is not None:
+            sets.append("node_count = ?")
+            params.append(node_count)
+        if error_count is not None:
+            sets.append("error_count = ?")
+            params.append(error_count)
+
+        params.append(run_id)
+        db.execute(
+            f"UPDATE runs SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        db.commit()

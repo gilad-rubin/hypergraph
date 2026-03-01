@@ -5,6 +5,7 @@ and supporting types for durable workflow execution.
 """
 
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
+from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
 from hypergraph.checkpointers.serializers import JsonSerializer, PickleSerializer, Serializer
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
@@ -26,5 +27,6 @@ __all__ = [
     "SqliteCheckpointer",
     "StepRecord",
     "StepStatus",
+    "SyncCheckpointerProtocol",
     "WorkflowStatus",
 ]

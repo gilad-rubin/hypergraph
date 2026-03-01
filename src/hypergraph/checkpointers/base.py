@@ -68,7 +68,13 @@ class Checkpointer(ABC):
         ...
 
     @abstractmethod
-    async def create_run(self, run_id: str, *, graph_name: str | None = None) -> Run:
+    async def create_run(
+        self,
+        run_id: str,
+        *,
+        graph_name: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> Run:
         """Create a new run record. Called by runner at run start."""
         ...
 

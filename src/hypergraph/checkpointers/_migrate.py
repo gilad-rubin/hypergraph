@@ -95,6 +95,7 @@ def _create_v2_indexes(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_run ON steps(run_id, step_index)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_node ON steps(node_name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_status ON steps(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_parent ON runs(parent_run_id)")
 
 
 def _create_fts(conn: Any) -> None:
