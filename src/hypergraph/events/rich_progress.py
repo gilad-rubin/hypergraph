@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -30,116 +29,6 @@ def _require_rich() -> None:
         raise ImportError(
             "The 'rich' package is required for RichProgressProcessor. Install it with: pip install 'hypergraph[progress]' or pip install rich"
         ) from None
-
-
-# ---------------------------------------------------------------------------
-# Adaptive dark/light rendering for Rich's Jupyter output
-# ---------------------------------------------------------------------------
-# Rich hardcodes DEFAULT_TERMINAL_THEME (a light theme) when rendering HTML
-# for Jupyter.  Dark ANSI colors (#800000 red, #008000 green) become invisible
-# on dark notebook backgrounds.  We monkey-patch _render_segments to render
-# with both light AND dark themes, merging the CSS via light-dark().
-
-_CSS_COLOR_RE = re.compile(r"((?:background-|text-decoration-)?color):\s*(#[0-9a-fA-F]+)")
-
-_ADAPTIVE_PRE_FORMAT = (
-    '<pre style="white-space:pre;overflow-x:auto;line-height:normal;'
-    "font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace;"
-    'color-scheme:light dark">{code}</pre>'
-)
-
-
-def _merge_adaptive(light_rule: str, dark_rule: str) -> str:
-    """Merge a light-theme and dark-theme CSS rule into one using light-dark().
-
-    Non-color properties (font-weight, font-style, text-decoration) pass through
-    unchanged.  Color properties that differ get ``light-dark(light, dark)``.
-    """
-    if light_rule == dark_rule:
-        return light_rule
-    dark_colors = dict(_CSS_COLOR_RE.findall(dark_rule))
-
-    def _replace(m: re.Match) -> str:
-        prop, light_val = m.group(1), m.group(2)
-        dark_val = dark_colors.get(prop, light_val)
-        if light_val == dark_val:
-            return m.group(0)
-        return f"{prop}: light-dark({light_val},{dark_val})"
-
-    return _CSS_COLOR_RE.sub(_replace, light_rule)
-
-
-def _make_dark_theme():
-    """Build a dark TerminalTheme matching hypergraph's dark palette."""
-    from rich.terminal_theme import TerminalTheme
-
-    return TerminalTheme(
-        (31, 41, 55),  # bg: gray-800
-        (209, 213, 219),  # fg: gray-300
-        [
-            (209, 213, 219),  # black  → gray-300 (readable on dark)
-            (248, 113, 113),  # red    → red-400
-            (52, 211, 153),  # green  → emerald-400
-            (251, 191, 36),  # yellow → amber-400
-            (96, 165, 250),  # blue   → blue-400
-            (167, 139, 250),  # magenta→ violet-400
-            (34, 211, 238),  # cyan   → cyan-400
-            (243, 244, 246),  # white  → gray-100
-        ],
-        [
-            (156, 163, 175),  # bright black  → gray-400
-            (252, 165, 165),  # bright red    → red-300
-            (110, 231, 183),  # bright green  → emerald-300
-            (253, 224, 71),  # bright yellow → yellow-300
-            (147, 197, 253),  # bright blue   → blue-300
-            (196, 181, 253),  # bright magenta→ violet-300
-            (103, 232, 249),  # bright cyan   → cyan-300
-            (255, 255, 255),  # bright white
-        ],
-    )
-
-
-def _patch_rich_jupyter() -> None:
-    """Monkey-patch rich.jupyter._render_segments for adaptive dark/light.
-
-    Safe to call multiple times — patches only once.
-    """
-    import rich.jupyter as rj
-
-    if getattr(rj, "_hypergraph_patched", False):
-        return
-
-    from rich.segment import Segment
-    from rich.terminal_theme import DEFAULT_TERMINAL_THEME
-
-    dark_theme = _make_dark_theme()
-    light_theme = DEFAULT_TERMINAL_THEME
-
-    def _adaptive_render_segments(segments):
-        """Render segments with light-dark() adaptive colors."""
-
-        def escape(text: str) -> str:
-            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-        fragments = []
-        for text, style, control in Segment.simplify(segments):
-            if control:
-                continue
-            text = escape(text)
-            if style:
-                light_rule = style.get_html_style(light_theme)
-                dark_rule = style.get_html_style(dark_theme)
-                rule = _merge_adaptive(light_rule, dark_rule) if light_rule else ""
-                text = f'<span style="{rule}">{text}</span>' if rule else text
-                if style.link:
-                    text = f'<a href="{style.link}" target="_blank">{text}</a>'
-            fragments.append(text)
-
-        code = "".join(fragments)
-        return _ADAPTIVE_PRE_FORMAT.format(code=code)
-
-    rj._render_segments = _adaptive_render_segments  # type: ignore[attr-defined]
-    rj._hypergraph_patched = True  # type: ignore[attr-defined]
 
 
 @dataclass
@@ -345,8 +234,6 @@ class RichProgressProcessor(TypedEventProcessor):
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
         if not self._started:
-            if self._notebook:
-                _patch_rich_jupyter()
             if self._tty_mode:
                 self._progress.start()
             self._started = True
