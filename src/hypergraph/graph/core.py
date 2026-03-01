@@ -701,7 +701,7 @@ class Graph:
         if self.has_interrupts:
             props.append("interrupts")
         prop_str = f" | {', '.join(props)}" if props else " | no cycles"
-        name = self._name or "unnamed"
+        name = self.name or "unnamed"
         return f"Graph: {name} | {n_nodes} nodes | {n_edges} edges{prop_str}"
 
     def _repr_html_(self) -> str:
@@ -709,7 +709,7 @@ class Graph:
 
         n_nodes = len(self._nodes)
         n_edges = self._nx_graph.number_of_edges()
-        name = self._name or "unnamed"
+        name = self.name or "unnamed"
 
         # Node table
         headers = ["Node", "Type", "Inputs", "Outputs"]
