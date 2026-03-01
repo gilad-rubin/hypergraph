@@ -126,8 +126,9 @@ class SyncRunner(SyncRunnerTemplate):
         state = initialize_state(graph, values)
         active_nodes = compute_active_node_set(graph)
 
-        # Checkpointer setup — deterministic node ordering for index assignment
-        sync_cp = _get_checkpoint_writer(self._checkpointer_instance, workflow_id)
+        # Checkpointer setup — template already validated the protocol,
+        # so we just check if checkpointing is active for this run
+        sync_cp = self._checkpointer_instance if (self._checkpointer_instance and workflow_id) else None
         step_counter = 0
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
@@ -312,15 +313,6 @@ class SyncRunner(SyncRunnerTemplate):
 # ------------------------------------------------------------------
 # Checkpoint helpers (module-level to keep the class focused)
 # ------------------------------------------------------------------
-
-
-def _get_checkpoint_writer(checkpointer: Any, workflow_id: str | None) -> Any:
-    """Return the sync checkpointer if active, else None."""
-    if checkpointer is None or workflow_id is None:
-        return None
-    from hypergraph.checkpointers.protocols import SyncCheckpointerProtocol
-
-    return checkpointer if isinstance(checkpointer, SyncCheckpointerProtocol) else None
 
 
 def _save_superstep_sync(

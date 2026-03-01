@@ -49,7 +49,7 @@ def runs_dashboard(
             print_json("runs", {"active": [], "recent": []}, output)
         else:
             print("No runs found.")
-            print(f"\n  Database: {db}")
+            print(f"\n  Database: {cp._path}")
             print("  To create runs, use: runner.run(graph, inputs, workflow_id='my-run')")
         return
 

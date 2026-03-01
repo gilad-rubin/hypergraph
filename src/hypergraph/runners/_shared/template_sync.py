@@ -397,12 +397,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
                 total_ms = (time.time() - start_time) * 1000
+                error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
                 sync_cp.update_run_status_sync(
                     workflow_id,
                     _WS.FAILED,
                     duration_ms=total_ms,
                     node_count=len(results),
-                    error_count=len(results),
+                    error_count=error_count,
                 )
             raise
         finally:
