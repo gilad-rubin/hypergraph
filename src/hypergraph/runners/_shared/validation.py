@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -17,60 +18,82 @@ if TYPE_CHECKING:
 _VALID_ON_INTERNAL_OVERRIDE = ("ignore", "warn", "error")
 
 
-def validate_inputs(
+@dataclass(frozen=True, slots=True)
+class _InputValidationContext:
+    """Pre-computed graph-structural context for input validation.
+
+    Holds everything derived from graph topology that doesn't depend
+    on per-item values.  Compute once via ``precompute_input_validation``,
+    then validate each item with ``validate_item_inputs``.
+    """
+
+    graph: Graph
+    active_nodes: dict[str, HyperNode]
+    active_subgraph: Any  # nx DiGraph
+    input_spec: InputSpec
+    edge_produced: set[str]
+    interrupt_outputs: set[str]
+    cycle_ep_params: set[str]
+    entrypoint: str | None
+
+
+def precompute_input_validation(
     graph: Graph,
-    values: dict[str, Any],
     *,
     entrypoint: str | None = None,
     selected: tuple[str, ...] | None = None,
+) -> _InputValidationContext:
+    """Graph-structural validation — call once, reuse across items."""
+    from hypergraph.graph._helpers import get_edge_produced_values
+
+    active_nodes, active_subgraph = _resolve_active_scope(graph, selected)
+    input_spec = _resolve_effective_input_spec(graph, selected, active_scope=(active_nodes, active_subgraph))
+    cycle_ep_params = {p for params in input_spec.entrypoints.values() for p in params}
+    edge_produced = get_edge_produced_values(active_subgraph)
+    interrupt_outputs = _get_interrupt_outputs(active_nodes)
+
+    return _InputValidationContext(
+        graph=graph,
+        active_nodes=active_nodes,
+        active_subgraph=active_subgraph,
+        input_spec=input_spec,
+        edge_produced=edge_produced,
+        interrupt_outputs=interrupt_outputs,
+        cycle_ep_params=cycle_ep_params,
+        entrypoint=entrypoint,
+    )
+
+
+def validate_item_inputs(
+    ctx: _InputValidationContext,
+    values: dict[str, Any],
+    *,
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
 ) -> None:
-    """Validate that all required inputs are provided.
+    """Per-item value validation using pre-computed context.
 
-    Follows a 6-step pipeline:
-    1. Merge bound + provided (provided overwrites bound)
-    2. Validate internal override conflicts (compute vs inject)
-    3. Handle non-conflicting internal/unknown parameters by policy
-    4. Bypass detection (considering merged values)
-    5. Cycle entry point matching
-    6. Completeness check
-
-    Args:
-        graph: The graph to validate against
-        values: The input values provided
-        entrypoint: Optional explicit entry point node name for cycle
-        selected: Optional runtime output selection (narrows validation scope)
-        on_internal_override: Policy for non-conflicting internal/unknown inputs
-
-    Raises:
-        MissingInputError: If required inputs or cycle entry points are missing
-        ValueError: If entrypoint is invalid or cycle entry is ambiguous
+    Validates a single set of input values against the pre-computed
+    graph context.  Handles bound/provided merge, internal override
+    detection, bypass detection, cycle entry, and completeness checks.
     """
     _validate_on_internal_override(on_internal_override)
-    # Compute active scope once — the foundation for both InputSpec and conflict checks
-    active_nodes, active_subgraph = _resolve_active_scope(graph, selected)
-    inputs_spec = _resolve_effective_input_spec(graph, selected, active_scope=(active_nodes, active_subgraph))
-    cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
+    inputs_spec = ctx.input_spec
 
     # Step 1: Merge bound + provided
     merged = {**inputs_spec.bound, **values}
     provided = set(merged.keys())
 
     # Step 2/3: Internal/unknown parameter handling
-    from hypergraph.graph._helpers import get_edge_produced_values
-
     expected_inputs = set(inputs_spec.all)
-    edge_produced = get_edge_produced_values(active_subgraph)
-    interrupt_outputs = _get_interrupt_outputs(active_nodes)
-    unexpected = provided - expected_inputs - interrupt_outputs
-    internal_edge = unexpected & edge_produced
-    unknown = unexpected - edge_produced
+    unexpected = provided - expected_inputs - ctx.interrupt_outputs
+    internal_edge = unexpected & ctx.edge_produced
+    unknown = unexpected - ctx.edge_produced
 
     conflict_errors = _find_internal_override_conflicts(
-        active_nodes=active_nodes,
+        active_nodes=ctx.active_nodes,
         provided=provided,
         internal_edge=internal_edge,
-        cycle_ep_params=cycle_ep_params,
+        cycle_ep_params=ctx.cycle_ep_params,
     )
     if conflict_errors:
         raise ValueError("Invalid internal override configuration:\n" + "\n".join(conflict_errors))
@@ -80,15 +103,15 @@ def validate_inputs(
         internal_edge=internal_edge,
         unknown=unknown,
         expected_inputs=expected_inputs,
-        active_nodes=active_nodes,
+        active_nodes=ctx.active_nodes,
     )
 
     # Step 4: Bypass detection (considering merged values)
-    bypassed_inputs = _find_bypassed_inputs(graph, provided, inputs_spec)
+    bypassed_inputs = _find_bypassed_inputs(ctx.graph, provided, inputs_spec)
 
     # Step 5: Cycle entry point matching
     if inputs_spec.entrypoints:
-        _validate_cycle_entry(graph, provided, bypassed_inputs, entrypoint, inputs_spec)
+        _validate_cycle_entry(ctx.graph, provided, bypassed_inputs, ctx.entrypoint, inputs_spec)
 
     # Step 6: Completeness check for required (acyclic) inputs
     required = set(inputs_spec.required) - bypassed_inputs
@@ -111,6 +134,24 @@ def validate_inputs(
         provided=list(provided),
         message=message,
     )
+
+
+def validate_inputs(
+    graph: Graph,
+    values: dict[str, Any],
+    *,
+    entrypoint: str | None = None,
+    selected: tuple[str, ...] | None = None,
+    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
+) -> None:
+    """Validate that all required inputs are provided.
+
+    Convenience wrapper that pre-computes graph context and validates
+    a single set of values.  For batch validation (e.g., ``map()``), use
+    ``precompute_input_validation`` + ``validate_item_inputs`` directly.
+    """
+    ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=selected)
+    validate_item_inputs(ctx, values, on_internal_override=on_internal_override)
 
 
 def _validate_cycle_entry(

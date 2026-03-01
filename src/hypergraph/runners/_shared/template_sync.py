@@ -23,8 +23,10 @@ from hypergraph.runners._shared.input_normalization import (
 from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, RunResult, RunStatus
 from hypergraph.runners._shared.validation import (
+    precompute_input_validation,
     resolve_runtime_selected,
     validate_inputs,
+    validate_item_inputs,
     validate_map_compatible,
     validate_node_types,
     validate_runner_compatibility,
@@ -36,6 +38,7 @@ if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
     from hypergraph.nodes.base import HyperNode
+    from hypergraph.runners._shared.validation import _InputValidationContext
 
 
 class SyncRunnerTemplate(BaseRunner, ABC):
@@ -155,6 +158,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
+        _validation_ctx: _InputValidationContext | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -164,19 +168,22 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
         )
 
-        validate_runner_compatibility(graph, self.capabilities)
-        validate_node_types(graph, self.supported_node_types)
-        effective_selected = resolve_runtime_selected(select, graph)
-        validate_inputs(
-            graph,
-            normalized_values,
-            entrypoint=entrypoint,
-            selected=effective_selected,
-            on_internal_override=on_internal_override,
-        )
-        _validate_on_missing(on_missing)
-        _validate_error_handling(error_handling)
-        _validate_workflow_id(workflow_id, _parent_run_id)
+        if _validation_ctx is None:
+            validate_runner_compatibility(graph, self.capabilities)
+            validate_node_types(graph, self.supported_node_types)
+            effective_selected = resolve_runtime_selected(select, graph)
+            validate_inputs(
+                graph,
+                normalized_values,
+                entrypoint=entrypoint,
+                selected=effective_selected,
+                on_internal_override=on_internal_override,
+            )
+            _validate_on_missing(on_missing)
+            _validate_error_handling(error_handling)
+            _validate_workflow_id(workflow_id, _parent_run_id)
+        else:
+            validate_item_inputs(_validation_ctx, normalized_values, on_internal_override=on_internal_override)
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()
@@ -293,11 +300,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
         )
 
+        # One-time graph-structural validation
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
         validate_map_compatible(graph)
         _validate_error_handling(error_handling)
         _validate_workflow_id(workflow_id, _parent_run_id)
+        effective_selected = resolve_runtime_selected(select, graph)
+        _validate_on_missing(on_missing)
+        ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
@@ -346,6 +357,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     workflow_id=child_workflow_id,
                     _parent_span_id=map_span_id,
                     _parent_run_id=workflow_id,
+                    _validation_ctx=ctx,
                 )
                 results.append(result)
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
