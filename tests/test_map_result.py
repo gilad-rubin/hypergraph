@@ -581,7 +581,7 @@ class TestMapLog:
         s = mr.log.summary()
         assert "3 items" in s
         assert "2 completed" in s
-        assert "1 errors" in s
+        assert "1 error" in s
         assert "avg" in s
         assert "/item" in s
 

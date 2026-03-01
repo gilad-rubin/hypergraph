@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from hypergraph._utils import format_duration_ms
+from hypergraph._utils import format_duration_ms, plural
 
 
 def _utcnow() -> datetime:
@@ -123,9 +123,9 @@ class Run:
             parts.append(format_duration_ms(self.duration_ms))
         items = []
         if self.node_count:
-            items.append(f"{self.node_count} steps")
+            items.append(plural(self.node_count, "step"))
         if self.error_count:
-            items.append(f"{self.error_count} errors")
+            items.append(plural(self.error_count, "error"))
         if items:
             parts.append(", ".join(items))
         return " | ".join(parts)
@@ -177,7 +177,7 @@ class Checkpoint:
     steps: list[StepRecord]
 
     def __repr__(self) -> str:
-        return f"Checkpoint: {len(self.values)} values, {len(self.steps)} steps"
+        return f"Checkpoint: {plural(len(self.values), 'value')}, {plural(len(self.steps), 'step')}"
 
     def _repr_html_(self) -> str:
         from hypergraph._repr import html_panel
@@ -199,7 +199,7 @@ class RunTable(list):
     def __repr__(self) -> str:
         if not self:
             return "RunTable: (empty)"
-        lines = [f"RunTable: {len(self)} runs", ""]
+        lines = [f"RunTable: {plural(len(self), 'run')}", ""]
         for run in self:
             lines.append(f"  {run!r}")
         return "\n".join(lines)
@@ -222,7 +222,7 @@ class RunTable(list):
                     f'<span style="color:#dc2626">{run.error_count}</span>' if run.error_count else "0",
                 ]
             )
-        return html_table(headers, rows, title=f"{len(self)} runs")
+        return html_table(headers, rows, title=plural(len(self), "run"))
 
 
 class StepTable(list):
@@ -234,7 +234,7 @@ class StepTable(list):
     def __repr__(self) -> str:
         if not self:
             return "StepTable: (empty)"
-        lines = [f"StepTable: {len(self)} steps", ""]
+        lines = [f"StepTable: {plural(len(self), 'step')}", ""]
         for step in self:
             lines.append(f"  {step!r}")
         return "\n".join(lines)
@@ -257,4 +257,4 @@ class StepTable(list):
                     str(step.superstep),
                 ]
             )
-        return html_table(headers, rows, title=f"{len(self)} steps")
+        return html_table(headers, rows, title=plural(len(self), "step"))

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any, Literal
 
+from hypergraph._utils import plural
+
 ErrorHandling = Literal["raise", "continue"]
 
 _MAX_STRING_PREVIEW = 120
@@ -367,7 +369,7 @@ class MapResult:
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
         n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
-        parts = [f"{n} items"]
+        parts = [plural(n, "item")]
         status_parts = []
         if n_completed:
             status_parts.append(f"{n_completed} completed")
@@ -419,7 +421,7 @@ class MapResult:
             completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
             avg = completed_ms / n_completed
             avg_part = f", avg {_format_duration(avg)}/item"
-        return f"MapResult({n} items: {status}{avg_part}, map_over={self.map_over!r})"
+        return f"MapResult({plural(n, 'item')}: {status}{avg_part}, map_over={self.map_over!r})"
 
     def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
         if cycle:
@@ -449,7 +451,7 @@ class MapResult:
             avg = completed_ms / n_completed
             kvs.append(html_kv("Avg/item", duration_html(avg)))
         body = " &nbsp;|&nbsp; ".join(kvs)
-        return html_panel(f"MapResult: {self.graph_name} ({n} items)", body)
+        return html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body)
 
 
 Sequence.register(MapResult)
@@ -717,7 +719,7 @@ class NodeStats:
         if self.succeeded:
             parts.append(f"{self.succeeded} succeeded")
         if self.errors:
-            parts.append(f"{self.errors} errors")
+            parts.append(plural(self.errors, "error"))
         if self.cached:
             parts.append(f"{self.cached} cached")
         if self.succeeded:
@@ -787,9 +789,9 @@ class RunLog:
         n_nodes = len({s.node_name for s in self.steps})
         slowest = max(self.timing.items(), key=lambda x: x[1]) if self.timing else ("", 0)
         parts = [
-            f"{n_nodes} nodes",
+            plural(n_nodes, "node"),
             _format_duration(self.total_duration_ms),
-            f"{n_errors} errors" if n_errors else "0 errors",
+            plural(n_errors, "error"),
         ]
         if slowest[1] > 0:
             parts.append(f"slowest: {slowest[0]} ({_format_duration(slowest[1])})")
@@ -837,8 +839,8 @@ class RunLog:
         header = (
             f"RunLog: {self.graph_name} | "
             f"{_format_duration(self.total_duration_ms)} | "
-            f"{len({s.node_name for s in self.steps})} nodes | "
-            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+            f"{plural(len({s.node_name for s in self.steps}), 'node')} | "
+            f"{plural(n_errors, 'error')}"
         )
 
         has_decisions = any(s.decision is not None for s in self.steps)
@@ -910,8 +912,8 @@ class RunLog:
         title = (
             f"RunLog: {self.graph_name} &nbsp; "
             f"{duration_html(self.total_duration_ms)} &nbsp; "
-            f"{len({s.node_name for s in self.steps})} nodes &nbsp; "
-            f"{n_errors} error{'s' if n_errors != 1 else ''}"
+            f"{plural(len({s.node_name for s in self.steps}), 'node')} &nbsp; "
+            f"{plural(n_errors, 'error')}"
         )
         return html_panel(title, html_table(headers, rows))
 
@@ -950,12 +952,12 @@ class MapLog:
         n = len(self.items)
         n_succeeded = sum(1 for log in self.items if not log.errors)
         n_errors = len(self.errors)
-        parts = [f"{n} items"]
+        parts = [plural(n, "item")]
         status_parts = []
         if n_succeeded:
             status_parts.append(f"{n_succeeded} completed")
         if n_errors:
-            status_parts.append(f"{n_errors} errors")
+            status_parts.append(plural(n_errors, "error"))
         if status_parts:
             parts.append(", ".join(status_parts))
         if n_succeeded > 0:
@@ -990,12 +992,7 @@ class MapLog:
             succeeded_items = [log for log in self.items if not log.errors]
             avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
             avg_part = f" | avg {_format_duration(avg)}/item"
-        header = (
-            f"MapLog: {self.graph_name} | "
-            f"{len(self.items)} items ({n_succeeded} succeeded) | "
-            f"{n_errors} error{'s' if n_errors != 1 else ''}"
-            f"{avg_part}"
-        )
+        header = f"MapLog: {self.graph_name} | {plural(len(self.items), 'item')} ({n_succeeded} succeeded) | {plural(n_errors, 'error')}{avg_part}"
         lines = [header, ""]
 
         cols = ["  Item", "Duration", "Status", "Nodes"]
@@ -1012,7 +1009,7 @@ class MapLog:
 
         remaining = len(self.items) - len(display_items)
         if remaining > 0:
-            lines.append(f"  ... and {remaining} more items")
+            lines.append(f"  ... and {plural(remaining, 'more item')}")
 
         lines.append("")
         lines.append("  → .log[i] for per-item trace")
@@ -1046,5 +1043,5 @@ class MapLog:
             avg_part = f" &nbsp; avg {duration_html(avg)}/item"
         remaining = len(self.items) - len(rows)
         footer = f" (+{remaining} more)" if remaining > 0 else ""
-        title = f"MapLog: {self.graph_name} ({len(self.items)} items){footer}{avg_part}"
+        title = f"MapLog: {self.graph_name} ({plural(len(self.items), 'item')}){footer}{avg_part}"
         return html_panel(title, html_table(headers, rows))

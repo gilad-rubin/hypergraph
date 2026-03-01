@@ -691,6 +691,8 @@ class Graph:
         return GraphNode(self, name=name)
 
     def __repr__(self) -> str:
+        from hypergraph._utils import plural
+
         n_nodes = len(self._nodes)
         n_edges = self._nx_graph.number_of_edges()
         props = []
@@ -702,10 +704,11 @@ class Graph:
             props.append("interrupts")
         prop_str = f" | {', '.join(props)}" if props else " | no cycles"
         name = self.name or "unnamed"
-        return f"Graph: {name} | {n_nodes} nodes | {n_edges} edges{prop_str}"
+        return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}"
 
     def _repr_html_(self) -> str:
         from hypergraph._repr import html_detail, html_panel, html_table, status_badge
+        from hypergraph._utils import plural
 
         n_nodes = len(self._nodes)
         n_edges = self._nx_graph.number_of_edges()
@@ -738,7 +741,7 @@ class Graph:
             props.append(status_badge("completed").replace("completed", "DAG"))
         prop_html = " ".join(props)
 
-        body = f"{prop_html} &nbsp; <b>{n_edges}</b> edges<br><br>{table_html}"
+        body = f"{prop_html} &nbsp; <b>{plural(n_edges, 'edge')}</b><br><br>{table_html}"
 
         # Collapsible visualization (if viz module is available)
         try:
@@ -749,7 +752,7 @@ class Graph:
         except (ImportError, Exception):
             pass
 
-        return html_panel(f"Graph: {name} ({n_nodes} nodes)", body)
+        return html_panel(f"Graph: {name} ({plural(n_nodes, 'node')})", body)
 
     def visualize(
         self,

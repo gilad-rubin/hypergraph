@@ -236,7 +236,7 @@ class TestRunTable:
     def test_repr(self):
         table = RunTable([Run(id="r-1", status=WorkflowStatus.COMPLETED)])
         r = repr(table)
-        assert "RunTable: 1 runs" in r
+        assert "RunTable: 1 run" in r
         assert "Run: r-1" in r
 
     def test_empty(self):
@@ -262,7 +262,7 @@ class TestStepTable:
             [StepRecord(run_id="r", superstep=0, node_name="classify", index=0, status=StepStatus.COMPLETED, input_versions={}, duration_ms=95.0)]
         )
         r = repr(table)
-        assert "StepTable: 1 steps" in r
+        assert "StepTable: 1 step" in r
         assert "classify" in r
 
     def test_empty(self):

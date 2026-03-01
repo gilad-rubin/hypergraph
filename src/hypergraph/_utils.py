@@ -28,6 +28,20 @@ def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
     return value
 
 
+def plural(n: int, word: str) -> str:
+    """Pluralize a word based on count.
+
+    Examples:
+        >>> plural(1, "node")
+        '1 node'
+        >>> plural(3, "node")
+        '3 nodes'
+        >>> plural(0, "error")
+        '0 errors'
+    """
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
 def format_duration_ms(ms: float | None) -> str:
     """Format milliseconds into human-readable duration.
 
