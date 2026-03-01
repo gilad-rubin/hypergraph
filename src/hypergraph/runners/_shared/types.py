@@ -897,7 +897,7 @@ class MapLog:
             lines.append(f"  ... and {remaining} more items")
 
         lines.append("")
-        lines.append("  → [i] for per-item trace")
+        lines.append("  → .log[i] for per-item trace")
 
         return "\n".join(lines)
 
