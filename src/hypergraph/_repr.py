@@ -38,6 +38,7 @@ _FONT = "font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace
 _BORDER = "border: 1px solid #e5e7eb"
 _RADIUS = "border-radius: 6px"
 _CELL_PAD = "padding: 6px 10px"
+_CODE_STYLE = "background:#f8fafc; padding:1px 4px; border-radius:3px"
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +114,15 @@ def html_detail(summary: str, content: str) -> str:
     )
 
 
+def _code(content: str) -> str:
+    """Wrap content in a styled inline <code> tag."""
+    return f'<code style="{_CODE_STYLE}">{content}</code>'
+
+
 def duration_html(ms: float | None) -> str:
     """Format duration with monospace styling."""
     text = format_duration_ms(ms)
-    return f'<code style="color:#374151">{text}</code>'
+    return f'<code style="{_CODE_STYLE}; color:#374151">{text}</code>'
 
 
 def datetime_html(dt) -> str:
@@ -140,41 +146,41 @@ def _compact_html(value: Any) -> str:
 
     if isinstance(value, str):
         if len(value) <= _MAX_VALUE_LEN:
-            return f"<code>{_html.escape(repr(value))}</code>"
+            return _code(_html.escape(repr(value)))
         preview = repr(value[:_MAX_VALUE_LEN])
-        return f'<code>{_html.escape(preview)}…</code> <span style="color:#6b7280">(len={len(value)})</span>'
+        return f'{_code(_html.escape(preview) + "…")} <span style="color:#6b7280">(len={len(value)})</span>'
 
     if isinstance(value, (int, float, bool)):
-        return f"<code>{value!r}</code>"
+        return _code(f"{value!r}")
 
     # numpy-like arrays
     shape = getattr(value, "shape", None)
     if shape is not None and hasattr(value, "dtype"):
         dtype = getattr(value, "dtype", None)
-        return f"<code>&lt;{type(value).__name__} shape={shape!r} dtype={dtype!r}&gt;</code>"
+        return _code(f"&lt;{type(value).__name__} shape={shape!r} dtype={dtype!r}&gt;")
 
     # dict preview
     if isinstance(value, dict):
         n = len(value)
         if n == 0:
-            return "<code>{}</code>"
+            return _code("{}")
         keys = ", ".join(_html.escape(repr(k)) for k in list(value)[:4])
         suffix = f" … (+{n - 4})" if n > 4 else ""
-        return f'<code>{{{keys}{suffix}}}</code> <span style="color:#6b7280">({plural(n, "key")})</span>'
+        return f'{_code("{" + keys + suffix + "}")} <span style="color:#6b7280">({plural(n, "key")})</span>'
 
     # list/tuple preview
     if isinstance(value, (list, tuple)):
         n = len(value)
         bracket = "[]" if isinstance(value, list) else "()"
         if n == 0:
-            return f"<code>{bracket}</code>"
-        return f'<code>{bracket[0]}…{bracket[1]}</code> <span style="color:#6b7280">({plural(n, "item")})</span>'
+            return _code(bracket)
+        return f'{_code(bracket[0] + "…" + bracket[1])} <span style="color:#6b7280">({plural(n, "item")})</span>'
 
     # fallback
     text = repr(value)
     if len(text) > _MAX_VALUE_LEN:
         text = text[:_MAX_VALUE_LEN] + "…"
-    return f"<code>{_html.escape(text)}</code>"
+    return _code(_html.escape(text))
 
 
 def values_html(values: dict[str, Any], *, max_items: int = _MAX_ITEMS) -> str:
@@ -186,7 +192,7 @@ def values_html(values: dict[str, Any], *, max_items: int = _MAX_ITEMS) -> str:
     if not values:
         return '<span style="color:#6b7280; font-style:italic">no values</span>'
     items = list(values.items())
-    rows = [[f"<code>{_html.escape(str(k))}</code>", _compact_html(v)] for k, v in items[:max_items]]
+    rows = [[_code(_html.escape(str(k))), _compact_html(v)] for k, v in items[:max_items]]
     table = html_table(["Key", "Value"], rows)
     if len(items) > max_items:
         table += f'<div style="color:#6b7280; font-size:0.85em; margin-top:4px">… and {plural(len(items) - max_items, "more key")}</div>'

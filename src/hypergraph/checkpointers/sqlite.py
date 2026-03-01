@@ -120,15 +120,15 @@ class SqliteCheckpointer(Checkpointer):
             return f"SqliteCheckpointer: {self._path}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import html_detail, html_kv, html_panel
+        from hypergraph._repr import _code, html_detail, html_kv, html_panel
         from hypergraph._utils import plural
 
         try:
             stats = self._db_stats()
         except Exception:
-            return f"<code>SqliteCheckpointer: {self._path}</code>"
+            return _code(f"SqliteCheckpointer: {self._path}")
 
-        kvs = [html_kv("Path", f"<code>{stats['path']}</code>")]
+        kvs = [html_kv("Path", _code(str(stats["path"])))]
         if stats["size_bytes"] is not None:
             size_mb = stats["size_bytes"] / (1024 * 1024)
             kvs.append(html_kv("Size", f"{size_mb:.1f} MB" if size_mb >= 1 else f"{stats['size_bytes'] / 1024:.0f} KB"))
@@ -148,8 +148,8 @@ class SqliteCheckpointer(Checkpointer):
         # API hints
         body += (
             '<div style="color:#6b7280; font-size:0.85em; margin-top:8px">'
-            "Explore: <code>.runs()</code> <code>.steps(run_id)</code> "
-            "<code>.search(query)</code> <code>.stats(run_id)</code>"
+            f"Explore: {_code('.runs()')} {_code('.steps(run_id)')} "
+            f"{_code('.search(query)')} {_code('.stats(run_id)')}"
             "</div>"
         )
         return html_panel("SqliteCheckpointer", body)

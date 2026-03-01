@@ -131,7 +131,7 @@ class Run:
         return " | ".join(parts)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import datetime_html, duration_html, html_kv, html_panel, status_badge
+        from hypergraph._repr import _code, datetime_html, duration_html, html_kv, html_panel, status_badge
 
         kvs = [
             html_kv("Status", status_badge(self.status.value)),
@@ -142,7 +142,7 @@ class Run:
         if self.error_count:
             kvs.append(html_kv("Errors", f'<span style="color:#dc2626; font-weight:600">{self.error_count}</span>'))
         if self.parent_run_id:
-            kvs.append(html_kv("Parent", f"<code>{self.parent_run_id}</code>"))
+            kvs.append(html_kv("Parent", _code(self.parent_run_id)))
         kvs.append(html_kv("Created", datetime_html(self.created_at)))
         title = f"Run: {self.id}"
         if self.graph_name:
@@ -180,9 +180,9 @@ class Checkpoint:
         return f"Checkpoint: {plural(len(self.values), 'value')}, {plural(len(self.steps), 'step')}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import html_panel
+        from hypergraph._repr import _code, html_panel
 
-        keys = ", ".join(f"<code>{k}</code>" for k in sorted(self.values.keys())[:10])
+        keys = ", ".join(_code(k) for k in sorted(self.values.keys())[:10])
         if len(self.values) > 10:
             keys += f" ... (+{len(self.values) - 10} more)"
         body = f"<b>{len(self.values)}</b> values: {keys}<br><b>{len(self.steps)}</b> steps"
@@ -205,7 +205,7 @@ class RunTable(list):
         return "\n".join(lines)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_table, status_badge
+        from hypergraph._repr import _code, duration_html, html_table, status_badge
 
         if not self:
             return '<div style="color:#6b7280; font-family:ui-monospace,monospace">RunTable: (empty)</div>'
@@ -214,7 +214,7 @@ class RunTable(list):
         for run in self:
             rows.append(
                 [
-                    f"<code>{run.id}</code>",
+                    _code(run.id),
                     run.graph_name or "—",
                     status_badge(run.status.value),
                     duration_html(run.duration_ms),
@@ -240,7 +240,7 @@ class StepTable(list):
         return "\n".join(lines)
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_table, status_badge
+        from hypergraph._repr import _code, duration_html, html_table, status_badge
 
         if not self:
             return '<div style="color:#6b7280; font-family:ui-monospace,monospace">StepTable: (empty)</div>'
@@ -251,7 +251,7 @@ class StepTable(list):
             rows.append(
                 [
                     str(step.index),
-                    f"<code>{step.node_name}</code>",
+                    _code(step.node_name),
                     status_badge(status),
                     duration_html(step.duration_ms) if step.duration_ms > 0 else "—",
                     str(step.superstep),

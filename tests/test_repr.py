@@ -366,7 +366,7 @@ class TestCompactHtml:
     def test_string(self):
         html = _compact_html("hello")
         assert "hello" in html
-        assert "<code>" in html
+        assert "<code" in html
 
     def test_long_string_truncated(self):
         long_str = "a" * 300
@@ -498,7 +498,7 @@ class TestRunResultProgressiveDisclosure:
         )
         r = RunResult(values={"result": 42}, status=RunStatus.COMPLETED, log=log)
         html = r._repr_html_()
-        assert "Execution log" in html
+        assert "Execution Log" in html
 
     def test_error_shown(self):
         r = RunResult(values={}, status=RunStatus.FAILED, error=ValueError("boom"))
@@ -523,6 +523,25 @@ class TestMapResultProgressiveDisclosure:
         html = mr._repr_html_()
         assert "<details" in html
         assert "Per-item breakdown" in html
+
+    def test_nested_drilldown_contains_run_result(self):
+        """Each item in the drill-down should be a full RunResult panel."""
+        mr = MapResult(
+            results=(
+                RunResult(values={"x": 42}, status=RunStatus.COMPLETED),
+                RunResult(values={"x": 99}, status=RunStatus.COMPLETED),
+            ),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        html = mr._repr_html_()
+        # Each item drills down to a nested RunResult panel
+        assert "Item 0:" in html
+        assert "Item 1:" in html
+        assert "RunResult:" in html
 
     def test_shows_error_type_for_failed_items(self):
         mr = MapResult(

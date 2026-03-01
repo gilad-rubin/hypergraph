@@ -268,7 +268,7 @@ class RunResult:
         if self.values:
             body += html_detail(f"Values ({plural(len(self.values), 'key')})", values_html(self.values))
         if self.log:
-            body += html_detail("Execution log", self.log._repr_html_())
+            body += html_detail("Execution Log", self.log._repr_html_())
         return html_panel(f"RunResult: {self.run_id}", body)
 
 
@@ -451,7 +451,7 @@ class MapResult:
         pretty_printer.text(repr(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_detail, html_kv, html_panel, html_table, status_badge
+        from hypergraph._repr import duration_html, html_detail, html_kv, html_panel, status_badge
 
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
@@ -471,19 +471,34 @@ class MapResult:
             kvs.append(html_kv("Avg/item", duration_html(avg)))
         body = " &nbsp;|&nbsp; ".join(kvs)
 
-        # Collapsible per-item breakdown
-        max_rows = 20
-        rows = []
-        for i, r in enumerate(self.results[:max_rows]):
-            dur = duration_html(r.log.total_duration_ms) if r.log else "—"
-            err = f' <span style="color:#dc2626; font-size:0.85em">{type(r.error).__name__}</span>' if r.error else ""
-            rows.append([str(i), status_badge(r.status.value), dur, err])
-        item_table = html_table(["#", "Status", "Duration", "Error"], rows)
-        if n > max_rows:
-            item_table += f'<div style="color:#6b7280; font-size:0.85em; margin-top:4px">… and {plural(n - max_rows, "more item")}</div>'
-        body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", item_table)
+        # Nested drill-down: each item is expandable to its full RunResult
+        max_items = 30
+        items_html = _map_items_drilldown(self.results, max_items)
+        body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", items_html)
 
         return html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body)
+
+
+def _map_items_drilldown(results: tuple[RunResult, ...], max_items: int = 30) -> str:
+    """Render nested drill-down for MapResult items.
+
+    Each item is a collapsible <details> showing a one-line summary.
+    Expanding reveals the full RunResult HTML with values, execution log,
+    and nested graph traces — clickable all the way down.
+    """
+    from hypergraph._repr import duration_html, html_detail, status_badge
+
+    parts: list[str] = []
+    for i, r in enumerate(results[:max_items]):
+        dur = duration_html(r.log.total_duration_ms) if r.log else "—"
+        err_label = f' — <span style="color:#dc2626">{type(r.error).__name__}</span>' if r.error else ""
+        summary = f"Item {i}: {status_badge(r.status.value)} {dur}{err_label}"
+        # Render the full RunResult HTML inside each item's expandable section
+        parts.append(html_detail(summary, r._repr_html_()))
+    if len(results) > max_items:
+        remaining = len(results) - max_items
+        parts.append(f'<div style="color:#6b7280; font-size:0.85em; margin-top:4px">… and {plural(remaining, "more item")}</div>')
+    return "".join(parts)
 
 
 Sequence.register(MapResult)
@@ -922,7 +937,7 @@ class RunLog:
         pretty_printer.text(str(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_panel, html_table, status_badge
+        from hypergraph._repr import _code, duration_html, html_panel, html_table, status_badge
 
         headers = ["Step", "Node", "Status", "Duration"]
         has_decisions = any(s.decision is not None for s in self.steps)
@@ -932,7 +947,7 @@ class RunLog:
         for i, step in enumerate(self.steps):
             status = "cached" if step.cached else step.status
             dur = duration_html(step.duration_ms)
-            row = [str(i), f"<code>{step.node_name}</code>", status_badge(status), dur]
+            row = [str(i), _code(step.node_name), status_badge(status), dur]
             if has_decisions:
                 if step.decision is not None:
                     d = ", ".join(step.decision) if isinstance(step.decision, list) else step.decision

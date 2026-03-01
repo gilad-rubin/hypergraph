@@ -707,7 +707,7 @@ class Graph:
         return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import html_detail, html_panel, html_table, status_badge
+        from hypergraph._repr import _code, html_detail, html_panel, html_table, status_badge
         from hypergraph._utils import plural
 
         n_nodes = len(self._nodes)
@@ -719,13 +719,13 @@ class Graph:
         rows = []
         for node_name, node in self._nodes.items():
             node_type = type(node).__name__
-            inputs = ", ".join(f"<code>{i}</code>" for i in node.inputs[:6])
+            inputs = ", ".join(_code(i) for i in node.inputs[:6])
             if len(node.inputs) > 6:
                 inputs += f" (+{len(node.inputs) - 6})"
-            outputs = ", ".join(f"<code>{o}</code>" for o in node.outputs[:6])
+            outputs = ", ".join(_code(o) for o in node.outputs[:6])
             if len(node.outputs) > 6:
                 outputs += f" (+{len(node.outputs) - 6})"
-            rows.append([f"<code>{node_name}</code>", node_type, inputs or "—", outputs or "—"])
+            rows.append([_code(node_name), node_type, inputs or "—", outputs or "—"])
 
         table_html = html_table(headers, rows)
 
