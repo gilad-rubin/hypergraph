@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -165,6 +166,8 @@ class RichProgressProcessor(TypedEventProcessor):
         self._spans: dict[str, _SpanInfo] = {}
         self._node_bars: dict[_NodeKey, _NodeBarInfo] = {}
         self._started = False
+        self._last_refresh: float = 0.0  # monotonic timestamp of last notebook refresh
+        self._refresh_dirty = False  # pending refresh not yet flushed
 
         # Tree structure: ordered child node keys per map span
         self._map_children: dict[str, list[_NodeKey]] = {}
@@ -199,10 +202,34 @@ class RichProgressProcessor(TypedEventProcessor):
         """Print a plain-text message (non-TTY mode)."""
         print(f"{_timestamp()} {msg}", flush=True)
 
+    # Minimum interval between notebook refreshes (seconds).
+    # Jupyter widget updates cost ~3-5ms each; at 100ms intervals we get
+    # smooth visuals without burning hundreds of ms on 300+ redraws.
+    _NOTEBOOK_REFRESH_INTERVAL = 0.1
+
     def _refresh(self) -> None:
-        """Explicit refresh for notebook mode (auto-refresh is disabled in Jupyter)."""
-        if self._notebook and self._progress is not None:
+        """Throttled refresh for notebook mode.
+
+        In TTY mode Rich auto-refreshes at ~10 Hz, so explicit refreshes
+        are unnecessary.  In notebook mode we refresh at most every 100 ms
+        to avoid flooding the IPython display protocol.
+        """
+        if not self._notebook or self._progress is None:
+            return
+        now = time.monotonic()
+        if now - self._last_refresh >= self._NOTEBOOK_REFRESH_INTERVAL:
             self._progress.refresh()
+            self._last_refresh = now
+            self._refresh_dirty = False
+        else:
+            self._refresh_dirty = True
+
+    def _flush_refresh(self) -> None:
+        """Force a final refresh if any updates were throttled."""
+        if self._refresh_dirty and self._progress is not None:
+            self._progress.refresh()
+            self._last_refresh = time.monotonic()
+            self._refresh_dirty = False
 
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
@@ -468,6 +495,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
         # If this is a root run (no parent), show completion
         if span_info.parent_span_id is None:
+            self._flush_refresh()
             if self._tty_mode:
                 if event.status == RunStatus.COMPLETED:
                     self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
@@ -484,6 +512,7 @@ class RichProgressProcessor(TypedEventProcessor):
     def shutdown(self) -> None:
         """Stop the Rich progress display."""
         if self._started:
+            self._flush_refresh()
             if self._tty_mode:
                 self._progress.stop()
             self._started = False

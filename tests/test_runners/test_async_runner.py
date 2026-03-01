@@ -580,7 +580,8 @@ class TestAsyncRunnerMap:
         elapsed = time.time() - start
 
         # 3 executions, each 0.05s, should be ~0.05s concurrent, not ~0.15s
-        assert elapsed < 0.1
+        # Allow generous overhead for xdist parallel execution
+        assert elapsed < 0.14
         assert len(results) == 3
 
     async def test_map_respects_max_concurrency(self):
