@@ -109,7 +109,8 @@ class TestNonTTYMapMilestones:
             proc.on_run_end(_run_end(item_span, parent="map1"))
 
         output = capsys.readouterr().out
-        # Should have milestone logs for 10%, 25%, 50%, 75%, 100%
+        # Should have milestone logs with ◈ prefix for 10%, 25%, 50%, 75%, 100%
+        assert "◈" in output
         assert "10%" in output
         assert "25%" in output
         assert "50%" in output

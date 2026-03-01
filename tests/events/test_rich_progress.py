@@ -29,7 +29,7 @@ def _make_processor() -> tuple[RichProgressProcessor, MagicMock]:
     # add_task returns incrementing task IDs
     task_counter = [0]
 
-    def _add_task(desc, total=1):
+    def _add_task(desc, **kwargs):
         tid = task_counter[0]
         task_counter[0] += 1
         mock_task = MagicMock()
@@ -99,6 +99,7 @@ def _node_end(
     parent_span_id: str = "s1",
     node_name: str = "nodeA",
     graph_name: str = "g",
+    cached: bool = False,
 ) -> NodeEndEvent:
     return NodeEndEvent(
         run_id=run_id,
@@ -106,6 +107,7 @@ def _node_end(
         parent_span_id=parent_span_id,
         node_name=node_name,
         graph_name=graph_name,
+        cached=cached,
     )
 
 
@@ -140,7 +142,7 @@ class TestSingleRun:
         proc.on_node_start(_node_start(node_name="load"))
 
         mock.add_task.assert_called_once()
-        assert mock.add_task.call_args.kwargs.get("total", mock.add_task.call_args[1].get("total")) == 1
+        assert mock.add_task.call_args.kwargs["total"] == 1
 
     def test_completion_message_on_root_run_end(self):
         proc, mock = _make_processor()
@@ -152,13 +154,33 @@ class TestSingleRun:
         assert "my_graph" in msg
         assert "completed" in msg
 
-    def test_icon_is_box_at_depth_0(self):
+    def test_plain_description_at_depth_0(self):
         proc, mock = _make_processor()
         proc.on_run_start(_run_start())
         proc.on_node_start(_node_start(node_name="load"))
 
         desc = mock.add_task.call_args[0][0]
-        assert "📦" in desc
+        assert desc == "load"
+
+    def test_stats_updated_on_node_end(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start())
+        proc.on_node_start(_node_start(node_name="load"))
+        proc.on_node_end(_node_end(node_name="load"))
+
+        # Stats field should be updated with succeeded count
+        stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
+        assert len(stats_calls) >= 1
+        assert "1✓" in stats_calls[-1].kwargs["stats"]
+
+    def test_cached_node_tracked_in_stats(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start())
+        proc.on_node_start(_node_start(node_name="load"))
+        proc.on_node_end(_node_end(node_name="load", cached=True))
+
+        stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
+        assert "1◉" in stats_calls[-1].kwargs["stats"]
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +189,13 @@ class TestSingleRun:
 
 
 class TestMapOperation:
-    def test_creates_map_bar(self):
+    def test_creates_map_bar_with_diamond(self):
         proc, mock = _make_processor()
         proc.on_run_start(_run_start(is_map=True, map_size=3))
 
         assert mock.add_task.call_count == 1
         desc = mock.add_task.call_args[0][0]
-        assert "🗺️" in desc
+        assert "◈" in desc
 
     def test_node_bars_have_map_total(self):
         proc, mock = _make_processor()
@@ -182,11 +204,18 @@ class TestMapOperation:
         # Item run (child of map)
         proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
         # Node in item
-        proc.on_node_start(_node_start(run_id="r2", span_id="ns1", parent_span_id="item1", node_name="load"))
+        proc.on_node_start(
+            _node_start(
+                run_id="r2",
+                span_id="ns1",
+                parent_span_id="item1",
+                node_name="load",
+            )
+        )
 
         # First call is map bar, second is node bar
         node_call = mock.add_task.call_args_list[1]
-        assert node_call.kwargs.get("total", node_call[1].get("total")) == 5
+        assert node_call.kwargs["total"] == 5
 
     def test_map_bar_advances_on_item_run_end(self):
         proc, mock = _make_processor()
@@ -203,18 +232,92 @@ class TestMapOperation:
 
         # Item 1
         proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
-        proc.on_node_start(_node_start(run_id="r2", span_id="ns1", parent_span_id="item1", node_name="load"))
-        proc.on_node_end(_node_end(run_id="r2", span_id="ns1", parent_span_id="item1", node_name="load"))
+        proc.on_node_start(
+            _node_start(
+                run_id="r2",
+                span_id="ns1",
+                parent_span_id="item1",
+                node_name="load",
+            )
+        )
+        proc.on_node_end(
+            _node_end(
+                run_id="r2",
+                span_id="ns1",
+                parent_span_id="item1",
+                node_name="load",
+            )
+        )
 
         # Item 2
         proc.on_run_start(_run_start(run_id="r3", span_id="item2", parent_span_id="map1"))
-        proc.on_node_start(_node_start(run_id="r3", span_id="ns2", parent_span_id="item2", node_name="load"))
-        proc.on_node_end(_node_end(run_id="r3", span_id="ns2", parent_span_id="item2", node_name="load"))
+        proc.on_node_start(
+            _node_start(
+                run_id="r3",
+                span_id="ns2",
+                parent_span_id="item2",
+                node_name="load",
+            )
+        )
+        proc.on_node_end(
+            _node_end(
+                run_id="r3",
+                span_id="ns2",
+                parent_span_id="item2",
+                node_name="load",
+            )
+        )
 
         # add_task: 1 for map bar + 1 for "load" node (reused)
         assert mock.add_task.call_count == 2
         # advance called twice for node bar
         assert mock.advance.call_count == 2
+
+    def test_child_nodes_have_tree_characters(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=2))
+        proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
+        proc.on_node_start(
+            _node_start(
+                run_id="r2",
+                span_id="ns1",
+                parent_span_id="item1",
+                node_name="classify",
+            )
+        )
+        proc.on_node_start(
+            _node_start(
+                run_id="r2",
+                span_id="ns2",
+                parent_span_id="item1",
+                node_name="generate",
+            )
+        )
+
+        # First child should be updated from └─ to ├─
+        update_descs = [c.kwargs["description"] for c in mock.update.call_args_list if "description" in c.kwargs]
+        assert any("├─" in d and "classify" in d for d in update_descs)
+
+        # Last child should have └─
+        last_node_desc = mock.add_task.call_args_list[-1][0][0]
+        assert "└─" in last_node_desc and "generate" in last_node_desc
+
+    def test_child_nodes_indented(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=2))
+        proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
+        proc.on_node_start(
+            _node_start(
+                run_id="r2",
+                span_id="ns1",
+                parent_span_id="item1",
+                node_name="load",
+            )
+        )
+
+        # Node bar (second add_task call) should be indented
+        node_desc = mock.add_task.call_args_list[1][0][0]
+        assert node_desc.startswith("  ")
 
 
 # ---------------------------------------------------------------------------
@@ -223,20 +326,33 @@ class TestMapOperation:
 
 
 class TestNestedGraph:
-    def test_inner_nodes_have_tree_icon(self):
+    def test_inner_nodes_indented(self):
         proc, mock = _make_processor()
         # Outer run
         proc.on_run_start(_run_start(span_id="run1"))
         # Outer node (graph node)
         proc.on_node_start(_node_start(span_id="outer_n", parent_span_id="run1", node_name="outer"))
         # Inner run (child of the outer node)
-        proc.on_run_start(_run_start(run_id="r2", span_id="inner_run", parent_span_id="outer_n", graph_name="inner"))
+        proc.on_run_start(
+            _run_start(
+                run_id="r2",
+                span_id="inner_run",
+                parent_span_id="outer_n",
+                graph_name="inner",
+            )
+        )
         # Inner node
-        proc.on_node_start(_node_start(run_id="r2", span_id="inner_n", parent_span_id="inner_run", node_name="step1", graph_name="inner"))
+        proc.on_node_start(
+            _node_start(
+                run_id="r2",
+                span_id="inner_n",
+                parent_span_id="inner_run",
+                node_name="step1",
+                graph_name="inner",
+            )
+        )
 
-        # Last add_task call should have tree icon and indentation
         inner_desc = mock.add_task.call_args_list[-1][0][0]
-        assert "🌳" in inner_desc
         assert inner_desc.startswith("  ")  # indented
 
     def test_outer_node_at_depth_0(self):
@@ -245,51 +361,50 @@ class TestNestedGraph:
         proc.on_node_start(_node_start(span_id="outer_n", parent_span_id="run1", node_name="outer"))
 
         desc = mock.add_task.call_args[0][0]
-        assert "📦" in desc
         assert not desc.startswith("  ")
 
 
 # ---------------------------------------------------------------------------
-# Scenario: Node error
+# Scenario: Map failures and stats
 # ---------------------------------------------------------------------------
 
 
 class TestMapFailures:
-    def test_failed_items_shown_in_map_bar(self):
+    def test_map_stats_track_succeeded_and_failed(self):
         proc, mock = _make_processor()
         proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=3))
 
         # Item 1 succeeds
         proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
-        proc.on_run_end(_run_end(run_id="r2", span_id="item1", parent_span_id="map1", status="completed"))
+        proc.on_run_end(
+            _run_end(
+                run_id="r2",
+                span_id="item1",
+                parent_span_id="map1",
+                status="completed",
+            )
+        )
 
         # Item 2 fails
         proc.on_run_start(_run_start(run_id="r3", span_id="item2", parent_span_id="map1"))
-        proc.on_run_end(_run_end(run_id="r3", span_id="item2", parent_span_id="map1", status="failed"))
+        proc.on_run_end(
+            _run_end(
+                run_id="r3",
+                span_id="item2",
+                parent_span_id="map1",
+                status="failed",
+            )
+        )
 
-        # Map bar should show failure count
-        update_calls = [c for c in mock.update.call_args_list if "description" in c.kwargs]
-        assert len(update_calls) == 1
-        desc = update_calls[0].kwargs["description"]
-        assert "1 failed" in desc
-        assert "red" in desc.lower()
-
-    def test_multiple_failures_accumulate(self):
-        proc, mock = _make_processor()
-        proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=3))
-
-        # Two items fail
-        for i, sid in enumerate(["item1", "item2"]):
-            proc.on_run_start(_run_start(run_id=f"r{i + 2}", span_id=sid, parent_span_id="map1"))
-            proc.on_run_end(_run_end(run_id=f"r{i + 2}", span_id=sid, parent_span_id="map1", status="failed"))
-
-        update_calls = [c for c in mock.update.call_args_list if "description" in c.kwargs]
-        last_desc = update_calls[-1].kwargs["description"]
-        assert "2 failed" in last_desc
+        # Check stats field updates
+        stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
+        last_stats = stats_calls[-1].kwargs["stats"]
+        assert "1✓" in last_stats
+        assert "1✗" in last_stats
 
 
 class TestNodeError:
-    def test_marks_bar_as_failed(self):
+    def test_error_advances_bar_and_tracks_stats(self):
         proc, mock = _make_processor()
         proc.on_run_start(_run_start())
         proc.on_node_start(_node_start(node_name="broken"))
@@ -305,10 +420,9 @@ class TestNodeError:
             )
         )
 
-        mock.update.assert_called()
-        desc_arg = mock.update.call_args.kwargs.get("description", "")
-        assert "1 failed" in desc_arg
         mock.advance.assert_called()
+        stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
+        assert "1✗" in stats_calls[-1].kwargs["stats"]
 
 
 # ---------------------------------------------------------------------------

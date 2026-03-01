@@ -42,6 +42,7 @@ class _SpanInfo:
     node_count: int = 0  # Number of node-end events seen
     map_parent: str | None = None  # Map span that owns this run
     failures: int = 0  # Failed item count (for map spans)
+    succeeded: int = 0  # Succeeded item count (for map spans)
 
 
 @dataclass
@@ -50,8 +51,12 @@ class _NodeBarInfo:
 
     rich_task_id: Any = None  # Rich TaskID
     total: int = 0
+    succeeded: int = 0
+    cached: int = 0
     failures: int = 0
-    base_description: str = ""  # Without failure suffix, for clean rebuilds
+    name: str = ""
+    depth: int = 0
+    map_span_id: str | None = None  # Parent map span (for tree chars)
 
 
 # Key type for node bar lookups: (graph_name, node_name, depth)
@@ -83,6 +88,18 @@ def _timestamp() -> str:
     return datetime.now().strftime("[%H:%M:%S]")
 
 
+def _format_stats(*, succeeded: int = 0, failures: int = 0, cached: int = 0) -> str:
+    """Build a compact stats string like '95✓ 5✗ 10◉'. Only non-zero counts shown."""
+    parts: list[str] = []
+    if succeeded:
+        parts.append(f"{succeeded}✓")
+    if failures:
+        parts.append(f"[red]{failures}✗[/red]")
+    if cached:
+        parts.append(f"{cached}◉")
+    return " ".join(parts)
+
+
 # Milestones for map progress (percentages to log)
 _MAP_MILESTONES = frozenset({10, 25, 50, 75, 100})
 
@@ -101,16 +118,16 @@ class RichProgressProcessor(TypedEventProcessor):
     """Displays hierarchical progress bars using Rich.
 
     Tracks graph execution events and renders live progress bars with
-    proper nesting, icons, and aggregation for map operations.
+    proper nesting, tree structure, and per-node outcome stats.
 
     In non-TTY environments (CI, piped output), falls back to simple
     text milestone logging instead of Rich live progress bars.
 
-    Visual conventions (TTY mode):
-        - ``📦`` regular nodes (depth 0)
-        - ``🌳`` nested graph nodes (depth > 0)
-        - ``🗺️`` map-level progress bars
-        - Indentation: ``"  " * depth``
+    Visual conventions (TTY mode)::
+
+        ◈ llm-pipeline  ━━━━━━━━━━  100/100  0:00:07  95✓ 5✗
+        ├─ classify     ━━━━━━━━━━  100/100  0:00:06  100✓
+        └─ generate     ━━━━━━━━━━  100/100  0:00:06  95✓ 5✗
     """
 
     def __init__(
@@ -133,6 +150,9 @@ class RichProgressProcessor(TypedEventProcessor):
         self._node_bars: dict[_NodeKey, _NodeBarInfo] = {}
         self._started = False
 
+        # Tree structure: ordered child node keys per map span
+        self._map_children: dict[str, list[_NodeKey]] = {}
+
         # Non-TTY state
         self._nontty_map_states: dict[str, _NonTTYMapState] = {}  # span_id -> state
 
@@ -153,6 +173,7 @@ class RichProgressProcessor(TypedEventProcessor):
                 BarColumn(),
                 MofNCompleteColumn(),
                 TimeElapsedColumn(),
+                TextColumn("{task.fields[stats]}"),
                 transient=transient,
             )
         else:
@@ -174,6 +195,26 @@ class RichProgressProcessor(TypedEventProcessor):
                 self._progress.start()
             self._started = True
 
+    # -- Description builders --------------------------------------------------
+
+    def _make_map_description(self, name: str, depth: int) -> str:
+        """Build description for a map bar: '◈ name'."""
+        indent = "  " * depth
+        return f"{indent}◈ {name}"
+
+    def _make_child_description(self, name: str, depth: int, *, is_last: bool) -> str:
+        """Build description for a node under a map: '├─ name' or '└─ name'."""
+        indent = "  " * depth
+        branch = "└─" if is_last else "├─"
+        return f"{indent}{branch} {name}"
+
+    def _make_node_description(self, name: str, depth: int) -> str:
+        """Build description for a regular node (no map parent)."""
+        indent = "  " * depth
+        return f"{indent}{name}"
+
+    # -- Span helpers ----------------------------------------------------------
+
     def _get_span(self, span_id: str) -> _SpanInfo:
         """Get or create span info for a given span ID."""
         if span_id not in self._spans:
@@ -192,20 +233,6 @@ class RichProgressProcessor(TypedEventProcessor):
             return parent.depth
         # If parent is a run (non-map), add 1 for nesting
         return parent.depth + 1
-
-    def _icon(self, depth: int, is_map: bool = False) -> str:
-        """Return the appropriate icon for the given depth."""
-        if is_map:
-            return "🗺️"
-        if depth > 0:
-            return "🌳"
-        return "📦"
-
-    def _make_description(self, name: str, depth: int, is_map: bool = False) -> str:
-        """Build an indented, icon-prefixed description."""
-        indent = "  " * depth
-        icon = self._icon(depth, is_map=is_map)
-        return f"{indent}{icon} {name}"
 
     def _find_map_ancestor(self, span_id: str) -> str | None:
         """Walk up the parent chain to find the nearest map span."""
@@ -229,6 +256,34 @@ class RichProgressProcessor(TypedEventProcessor):
             return self._spans[map_span].map_size or 1
         return 1
 
+    def _update_node_stats(self, bar: _NodeBarInfo) -> None:
+        """Recompute and push the stats field for a node bar."""
+        stats = _format_stats(succeeded=bar.succeeded, failures=bar.failures, cached=bar.cached)
+        self._progress.update(bar.rich_task_id, stats=stats)
+
+    def _update_map_stats(self, map_info: _SpanInfo) -> None:
+        """Recompute and push the stats field for a map bar."""
+        stats = _format_stats(succeeded=map_info.succeeded, failures=map_info.failures)
+        self._progress.update(map_info.rich_task_id, stats=stats)
+
+    # -- Tree management -------------------------------------------------------
+
+    def _register_map_child(self, map_span_id: str, key: _NodeKey, bar: _NodeBarInfo) -> str:
+        """Register a node bar as a child of a map span. Returns the description."""
+        children = self._map_children.setdefault(map_span_id, [])
+
+        # Update previous last child from └─ to ├─
+        if children:
+            prev_key = children[-1]
+            prev_bar = self._node_bars[prev_key]
+            prev_desc = self._make_child_description(prev_bar.name, prev_bar.depth, is_last=False)
+            self._progress.update(prev_bar.rich_task_id, description=prev_desc)
+
+        children.append(key)
+        return self._make_child_description(bar.name, bar.depth, is_last=True)
+
+    # -- Event handlers --------------------------------------------------------
+
     def on_run_start(self, event: RunStartEvent) -> None:
         """Handle run start: track depth and create map bars."""
         self._ensure_started()
@@ -243,8 +298,8 @@ class RichProgressProcessor(TypedEventProcessor):
         if event.is_map and event.map_size is not None:
             info.map_size = event.map_size
             if self._tty_mode:
-                desc = self._make_description(f"{event.graph_name or 'Map'} Progress", info.depth, is_map=True)
-                info.rich_task_id = self._progress.add_task(desc, total=event.map_size)
+                desc = self._make_map_description(event.graph_name or "Map", info.depth)
+                info.rich_task_id = self._progress.add_task(desc, total=event.map_size, stats="")
                 self._refresh()
             else:
                 name = event.graph_name or "Map"
@@ -264,7 +319,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
         info = self._get_span(span)
         info.parent_span_id = parent
-        # Node depth = run depth, +1 if inside a map (so nodes indent under the map bar)
+        # Node depth = run depth, +1 if inside a map (indent under map bar)
         parent_info = self._spans.get(parent) if parent else None
         node_depth = parent_info.depth if parent_info else 0
         if parent_info and parent_info.map_parent:
@@ -273,25 +328,35 @@ class RichProgressProcessor(TypedEventProcessor):
 
         key: _NodeKey = (event.graph_name, event.node_name, node_depth)
         total = self._get_node_total(span)
+        map_span = self._find_map_ancestor(span)
 
         if self._tty_mode:
             bar = self._node_bars.get(key)
             if bar is None:
-                desc = self._make_description(event.node_name, node_depth)
-                task_id = self._progress.add_task(desc, total=total)
-                self._node_bars[key] = _NodeBarInfo(rich_task_id=task_id, total=total, base_description=desc)
+                bar = _NodeBarInfo(
+                    total=total,
+                    name=event.node_name,
+                    depth=node_depth,
+                    map_span_id=map_span,
+                )
+
+                # Tree chars for map children, plain otherwise
+                desc = self._register_map_child(map_span, key, bar) if map_span else self._make_node_description(event.node_name, node_depth)
+
+                bar.rich_task_id = self._progress.add_task(desc, total=total, stats="")
+                self._node_bars[key] = bar
                 self._refresh()
             elif bar.total < total:
                 bar.total = total
                 self._progress.update(bar.rich_task_id, total=total)
                 self._refresh()
         else:
-            # Non-TTY: log node start only for non-map runs (map items are tracked via milestones)
-            if not self._find_map_ancestor(span):
+            # Non-TTY: log node start only for non-map runs
+            if not map_span:
                 self._print(f"▶ {event.node_name} started")
 
     def on_node_end(self, event: NodeEndEvent) -> None:
-        """Handle node end: advance progress bars."""
+        """Handle node end: advance progress bars and update stats."""
         span = event.span_id
         parent = event.parent_span_id
         span_info = self._spans.get(span)
@@ -301,12 +366,17 @@ class RichProgressProcessor(TypedEventProcessor):
             key: _NodeKey = (event.graph_name, event.node_name, node_depth)
             bar = self._node_bars.get(key)
             if bar is not None:
+                if event.cached:
+                    bar.cached += 1
+                else:
+                    bar.succeeded += 1
                 self._progress.advance(bar.rich_task_id, 1)
+                self._update_node_stats(bar)
                 self._refresh()
         else:
-            # Non-TTY: log node completion for non-map runs
             if not self._find_map_ancestor(span):
-                self._print(f"✓ {event.node_name} completed")
+                suffix = " (cached)" if event.cached else ""
+                self._print(f"✓ {event.node_name} completed{suffix}")
 
         # Track node completions for map-item runs
         if parent:
@@ -325,10 +395,7 @@ class RichProgressProcessor(TypedEventProcessor):
             if bar is not None:
                 bar.failures += 1
                 self._progress.advance(bar.rich_task_id, 1)
-                self._progress.update(
-                    bar.rich_task_id,
-                    description=f"{bar.base_description} [red]({bar.failures} failed)[/red]",
-                )
+                self._update_node_stats(bar)
                 self._refresh()
         else:
             if not self._find_map_ancestor(event.span_id):
@@ -350,7 +417,7 @@ class RichProgressProcessor(TypedEventProcessor):
             for m in _MAP_MILESTONES:
                 if m <= milestone_to_log:
                     state.logged_milestones.add(m)
-            self._print(f"🗺️ {state.name}: {milestone_to_log}% ({state.completed}/{state.total})")
+            self._print(f"◈ {state.name}: {milestone_to_log}% ({state.completed}/{state.total})")
 
     def on_run_end(self, event: RunEndEvent) -> None:
         """Handle run end: advance map bars and show completion."""
@@ -368,15 +435,9 @@ class RichProgressProcessor(TypedEventProcessor):
 
                     if event.status == RunStatus.FAILED:
                         map_info.failures += 1
-                        base_desc = self._make_description(
-                            f"{event.graph_name or 'Map'} Progress",
-                            map_info.depth,
-                            is_map=True,
-                        )
-                        self._progress.update(
-                            map_info.rich_task_id,
-                            description=f"{base_desc} [red]({map_info.failures} failed)[/red]",
-                        )
+                    else:
+                        map_info.succeeded += 1
+                    self._update_map_stats(map_info)
                     self._refresh()
                 elif not self._tty_mode:
                     # Non-TTY: update map state and check milestones
