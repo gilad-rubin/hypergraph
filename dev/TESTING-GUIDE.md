@@ -137,6 +137,22 @@ tests/
 
 ## Common Gotchas
 
+### Never Use `asyncio.run()` in Tests
+
+Tests run in parallel via pytest-xdist. `asyncio.run()` inside a sync `def test_*` creates a rogue event loop that races with pytest-asyncio's loop lifecycle — causing flaky "Cannot run the event loop while another loop is running" errors in *other* async tests sharing the same worker.
+
+Since `asyncio_mode = "auto"` is configured, just make the test `async def` and use `await`:
+
+```python
+# WRONG — creates unmanaged event loop, causes xdist flakes
+def test_async_behavior(self):
+    result = asyncio.run(runner.run(graph, {"x": 5}))
+
+# RIGHT — pytest-asyncio manages the loop
+async def test_async_behavior(self):
+    result = await runner.run(graph, {"x": 5})
+```
+
 ### Cycle Tests Need Unique Output Names
 
 Each node in a cycle must produce a **unique** output name. Two nodes producing the same output triggers `validate_output_conflicts` unless they are in mutex gate branches or connected by a directed path.
