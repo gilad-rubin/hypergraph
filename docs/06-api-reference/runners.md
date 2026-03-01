@@ -151,6 +151,7 @@ def map(
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
@@ -169,6 +170,7 @@ Execute a graph multiple times with different inputs.
 - `values` - Optional input values. Parameters in `map_over` should be lists
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
+- `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively. Prevents cross-iteration mutation.
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
@@ -359,6 +361,7 @@ async def map(
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
@@ -378,6 +381,7 @@ Execute graph multiple times concurrently.
 - `values` - Optional input values
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` or `"product"`
+- `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively.
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
@@ -709,10 +713,9 @@ Superstep 3: [generate]        → produces "answer"
 When collecting inputs for a node, values are resolved in this order:
 
 1. **Edge value** - Output from upstream node
-2. **Input value** - Provided via `values` or kwargs shorthand
-3. **Checkpoint value** - Loaded from prior run state (when using `workflow_id` + checkpointer)
-4. **Bound value** - From `graph.bind()`
-5. **Function default** - From function signature
+2. **Input value** - Provided via `values`, kwargs, or loaded from checkpoint (runtime values win over checkpoint). See [Resuming Runs](../05-how-to/batch-processing.md#resuming-runs).
+3. **Bound value** - From `graph.bind()`
+4. **Function default** - From function signature
 
 ```python
 @node(output_name="result")
@@ -723,12 +726,11 @@ graph = Graph([process]).bind(x=5)  # bound=5
 
 # Edge value wins (if exists)
 # Then input value: runner.run(graph, {"x": 3})  → x=3
-# Then checkpoint value (if workflow_id + checkpointer)
 # Then bound value: runner.run(graph, {})        → x=5
 # Then default: (if no bind) runner.run(graph, {}) → x=10
 ```
 
-> **Note:** Checkpoint values only apply to graph inputs (required, optional, seeds). Intermediate edge-produced values are always re-computed during execution.
+> **Note:** Checkpoint values only apply to [graph inputs](inputspec.md) (required, optional, seeds). Intermediate edge-produced values are always re-computed during execution.
 
 ### Cyclic Graphs
 
