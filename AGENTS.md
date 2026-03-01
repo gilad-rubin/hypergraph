@@ -2,6 +2,12 @@
 
 Python workflow orchestration framework (alpha, solo dev). One set of primitives for DAGs, branches, loops, and nested hierarchies.
 
+## Design Philosophy
+
+- **User-facing API**: Accessible, clear, minimal surface. The complexity budget is spent internally so users don't have to.
+- **Internal OOP**: Elegant, DRY, clean. Complexity earns its place through well-structured abstractions, not by being avoided. Don't skip features because they're complex — implement them cleanly.
+- **Nested graphs are first-class**: Every feature that works for flat graphs must work for nested graphs — checkpointing, debugging, CLI, observability. This is the core offering.
+
 ## Information Architecture
 
 This repo uses a three-layer progressive disclosure pattern to keep agent context lean:
