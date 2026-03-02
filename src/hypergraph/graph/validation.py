@@ -100,6 +100,13 @@ def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
                     f"How to fix:\n"
                     f"  Use a different name (e.g., '{output}_value' or '{output}_result')"
                 )
+            if output.startswith("_"):
+                raise GraphConfigError(
+                    f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
+                    f"  -> Output names starting with '_' are reserved for internal use\n\n"
+                    f"How to fix:\n"
+                    f"  Remove the leading underscore (e.g., '{output.lstrip('_')}')"
+                )
 
 
 def _validate_no_namespace_collision(nodes: dict[str, HyperNode]) -> None:

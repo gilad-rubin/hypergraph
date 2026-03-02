@@ -324,16 +324,15 @@ class TestNameValidationEdgeCases:
         g = Graph([fn])
         assert "_private" in g.nodes
 
-    def test_output_name_with_leading_underscore_valid(self):
-        """Output name with leading underscore is valid."""
+    def test_output_name_with_leading_underscore_rejected(self):
+        """Output names starting with '_' are reserved for gate decision outputs."""
 
         @node(output_name="_result")
         def foo(x: int) -> int:
             return x
 
-        # Should not raise
-        g = Graph([foo])
-        assert "_result" in g.outputs
+        with pytest.raises(GraphConfigError, match="reserved for internal use"):
+            Graph([foo])
 
     def test_node_name_double_underscore_valid(self):
         """Dunder-style names are valid Python identifiers."""
