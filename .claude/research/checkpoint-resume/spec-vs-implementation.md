@@ -382,3 +382,187 @@ Despite the gaps, the core mechanics are sound:
 6. **_validation_ctx guard** — correct optimization to avoid redundant DB reads for map children
 
 The fundamental load → merge → execute → append cycle is right. The gaps are about **what we load** (values only vs values + steps) and **what we check** (graph_hash, terminal status, concurrent execution).
+
+---
+
+## Engine Mental Model: Restore + Continue
+
+The resume approach is **not replay**. It's "restore state as if execution already happened, then let the normal loop take over."
+
+### The execution loop (state machine)
+
+```python
+state = initialize(values)
+
+while True:
+    ready = get_ready_nodes(graph, state)
+    if not ready: break
+    execute(ready)           # updates state.values, state.versions
+    record(ready)            # updates state.node_executions, state.routing_decisions
+    save_steps(ready)        # checkpoint to DB
+```
+
+### GraphState — 4 fields
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `values` | `{name: Any}` | Current value of every input/output |
+| `versions` | `{name: int}` | How many times each value changed (for staleness) |
+| `node_executions` | `{node_name: NodeExecution}` | Last execution per node — what versions it consumed |
+| `routing_decisions` | `{gate_name: target}` | Gate routing decisions (which branch/target is active) |
+
+### Scheduling: `get_ready_nodes`
+
+A node is "ready" when:
+1. **Inputs available**: all required values exist in `state.values`
+2. **Gate activation**: if the node is a gate target, the gate must have routed to it (checked via `state.routing_decisions`)
+3. **Needs execution**: never ran (`not in node_executions`) OR stale (`consumed_version ≠ current_version`)
+
+### How resume works (the remap-to-1 trick)
+
+Instead of `state = initialize(user_values)` (empty state), we do:
+
+```python
+state = initialize_with_checkpoint(
+    checkpoint_values,   # ALL values from checkpoint
+    user_values,         # user's runtime overrides
+    checkpoint_steps,    # step records → node_executions + routing_decisions
+)
+```
+
+The version alignment trick:
+1. Load ALL checkpoint values → each gets version 1
+2. Apply user runtime values on top → changed values get version 2
+3. Restore `node_executions` with ALL `input_versions` remapped to 1
+
+Result:
+- **No user override**: versions = 1, consumed = 1 → not stale → skip
+- **User provides different value**: version = 2, consumed = 1 → stale → re-execute → cascade
+- **Cascade**: upstream re-executes → bumps downstream input version → downstream stale too
+
+The engine doesn't know it's resuming. It just sees a GraphState and finds what's ready.
+
+### Walkthrough: DAG resume (A,B completed, C failed)
+
+```
+Restore:
+  values:           {x: 5, a_out: 10, b_out: 20}   (all from checkpoint)
+  versions:         {x: 1,  a_out: 1,  b_out: 1}    (all version 1)
+  node_executions:  {A: consumed{x:1}, B: consumed{a_out:1}}  (remapped to 1)
+
+get_ready_nodes:
+  A: consumed{x:1}, current x=v1 → 1==1 → NOT stale → skip ✓
+  B: consumed{a_out:1}, current a_out=v1 → 1==1 → NOT stale → skip ✓
+  C: not in node_executions → needs execution → RUNS ✓
+```
+
+### Walkthrough: Completed cycle resume
+
+```
+Restore:
+  values:             {count: 3}
+  versions:           {count: 1}
+  node_executions:    {increment: consumed{count:1}, check_done: consumed{count:1}}
+  routing_decisions:  {check_done: END}
+
+get_ready_nodes:
+  increment: gate says END → NOT activated → skip ✓
+  check_done: consumed{count:1}, current count=v1 → 1==1 → NOT stale → skip ✓
+  No ready nodes → DONE immediately ✓
+```
+
+### Walkthrough: DAG resume with override (cascade)
+
+```
+Restore:
+  checkpoint_values: {x: 5, a_out: 10, b_out: 20}  → all version 1
+  user_values:       {x: 100}                        → x bumps to version 2
+
+  versions:          {x: 2, a_out: 1, b_out: 1}
+  node_executions:   {A: consumed{x:1}, B: consumed{a_out:1}, C: consumed{b_out:1}}
+
+get_ready_nodes:
+  A: consumed{x:1}, current x=v2 → 2≠1 → STALE → runs
+  A produces a_out=200 → version bumps to 2
+  B: consumed{a_out:1}, current a_out=v2 → STALE → runs (cascade!)
+  B produces b_out=400 → version bumps to 2
+  C: consumed{b_out:1}, current b_out=v2 → STALE → runs (cascade!)
+```
+
+### Progress bar
+
+Event-driven: `NodeStartEvent`/`NodeEndEvent` fire during execution. Restored nodes don't execute → don't emit events. The progress bar only shows nodes that actually run. Optional: `NodeRestoredEvent` for "restored" display.
+
+### Checkpoint continuation
+
+New steps append to existing history. Two offsets needed:
+- `step_counter`: starts at `len(checkpoint_steps)` (new step indices continue from old)
+- `superstep_idx`: starts at `max_superstep + 1` (new supersteps don't collide)
+
+### Why Restore + Continue, not Replay
+
+| | Replay | Restore + Continue |
+|---|---|---|
+| **Speed** | O(all steps) — re-executes everything | O(remaining) — only pending/stale nodes |
+| **Side effects** | Re-triggers API calls, DB writes | No side effects for skipped nodes |
+| **Simplicity** | Simple but slow and dangerous | Uses existing engine logic (no special resume path) |
+| **Correctness** | Correct if deterministic | Correct for DAGs + completed cycles via remap-to-1 |
+
+The key insight: the engine already knows how to decide "what runs next" — that's `get_ready_nodes`. We don't teach it a new concept. We just give it a richer starting state.
+
+---
+
+## Known Limitation: Mid-Cycle Crash Recovery
+
+### The problem
+
+The remap-to-1 trick breaks when a cycle crashes **mid-iteration** — i.e., some nodes in the cycle completed the current iteration but not all.
+
+### Concrete example
+
+```
+increment(count) → check_done(count) → [END or "increment"]
+```
+
+Process crashes after iteration 3's `increment` (count=3) but **before `check_done` runs**.
+
+Checkpoint state:
+- `count=3` (latest value)
+- Steps: `increment` ran 3 times, `check_done` ran 2 times
+
+With remap-to-1:
+```
+values:           {count: 3}
+versions:         {count: 1}
+node_executions:  {increment: consumed{count:1}, check_done: consumed{count:1}}
+routing_decisions: {check_done: "increment"}  # last decision was "keep going"
+```
+
+Problem: `check_done` consumed count@1, current count=v1 → `1==1` → **NOT stale → skips**
+
+But `check_done` **should run** — it never saw count=3. The remap erased the fact that `increment` ran one more time than `check_done`.
+
+### Why it happens
+
+Remap-to-1 collapses all version history into a single point. In a DAG, each node runs exactly once, so there's only one "last execution" per node — remap works perfectly. In a completed cycle, the gate's `END` decision prevents re-entry regardless of versions — remap works.
+
+But mid-cycle, two nodes have different execution counts (increment ran N times, check_done ran N-1 times). The version difference between them is the signal that check_done needs to run. Remap-to-1 destroys this signal.
+
+### The fix (Phase 2)
+
+**Version-aligned step replay**: Instead of remapping everything to 1, replay the version increments in chronological step order so that `increment`'s last execution consumed `count@v5` but `check_done`'s last execution consumed `count@v4`. The version mismatch correctly triggers re-execution.
+
+This requires:
+1. Sorting steps by `(superstep_idx, index)` to replay in execution order
+2. Tracking which value each step produced and what version it would have gotten
+3. Setting `input_versions` to the actual versions the step would have consumed
+
+### When it matters
+
+Only affects: crash **during** a cycle iteration (between node completions within the same cycle). In practice this is rare — most crashes happen during long-running operations (API calls, etc.), and the cycle typically completes its iteration before the next one starts.
+
+Does NOT affect:
+- DAGs (each node runs once — remap is exact)
+- Completed cycles (gate decision restored, blocks re-entry)
+- Cycle that finished all iterations but crashed after (same as completed)
+- Cycle that crashed between iterations (gate decision from previous iteration is correct)
