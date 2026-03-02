@@ -375,6 +375,8 @@ Every system with resumable branching workflows separates two concerns:
 | **Flink** | Source offsets + operator UIDs | Keyed state |
 | **Event sourcing** | Log offset / sequence number | Aggregate state from handlers |
 | **Git** | HEAD + branch refs (mutable pointers) | Tree/blob objects (immutable) |
+| **Dolt** | Branch pointer + HEAD + WorkingSet | RootValue (content-addressed Prolly tree) |
+| **Beads (Yegge)** | Task status + dependency graph | Task details + attachments |
 
 ### What breaks when definitions change (universal)
 
@@ -393,6 +395,8 @@ Every system has the same failure modes:
 | **Event sourcing** | Upcasting pipeline transforms old events at read time. Event store immutable. |
 | **Git** | Immutable commits. Fork = new ref pointing to same commit. Three-way merge using common ancestor. |
 | **Petri nets** | Marking IS position. Saving marking + colors = complete state. Topology change = new net. |
+| **Dolt** | Content-addressed root hash. Schema diff reports *what* changed. Three-way merge at cell level. |
+| **Beads** | Load task statuses, find ready work. Append-only log. Hash-based IDs for collision-free distributed creation. |
 
 ### Key design insights for hypergraph
 
@@ -406,6 +410,27 @@ Every system has the same failure modes:
 
 5. **Temporal's lesson**: Full replay is correct but expensive (51,200 event limit). Our "Restore + Continue" approach avoids replay entirely — better for large graphs. But we need Temporal-level strictness about position tracking.
 
+6. **Dolt's fork-as-reference**: A fork is just a pointer into shared history, not a copy of data. Our `forked_from` + `fork_superstep` on `Run` follows this — the new run references the parent's steps rather than duplicating them.
+
+7. **Dolt's schema diff over hash comparison**: When graph structure changes, report *what* changed (which nodes added/removed, which edges changed) rather than just "hash mismatch." More actionable error messages. Not for MVP, but the right long-term direction.
+
+8. **Beads' "ready work" = our scheduling problem**: `bd ready` does a topological sort and returns only actionable items. Our `get_ready_nodes()` is the same pattern. The resume problem IS the scheduling problem — restore state correctly and the normal scheduler produces the right answer. No special "resume logic" needed.
+
+9. **Beads' append-only externalized state**: All task state lives outside the agent's context window. Fresh agents load state and pick up where the last one left off. Validates our "Restore + Continue" approach — a fresh engine loads checkpoint state and runs, just like a fresh Beads agent runs `bd ready` and starts working.
+
+### Dolt as backend: evaluated and rejected
+
+Dolt's conceptual primitives (branches, commits, forks, time travel, three-way merge) map almost perfectly to our checkpoint model. However, from Python, Dolt is a **client-server database**, not an embedded one:
+
+- 103MB Go binary, installed separately (not pip-installable)
+- Requires running `dolt sql-server` as a separate daemon process
+- Python connects via MySQL protocol (`mysql-connector-python`)
+- No in-memory mode for testing (SQLite has `":memory:"`)
+- The Go embedded driver (`file://` DSN) has no Python equivalent
+- `doltpy` Python package is deprecated (last release Jan 2023)
+
+**Verdict**: Operationally closer to "add PostgreSQL support" than "add SQLite support." The ~100 lines of SQL we need on SQLite are dramatically simpler than asking users to install and operate a Go database server. We adopt Dolt's design patterns, implement them on SQLite.
+
 ### The critical insight
 
 **A checkpoint is a Petri net marking + token colors.**
@@ -413,3 +438,68 @@ Every system has the same failure modes:
 - Colors = `{name: value}` → data (portable)
 
 Compatibility checking should operate on the marking against the current graph structure. If the marking references nodes/decisions that don't exist in the new graph, that's an incompatibility — handle it explicitly (error, warn, or transform), never silently.
+
+---
+
+## Design Patterns Adopted from Research
+
+Concrete patterns we're bringing into hypergraph's checkpoint/resume design, with their origin:
+
+### From Dolt
+
+| Pattern | What we adopt | How we implement it |
+|---|---|---|
+| **Fork as reference** | New run points to parent, doesn't copy data | `Run.forked_from` + `Run.fork_superstep` fields |
+| **Content-addressed equality** | Cheap "did anything change?" check | `graph.definition_hash` for graph structure |
+| **Three-way merge model** | Framework for reasoning about value conflicts | `checkpoint_values ← runtime_values` (runtime wins, no conflicts for now) |
+| **Schema diff granularity** | Report what changed, not just "hash mismatch" | Future: `GraphDiff` with added/removed nodes. MVP: hash comparison only |
+| **WorkingSet vs Committed** | Separate in-flight from persisted state | `GraphState` (ephemeral, in-memory) vs `StepRecord` (durable, checkpointed) |
+
+### From Beads (Yegge)
+
+| Pattern | What we adopt | How we implement it |
+|---|---|---|
+| **"Ready work" as universal primitive** | Resume = normal scheduling on restored state | `get_ready_nodes()` — no special resume logic, just correct state restoration |
+| **Externalized state for bounded agents** | Checkpoint is self-describing; fresh engine can load and continue | Checkpoint = values + steps + routing decisions (complete state) |
+| **Append-only history** | Step records are immutable once written | `save_step` appends, never overwrites. Failed + retried = both records exist |
+| **Gates as checkpoint boundaries** | Natural pause points where state should be persisted | `InterruptNode` already does this; generalizable to any blocking operation |
+| **Source of truth vs read cache** | Durable log + fast query layer | SQLite serves both roles for now; JSONL export as future portable format |
+
+### From Petri Nets
+
+| Pattern | What we adopt | How we implement it |
+|---|---|---|
+| **Marking = position** | `node_executions` + `routing_decisions` IS the position | Restored from step history on resume |
+| **Token colors = data** | `values` dict IS the data (portable across graph versions) | Restored from checkpoint values |
+| **Topology change = new net** | Graph change requires new workflow (fork) | Same `workflow_id` + different `graph_hash` = error |
+
+### From Git
+
+| Pattern | What we adopt | How we implement it |
+|---|---|---|
+| **Immutable commits + mutable refs** | Steps are immutable, run status is mutable | `StepRecord` (append-only) + `Run.status` (updated on completion/failure) |
+| **Branch = cheap pointer** | Fork doesn't duplicate history | `forked_from` references parent; `get_steps` walks the fork chain |
+| **Common ancestor for merge** | Fork point is always findable | `Run.fork_superstep` records where the fork happened |
+
+### Gate Output Values (New — from this session)
+
+Not from external research, but from our own design discussion:
+
+| Decision | Rationale |
+|---|---|
+| Gates produce output values | Makes routing decisions visible in `state.values`, enables values-based resume for gates |
+| Output name = `_<function_name>` | Reserved `_` prefix namespace — user output names can't start with `_` |
+| ifelse output = `bool` | The raw return value of the gate function |
+| route output = `str` | The target name string (value and decision are the same) |
+| Routing decisions derivable from values | `_is_valid = True` + gate config `when_true="approve"` → decision = `"approve"` |
+
+### Not Adopted
+
+| Pattern | Source | Why not |
+|---|---|---|
+| **Dolt as storage backend** | Dolt | Client-server from Python, 103MB binary, deprecated Python package. Implement patterns on SQLite instead. |
+| **Prolly tree storage** | Dolt | Content-addressed dedup is elegant but overkill for our checkpoint sizes |
+| **Hash-based IDs** | Beads | Our `workflow_id` is user-provided, `run_id` is UUID. Both are fine for single-process. |
+| **Full replay** | Temporal | Expensive (51K event limit). Our "Restore + Continue" is cheaper and sufficient. |
+| **Semantic memory decay** | Beads | LLM-summarized old history. Interesting for `CheckpointPolicy` long-term, not for MVP. |
+| **Stable UIDs across renames** | Flink | We use node names as identifiers. Rename = different node. Simpler, and renames are rare. |
