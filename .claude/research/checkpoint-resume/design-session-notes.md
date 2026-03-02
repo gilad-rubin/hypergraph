@@ -1,6 +1,6 @@
 # Checkpoint Resume: Design Session Notes
 
-Deep design discussion exploring resume semantics, version replay, fork model, and the fundamental relationship between values and execution history.
+Deep design discussion exploring resume semantics, the runner/checkpointer boundary, minimal state for scheduling, and the relationship between values, steps, and history.
 
 **Date**: 2026-03-02
 **Status**: Exploration — not yet finalized into a plan
@@ -8,9 +8,39 @@ Deep design discussion exploring resume semantics, version replay, fork model, a
 
 ---
 
-## Starting Point
+## Terminology
 
-The previous session produced a plan with 5 gaps (step history, graph hash, terminal status, silent filter, fork/time-travel) and a "remap-to-1" version alignment approach. This session challenged and refined that design.
+| Term | Meaning | Example |
+|---|---|---|
+| **Values** | The accumulated data outputs at a point in time | `{x: 5, _check: True, data: 10}` |
+| **Steps** | Individual `StepRecord`s stored by the checkpointer | `StepRecord(node_name="A", status=COMPLETED, ...)` |
+| **History** | The full chronological sequence of steps — for observability and continuity | All steps from superstep 0 to N |
+| **State** (`GraphState`) | The runtime snapshot the engine operates on: values + versions + node_executions + routing_decisions | The 4-field struct in `types.py` |
+| **Snapshot** | The minimal data needed to reconstruct a `GraphState` for resume | Values (with gate outputs) + node completions |
+
+---
+
+## The Core Architecture: Runner ≠ Checkpointer
+
+The most important insight from this session. The runner and checkpointer have completely separate concerns:
+
+```
+Runner's world:        GraphState → get_ready_nodes() → execute → update state → repeat
+                       (doesn't know about history, forks, checkpointers, or persistence)
+
+Checkpointer's world:  Steps, Run metadata, fork lineage, graph_hash
+                       (stores history, builds snapshots, tracks relationships between runs)
+
+The bridge:            Resume: checkpointer → reconstruct GraphState → hand to runner
+                       Execute: runner → produces step records → checkpointer stores them
+```
+
+**The runner doesn't need history. It needs a GraphState snapshot.** Give it a correctly populated `GraphState` and it doesn't know (or care) whether this is a fresh run or a resume from a checkpoint. `get_ready_nodes()` just sees state and schedules accordingly.
+
+This is the same pattern as:
+- **Dolt**: WorkingSet (mutable, in-memory runtime) vs commits (immutable, stored history)
+- **Git**: working tree (what you're editing) vs commit log (what happened)
+- **Beads**: workspace (active work) vs archive (completed work)
 
 ---
 
@@ -22,7 +52,7 @@ The previous session produced a plan with 5 gaps (step history, graph hash, term
 
 **Remap-to-1** (rejected): Set all checkpoint values to version 1, remap all restored `input_versions` to 1. Creates a synthetic GraphState that never existed during the original execution. Breaks mid-cycle crash recovery.
 
-**Version replay** (adopted): Reconstruct exact version counts from step history.
+**Version replay** (adopted): Reconstruct exact version counts from step records.
 
 ```python
 def initialize_state_with_checkpoint(checkpoint_values, runtime_values, steps, graph):
@@ -60,59 +90,98 @@ def initialize_state_with_checkpoint(checkpoint_values, runtime_values, steps, g
     return state
 ```
 
-**Why version replay is correct**: The version of a value = `1 (initial set) + N (step productions)`. This is deterministic from step records. Mid-cycle crash example:
+**Why version replay is correct**: The version of a value = `1 (initial set) + N (step productions)`. This is deterministic from step records. Eliminates "mid-cycle crash" from Phase 2 deferrals.
 
-- Original: count goes 0→v1, 1→v2, 2→v3, 3→v4. increment consumed count@v3 last, check_done consumed count@v3 last.
-- Replay: count=3 from checkpoint→v1, step outputs 1→v2, 2→v3, 3→v4. Same final versions.
-- check_done: consumed@3, current@4 → stale → runs. Correct!
-- With remap-to-1: consumed@1, current@1 → not stale → skips. BUG!
+### 2. Gate Nodes Produce Output Values
 
-**Eliminates "mid-cycle crash" from Phase 2 deferrals.**
+**The problem**: Gate routing decisions were invisible in `state.values`. Without gate outputs, there's no way to know which branch was taken from values alone — routing lived only in step history.
 
-### 2. Values vs History — Fundamentally Different State
+**The solution**: Gates produce their return value as a regular data output, using a reserved `_` prefix namespace.
 
-**Values** = WHAT was computed (data, portable across graph versions)
-**History** = WHERE you are in the graph (execution records, routing decisions, graph-specific)
+| Gate type | Function name | Output name | Output value | Routing decision |
+|---|---|---|---|---|
+| `@ifelse` | `is_valid` | `_is_valid` | `True` / `False` | Derived: `gate.when_true if value else gate.when_false` |
+| `@route` | `decide` | `_decide` | `"process_a"` (target name) | The value itself |
+| `@route(multi_target=True)` | `fan_out` | `_fan_out` | `["a", "b"]` (target list) | The value itself |
 
-| | In values | In step history |
+**Namespace safety**: Output names starting with `_` are rejected at graph build time (**implemented** in `validation.py`). Gate outputs are generated internally, bypassing this check. No user output can ever collide with a gate output.
+
+**What this changes**:
+
+```
+Before:
+  GateNode.data_outputs = ()           # gates produce nothing
+  execute_ifelse → return {}            # discard the bool
+  state.routing_decisions["is_valid"]   # only place the decision lives
+
+After:
+  GateNode.data_outputs = ("_is_valid",)  # gates produce their return value
+  execute_ifelse → return {"_is_valid": True}  # store the bool
+  state.routing_decisions["is_valid"]     # still set (for scheduler)
+  state.values["_is_valid"] = True        # also in values (for checkpoint)
+```
+
+**Why this matters for resume**: `routing_decisions` becomes derivable from values. On resume, read `_is_valid = True` from checkpoint values → look up gate config → derive decision. The scheduler code doesn't change — it still reads `routing_decisions` — but we populate it from values instead of needing step history.
+
+**Implementation status**: `_` prefix validation is committed. Gate output production is pending.
+
+### 3. Minimal State for Resume (The Snapshot)
+
+**What the scheduler (`get_ready_nodes`) actually reads from `GraphState`:**
+
+| GraphState field | Used by scheduler | For what |
 |---|---|---|
-| Node outputs | `{embedding: [...]}` | `step.values` |
-| Routing decisions | **NOT stored** | `step.decision` |
-| Version timeline | **NOT stored** | `step.input_versions` |
-| Execution record | **NOT stored** | `step.status` (COMPLETED/FAILED) |
+| `values` | Yes | Input availability — are this node's inputs present? |
+| `versions` | Yes | Current version — for staleness comparison |
+| `node_executions` | Yes | Did this node run? What `input_versions` did it consume? |
+| `routing_decisions` | Yes | Which branch is active? (derivable from gate output values) |
 
-**Gate decisions are invisible in checkpoint values.** `get_state()` only folds `step.values`. Routing decisions exist only in `step.decision` and `state.routing_decisions`. Without history, gates re-evaluate — which may pick different branches.
+**Within `NodeExecution`, what the scheduler reads:**
 
-### 3. Values-Only Resume Is Broken for Graphs with Gates
+| NodeExecution field | Used by scheduler? | Notes |
+|---|---|---|
+| `node_name` | Yes | Identity (dict key) |
+| `input_versions` | Yes | Consumed versions for staleness check |
+| `wait_for_versions` | Yes | Wait-for freshness check |
+| `outputs` | **No** | Redundant copy of data already in `state.values`. Only used by checkpoint persistence. |
+| `duration_ms` | **No** | Observability only |
+| `cached` | **No** | Observability only |
 
-**Tested empirically** (not just theory). Running with pre-seeded intermediate values:
+**The truly minimal independent data for a checkpoint snapshot:**
 
 ```python
-runner.run(graph, {"x": 5, "result": 999})
-# ValueError: Cannot mix compute and inject for node 'branch_a':
-# injected outputs ['result'] and also seeded inputs ['x'].
+# INDEPENDENT (must be persisted):
+values: dict[str, Any]          # all computed data, including _gate outputs
+node_completions: dict[str, {   # per node, latest completed record only
+    input_versions: dict[str, int],
+    wait_for_versions: dict[str, int],
+}]
+
+# DERIVED (computed on resume, not persisted separately):
+versions            # from version replay over steps, or from loading sequence
+routing_decisions   # from _gate values + gate config
+NodeExecution.outputs    # already in values
+NodeExecution.duration_ms  # observability
+NodeExecution.cached       # observability
 ```
 
-The validation layer already rejects this — you can't provide both a node's inputs AND its outputs. This is the "compute vs inject" conflict in `validate_inputs`.
+**Key implication**: The checkpointer doesn't need to provide the runner with step history. It needs to provide a **snapshot** — enough data to reconstruct a `GraphState`. Steps are one way to build that snapshot, but the runner never reads steps directly.
 
-Even if validation were bypassed, there's a deeper problem:
+### 4. Values Carry More Signal Than Before
 
-**Branch ambiguity**: In an ifelse where both branches produce `data`:
-```
-check(x) → [A1(x)→A2(data) | B1(x)→B2(data)] → merge(result)
-```
+With gate output values, the table from earlier sessions needs updating:
 
-If we provide `{data: 10}` without routing decisions:
-- A2 sees `data` available → ready
-- B2 sees `data` available → ready
-- No routing decision → both activated (default_open=True)
-- Engine can't tell which branch we're in
+| | In values | In steps | In node_completions |
+|---|---|---|---|
+| Node outputs | `{data: 10}` | `step.values` | — |
+| Gate decisions | **`{_check: True}`** (NEW) | `step.decision` | — |
+| Version timeline | — | `step.input_versions` | `input_versions` |
+| Execution record | Implicit (output exists = ran) | `step.status` | Present = completed |
+| Side-effect completion | **Gap** (no output to check) | `step.status` | Present = completed |
 
-**And**: Even for nodes NOT behind gates, pre-seeded intermediates make downstream nodes ready before upstream nodes run, breaking execution order.
+**Values alone handle most scheduling** — the remaining gap is side-effect nodes (no outputs) and exact version tracking (for cycles). That's what `node_completions` fills.
 
-**Conclusion: History is non-negotiable for correct resume. The framework already knows this.**
-
-### 4. Checkpoint = Values + Steps (Already Exists)
+### 5. Checkpoint = Values + Steps (Already Exists)
 
 The `Checkpoint` type bundles both:
 ```python
@@ -127,12 +196,9 @@ Three separate read APIs already exist:
 - `get_steps(run_id)` → just steps
 - `get_checkpoint(run_id)` → both (convenience for fork)
 
-`CheckpointPolicy.retention` controls what's kept:
-- `"full"` — all steps (time travel works)
-- `"latest"` — only materialized values (no steps, no skip logic on resume)
-- `"windowed"` — last N supersteps
+**Naming inconsistency to address**: `GraphState` has 4 fields, but the checkpointer's `get_state()` returns only values. These are different things. The checkpointer's `get_state()` should ideally return enough to reconstruct a full `GraphState`, not just values.
 
-### 5. Workflow ID Semantics
+### 6. Workflow ID Semantics
 
 **From the spec** (execution-types.md):
 
@@ -146,9 +212,9 @@ Three separate read APIs already exist:
 | New | — | Checkpoint | Fork with explicit ID |
 | Existing | — | Checkpoint | Error (can't fork into existing) |
 
-**Checkpointer + no workflow_id = error.** Not warning, not auto-generate. The spec calls `uuid4()` an anti-pattern.
+**Checkpointer + no workflow_id = error.** Not warning, not auto-generate.
 
-### 6. Terminal Status: COMPLETED = Error, FAILED = Allow
+### 7. Terminal Status: COMPLETED = Error, FAILED = Allow
 
 | Status | Same `workflow_id` | Behavior |
 |---|---|---|
@@ -156,17 +222,13 @@ Three separate read APIs already exist:
 | FAILED | Allow | Retry (load state, re-run failed nodes) |
 | COMPLETED | Error | `WorkflowAlreadyCompletedError` |
 
-Error message: `"Workflow 'job-1' already completed. Use a new workflow_id for a fresh run."`
-
 No escape hatch for completed workflows — use fork instead.
 
-### 7. Graph Changes = Fork (Git Model)
+### 8. Graph Changes = Fork (Git Model)
 
 **Same workflow_id requires same graph hash.** No exceptions, no `on_graph_change` param.
 
 **Why**: Mixing graph versions in one workflow's step history creates internally inconsistent state. Step records reference node names, edges, version numbers from a specific graph structure. A different graph makes that history nonsensical.
-
-**Important**: `FunctionNode.definition_hash` hashes SOURCE CODE (via `hash_definition`). So even a bug fix to a function body changes the graph hash. This means graph hash mismatches are common in the "fix and retry" workflow.
 
 **The git model for forks**:
 
@@ -193,13 +255,6 @@ class Run:
     fork_superstep: int | None = None   # fork point
 ```
 
-Properties:
-- Each workflow's own steps are internally consistent (one graph version)
-- History is immutable (forking references/copies, never modifies parent)
-- Lineage is traceable (`forked_from` chain)
-- Full history view: walk fork chain for complete timeline
-- `get_steps("job-1-v2")` returns inherited steps + new steps
-
 User experience:
 ```python
 # Run fails
@@ -209,12 +264,12 @@ await runner.run(graph_v1, {"x": 5}, workflow_id="job-1")  # FAILED
 await runner.run(graph_v2, workflow_id="job-1")
 # GraphChangedError: "Graph structure changed. Fork instead."
 
-# Fork (inherits history → routing preserved → correct resume)
+# Fork (new workflow_id + checkpoint from old run)
 checkpoint = await cp.get_checkpoint("job-1")
 await runner.run(graph_v2, checkpoint=checkpoint, workflow_id="job-1-v2")
 ```
 
-### 8. History Across Graph Changes (Fork with Steps)
+### 9. History Across Graph Changes (Fork with Steps)
 
 When forking with a different graph, the checkpoint has steps from graph_v1 but we're running graph_v2. The staleness machinery handles most cases:
 
@@ -224,12 +279,12 @@ When forking with a different graph, the checkpoint has steps from graph_v1 but 
 | Added new node | Not in history → "never executed" → runs ✓ |
 | Removed node | Not in new graph → never scheduled → ignored ✓ |
 | Changed node inputs | `_is_stale` finds missing input → version 0 ≠ current → stale → re-runs ✓ |
-| Gate routing decision | Preserved → correct branch active ✓ |
+| Gate routing decision | Preserved (from `_gate` values) → correct branch active ✓ |
 | Routing to removed target | Target not in graph → not activated ✓ |
 
-**Risk**: Node name collision (old "process" vs new "process" doing different things). The warning covers this.
+**Risk**: Node name collision (old "process" vs new "process" doing different things).
 
-### 9. Immutable History with Visibility
+### 10. Immutable History with Visibility
 
 Step history is append-only. If node C fails at step 3 and succeeds on retry at step 7, both records exist:
 ```
@@ -239,83 +294,17 @@ step 7: C → COMPLETED (values: {...})
 
 The execution is identical to running end-to-end (same final state), but the history tells the story of what actually happened. Already how the system works — `save_step` appends, never overwrites.
 
-### 10. No `on_graph_change` Param
+---
 
-Removed from the design. Graph change detection stored for observability but doesn't gate `run()`:
-- Same hash + same workflow_id → resume
-- Different hash + same workflow_id → GraphChangedError (must fork)
-- Different hash + fork (new workflow_id + checkpoint) → load steps, let engine handle it
+## Steps vs History vs Snapshot — The Three Layers
 
-### 11. Gate Nodes Produce Output Values
+| Layer | What | Who needs it | Persistence |
+|---|---|---|---|
+| **Snapshot** | GraphState at superstep N (values + versions + node_executions + routing_decisions) | The **runner** — for scheduling | Reconstructed on resume from steps or stored directly |
+| **Steps** | Individual `StepRecord`s with status, timing, input_versions, outputs | The **checkpointer** — stores them, builds snapshots from them | SQLite `steps` table |
+| **History** | Full chronological sequence of steps across the run lifetime | The **user** — observability, debugging, time travel, fork lineage | Same storage as steps, but a conceptual view |
 
-**The problem**: Gate routing decisions are invisible in `state.values`. The `get_state()` API only returns values — routing decisions live only in step history (`step.decision`) and `state.routing_decisions`. Without history, there's no way to know which branch was taken. This is the "branch ambiguity" problem.
-
-**The solution**: Gates produce their return value as a regular data output, using a reserved `_` prefix namespace.
-
-| Gate type | Function name | Output name | Output value | Routing decision |
-|---|---|---|---|---|
-| `@ifelse` | `is_valid` | `_is_valid` | `True` / `False` | Derived: `gate.when_true if value else gate.when_false` |
-| `@route` | `decide` | `_decide` | `"process_a"` (target name) | The value itself |
-| `@route(multi_target=True)` | `fan_out` | `_fan_out` | `["a", "b"]` (target list) | The value itself |
-
-**Namespace safety**: Output names starting with `_` are rejected at graph build time (validation added). Gate outputs are generated internally, bypassing this check. No user output can ever collide with a gate output.
-
-**How this helps resume**:
-
-On a fresh run, the gate `is_valid` executes, stores `_is_valid = True` in `state.values`, and sets `state.routing_decisions["is_valid"] = "approve"`. Both happen automatically.
-
-On resume with checkpoint values:
-1. `state.values["_is_valid"] = True` is restored from checkpoint
-2. `state.routing_decisions["is_valid"]` is reconstructed: read `_is_valid` from values, look up gate config (`when_true="approve"`), derive decision
-3. The scheduler sees the routing decision → only the correct branch is activated
-4. The gate itself participates in staleness: if its inputs change, `_is_valid` version bumps → downstream nodes cascade
-
-**What this changes in the execution model**:
-
-```
-Before:
-  GateNode.data_outputs = ()           # gates produce nothing
-  execute_ifelse → return {}            # discard the bool
-  state.routing_decisions["is_valid"]   # only place the decision lives
-
-After:
-  GateNode.data_outputs = ("_is_valid",)  # gates produce their return value
-  execute_ifelse → return {"_is_valid": True}  # store the bool
-  state.routing_decisions["is_valid"]     # still set (for scheduler)
-  state.values["_is_valid"] = True        # also in values (for checkpoint)
-```
-
-**Implementation changes needed**:
-
-| File | Change |
-|---|---|
-| `nodes/gate.py` | `GateNode.__init__` sets data output name `_<name>`. `data_outputs` returns it. `outputs` = data output + emit outputs |
-| `gate_execution.py` | `execute_ifelse` passes `result` (not `None`) to `wrap_outputs`. `execute_route` passes `decision` to `wrap_outputs` |
-| `graph/validation.py` | Skip `_` prefix check for `GateNode` outputs (already reserved internally) |
-| `graph/_helpers.py` | Edge building: gates now have data edges from `_<name>` to any consumer. Verify no unintended edges |
-| `runners/_shared/helpers.py` | On resume, derive `routing_decisions` from gate output values in checkpoint |
-| Tests | Gate execution tests verify output value is stored. Resume tests verify routing is reconstructed from values |
-
-**What this does NOT change**:
-- User API for gates: `@ifelse(when_true=..., when_false=...)` — no new params
-- The scheduler: still reads `state.routing_decisions` — gate outputs feed into it, not replace it
-- Existing graphs without checkpointing: gates now produce `_` outputs that sit unused unless consumed
-
-**Interaction with version replay**:
-
-Gate outputs integrate naturally into version replay because they're regular values:
-
-```python
-# Version replay counts gate outputs like any other value
-for step in completed_steps:
-    if step.values:  # now includes {"_is_valid": True}
-        for name in step.values:
-            versions[name] = versions.get(name, 0) + 1
-```
-
-The gate's `_is_valid` gets a version, participates in staleness checks, and cascades correctly. No special-casing needed.
-
-**Resolves**: Open question "Branch Ambiguity Without History" — gate decisions are now IN the values, not only in history. Values carry enough signal for routing even without full step history.
+The runner consumes **snapshots**. The checkpointer stores **steps** and can build snapshots from them. **History** is the user-facing view of all steps — it's never consumed by the engine.
 
 ---
 
@@ -326,7 +315,7 @@ The gate's `_is_valid` gets a version, participates in staleness checks, and cas
 # Before: A, B, C all re-execute
 await runner.run(pipeline, workflow_id="job-1")
 
-# After: A, B skipped (history), only failed C re-runs
+# After: A, B skipped (snapshot shows they completed), only failed C re-runs
 await runner.run(pipeline, workflow_id="job-1")
 
 # After with override: cascade re-execution
@@ -356,10 +345,10 @@ await runner.run(graph, {"x": 10}, workflow_id="job-1")
 # WorkflowAlreadyCompletedError: "Workflow 'job-1' already completed."
 ```
 
-### 4. Intermediate values silently dropped → restored via step history
+### 4. Intermediate values silently dropped → restored via snapshot
 ```python
 # Before: only graph inputs loaded, intermediates dropped
-# After: all values + history restored, completed nodes skip
+# After: all values restored from snapshot, completed nodes skip
 ```
 
 ### 5. Fork / time travel
@@ -398,16 +387,12 @@ await runner.run(graph, {"x": 5})
 | `Run.forked_from` | `str \| None` |
 | `Run.fork_superstep` | `int \| None` |
 
-**Removed from earlier plan**: `on_graph_change` param (always error for same workflow_id).
-
 ---
 
 ## Open Questions
 
-### ~~Branch Ambiguity Without History~~ → Resolved by Gate Output Values (§11)
-~~When two branches share parameter names, values alone can't disambiguate which branch is active.~~
-
-**Resolved**: Gate outputs (`_is_valid`, `_decide`) make routing decisions visible in `state.values`. On resume, routing decisions are derived from gate output values + gate config. Values now carry enough signal for routing — history is still better (gives version-accurate state), but values alone no longer lose branch information.
+### ~~Branch Ambiguity Without History~~ → Resolved by Gate Output Values (§2)
+**Resolved**: Gate outputs (`_is_valid`, `_decide`) make routing decisions visible in `state.values`. Routing decisions are derived from gate output values + gate config.
 
 ### History in Fork with Changed Graph
 When forking across graph versions, inherited steps reference the old graph's structure. The staleness machinery handles most cases correctly, but node name collisions across versions remain a risk.
@@ -421,20 +406,6 @@ When forking across graph versions, inherited steps reference the old graph's st
 
 ---
 
-## Engine Mental Model: Restore + Continue
-
-Full walkthrough documented in [spec-vs-implementation.md](spec-vs-implementation.md) §Engine Mental Model.
-
-Key points:
-- The engine is a state machine loop: `initialize → get_ready_nodes → execute → record → repeat`
-- GraphState has 4 fields: values, versions, node_executions, routing_decisions
-- Resume = restore GraphState to look as if execution already happened, then let the normal loop take over
-- The engine doesn't know it's resuming — it just sees a richer starting state
-- `get_ready_nodes` is the scheduling brain — checks inputs available, gate activation, staleness
-- Staleness: `consumed_version ≠ current_version` (from `_is_stale` in helpers.py)
-
----
-
 ## Analogies to Other Systems
 
 Every system with resumable branching workflows separates two concerns:
@@ -444,50 +415,17 @@ Every system with resumable branching workflows separates two concerns:
 | **Petri nets** | Marking vector (tokens in places) | Token colors |
 | **Temporal** | Event history (command sequence) | Field values in events |
 | **Flink** | Source offsets + operator UIDs | Keyed state |
-| **Event sourcing** | Log offset / sequence number | Aggregate state from handlers |
 | **Git** | HEAD + branch refs (mutable pointers) | Tree/blob objects (immutable) |
 | **Dolt** | Branch pointer + HEAD + WorkingSet | RootValue (content-addressed Prolly tree) |
 | **Beads (Yegge)** | Task status + dependency graph | Task details + attachments |
 
-### What breaks when definitions change (universal)
+### The critical insight
 
-Every system has the same failure modes:
-1. **Node removed** → checkpoint references non-existent node
-2. **Node added** → new node has no checkpoint data
-3. **Branch structure changed** → data was computed assuming one branch, new graph has different branching
-4. **Data schema changed** → old checkpoint may not deserialize
+**A checkpoint is a Petri net marking + token colors.**
+- Marking = `{node_completions, routing_decisions}` → position (graph-specific)
+- Colors = `{name: value}` → data (portable)
 
-### How each system handles it
-
-| System | Strategy |
-|---|---|
-| **Temporal** | Error (non-determinism). Patching via `get_version()` marker events. Full replay required. |
-| **Flink** | Stable UIDs map state to operators. Validates topology at restore time. `allowNonRestoredState` for orphaned data. |
-| **Event sourcing** | Upcasting pipeline transforms old events at read time. Event store immutable. |
-| **Git** | Immutable commits. Fork = new ref pointing to same commit. Three-way merge using common ancestor. |
-| **Petri nets** | Marking IS position. Saving marking + colors = complete state. Topology change = new net. |
-| **Dolt** | Content-addressed root hash. Schema diff reports *what* changed. Three-way merge at cell level. |
-| **Beads** | Load task statuses, find ready work. Append-only log. Hash-based IDs for collision-free distributed creation. |
-
-### Key design insights for hypergraph
-
-1. **Petri net marking = our `node_executions` + `routing_decisions`**. The set of completed nodes and gate decisions IS the position marker. Values are the token colors. They're conceptually separate even though stored together.
-
-2. **Flink's stable UIDs**: Use stable node identities for checkpoint keys. If a node is renamed but keeps its UID, checkpoint data survives. (We currently use node names — fragile across renames.)
-
-3. **Event sourcing's upcasting**: Schema evolution at read time, not write time. Store checkpoints with version metadata. Transform on load if needed.
-
-4. **Git's fork model**: Immutable history + mutable position pointers. Fork is cheap (new pointer into shared history). Divergent histories are clean because the common ancestor is always findable.
-
-5. **Temporal's lesson**: Full replay is correct but expensive (51,200 event limit). Our "Restore + Continue" approach avoids replay entirely — better for large graphs. But we need Temporal-level strictness about position tracking.
-
-6. **Dolt's fork-as-reference**: A fork is just a pointer into shared history, not a copy of data. Our `forked_from` + `fork_superstep` on `Run` follows this — the new run references the parent's steps rather than duplicating them.
-
-7. **Dolt's schema diff over hash comparison**: When graph structure changes, report *what* changed (which nodes added/removed, which edges changed) rather than just "hash mismatch." More actionable error messages. Not for MVP, but the right long-term direction.
-
-8. **Beads' "ready work" = our scheduling problem**: `bd ready` does a topological sort and returns only actionable items. Our `get_ready_nodes()` is the same pattern. The resume problem IS the scheduling problem — restore state correctly and the normal scheduler produces the right answer. No special "resume logic" needed.
-
-9. **Beads' append-only externalized state**: All task state lives outside the agent's context window. Fresh agents load state and pick up where the last one left off. Validates our "Restore + Continue" approach — a fresh engine loads checkpoint state and runs, just like a fresh Beads agent runs `bd ready` and starts working.
+With gate output values, the marking is partially IN the colors — routing decisions are derivable from `_gate` values. The remaining marking-only data is `node_completions` (who ran and what they consumed).
 
 ### Dolt as backend: evaluated and rejected
 
@@ -500,21 +438,11 @@ Dolt's conceptual primitives (branches, commits, forks, time travel, three-way m
 - The Go embedded driver (`file://` DSN) has no Python equivalent
 - `doltpy` Python package is deprecated (last release Jan 2023)
 
-**Verdict**: Operationally closer to "add PostgreSQL support" than "add SQLite support." The ~100 lines of SQL we need on SQLite are dramatically simpler than asking users to install and operate a Go database server. We adopt Dolt's design patterns, implement them on SQLite.
-
-### The critical insight
-
-**A checkpoint is a Petri net marking + token colors.**
-- Marking = `{completed_nodes, routing_decisions}` → position (graph-specific)
-- Colors = `{name: value}` → data (portable)
-
-Compatibility checking should operate on the marking against the current graph structure. If the marking references nodes/decisions that don't exist in the new graph, that's an incompatibility — handle it explicitly (error, warn, or transform), never silently.
+**Verdict**: We adopt Dolt's design patterns, implement them on SQLite.
 
 ---
 
 ## Design Patterns Adopted from Research
-
-Concrete patterns we're bringing into hypergraph's checkpoint/resume design, with their origin:
 
 ### From Dolt
 
@@ -522,27 +450,16 @@ Concrete patterns we're bringing into hypergraph's checkpoint/resume design, wit
 |---|---|---|
 | **Fork as reference** | New run points to parent, doesn't copy data | `Run.forked_from` + `Run.fork_superstep` fields |
 | **Content-addressed equality** | Cheap "did anything change?" check | `graph.definition_hash` for graph structure |
-| **Three-way merge model** | Framework for reasoning about value conflicts | `checkpoint_values ← runtime_values` (runtime wins, no conflicts for now) |
-| **Schema diff granularity** | Report what changed, not just "hash mismatch" | Future: `GraphDiff` with added/removed nodes. MVP: hash comparison only |
 | **WorkingSet vs Committed** | Separate in-flight from persisted state | `GraphState` (ephemeral, in-memory) vs `StepRecord` (durable, checkpointed) |
+| **Schema diff granularity** | Report what changed, not just "hash mismatch" | Future: `GraphDiff` with added/removed nodes. MVP: hash comparison only |
 
 ### From Beads (Yegge)
 
 | Pattern | What we adopt | How we implement it |
 |---|---|---|
 | **"Ready work" as universal primitive** | Resume = normal scheduling on restored state | `get_ready_nodes()` — no special resume logic, just correct state restoration |
-| **Externalized state for bounded agents** | Checkpoint is self-describing; fresh engine can load and continue | Checkpoint = values + steps + routing decisions (complete state) |
-| **Append-only history** | Step records are immutable once written | `save_step` appends, never overwrites. Failed + retried = both records exist |
-| **Gates as checkpoint boundaries** | Natural pause points where state should be persisted | `InterruptNode` already does this; generalizable to any blocking operation |
-| **Source of truth vs read cache** | Durable log + fast query layer | SQLite serves both roles for now; JSONL export as future portable format |
-
-### From Petri Nets
-
-| Pattern | What we adopt | How we implement it |
-|---|---|---|
-| **Marking = position** | `node_executions` + `routing_decisions` IS the position | Restored from step history on resume |
-| **Token colors = data** | `values` dict IS the data (portable across graph versions) | Restored from checkpoint values |
-| **Topology change = new net** | Graph change requires new workflow (fork) | Same `workflow_id` + different `graph_hash` = error |
+| **Externalized state** | Checkpoint is self-describing; fresh engine can load and continue | Snapshot = values + node_completions (complete scheduling state) |
+| **Append-only history** | Step records are immutable once written | `save_step` appends, never overwrites |
 
 ### From Git
 
@@ -550,29 +467,28 @@ Concrete patterns we're bringing into hypergraph's checkpoint/resume design, wit
 |---|---|---|
 | **Immutable commits + mutable refs** | Steps are immutable, run status is mutable | `StepRecord` (append-only) + `Run.status` (updated on completion/failure) |
 | **Branch = cheap pointer** | Fork doesn't duplicate history | `forked_from` references parent; `get_steps` walks the fork chain |
-| **Common ancestor for merge** | Fork point is always findable | `Run.fork_superstep` records where the fork happened |
-
-### Gate Output Values (New — from this session)
-
-Not from external research, but from our own design discussion. Resolves the "branch ambiguity without history" problem.
-
-| Decision | Rationale | Status |
-|---|---|---|
-| Gates produce output values | Makes routing decisions visible in `state.values`, enables values-based resume for gates | Design complete, implementation pending |
-| Output name = `_<function_name>` | Reserved `_` prefix namespace — user output names can't start with `_` | **Implemented** (`validation.py`) |
-| ifelse output = `bool` | The raw return value of the gate function | Implementation pending |
-| route output = `str` | The target name string (value and decision are the same) | Implementation pending |
-| Routing decisions derivable from values | `_is_valid = True` + gate config `when_true="approve"` → decision = `"approve"` | Implementation pending |
-
-See §11 in Key Design Decisions for full details including implementation changes needed.
 
 ### Not Adopted
 
 | Pattern | Source | Why not |
 |---|---|---|
-| **Dolt as storage backend** | Dolt | Client-server from Python, 103MB binary, deprecated Python package. Implement patterns on SQLite instead. |
-| **Prolly tree storage** | Dolt | Content-addressed dedup is elegant but overkill for our checkpoint sizes |
-| **Hash-based IDs** | Beads | Our `workflow_id` is user-provided, `run_id` is UUID. Both are fine for single-process. |
-| **Full replay** | Temporal | Expensive (51K event limit). Our "Restore + Continue" is cheaper and sufficient. |
-| **Semantic memory decay** | Beads | LLM-summarized old history. Interesting for `CheckpointPolicy` long-term, not for MVP. |
-| **Stable UIDs across renames** | Flink | We use node names as identifiers. Rename = different node. Simpler, and renames are rare. |
+| **Dolt as storage backend** | Dolt | Client-server from Python, 103MB binary, deprecated Python package |
+| **Prolly tree storage** | Dolt | Content-addressed dedup overkill for our checkpoint sizes |
+| **Full replay** | Temporal | Expensive (51K event limit). "Restore + Continue" is cheaper |
+| **Stable UIDs across renames** | Flink | We use node names as identifiers. Simpler, renames are rare |
+
+---
+
+## Implementation Status
+
+| Item | Status |
+|---|---|
+| `_` prefix validation for output names | **Committed** |
+| Gate output value production (§2) | Design complete, implementation pending |
+| Version replay (§1) | Design complete, implementation pending |
+| Snapshot reconstruction from steps (§3) | Design complete, implementation pending |
+| Schema migration (graph_hash column) | Design complete, implementation pending |
+| New exceptions | Design complete, implementation pending |
+| Checkpointer guards (terminal status, graph hash) | Design complete, implementation pending |
+| Fork API (`checkpoint` param on `run()`) | Design complete, implementation pending |
+| Plan file update | **Outdated** — still has remap-to-1, needs full rewrite |
