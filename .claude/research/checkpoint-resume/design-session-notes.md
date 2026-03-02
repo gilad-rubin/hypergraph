@@ -246,6 +246,77 @@ Removed from the design. Graph change detection stored for observability but doe
 - Different hash + same workflow_id → GraphChangedError (must fork)
 - Different hash + fork (new workflow_id + checkpoint) → load steps, let engine handle it
 
+### 11. Gate Nodes Produce Output Values
+
+**The problem**: Gate routing decisions are invisible in `state.values`. The `get_state()` API only returns values — routing decisions live only in step history (`step.decision`) and `state.routing_decisions`. Without history, there's no way to know which branch was taken. This is the "branch ambiguity" problem.
+
+**The solution**: Gates produce their return value as a regular data output, using a reserved `_` prefix namespace.
+
+| Gate type | Function name | Output name | Output value | Routing decision |
+|---|---|---|---|---|
+| `@ifelse` | `is_valid` | `_is_valid` | `True` / `False` | Derived: `gate.when_true if value else gate.when_false` |
+| `@route` | `decide` | `_decide` | `"process_a"` (target name) | The value itself |
+| `@route(multi_target=True)` | `fan_out` | `_fan_out` | `["a", "b"]` (target list) | The value itself |
+
+**Namespace safety**: Output names starting with `_` are rejected at graph build time (validation added). Gate outputs are generated internally, bypassing this check. No user output can ever collide with a gate output.
+
+**How this helps resume**:
+
+On a fresh run, the gate `is_valid` executes, stores `_is_valid = True` in `state.values`, and sets `state.routing_decisions["is_valid"] = "approve"`. Both happen automatically.
+
+On resume with checkpoint values:
+1. `state.values["_is_valid"] = True` is restored from checkpoint
+2. `state.routing_decisions["is_valid"]` is reconstructed: read `_is_valid` from values, look up gate config (`when_true="approve"`), derive decision
+3. The scheduler sees the routing decision → only the correct branch is activated
+4. The gate itself participates in staleness: if its inputs change, `_is_valid` version bumps → downstream nodes cascade
+
+**What this changes in the execution model**:
+
+```
+Before:
+  GateNode.data_outputs = ()           # gates produce nothing
+  execute_ifelse → return {}            # discard the bool
+  state.routing_decisions["is_valid"]   # only place the decision lives
+
+After:
+  GateNode.data_outputs = ("_is_valid",)  # gates produce their return value
+  execute_ifelse → return {"_is_valid": True}  # store the bool
+  state.routing_decisions["is_valid"]     # still set (for scheduler)
+  state.values["_is_valid"] = True        # also in values (for checkpoint)
+```
+
+**Implementation changes needed**:
+
+| File | Change |
+|---|---|
+| `nodes/gate.py` | `GateNode.__init__` sets data output name `_<name>`. `data_outputs` returns it. `outputs` = data output + emit outputs |
+| `gate_execution.py` | `execute_ifelse` passes `result` (not `None`) to `wrap_outputs`. `execute_route` passes `decision` to `wrap_outputs` |
+| `graph/validation.py` | Skip `_` prefix check for `GateNode` outputs (already reserved internally) |
+| `graph/_helpers.py` | Edge building: gates now have data edges from `_<name>` to any consumer. Verify no unintended edges |
+| `runners/_shared/helpers.py` | On resume, derive `routing_decisions` from gate output values in checkpoint |
+| Tests | Gate execution tests verify output value is stored. Resume tests verify routing is reconstructed from values |
+
+**What this does NOT change**:
+- User API for gates: `@ifelse(when_true=..., when_false=...)` — no new params
+- The scheduler: still reads `state.routing_decisions` — gate outputs feed into it, not replace it
+- Existing graphs without checkpointing: gates now produce `_` outputs that sit unused unless consumed
+
+**Interaction with version replay**:
+
+Gate outputs integrate naturally into version replay because they're regular values:
+
+```python
+# Version replay counts gate outputs like any other value
+for step in completed_steps:
+    if step.values:  # now includes {"_is_valid": True}
+        for name in step.values:
+            versions[name] = versions.get(name, 0) + 1
+```
+
+The gate's `_is_valid` gets a version, participates in staleness checks, and cascades correctly. No special-casing needed.
+
+**Resolves**: Open question "Branch Ambiguity Without History" — gate decisions are now IN the values, not only in history. Values carry enough signal for routing even without full step history.
+
 ---
 
 ## Updated Before / After (User-Facing)
@@ -333,10 +404,10 @@ await runner.run(graph, {"x": 5})
 
 ## Open Questions
 
-### Branch Ambiguity Without History
-When two branches share parameter names, values alone can't disambiguate which branch is active. The routing decision (from history) is the only signal. This is relevant beyond checkpointing — it's a fundamental property of the execution model.
+### ~~Branch Ambiguity Without History~~ → Resolved by Gate Output Values (§11)
+~~When two branches share parameter names, values alone can't disambiguate which branch is active.~~
 
-**Question**: How should we think about this? What can we learn from other systems with similar branching/versioning traits?
+**Resolved**: Gate outputs (`_is_valid`, `_decide`) make routing decisions visible in `state.values`. On resume, routing decisions are derived from gate output values + gate config. Values now carry enough signal for routing — history is still better (gives version-accurate state), but values alone no longer lose branch information.
 
 ### History in Fork with Changed Graph
 When forking across graph versions, inherited steps reference the old graph's structure. The staleness machinery handles most cases correctly, but node name collisions across versions remain a risk.
@@ -483,15 +554,17 @@ Concrete patterns we're bringing into hypergraph's checkpoint/resume design, wit
 
 ### Gate Output Values (New — from this session)
 
-Not from external research, but from our own design discussion:
+Not from external research, but from our own design discussion. Resolves the "branch ambiguity without history" problem.
 
-| Decision | Rationale |
-|---|---|
-| Gates produce output values | Makes routing decisions visible in `state.values`, enables values-based resume for gates |
-| Output name = `_<function_name>` | Reserved `_` prefix namespace — user output names can't start with `_` |
-| ifelse output = `bool` | The raw return value of the gate function |
-| route output = `str` | The target name string (value and decision are the same) |
-| Routing decisions derivable from values | `_is_valid = True` + gate config `when_true="approve"` → decision = `"approve"` |
+| Decision | Rationale | Status |
+|---|---|---|
+| Gates produce output values | Makes routing decisions visible in `state.values`, enables values-based resume for gates | Design complete, implementation pending |
+| Output name = `_<function_name>` | Reserved `_` prefix namespace — user output names can't start with `_` | **Implemented** (`validation.py`) |
+| ifelse output = `bool` | The raw return value of the gate function | Implementation pending |
+| route output = `str` | The target name string (value and decision are the same) | Implementation pending |
+| Routing decisions derivable from values | `_is_valid = True` + gate config `when_true="approve"` → decision = `"approve"` | Implementation pending |
+
+See §11 in Key Design Decisions for full details including implementation changes needed.
 
 ### Not Adopted
 
