@@ -224,11 +224,13 @@ Auto-generated IDs use a short format: `"run-{date}-{short_hash}"` (e.g., `"run-
 
 No escape hatch for completed workflows — use fork instead.
 
-### 8. Graph Changes = Fork (Git Model)
+### 8. Graph Changes = Fork (Git Model) — Partially Open
 
 **Same workflow_id requires same graph hash.** No exceptions, no `on_graph_change` param.
 
 **Why**: Mixing graph versions in one workflow's step history creates internally inconsistent state. Step records reference node names, edges, version numbers from a specific graph structure. A different graph makes that history nonsensical.
+
+**Open**: What exactly constitutes the "graph hash" — see the Definition Hash open question. The fork model itself is settled; what triggers it is not.
 
 **The git model for forks**:
 
@@ -498,23 +500,42 @@ print(result.workflow_id)  # "run-20260302-a7b3c2"
 ### ~~Branch Ambiguity Without History~~ → Resolved by Gate Output Values (§2)
 **Resolved**: Gate outputs (`_is_valid`, `_decide`) make routing decisions visible in `state.values`. Routing decisions are derived from gate output values + gate config.
 
-### ~~Definition Hash Sensitivity~~ → Resolved: Structural Only
-**Resolved**: Graph hash should be **structural only** (node names + edges + node types), NOT include source code. The "fix a bug and retry" workflow is too common to force a fork for every code change. Content-based change detection belongs in the **caching** layer (per-node, function hash as part of cache key), not the checkpoint layer.
+### Definition Hash: What To Hash and Why — OPEN
 
-This means:
-- Same graph structure + same workflow_id = resume (code changes are invisible to checkpoint)
-- Different graph structure + same workflow_id = `GraphChangedError` (fork required)
-- Code change detection = handled by `cache=True` on individual nodes
+**Research finding**: Neither Temporal nor Restate hash workflow definitions. Both detect code changes lazily at execution time through replay mismatch. But our system is fundamentally different — we don't do replay. We restore a snapshot and continue. So we can't get code change detection "for free."
 
-### ~~Value Override on Same Workflow ID~~ → Resolved: Resume = No New Values
-**Resolved**: Passing new values to the same `workflow_id` is conceptually a fork, not a resume. The API makes this explicit:
+**Two separate concerns:**
 
-- **Resume**: `run(graph, workflow_id="job-1")` — no new values, continue from snapshot
-- **Fork**: `run(graph, {"x": 100}, checkpoint=cp, workflow_id="job-1-v2")` — new values = new identity
+| Concern | Question | Purpose |
+|---|---|---|
+| **Structural compatibility** | "Does the snapshot fit this graph?" | Prevent nonsensical resume (snapshot references nodes that don't exist) |
+| **Code change detection** | "Did any node's implementation change?" | Prevent stale results (node ran with buggy code) |
 
-If you pass values to a resume call, the behavior depends:
-- Values that match what's in the checkpoint → no-op (same state)
-- Values that differ → should this be an error or silent fork? **Decision: error.** "If you want different inputs, fork."
+**Options under consideration:**
+
+| Approach | Structural | Code changes | Complexity | Notes |
+|---|---|---|---|---|
+| **No hash** | Not detected | Not detected | Zero | Like Temporal pre-replay; risky for us since we don't replay |
+| **Structural hash only** | Error + fork | Not detected | Low | Safe for structure; code changes invisible to checkpoint layer |
+| **Structural + code hash** | Error + fork | Error + fork | Medium | Forces fork for every bug fix |
+| **Structural hash + per-node cache** | Error + fork | Cache miss → re-compute | Medium | Best of both? Cache detects code changes at node level |
+
+**Temporal's approach (for reference)**: No upfront detection. At replay time, if the workflow code generates a different command sequence than what's in history → `[TMPRL1100] Nondeterminism error`. Safe changes (activity internals, logic inside activities) are invisible. Unsafe changes (reordering activities, adding/removing workflow API calls) are caught.
+
+**Restate's approach**: Pins invocations to deployment endpoints. Code changes at the same endpoint → `RT0016 Journal mismatch`. New code must be deployed to a new endpoint, then invocations migrated.
+
+**Key question**: Since we don't do replay, what level of hash gives us the right tradeoff between safety and DX friction?
+
+### Value Override on Resume — OPEN
+
+Passing new values to the same `workflow_id` is conceptually a fork, not a resume. But should we enforce this strictly?
+
+**Temporal**: Cannot change inputs on retry. New execution required.
+**Restate**: Same — `restart-as-new` uses original input. New invocation required for different inputs.
+
+Both systems agree: **same identity = same inputs**. This suggests we should follow suit.
+
+**Proposed**: Resume = no new values. New values = requires fork (new workflow_id + checkpoint). But we should validate this against our actual use cases before committing.
 
 ### History in Fork with Changed Graph
 When forking across graph versions, inherited steps reference the old graph's structure. The staleness machinery handles most cases correctly, but node name collisions across versions remain a risk.
@@ -543,6 +564,38 @@ Every system with resumable branching workflows separates two concerns:
 - Colors = `{name: value}` → data (portable)
 
 With gate output values, the marking is partially IN the colors — routing decisions are derivable from `_gate` values. The remaining marking-only data is `node_completions` (who ran and what they consumed).
+
+### Temporal vs Restate vs Hypergraph: Resume Mechanisms
+
+Research into how Temporal and Restate handle code changes, forks, and input overrides.
+
+**The fundamental architectural difference:**
+
+| | Temporal | Restate | Hypergraph |
+|---|---|---|---|
+| **Resume mechanism** | Full replay from start | Journal replay from start | Snapshot restore + continue |
+| **Code change detection** | Implicit (replay mismatch) | Implicit (journal mismatch) | Must be explicit (no replay) |
+| **Detection timing** | At execution time (lazy) | At execution time (lazy) | At resume time (eager) |
+| **Versioning approach** | In-code (`GetVersion`/`patched()`) | Infrastructure (immutable deployments) | TBD (hash? cache? both?) |
+| **Input change on retry** | New execution required | New invocation required | TBD |
+| **Fork / time travel** | Reset API (terminates old execution) | `restart-as-new?from=N` (preserves old) | Checkpoint + new workflow_id (preserves old) |
+
+**Key Temporal details:**
+- `GetVersion(ctx, changeId, defaultVersion, maxVersion)` — records a marker event in history. Old workflows replay and see `DefaultVersion`. New workflows see `maxVersion`. Both code paths coexist until old workflows drain.
+- Worker Versioning (recommended for production) — tag workers with build IDs, route old workflows to old workers. No `GetVersion` needed.
+- Reset API — rewinds to a `WorkflowTaskStarted` event. Same workflow ID, new run ID. Old execution terminated.
+
+**Key Restate details:**
+- No in-code versioning API (no `GetVersion` equivalent)
+- Invocations pinned to deployment ID. New code = new endpoint = new deployment registration
+- `restart-as-new?from=N&deployment=new_id` — copies journal prefix, resumes with new code. Old invocation preserved.
+- `RT0016 Journal mismatch` if code changes at same endpoint without new deployment
+
+**What this means for us:**
+- Both systems agree: same identity = same inputs. You cannot change inputs on retry.
+- Both detect code changes lazily through replay, which we can't do.
+- Temporal's `GetVersion` is elegant but adds code complexity. Not applicable to our restore-based model.
+- Our closest analog to Temporal's Reset is fork (checkpoint from old run + new workflow_id). But we preserve the old run, like Restate.
 
 ### Dolt as backend: evaluated and rejected
 
