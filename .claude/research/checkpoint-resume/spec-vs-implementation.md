@@ -2,6 +2,8 @@
 
 Gap analysis between the reviewed specs and what PR #63 actually implements.
 
+**Spec sources**: `execution-types.md`, `persistence.md`, `state-model.md`, `checkpointer.md`, `durability.md`, `durable-execution.md`
+
 ---
 
 ## What We Built (PR #63)
@@ -39,271 +41,344 @@ When `map()` is called with the same `workflow_id`:
 
 ---
 
-## What the Specs Envision
+## Critical Gap: Step History as Implicit Cursor
 
-The following sections map spec features to their implementation status.
+**This is the biggest thing we got wrong.** The spec (execution-types.md §Step History as Implicit Cursor) is very clear:
 
-### Value Resolution Hierarchy
+> Unlike sequential workflow systems that track an explicit program counter, hypergraph uses **step history as an implicit cursor**. The combination of outputs + completed steps determines what runs next.
 
-**Spec** (persistence.md, state-model.md):
+### Why values alone are insufficient
+
+The spec gives two concrete examples:
+
+**1. Cycles need iteration count**
+
 ```
-1. Edge value        — Produced by upstream node
-2. Runtime input     — Explicit in runner.run(values={...})
-3. Checkpoint value  — Loaded from persistence
-4. Bound value       — Set via graph.bind()
-5. Function default  — Default in function signature
-```
-
-**Implementation**: We merge checkpoint into runtime inputs before execution: `{**checkpoint, **runtime}`. This collapses levels 2+3 into one "merged input" bucket. state-model.md explicitly validates this: *"checkpoint values are just part of the merged inputs."*
-
-**Status**: ALIGNED. The 5-level hierarchy is a conceptual model. The implementation correctly gives runtime values priority over checkpoint values, which is the invariant that matters.
-
-### Execution Semantics (load → merge → execute → append)
-
-**Spec** (persistence.md §Execution Semantics):
-```
-run(graph, values, workflow_id):
-  1. Load   — Get checkpoint state (if workflow_id exists)
-  2. Merge  — Combine with values (values win on conflicts)
-  3. Execute — Run the graph
-  4. Append — Add new steps to history
-  5. Return — Give back result
+generate(messages) → accumulate(messages, response) → check_done → generate
 ```
 
-**Implementation**: Exactly this. We load, merge, execute (which appends steps via save_step), and return.
+If checkpoint contains `{"messages": [...], "response": "..."}`:
 
-**Status**: IMPLEMENTED.
+- **Scenario A**: Crashed after `generate`, before `accumulate` → should run `accumulate`
+- **Scenario B**: Crashed after `accumulate`, before `check_done` → should run `check_done`
 
-### graph_hash (version mismatch detection)
+With just outputs, both scenarios look identical. Step history tells us which node last completed.
 
-**Spec** (checkpointer.md §Types):
+**2. Branches with shared intermediate outputs**
+
+If branch A and branch B both produce `processed`, and we crash after `process_a`:
+- Both `finalize_a` and `finalize_b` appear runnable (both see `processed` in state)
+- Step history shows `process_a` completed, disambiguating which branch is active
+
+### The spec's resume algorithm
+
+```python
+def should_run_node(node, state, steps):
+    # 1. Inputs available?
+    if not all(inp in state.values for inp in node.inputs):
+        return False
+    # 2. Find last step for this node
+    last_step = find_last_step(node.name, steps)
+    if last_step is None:
+        return True  # Never ran
+    # 3. Compare consumed vs current versions (staleness detection)
+    consumed = last_step.input_versions
+    current = {inp: state.versions[inp] for inp in node.inputs}
+    return consumed != current  # Run if any input changed
+```
+
+This algorithm is **already implemented** in `_needs_execution()` in `helpers.py` — but only for in-memory `GraphState.node_executions`. On resume, we create a fresh `GraphState` with no execution history. The step records from the previous run are never loaded.
+
+### What our implementation actually does on resume
+
+1. Load values from `get_state()` → `{"messages": [...], "count": 3}`
+2. Merge into fresh `GraphState` → versions all start at 1
+3. Run graph from scratch with these values as "inputs"
+4. Hope that the graph's logic (gates, conditions) correctly handles the resumed state
+
+This **works for simple cases** (multi-turn chat, simple DAGs) because:
+- In chat: `messages` from checkpoint + new `user_input` → graph produces correct output
+- In DAGs: edge values from loaded state satisfy downstream inputs, upstream nodes don't run
+
+This **breaks for**:
+- Mid-cycle crashes (can't distinguish iteration N from iteration N+1)
+- Branches with shared output names (can't tell which branch was taken)
+- Partial superstep recovery (can't skip node A that completed but not node B that was running in parallel)
+
+### What we should do
+
+The spec says `Checkpoint = values + steps`. We only load values. We should also load steps and use them to populate `GraphState.node_executions` so the existing `_needs_execution()` / `_is_stale()` machinery works correctly on resume.
+
+This is not "nice to have" — it's **correctness for cycles and branches**.
+
+---
+
+## The `graph.inputs.all` Filter Problem
+
+**User concern**: "I don't like magic... I like explicit and fail fast."
+
+### What we do
+
+```python
+checkpoint_state = await checkpointer.get_state(workflow_id)
+if checkpoint_state:
+    graph_input_names = set(graph.inputs.all)
+    checkpoint_inputs = {k: v for k, v in checkpoint_state.items() if k in graph_input_names}
+```
+
+We silently drop any checkpoint value not in `graph.inputs.all`. The user never sees which values were dropped or why.
+
+### Why this is wrong
+
+1. **Silent filtering is magic**. If someone stores `embedding` as a checkpoint value and the graph expects it, but it's classified as an edge-produced intermediate rather than an "input", it silently disappears. No error, no warning.
+
+2. **The spec's approach is different**. The spec loads ALL checkpoint state into the execution state, then uses the `should_run_node()` algorithm (with input_versions) to decide what to skip. The filtering happens at the execution level (staleness detection), not at the loading level.
+
+3. **The "don't short-circuit intermediates" concern is real but solved differently**. The worry was: if checkpoint has `embedding` from a prior run, and the new run has an `embed` node, we don't want stale `embedding` to skip the node. But the spec solves this with **input_versions** — on a fresh run (no step history), `embed` would be treated as "never ran" and would execute regardless of whether its output exists in state.
+
+### What we should do
+
+Two options:
+- **Option A (spec-aligned)**: Load all checkpoint values, use step history + input_versions for staleness. This is correct but requires implementing step-history loading first.
+- **Option B (explicit/fail-fast)**: Keep filtering, but make it explicit — log which values were loaded and which were dropped. Better: let the user control the filter with a parameter.
+
+Option A is the right long-term answer. Option B is a reasonable interim step.
+
+---
+
+## graph_hash: Error by Default, Not Warning
+
+### What the spec says (execution-types.md)
+
 ```python
 @dataclass
 class Workflow:
-    graph_hash: str | None  # For version mismatch detection
+    graph_hash: str | None = None
+    """Hash of the graph definition at workflow creation.
+
+    Used to detect version mismatches on resume. If current graph hash
+    differs from stored hash, resume will fail with VersionMismatchError
+    unless force_resume=True is specified.
+    """
 ```
 
-**Implementation**: The `Run` type has no `graph_hash` field. No hash is computed or compared.
+This is **error by default** with `force_resume=True` as the escape hatch. Not a warning.
 
-**Status**: NOT IMPLEMENTED.
+### Why error is the right default
 
-**Assessment**: This is the spec's answer to "what if the graph changed between runs?" Without it, resuming with a structurally different graph may silently produce wrong results or crash. The spec envisions:
-- Compute a hash from the graph structure (node names, edges, types)
-- Store it in the workflow/run record at creation
-- On resume, compare hashes and warn (not block) on mismatch
+Resuming with a different graph is dangerous:
+- Step history may reference nodes that no longer exist
+- Node input/output signatures may have changed
+- Gate routing decisions may be invalid for the new graph structure
+- The implicit cursor (step history + versions) may be meaningless
 
-**Recommendation**: Implement as a warning. Store `graph_name` (already available) + a structural hash. On resume, if hash differs, log a warning but proceed. This gives users visibility into graph drift without blocking legitimate use cases (bug fixes, added nodes).
+The spec's approach: **fail loudly**, let the user opt in with `force_resume=True` when they know what they're doing (e.g., bug fix that doesn't change structure).
 
-### history parameter (workflow forking)
+### What to implement
 
-**Spec** (persistence.md §Explicit State and History Injection):
+1. Compute `graph_hash` from: sorted node names, sorted edge tuples, node types, output names
+2. Store in `runs` table when creating a run
+3. On resume (when `workflow_id` exists in checkpointer):
+   - Load stored `graph_hash`
+   - Compute current graph hash
+   - If different: raise `VersionMismatchError` unless `force_resume=True`
+4. Add `force_resume: bool = False` to `run()` and `map()` signatures
+
+---
+
+## Recursive Resume for Nested Graphs
+
+**User question**: "does this whole system work recursively? because we can have multiple nested graphs (with .map runs, nested graphs with .map_over in them)"
+
+### Current state
+
+Our skip-completed logic only works at the **top-level** `map()` call:
+- `_get_completed_child_indices()` queries direct children of the map's `workflow_id`
+- Nested graphs within each map item create their own child workflows (`batch-001/0/rag`)
+- But when a map item is **re-executed** (not skipped), the entire nested graph runs from scratch
+
+### What should happen
+
+For nested `map_over` inside a nested graph:
+```
+runner.map(graph, {...}, workflow_id="batch")
+  → batch/0 → runs inner graph → inner graph has map_over("item")
+    → batch/0/processor/0
+    → batch/0/processor/1
+    → batch/0/processor/2
+  → batch/1 → ...
+```
+
+If `batch/0` is COMPLETED, we skip it entirely (restore from checkpoint) — ✅ works.
+If `batch/0` is FAILED, we re-execute it. But inside, `batch/0/processor/0` might have completed while `batch/0/processor/1` failed. The inner `map_over` should also skip its completed items.
+
+### Does this work today?
+
+**Partially.** The GraphNode executor for nested graphs calls `runner.run()` with a child `workflow_id`. If that child workflow already has completed steps, AND we implement step-history loading (the critical gap above), then the inner graph's execution would benefit from resume.
+
+But `map_over` on GraphNode uses a different path than `runner.map()` — it's handled in the GraphNode executor. That executor does NOT currently have skip-completed logic for individual items.
+
+### What needs to happen
+
+1. Step-history loading (the critical gap) — enables nested graph resume within a single run
+2. `map_over` on GraphNode should use the same skip-completed pattern as `runner.map()` — query completed children, skip them
+3. This needs to be recursive: each level of nesting should check its own children
+
+---
+
+## Re-Running Completed/Failed/Partial Workflows
+
+**User question**: "what should be the default in cases where the graph ran fully (succeeded, failed, partial) - and then rerun again?"
+
+### What the spec says
+
+The `WorkflowStatus` enum (execution-types.md):
+
+```python
+class WorkflowStatus(Enum):
+    ACTIVE = "active"       # Can be resumed
+    COMPLETED = "completed" # Terminal state — "Can resume? ❌"
+    FAILED = "failed"       # Terminal state — "Can resume? ❌"
+```
+
+But persistence.md also says:
+> "Retry after error: Same `workflow_id`, just run again"
+
+And our `create_run` upsert resets ANY status back to ACTIVE:
+```sql
+INSERT ... ON CONFLICT(id) DO UPDATE SET status = 'active', ...
+```
+
+### The contradiction
+
+The WorkflowStatus table says COMPLETED and FAILED are terminal ("Can resume? ❌"). But the execution semantics say "just run again". And our upsert blindly resets to ACTIVE.
+
+### What should actually happen
+
+| Prior Status | Re-run with same `workflow_id` | Rationale |
+|---|---|---|
+| ACTIVE | Allow (resume) | Normal resume / HITL continue |
+| COMPLETED | **Error by default** | Workflow is done — re-running would append to a completed workflow, creating confusing state |
+| FAILED | Allow (retry) | "Fix the bug and try again" pattern |
+
+For COMPLETED → re-run:
+- The user probably wants a **new** workflow, not to append to the old one
+- If they really want to continue, they should use `force_resume=True` or fork
+
+For FAILED → re-run:
+- This is the "retry after fixing the bug" pattern — should work
+- Step history should allow skipping successfully completed nodes
+
+### What we should implement
+
+Add status checks in `run()` before the upsert:
+```python
+if existing_run:
+    if existing_run.status == WorkflowStatus.COMPLETED and not force_resume:
+        raise WorkflowAlreadyCompletedError(workflow_id)
+    # ACTIVE and FAILED allow re-run
+```
+
+---
+
+## The `history` / `checkpoint` Parameter
+
+**User concern**: "we need the history w.r.t the node execution order and/or the values in order to understand exactly where we are in the graph. there are some ambiguous cases where we need this."
+
+### What the spec defines
+
+Two related parameters on `run()`:
+
+**1. `checkpoint` parameter (execution-types.md §Resume vs Fork)**:
+```python
+result = await runner.run(
+    graph,
+    values={"decision": "reject"},
+    checkpoint=checkpoint,           # Checkpoint = values + steps
+    workflow_id="order-123-retry",   # NEW workflow
+)
+```
+
+Parameter combinations:
+| `workflow_id` | `checkpoint` | Behavior |
+|:---:|:---:|---|
+| None | None | Ephemeral run (no checkpointer) or error (with checkpointer) |
+| New | None | Fresh start |
+| Existing | None | Resume from checkpointer state |
+| New | Yes | Fork with explicit workflow_id |
+| Existing | Yes | Error: can't fork into existing workflow |
+
+**2. `history` parameter (persistence.md)**:
 ```python
 result = await runner.run(
     graph,
     values={**state, "user_input": "new question"},
-    history=steps,                                     # Execution trail
-    workflow_id="session-456",                         # NEW workflow
+    history=steps,                    # Seeds step index, copies trail
+    workflow_id="session-456",        # NEW workflow
 )
 ```
 
-The `history` parameter:
-- Seeds the step index (new steps continue numbering)
-- Copies the step trail into the new workflow
-- Provides full audit trail via `get_steps()`
-- Errors if used with an existing workflow (it has its own history)
+These serve overlapping purposes. The `checkpoint` parameter is probably the cleaner API since `Checkpoint = values + steps` bundles them together.
 
-**Implementation**: Not implemented. `run()` has no `history` parameter.
+### Why this matters for correctness
 
-**Status**: NOT IMPLEMENTED.
+The `Checkpoint.steps` contain `input_versions` for each step. These are the **implicit cursor** — they tell the resume algorithm exactly where execution left off:
 
-**Assessment**: This is a fork/branch feature. The current implementation supports the simpler pattern: read state from workflow A, pass as values to workflow B. The `history` parameter adds step-level provenance (audit trail continuity). This is a nice-to-have for compliance and debugging, not critical for basic resume.
+- In a cycle: which iteration was last completed
+- In a branch: which branch was taken
+- In a parallel superstep: which nodes completed before the crash
 
-**Recommendation**: Defer. The value-spreading pattern (`values={**checkpoint.values, ...}`) covers the core fork use case. `history` adds audit provenance — implement when users need it.
+Without loading steps, we lose this information. Our current implementation works by accident for simple cases but is fundamentally incomplete.
 
-### get_checkpoint() (time travel)
+### What to implement
 
-**Spec** (checkpointer.md):
-```python
-async def get_checkpoint(self, run_id: str, *, superstep: int | None = None) -> Checkpoint:
-    """Combines get_state() and get_steps() into a single Checkpoint object."""
-```
-
-**Implementation**: `get_checkpoint()` exists on the Checkpointer ABC with a default implementation that calls `get_state()` + `get_steps()`. However, `get_state(superstep=N)` for historical supersteps is not implemented in SqliteCheckpointer — it always returns latest state.
-
-**Status**: PARTIALLY IMPLEMENTED. The method exists but historical time-travel queries don't work yet.
-
-**Assessment**: Historical state queries need either step-folding or snapshot materialization (spec §State Materialization). Current `get_state()` uses a `latest_values` table which is fast for latest but can't do point-in-time.
-
-**Recommendation**: Implement step-folding as fallback in SqliteCheckpointer when `superstep` is provided. This enables the fork-from-point use case.
-
-### Concurrent execution guard
-
-**Spec** (persistence.md §Concurrent Execution):
-```python
-# ❌ Error: workflow is already running
-task1 = runner.run(graph, values={...}, workflow_id="order-123")
-task2 = runner.run(graph, values={...}, workflow_id="order-123")  # Conflict!
-```
-
-**Implementation**: No guard. Two concurrent runs with the same `workflow_id` would race on checkpoint reads/writes and produce corrupt state.
-
-**Status**: NOT IMPLEMENTED.
-
-**Assessment**: This is a safety concern, not a feature. Without it, concurrent map() retries or accidental double-submissions can corrupt checkpoint state.
-
-**Recommendation**: Implement using `status=ACTIVE` check. On `create_run`, if existing run has `status=ACTIVE`, raise `ConcurrentExecutionError`. The upsert already sets status to ACTIVE, so we just need the check before the upsert.
-
-### CheckpointPolicy
-
-**Spec** (checkpointer.md):
-```python
-@dataclass
-class CheckpointPolicy:
-    durability: Literal["sync", "async", "exit"] = "async"
-    retention: Literal["full", "latest", "windowed"] = "full"
-    window: int | None = None
-    ttl: timedelta | None = None
-```
-
-**Implementation**: `CheckpointPolicy` exists in `base.py` with full validation. SqliteCheckpointer accepts it. However:
-- `durability`: Only "exit" mode is effectively implemented (steps are saved synchronously during execution — there's no background write pipeline for "async"). In practice, "sync" and "async" behave the same.
-- `retention`: Only "full" is implemented. No pruning for "latest" or "windowed".
-- `ttl`: Not implemented (no cleanup job).
-
-**Status**: PARTIALLY IMPLEMENTED (type + validation exist, but behavior is uniform).
-
-**Assessment**: The policy is structural scaffolding. The "async" vs "sync" distinction requires a background write queue. "latest" retention requires a pruning pass after save_step. These are performance optimizations, not correctness concerns.
-
-**Recommendation**: Defer. The current behavior (sync writes, full retention) is the safest default and sufficient for alpha/beta.
-
-### ArtifactRef (tiered storage for large values)
-
-**Spec** (durability.md §6):
-```python
-@dataclass(frozen=True)
-class ArtifactRef:
-    storage: str
-    key: str
-    size: int
-    content_type: str
-    checksum: str
-```
-
-**Implementation**: Not implemented. All values are stored inline in the SQLite `values` column.
-
-**Status**: NOT IMPLEMENTED.
-
-**Assessment**: Critical for production with large outputs (embeddings, images, dataframes). Not needed for the current alpha.
-
-**Recommendation**: Defer to production readiness phase. The serializer interface already exists as an extension point.
-
-### GraphNode durability boundaries
-
-**Spec** (durability.md §7-8):
-```python
-rag.as_node(durability="nested")   # default: inner steps persisted individually
-rag.as_node(durability="atomic")   # single StepRecord for entire subgraph
-```
-
-**Implementation**: Not implemented. Nested graphs always use the "nested" pattern (child workflow + per-step records).
-
-**Status**: NOT IMPLEMENTED.
-
-**Assessment**: "atomic" mode is an optimization for subgraphs with non-serializable intermediates. The default "nested" behavior is correct and implemented.
-
-**Recommendation**: Defer. Add when users hit serialization issues with nested graph intermediates.
-
-### SyncRunner checkpointing
-
-**Spec** (checkpointer.md §SyncRunner):
-> "SyncRunner does not support checkpointing. This is by design."
-
-**Implementation**: SyncRunner fully supports checkpointing via `SyncCheckpointerProtocol`. This is a deliberate deviation from the spec — we added sync support because the framework targets data scientists who often work synchronously.
-
-**Status**: IMPLEMENTED (spec is outdated).
-
-**Assessment**: The spec should be updated. `SyncCheckpointerProtocol` is a runtime-checkable Protocol with sync methods (`state()`, `runs()`, `create_run_sync()`, etc.) that SqliteCheckpointer implements alongside its async interface.
-
-### HITL (Human-in-the-Loop) with InterruptNode
-
-**Spec** (persistence.md §Human-in-the-Loop):
-```python
-approval = InterruptNode(
-    name="approval",
-    input_param="draft",
-    response_param="decision",
-)
-```
-
-Resume pattern: run with same `workflow_id`, provide response in values.
-
-**Implementation**: InterruptNode exists and works with checkpointing. The resume mechanism (load state → merge with response → re-execute) works because the checkpoint provides all prior state, and the response comes as a runtime value which overrides checkpoint.
-
-**Status**: IMPLEMENTED (via the general resume mechanism, not a special HITL path).
-
-### No update_state()
-
-**Spec** (state-model.md, persistence.md):
-> "hypergraph intentionally does not have update_state(). State flows through nodes."
-
-**Implementation**: Correct. No external state mutation API. InterruptNode is the sanctioned way to inject human input.
-
-**Status**: ALIGNED.
+1. Add `checkpoint: Checkpoint | None = None` to `run()` signature
+2. When resuming (existing `workflow_id`, no explicit `checkpoint`), load `Checkpoint` from checkpointer (not just values)
+3. Use `checkpoint.steps` to populate `GraphState.node_executions` before execution begins
+4. The existing `_needs_execution()` / `_is_stale()` machinery then handles resume correctly
 
 ---
 
-## Gap Summary
+## Gap Summary (Revised)
 
-| Feature | Spec | Implementation | Priority |
-|---------|------|----------------|----------|
-| Value merge (load→merge→execute→append) | Defined | Done | — |
-| map() skip completed | Implied | Done | — |
-| SyncRunner checkpointing | Excluded | Done (deviation) | — |
-| InterruptNode resume | Defined | Works via general mechanism | — |
-| graph_hash warning | Defined (Workflow type) | Missing | Medium |
-| Concurrent execution guard | Defined | Missing | Medium |
-| get_state(superstep=N) | Defined | Missing (always latest) | Low |
-| history parameter | Defined | Missing | Low |
-| CheckpointPolicy behavior | Defined | Scaffolding only | Low |
-| ArtifactRef | Defined | Missing | Future |
-| GraphNode durability modes | Defined | Missing | Future |
-| ttl / retention pruning | Defined | Missing | Future |
+### Correctness gaps (must fix)
 
-### Recommended next steps (in priority order)
+| Gap | What Breaks Without It | Spec Source |
+|-----|----------------------|-------------|
+| **Step history loading** | Mid-cycle resume, branch disambiguation, partial superstep recovery | execution-types.md §Implicit Cursor |
+| **graph_hash + VersionMismatchError** | Silent corruption when graph changes between runs | execution-types.md §Workflow type |
+| **Terminal status guard** | Re-running COMPLETED workflow creates confusing mixed state | execution-types.md §WorkflowStatus |
+| **Silent value filter** | Values silently dropped, no visibility into what was loaded vs dropped | (fail-fast principle) |
 
-1. **graph_hash warning** — Low effort, high safety value. Compute a hash from node names + edge structure, store in `runs` table, warn on mismatch during resume.
+### Safety gaps (should fix)
 
-2. **Concurrent execution guard** — Low effort, prevents data corruption. Check `status=ACTIVE` before upsert in `create_run`.
+| Gap | Risk | Spec Source |
+|-----|------|-------------|
+| **Concurrent execution guard** | Corrupt checkpoint state from parallel writes | persistence.md §Concurrent Execution |
+| **Nested map_over resume** | Inner completed items re-execute unnecessarily | (recursive correctness) |
 
-3. **get_state(superstep=N)** — Enables fork-from-point. Implement as step-folding in SqliteCheckpointer when `superstep` is not None.
+### Feature gaps (defer)
 
-4. **history parameter** — Enables audit-trail-preserving forks. Add `history: list[StepRecord] | None = None` to `run()`.
-
-Everything else (ArtifactRef, durability modes, retention pruning, TTL) is production-readiness work, not alpha-blocking.
+| Gap | What It Enables | Spec Source |
+|-----|-----------------|-------------|
+| `checkpoint` param on `run()` | Explicit fork from any point | execution-types.md §Resume vs Fork |
+| `get_state(superstep=N)` | Time travel / historical queries | checkpointer.md, persistence.md |
+| `force_resume` param | Override graph_hash and terminal status checks | execution-types.md §Workflow type |
+| CheckpointPolicy behavior | Async writes, retention pruning, TTL | checkpointer.md §Policy |
+| ArtifactRef | Large value storage | durability.md §6 |
+| GraphNode durability modes | atomic vs nested persistence | durability.md §7-8 |
 
 ---
 
-## Design Decisions We Made (and why)
+## What the Implementation Does Right
 
-### State injection, not replay
+Despite the gaps, the core mechanics are sound:
 
-The spec defines "load → merge → execute → append", which is state injection. The graph re-executes from the top with merged inputs — there's no deterministic replay of prior steps (Temporal-style).
+1. **Value merge with runtime-wins semantics** — correctly implements the spec's priority hierarchy
+2. **map() skip-completed** — correct for flat (non-nested) batch operations
+3. **Upsert semantics** — correctly handles re-runs without crash
+4. **SyncRunner support** — pragmatic deviation from spec that serves real users
+5. **Append-only history** — each run appends steps, never overwrites
+6. **_validation_ctx guard** — correct optimization to avoid redundant DB reads for map children
 
-This is the right call because:
-- Hypergraph graphs are not deterministic (LLM calls, external APIs)
-- Replay would require recording all non-deterministic inputs (massive complexity)
-- State injection is simple: load the outputs, skip the nodes that already ran (via edge values)
-
-### Filter to graph.inputs.all
-
-We filter checkpoint state to only names in `graph.inputs.all` before merging. This prevents intermediate values from a prior run leaking into the new run's input resolution.
-
-Why this matters: if a prior run produced `embedding` as an intermediate value, and the new graph also has an `embed` node, we don't want the stale `embedding` to short-circuit the node. Only values that are actual graph inputs (required, optional, seeds) get merged.
-
-### _validation_ctx guard
-
-Map() children don't need checkpoint merge because the parent already distributes values to each child. Without the guard, each child would redundantly query the DB for checkpoint state — wasted I/O for potentially thousands of items.
-
-### Upsert semantics for create_run
-
-The original `create_run` did `INSERT` which crashed on re-run (`UNIQUE constraint failed`). We changed to `INSERT ... ON CONFLICT DO UPDATE` to support the resume pattern. The upsert preserves `created_at` while resetting `status` to ACTIVE.
+The fundamental load → merge → execute → append cycle is right. The gaps are about **what we load** (values only vs values + steps) and **what we check** (graph_hash, terminal status, concurrent execution).
