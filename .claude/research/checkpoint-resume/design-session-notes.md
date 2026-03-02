@@ -200,19 +200,19 @@ Three separate read APIs already exist:
 
 ### 6. Workflow ID Semantics
 
-**From the spec** (execution-types.md):
-
 | `workflow_id` | Checkpointer | `checkpoint` param | Behavior |
 |---|---|---|---|
-| None | No | None | OK — ephemeral run |
-| None | Yes | None | **Error** (spec is explicit) |
-| None | Yes | Checkpoint | Fork with auto-generated ID |
-| New | — | None | Fresh start |
-| Existing | — | None | Resume |
-| New | — | Checkpoint | Fork with explicit ID |
-| Existing | — | Checkpoint | Error (can't fork into existing) |
+| None | No | None | Ephemeral run (no persistence) |
+| None | Yes | None | **Auto-generate** workflow_id |
+| None | Yes | Checkpoint | **Auto-generate** workflow_id, fork from checkpoint |
+| Explicit (new) | — | None | Fresh start |
+| Explicit (existing) | — | None | Resume |
+| Explicit (new) | — | Checkpoint | Fork with explicit ID |
+| Explicit (existing) | — | Checkpoint | Error (can't fork into existing) |
 
-**Checkpointer + no workflow_id = error.** Not warning, not auto-generate.
+**Checkpointer + no workflow_id = auto-generate.** Updated from original spec which said "error." Auto-generating is better DX — less friction for the common case. The workflow_id is returned via `result.workflow_id` so the user can reference it later.
+
+Auto-generated IDs use a short format: `"run-{date}-{short_hash}"` (e.g., `"run-20260302-a7b3c2"`).
 
 ### 7. Terminal Status: COMPLETED = Error, FAILED = Allow
 
@@ -284,7 +284,45 @@ When forking with a different graph, the checkpoint has steps from graph_v1 but 
 
 **Risk**: Node name collision (old "process" vs new "process" doing different things).
 
-### 10. Immutable History with Visibility
+### 10. Resume = No New Values; New Values = Fork
+
+**The DX question**: When resuming a workflow, should you be able to pass new input values?
+
+**Answer: No.** Passing new values to the same workflow_id is conceptually a fork — you're branching from the existing state with different inputs. Making this explicit prevents confusion about what happened:
+
+```python
+# Resume: continue exactly where you left off
+await runner.run(graph, workflow_id="job-1")
+
+# Fork: start fresh from old state with different inputs
+checkpoint = await cp.get_checkpoint("job-1")
+await runner.run(graph, {"x": 100}, checkpoint=checkpoint, workflow_id="job-1-retry")
+
+# ERROR: passing values to resume is ambiguous
+await runner.run(graph, {"x": 100}, workflow_id="job-1")
+# ValueError: "Cannot pass input values when resuming. Fork instead."
+```
+
+**Why not allow it?** Two reasons:
+1. **Semantic ambiguity**: Does it mean "override and re-run affected nodes" or "replace but keep everything else"? Different users expect different things.
+2. **History integrity**: The workflow's step history shows what inputs were used. Silently changing inputs mid-workflow makes the history inconsistent.
+
+**What about retry with the same inputs?** That's just resume — no values needed. The snapshot has everything.
+
+### 11. Caching vs Checkpointing: Different Tools for Different Problems
+
+**Insight from DX exploration**: The "fix a bug and retry" scenario is better served by caching than checkpointing.
+
+| | Caching | Checkpointing |
+|---|---|---|
+| **Purpose** | Avoid re-computing unchanged nodes | Track and continue specific workflows |
+| **Best for** | Development iteration, expensive nodes | Production pipelines, failure recovery |
+| **Change detection** | Automatic (content-addressed) | Manual (fork required) |
+| **Identity** | None (stateless) | Workflow ID (stateful) |
+
+They compose naturally. A production pipeline uses both: checkpointing for workflow identity/history, caching for efficiency. A development iteration uses caching alone.
+
+### 12. Immutable History with Visibility
 
 Step history is append-only. If node C fails at step 3 and succeeds on retry at step 7, both records exist:
 ```
@@ -308,6 +346,75 @@ The runner consumes **snapshots**. The checkpointer stores **steps** and can bui
 
 ---
 
+## The Three Mechanisms: Caching vs Checkpoint vs Fork
+
+These are distinct tools that compose, not alternatives:
+
+| | **Caching** | **Checkpoint (Resume)** | **Fork** |
+|---|---|---|---|
+| **Identity** | Function + inputs hash (content-addressed) | Workflow ID (identity-addressed) | New workflow ID, inherited state |
+| **Scope** | Per-node | Per-workflow | Per-workflow |
+| **Invalidation** | Automatic (inputs changed → miss) | Manual (retry or override) | Explicit (new identity) |
+| **State** | Individual node results | Entire workflow snapshot | Snapshot from parent |
+| **Use case** | Avoid re-computing expensive nodes | Continue a failed/paused workflow | Branch from old state, possibly different graph |
+| **Already exists?** | Yes (`cache=True`, `DiskCache`) | Partially (PR #63 — values only, no skip) | No |
+
+### When to use which
+
+| Scenario | Mechanism | Why |
+|---|---|---|
+| Expensive API call, same inputs across runs | **Caching** | Content-addressed, automatic, no workflow identity needed |
+| Pipeline fails at step 5 of 10, retry | **Resume** | Same graph, same identity, skip completed steps |
+| Fix a bug in code, re-run | **Fork** | Code changed → graph hash changed → new identity |
+| "What if I took the other branch?" | **Fork** | Load old checkpoint, provide different inputs |
+| Iterating on node code during development | **Caching** | Avoid re-computing unchanged upstream nodes |
+
+### How they compose
+
+```python
+# Caching alone (no checkpointer, no workflow identity)
+@node(output_name="embedding", cache=True)
+def embed(text: str) -> list[float]:
+    return expensive_api_call(text)
+
+runner = AsyncRunner()
+await runner.run(pipeline, {"text": "hello"})  # computes embedding
+await runner.run(pipeline, {"text": "hello"})  # cache hit, skips embed
+
+# Resume alone (checkpointer, no per-node cache)
+runner = AsyncRunner(checkpointer=cp)
+await runner.run(pipeline, {"text": "hello"}, workflow_id="job-1")  # fails at step 3
+await runner.run(pipeline, workflow_id="job-1")  # skips steps 1-2, retries step 3
+
+# Both: checkpoint tracks workflow, cache avoids re-computation
+runner = AsyncRunner(checkpointer=cp)
+await runner.run(pipeline, {"text": "hello"}, workflow_id="job-1")  # fails at step 3
+await runner.run(pipeline, workflow_id="job-1")  # resume skips 1-2, cache may help step 3
+
+# Fork: new identity from old state
+checkpoint = await cp.get_checkpoint("job-1")
+await runner.run(graph_v2, checkpoint=checkpoint, workflow_id="job-1-v2")
+```
+
+### The "silent bug" scenario
+
+```
+Pipeline: A → B (buggy) → C
+Run completes successfully. B produced WRONG results, C used them.
+User fixes B's code.
+```
+
+| Approach | What happens |
+|---|---|
+| **New run (no checkpoint)** | Everything re-executes from scratch. Correct but wasteful. |
+| **New run + caching** | A cache hit (skip), B cache miss (code changed → different hash), C re-runs (B's output changed). Correct and efficient. |
+| **Fork** | Load old snapshot. B was COMPLETED. If graph hash includes code → B marked stale → re-runs → C cascades. If structural-only → B skips (WRONG). |
+| **Resume same ID** | `WorkflowAlreadyCompletedError` (completed = terminal). |
+
+**Insight**: For the "fix a bug and retry" workflow during development, **caching is the better primitive**. It's automatic (input hash detects changes), works without workflow identity, and handles code changes naturally (function code is part of the cache key). Checkpointing is for production workflows where you need identity, history, and observability.
+
+---
+
 ## Updated Before / After (User-Facing)
 
 ### 1. Completed nodes re-execute on resume
@@ -317,10 +424,6 @@ await runner.run(pipeline, workflow_id="job-1")
 
 # After: A, B skipped (snapshot shows they completed), only failed C re-runs
 await runner.run(pipeline, workflow_id="job-1")
-
-# After with override: cascade re-execution
-await runner.run(pipeline, {"x": 100}, workflow_id="job-1")
-# A re-runs (x changed) → B re-runs (cascade) → C re-runs
 ```
 
 ### 2. Graph changes go undetected → now error + fork
@@ -363,13 +466,14 @@ await runner.run(graph, {"decision": "reject"}, checkpoint=checkpoint, workflow_
 # After: check_done picks up correctly (version replay)
 ```
 
-### 7. Checkpointer without workflow_id → error
+### 7. Checkpointer without workflow_id → auto-generate
 ```python
 # Before: silently ignores checkpointer
 await runner.run(graph, {"x": 5})
 
-# After: error
-# MissingWorkflowIdError: "Checkpointer configured but no workflow_id provided."
+# After: auto-generates workflow_id, returns it
+result = await runner.run(graph, {"x": 5})
+print(result.workflow_id)  # "run-20260302-a7b3c2"
 ```
 
 ---
@@ -394,15 +498,28 @@ await runner.run(graph, {"x": 5})
 ### ~~Branch Ambiguity Without History~~ → Resolved by Gate Output Values (§2)
 **Resolved**: Gate outputs (`_is_valid`, `_decide`) make routing decisions visible in `state.values`. Routing decisions are derived from gate output values + gate config.
 
+### ~~Definition Hash Sensitivity~~ → Resolved: Structural Only
+**Resolved**: Graph hash should be **structural only** (node names + edges + node types), NOT include source code. The "fix a bug and retry" workflow is too common to force a fork for every code change. Content-based change detection belongs in the **caching** layer (per-node, function hash as part of cache key), not the checkpoint layer.
+
+This means:
+- Same graph structure + same workflow_id = resume (code changes are invisible to checkpoint)
+- Different graph structure + same workflow_id = `GraphChangedError` (fork required)
+- Code change detection = handled by `cache=True` on individual nodes
+
+### ~~Value Override on Same Workflow ID~~ → Resolved: Resume = No New Values
+**Resolved**: Passing new values to the same `workflow_id` is conceptually a fork, not a resume. The API makes this explicit:
+
+- **Resume**: `run(graph, workflow_id="job-1")` — no new values, continue from snapshot
+- **Fork**: `run(graph, {"x": 100}, checkpoint=cp, workflow_id="job-1-v2")` — new values = new identity
+
+If you pass values to a resume call, the behavior depends:
+- Values that match what's in the checkpoint → no-op (same state)
+- Values that differ → should this be an error or silent fork? **Decision: error.** "If you want different inputs, fork."
+
 ### History in Fork with Changed Graph
 When forking across graph versions, inherited steps reference the old graph's structure. The staleness machinery handles most cases correctly, but node name collisions across versions remain a risk.
 
 **Question**: Should we validate inherited steps against the new graph at fork time? Or just let the engine handle it and warn?
-
-### Definition Hash Sensitivity
-`FunctionNode.definition_hash` hashes source code, so even a bug fix changes the graph hash. This makes graph hash mismatches very common in the "fix and retry" workflow, forcing a fork even for trivial changes.
-
-**Question**: Should the graph hash be structural only (node names + edges) or include implementation (source code)? Structural-only would allow same-workflow_id resume after bug fixes but miss implementation changes that affect correctness.
 
 ---
 
