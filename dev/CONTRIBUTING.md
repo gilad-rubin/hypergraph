@@ -65,6 +65,5 @@ tests/             # Test suite (70+ files)
 docs/              # User-facing documentation
 dev/               # Internal development guidance (you are here)
 specs/             # Design specifications
-scripts/           # Utility scripts
-examples/          # Example usage
+scripts/           # Utility scripts and runnable examples
 ```
