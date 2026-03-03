@@ -136,6 +136,8 @@ def run_superstep_sync(
         for name, value in outputs.items():
             new_state.update_value(name, value)
 
+        output_versions = {name: new_state.get_version(name) for name in outputs}
+
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
@@ -148,6 +150,7 @@ def run_superstep_sync(
             node_name=node.name,
             input_versions=input_versions,
             outputs=outputs,
+            output_versions=output_versions,
             wait_for_versions=wait_for_versions,
             duration_ms=node_duration,
             cached=node_cached,

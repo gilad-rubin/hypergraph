@@ -272,6 +272,31 @@ class Graph:
         """
         return {output: next(iter(nodes)) for output, nodes in self.self_producers.items() if len(nodes) == 1}
 
+    @functools.cached_property
+    def input_data_producers(self) -> dict[str, dict[str, frozenset[str]]]:
+        """Map node_name -> input_name -> producers on incoming DATA edges.
+
+        In explicit-edge graphs, this captures exactly which producers are
+        wired to each input. The runner uses it to avoid marking a node stale
+        when an identically named value changes via a non-wired producer.
+        """
+        producer_map: dict[str, dict[str, set[str]]] = {}
+        for src, dst, data in self._nx_graph.edges(data=True):
+            if data.get("edge_type") != "data":
+                continue
+            for value_name in data.get("value_names", []):
+                producer_map.setdefault(dst, {}).setdefault(value_name, set()).add(src)
+
+        frozen: dict[str, dict[str, frozenset[str]]] = {}
+        for node_name, inputs in producer_map.items():
+            frozen[node_name] = {input_name: frozenset(names) for input_name, names in inputs.items()}
+        return frozen
+
+    @property
+    def has_explicit_edges(self) -> bool:
+        """Whether the graph was built in explicit-edges mode."""
+        return self._explicit_edges is not None
+
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
         return get_edge_produced_values(self._nx_graph)

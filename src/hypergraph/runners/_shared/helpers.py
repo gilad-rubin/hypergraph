@@ -421,6 +421,8 @@ def _is_stale(
     self_producers = graph.self_producers
     is_gated = _is_controlled_by_gate(node, graph)
     downstream = graph.downstream_produced.get(node.name, frozenset())
+    explicit_mode = graph.has_explicit_edges
+    explicit_input_producers = graph.input_data_producers.get(node.name, {}) if explicit_mode else {}
 
     for param in node.inputs:
         if not is_gated:
@@ -432,9 +434,45 @@ def _is_stale(
                 continue
         current_version = state.get_version(param)
         consumed_version = last_exec.input_versions.get(param, 0)
-        if current_version != consumed_version:
+        if current_version == consumed_version:
+            continue
+
+        if explicit_mode:
+            # In explicit-edge mode, only data producers wired to this input
+            # should trigger staleness for this node.
+            upstream = explicit_input_producers.get(param, frozenset())
+            if upstream and _latest_upstream_output_version(param, upstream, state) <= consumed_version:
+                continue
             return True
+
+        return True
     return False
+
+
+def _latest_upstream_output_version(
+    param: str,
+    upstream: frozenset[str],
+    state: GraphState,
+) -> int:
+    """Get newest known version of ``param`` produced by eligible upstream nodes."""
+    latest = 0
+    for producer in upstream:
+        execution = state.node_executions.get(producer)
+        if execution is None:
+            continue
+
+        produced_version = execution.output_versions.get(param)
+        if produced_version is None:
+            # Backward compatibility for older execution records that do not
+            # capture output_versions yet.
+            if param in execution.outputs:
+                produced_version = state.get_version(param)
+            else:
+                continue
+
+        latest = max(latest, produced_version)
+
+    return latest
 
 
 def collect_inputs_for_node(
@@ -603,6 +641,7 @@ def initialize_state_with_checkpoint(
             node_name=step.node_name,
             input_versions=dict(step.input_versions or {}),
             outputs=dict(step.values or {}),
+            output_versions={},
             duration_ms=step.duration_ms,
             cached=step.cached,
         )
@@ -627,6 +666,21 @@ def initialize_state_with_checkpoint(
 
     for name, value in runtime_values.items():
         state.update_value(name, value)
+
+    # Reconstruct per-step output versions so staleness checks can attribute
+    # changes to explicit upstream producers after checkpoint restore.
+    replay_versions: dict[str, int] = {}
+    for name in checkpoint_values:
+        if name in graph_input_names:
+            replay_versions[name] = 1
+    for step in completed_steps:
+        output_versions: dict[str, int] = {}
+        for out_name in step.values or {}:
+            replay_versions[out_name] = replay_versions.get(out_name, 0) + 1
+            output_versions[out_name] = replay_versions[out_name]
+        execution = state.node_executions.get(step.node_name)
+        if execution is not None:
+            execution.output_versions = output_versions
 
     return state
 

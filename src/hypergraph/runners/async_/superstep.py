@@ -172,10 +172,12 @@ async def run_superstep_async(
         node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
         for name, value in outputs.items():
             new_state.update_value(name, value)
+        output_versions = {name: new_state.get_version(name) for name in outputs}
         new_state.node_executions[node.name] = NodeExecution(
             node_name=node.name,
             input_versions=input_versions,
             outputs=outputs,
+            output_versions=output_versions,
             wait_for_versions=wait_for_versions,
             duration_ms=duration_ms,
             cached=cached,

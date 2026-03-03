@@ -188,6 +188,77 @@ class TestGetReadyNodes:
         assert len(ready) == 1
         assert ready[0].name == "counter"
 
+    def test_explicit_edges_staleness_ignores_non_upstream_writers(self):
+        """Explicit edges should prevent stale-trigger from non-wired producers."""
+
+        @node(output_name="messages")
+        def ask_user(messages: list[str], user_input: str) -> list[str]:
+            return [*messages, f"user: {user_input}"]
+
+        @node(output_name="messages")
+        def llm(messages: list[str]) -> list[str]:
+            return [*messages, "assistant: ok"]
+
+        @route(targets=["ask_user", END])
+        def should_continue(messages: list[str], max_turns: int) -> str:
+            turns = sum(1 for m in messages if m.startswith("assistant: "))
+            return END if turns >= max_turns else "ask_user"
+
+        graph = Graph(
+            [ask_user, llm, should_continue],
+            edges=[
+                (ask_user, llm),
+                (llm, should_continue),
+                (should_continue, ask_user),
+            ],
+            entrypoint="ask_user",
+        )
+        state = initialize_state(
+            graph,
+            {"messages": [], "user_input": "first", "max_turns": 2},
+        )
+
+        # Simulate prior llm -> should_continue execution.
+        state.update_value("messages", ["user: first", "assistant: ok"])
+        v_after_llm = state.get_version("messages")
+        state.node_executions["llm"] = NodeExecution(
+            node_name="llm",
+            input_versions={"messages": 1},
+            outputs={"messages": state.values["messages"]},
+            output_versions={"messages": v_after_llm},
+        )
+        state.node_executions["should_continue"] = NodeExecution(
+            node_name="should_continue",
+            input_versions={"messages": v_after_llm, "max_turns": state.get_version("max_turns")},
+            outputs={"_should_continue": "ask_user"},
+        )
+
+        # Non-upstream writer (ask_user) changes messages.
+        state.update_value("messages", ["user: first", "assistant: ok", "user: second"])
+        v_after_ask = state.get_version("messages")
+        state.node_executions["ask_user"] = NodeExecution(
+            node_name="ask_user",
+            input_versions={"messages": v_after_llm, "user_input": state.get_version("user_input")},
+            outputs={"messages": state.values["messages"]},
+            output_versions={"messages": v_after_ask},
+        )
+
+        ready_names = {n.name for n in get_ready_nodes(graph, state)}
+        assert "should_continue" not in ready_names
+
+        # Upstream writer (llm) changes messages again.
+        state.update_value("messages", ["user: first", "assistant: ok", "user: second", "assistant: ok"])
+        v_after_llm_again = state.get_version("messages")
+        state.node_executions["llm"] = NodeExecution(
+            node_name="llm",
+            input_versions={"messages": v_after_ask},
+            outputs={"messages": state.values["messages"]},
+            output_versions={"messages": v_after_llm_again},
+        )
+
+        ready_names = {n.name for n in get_ready_nodes(graph, state)}
+        assert "should_continue" in ready_names
+
 
 # === Tests for collect_inputs_for_node ===
 

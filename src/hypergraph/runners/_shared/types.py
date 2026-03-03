@@ -669,6 +669,7 @@ class NodeExecution:
     Attributes:
         node_name: Name of the executed node
         input_versions: Version numbers of inputs at execution time
+        output_versions: Version numbers of outputs right after execution
         outputs: Output values produced
         wait_for_versions: Version numbers of wait_for names at execution time
         duration_ms: Wall-clock execution time in milliseconds
@@ -678,6 +679,7 @@ class NodeExecution:
     node_name: str
     input_versions: dict[str, int]
     outputs: dict[str, Any]
+    output_versions: dict[str, int] = field(default_factory=dict)
     wait_for_versions: dict[str, int] = field(default_factory=dict)
     duration_ms: float = 0.0
     cached: bool = False
@@ -745,6 +747,7 @@ class GraphState:
                 k: replace(
                     v,
                     input_versions=dict(v.input_versions),
+                    output_versions=dict(v.output_versions),
                     outputs=dict(v.outputs),
                     wait_for_versions=dict(v.wait_for_versions),
                 )
