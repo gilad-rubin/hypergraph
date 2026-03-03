@@ -306,6 +306,43 @@ class TestEntrypointValidation:
             graph.with_entrypoint("gate_val")
 
 
+class TestConstructorEntrypointShortcut:
+    """Validation and parity for Graph(..., entrypoint=...)."""
+
+    def test_constructor_entrypoint_matches_with_entrypoint(self):
+        base = Graph([root1, root2, root3, merge_node, process_node])
+        via_method = base.with_entrypoint("merge_node")
+        via_ctor = Graph([root1, root2, root3, merge_node, process_node], entrypoint="merge_node")
+
+        assert via_ctor.entrypoints_config == ("merge_node",)
+        assert set(via_ctor.inputs.required) == set(via_method.inputs.required)
+        assert set(via_ctor.inputs.optional) == set(via_method.inputs.optional)
+
+    def test_constructor_multi_entrypoint_supported(self):
+        graph = Graph([root1, root2, root3, merge_node, process_node], entrypoint=["root1", "root2"])
+        assert graph.entrypoints_config == ("root1", "root2")
+        assert "x" in graph.inputs.required
+        assert "y" in graph.inputs.required
+
+    def test_constructor_unknown_entrypoint_raises(self):
+        with pytest.raises(GraphConfigError, match="Unknown entry point"):
+            Graph([root1], entrypoint="nonexistent")
+
+    def test_constructor_gate_entrypoint_raises(self):
+        from hypergraph import ifelse
+
+        @ifelse(when_true="root1", when_false="root2")
+        def gate_val(x):
+            return x > 0
+
+        with pytest.raises(GraphConfigError, match="gate"):
+            Graph([gate_val, root1, root2], entrypoint="gate_val")
+
+    def test_constructor_entrypoint_type_error(self):
+        with pytest.raises(GraphConfigError, match="entrypoint must be a node name"):
+            Graph([root1], entrypoint=123)  # type: ignore[arg-type]
+
+
 # === Immutability ===
 
 

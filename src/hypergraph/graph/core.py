@@ -82,6 +82,7 @@ class Graph:
         nodes: list[HyperNode],
         *,
         edges: list[tuple] | None = None,
+        entrypoint: str | list[str] | tuple[str, ...] | None = None,
         name: str | None = None,
         strict_types: bool = False,
     ) -> None:
@@ -97,6 +98,9 @@ class Graph:
                 the intersection of source outputs and target inputs. Edges
                 with no matching values become ordering-only edges.
                 When ``edges`` is provided, auto-inference is disabled.
+            entrypoint: Convenience shortcut for ``with_entrypoint(...)``.
+                Accepts a node name or a list/tuple of node names and applies
+                the same validation and semantics as ``with_entrypoint``.
             name: Optional graph name for nesting
             strict_types: If True, validate type compatibility between connected
                          nodes at graph construction time. Calls _validate_types()
@@ -107,14 +111,52 @@ class Graph:
         self._strict_types = strict_types
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
-        self._entrypoints: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
+        self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
         self._cached_structural_hash: str | None = None
         self._controlled_by: dict[str, list[str]] | None = None
         self._validate()
+
+    def _normalize_constructor_entrypoints(
+        self,
+        entrypoint: str | list[str] | tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        """Normalize constructor ``entrypoint=`` into validated tuple form."""
+        if entrypoint is None:
+            return None
+
+        if isinstance(entrypoint, str):
+            node_names = (entrypoint,)
+        elif isinstance(entrypoint, (list, tuple)):
+            node_names = tuple(entrypoint)
+        else:
+            raise GraphConfigError("entrypoint must be a node name (str) or a list/tuple of node names")
+
+        self._validate_entrypoint_names(node_names)
+        return tuple(dict.fromkeys(node_names))
+
+    def _validate_entrypoint_names(self, node_names: tuple[str, ...]) -> None:
+        """Validate entrypoint node names and ensure they are non-gate nodes."""
+        from hypergraph.nodes.gate import GateNode
+
+        for name in node_names:
+            if not isinstance(name, str):
+                raise GraphConfigError(f"Entry point names must be strings, got {type(name).__name__}")
+
+            if name not in self._nodes:
+                raise GraphConfigError(
+                    f"Unknown entry point node: '{name}'\n\n  -> '{name}' is not in the graph\n  -> Available nodes: {sorted(self._nodes.keys())}"
+                )
+            if isinstance(self._nodes[name], GateNode):
+                raise GraphConfigError(
+                    f"Cannot use gate '{name}' as entry point\n\n"
+                    f"  -> Gates control routing, they cannot be entry points\n\n"
+                    f"How to fix:\n"
+                    f"  Use a non-gate node as the entry point"
+                )
 
     @property
     def controlled_by(self) -> dict[str, list[str]]:
@@ -575,24 +617,11 @@ class Graph:
             >>> g2 = g.with_entrypoint("process")
             >>> g2.inputs.required  # only process's unproduced inputs
         """
-        from hypergraph.nodes.gate import GateNode
-
-        for name in node_names:
-            if name not in self._nodes:
-                raise GraphConfigError(
-                    f"Unknown entry point node: '{name}'\n\n  -> '{name}' is not in the graph\n  -> Available nodes: {sorted(self._nodes.keys())}"
-                )
-            if isinstance(self._nodes[name], GateNode):
-                raise GraphConfigError(
-                    f"Cannot use gate '{name}' as entry point\n\n"
-                    f"  -> Gates control routing, they cannot be entry points\n\n"
-                    f"How to fix:\n"
-                    f"  Use a non-gate node as the entry point"
-                )
+        self._validate_entrypoint_names(node_names)
 
         new_graph = self._shallow_copy()
         existing = self._entrypoints or ()
-        new_graph._entrypoints = tuple(dict.fromkeys(existing + node_names))
+        new_graph._entrypoints = tuple(dict.fromkeys(existing + tuple(node_names)))
         return new_graph
 
     @property
