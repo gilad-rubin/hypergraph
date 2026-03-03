@@ -134,6 +134,13 @@ class TestBasicMermaid:
 
         assert "input_x --> double" in mermaid
 
+    def test_no_start_node_without_explicit_entrypoint(self):
+        """START node is not rendered unless entrypoints are explicitly configured."""
+        graph = Graph(nodes=[double, add_one])
+        mermaid = graph.to_mermaid()
+
+        assert "__start__" not in mermaid
+
     def test_multi_input_graph(self):
         """Graph with multiple inputs creates multiple input nodes."""
         graph = Graph(nodes=[embed, retrieve, generate])
@@ -265,6 +272,14 @@ class TestEdgeTypes:
         mermaid = graph.to_mermaid()
 
         assert '(["End"])' in mermaid
+
+    def test_start_node_for_explicit_entrypoint(self):
+        """START node appears and points to configured entrypoint."""
+        graph = Graph(nodes=[double, add_one]).with_entrypoint("add_one")
+        mermaid = graph.to_mermaid()
+
+        assert '(("Start"))' in mermaid
+        assert "__start__ --> add_one" in mermaid
 
     def test_route_edge_to_targets(self):
         """Route control edges connect gate to each target."""

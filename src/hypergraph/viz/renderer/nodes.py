@@ -1,7 +1,7 @@
 """Node construction for React Flow visualization.
 
 Creates React Flow node objects (INPUT, INPUT_GROUP, FUNCTION, PIPELINE,
-DATA, END) from the flat graph structure.
+DATA, START, END) from the flat graph structure.
 """
 
 from __future__ import annotations
@@ -285,6 +285,63 @@ def has_end_routing(
             if "END" in target_values:
                 return True
     return False
+
+
+def get_start_targets(
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> list[str]:
+    """Get visible targets for the synthetic START node.
+
+    START edges are only created for explicit graph entrypoints configured
+    via ``Graph.with_entrypoint(...)``.
+    """
+    configured = flat_graph.graph.get("configured_entrypoints") or ()
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    for node_id in configured:
+        if node_id not in flat_graph:
+            continue
+
+        resolved: str | None = node_id
+        while resolved is not None and not is_node_visible(resolved, flat_graph, expansion_state):
+            resolved = flat_graph.nodes[resolved].get("parent")
+
+        if resolved is None or resolved in seen:
+            continue
+
+        seen.add(resolved)
+        targets.append(resolved)
+
+    return targets
+
+
+def create_start_node(
+    nodes: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    theme: str,
+    show_types: bool,
+    expansion_state: dict[str, bool],
+) -> None:
+    """Create the START node when graph entrypoints are explicitly configured."""
+    if not get_start_targets(flat_graph, expansion_state):
+        return
+
+    start_node: dict[str, Any] = {
+        "id": "__start__",
+        "type": "custom",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "nodeType": "START",
+            "label": "Start",
+            "theme": theme,
+            "showTypes": show_types,
+        },
+        "sourcePosition": "bottom",
+        "targetPosition": "top",
+    }
+    nodes.append(start_node)
 
 
 def create_end_node(

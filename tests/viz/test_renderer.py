@@ -128,6 +128,26 @@ class TestRenderGraph:
         assert result["meta"]["show_types"] is True
         assert result["meta"]["initial_depth"] == 2
 
+    def test_start_node_for_explicit_entrypoint(self):
+        """Configured entrypoints get a synthetic START node and edge."""
+        graph = Graph(nodes=[double, add]).with_entrypoint("add")
+        result = render_graph(graph.to_flat_graph())
+
+        start_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "START"]
+        assert len(start_nodes) == 1
+        assert start_nodes[0]["id"] == "__start__"
+
+        start_edges = [e for e in result["edges"] if e["source"] == "__start__"]
+        assert len(start_edges) == 1
+        assert start_edges[0]["target"] == "add"
+
+    def test_no_start_node_without_explicit_entrypoint(self):
+        """No synthetic START node is rendered by default."""
+        graph = Graph(nodes=[double, add])
+        result = render_graph(graph.to_flat_graph())
+
+        assert all(n["data"]["nodeType"] != "START" for n in result["nodes"])
+
     def test_render_nested_graph(self):
         """Test rendering a nested graph."""
         inner = Graph(nodes=[double], name="inner")

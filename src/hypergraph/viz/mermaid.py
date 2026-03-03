@@ -26,7 +26,11 @@ from hypergraph.viz._common import (
     is_node_visible,
 )
 from hypergraph.viz.renderer._format import format_type
-from hypergraph.viz.renderer.nodes import build_input_groups, has_end_routing
+from hypergraph.viz.renderer.nodes import (
+    build_input_groups,
+    get_start_targets,
+    has_end_routing,
+)
 from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
     find_internal_producer_for_output,
@@ -94,6 +98,12 @@ DEFAULT_COLORS: dict[str, dict[str, str]] = {
         "stroke-width": "2px",
         "color": "#263238",
     },
+    "start": {
+        "fill": "#ECFDF5",
+        "stroke": "#10B981",
+        "stroke-width": "2px",
+        "color": "#065F46",
+    },
 }
 
 # Maps HyperGraph node_type to Mermaid classDef name
@@ -104,6 +114,7 @@ _NODE_TYPE_TO_CLASS = {
     "INPUT": "input",
     "INPUT_GROUP": "input",
     "DATA": "data",
+    "START": "start",
     "END": "end",
 }
 
@@ -267,6 +278,7 @@ _SHAPE_DELIMITERS: dict[str, tuple[str, str]] = {
     "INPUT": ('(["', '"])'),
     "INPUT_GROUP": ('(["', '"])'),
     "DATA": ('[/"', '"/]'),
+    "START": ('(("', '"))'),
     "END": ('(["', '"])'),
 }
 
@@ -790,6 +802,13 @@ def to_mermaid(
                 lines.append(_format_node(_sanitize_id(data_id), data_label, "DATA"))
                 node_class_map[data_id] = "data"
 
+    # --- START node ---
+    start_targets = get_start_targets(flat_graph, expansion_state)
+    if start_targets:
+        start_id = "__start__"
+        lines.append(_format_node(_sanitize_id(start_id), "Start", "START"))
+        node_class_map[start_id] = "start"
+
     # --- END node ---
     if has_end_routing(flat_graph, expansion_state):
         end_id = "__end__"
@@ -798,6 +817,8 @@ def to_mermaid(
 
     # --- Input → consumer edges ---
     lines.append("    %% Edges")
+    lines.extend(_render_start_edges(start_targets))
+
     for group in input_groups:
         params = group["params"]
         input_node_id = f"input_{params[0]}" if len(params) == 1 else f"input_group_{'_'.join(params)}"
@@ -923,6 +944,11 @@ def _render_end_edges(
                 lines.append(_format_edge(node_id, "__end__", None))
 
     return lines
+
+
+def _render_start_edges(start_targets: list[str]) -> list[str]:
+    """Render edges from START to explicitly configured entrypoints."""
+    return [_format_edge("__start__", target, None) for target in start_targets]
 
 
 def _find_ordering_edge_indices(lines: list[str]) -> list[int]:

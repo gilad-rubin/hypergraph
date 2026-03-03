@@ -68,11 +68,11 @@
 
   var NODE_TYPE_OFFSETS = {
     PIPELINE: 26, GRAPH: 26, FUNCTION: 14,
-    DATA: 6, INPUT: 6, INPUT_GROUP: 6, BRANCH: 10, END: 6,
+    DATA: 6, INPUT: 6, INPUT_GROUP: 6, BRANCH: 10, START: 6, END: 6,
   };
   var NODE_TYPE_TOP_INSETS = {
     PIPELINE: 0, GRAPH: 0, FUNCTION: 0,
-    DATA: 0, INPUT: 0, INPUT_GROUP: 0, BRANCH: 3, END: 0,
+    DATA: 0, INPUT: 0, INPUT_GROUP: 0, BRANCH: 3, START: 0, END: 0,
   };
   var DEFAULT_OFFSET = 10;
   var DEFAULT_TOP_INSET = 0;
@@ -346,9 +346,9 @@
       var srcBottom = src.y + src.height * 0.5 - getOffset(srcType);
       var tgtTop = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
 
-      // BRANCH/END nodes always use center-x (diamond has single entry/exit point)
-      var srcForceCenterX = srcType === 'BRANCH' || srcType === 'END';
-      var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'END';
+      // BRANCH/START/END nodes always use center-x for clean vertical anchors
+      var srcForceCenterX = srcType === 'BRANCH' || srcType === 'START' || srcType === 'END';
+      var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'START' || tgtType === 'END';
 
       var dagreEdge = g.edge(e.source, e.target);
       if (dagreEdge && dagreEdge.points && dagreEdge.points.length > 0) {
@@ -1051,6 +1051,7 @@
     SplitOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M16 3h5v5"></path><path d="M8 3H3v5"></path><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"></path><path d="m15 9 6-6"></path></svg>`; },
     MergeOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 3H3v5"></path><path d="m3 3 5.586 5.586a2 2 0 0 1 .586 1.414V22"></path><path d="M16 3h5v5"></path><path d="m21 3-5.586 5.586a2 2 0 0 0-.586 1.414V22"></path></svg>`; },
     Type: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`; },
+    Start: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8" fill="currentColor"></polygon></svg>`; },
     End: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>`; },
   };
 
@@ -1150,6 +1151,17 @@
                 ${data.showTypes && paramTypes[i] ? html`<span className=${'text-xs font-mono ' + tc} title=${paramTypes[i]}>: ${truncateTypeHint(paramTypes[i])}</span>` : null}
               </div>`;
             })}
+          </div>
+          <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
+        </div>`;
+    }
+
+    // ── START node ──
+    if (nodeType === 'START') {
+      return html`
+        <div className="w-full h-full relative" style=${wrapStyle}>
+          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white border-sky-300 text-sky-600 shadow-slate-200 hover:border-sky-400' : ' bg-slate-900 border-sky-500/50 text-sky-400 shadow-black/50 hover:border-sky-400/70')}>
+            <${Icons.Start} /> <span className="text-xs font-semibold uppercase tracking-wide">Start</span>
           </div>
           <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
         </div>`;

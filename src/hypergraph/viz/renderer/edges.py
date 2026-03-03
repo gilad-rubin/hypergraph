@@ -19,6 +19,7 @@ from hypergraph.viz._common import (
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
     get_group_targets,
+    get_start_targets,
     has_end_routing,
     is_data_node_visible,
 )
@@ -70,6 +71,25 @@ def add_end_node_edges(
                     "data": {"edgeType": "end", "label": label},
                 }
             )
+
+
+def add_start_node_edges(
+    edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> None:
+    """Add edges from the synthetic START node to configured entrypoints."""
+    for target in get_start_targets(flat_graph, expansion_state):
+        edges.append(
+            {
+                "id": f"e___start___to_{target}",
+                "source": "__start__",
+                "target": target,
+                "animated": False,
+                "style": {"stroke": "#0ea5e9", "strokeWidth": 2},
+                "data": {"edgeType": "start"},
+            }
+        )
 
 
 def add_merged_output_edges(
@@ -448,7 +468,10 @@ def compute_edges_for_state(
     else:
         add_merged_output_edges(edges, flat_graph, expansion_state)
 
-    # 3. Add edges to END node
+    # 3. Add edges from START node
+    add_start_node_edges(edges, flat_graph, expansion_state)
+
+    # 4. Add edges to END node
     add_end_node_edges(edges, flat_graph, expansion_state)
 
     return edges

@@ -25,6 +25,7 @@ from hypergraph.viz.renderer.nodes import (
     create_end_node,
     create_input_nodes,
     create_rf_node,
+    create_start_node,
 )
 
 
@@ -96,6 +97,8 @@ def compute_nodes_for_state(
         nodes.append(rf_node)
 
     create_data_nodes(nodes, flat_graph, theme, show_types, graph_output_visibility)
+
+    create_start_node(nodes, flat_graph, theme, show_types, expansion_state)
 
     create_end_node(nodes, flat_graph, theme, show_types, expansion_state)
 

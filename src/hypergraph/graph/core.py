@@ -919,7 +919,8 @@ class Graph:
         - Node attributes include `parent` for hierarchy
         - Node IDs are hierarchical to prevent collisions (e.g., "pipeline1/process")
         - Edges include both root-level and nested edges
-        - Graph attributes include `input_spec` and `output_to_sources`
+        - Graph attributes include `input_spec`, `output_to_sources`, and
+          configured execution entrypoints (if any)
 
         This is the canonical representation for visualization and analysis.
         """
@@ -944,6 +945,7 @@ class Graph:
             "entrypoints": {k: list(v) for k, v in input_spec.entrypoints.items()},
         }
         G.graph["output_to_sources"] = output_to_sources
+        G.graph["configured_entrypoints"] = list(self._entrypoints or ())
         return G
 
     def _flatten_nodes(
