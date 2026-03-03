@@ -41,7 +41,7 @@ def execute_ifelse(
 
     decision = node.when_true if result else node.when_false
     state.routing_decisions[node.name] = decision
-    return wrap_outputs(node, None)
+    return wrap_outputs(node, result)
 
 
 def execute_route(
@@ -65,4 +65,4 @@ def execute_route(
 
     validate_routing_decision(node, decision)
     state.routing_decisions[node.name] = decision
-    return wrap_outputs(node, None)
+    return wrap_outputs(node, decision)

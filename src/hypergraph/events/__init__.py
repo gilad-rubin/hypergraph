@@ -19,6 +19,7 @@ from hypergraph.events.types import (
     RunStartEvent,
     RunStatus,
     StopRequestedEvent,
+    SuperstepStartEvent,
 )
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "RunStartEvent",
     "RunStatus",
     "StopRequestedEvent",
+    "SuperstepStartEvent",
     # Processor interfaces
     "AsyncEventProcessor",
     "EventProcessor",

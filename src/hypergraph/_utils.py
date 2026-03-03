@@ -1,8 +1,11 @@
 """Utility functions for hypergraph."""
 
+from __future__ import annotations
+
 import hashlib
 import inspect
 from collections.abc import Callable
+from datetime import datetime
 
 
 def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
@@ -23,6 +26,59 @@ def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
     return value
+
+
+def plural(n: int, word: str) -> str:
+    """Pluralize a word based on count.
+
+    Examples:
+        >>> plural(1, "node")
+        '1 node'
+        >>> plural(3, "node")
+        '3 nodes'
+        >>> plural(0, "error")
+        '0 errors'
+    """
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def format_duration_ms(ms: float | None) -> str:
+    """Format milliseconds into human-readable duration.
+
+    Examples:
+        >>> format_duration_ms(42)
+        '42ms'
+        >>> format_duration_ms(1500)
+        '1.5s'
+        >>> format_duration_ms(125000)
+        '2m05.0s'
+        >>> format_duration_ms(None)
+        '—'
+    """
+    if ms is None:
+        return "—"
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f}s"
+    minutes = int(ms // 60_000)
+    seconds = (ms % 60_000) / 1000
+    return f"{minutes}m{seconds:04.1f}s"
+
+
+def format_datetime(dt: datetime | None) -> str:
+    """Format datetime for human display.
+
+    Examples:
+        >>> from datetime import datetime, timezone
+        >>> format_datetime(datetime(2026, 3, 1, 12, 30, tzinfo=timezone.utc))
+        '2026-03-01 12:30'
+        >>> format_datetime(None)
+        '—'
+    """
+    if dt is None:
+        return "—"
+    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 def hash_definition(func: Callable) -> str:

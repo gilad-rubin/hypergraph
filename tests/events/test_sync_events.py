@@ -106,8 +106,10 @@ class TestSimpleDAGEvents:
         types = lp.event_types()
         assert types == [
             "RunStartEvent",
+            "SuperstepStartEvent",
             "NodeStartEvent",
             "NodeEndEvent",
+            "SuperstepStartEvent",
             "NodeStartEvent",
             "NodeEndEvent",
             "RunEndEvent",

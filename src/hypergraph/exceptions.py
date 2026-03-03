@@ -107,3 +107,31 @@ class ExecutionError(Exception):
         self.partial_state = partial_state
         super().__init__(str(cause))
         self.__cause__ = cause
+
+
+class WorkflowAlreadyCompletedError(Exception):
+    """Raised when attempting to resume a workflow that is already completed."""
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(f"Workflow '{workflow_id}' is already completed. Fork to create a new lineage.")
+
+
+class GraphChangedError(Exception):
+    """Raised when graph structure changed for an existing workflow lineage."""
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(f"Graph structure changed for workflow '{workflow_id}'. Fork instead of resuming in place.")
+
+
+class WorkflowForkError(Exception):
+    """Raised when fork arguments are invalid for the requested workflow."""
+
+
+class InputOverrideRequiresForkError(Exception):
+    """Raised when input values are provided while resuming an existing workflow."""
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(f"Cannot pass input values when resuming workflow '{workflow_id}'. Use checkpoint + new workflow_id to fork.")

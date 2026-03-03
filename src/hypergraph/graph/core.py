@@ -112,6 +112,7 @@ class Graph:
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
+        self._cached_structural_hash: str | None = None
         self._controlled_by: dict[str, list[str]] | None = None
         self._validate()
 
@@ -626,6 +627,21 @@ class Graph:
             self._cached_hash = self._compute_definition_hash()
         return self._cached_hash
 
+    @property
+    def code_hash(self) -> str:
+        """Code-sensitive hash used by caching and change observability.
+
+        This includes node definition hashes (function/code sensitive).
+        """
+        return self.definition_hash
+
+    @property
+    def structural_hash(self) -> str:
+        """Hash of graph topology and node signatures (excluding function code)."""
+        if self._cached_structural_hash is None:
+            self._cached_structural_hash = self._compute_structural_hash()
+        return self._cached_structural_hash
+
     def _compute_definition_hash(self) -> str:
         """Recursive Merkle-tree style hash.
 
@@ -650,6 +666,61 @@ class Graph:
         # 3. Combine and hash
         combined = "|".join(node_hashes) + "|" + edge_str
         return hashlib.sha256(combined.encode()).hexdigest()
+
+    def _compute_structural_hash(self) -> str:
+        """Compute hash for resume compatibility checks.
+
+        Includes node identity/topology and declared interfaces, but excludes
+        function source code so bug-fix edits do not force forking.
+        """
+        from hypergraph.nodes.gate import GateNode
+        from hypergraph.nodes.graph_node import GraphNode
+
+        node_signatures: list[str] = []
+        for node in sorted(self._nodes.values(), key=lambda n: n.name):
+            parts = [
+                node.__class__.__name__,
+                node.name,
+                ",".join(node.inputs),
+                ",".join(node.outputs),
+                ",".join(getattr(node, "wait_for", ())),
+            ]
+            if isinstance(node, GateNode):
+                targets = [t if isinstance(t, str) else "END" for t in node.targets]
+                parts.extend(
+                    [
+                        "targets=" + ",".join(targets),
+                        f"default_open={getattr(node, 'default_open', True)}",
+                    ]
+                )
+                if hasattr(node, "multi_target"):
+                    parts.append(f"multi_target={node.multi_target}")
+                if hasattr(node, "fallback"):
+                    fb = node.fallback
+                    parts.append(f"fallback={fb if isinstance(fb, str) else 'END' if fb is not None else 'None'}")
+                if hasattr(node, "when_true") and hasattr(node, "when_false"):
+                    wt = node.when_true
+                    wf = node.when_false
+                    parts.append(f"when_true={wt if isinstance(wt, str) else 'END'}")
+                    parts.append(f"when_false={wf if isinstance(wf, str) else 'END'}")
+            if isinstance(node, GraphNode):
+                parts.append(f"nested_struct={node.graph.structural_hash}")
+                map_config = node.map_config
+                if map_config is not None:
+                    map_params, map_mode, error_handling = map_config
+                    parts.append("map_over=" + ",".join(map_params))
+                    parts.append(f"map_mode={map_mode}")
+                    parts.append(f"map_error_handling={error_handling}")
+                    clone_cfg = getattr(node, "_clone", False)
+                    if isinstance(clone_cfg, list):
+                        parts.append("map_clone=" + ",".join(clone_cfg))
+                    else:
+                        parts.append(f"map_clone={clone_cfg}")
+            node_signatures.append("|".join(parts))
+
+        edges = sorted((u, v, ",".join(data.get("value_names", []))) for u, v, data in self._nx_graph.edges(data=True))
+        edge_str = str(edges)
+        return hashlib.sha256(("|".join(node_signatures) + "|" + edge_str).encode()).hexdigest()
 
     def _shallow_copy(self) -> Graph:
         """Create a shallow copy of this graph.
@@ -689,6 +760,73 @@ class Graph:
         from hypergraph.nodes.graph_node import GraphNode
 
         return GraphNode(self, name=name)
+
+    def __repr__(self) -> str:
+        from hypergraph._utils import plural
+
+        n_nodes = len(self._nodes)
+        n_edges = self._nx_graph.number_of_edges()
+        props = []
+        if self.has_cycles:
+            props.append("cycles")
+        if self.has_async_nodes:
+            props.append("async")
+        if self.has_interrupts:
+            props.append("interrupts")
+        prop_str = f" | {', '.join(props)}" if props else " | no cycles"
+        name = self.name or "unnamed"
+        return f"Graph: {name} | {plural(n_nodes, 'node')} | {plural(n_edges, 'edge')}{prop_str}"
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import _code, html_detail, html_panel, html_table, status_badge, theme_wrap, widget_state_key
+        from hypergraph._utils import plural
+
+        n_nodes = len(self._nodes)
+        n_edges = self._nx_graph.number_of_edges()
+        name = self.name or "unnamed"
+
+        # Node table
+        headers = ["Node", "Type", "Inputs", "Outputs"]
+        rows = []
+        for node_name, node in self._nodes.items():
+            node_type = type(node).__name__
+            inputs = ", ".join(_code(i) for i in node.inputs[:6])
+            if len(node.inputs) > 6:
+                inputs += f" (+{len(node.inputs) - 6})"
+            outputs = ", ".join(_code(o) for o in node.outputs[:6])
+            if len(node.outputs) > 6:
+                outputs += f" (+{len(node.outputs) - 6})"
+            rows.append([_code(node_name), node_type, inputs or "—", outputs or "—"])
+
+        table_html = html_table(headers, rows)
+
+        # Properties
+        props = []
+        if self.has_cycles:
+            props.append(status_badge("active").replace("active", "cycles"))
+        if self.has_async_nodes:
+            props.append(status_badge("cached").replace("cached", "async"))
+        if self.has_interrupts:
+            props.append(status_badge("paused").replace("paused", "interrupts"))
+        if not props:
+            props.append(status_badge("completed").replace("completed", "DAG"))
+        prop_html = " ".join(props)
+
+        body = f"{prop_html} &nbsp; <b>{plural(n_edges, 'edge')}</b><br><br>{table_html}"
+
+        # Collapsible visualization (if viz module is available)
+        try:
+            widget = self.visualize()
+            if hasattr(widget, "_repr_html_"):
+                viz_html = widget._repr_html_()
+                body += html_detail("Show interactive graph", viz_html, state_key="interactive-graph")
+        except (ImportError, Exception):
+            pass
+
+        return theme_wrap(
+            html_panel(f"Graph: {name} ({plural(n_nodes, 'node')})", body),
+            state_key=widget_state_key("graph", name, self.structural_hash),
+        )
 
     def visualize(
         self,

@@ -7,7 +7,6 @@ and select() interaction.
 
 from __future__ import annotations
 
-import asyncio
 import threading
 
 import pytest
@@ -185,7 +184,7 @@ class TestExceptionSafety:
 class TestAsyncCacheParity:
     """Async runner must behave identically to sync for caching."""
 
-    def test_async_cache_hit(self):
+    async def test_async_cache_hit(self):
         """AsyncRunner should hit cache on second run."""
         counter = CallCounter()
 
@@ -198,14 +197,14 @@ class TestAsyncCacheParity:
         cache = InMemoryCache()
         runner = AsyncRunner(cache=cache)
 
-        r1 = asyncio.run(runner.run(graph, {"x": 5}))
-        r2 = asyncio.run(runner.run(graph, {"x": 5}))
+        r1 = await runner.run(graph, {"x": 5})
+        r2 = await runner.run(graph, {"x": 5})
 
         assert r1["r"] == 10
         assert r2["r"] == 10
         assert counter.count == 1
 
-    def test_async_cache_events(self):
+    async def test_async_cache_events(self):
         """AsyncRunner emits CacheHitEvent on hit."""
         counter = CallCounter()
 
@@ -218,10 +217,10 @@ class TestAsyncCacheParity:
         cache = InMemoryCache()
         runner = AsyncRunner(cache=cache)
 
-        asyncio.run(runner.run(graph, {"x": 1}))
+        await runner.run(graph, {"x": 1})
 
         proc = ListProcessor()
-        asyncio.run(runner.run(graph, {"x": 1}, event_processors=[proc]))
+        await runner.run(graph, {"x": 1}, event_processors=[proc])
 
         hits = proc.of_type(CacheHitEvent)
         assert len(hits) == 1

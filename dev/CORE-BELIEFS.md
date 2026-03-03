@@ -46,9 +46,9 @@ Errors caught at `Graph()` construction, not hours into a run. Invalid targets, 
 
 ## 6. Composition Over Configuration
 
-Nest graphs as nodes (`.as_node()`) instead of adding flags or config surfaces.
+Nest graphs as nodes (`.as_node()`) instead of adding flags or config surfaces. **Nested graphs are first-class citizens** — every framework feature (checkpointing, debugging, CLI, observability) must work with them. That's what "first-class" means.
 
-**What breaks**: Feature-flag spaghetti. A flat mega-graph with conditional logic baked into every node is impossible to test in isolation and hard to reason about.
+**What breaks**: Feature-flag spaghetti. A flat mega-graph with conditional logic baked into every node is impossible to test in isolation and hard to reason about. If nested graphs silently lose checkpointing or observability, composition becomes a leaky abstraction that users can't trust.
 
 ---
 

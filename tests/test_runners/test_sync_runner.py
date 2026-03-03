@@ -9,7 +9,7 @@ from hypergraph.exceptions import (
     MissingInputError,
 )
 from hypergraph.nodes.gate import END, route
-from hypergraph.runners import RunResult, RunStatus, SyncRunner
+from hypergraph.runners import MapResult, RunResult, RunStatus, SyncRunner
 
 # === Test Fixtures ===
 
@@ -630,7 +630,7 @@ class TestSyncRunnerMap:
 
         results = runner.map(graph, {"x": [1, 2]}, map_over="x")
 
-        assert isinstance(results, list)
+        assert isinstance(results, MapResult)
         assert all(r.status == RunStatus.COMPLETED for r in results)
 
     def test_map_preserves_order(self):
@@ -650,7 +650,7 @@ class TestSyncRunnerMap:
 
         results = runner.map(graph, {"x": []}, map_over="x")
 
-        assert results == []
+        assert len(results) == 0
 
     def test_broadcast_values_shared(self):
         """Non-mapped values are broadcast to all iterations."""

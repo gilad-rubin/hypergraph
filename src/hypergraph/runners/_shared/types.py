@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from typing import Any, Literal
+
+from hypergraph._utils import plural
 
 ErrorHandling = Literal["raise", "continue"]
 
@@ -14,6 +17,7 @@ _MAX_SEQUENCE_PREVIEW = 6
 _MAX_MAPPING_PREVIEW = 6
 _MAX_VALUE_REPR = 240
 _MAX_RUN_RESULT_REPR = 4_000
+DURATION_PRECISION = 3  # decimal places for duration_ms (microsecond precision)
 
 
 class RunStatus(Enum):
@@ -28,6 +32,7 @@ class RunStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+    PARTIAL = "partial"
 
 
 def _generate_run_id() -> str:
@@ -154,6 +159,7 @@ class RunResult:
         workflow_id: Optional workflow identifier for tracking related runs
         error: Exception if status is FAILED, else None
         pause: PauseInfo if status is PAUSED, else None
+        log: RunLog with execution trace (timing, status, routing), or None
     """
 
     values: dict[str, Any]
@@ -162,6 +168,7 @@ class RunResult:
     workflow_id: str | None = None
     error: BaseException | None = None
     pause: PauseInfo | None = None
+    log: RunLog | None = None
 
     @property
     def paused(self) -> bool:
@@ -172,6 +179,36 @@ class RunResult:
     def completed(self) -> bool:
         """Whether execution completed successfully."""
         return self.status == RunStatus.COMPLETED
+
+    @property
+    def failed(self) -> bool:
+        """Whether execution failed."""
+        return self.status == RunStatus.FAILED
+
+    def summary(self) -> str:
+        """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
+        if self.log:
+            return self.log.summary()
+        if self.error:
+            return f"{self.status.value}: {type(self.error).__name__}: {self.error}"
+        return self.status.value
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with status, run_id, and log.
+
+        Does NOT include raw values or error objects — only metadata.
+        Use result.values directly for output access.
+        """
+        d: dict[str, Any] = {
+            "status": self.status.value,
+            "run_id": self.run_id,
+            "workflow_id": self.workflow_id,
+        }
+        if self.log:
+            d["log"] = self.log.to_dict()
+        if self.error:
+            d["error"] = f"{type(self.error).__name__}: {self.error}"
+        return d
 
     def __getitem__(self, key: str) -> Any:
         """Dict-like access to values."""
@@ -205,6 +242,341 @@ class RunResult:
             pretty_printer.text("RunResult(...)")
             return
         pretty_printer.text(repr(self))
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import (
+            ERROR_COLOR,
+            duration_html,
+            error_html,
+            html_detail,
+            html_kv,
+            html_panel,
+            status_badge,
+            theme_wrap,
+            values_html,
+            widget_state_key,
+        )
+
+        kvs = [html_kv("Status", status_badge(self.status.value))]
+        if self.log:
+            kvs.append(html_kv("Duration", duration_html(self.log.total_duration_ms)))
+            kvs.append(html_kv("Nodes", str(len({s.node_name for s in self.log.steps}))))
+            n_errors = len(self.log.errors)
+            if n_errors:
+                kvs.append(html_kv("Errors", f'<span style="color:{ERROR_COLOR}">{n_errors}</span>'))
+        kvs.append(html_kv("Values", plural(len(self.values), "key")))
+        body = " &nbsp;|&nbsp; ".join(kvs)
+        if self.error:
+            body += error_html(self.error)
+        if self.values:
+            body += html_detail(
+                f"Values ({plural(len(self.values), 'key')})",
+                values_html(self.values),
+                state_key="values",
+            )
+        if self.log:
+            body += html_detail("Run Log", self.log._repr_html_(), state_key="run-log")
+        return theme_wrap(
+            html_panel(f"RunResult: {self.run_id}", body),
+            state_key=widget_state_key("run-result", self.workflow_id or "", self.run_id),
+        )
+
+
+@dataclass(frozen=True)
+class MapResult:
+    """Result of a batch map() execution.
+
+    Wraps individual RunResult items with batch-level metadata.
+    Supports read-only sequence protocol: len(), iter(), indexing.
+    String key access collects values across items:
+        results["doubled"] → [2, 4, None, 6, 8]
+        (None for failed items whose outputs are missing)
+    """
+
+    results: tuple[RunResult, ...]
+    run_id: str | None  # None for empty (no-op) maps
+    total_duration_ms: float
+    map_over: tuple[str, ...]
+    map_mode: str  # "zip" | "product"
+    graph_name: str
+
+    # --- Sequence protocol (read-only backward compat) ---
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __bool__(self) -> bool:
+        return len(self.results) > 0
+
+    def __reversed__(self):
+        return reversed(self.results)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.results[key]
+        if isinstance(key, slice):
+            return list(self.results[key])
+        if isinstance(key, str):
+            return [r.get(key) for r in self.results]
+        raise TypeError(f"indices must be integers, slices, or strings, not {type(key).__name__}")
+
+    def __contains__(self, item):
+        return item in self.results
+
+    def __eq__(self, other):
+        if isinstance(other, MapResult):
+            return self.results == other.results
+        if isinstance(other, list):
+            return list(self.results) == other
+        return NotImplemented
+
+    # --- Aggregate properties ---
+
+    @property
+    def status(self) -> RunStatus:
+        """Batch-level aggregate status.
+
+        PARTIAL when some items completed and some failed — the common case
+        for large batches where a few items hit transient errors.
+        FAILED only when every item failed. Empty → COMPLETED.
+        """
+        has_failed = any(r.status == RunStatus.FAILED for r in self.results)
+        has_completed = any(r.status == RunStatus.COMPLETED for r in self.results)
+        if has_failed and has_completed:
+            return RunStatus.PARTIAL
+        if has_failed:
+            return RunStatus.FAILED
+        if any(r.status == RunStatus.PAUSED for r in self.results):
+            return RunStatus.PAUSED
+        return RunStatus.COMPLETED
+
+    @property
+    def completed(self) -> bool:
+        """True if all items completed (or empty)."""
+        return self.status == RunStatus.COMPLETED
+
+    @property
+    def paused(self) -> bool:
+        """True if any item is paused (and none failed)."""
+        return self.status == RunStatus.PAUSED
+
+    @property
+    def failed(self) -> bool:
+        """True if any item failed (FAILED or PARTIAL)."""
+        return any(r.status == RunStatus.FAILED for r in self.results)
+
+    @property
+    def partial(self) -> bool:
+        """True if some items completed and some failed."""
+        return self.status == RunStatus.PARTIAL
+
+    @property
+    def failures(self) -> list[RunResult]:
+        """Only failed items."""
+        return [r for r in self.results if r.status == RunStatus.FAILED]
+
+    @property
+    def log(self) -> MapLog:
+        """Batch-level execution trace."""
+        return MapLog(
+            graph_name=self.graph_name,
+            total_duration_ms=self.total_duration_ms,
+            items=tuple(r.log if r.log is not None else _build_map_item_placeholder_log(r, self.graph_name) for r in self.results),
+        )
+
+    def get(self, key: str, default: Any = None) -> list[Any]:
+        """Collect values across items with a default.
+        results.get("doubled", 0) → [2, 4, 0, 6, 8]"""
+        return [r.get(key, default) for r in self.results]
+
+    # --- Progressive disclosure ---
+
+    def summary(self) -> str:
+        """One-liner: '5 items | 4 completed, 1 failed | avg 42ms/item'"""
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
+        parts = [plural(n, "item")]
+        status_parts = []
+        if n_completed:
+            status_parts.append(f"{n_completed} completed")
+        if n_failed:
+            status_parts.append(f"{n_failed} failed")
+        if n_paused:
+            status_parts.append(f"{n_paused} paused")
+        if status_parts:
+            parts.append(", ".join(status_parts))
+        if n_completed > 0:
+            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
+            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
+            avg = completed_ms / n_completed
+            parts.append(f"avg {_format_duration(avg)}/item")
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable batch metadata + per-item results."""
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        return {
+            "run_id": self.run_id,
+            "total_duration_ms": self.total_duration_ms,
+            "map_over": list(self.map_over),
+            "map_mode": self.map_mode,
+            "graph_name": self.graph_name,
+            "item_count": len(self.results),
+            "completed_count": n_completed,
+            "failed_count": n_failed,
+            "items": [item.to_dict() for item in self.results],
+        }
+
+    def __repr__(self) -> str:
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        parts = []
+        if n_completed:
+            parts.append(f"{n_completed} completed")
+        if n_failed:
+            parts.append(f"{n_failed} failed")
+        n_paused = n - n_completed - n_failed
+        if n_paused:
+            parts.append(f"{n_paused} paused")
+        status = ", ".join(parts) if parts else "empty"
+        avg_part = ""
+        if n_completed > 0:
+            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
+            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
+            avg = completed_ms / n_completed
+            avg_part = f", avg {_format_duration(avg)}/item"
+        return f"MapResult({plural(n, 'item')}: {status}{avg_part}, map_over={self.map_over!r})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        if cycle:
+            pretty_printer.text("MapResult(...)")
+            return
+        pretty_printer.text(repr(self))
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import (
+            ERROR_COLOR,
+            duration_html,
+            html_detail,
+            html_kv,
+            html_panel,
+            status_badge,
+            theme_wrap,
+            widget_state_key,
+        )
+
+        n = len(self.results)
+        n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
+        n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        kvs = [
+            html_kv("Items", str(n)),
+            html_kv("Status", status_badge(self.status.value)),
+        ]
+        if n_completed:
+            kvs.append(html_kv("Completed", str(n_completed)))
+        if n_failed:
+            kvs.append(html_kv("Failed", f'<span style="color:{ERROR_COLOR}">{n_failed}</span>'))
+        if n_completed > 0:
+            completed_items = [r for r in self.results if r.status == RunStatus.COMPLETED]
+            completed_ms = sum(r.log.total_duration_ms for r in completed_items if r.log)
+            avg = completed_ms / n_completed
+            kvs.append(html_kv("Avg/item", duration_html(avg)))
+        body = " &nbsp;|&nbsp; ".join(kvs)
+
+        # Nested drill-down: each item is expandable to its full RunResult
+        items_html = _map_items_drilldown(
+            self.results,
+            scope_key=widget_state_key("map-result-items", self.run_id or "", self.graph_name, n),
+        )
+        body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", items_html, state_key="per-item-breakdown")
+
+        return theme_wrap(
+            html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body),
+            state_key=widget_state_key("map-result", self.run_id or "", self.graph_name, n),
+        )
+
+
+def _map_items_drilldown(
+    results: tuple[RunResult, ...],
+    *,
+    scope_key: str = "map-items",
+) -> str:
+    """Render nested drill-down for MapResult items.
+
+    Each item is a collapsible <details> showing a one-line summary.
+    Expanding reveals the full RunResult HTML with values, execution log,
+    and nested graph traces — clickable all the way down.
+    """
+    from hypergraph._repr import (
+        ERROR_COLOR,
+        duration_html,
+        html_detail,
+        html_filter_paginate_controls,
+        html_filter_paginate_script,
+        status_badge,
+        unique_dom_id,
+    )
+
+    total = len(results)
+    status_counts: dict[str, int] = {"all": total}
+    for status in RunStatus:
+        count = sum(1 for r in results if r.status == status)
+        if count:
+            status_counts[status.value] = count
+
+    # Intelligent default: moderate batches open at 50, larger ones at 100 to
+    # reduce unnecessary paging while keeping the view readable.
+    default_page_size = 100 if total > 200 else 50
+    dom_scope = unique_dom_id("map-items", scope_key, total)
+    filter_id = f"{dom_scope}-filter"
+    page_size_id = f"{dom_scope}-page-size"
+    prev_id = f"{dom_scope}-prev"
+    next_id = f"{dom_scope}-next"
+    page_info_id = f"{dom_scope}-page-info"
+    list_id = f"{dom_scope}-items"
+
+    parts: list[str] = []
+    for i, r in enumerate(results):
+        dur = duration_html(r.log.total_duration_ms) if r.log else "—"
+        err_label = f' — <span style="color:{ERROR_COLOR}">{type(r.error).__name__}</span>' if r.error else ""
+        summary = f"Item {i}: {status_badge(r.status.value)} {dur}{err_label}"
+        # Render the full RunResult HTML inside each item's expandable section.
+        item_html = html_detail(summary, r._repr_html_(), state_key=f"item-{i}")
+        parts.append(f'<div data-hg-map-item="1" data-status="{r.status.value}" style="display:block">{item_html}</div>')
+
+    controls = html_filter_paginate_controls(
+        filter_id=filter_id,
+        page_size_id=page_size_id,
+        prev_id=prev_id,
+        next_id=next_id,
+        page_info_id=page_info_id,
+        counts=status_counts,
+        page_size_options=[20, 50, 100],
+        default_page_size=default_page_size,
+    )
+    items_block = f'<div id="{list_id}">{"".join(parts)}</div>'
+    script = html_filter_paginate_script(
+        list_id=list_id,
+        item_selector='[data-hg-map-item="1"]',
+        status_attr="data-status",
+        filter_id=filter_id,
+        page_size_id=page_size_id,
+        prev_id=prev_id,
+        next_id=next_id,
+        page_info_id=page_info_id,
+        item_display="block",
+    )
+    return controls + items_block + script
+
+
+Sequence.register(MapResult)
 
 
 @dataclass
@@ -285,6 +657,7 @@ class RunnerCapabilities:
     supports_streaming: bool = False
     returns_coroutine: bool = False
     supports_interrupts: bool = False
+    supports_checkpointing: bool = False
 
 
 @dataclass
@@ -298,12 +671,16 @@ class NodeExecution:
         input_versions: Version numbers of inputs at execution time
         outputs: Output values produced
         wait_for_versions: Version numbers of wait_for names at execution time
+        duration_ms: Wall-clock execution time in milliseconds
+        cached: Whether this execution was a cache hit
     """
 
     node_name: str
     input_versions: dict[str, int]
     outputs: dict[str, Any]
     wait_for_versions: dict[str, int] = field(default_factory=dict)
+    duration_ms: float = 0.0
+    cached: bool = False
 
 
 @dataclass
@@ -374,4 +751,545 @@ class GraphState:
                 for k, v in self.node_executions.items()
             },
             routing_decisions=dict(self.routing_decisions),
+        )
+
+
+# ---------------------------------------------------------------------------
+# RunLog types — always-on execution trace
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NodeRecord:
+    """Record of a single node execution within a run.
+
+    Attributes:
+        node_name: Name of the executed node.
+        superstep: Parallel execution round (0-indexed).
+        duration_ms: Wall-clock execution time in milliseconds.
+        status: "completed" or "failed".
+        span_id: Correlates with OTel traces.
+        error: Error message if status is "failed".
+        cached: Whether this was a cache hit.
+        decision: Gate routing decision, if this was a gate node.
+    """
+
+    node_name: str
+    superstep: int
+    duration_ms: float
+    status: Literal["completed", "failed"]
+    span_id: str
+    error: str | None = None
+    cached: bool = False
+    decision: str | list[str] | None = None
+    _inner_logs: tuple[RunLog, ...] = field(default=(), repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "duration_ms", round(self.duration_ms, DURATION_PRECISION))
+
+    def __repr__(self) -> str:
+        status = "cached" if self.cached else self.status
+        parts = [f"NodeRecord: {self.node_name}", status, _format_duration(self.duration_ms), f"superstep {self.superstep}"]
+        if self.error:
+            parts.append(f"error: {self.error[:60]}")
+        if self.decision is not None:
+            d = ", ".join(self.decision) if isinstance(self.decision, list) else self.decision
+            parts.append(f"-> {d}")
+        return " | ".join(parts)
+
+    @property
+    def log(self) -> RunLog | MapLog | None:
+        """Drill into nested execution traces.
+
+        Returns RunLog for single inner, MapLog for multiple, None for leaf nodes.
+        """
+        if not self._inner_logs:
+            return None
+        if len(self._inner_logs) == 1:
+            return self._inner_logs[0]
+        return MapLog(
+            graph_name=self._inner_logs[0].graph_name,
+            total_duration_ms=sum(log.total_duration_ms for log in self._inner_logs),
+            items=self._inner_logs,
+        )
+
+
+@dataclass(frozen=True)
+class NodeStats:
+    """Aggregate statistics for a node across executions.
+
+    Produced by RunLog.node_stats — immutable after creation.
+    """
+
+    count: int = 0
+    total_ms: float = 0.0
+    errors: int = 0
+    cached: int = 0
+
+    @property
+    def succeeded(self) -> int:
+        """Executions that completed without cache hit."""
+        return self.count - self.errors - self.cached
+
+    @property
+    def avg_ms(self) -> float:
+        """Average execution time for succeeded (non-cached) runs."""
+        return self.total_ms / self.succeeded if self.succeeded > 0 else 0.0
+
+    def __repr__(self) -> str:
+        parts = []
+        if self.succeeded:
+            parts.append(f"{self.succeeded} succeeded")
+        if self.errors:
+            parts.append(plural(self.errors, "error"))
+        if self.cached:
+            parts.append(f"{self.cached} cached")
+        if self.succeeded:
+            parts.append(f"avg {_format_duration(self.avg_ms)}")
+        return f"NodeStats: {', '.join(parts)}" if parts else "NodeStats: empty"
+
+
+def _format_duration(ms: float) -> str:
+    """Format milliseconds into human-readable duration."""
+    from hypergraph._utils import format_duration_ms
+
+    return format_duration_ms(ms)
+
+
+def _compute_node_stats(steps: tuple[NodeRecord, ...]) -> dict[str, NodeStats]:
+    """Aggregate per-node stats from step records."""
+    accumulators: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        acc = accumulators.setdefault(step.node_name, {"count": 0, "total_ms": 0.0, "errors": 0, "cached": 0})
+        acc["count"] += 1
+        acc["total_ms"] += step.duration_ms
+        if step.status == "failed":
+            acc["errors"] += 1
+        if step.cached:
+            acc["cached"] += 1
+    return {name: NodeStats(**vals) for name, vals in accumulators.items()}
+
+
+@dataclass(frozen=True)
+class RunLog:
+    """Immutable execution trace, available on every RunResult.
+
+    Provides progressive disclosure: summary() for one-liner,
+    node_stats for aggregates, steps for full trace, to_dict()
+    for JSON serialization.
+    """
+
+    graph_name: str
+    run_id: str
+    total_duration_ms: float
+    steps: tuple[NodeRecord, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "total_duration_ms", round(self.total_duration_ms, DURATION_PRECISION))
+
+    @property
+    def errors(self) -> tuple[NodeRecord, ...]:
+        """Only failed steps."""
+        return tuple(s for s in self.steps if s.status == "failed")
+
+    @property
+    def timing(self) -> dict[str, float]:
+        """Total ms per node name."""
+        result: dict[str, float] = {}
+        for step in self.steps:
+            result[step.node_name] = result.get(step.node_name, 0.0) + step.duration_ms
+        return result
+
+    @property
+    def node_stats(self) -> dict[str, NodeStats]:
+        """Aggregate statistics per node name."""
+        return _compute_node_stats(self.steps)
+
+    def summary(self) -> str:
+        """One-line overview string."""
+        n_errors = len(self.errors)
+        n_nodes = len({s.node_name for s in self.steps})
+        slowest = max(self.timing.items(), key=lambda x: x[1]) if self.timing else ("", 0)
+        parts = [
+            plural(n_nodes, "node"),
+            _format_duration(self.total_duration_ms),
+            plural(n_errors, "error"),
+        ]
+        if slowest[1] > 0:
+            parts.append(f"slowest: {slowest[0]} ({_format_duration(slowest[1])})")
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict with only primitive types.
+
+        Returns only str, int, float, bool, None, list, dict.
+        This is intentionally shallow — no complex objects.
+        """
+        return {
+            "graph_name": self.graph_name,
+            "run_id": self.run_id,
+            "total_duration_ms": self.total_duration_ms,
+            "steps": [
+                {
+                    "node_name": s.node_name,
+                    "superstep": s.superstep,
+                    "duration_ms": s.duration_ms,
+                    "status": s.status,
+                    "span_id": s.span_id,
+                    "error": s.error,
+                    "cached": s.cached,
+                    "decision": s.decision,
+                    "inner_log": s.log.to_dict() if s._inner_logs else None,
+                }
+                for s in self.steps
+            ],
+            "node_stats": {
+                name: {
+                    "count": stats.count,
+                    "total_ms": stats.total_ms,
+                    "avg_ms": stats.avg_ms,
+                    "errors": stats.errors,
+                    "cached": stats.cached,
+                }
+                for name, stats in self.node_stats.items()
+            },
+        }
+
+    def __str__(self) -> str:
+        """Formatted table output for terminal / print()."""
+        n_errors = len(self.errors)
+        header = (
+            f"RunLog: {self.graph_name} | "
+            f"{_format_duration(self.total_duration_ms)} | "
+            f"{plural(len({s.node_name for s in self.steps}), 'node')} | "
+            f"{plural(n_errors, 'error')}"
+        )
+
+        has_decisions = any(s.decision is not None for s in self.steps)
+        lines = [header, ""]
+
+        # Column headers
+        cols = ["  Step", "Node", "Duration", "Status"]
+        if has_decisions:
+            cols.append("Decision")
+        lines.append("  ".join(f"{c:<16}" for c in cols).rstrip())
+        lines.append("  ".join("─" * 16 for _ in cols))
+
+        for i, step in enumerate(self.steps):
+            dur = _format_duration(step.duration_ms) if step.status != "failed" or step.duration_ms > 0 else "—"
+            status = "completed" if step.status == "completed" else f"FAILED: {step.error or 'unknown'}"
+            if step.cached:
+                status = "cached"
+            if step._inner_logs:
+                status += f" ({len(step._inner_logs)} inner)"
+            row = [f"  {i:>4}", f"{step.node_name:<16}", f"{dur:<16}", status]
+            if has_decisions:
+                decision_str = ""
+                if step.decision is not None:
+                    decision_str = "→ " + ", ".join(step.decision) if isinstance(step.decision, list) else f"→ {step.decision}"
+                row.append(decision_str)
+            lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
+
+        nested = [i for i, s in enumerate(self.steps) if s._inner_logs]
+        if nested:
+            lines.append("")
+            if len(nested) == 1:
+                lines.append(f"  → .steps[{nested[0]}].log for inner trace")
+            else:
+                lines.append(f"  → .steps[i].log for inner traces (i={nested})")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        """Concise repr for REPL/debugger."""
+        return f"RunLog(graph={self.graph_name!r}, steps={len(self.steps)}, duration={_format_duration(self.total_duration_ms)})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        """Show full table in IPython/Jupyter notebooks."""
+        if cycle:
+            pretty_printer.text("RunLog(...)")
+            return
+        pretty_printer.text(str(self))
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import (
+            _code,
+            duration_html,
+            html_panel,
+            html_table,
+            status_badge,
+            theme_wrap,
+            widget_state_key,
+        )
+
+        headers = ["Step", "Node", "Status", "Duration"]
+        has_decisions = any(s.decision is not None for s in self.steps)
+        if has_decisions:
+            headers.append("Decision")
+        rows = []
+        for i, step in enumerate(self.steps):
+            status = "cached" if step.cached else step.status
+            dur = duration_html(step.duration_ms)
+            row = [str(i), _code(step.node_name), status_badge(status), dur]
+            if has_decisions:
+                if step.decision is not None:
+                    d = ", ".join(step.decision) if isinstance(step.decision, list) else step.decision
+                    row.append(f"&rarr; {d}")
+                else:
+                    row.append("")
+            rows.append(row)
+        n_errors = len(self.errors)
+        title = (
+            f"RunLog: {self.graph_name} &nbsp; "
+            f"{duration_html(self.total_duration_ms)} &nbsp; "
+            f"{plural(len({s.node_name for s in self.steps}), 'node')} &nbsp; "
+            f"{plural(n_errors, 'error')}"
+        )
+        body = html_table(headers, rows)
+        return theme_wrap(
+            html_panel(title, body),
+            state_key=widget_state_key("run-log", self.run_id, self.graph_name),
+        )
+
+
+def _build_map_item_placeholder_log(result: RunResult, graph_name: str) -> RunLog:
+    """Create a synthetic per-item log when map item trace is unavailable."""
+    if result.status == RunStatus.FAILED:
+        error_text = None
+        if result.error is not None:
+            error_text = f"{type(result.error).__name__}: {result.error}"
+        steps: tuple[NodeRecord, ...] = (
+            NodeRecord(
+                node_name="map_item",
+                superstep=0,
+                duration_ms=0.0,
+                status="failed",
+                span_id="missing-log",
+                error=error_text,
+            ),
+        )
+    else:
+        steps = ()
+    return RunLog(
+        graph_name=graph_name,
+        run_id=result.run_id,
+        total_duration_ms=0.0,
+        steps=steps,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MapLog — batch-level execution trace
+# ---------------------------------------------------------------------------
+
+_MAX_MAP_LOG_ROWS = 20
+
+
+@dataclass(frozen=True)
+class MapLog:
+    """Batch-level execution trace for map() or map_over.
+
+    Progressive disclosure: summary() → print() → [i] for per-item drill-down.
+    """
+
+    graph_name: str
+    total_duration_ms: float
+    items: tuple[RunLog, ...]
+
+    @property
+    def errors(self) -> tuple[NodeRecord, ...]:
+        """All failed NodeRecords across all items."""
+        return tuple(record for log in self.items for record in log.errors)
+
+    @property
+    def node_stats(self) -> dict[str, NodeStats]:
+        """Aggregate stats across all items (cross-item bottleneck analysis)."""
+        all_steps = tuple(step for log in self.items for step in log.steps)
+        return _compute_node_stats(all_steps)
+
+    def summary(self) -> str:
+        """One-liner: '5 items | 5 completed, 0 errors | avg 42ms/item'."""
+        n = len(self.items)
+        n_succeeded = sum(1 for log in self.items if not log.errors)
+        n_errors = len(self.errors)
+        parts = [plural(n, "item")]
+        status_parts = []
+        if n_succeeded:
+            status_parts.append(f"{n_succeeded} completed")
+        if n_errors:
+            status_parts.append(plural(n_errors, "error"))
+        if status_parts:
+            parts.append(", ".join(status_parts))
+        if n_succeeded > 0:
+            succeeded_items = [log for log in self.items if not log.errors]
+            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+            parts.append(f"avg {_format_duration(avg)}/item")
+        return " | ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-serializable dict."""
+        return {
+            "graph_name": self.graph_name,
+            "total_duration_ms": self.total_duration_ms,
+            "items": [log.to_dict() for log in self.items],
+        }
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> RunLog:
+        return self.items[index]
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __str__(self) -> str:
+        """Per-item table with footer."""
+        n_errors = len(self.errors)
+        n_succeeded = sum(1 for log in self.items if not log.errors)
+        avg_part = ""
+        if n_succeeded > 0:
+            succeeded_items = [log for log in self.items if not log.errors]
+            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+            avg_part = f" | avg {_format_duration(avg)}/item"
+        header = f"MapLog: {self.graph_name} | {plural(len(self.items), 'item')} ({n_succeeded} succeeded) | {plural(n_errors, 'error')}{avg_part}"
+        lines = [header, ""]
+
+        cols = ["  Item", "Duration", "Status", "Nodes"]
+        lines.append("  ".join(f"{c:<16}" for c in cols).rstrip())
+        lines.append("  ".join("─" * 16 for _ in cols))
+
+        display_items = self.items[:_MAX_MAP_LOG_ROWS]
+        for i, log in enumerate(display_items):
+            dur = _format_duration(log.total_duration_ms)
+            status = "FAILED" if log.errors else "completed"
+            n_nodes = len({s.node_name for s in log.steps})
+            row = [f"  {i:>4}", f"{dur:<16}", f"{status:<16}", str(n_nodes)]
+            lines.append("  ".join(f"{c:<16}" for c in row).rstrip())
+
+        remaining = len(self.items) - len(display_items)
+        if remaining > 0:
+            lines.append(f"  ... and {plural(remaining, 'more item')}")
+
+        lines.append("")
+        lines.append("  → .log[i] for per-item trace")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"MapLog(graph={self.graph_name!r}, items={len(self.items)}, duration={_format_duration(self.total_duration_ms)})"
+
+    def _repr_pretty_(self, pretty_printer: Any, cycle: bool) -> None:
+        """Show table in IPython/Jupyter notebooks."""
+        if cycle:
+            pretty_printer.text("MapLog(...)")
+            return
+        pretty_printer.text(str(self))
+
+    def _repr_html_(self) -> str:
+        from hypergraph._repr import (
+            BORDER_COLOR,
+            MUTED_COLOR,
+            SURFACE_COLOR,
+            duration_html,
+            html_detail,
+            html_filter_paginate_controls,
+            html_filter_paginate_script,
+            html_panel,
+            html_table_with_row_attrs,
+            status_badge,
+            theme_wrap,
+            unique_dom_id,
+            widget_state_key,
+        )
+
+        headers = ["Item", "Duration", "Status", "Nodes"]
+        rows = []
+        row_attrs = []
+        trace_items = []
+        n_items = len(self.items)
+        status_counts: dict[str, int] = {"all": n_items}
+        n_completed = 0
+        for i, log in enumerate(self.items):
+            status = "failed" if log.errors else "completed"
+            if status == "completed":
+                n_completed += 1
+            status_counts[status] = status_counts.get(status, 0) + 1
+            n_nodes = len({s.node_name for s in log.steps})
+            rows.append([str(i), duration_html(log.total_duration_ms), status_badge(status), str(n_nodes)])
+            row_attrs.append({"data-hg-map-log-item": "1", "data-status": status})
+
+            summary = (
+                f"Item {i}: {status_badge(status)} "
+                f"{duration_html(log.total_duration_ms)} "
+                f'<span style="color:{MUTED_COLOR}">({plural(n_nodes, "node")})</span>'
+            )
+            trace_detail = html_detail(summary, log._repr_html_(), state_key=f"map-log-item-{i}")
+            trace_items.append(
+                '<div data-hg-map-log-item="1" '
+                f'data-status="{status}" '
+                'style="display:block; margin:0 0 8px 0; padding:6px 8px; '
+                f"border:1px solid {BORDER_COLOR}; border-radius:10px; "
+                f'background:{SURFACE_COLOR}">'
+                f"{trace_detail}</div>"
+            )
+
+        avg_part = ""
+        n_succeeded = n_completed
+        if n_succeeded > 0:
+            succeeded_items = [log for log in self.items if not log.errors]
+            avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
+            avg_part = f" &nbsp; avg {duration_html(avg)}/item"
+
+        title = f"MapLog: {self.graph_name} ({plural(n_items, 'item')}){avg_part}"
+        dom_scope = unique_dom_id("map-log-controls", self.graph_name, n_items, self.total_duration_ms)
+        table_id = f"{dom_scope}-table"
+        traces_id = f"{dom_scope}-traces"
+        filter_id = f"{dom_scope}-filter"
+        page_size_id = f"{dom_scope}-page-size"
+        prev_id = f"{dom_scope}-prev"
+        next_id = f"{dom_scope}-next"
+        page_info_id = f"{dom_scope}-page-info"
+        default_page_size = 100 if n_items > 200 else 50
+
+        controls = html_filter_paginate_controls(
+            filter_id=filter_id,
+            page_size_id=page_size_id,
+            prev_id=prev_id,
+            next_id=next_id,
+            page_info_id=page_info_id,
+            counts=status_counts,
+            page_size_options=[25, 50, 100],
+            default_page_size=default_page_size,
+        )
+        table_html = html_table_with_row_attrs(headers, rows, table_id=table_id, row_attrs=row_attrs)
+        traces_block = f'<div id="{traces_id}">{"".join(trace_items)}</div>'
+        traces = html_detail("Item Traces", traces_block, state_key="map-log-item-traces")
+        table_script = html_filter_paginate_script(
+            list_id=table_id,
+            item_selector='tbody tr[data-hg-map-log-item="1"]',
+            status_attr="data-status",
+            filter_id=filter_id,
+            page_size_id=page_size_id,
+            prev_id=prev_id,
+            next_id=next_id,
+            page_info_id=page_info_id,
+            item_display="table-row",
+        )
+        traces_script = html_filter_paginate_script(
+            list_id=traces_id,
+            item_selector='[data-hg-map-log-item="1"]',
+            status_attr="data-status",
+            filter_id=filter_id,
+            page_size_id=page_size_id,
+            prev_id=prev_id,
+            next_id=next_id,
+            page_info_id=page_info_id,
+            item_display="block",
+        )
+        body = controls + table_html + traces + table_script + traces_script
+
+        return theme_wrap(
+            html_panel(title, body),
+            state_key=widget_state_key("map-log", self.graph_name, len(self.items)),
         )

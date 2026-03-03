@@ -119,8 +119,8 @@ class GateNode(CallableMixin, HyperNode):
 
     @property
     def data_outputs(self) -> tuple[str, ...]:
-        """Gates produce no data outputs (emit outputs are ordering-only)."""
-        return ()
+        """Internal routing value output used for checkpoint/resume reconstruction."""
+        return (f"_{self.name}",)
 
     @property
     def is_async(self) -> bool:
@@ -258,6 +258,8 @@ class RouteNode(GateNode):
         if fallback is not None and fallback not in target_list:
             target_list.append(fallback)
 
+        resolved_name = name or func.__name__
+        self.name = resolved_name
         self.func = func
         self.targets = target_list
         self.descriptions = descriptions
@@ -271,8 +273,7 @@ class RouteNode(GateNode):
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
-        self.name = name or func.__name__
-        self.outputs = self._emit  # Gates: only emit outputs (no data outputs)
+        self.outputs = (f"_{self.name}", *self._emit)
 
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
@@ -462,6 +463,8 @@ class IfElseNode(GateNode):
                 f"or use a regular FunctionNode if no branching is needed"
             )
 
+        resolved_name = name or func.__name__
+        self.name = resolved_name
         self.func = func
         self.when_true = when_true
         self.when_false = when_false
@@ -475,8 +478,7 @@ class IfElseNode(GateNode):
         self._definition_hash = hash_definition(func)
 
         # Core HyperNode attributes
-        self.name = name or func.__name__
-        self.outputs = self._emit  # Gates: only emit outputs (no data outputs)
+        self.outputs = (f"_{self.name}", *self._emit)
 
         inputs = tuple(inspect.signature(func).parameters.keys())
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")

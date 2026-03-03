@@ -37,6 +37,7 @@ from hypergraph.runners.async_.superstep import (
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
+    from hypergraph.checkpointers.base import Checkpointer
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.events.processor import EventProcessor
     from hypergraph.graph import Graph
@@ -72,14 +73,22 @@ class AsyncRunner(AsyncRunnerTemplate):
         10
     """
 
-    def __init__(self, cache: CacheBackend | None = None):
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ):
         """Initialize AsyncRunner with its node executors.
 
         Args:
             cache: Optional cache backend for node result caching.
                 Nodes opt in with ``cache=True``.
+            checkpointer: Optional checkpointer for workflow persistence.
+                Enables save/resume, crash recovery, and cross-process queries.
+                Pass a workflow_id to run() to activate persistence.
         """
         self._cache = cache
+        self._checkpointer_instance = checkpointer
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -87,6 +96,11 @@ class AsyncRunner(AsyncRunnerTemplate):
             RouteNode: AsyncRouteNodeExecutor(),
             InterruptNode: AsyncInterruptNodeExecutor(),
         }
+
+    @property
+    def _checkpointer(self) -> Checkpointer | None:
+        """Checkpointer for workflow persistence."""
+        return self._checkpointer_instance
 
     @property
     def capabilities(self) -> RunnerCapabilities:
@@ -97,6 +111,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             supports_streaming=False,  # Phase 2
             returns_coroutine=True,
             supports_interrupts=True,
+            supports_checkpointing=self._checkpointer_instance is not None,
         )
 
     @property
@@ -120,12 +135,15 @@ class AsyncRunner(AsyncRunnerTemplate):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        workflow_id: str | None = None,
+        checkpoint: Any | None = None,
+        step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
         On failure, raises ExecutionError wrapping the cause and partial state.
         """
-        state = initialize_state(graph, values)
+        state = initialize_state(graph, values, checkpoint=checkpoint)
         active_nodes = compute_active_node_set(graph)
 
         # Set up concurrency limiter only at top level (when none exists)
@@ -137,13 +155,41 @@ class AsyncRunner(AsyncRunnerTemplate):
         else:
             token = None
 
+        # Checkpointer setup — deterministic node ordering for index assignment
+        checkpointer = self._checkpointer_instance
+        has_checkpointer = checkpointer is not None and workflow_id is not None
+        step_counter = 0
+        node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
+        save_tasks: list[asyncio.Task[None]] = []
+
         try:
-            for _ in range(max_iterations):
+            for superstep_idx in range(max_iterations):
                 ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
 
                 if not ready_nodes:
                     break  # No more nodes to execute
 
+                if dispatcher.active:
+                    from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
+
+                    await dispatcher.emit_async(
+                        SuperstepStartEvent(
+                            run_id=run_id,
+                            span_id=_generate_span_id(),
+                            parent_span_id=run_span_id,
+                            graph_name=graph.name,
+                            superstep=superstep_idx,
+                        )
+                    )
+
+                # Track ready nodes and their prior input_versions for
+                # detecting re-executions (cycles) and failures
+                ready_node_names = [n.name for n in ready_nodes]
+                prev_input_versions = {
+                    name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
+                }
+
+                superstep_error: BaseException | None = None
                 try:
                     # Execute all ready nodes concurrently
                     # Concurrency controlled by shared semaphore in ContextVar
@@ -152,17 +198,38 @@ class AsyncRunner(AsyncRunnerTemplate):
                         state,
                         ready_nodes,
                         values,
-                        self._make_execute_node(event_processors),
+                        self._make_execute_node(event_processors, workflow_id=workflow_id),
                         max_concurrency,
                         cache=self._cache,
                         dispatcher=dispatcher,
                         run_id=run_id,
                         run_span_id=run_span_id,
                     )
-                except ExecutionError:
-                    raise
+                except ExecutionError as e:
+                    superstep_error = e
+                    state = e.partial_state  # type: ignore[assignment]
                 except Exception as e:
-                    raise ExecutionError(e, state) from e
+                    superstep_error = ExecutionError(e, state)
+
+                # Save step records for executed nodes (even on failure)
+                if has_checkpointer:
+                    step_counter = await self._save_superstep_records(
+                        checkpointer,
+                        workflow_id,
+                        superstep_idx,
+                        state,
+                        ready_node_names,
+                        prev_input_versions,
+                        node_order,
+                        step_counter,
+                        step_buffer,
+                        save_tasks,
+                        graph,
+                        superstep_error,
+                    )
+
+                if superstep_error is not None:
+                    raise superstep_error
 
             else:
                 # Loop completed without break = hit max_iterations
@@ -176,21 +243,81 @@ class AsyncRunner(AsyncRunnerTemplate):
             pause._partial_state = state  # type: ignore[attr-defined]
             raise
         finally:
+            # Await any background save tasks before returning
+            if save_tasks:
+                results = await asyncio.gather(*save_tasks, return_exceptions=True)
+                failures = [r for r in results if isinstance(r, BaseException)]
+                if failures:
+                    import logging
+
+                    logger = logging.getLogger("hypergraph.checkpointers")
+                    if len(failures) == len(results):
+                        logger.error(
+                            "All %d async step saves failed for workflow %s — no steps persisted: %s",
+                            len(failures),
+                            workflow_id,
+                            failures[0],
+                        )
+                    else:
+                        for f in failures:
+                            logger.warning("Async step save failed: %s", f)
             # Reset concurrency limiter only if we set it
             if token is not None:
                 reset_concurrency_limiter(token)
 
         return state
 
+    async def _save_superstep_records(
+        self,
+        checkpointer: Checkpointer,
+        workflow_id: str,
+        superstep_idx: int,
+        state: GraphState,
+        ready_node_names: list[str],
+        prev_input_versions: dict[str, dict[str, int]],
+        node_order: dict[str, int],
+        step_counter: int,
+        step_buffer: list[Any] | None,
+        save_tasks: list[asyncio.Task[None]],
+        graph: Graph,
+        superstep_error: BaseException | None = None,
+    ) -> int:
+        """Build StepRecords and dispatch to the appropriate durability mode."""
+        from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
+
+        records, step_counter = build_superstep_records(
+            workflow_id=workflow_id,
+            superstep_idx=superstep_idx,
+            state=state,
+            ready_node_names=ready_node_names,
+            prev_input_versions=prev_input_versions,
+            node_order=node_order,
+            step_counter=step_counter,
+            graph=graph,
+            superstep_error=superstep_error,
+        )
+
+        durability = checkpointer.policy.durability
+        for record in records:
+            if durability == "sync":
+                await checkpointer.save_step(record)
+            elif durability == "async":
+                save_tasks.append(asyncio.create_task(checkpointer.save_step(record)))
+            elif step_buffer is not None:
+                step_buffer.append(record)
+
+        return step_counter
+
     def _make_execute_node(
         self,
         event_processors: list[EventProcessor] | None,
+        workflow_id: str | None = None,
     ) -> AsyncNodeExecutor:
         """Create an async node executor closure that carries event context.
 
         The superstep calls execute_node(node, state, inputs). For GraphNode
-        executors, we need to pass event_processors and parent_span_id so
-        nested graphs propagate events. This closure captures that context.
+        executors, we need to pass event_processors, parent_span_id, and
+        workflow_id so nested graphs propagate events and checkpointing.
 
         The superstep sets ``execute_node.current_span_id`` before each
         call so that nested graph runs know their parent span.
@@ -211,18 +338,28 @@ class AsyncRunner(AsyncRunnerTemplate):
 
             # For GraphNodeExecutor, pass context as params (not mutable state)
             if isinstance(executor, AsyncGraphNodeExecutor):
-                return await executor(
+                result = await executor(
                     node,
                     state,
                     inputs,
                     event_processors=event_processors,
                     parent_span_id=current_span_id[0],
+                    workflow_id=workflow_id,
                 )
+                return result
 
             return await executor(node, state, inputs)
 
-        # Expose mutable span_id holder so superstep can set it per-node
+        def consume_last_inner_logs() -> tuple:
+            """Read and clear nested logs for the current async task context."""
+            graph_executor = self._executors.get(GraphNode)
+            if isinstance(graph_executor, AsyncGraphNodeExecutor):
+                return graph_executor.consume_last_inner_logs()
+            return ()
+
+        # Expose holders so superstep can set parent span and read nested logs
         execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
+        execute_node.consume_last_inner_logs = consume_last_inner_logs  # type: ignore[attr-defined]
         return execute_node
 
     # Template hook implementations
@@ -293,7 +430,7 @@ class AsyncRunner(AsyncRunnerTemplate):
 
 
 # ------------------------------------------------------------------
-# Event helpers (module-level to keep the class focused)
+# Event helpers
 # ------------------------------------------------------------------
 
 

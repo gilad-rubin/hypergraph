@@ -170,6 +170,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiosqlite"
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
+]
+
+[[package]]
 name = "allpairspy"
 version = "2.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1364,6 +1373,14 @@ batch = [
 cache = [
     { name = "diskcache" },
 ]
+checkpoint = [
+    { name = "aiosqlite" },
+]
+cli = [
+    { name = "aiosqlite" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "typer" },
+]
 daft = [
     { name = "daft" },
 ]
@@ -1390,6 +1407,10 @@ notebook = [
     { name = "ipywidgets" },
     { name = "nbformat" },
     { name = "notebook" },
+]
+otel = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
 ]
 progress = [
     { name = "rich" },
@@ -1419,6 +1440,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", marker = "extra == 'checkpoint'", specifier = ">=0.20.0" },
+    { name = "aiosqlite", marker = "extra == 'cli'", specifier = ">=0.20.0" },
     { name = "cloudpickle", marker = "extra == 'modal'", specifier = ">=3.0.0" },
     { name = "colbert-ai", marker = "extra == 'examples'", specifier = ">=0.2.22" },
     { name = "daft", marker = "extra == 'all'", specifier = ">=0.6.11" },
@@ -1441,6 +1464,8 @@ requires-dist = [
     { name = "networkx", specifier = ">=3.2" },
     { name = "notebook", marker = "extra == 'notebook'", specifier = ">=7.5.0" },
     { name = "numpy", marker = "extra == 'examples'", specifier = ">=1.21.0" },
+    { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "pandas", marker = "extra == 'examples'", specifier = ">=1.3.0" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=14.0.0" },
     { name = "pyarrow", marker = "extra == 'batch'", specifier = ">=14.0.0" },
@@ -1451,10 +1476,12 @@ requires-dist = [
     { name = "rich", marker = "extra == 'all'", specifier = ">=13.0.0" },
     { name = "rich", marker = "extra == 'progress'", specifier = ">=13.0.0" },
     { name = "rich", marker = "extra == 'telemetry'", specifier = ">=13.0.0" },
+    { name = "tomli", marker = "python_full_version < '3.11' and extra == 'cli'", specifier = ">=2.0" },
     { name = "tqdm", marker = "extra == 'all'", specifier = ">=4.67.1" },
     { name = "tqdm", marker = "extra == 'telemetry'", specifier = ">=4.67.1" },
+    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9.0" },
 ]
-provides-extras = ["batch", "daft", "viz", "notebook", "cache", "progress", "telemetry", "all", "modal", "examples", "dev"]
+provides-extras = ["batch", "daft", "viz", "notebook", "cache", "checkpoint", "cli", "otel", "progress", "telemetry", "all", "modal", "examples", "dev"]
 
 [package.metadata.requires-dev]
 dev = [

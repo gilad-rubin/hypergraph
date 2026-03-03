@@ -145,7 +145,8 @@ class TestNodeAttributes:
             return "a"
 
         assert "decided" in decide.outputs
-        assert decide.data_outputs == ()
+        assert decide.data_outputs == ("_decide",)
+        assert "_decide" in decide.outputs
 
     def test_ifelse_node_with_emit(self):
         """IfElseNode supports emit."""
@@ -155,7 +156,8 @@ class TestNodeAttributes:
             return x > 0
 
         assert "checked" in check.outputs
-        assert check.data_outputs == ()
+        assert check.data_outputs == ("_check",)
+        assert "_check" in check.outputs
 
     def test_route_node_with_wait_for(self):
         """RouteNode supports wait_for."""

@@ -109,7 +109,8 @@ class TestNonTTYMapMilestones:
             proc.on_run_end(_run_end(item_span, parent="map1"))
 
         output = capsys.readouterr().out
-        # Should have milestone logs for 10%, 25%, 50%, 75%, 100%
+        # Should have milestone logs with ◈ prefix for 10%, 25%, 50%, 75%, 100%
+        assert "◈" in output
         assert "10%" in output
         assert "25%" in output
         assert "50%" in output
@@ -152,14 +153,20 @@ class TestNonTTYAutoDetect:
     """Test auto-detection of TTY mode."""
 
     def test_auto_detects_nontty(self):
-        with patch("hypergraph.events.rich_progress._is_tty", return_value=False):
+        with patch("hypergraph.events.rich_progress._detect_mode", return_value="non-tty"):
             proc = RichProgressProcessor(force_mode="auto")
             assert proc._tty_mode is False
 
     def test_auto_detects_tty(self):
-        with patch("hypergraph.events.rich_progress._is_tty", return_value=True):
+        with patch("hypergraph.events.rich_progress._detect_mode", return_value="tty"):
             proc = RichProgressProcessor(force_mode="auto")
             assert proc._tty_mode is True
+
+    def test_auto_detects_notebook(self):
+        with patch("hypergraph.events.rich_progress._detect_mode", return_value="notebook"):
+            proc = RichProgressProcessor(force_mode="auto")
+            assert proc._tty_mode is True
+            assert proc._notebook is True
 
     def test_force_nontty(self):
         proc = RichProgressProcessor(force_mode="non-tty")

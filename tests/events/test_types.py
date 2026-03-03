@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from hypergraph.events import (
@@ -224,19 +222,19 @@ class _AsyncListProcessor(AsyncEventProcessor):
 
 
 class TestAsyncDispatcher:
-    def test_emit_async(self):
+    async def test_emit_async(self):
         sync_p = _ListProcessor()
         async_p = _AsyncListProcessor()
         d = EventDispatcher([sync_p, async_p])
         ev = RunStartEvent(run_id="r1")
-        asyncio.run(d.emit_async(ev))
+        await d.emit_async(ev)
         assert sync_p.events == [ev]
         assert async_p.events == [ev]
 
-    def test_shutdown_async(self):
+    async def test_shutdown_async(self):
         sync_p = _ListProcessor()
         async_p = _AsyncListProcessor()
         d = EventDispatcher([sync_p, async_p])
-        asyncio.run(d.shutdown_async())
+        await d.shutdown_async()
         assert sync_p.shutdown_called
         assert async_p.shutdown_called

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_func_params
@@ -32,6 +33,21 @@ class AsyncGraphNodeExecutor:
             runner: The AsyncRunner that owns this executor
         """
         self.runner = runner
+        self._last_inner_logs: ContextVar[tuple] = ContextVar(
+            "async_graph_node_executor_last_inner_logs",
+            default=(),
+        )
+
+    @property
+    def last_inner_logs(self) -> tuple:
+        """Latest nested logs for the current task context."""
+        return self._last_inner_logs.get()
+
+    def consume_last_inner_logs(self) -> tuple:
+        """Read and clear nested logs for the current task context."""
+        logs = self._last_inner_logs.get()
+        self._last_inner_logs.set(())
+        return logs
 
     async def __call__(
         self,
@@ -41,6 +57,7 @@ class AsyncGraphNodeExecutor:
         *,
         event_processors: list[EventProcessor] | None = None,
         parent_span_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
 
@@ -53,12 +70,14 @@ class AsyncGraphNodeExecutor:
             inputs: Input values for the nested graph
             event_processors: Processors to propagate to nested runs
             parent_span_id: Span ID of the parent node for event linking
+            workflow_id: Parent workflow ID for hierarchical checkpointing
 
         Returns:
             Dict mapping output names to their values
         """
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
+        child_workflow_id = f"{workflow_id}/{node.name}" if workflow_id else None
 
         map_config = node.map_config
 
@@ -74,16 +93,22 @@ class AsyncGraphNodeExecutor:
                 clone=node._original_clone(),
                 error_handling=error_handling,
                 event_processors=event_processors,
+                workflow_id=child_workflow_id,
                 _parent_span_id=parent_span_id,
+                _parent_run_id=workflow_id,
             )
+            self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
             return collect_as_lists(results, node, error_handling)
 
         result = await self.runner.run(
             node.graph,
             inner_inputs,
             event_processors=event_processors,
+            workflow_id=child_workflow_id,
             _parent_span_id=parent_span_id,
+            _parent_run_id=workflow_id,
         )
+        self._last_inner_logs.set((result.log,) if result.log is not None else ())
         return self._handle_nested_result(node, result)
 
     def _handle_nested_result(self, node: GraphNode, result: RunResult) -> dict[str, Any]:

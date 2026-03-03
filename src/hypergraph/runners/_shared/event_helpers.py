@@ -60,6 +60,7 @@ def build_node_end_event(
     graph: Graph,
     duration_ms: float,
     cached: bool = False,
+    inner_logs: tuple = (),
 ) -> Any:
     """Build a NodeEndEvent."""
     from hypergraph.events.types import NodeEndEvent
@@ -72,6 +73,7 @@ def build_node_end_event(
         graph_name=graph.name,
         duration_ms=duration_ms,
         cached=cached,
+        inner_logs=inner_logs,
     )
 
 

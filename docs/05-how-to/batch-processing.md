@@ -151,6 +151,31 @@ batch_pipeline = Graph([
 ])
 ```
 
+## Working with MapResult
+
+`runner.map()` returns a `MapResult` — a read-only sequence with batch-level metadata and aggregate accessors. It's fully backward compatible: `len()`, iteration, and indexing all work as before.
+
+```python
+results = runner.map(graph, {"text": texts}, map_over="text")
+
+# Quick overview
+print(results.summary())    # "5 items | 5 completed | 42ms"
+
+# Collect values across all items by key
+word_counts = results["word_count"]  # [2, 2, 2]
+
+# Collect with a default for failed items
+word_counts = results.get("word_count", 0)  # [2, 2, 0, 2, ...]
+
+# Batch metadata
+results.run_id              # Unique batch ID
+results.total_duration_ms   # Wall-clock time for the entire batch
+results.map_over            # ("text",)
+
+# JSON-serializable export (for logging, dashboards, agents)
+results.to_dict()           # Full batch metadata + per-item results
+```
+
 ## Error Handling
 
 Control what happens when individual items fail using the `error_handling` parameter.
@@ -166,11 +191,9 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 
 ### Continue on Error
 
-Use `error_handling="continue"` to collect all results, including failures. This is useful in production when occasional bad data shouldn't block the entire batch:
+Use `error_handling="continue"` to collect all results, including failures. `MapResult` provides aggregate status and filtering:
 
 ```python
-from hypergraph import RunStatus
-
 results = runner.map(
     graph,
     {"text": texts},
@@ -178,16 +201,22 @@ results = runner.map(
     error_handling="continue",
 )
 
+# Aggregate status
+if results.failed:
+    print(f"{len(results.failures)} items failed out of {len(results)}")
+
+# Collect values with None for failures
+results["result"]                  # [value, value, None, value, ...]
+
+# Collect with a custom default
+results.get("result", "N/A")      # [value, value, "N/A", value, ...]
+
+# Iterate individual results
 for r in results:
-    if r.status == RunStatus.FAILED:
+    if r.failed:
         print(f"Error: {r.error}")
     else:
         print(f"Success: {r['result']}")
-
-# Summary
-successes = [r for r in results if r.status == RunStatus.COMPLETED]
-failures = [r for r in results if r.status == RunStatus.FAILED]
-print(f"{len(successes)} succeeded, {len(failures)} failed")
 ```
 
 ### Error Handling in Nested Graphs
@@ -204,10 +233,207 @@ result = runner.run(batch, {"path": "data.txt"})
 # None entries correspond to failed items
 ```
 
+## runner.map() vs map_over
+
+Two batch patterns, different tradeoffs. Both start from the same idea — **write logic for one item, scale to many** — but they give different guarantees:
+
+| | `runner.map()` | `map_over` |
+|---|---|---|
+| **Returns** | `MapResult` (N `RunResult`s) | One `RunResult` with list outputs |
+| **Error isolation** | Per-item — failures don't affect other items | Whole step — one failure can fail the batch |
+| **Tracing** | Per-item RunLogs with full routing/timing | One RunLog (batch is a single step) |
+| **Checkpointing** | Parent batch run + per-item child runs | Persisted as one run step |
+| **Product mode** | Yes — `map_mode="product"` with multi-key `map_over` | Yes — `mode="product"` for cartesian product |
+| **Use in pipelines** | Top-level batch processing | Step inside a larger graph |
+
+### When to use runner.map()
+
+```python
+# Independent items where failures should be isolated
+results = runner.map(graph, {"url": urls}, map_over="url", error_handling="continue")
+
+# results.failures → only failed items
+# results["data"] → [value, value, None, value, ...]
+```
+
+- Processing independent items (scraping, embedding, classification)
+- When you need per-item RunLogs for debugging
+- Quick fan-out over a single parameter
+- With `workflow_id`: persisted batch with per-item child runs
+
+### When to use map_over
+
+```python
+# Batch step inside a larger pipeline
+inner = Graph([embed, classify], name="processor")
+pipeline = Graph([
+    load_items,
+    inner.as_node().map_over("item"),  # Fan out
+    aggregate,
+])
+result = runner.run(pipeline, {"path": "data.csv"})
+```
+
+- Batch step inside a larger pipeline (load → process_all → aggregate)
+- When you need checkpoint persistence for the batch
+- Cartesian product mode (`mode="product"`)
+- When the batch is part of a nested graph hierarchy
+
+### Checkpointing with map()
+
+Pass a `workflow_id` to `runner.map()` to persist batch results. This creates a parent batch run and per-item child runs:
+
+```python
+from hypergraph import SyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
+
+cp = SqliteCheckpointer("./runs.db")
+runner = SyncRunner(checkpointer=cp)
+
+results = runner.map(
+    graph,
+    {"x": [1, 2, 3]},
+    map_over="x",
+    workflow_id="batch-001",
+)
+# Creates:
+#   batch-001    (parent batch run)
+#   batch-001/0  (child — x=1)
+#   batch-001/1  (child — x=2)
+#   batch-001/2  (child — x=3)
+
+# Query later
+cp.runs(parent_run_id="batch-001")  # list child runs
+cp.values("batch-001/1")            # values for item 1
+```
+
+From the CLI:
+
+```bash
+hypergraph runs ls --parent batch-001
+hypergraph runs show batch-001/1
+```
+
+Without `workflow_id`, `runner.map()` still works but results exist only in-process.
+
+### Run Lineage: Resume vs Fork
+
+`run()` now uses strict, git-like lineage semantics when a checkpointer is configured:
+
+- Same `workflow_id` means "same lineage"
+- Resume is strict: no new runtime values
+- Structural graph changes require fork
+- Completed workflows are terminal (fork to branch)
+
+When `workflow_id` is omitted and a checkpointer exists, `run()` auto-generates one and returns it in `result.workflow_id`.
+
+```python
+result = await runner.run(graph, {"x": 5})  # auto-id when checkpointer is set
+print(result.workflow_id)  # e.g. "run-20260302-a7b3c2"
+```
+
+#### Resume (same workflow_id, no new values)
+
+```python
+from hypergraph import Graph, node, AsyncRunner
+from hypergraph.checkpointers import SqliteCheckpointer
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+@node(output_name="tripled")
+def triple(doubled: int) -> int:
+    return doubled * 3
+
+cp = SqliteCheckpointer("./runs.db")
+runner = AsyncRunner(checkpointer=cp)
+
+# First run
+await runner.run(Graph([double, triple]), {"x": 5}, workflow_id="job-1")
+
+# Resume attempt on completed workflow raises WorkflowAlreadyCompletedError
+# await runner.run(Graph([double, triple]), workflow_id="job-1")
+```
+
+Resume is intended for ACTIVE/FAILED workflows (e.g., retry after failure), not for appending new work to completed lineages.
+
+#### Fork (new workflow_id, optional overrides)
+
+Fork by workflow ID when you want to branch history, override inputs, or run a changed graph:
+
+```python
+forked = await runner.run(
+    Graph([double, triple]),
+    {"x": 100},                      # optional overrides
+    fork_from="job-1",
+)
+assert forked["tripled"] == 600
+```
+
+Retry is symmetrical:
+
+```python
+retried = await runner.run(
+    Graph([double, triple]),
+    retry_from="job-1",
+    on_internal_override="ignore",   # common for flaky-node recovery
+)
+```
+
+If you pass runtime values with an existing workflow ID, `run()` raises `InputOverrideRequiresForkError`.
+If graph structure changed for an existing workflow ID, `run()` raises `GraphChangedError`.
+
+### Resuming Batches
+
+When you re-run `map()` with the same `workflow_id`, completed items are automatically skipped. Only failed or unfinished items are re-executed:
+
+```python
+# First run: item x=20 fails
+results = await runner.map(
+    graph,
+    {"x": [10, 20, 30]},
+    map_over="x",
+    workflow_id="batch-retry",
+    error_handling="continue",
+)
+# batch-retry/0 → COMPLETED
+# batch-retry/1 → FAILED (x=20 error)
+# batch-retry/2 → COMPLETED
+
+# Fix the bug, then re-run with the same workflow_id
+results = await runner.map(
+    graph,
+    {"x": [10, 20, 30]},
+    map_over="x",
+    workflow_id="batch-retry",
+    error_handling="continue",
+)
+# batch-retry/0 → skipped (already COMPLETED)
+# batch-retry/1 → re-executed (was FAILED)
+# batch-retry/2 → skipped (already COMPLETED)
+```
+
+This makes it safe to retry large batches — you only pay for the items that actually need re-processing.
+
+### CLI batch execution
+
+You can also run batch operations directly from the terminal:
+
+```bash
+# Map over a parameter
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}'
+
+# With checkpointing (requires --workflow-id to activate persistence)
+hypergraph map my_module:graph --map-over x --values '{"x": [1, 2, 3]}' --workflow-id batch-001 --db ./runs.db
+```
+
+See [Debug Workflows — CLI](debug-workflows.md#run--execute-a-graph) for full CLI reference.
+
 ## When to Use Map vs Loop
 
-| Use `runner.map()` | Use a Python loop |
-|-------------------|-------------------|
+| Use `runner.map()` or `map_over` | Use a Python loop |
+|----------------------------------|-------------------|
 | Same graph, different inputs | Different graphs per item |
 | Want parallel execution | Need sequential dependencies |
 | Processing a collection | One-off processing |

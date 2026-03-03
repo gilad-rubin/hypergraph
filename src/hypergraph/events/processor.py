@@ -14,6 +14,7 @@ from hypergraph.events.types import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    SuperstepStartEvent,
 )
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ _EVENT_METHOD_MAP: dict[type, str] = {
     CacheHitEvent: "on_cache_hit",
     NodeErrorEvent: "on_node_error",
     RouteDecisionEvent: "on_route_decision",
+    SuperstepStartEvent: "on_superstep_start",
     InterruptEvent: "on_interrupt",
     StopRequestedEvent: "on_stop_requested",
 }
@@ -83,5 +85,6 @@ class TypedEventProcessor(EventProcessor):
     def on_cache_hit(self, event: CacheHitEvent) -> None: ...
     def on_node_error(self, event: NodeErrorEvent) -> None: ...
     def on_route_decision(self, event: RouteDecisionEvent) -> None: ...
+    def on_superstep_start(self, event: SuperstepStartEvent) -> None: ...
     def on_interrupt(self, event: InterruptEvent) -> None: ...
     def on_stop_requested(self, event: StopRequestedEvent) -> None: ...

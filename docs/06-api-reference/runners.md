@@ -36,11 +36,16 @@ print(result["doubled"])  # 10
 
 ```python
 class SyncRunner:
-    def __init__(self, cache: CacheBackend | None = None) -> None: ...
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ) -> None: ...
 ```
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
+- `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
 
 ### run()
 
@@ -57,6 +62,11 @@ def run(
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    checkpoint: Checkpoint | None = None,
+    workflow_id: str | None = None,
+    override_workflow: bool = False,
+    fork_from: str | None = None,
+    retry_from: str | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -82,6 +92,15 @@ Execute a graph once.
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
+- `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
+  - omitted: auto-generated for `run()`
+  - existing: strict resume only (no runtime values; same graph structure)
+  - new + `checkpoint`: explicit fork
+- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
+- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
+- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
+- Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
@@ -123,6 +142,26 @@ result = runner.run(graph, {"x": 5}, error_handling="continue")
 if result.status == RunStatus.FAILED:
     print(result.error)        # the original exception
     print(result.values)       # outputs from nodes that completed before the failure
+
+# Fork from an existing run (workflow-id based)
+from hypergraph.checkpointers import SqliteCheckpointer
+cp = SqliteCheckpointer("./runs.db")
+runner = SyncRunner(checkpointer=cp)
+
+runner.run(graph, {"x": 5}, workflow_id="job-1")
+result = runner.run(
+    graph,
+    {"x": 100},
+    fork_from="job-1",
+)
+
+# Convenience override (auto-forks if "job-1" already exists)
+result = runner.run(
+    graph,
+    {"x": 100},
+    workflow_id="job-1",
+    override_workflow=True,
+)
 ```
 
 ### map()
@@ -135,14 +174,16 @@ def map(
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    workflow_id: str | None = None,
     **input_values: Any,
-) -> list[RunResult]: ...
+) -> MapResult: ...
 ```
 
 Execute a graph multiple times with different inputs.
@@ -152,6 +193,7 @@ Execute a graph multiple times with different inputs.
 - `values` - Optional input values. Parameters in `map_over` should be lists
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
+- `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively. Prevents cross-iteration mutation.
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
@@ -160,9 +202,10 @@ Execute a graph multiple times with different inputs.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand (merged with `values`)
 
-**Returns:** List of `RunResult`, one per iteration
+**Returns:** [`MapResult`](#mapresult) wrapping per-iteration RunResults with batch metadata
 
 **Example:**
 
@@ -173,6 +216,10 @@ results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
 # kwargs shorthand
 results = runner.map(graph, map_over="x", x=[1, 2, 3])
 
+# Batch-level metadata
+print(results.summary())   # "3 items | 3 completed | 12ms"
+print(results["doubled"])  # [2, 4, 6] — collect values across items
+
 # Multiple parameters with zip
 results = runner.map(
     graph,
@@ -181,23 +228,15 @@ results = runner.map(
     map_mode="zip",  # (1,10), (2,20)
 )
 
-# Cartesian product
-results = runner.map(
-    graph,
-    {"a": [1, 2], "b": [10, 20]},
-    map_over=["a", "b"],
-    map_mode="product",  # (1,10), (1,20), (2,10), (2,20)
-)
-
-# Continue on errors — collect partial results
+# Continue on errors — aggregate status
 results = runner.map(
     graph,
     {"x": [1, 2, 3]},
     map_over="x",
     error_handling="continue",
 )
-successes = [r for r in results if r.status == RunStatus.COMPLETED]
-failures = [r for r in results if r.status == RunStatus.FAILED]
+if results.failed:
+    print(f"{len(results.failures)} items failed")
 ```
 
 ### capabilities
@@ -245,11 +284,16 @@ result = await runner.run(graph, {"url": "https://api.example.com"})
 
 ```python
 class AsyncRunner:
-    def __init__(self, cache: CacheBackend | None = None) -> None: ...
+    def __init__(
+        self,
+        cache: CacheBackend | None = None,
+        checkpointer: Checkpointer | None = None,
+    ) -> None: ...
 ```
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
+- `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
 
 ### run()
 
@@ -267,6 +311,11 @@ async def run(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    checkpoint: Checkpoint | None = None,
+    workflow_id: str | None = None,
+    override_workflow: bool = False,
+    fork_from: str | None = None,
+    retry_from: str | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -286,6 +335,15 @@ Execute a graph asynchronously.
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
+- `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
+- `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
+  - omitted: auto-generated for `run()`
+  - existing: strict resume only (no runtime values; same graph structure)
+  - new + `checkpoint`: explicit fork
+- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
+- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
+- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
+- Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
@@ -338,6 +396,7 @@ async def map(
     *,
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
@@ -345,8 +404,9 @@ async def map(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    workflow_id: str | None = None,
     **input_values: Any,
-) -> list[RunResult]: ...
+) -> MapResult: ...
 ```
 
 Execute graph multiple times concurrently.
@@ -356,6 +416,7 @@ Execute graph multiple times concurrently.
 - `values` - Optional input values
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` or `"product"`
+- `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively.
 - `select` - Which outputs to return. `"**"` (default) returns all outputs.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
@@ -365,6 +426,7 @@ Execute graph multiple times concurrently.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Example:**
@@ -452,8 +514,9 @@ class RunResult:
 ### Convenience Properties
 
 ```python
-result.paused     # True if status == PAUSED
 result.completed  # True if status == COMPLETED
+result.paused     # True if status == PAUSED
+result.failed     # True if status == FAILED
 ```
 
 ### Dict-like Access
@@ -485,6 +548,66 @@ if result.status == RunStatus.FAILED:
 ```
 
 This is useful for debugging — you can inspect which nodes completed successfully.
+
+### Progressive Disclosure
+
+```python
+# One-line summary
+result.summary()   # "3 nodes | 12ms | 0 errors | slowest: generate (8ms)"
+
+# JSON-serializable metadata (no raw values or exception objects)
+result.to_dict()   # {"status": "completed", "run_id": "run-abc", "log": {...}}
+```
+
+---
+
+## MapResult
+
+Result of a batch `map()` execution. Wraps individual `RunResult` items with batch-level metadata.
+
+Supports read-only sequence protocol — `len()`, `iter()`, `[int]` work; mutable list ops do not.
+
+```python
+from hypergraph import MapResult
+
+results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+
+# Sequence protocol (backward compatible)
+len(results)     # 3
+results[0]       # RunResult
+for r in results: ...
+
+# String key access — collect values across items
+results["doubled"]           # [2, 4, 6]
+results.get("doubled", 0)   # [2, 4, 6] (with default for missing)
+
+# Aggregate status
+results.status       # RunStatus.COMPLETED (or FAILED if any failed)
+results.completed    # True if all completed
+results.failed       # True if any failed
+results.failures     # List of failed RunResult items
+
+# Progressive disclosure
+results.summary()    # "3 items | 3 completed | 12ms"
+results.to_dict()    # JSON-serializable batch metadata + per-item results
+```
+
+### Attributes
+
+```python
+@dataclass(frozen=True)
+class MapResult:
+    results: tuple[RunResult, ...]   # Individual results
+    run_id: str | None               # None for empty maps
+    total_duration_ms: float         # Wall-clock batch time
+    map_over: tuple[str, ...]        # Parameter names iterated
+    map_mode: str                    # "zip" or "product"
+    graph_name: str                  # Name of the executed graph
+```
+
+### Status Precedence
+
+`FAILED > PAUSED > COMPLETED`. If any item failed, the batch status is FAILED. Empty batch → COMPLETED.
 
 ---
 
@@ -625,7 +748,7 @@ Superstep 3: [generate]        → produces "answer"
 When collecting inputs for a node, values are resolved in this order:
 
 1. **Edge value** - Output from upstream node
-2. **Input value** - Provided via `values` or kwargs shorthand
+2. **Input value** - Provided via `values`/kwargs. On resume/fork, checkpoint state is restored first, then runtime inputs apply (runtime values win). See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
 3. **Bound value** - From `graph.bind()`
 4. **Function default** - From function signature
 
@@ -641,6 +764,8 @@ graph = Graph([process]).bind(x=5)  # bound=5
 # Then bound value: runner.run(graph, {})        → x=5
 # Then default: (if no bind) runner.run(graph, {}) → x=10
 ```
+
+> **Note:** Fork/resume restoration rehydrates execution state from checkpoint snapshot data (including prior computed values) and uses staleness checks to decide which nodes re-execute.
 
 ### Cyclic Graphs
 
