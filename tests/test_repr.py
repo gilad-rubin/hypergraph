@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from hypergraph._repr import (
     _compact_html,
     error_html,
@@ -752,6 +754,7 @@ class TestMapLogProgressiveDisclosure:
 
 class TestSqliteCheckpointerRepr:
     def test_repr(self):
+        pytest.importorskip("aiosqlite")
         from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 
         cp = SqliteCheckpointer(":memory:")
@@ -760,6 +763,7 @@ class TestSqliteCheckpointerRepr:
         assert "0 runs" in r
 
     def test_repr_html(self):
+        pytest.importorskip("aiosqlite")
         from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 
         cp = SqliteCheckpointer(":memory:")
