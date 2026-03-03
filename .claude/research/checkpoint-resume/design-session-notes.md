@@ -526,16 +526,32 @@ print(result.workflow_id)  # "run-20260302-a7b3c2"
 
 **Key question**: Since we don't do replay, what level of hash gives us the right tradeoff between safety and DX friction?
 
+**Industry survey** (4 systems):
+
+| System | Resume model | Code hash | Code change handling |
+|---|---|---|---|
+| **Temporal** | Full replay | None | Replay mismatch error (lazy) |
+| **Restate** | Journal replay | None (deployment ID) | Journal mismatch error (lazy) |
+| **DBOS** | Re-execute + memoize | SHA-256 of all functions | Version mismatch → no auto-recovery; use `fork_workflow` |
+| **LangGraph** | Snapshot + `next` | None | Not detected; manual time-travel |
+
+Nobody does per-node hashing or structural-only hashing. The split is: replay-based systems get detection for free (Temporal, Restate), snapshot-based systems either hash the whole app (DBOS) or punt entirely (LangGraph).
+
+**Our closest analog is LangGraph** (snapshot restore, no replay). They chose "no detection, user time-travels manually." DBOS is the cautious alternative — hash everything, fork to recover.
+
 ### Value Override on Resume — OPEN
 
 Passing new values to the same `workflow_id` is conceptually a fork, not a resume. But should we enforce this strictly?
 
-**Temporal**: Cannot change inputs on retry. New execution required.
-**Restate**: Same — `restart-as-new` uses original input. New invocation required for different inputs.
+**All four systems agree: same identity = same inputs.**
+- Temporal: cannot change inputs on retry; new execution required
+- Restate: `restart-as-new` uses original input; new invocation for different inputs
+- DBOS: `resume_workflow` always uses stored inputs; new workflow for different inputs
+- LangGraph: `update_state` creates a **new checkpoint** (effectively a fork within the thread); or use time-travel
 
-Both systems agree: **same identity = same inputs**. This suggests we should follow suit.
+LangGraph's `update_state` is interesting — it modifies state but creates a new checkpoint, so the old state is preserved. It's a fork in disguise, within the same thread_id.
 
-**Proposed**: Resume = no new values. New values = requires fork (new workflow_id + checkpoint). But we should validate this against our actual use cases before committing.
+**Proposed**: Resume = no new values. New values = requires fork (new workflow_id + checkpoint).
 
 ### History in Fork with Changed Graph
 When forking across graph versions, inherited steps reference the old graph's structure. The staleness machinery handles most cases correctly, but node name collisions across versions remain a risk.
@@ -565,37 +581,46 @@ Every system with resumable branching workflows separates two concerns:
 
 With gate output values, the marking is partially IN the colors — routing decisions are derivable from `_gate` values. The remaining marking-only data is `node_completions` (who ran and what they consumed).
 
-### Temporal vs Restate vs Hypergraph: Resume Mechanisms
+### Durable Execution Engines: Detailed Comparison
 
-Research into how Temporal and Restate handle code changes, forks, and input overrides.
+Research into how four production systems handle resume, code changes, forks, and input overrides.
 
-**The fundamental architectural difference:**
+**The two resume families:**
 
-| | Temporal | Restate | Hypergraph |
+| Family | Systems | Mechanism | Code change detection |
 |---|---|---|---|
-| **Resume mechanism** | Full replay from start | Journal replay from start | Snapshot restore + continue |
-| **Code change detection** | Implicit (replay mismatch) | Implicit (journal mismatch) | Must be explicit (no replay) |
-| **Detection timing** | At execution time (lazy) | At execution time (lazy) | At resume time (eager) |
-| **Versioning approach** | In-code (`GetVersion`/`patched()`) | Infrastructure (immutable deployments) | TBD (hash? cache? both?) |
-| **Input change on retry** | New execution required | New invocation required | TBD |
-| **Fork / time travel** | Reset API (terminates old execution) | `restart-as-new?from=N` (preserves old) | Checkpoint + new workflow_id (preserves old) |
+| **Replay-based** | Temporal, Restate, DBOS | Re-execute from top; skip completed via memoization or event matching | Implicit (mismatch during replay) |
+| **Snapshot-based** | LangGraph, **Hypergraph** | Store full state + "what's next"; jump to pending work | Must be explicit (no replay to compare) |
 
-**Key Temporal details:**
-- `GetVersion(ctx, changeId, defaultVersion, maxVersion)` — records a marker event in history. Old workflows replay and see `DefaultVersion`. New workflows see `maxVersion`. Both code paths coexist until old workflows drain.
-- Worker Versioning (recommended for production) — tag workers with build IDs, route old workflows to old workers. No `GetVersion` needed.
-- Reset API — rewinds to a `WorkflowTaskStarted` event. Same workflow ID, new run ID. Old execution terminated.
+**Full comparison:**
 
-**Key Restate details:**
-- No in-code versioning API (no `GetVersion` equivalent)
-- Invocations pinned to deployment ID. New code = new endpoint = new deployment registration
-- `restart-as-new?from=N&deployment=new_id` — copies journal prefix, resumes with new code. Old invocation preserved.
-- `RT0016 Journal mismatch` if code changes at same endpoint without new deployment
+| | Temporal | Restate | DBOS | LangGraph | Hypergraph |
+|---|---|---|---|---|---|
+| **Resume** | Full replay | Journal replay | Re-exec + memoize | Snapshot + `next` field | Snapshot + `get_ready_nodes` |
+| **Code hash** | None | None (deploy ID) | SHA-256 all functions | None | TBD |
+| **Code change** | Replay mismatch | Journal mismatch | No auto-recovery | Not detected | TBD |
+| **Input override** | New execution | New invocation | New workflow | `update_state` (new checkpoint) | TBD |
+| **Fork** | Reset (kills old) | `restart-as-new` | `fork_workflow(id, step, version)` | `update_state` on historical checkpoint | `checkpoint` + new workflow_id |
+| **Structure change** | `GetVersion`/`patched()` | New deployment | Version mismatch | Error if `next` → removed node | TBD |
+| **Versioning** | In-code markers | Infra (deployments) | App-level hash | None | TBD |
+| **Old run preserved?** | No (terminated) | Yes | Yes (independent) | Yes (checkpoint DAG) | Yes |
+
+**Key details per system:**
+
+**Temporal**: `GetVersion(ctx, changeId, min, max)` records marker events in history for in-code branching. Worker Versioning (build IDs) for infra-level routing. Reset API rewinds to a `WorkflowTaskStarted` event — same workflow ID, new run ID.
+
+**Restate**: Invocations pinned to deployment ID. No in-code versioning API. `restart-as-new?from=N&deployment=new_id` copies journal prefix, resumes with new code. `RT0016 Journal mismatch` if code changes at same endpoint.
+
+**DBOS**: Hashes ALL registered workflow functions into one SHA-256. Version-mismatched workflows sit in PENDING, not auto-recovered. `fork_workflow(id, start_step, application_version)` is the explicit recovery — copies step outputs 0..N-1, starts fresh at step N. `DBOS.patch("change_id")` for safe incremental code evolution (returns True if workflow hasn't passed this point yet).
+
+**LangGraph**: Stores `next: tuple[str, ...]` in every checkpoint — literal list of nodes to execute. No code change detection at all. `update_state(config, values, as_node)` creates new checkpoint (respects reducers); `as_node` controls what `next` becomes. Time-travel = `update_state` on a historical `checkpoint_id`. `put_writes` stores partial superstep results for parallel crash recovery.
 
 **What this means for us:**
-- Both systems agree: same identity = same inputs. You cannot change inputs on retry.
-- Both detect code changes lazily through replay, which we can't do.
-- Temporal's `GetVersion` is elegant but adds code complexity. Not applicable to our restore-based model.
-- Our closest analog to Temporal's Reset is fork (checkpoint from old run + new workflow_id). But we preserve the old run, like Restate.
+- All four agree: same identity = same inputs
+- LangGraph is our closest model (snapshot-based, no replay). They punt on code changes entirely.
+- DBOS shows the "hash everything + fork" approach works in practice
+- Fork is the universal recovery mechanism across all four systems
+- LangGraph's `put_writes` is worth studying for our parallel superstep crash recovery
 
 ### Dolt as backend: evaluated and rejected
 
