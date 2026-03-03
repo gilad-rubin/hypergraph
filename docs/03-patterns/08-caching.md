@@ -80,6 +80,15 @@ result = runner.run(graph, {"text": "hello", "query": "Q1"})
 # embed is still cached from the previous run
 ```
 
+#### Integrity Verification
+
+`DiskCache` stores serialized bytes plus an HMAC-SHA256 signature:
+
+- On write: value is serialized, signed, and stored with its signature
+- On read: signature is verified **before** deserialization
+
+This prevents deserializing tampered cache payloads. If an entry is corrupted, missing a signature, has invalid metadata, or fails deserialization, Hypergraph evicts it and treats it as a cache miss.
+
 ### Custom Backend
 
 Implement the `CacheBackend` protocol for Redis, databases, or anything else:
