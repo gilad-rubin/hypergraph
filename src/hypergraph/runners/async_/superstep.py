@@ -138,9 +138,8 @@ async def run_superstep_async(
 
             # Capture inner logs from nested graph execution (if any)
             inner_logs: tuple = ()
-            if hasattr(execute_node, "last_inner_logs"):
-                inner_logs = execute_node.last_inner_logs[0]  # type: ignore[attr-defined]
-                execute_node.last_inner_logs[0] = ()  # type: ignore[attr-defined]
+            if hasattr(execute_node, "consume_last_inner_logs"):
+                inner_logs = execute_node.consume_last_inner_logs()  # type: ignore[attr-defined]
 
             # Store result in cache
             if cache is not None and cache_key:

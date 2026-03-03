@@ -323,7 +323,6 @@ class AsyncRunner(AsyncRunnerTemplate):
         call so that nested graph runs know their parent span.
         """
         current_span_id: list[str | None] = [None]
-        last_inner_logs: list[tuple] = [()]
 
         async def execute_node(
             node: HyperNode,
@@ -347,15 +346,20 @@ class AsyncRunner(AsyncRunnerTemplate):
                     parent_span_id=current_span_id[0],
                     workflow_id=workflow_id,
                 )
-                last_inner_logs[0] = executor.last_inner_logs
                 return result
 
-            last_inner_logs[0] = ()
             return await executor(node, state, inputs)
 
-        # Expose mutable holders so superstep can read/set per-node
+        def consume_last_inner_logs() -> tuple:
+            """Read and clear nested logs for the current async task context."""
+            graph_executor = self._executors.get(GraphNode)
+            if isinstance(graph_executor, AsyncGraphNodeExecutor):
+                return graph_executor.consume_last_inner_logs()
+            return ()
+
+        # Expose holders so superstep can set parent span and read nested logs
         execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
-        execute_node.last_inner_logs = last_inner_logs  # type: ignore[attr-defined]
+        execute_node.consume_last_inner_logs = consume_last_inner_logs  # type: ignore[attr-defined]
         return execute_node
 
     # Template hook implementations

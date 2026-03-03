@@ -154,6 +154,12 @@ class TestValueParsing:
         result = _resolve_values(None, ["x=5"])
         assert result == {"x": 5}
 
+    def test_resolve_values_non_object_json_raises(self):
+        from click.exceptions import Exit
+
+        with pytest.raises(Exit):
+            _resolve_values("[1, 2, 3]", [])
+
 
 # ---------------------------------------------------------------------------
 # Graph ls tests
@@ -276,6 +282,12 @@ class TestRunCmd:
         result = runner_cli.invoke(app, ["run", "nonexistent_module:graph", "x=5"])
         assert result.exit_code != 0
 
+    def test_run_sync_workflow_id_warns(self):
+        app = create_app()
+        result = runner_cli.invoke(app, ["run", MODULE_PATH, "x=5", "--runner", "sync", "--workflow-id", "wf-1"])
+        assert result.exit_code == 0
+        assert "Warning: --workflow-id has no persistence effect" in result.output
+
     def test_run_registry_name_not_found(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         app = create_app()
@@ -342,3 +354,38 @@ class TestMapCmd:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["data"]["map_mode"] == "zip"
+
+    def test_map_sync_workflow_id_warns(self):
+        app = create_app()
+        result = runner_cli.invoke(
+            app,
+            ["map", MODULE_PATH, "--map-over", "x", "x=[1,2]", "--runner", "sync", "--workflow-id", "wf-map"],
+        )
+        assert result.exit_code == 0
+        assert "Warning: --workflow-id has no persistence effect" in result.output
+
+    def test_map_with_db_and_workflow_id_sets_child_workflow_ids(self, tmp_path):
+        pytest.importorskip("aiosqlite")
+
+        app = create_app()
+        db_path = str(tmp_path / "map.db")
+        result = runner_cli.invoke(
+            app,
+            [
+                "map",
+                MODULE_PATH,
+                "--map-over",
+                "x",
+                "--values",
+                '{"x": [1, 2]}',
+                "--db",
+                db_path,
+                "--workflow-id",
+                "wf-map",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        workflow_ids = [item.get("workflow_id") for item in data["data"]["results"]]
+        assert workflow_ids == ["wf-map/0", "wf-map/1"]

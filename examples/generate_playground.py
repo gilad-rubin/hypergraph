@@ -94,8 +94,12 @@ def run_cli(args: list[str]) -> str:
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
+        timeout=30,
     )
-    return strip_ansi(result.stdout + result.stderr).rstrip()
+    output = strip_ansi((result.stdout or "") + (result.stderr or "")).rstrip()
+    if result.returncode != 0:
+        raise RuntimeError(f"CLI command failed ({result.returncode}): {' '.join(args)}\n{output}")
+    return output
 
 
 def strip_ansi(text: str) -> str:
@@ -522,7 +526,7 @@ cp = SqliteCheckpointer("./runs.db")
     results_map = runner_sync.map(graph, {"x": [5, 10, 15]}, map_over="x")
     mapped = f"""\
 # runner.map() is ephemeral — results exist only in the current process
-results = runner.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
+results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
@@ -545,6 +549,7 @@ results = runner.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}"""
 
     nested_cli = run_cli(["runs", "show", "uc4-multi", "--db", db_path])
+    await cp.close()
 
     return UseCase(
         id="uc5",
@@ -607,7 +612,7 @@ async def run_uc6(db_path: str) -> UseCase:
     failure_errors = [f.error for f in results_map.failures]
     mapped = f"""\
 # runner.map() — in-process filtering via MapResult (ephemeral)
-results = runner.map(
+results = runner_sync.map(
     flaky_graph, {{"x": [1, 2, 3, 4, 5, 6]}},
     map_over="x", error_handling="continue",
 )
@@ -634,6 +639,7 @@ results = runner.map(
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in cp2.runs(status=WorkflowStatus.COMPLETED))}"""
 
     nested_cli = run_cli(["runs", "ls", "--status", "completed", "--db", db_path])
+    await cp2.close()
 
     return UseCase(
         id="uc6",
@@ -760,7 +766,7 @@ cp2 = SqliteCheckpointer("./runs.db")
     results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
     mapped = f"""\
 # runner.map() is ephemeral — no live query from another process
-results = runner.map(graph, {{"x": [5, 10]}}, map_over="x")
+results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
@@ -841,7 +847,7 @@ result = await runner.run(
     results_map = runner_sync.map(graph, {"x": [5, 10]}, map_over="x")
     mapped = f"""\
 # runner.map() is ephemeral — can't fork or retry from a checkpoint
-results = runner.map(graph, {{"x": [5, 10]}}, map_over="x")
+results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
 
 >>> results.summary()
 '{results_map.summary()}'
@@ -1408,8 +1414,8 @@ async def main() -> None:
             print(f"  {uc.label}: {uc.title}")
             use_cases.append(uc)
 
-        # Sort by id
-        use_cases.sort(key=lambda u: u.id)
+        # Sort by numeric UC index (uc2 before uc10)
+        use_cases.sort(key=lambda u: int(u.id[2:]) if u.id.startswith("uc") and u.id[2:].isdigit() else u.id)
 
         print(f"\nGenerating HTML ({len(use_cases)} use cases)...")
         html_content = generate_html(use_cases)

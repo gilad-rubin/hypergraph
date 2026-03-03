@@ -102,6 +102,14 @@ def _create_runner(graph, runner_override: str | None, db: str | None):
     return SyncRunner(), False
 
 
+def _warn_sync_workflow_id_ignored(workflow_id: str | None, *, db: str | None) -> None:
+    """Warn when workflow_id cannot enable persistence on sync runs."""
+    if workflow_id is None:
+        return
+    if db is None:
+        print("Warning: --workflow-id has no persistence effect in sync mode without --db.")
+
+
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
@@ -214,6 +222,7 @@ def register_commands(app: typer.Typer) -> None:
         if is_async:
             result = asyncio.run(runner.run(graph, input_values or None, **run_kwargs))
         else:
+            _warn_sync_workflow_id_ignored(workflow_id, db=db)
             result = runner.run(graph, input_values or None, **run_kwargs)
 
         _print_run_result(result, as_json, output, verbose)
@@ -232,6 +241,7 @@ def register_commands(app: typer.Typer) -> None:
         error_handling: Annotated[str, typer.Option("--error-handling", help="'raise' or 'continue'")] = "continue",
         runner_type: Annotated[str | None, typer.Option("--runner", help="'sync' or 'async'")] = None,
         db: Annotated[str | None, typer.Option("--db", help="SQLite DB path for checkpointing")] = None,
+        workflow_id: Annotated[str | None, typer.Option("--workflow-id", help="Workflow identifier (required for map checkpointing)")] = None,
         as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
         output: Annotated[str | None, typer.Option("--output", help="Write JSON to file")] = None,
         verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show detailed output")] = False,
@@ -253,10 +263,15 @@ def register_commands(app: typer.Typer) -> None:
         }
         if select:
             map_kwargs["select"] = select.split(",")
+        if workflow_id:
+            map_kwargs["workflow_id"] = workflow_id
 
         if is_async:
+            if db is not None and workflow_id is None:
+                print("Warning: map checkpointing requires --workflow-id; running without persistence.")
             result = asyncio.run(runner.map(graph, input_values or None, **map_kwargs))
         else:
+            _warn_sync_workflow_id_ignored(workflow_id, db=db)
             result = runner.map(graph, input_values or None, **map_kwargs)
 
         _print_map_result(result, as_json, output, verbose)

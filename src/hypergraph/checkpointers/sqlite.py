@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -101,9 +102,18 @@ class SqliteCheckpointer(Checkpointer):
             )
         super().__init__(policy=policy)
         self._path = str(path)
+        self._is_memory = self._path == ":memory:"
+        self._connect_path = self._path
+        self._connect_uri = self._path.startswith("file:")
+        if self._is_memory:
+            # Use a shared in-memory URI so sync/async connections see the same schema/data.
+            shared_name = f"hypergraph-{uuid.uuid4().hex}"
+            self._connect_path = f"file:{shared_name}?mode=memory&cache=shared"
+            self._connect_uri = True
         self._serializer = serializer or JsonSerializer()
         self._db: Any = None
         self._sync_conn: Any = None
+        self._init_lock = asyncio.Lock()
         self._aiosqlite = _require_aiosqlite()
 
     def _db_stats(self) -> dict[str, Any]:
@@ -179,20 +189,24 @@ class SqliteCheckpointer(Checkpointer):
 
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""
-        self._db = await self._aiosqlite.connect(self._path)
+        # For file-backed DBs, create/migrate schema before async connect to avoid
+        # opening a second connection while async holds a write lock.
+        if not self._is_memory:
+            self._ensure_sync_schema()
+
+        self._db = await self._aiosqlite.connect(self._connect_path, uri=self._connect_uri)
         await self._db.execute("PRAGMA journal_mode=WAL")
-        # Run migration/creation synchronously through the async connection
-        conn = await self._db.execute("SELECT 1")  # ensure connection is open
-        await conn.close()
-        # Use a sync connection for schema setup (ensure_schema uses sync sqlite3)
-        self._ensure_sync_schema()
+        # For in-memory DBs, schema must be created after async connect so the
+        # shared-cache database stays alive across connections.
+        if self._is_memory:
+            self._ensure_sync_schema()
         await self._db.commit()
 
     def _ensure_sync_schema(self) -> None:
         """Set up schema using sync connection (migration logic is sync)."""
         import sqlite3
 
-        conn = sqlite3.connect(self._path)
+        conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
         try:
             ensure_schema(conn)
         finally:
@@ -209,8 +223,11 @@ class SqliteCheckpointer(Checkpointer):
 
     async def _ensure_db(self) -> None:
         """Lazy-initialize on first use."""
-        if self._db is None:
-            await self.initialize()
+        if self._db is not None:
+            return
+        async with self._init_lock:
+            if self._db is None:
+                await self.initialize()
 
     # === Write ===
 
@@ -257,6 +274,7 @@ class SqliteCheckpointer(Checkpointer):
                 record.child_run_id,
             ),
         )
+        await self._apply_retention_policy_async(record.run_id)
         await self._db.commit()
 
     async def create_run(
@@ -563,7 +581,7 @@ class SqliteCheckpointer(Checkpointer):
 
             # WAL mode allows concurrent readers alongside async writes
             # without "database is locked" errors
-            conn = sqlite3.connect(self._path)
+            conn = sqlite3.connect(self._connect_path, uri=self._connect_uri)
             conn.execute("PRAGMA journal_mode=WAL")
             ensure_schema(conn)
             self._sync_conn = conn
@@ -943,7 +961,92 @@ class SqliteCheckpointer(Checkpointer):
                 record.child_run_id,
             ),
         )
+        self._apply_retention_policy_sync(record.run_id)
         db.commit()
+
+    async def _apply_retention_policy_async(self, run_id: str) -> None:
+        """Apply configured retention policy after persisting a step (async)."""
+        retention = self.policy.retention
+        if retention == "full":
+            return
+
+        if retention == "latest":
+            await self._db.execute(
+                """
+                DELETE FROM steps
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY node_name
+                                ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+                            ) AS rn
+                        FROM steps
+                        WHERE run_id = ?
+                    )
+                    WHERE rn > 1
+                )
+                """,
+                (run_id,),
+            )
+            return
+
+        if retention == "windowed" and self.policy.window is not None:
+            cursor = await self._db.execute("SELECT MAX(superstep) FROM steps WHERE run_id = ?", (run_id,))
+            row = await cursor.fetchone()
+            max_superstep = row[0] if row else None
+            if max_superstep is None:
+                return
+            cutoff = max_superstep - self.policy.window + 1
+            if cutoff <= 0:
+                return
+            await self._db.execute(
+                "DELETE FROM steps WHERE run_id = ? AND superstep < ?",
+                (run_id, cutoff),
+            )
+
+    def _apply_retention_policy_sync(self, run_id: str) -> None:
+        """Apply configured retention policy after persisting a step (sync)."""
+        retention = self.policy.retention
+        if retention == "full":
+            return
+
+        db = self._sync_db()
+        if retention == "latest":
+            db.execute(
+                """
+                DELETE FROM steps
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY node_name
+                                ORDER BY COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC
+                            ) AS rn
+                        FROM steps
+                        WHERE run_id = ?
+                    )
+                    WHERE rn > 1
+                )
+                """,
+                (run_id,),
+            )
+            return
+
+        if retention == "windowed" and self.policy.window is not None:
+            row = db.execute("SELECT MAX(superstep) FROM steps WHERE run_id = ?", (run_id,)).fetchone()
+            max_superstep = row[0] if row else None
+            if max_superstep is None:
+                return
+            cutoff = max_superstep - self.policy.window + 1
+            if cutoff <= 0:
+                return
+            db.execute(
+                "DELETE FROM steps WHERE run_id = ? AND superstep < ?",
+                (run_id, cutoff),
+            )
 
     def update_run_status_sync(
         self,

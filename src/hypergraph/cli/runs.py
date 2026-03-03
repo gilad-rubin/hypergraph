@@ -449,23 +449,27 @@ def runs_values(
     current_state = cp.state(run_id, superstep=superstep)
     step_list = cp.steps(run_id, superstep=superstep)
 
-    if as_json:
-        data = {"run_id": run_id, "through_superstep": superstep, "values": current_state}
-        print_json("runs.values", data, output)
-        return
-
     # Single key mode
-    if key:
+    if key is not None:
         if key not in current_state:
             print(f"Error: Key '{key}' not found. Available: {', '.join(current_state.keys())}")
             raise typer.Exit(1)
         value = current_state[key]
+        if as_json:
+            data = {"run_id": run_id, "through_superstep": superstep, "values": {key: value}}
+            print_json("runs.values", data, output)
+            return
         if full:
             import json
 
             print(json.dumps(value, indent=2, default=str))
         else:
             print(truncate_value(value, max_chars=500))
+        return
+
+    if as_json:
+        data = {"run_id": run_id, "through_superstep": superstep, "values": current_state}
+        print_json("runs.values", data, output)
         return
 
     # Status header
@@ -548,8 +552,9 @@ def runs_steps(
             print(f"No steps found for run '{run_id}'.")
         return
 
+    show_raw_values = show_values or full
     for s in step_list:
-        _print_step_detail(s, show_values)
+        _print_step_detail(s, show_raw_values)
 
     shown = len(step_list)
     if shown < total:

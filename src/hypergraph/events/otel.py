@@ -59,10 +59,11 @@ class OpenTelemetryProcessor(TypedEventProcessor):
     def __init__(self, tracer_name: str = "hypergraph") -> None:
         _require_opentelemetry()
         from opentelemetry import trace
-        from opentelemetry.trace import StatusCode
+        from opentelemetry.trace import Status, StatusCode
 
         self._tracer = trace.get_tracer(tracer_name)
         self._trace = trace
+        self._Status = Status
         self._StatusCode = StatusCode
         self._spans: dict[str, Any] = {}  # span_id → OTel Span
         self._contexts: dict[str, Any] = {}  # span_id → OTel Context
@@ -89,7 +90,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         span.set_attribute("hypergraph.duration_ms", event.duration_ms)
         span.set_attribute("hypergraph.status", event.status.value)
         if event.error:
-            span.set_status(self._StatusCode.ERROR, event.error)
+            span.set_status(self._Status(self._StatusCode.ERROR, event.error))
         span.end()
 
     def on_node_start(self, event: NodeStartEvent) -> None:
@@ -130,7 +131,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         self._contexts.pop(event.span_id, None)
         if span is None:
             return
-        span.set_status(self._StatusCode.ERROR, event.error)
+        span.set_status(self._Status(self._StatusCode.ERROR, event.error))
         span.set_attribute("hypergraph.error_type", event.error_type)
         span.end()
 

@@ -110,7 +110,7 @@ class TestRunnerCheckpointIntegration:
         assert result["tripled"] == 12
 
     async def test_step_records_have_duration(self, checkpointer):
-        """Step records include duration_ms > 0 for executed nodes."""
+        """Step records include duration_ms >= 0 for executed nodes."""
         checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])

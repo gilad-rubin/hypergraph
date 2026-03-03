@@ -2,6 +2,7 @@
 
 from hypergraph.runners import (
     GraphState,
+    MapResult,
     NodeExecution,
     PauseInfo,
     RunnerCapabilities,
@@ -298,3 +299,23 @@ class TestGraphState:
         assert copied.values["y"] == 3
         assert copied.versions["x"] == 2
         assert copied.versions["y"] == 1
+
+
+class TestMapResult:
+    def test_log_includes_placeholder_for_items_missing_run_log(self):
+        """MapResult.log should include one per-item log entry even without RunResult.log."""
+        completed = RunResult(values={"x": 1}, status=RunStatus.COMPLETED, log=None)
+        failed = RunResult(values={}, status=RunStatus.FAILED, error=ValueError("boom"), log=None)
+        result = MapResult(
+            results=(completed, failed),
+            run_id="map-1",
+            total_duration_ms=12.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="g",
+        )
+
+        map_log = result.log
+        assert len(map_log.items) == 2
+        assert len(map_log.errors) == 1
+        assert "boom" in (map_log.errors[0].error or "")

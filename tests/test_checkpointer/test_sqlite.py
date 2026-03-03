@@ -1,5 +1,6 @@
 """Tests for SqliteCheckpointer."""
 
+import asyncio
 from datetime import timedelta, timezone
 from pathlib import Path
 
@@ -308,6 +309,38 @@ class TestLazyInit:
         assert r is not None
         await cp.close()
 
+    async def test_concurrent_lazy_initialize_runs_once(self, tmp_path):
+        """Concurrent first-use calls should serialize initialization."""
+        cp = SqliteCheckpointer(str(tmp_path / "lazy-race.db"))
+        init_calls = 0
+        original_initialize = cp.initialize
+
+        async def counted_initialize():
+            nonlocal init_calls
+            init_calls += 1
+            await asyncio.sleep(0)
+            await original_initialize()
+
+        cp.initialize = counted_initialize  # type: ignore[method-assign]
+
+        await asyncio.gather(
+            cp.create_run("wf-a"),
+            cp.create_run("wf-b"),
+            cp.create_run("wf-c"),
+        )
+
+        assert init_calls == 1
+        await cp.close()
+
+    async def test_memory_db_schema_available_after_initialize(self):
+        """In-memory DB initialization creates schema for async operations."""
+        cp = SqliteCheckpointer(":memory:")
+        await cp.initialize()
+        await cp.create_run("wf-mem")
+        run = await cp.get_run_async("wf-mem")
+        assert run is not None
+        await cp.close()
+
 
 class TestPolicyIntegration:
     def test_default_policy(self):
@@ -517,6 +550,50 @@ class TestSyncReads:
         html = lineage._repr_html_()
         assert "retry" in html
         assert "Cached" in html
+
+
+class TestRetentionPolicyBehavior:
+    async def test_latest_retention_keeps_latest_per_node(self, checkpointer):
+        """latest retention should prune older executions of the same node."""
+        checkpointer.policy = CheckpointPolicy(retention="latest")
+        await checkpointer.create_run("wf-latest")
+        await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=0, node_name="a", index=0, values={"x": 1}))
+        await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=0, node_name="b", index=1, values={"y": 2}))
+        await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=1, node_name="a", index=2, values={"x": 3}))
+
+        steps = await checkpointer.get_steps("wf-latest")
+        assert len(steps) == 2
+        assert {(s.node_name, s.superstep) for s in steps} == {("a", 1), ("b", 0)}
+        assert await checkpointer.get_state("wf-latest") == {"x": 3, "y": 2}
+
+    async def test_windowed_retention_keeps_recent_supersteps(self, checkpointer):
+        """windowed retention should keep only the latest N supersteps."""
+        checkpointer.policy = CheckpointPolicy(retention="windowed", window=2)
+        await checkpointer.create_run("wf-windowed")
+        await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=0, node_name="a", index=0, values={"x": 1}))
+        await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=1, node_name="b", index=1, values={"y": 2}))
+        await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=2, node_name="c", index=2, values={"z": 3}))
+
+        steps = await checkpointer.get_steps("wf-windowed")
+        assert {s.superstep for s in steps} == {1, 2}
+        assert await checkpointer.get_state("wf-windowed") == {"y": 2, "z": 3}
+
+    def test_sync_save_step_applies_retention(self, tmp_path):
+        """Sync write path should apply windowed retention as well."""
+        cp = SqliteCheckpointer(
+            str(tmp_path / "sync-retention.db"),
+            policy=CheckpointPolicy(retention="windowed", window=1),
+        )
+        cp.create_run_sync("wf-sync")
+        cp.save_step_sync(_make_step(run_id="wf-sync", superstep=0, node_name="a", index=0, values={"x": 1}))
+        cp.save_step_sync(_make_step(run_id="wf-sync", superstep=1, node_name="b", index=1, values={"y": 2}))
+
+        steps = cp.steps("wf-sync")
+        assert len(steps) == 1
+        assert steps[0].superstep == 1
+        assert cp.state("wf-sync") == {"y": 2}
+        if cp._sync_conn:
+            cp._sync_conn.close()
 
 
 class TestSearch:

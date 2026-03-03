@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import (
@@ -59,6 +62,7 @@ if TYPE_CHECKING:
 
 
 MAX_UNBOUNDED_MAP_TASKS = 10_000
+_MAP_SIGNATURE_CONFIG_KEY = "map_item_signature"
 
 
 class AsyncRunnerTemplate(BaseRunner, ABC):
@@ -180,6 +184,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
         _validation_ctx: _InputValidationContext | None = None,
+        _run_config: dict[str, Any] | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -287,6 +292,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         # Checkpointer lifecycle — upsert run record
         if has_checkpointer:
+            run_config = {
+                "graph_struct_hash": graph.structural_hash,
+                "graph_code_hash": graph.code_hash,
+            }
+            if _run_config:
+                run_config.update(_run_config)
             await checkpointer.create_run(
                 workflow_id,
                 graph_name=graph.name,
@@ -295,10 +306,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 fork_superstep=fork_superstep,
                 retry_of=retry_of,
                 retry_index=retry_index,
-                config={
-                    "graph_struct_hash": graph.structural_hash,
-                    "graph_code_hash": graph.code_hash,
-                },
+                config=run_config,
             )
 
         # Step buffer for "exit" durability — records are flushed after run completes
@@ -355,6 +363,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_state = getattr(pause, "_partial_state", None)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
+            if has_checkpointer:
+                for record in step_buffer:
+                    await checkpointer.save_step(record)
             # Workflow stays ACTIVE when paused (can be resumed)
             return RunResult(
                 values=partial_values,
@@ -493,8 +504,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 },
             )
 
-        # Resume: find completed child runs to skip
-        completed_indices = await _get_completed_child_indices(checkpointer, workflow_id)
+        # Resume: find completed child runs to skip by stable input signature.
+        completed_runs = await _get_completed_child_runs(checkpointer, workflow_id)
+        completed_by_signature, completed_by_index = _index_completed_child_runs(completed_runs, workflow_id)
 
         existing_limiter = self._get_concurrency_limiter()
         token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
@@ -502,15 +514,24 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         async def _run_map_item(idx: int, variation_inputs: dict[str, Any]) -> RunResult:
             """Execute one map variation, or restore from checkpoint if completed."""
             child_workflow_id = f"{workflow_id}/{idx}" if workflow_id else None
+            item_signature = _compute_map_item_signature(variation_inputs, map_over_list, map_mode)
 
-            # Skip completed items — restore result from checkpoint
-            if idx in completed_indices and has_checkpointer:
-                state = await checkpointer.get_state(child_workflow_id)
+            # Skip completed items — restore result from checkpoint.
+            restore_run_id = _claim_completed_child_run_id(
+                idx=idx,
+                signature=item_signature,
+                by_signature=completed_by_signature,
+                by_index=completed_by_index,
+            )
+            if restore_run_id is not None and has_checkpointer:
+                state = await checkpointer.get_state(restore_run_id)
+                restored_state = GraphState(values=dict(state))
+                restored_values = filter_outputs(restored_state, graph, select, on_missing)
                 return RunResult(
-                    values=state,
+                    values=restored_values,
                     status=RunStatus.COMPLETED,
-                    run_id=child_workflow_id,
-                    workflow_id=child_workflow_id,
+                    run_id=restore_run_id,
+                    workflow_id=restore_run_id,
                 )
 
             try:
@@ -528,6 +549,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _parent_span_id=map_span_id,
                     _parent_run_id=workflow_id,
                     _validation_ctx=ctx,
+                    _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
@@ -649,25 +671,93 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 await self._shutdown_dispatcher_async(dispatcher)
 
 
-async def _get_completed_child_indices(
+def _normalize_signature_value(value: Any) -> Any:
+    """Normalize map inputs into a JSON-stable structure for hashing."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _normalize_signature_value(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_signature_value(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_normalize_signature_value(v) for v in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+        )
+    return {"__type__": type(value).__name__, "__repr__": repr(value)}
+
+
+def _compute_map_item_signature(
+    variation_inputs: dict[str, Any],
+    map_over: list[str],
+    map_mode: str,
+) -> str:
+    """Compute a stable signature for one mapped item input payload."""
+    payload = {
+        "map_mode": map_mode,
+        "map_over": map_over,
+        "inputs": _normalize_signature_value(variation_inputs),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+async def _get_completed_child_runs(
     checkpointer: Any,
     workflow_id: str | None,
-) -> set[int]:
-    """Query checkpoint for completed child runs and return their indices.
-
-    Only COMPLETED items are skipped — FAILED and ACTIVE items are re-executed.
-    """
+) -> list[Any]:
+    """Return completed child runs for a batch workflow."""
     if checkpointer is None or workflow_id is None:
-        return set()
+        return []
 
     from hypergraph.checkpointers.types import WorkflowStatus
 
     child_runs = await checkpointer.list_runs(parent_run_id=workflow_id)
-    completed: set[int] = set()
+    return [run for run in child_runs if run.status == WorkflowStatus.COMPLETED]
+
+
+def _index_completed_child_runs(
+    child_runs: list[Any],
+    workflow_id: str | None,
+) -> tuple[dict[str, list[str]], dict[int, list[str]]]:
+    """Index completed child runs by signature and by legacy index suffix."""
+    by_signature: dict[str, list[str]] = defaultdict(list)
+    by_index: dict[int, list[str]] = defaultdict(list)
+
     for run in child_runs:
-        if run.status != WorkflowStatus.COMPLETED:
+        if isinstance(run.config, dict):
+            signature = run.config.get(_MAP_SIGNATURE_CONFIG_KEY)
+            if isinstance(signature, str):
+                by_signature[signature].append(run.id)
+
+        if workflow_id is None:
             continue
         suffix = run.id.removeprefix(f"{workflow_id}/")
         if suffix.isdigit():
-            completed.add(int(suffix))
-    return completed
+            by_index[int(suffix)].append(run.id)
+
+    for ids in by_signature.values():
+        ids.sort()
+    for ids in by_index.values():
+        ids.sort()
+    return by_signature, by_index
+
+
+def _claim_completed_child_run_id(
+    *,
+    idx: int,
+    signature: str,
+    by_signature: dict[str, list[str]],
+    by_index: dict[int, list[str]],
+) -> str | None:
+    """Claim a completed child run id for resume, preferring signature match."""
+    by_sig = by_signature.get(signature)
+    if by_sig:
+        return by_sig.pop(0)
+
+    by_idx = by_index.get(idx)
+    if by_idx:
+        return by_idx.pop(0)
+
+    return None

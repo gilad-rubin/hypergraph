@@ -40,8 +40,12 @@ class CheckpointPolicy:
             )
         if self.retention == "windowed" and self.window is None:
             raise ValueError('retention="windowed" requires window parameter')
+        if self.window is not None and (not isinstance(self.window, int) or self.window <= 0):
+            raise ValueError("window must be a positive integer")
         if self.retention != "windowed" and self.window is not None:
             raise ValueError(f'window parameter only valid with retention="windowed", got retention="{self.retention}"')
+        if self.ttl is not None and self.ttl <= timedelta(0):
+            raise ValueError("ttl must be greater than 0")
 
 
 class Checkpointer(ABC):

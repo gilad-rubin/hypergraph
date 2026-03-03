@@ -384,7 +384,7 @@ class MapResult:
         return MapLog(
             graph_name=self.graph_name,
             total_duration_ms=self.total_duration_ms,
-            items=tuple(r.log for r in self.results if r.log is not None),
+            items=tuple(r.log if r.log is not None else _build_map_item_placeholder_log(r, self.graph_name) for r in self.results),
         )
 
     def get(self, key: str, default: Any = None) -> list[Any]:
@@ -1050,6 +1050,32 @@ class RunLog:
             html_panel(title, body),
             state_key=widget_state_key("run-log", self.run_id, self.graph_name),
         )
+
+
+def _build_map_item_placeholder_log(result: RunResult, graph_name: str) -> RunLog:
+    """Create a synthetic per-item log when map item trace is unavailable."""
+    if result.status == RunStatus.FAILED:
+        error_text = None
+        if result.error is not None:
+            error_text = f"{type(result.error).__name__}: {result.error}"
+        steps: tuple[NodeRecord, ...] = (
+            NodeRecord(
+                node_name="map_item",
+                superstep=0,
+                duration_ms=0.0,
+                status="failed",
+                span_id="missing-log",
+                error=error_text,
+            ),
+        )
+    else:
+        steps = ()
+    return RunLog(
+        graph_name=graph_name,
+        run_id=result.run_id,
+        total_duration_ms=0.0,
+        steps=steps,
+    )
 
 
 # ---------------------------------------------------------------------------

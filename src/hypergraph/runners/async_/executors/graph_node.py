@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_func_params
@@ -32,7 +33,21 @@ class AsyncGraphNodeExecutor:
             runner: The AsyncRunner that owns this executor
         """
         self.runner = runner
-        self.last_inner_logs: tuple = ()
+        self._last_inner_logs: ContextVar[tuple] = ContextVar(
+            "async_graph_node_executor_last_inner_logs",
+            default=(),
+        )
+
+    @property
+    def last_inner_logs(self) -> tuple:
+        """Latest nested logs for the current task context."""
+        return self._last_inner_logs.get()
+
+    def consume_last_inner_logs(self) -> tuple:
+        """Read and clear nested logs for the current task context."""
+        logs = self._last_inner_logs.get()
+        self._last_inner_logs.set(())
+        return logs
 
     async def __call__(
         self,
@@ -82,7 +97,7 @@ class AsyncGraphNodeExecutor:
                 _parent_span_id=parent_span_id,
                 _parent_run_id=workflow_id,
             )
-            self.last_inner_logs = tuple(r.log for r in results if r.log is not None)
+            self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
             return collect_as_lists(results, node, error_handling)
 
         result = await self.runner.run(
@@ -93,7 +108,7 @@ class AsyncGraphNodeExecutor:
             _parent_span_id=parent_span_id,
             _parent_run_id=workflow_id,
         )
-        self.last_inner_logs = (result.log,) if result.log is not None else ()
+        self._last_inner_logs.set((result.log,) if result.log is not None else ())
         return self._handle_nested_result(node, result)
 
     def _handle_nested_result(self, node: GraphNode, result: RunResult) -> dict[str, Any]:

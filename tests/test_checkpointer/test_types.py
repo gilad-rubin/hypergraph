@@ -1,5 +1,7 @@
 """Tests for checkpointer types and CheckpointPolicy validation."""
 
+from datetime import timedelta
+
 import pytest
 
 from hypergraph.checkpointers import CheckpointPolicy, Run, StepRecord, StepStatus, WorkflowStatus
@@ -40,6 +42,18 @@ class TestCheckpointPolicy:
     def test_windowed_with_window(self):
         policy = CheckpointPolicy(retention="windowed", window=50)
         assert policy.window == 50
+
+    def test_window_must_be_positive(self):
+        with pytest.raises(ValueError, match="window must be a positive integer"):
+            CheckpointPolicy(retention="windowed", window=0)
+
+    def test_ttl_must_be_positive(self):
+        with pytest.raises(ValueError, match="ttl must be greater than 0"):
+            CheckpointPolicy(ttl=timedelta(seconds=0))
+
+    def test_positive_ttl_is_allowed(self):
+        policy = CheckpointPolicy(ttl=timedelta(minutes=5))
+        assert policy.ttl == timedelta(minutes=5)
 
 
 class TestStepRecord:

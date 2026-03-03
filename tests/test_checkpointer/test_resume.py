@@ -329,6 +329,55 @@ class TestAsyncMapResume:
         await runner.map(graph, {"x": [1, 2]}, map_over="x", workflow_id="no-cp")
         assert call_count == 2  # all re-executed
 
+    async def test_map_resume_matches_completed_items_by_input_identity(self, checkpointer):
+        """Reordered inputs should restore by input identity, not list index."""
+        call_count = 0
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([counting_double])
+
+        await runner.map(graph, {"x": [10, 20, 30]}, map_over="x", workflow_id="identity-batch")
+        assert call_count == 3
+
+        call_count = 0
+        result = await runner.map(
+            graph,
+            {"x": [30, 10, 20]},
+            map_over="x",
+            workflow_id="identity-batch",
+        )
+        assert call_count == 0
+        assert [r["doubled"] for r in result.results] == [60, 20, 40]
+
+    async def test_map_resume_reapplies_select_filter_when_restoring(self, checkpointer):
+        """Restored map items should respect select filtering just like fresh runs."""
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([double, triple])
+
+        await runner.map(
+            graph,
+            {"x": [2, 3]},
+            map_over="x",
+            workflow_id="select-batch",
+            select=["tripled"],
+        )
+        resumed = await runner.map(
+            graph,
+            {"x": [3, 2]},
+            map_over="x",
+            workflow_id="select-batch",
+            select=["tripled"],
+        )
+
+        assert [set(r.values.keys()) for r in resumed.results] == [{"tripled"}, {"tripled"}]
+        assert [r["tripled"] for r in resumed.results] == [18, 12]
+
 
 # =============================================================================
 # Sync run() resume tests
@@ -466,6 +515,50 @@ class TestSyncMapResume:
             error_handling="continue",
         )
         assert all(r.status == RunStatus.COMPLETED for r in result2.results)
+
+    def test_map_resume_matches_completed_items_by_input_identity(self, sync_checkpointer):
+        """Sync mirror: reordered inputs should restore by input identity."""
+        call_count = 0
+
+        @node(output_name="doubled")
+        def counting_double(x: int) -> int:
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([counting_double])
+
+        runner.map(graph, {"x": [10, 20, 30]}, map_over="x", workflow_id="sync-identity")
+        assert call_count == 3
+
+        call_count = 0
+        result = runner.map(graph, {"x": [30, 10, 20]}, map_over="x", workflow_id="sync-identity")
+        assert call_count == 0
+        assert [r["doubled"] for r in result.results] == [60, 20, 40]
+
+    def test_map_resume_reapplies_select_filter_when_restoring(self, sync_checkpointer):
+        """Sync mirror: restored map items should preserve select filtering."""
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([double, triple])
+
+        runner.map(
+            graph,
+            {"x": [2, 3]},
+            map_over="x",
+            workflow_id="sync-select-batch",
+            select=["tripled"],
+        )
+        resumed = runner.map(
+            graph,
+            {"x": [3, 2]},
+            map_over="x",
+            workflow_id="sync-select-batch",
+            select=["tripled"],
+        )
+
+        assert [set(r.values.keys()) for r in resumed.results] == [{"tripled"}, {"tripled"}]
+        assert [r["tripled"] for r in resumed.results] == [18, 12]
 
 
 # =============================================================================

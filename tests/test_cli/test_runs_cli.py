@@ -163,6 +163,14 @@ class TestRunsValues:
         assert data["data"]["values"]["doubled"] == 10
         assert data["data"]["values"]["tripled"] == 30
 
+    def test_values_json_key_filters_output(self, populated_db):
+        """CLI: values --json --key returns only the requested key."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "values", "run-test", "--db", populated_db, "--json", "--key", "doubled"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"]["values"] == {"doubled": 10}
+
 
 class TestRunsLs:
     def test_ls_lists_runs(self, populated_db):
@@ -254,6 +262,14 @@ class TestRunsSteps:
         data = json.loads(result.output)
         assert len(data["data"]) == 2
         assert data["data"][0]["node_name"] == "double"
+
+    def test_steps_full_shows_values(self, populated_db):
+        """CLI: steps --full enables full value output."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "steps", "run-test", "--db", populated_db, "--full"])
+        assert result.exit_code == 0
+        assert "values:" in result.output
+        assert "doubled" in result.output
 
 
 class TestRunsSearch:
