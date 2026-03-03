@@ -796,6 +796,80 @@ class TestInterruptNodeInCycle:
         assert result.status == RunStatus.COMPLETED
         assert result["messages"] == ["response to hello"]
 
+    @pytest.mark.asyncio
+    async def test_nested_interrupt_resumes_and_accumulates(self):
+        """Nested interrupt inside a cycle: resume value routes through the GraphNode.
+
+        Mirrors the notebook pattern: ask(interrupt + accumulate) -> llm(process +
+        accumulate) -> decide -> ask.  Two nested subgraphs with the route AFTER
+        processing so the gate sees fully-updated messages.
+        """
+
+        @interrupt(output_name="query")
+        def ask_user(messages: list) -> str: ...
+
+        @node(output_name="messages")
+        def add_query(messages: list, query: str) -> list:
+            return [*messages, f"q: {query}"]
+
+        @node(output_name="response")
+        def process(messages: list, query: str) -> str:
+            return f"answer to {query}"
+
+        @node(output_name="messages")
+        def add_response(messages: list, response: str) -> list:
+            return [*messages, f"a: {response}"]
+
+        @route(targets=["ask", END])
+        def decide(messages: list) -> str:
+            return END if sum(1 for m in messages if m.startswith("a: ")) >= 2 else "ask"
+
+        ask_node = Graph([ask_user, add_query], edges=[(ask_user, add_query)], name="ask").as_node()
+        llm_node = Graph([process, add_response], edges=[(process, add_response)], name="llm").as_node()
+
+        graph = Graph(
+            [ask_node, llm_node, decide],
+            edges=[
+                (ask_node, llm_node),
+                (llm_node, decide),
+                (llm_node, ask_node),  # data back-edge (carries messages)
+                (decide, ask_node),  # control edge (routing)
+            ],
+            entrypoint="ask",
+        )
+        runner = AsyncRunner()
+
+        # Run 1: pauses at nested interrupt
+        r1 = await runner.run(graph, {"messages": []})
+        assert r1.paused
+        assert r1.pause.node_name == "ask/ask_user"
+        assert r1.pause.response_key == "ask.query"
+
+        # Run 2: resume with query — cycle processes it, pauses again with updated messages
+        r2 = await runner.run(
+            graph,
+            {"messages": r1.pause.value, r1.pause.response_key: "What is RAG?"},
+            on_internal_override="ignore",
+        )
+        assert r2.paused
+        assert r2.pause.node_name == "ask/ask_user"
+        # Messages accumulated through the full cycle
+        assert r2.pause.value == ["q: What is RAG?", "a: answer to What is RAG?"]
+
+        # Run 3: resume again — cycle completes (2 answers >= 2)
+        r3 = await runner.run(
+            graph,
+            {"messages": r2.pause.value, r2.pause.response_key: "What is LLM?"},
+            on_internal_override="ignore",
+        )
+        assert r3.status == RunStatus.COMPLETED
+        assert r3["messages"] == [
+            "q: What is RAG?",
+            "a: answer to What is RAG?",
+            "q: What is LLM?",
+            "a: answer to What is LLM?",
+        ]
+
 
 # ── @interrupt decorator ──
 

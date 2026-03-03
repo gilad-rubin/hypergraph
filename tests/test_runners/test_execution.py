@@ -413,27 +413,34 @@ class TestRunSuperstepAsync:
 
     async def test_executes_nodes_concurrently(self):
         """Multiple nodes execute concurrently."""
+        timestamps: dict[str, list[float]] = {"a": [], "b": []}
 
         @node(output_name="a")
         async def slow_a(x: int) -> int:
+            timestamps["a"].append(time.monotonic())  # start
             await asyncio.sleep(0.1)
+            timestamps["a"].append(time.monotonic())  # end
             return x + 1
 
         @node(output_name="b")
         async def slow_b(x: int) -> int:
+            timestamps["b"].append(time.monotonic())  # start
             await asyncio.sleep(0.1)
+            timestamps["b"].append(time.monotonic())  # end
             return x + 2
 
         graph = Graph([slow_a, slow_b])
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        start = time.time()
         new_state = await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node)
-        elapsed = time.time() - start
 
-        # Should be ~0.1s (concurrent), not ~0.2s (sequential)
-        assert elapsed < 0.18
+        # Verify concurrency: each task must have started before the other finished.
+        # If sequential, one task's start would be after the other's end.
+        a_start, a_end = timestamps["a"]
+        b_start, b_end = timestamps["b"]
+        assert a_start < b_end, "a should start before b finishes (concurrent)"
+        assert b_start < a_end, "b should start before a finishes (concurrent)"
 
         assert new_state.values["a"] == 6
         assert new_state.values["b"] == 7

@@ -236,6 +236,35 @@ class Graph:
         return {output: set(sources) for output, sources in output_sources.items()}
 
     @functools.cached_property
+    def downstream_produced(self) -> dict[str, frozenset[str]]:
+        """Map node_name → frozenset of params produced by descendants only.
+
+        In a DAG, when ALL producers of a param are descendants (downstream)
+        of the consuming node, their writes should not trigger re-execution —
+        the natural execution order is consumer-first, producer-second, and
+        the producer's output is the final value, not a signal to loop.
+
+        Only computed for acyclic graphs; returns empty for cyclic ones
+        (where staleness is driven by gates instead).
+        """
+        if self.has_cycles:
+            return {}
+
+        from hypergraph.graph.input_spec import _data_only_subgraph
+
+        data_graph = _data_only_subgraph(self._nx_graph)
+        result: dict[str, frozenset[str]] = {}
+        for node_name in data_graph.nodes():
+            node = self._nodes.get(node_name)
+            if node is None:
+                continue
+            descendants = nx.descendants(data_graph, node_name)
+            exempt = frozenset(param for param in node.inputs if (producers := self.self_producers.get(param)) and producers <= descendants)
+            if exempt:
+                result[node_name] = exempt
+        return result
+
+    @functools.cached_property
     def sole_producers(self) -> dict[str, str]:
         """Map output_name → node_name for outputs with exactly one producer.
 

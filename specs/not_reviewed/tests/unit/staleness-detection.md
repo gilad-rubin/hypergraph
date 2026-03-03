@@ -138,6 +138,80 @@ def test_sole_producer_stale_from_other_input():
 
 ---
 
+## Test Category: Descendant Producer Rule (DAGs only)
+
+### test_descendant_producer_not_stale
+
+```python
+def test_descendant_producer_not_stale():
+    """
+    In a DAG, a downstream node writing a param that an upstream node
+    already consumed should NOT trigger re-execution of the upstream node.
+
+    Pattern: interrupt(messages) -> accumulate(messages, query) -> messages
+    The accumulate node is downstream — its write is final, not a loop signal.
+    """
+    @interrupt(output_name="query")
+    def ask(messages: list) -> str: ...
+
+    @node(output_name="messages")
+    def accumulate(messages: list, query: str) -> list:
+        return [*messages, query]
+
+    graph = Graph([ask, accumulate], edges=[(ask, accumulate)])
+    assert not graph.has_cycles  # DAG
+    # ask should have "messages" in downstream_produced
+    assert "messages" in graph.downstream_produced.get("ask", frozenset())
+```
+
+### test_upstream_producer_still_triggers_staleness
+
+```python
+def test_upstream_producer_still_triggers_staleness():
+    """
+    In a DAG, an upstream node writing a param DOES trigger re-execution
+    of the downstream node. This is the normal data-flow case.
+
+    Pattern: produce() -> x, consume(x=0) -> result
+    consume initially runs with default x=0, then re-executes with x=42.
+    """
+    @node(output_name="x")
+    def produce() -> int:
+        return 42
+
+    @node(output_name="result")
+    def consume(x: int = 0) -> int:
+        return x
+
+    graph = Graph([produce, consume])
+    runner = SyncRunner()
+    result = runner.run(graph, {})
+    assert result["result"] == 42  # Must use edge value, not default
+```
+
+### test_descendant_rule_disabled_in_cycles
+
+```python
+def test_descendant_rule_disabled_in_cycles():
+    """
+    Descendant Producer Rule only applies to DAGs. In cyclic graphs,
+    staleness is driven by gates (Sole Producer Rule still applies).
+    """
+    @node(output_name="x")
+    def step(x: int) -> int:
+        return x + 1
+
+    @route(targets=["step", END])
+    def check(x: int) -> str:
+        return END if x >= 3 else "step"
+
+    graph = Graph([step, check])
+    assert graph.has_cycles
+    assert graph.downstream_produced == {}  # Empty for cyclic graphs
+```
+
+---
+
 ## Test Category: Version Tracking
 
 ### test_initial_values_version_zero

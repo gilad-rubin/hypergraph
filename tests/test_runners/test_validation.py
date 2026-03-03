@@ -144,7 +144,7 @@ class TestInternalOverrideValidation:
     def test_mixed_compute_and_inject_for_same_node_errors(self):
         """Providing producer inputs + produced outputs is a hard conflict."""
         graph = self._make_split_graph()
-        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             validate_inputs(
                 graph,
                 {"left": 100, "x": 5},

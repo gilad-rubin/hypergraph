@@ -6,6 +6,5 @@
       "source.fixAll.ruff": "explicit",
       "source.organizeImports.ruff": "explicit"
     }
-  },
-  "ruff.lint.run": "onType"
+  }
 }

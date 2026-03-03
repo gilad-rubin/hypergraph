@@ -84,7 +84,10 @@ def validate_item_inputs(
     provided = set(merged.keys())
 
     # Step 2/3: Internal/unknown parameter handling
-    expected_inputs = set(inputs_spec.all)
+    # Bound values are always expected — the user explicitly set them via bind().
+    # InputSpec.all excludes bound params (they're "satisfied"), but since we
+    # merge them back into `provided` above, we must also include them here.
+    expected_inputs = set(inputs_spec.all) | set(inputs_spec.bound)
     unexpected = provided - expected_inputs - ctx.interrupt_outputs
     internal_edge = unexpected & ctx.edge_produced
     unknown = unexpected - ctx.edge_produced
@@ -96,7 +99,7 @@ def validate_item_inputs(
         cycle_ep_params=ctx.cycle_ep_params,
     )
     if conflict_errors:
-        raise ValueError("Invalid internal override configuration:\n" + "\n".join(conflict_errors))
+        raise ValueError("Cannot determine whether to run or skip node(s):\n" + "\n".join(conflict_errors))
 
     _handle_internal_override_policy(
         on_internal_override=on_internal_override,
@@ -444,30 +447,38 @@ def _find_internal_override_conflicts(
         if not injected_outputs:
             continue
 
-        # Compute+inject is the stricter conflict — check first
+        # Compute+inject: node can run but user also provides its outputs
         if _node_is_runnable_from_seed_values(node, provided):
             seeded_inputs = sorted(set(node.inputs) & provided)
             if seeded_inputs:
                 conflicts.append(
-                    f"- Cannot mix compute and inject for node '{node.name}': "
-                    f"injected outputs {injected_outputs} and also seeded inputs {seeded_inputs}."
+                    f"- '{node.name}' conflict — you provided both its inputs "
+                    f"{seeded_inputs} and its outputs {injected_outputs}.\n"
+                    f"    To skip '{node.name}': remove {seeded_inputs}\n"
+                    f"    To run  '{node.name}': remove {injected_outputs}"
                 )
             else:
                 defaults = sorted([p for p in node.inputs if node.has_default_for(p)])
+                consumed_for_node = (node_outputs & downstream_consumed) - cycle_ep_params
+                all_needed = sorted(consumed_for_node)
                 conflicts.append(
-                    f"- Cannot mix compute and inject for node '{node.name}': "
-                    f"injected outputs {injected_outputs}, but defaults {defaults} make the node runnable."
+                    f"- '{node.name}' conflict — you provided its outputs "
+                    f"{injected_outputs}, but defaults {defaults} also make it runnable.\n"
+                    f"    To skip '{node.name}': also provide {sorted(set(all_needed) - set(injected_outputs))}\n"
+                    f"    To run  '{node.name}': remove {injected_outputs}"
                 )
             continue
 
-        # Partial inject: some outputs injected but downstream needs others
+        # Partial inject: some outputs provided but downstream needs others
         consumed_for_node = (node_outputs & downstream_consumed) - cycle_ep_params
         missing_consumed = sorted(consumed_for_node - provided)
         if missing_consumed:
+            all_needed = sorted(consumed_for_node)
             conflicts.append(
-                f"- Node '{node.name}': partial inject outputs {injected_outputs}, "
-                f"but downstream also needs {missing_consumed}. "
-                "Provide all consumed outputs or switch to compute mode."
+                f"- '{node.name}' conflict — you provided {injected_outputs} "
+                f"but it also produces {missing_consumed} which downstream nodes need.\n"
+                f"    To skip '{node.name}': also provide {missing_consumed}\n"
+                f"    To run  '{node.name}': remove {injected_outputs}"
             )
 
     return conflicts

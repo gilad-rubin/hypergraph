@@ -439,7 +439,7 @@ class TestInputValidationOverrides:
         runner = SyncRunner()
 
         # 'intermediate' is produced by step1, and 'x' makes step1 runnable.
-        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             runner.run(graph, {"x": 10, "intermediate": 999})
 
     async def test_async_runner_rejects_override_edge_produced_values(self):
@@ -456,7 +456,7 @@ class TestInputValidationOverrides:
         graph = Graph([step1, step2])
         runner = AsyncRunner()
 
-        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             await runner.run(graph, {"x": 10, "intermediate": 999})
 
 

@@ -41,6 +41,23 @@ async def run_auto_resume_cycle(
     max_pauses: int = 30,
 ) -> Any:
     """Run a cyclic graph, auto-resuming interrupts via `node.receiver`."""
+
+    def _resolve_node_by_path(root: Graph, node_path: str) -> Any | None:
+        """Resolve nested node paths like 'ask_user/ask_slack'."""
+        parts = node_path.split("/")
+        current_graph = root
+        current_node: Any | None = None
+        for idx, part in enumerate(parts):
+            current_node = current_graph.nodes.get(part)
+            if current_node is None:
+                return None
+            if idx < len(parts) - 1:
+                nested = getattr(current_node, "graph", None)
+                if nested is None:
+                    return None
+                current_graph = nested
+        return current_node
+
     merged = dict(values)
 
     for _ in range(max_pauses + 1):
@@ -56,7 +73,7 @@ async def run_auto_resume_cycle(
         if pause is None:
             raise RuntimeError("Paused run returned no PauseInfo.")
 
-        paused_node = graph.nodes.get(pause.node_name)
+        paused_node = _resolve_node_by_path(graph, pause.node_name)
         if paused_node is None:
             raise RuntimeError(f"Paused node '{pause.node_name}' not found in graph.")
 
@@ -116,26 +133,40 @@ async def main() -> None:
     def add_assistant_message(messages: list[str], assistant_text: str) -> list[str]:
         return [*messages, f"assistant: {assistant_text}"]
 
-    @route(targets=["ask_slack", END])
+    @route(targets=["ask_user", END])
     def should_continue(messages: list[str], max_turns: int) -> str:
         turns = sum(1 for m in messages if m.startswith("assistant: "))
-        return END if turns >= max_turns else "ask_slack"
+        return END if turns >= max_turns else "ask_user"
 
-    # Explicit cyclic topology with entrypoint anchored at ask_slack.
-    graph = Graph(
-        [ask_slack, llm_step, add_user_message, add_assistant_message, should_continue],
+    # Build subgraphs with explicit inner edges to avoid accidental auto-wiring
+    # around the shared "messages" value.
+    user_graph = Graph(
+        [ask_slack, add_user_message],
         edges=[
-            (ask_slack, add_user_message),  # user_input
-            (ask_slack, llm_step),  # user_input
-            (add_user_message, llm_step),  # messages
-            (llm_step, add_assistant_message),  # assistant_text
-            (add_user_message, add_assistant_message),  # messages (same-turn context)
-            (add_assistant_message, should_continue),  # messages
-            (add_assistant_message, ask_slack),  # messages for next interrupt turn
-            (add_assistant_message, add_user_message),  # messages (cycle accumulator)
+            (ask_slack, add_user_message),
+        ],
+        name="ask_user",
+    )
+    llm_graph = Graph(
+        [llm_step, add_assistant_message],
+        edges=[
+            (llm_step, add_assistant_message),
+        ],
+        name="llm",
+    )
+    ask_user_node = user_graph.as_node()
+    llm_node = llm_graph.as_node()
+
+    # Outer cycle topology.
+    graph = Graph(
+        [ask_user_node, llm_node, should_continue],
+        edges=[
+            (ask_user_node, llm_node),
+            (llm_node, should_continue),
+            (llm_node, ask_user_node),
         ],
         name="slack_cycle",
-        entrypoint="ask_slack",
+        entrypoint="ask_user",
     )
     runner = AsyncRunner()
 

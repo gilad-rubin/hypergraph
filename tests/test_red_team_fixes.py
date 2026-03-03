@@ -171,7 +171,7 @@ class TestIntermediateInjection:
 
         # Provide only "left" - but "right" is still needed from split.
         # Reject as invalid internal override config.
-        with pytest.raises(ValueError, match="partial inject outputs"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             runner.run(graph, {"left": 100})
 
     def test_multi_output_full_injection_skips_node(self):

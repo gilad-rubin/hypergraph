@@ -404,23 +404,32 @@ def _is_stale(
 ) -> bool:
     """Check if node inputs have changed since last execution.
 
-    Implements the Sole Producer Rule: when a node is the only producer of a
-    value that it also consumes, changes to that value are skipped in the
-    staleness check. Without this, patterns like ``add_response(messages) ->
-    messages`` would re-trigger infinitely because the node's own output makes
-    it appear stale.
+    Implements two staleness-skip rules for non-gated nodes:
 
-    EXCEPTION: For gate-controlled nodes, the Sole Producer Rule does NOT apply.
-    Gates explicitly drive cycle execution, so self-produced inputs should
-    trigger re-execution when the gate routes back to the node.
+    1. **Sole Producer Rule** — skip if this node itself produces the param.
+       Prevents ``add_response(messages) -> messages`` from re-triggering
+       infinitely.
+
+    2. **Descendant Producer Rule** (DAGs only) — skip if ALL producers of
+       the param are descendants of this node.  Prevents downstream writes
+       from triggering upstream re-execution, e.g. an interrupt node that
+       consumes ``messages`` while a downstream accumulator produces it.
+
+    EXCEPTION: For gate-controlled nodes, neither rule applies.  Gates
+    explicitly drive cycle re-execution.
     """
     self_producers = graph.self_producers
     is_gated = _is_controlled_by_gate(node, graph)
+    downstream = graph.downstream_produced.get(node.name, frozenset())
 
     for param in node.inputs:
-        # Self-Producer Rule: skip inputs this node produces itself (non-gated only)
-        if not is_gated and node.name in self_producers.get(param, set()):
-            continue
+        if not is_gated:
+            # Sole Producer Rule: node produces this param itself
+            if node.name in self_producers.get(param, set()):
+                continue
+            # Descendant Producer Rule: all producers are downstream (DAGs only)
+            if param in downstream:
+                continue
         current_version = state.get_version(param)
         consumed_version = last_exec.input_versions.get(param, 0)
         if current_version != consumed_version:
