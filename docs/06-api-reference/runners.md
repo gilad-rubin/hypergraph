@@ -45,7 +45,7 @@ class SyncRunner:
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
-- `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. Enables resume for `run()` and `map()` when used with `workflow_id`. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
+- `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
 
 ### run()
 
@@ -62,7 +62,11 @@ def run(
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    checkpoint: Checkpoint | None = None,
     workflow_id: str | None = None,
+    override_workflow: bool = False,
+    fork_from: str | None = None,
+    retry_from: str | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -88,7 +92,15 @@ Execute a graph once.
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
-- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. When set with a checkpointer, enables: (1) persisting run state, (2) resuming from prior state on re-run with the same ID. See [Resuming Runs](../05-how-to/batch-processing.md#resuming-runs).
+- `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
+- `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
+  - omitted: auto-generated for `run()`
+  - existing: strict resume only (no runtime values; same graph structure)
+  - new + `checkpoint`: explicit fork
+- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
+- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
+- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
+- Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
@@ -131,14 +143,25 @@ if result.status == RunStatus.FAILED:
     print(result.error)        # the original exception
     print(result.values)       # outputs from nodes that completed before the failure
 
-# Resume from checkpoint — second run merges prior state
+# Fork from an existing run (workflow-id based)
 from hypergraph.checkpointers import SqliteCheckpointer
 cp = SqliteCheckpointer("./runs.db")
 runner = SyncRunner(checkpointer=cp)
 
-runner.run(graph_step1, {"x": 5}, workflow_id="my-workflow")
-# Later: step2 gets 'doubled' from checkpoint, no need to provide it
-result = runner.run(graph_step2, workflow_id="my-workflow")
+runner.run(graph, {"x": 5}, workflow_id="job-1")
+result = runner.run(
+    graph,
+    {"x": 100},
+    fork_from="job-1",
+)
+
+# Convenience override (auto-forks if "job-1" already exists)
+result = runner.run(
+    graph,
+    {"x": 100},
+    workflow_id="job-1",
+    override_workflow=True,
+)
 ```
 
 ### map()
@@ -270,7 +293,7 @@ class AsyncRunner:
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
-- `checkpointer` — Optional checkpointer for persistent run history. Enables resume for `run()` and `map()` when used with `workflow_id`. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
+- `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
 
 ### run()
 
@@ -288,7 +311,11 @@ async def run(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    checkpoint: Checkpoint | None = None,
     workflow_id: str | None = None,
+    override_workflow: bool = False,
+    fork_from: str | None = None,
+    retry_from: str | None = None,
     **input_values: Any,
 ) -> RunResult: ...
 ```
@@ -308,7 +335,15 @@ Execute a graph asynchronously.
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
-- `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. See [Resuming Runs](../05-how-to/batch-processing.md#resuming-runs).
+- `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
+- `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
+  - omitted: auto-generated for `run()`
+  - existing: strict resume only (no runtime values; same graph structure)
+  - new + `checkpoint`: explicit fork
+- `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
+- `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
+- `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
+- Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
 - `**input_values` - Input shorthand (merged with `values`)
 
 **Returns:** `RunResult` with outputs and status
@@ -713,7 +748,7 @@ Superstep 3: [generate]        → produces "answer"
 When collecting inputs for a node, values are resolved in this order:
 
 1. **Edge value** - Output from upstream node
-2. **Input value** - Provided via `values`, kwargs, or loaded from checkpoint (runtime values win over checkpoint). See [Resuming Runs](../05-how-to/batch-processing.md#resuming-runs).
+2. **Input value** - Provided via `values`/kwargs. On resume/fork, checkpoint state is restored first, then runtime inputs apply (runtime values win). See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
 3. **Bound value** - From `graph.bind()`
 4. **Function default** - From function signature
 
@@ -730,7 +765,7 @@ graph = Graph([process]).bind(x=5)  # bound=5
 # Then default: (if no bind) runner.run(graph, {}) → x=10
 ```
 
-> **Note:** Checkpoint values only apply to [graph inputs](inputspec.md) (required, optional, seeds). Intermediate edge-produced values are always re-computed during execution.
+> **Note:** Fork/resume restoration rehydrates execution state from checkpoint snapshot data (including prior computed values) and uses staleness checks to decide which nodes re-execute.
 
 ### Cyclic Graphs
 

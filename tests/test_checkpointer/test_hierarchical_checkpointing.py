@@ -212,17 +212,39 @@ class TestNestedGraphCheckpointing:
         assert "deep/A" in run_ids
         assert "deep/A/B" in run_ids
 
-    async def test_no_workflow_id_skips_nested_checkpointing(self, async_cp):
-        """Without workflow_id, nested graphs don't checkpoint."""
+    async def test_no_workflow_id_auto_generates_nested_checkpointing(self, async_cp):
+        """Without workflow_id, parent/child runs use an auto-generated id."""
         runner = AsyncRunner(checkpointer=async_cp)
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
         result = await runner.run(outer, {"x": 5})
         assert result["tripled"] == 30
+        assert result.workflow_id is not None
 
         runs = await async_cp.list_runs()
-        assert len(runs) == 0
+        run_ids = {r.id for r in runs}
+        assert result.workflow_id in run_ids
+        assert f"{result.workflow_id}/embed" in run_ids
+
+    async def test_nested_workflow_can_be_forked_with_lineage(self, async_cp):
+        """Forking an outer workflow preserves lineage and nested child structure."""
+        runner = AsyncRunner(checkpointer=async_cp)
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(name="embed"), triple], name="outer")
+
+        await runner.run(outer, {"x": 5}, workflow_id="nested-root")
+        fork_id, fork_cp = await async_cp.fork_workflow_async("nested-root", workflow_id="nested-root-fork")
+        await runner.run(outer, {"x": 10}, checkpoint=fork_cp, workflow_id=fork_id)
+
+        fork_run = await async_cp.get_run_async("nested-root-fork")
+        assert fork_run is not None
+        assert fork_run.forked_from == "nested-root"
+        assert fork_run.retry_of is None
+
+        child = await async_cp.get_run_async("nested-root-fork/embed")
+        assert child is not None
+        assert child.parent_run_id == "nested-root-fork"
 
 
 # --- SyncRunner nested + map ---

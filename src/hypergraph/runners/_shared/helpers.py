@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from collections.abc import Iterator, Sequence
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -524,6 +526,8 @@ def wrap_outputs(node: HyperNode, result: Any) -> dict[str, Any]:
 def initialize_state(
     graph: Graph,
     values: dict[str, Any],
+    *,
+    checkpoint: Any | None = None,
 ) -> GraphState:
     """Initialize execution state with provided input values.
 
@@ -534,13 +538,113 @@ def initialize_state(
     Returns:
         Initial GraphState with input values set
     """
-    state = GraphState()
+    if checkpoint is None:
+        state = GraphState()
+        # Set initial values for all provided inputs
+        for name, value in values.items():
+            state.update_value(name, value)
+        return state
 
-    # Set initial values for all provided inputs
-    for name, value in values.items():
+    return initialize_state_with_checkpoint(
+        graph=graph,
+        checkpoint_values=checkpoint.values,
+        runtime_values=values,
+        steps=checkpoint.steps,
+    )
+
+
+def initialize_state_with_checkpoint(
+    *,
+    graph: Graph,
+    checkpoint_values: dict[str, Any],
+    runtime_values: dict[str, Any],
+    steps: list[Any],
+) -> GraphState:
+    """Restore GraphState from checkpoint snapshot and append runtime overrides.
+
+    Restores exact version counters via step replay so mid-cycle resumes keep
+    staleness semantics correct (no remap-to-1).
+    """
+    from hypergraph.nodes.gate import END as _END
+    from hypergraph.nodes.gate import IfElseNode, RouteNode
+
+    state = GraphState()
+    state.values = dict(checkpoint_values)
+
+    versions: dict[str, int] = {}
+    graph_input_names = set(graph.inputs.all)
+    for name in checkpoint_values:
+        if name in graph_input_names:
+            versions[name] = 1
+
+    completed_steps = [s for s in steps if getattr(s, "status", None) is not None and s.status.value == "completed"]
+    completed_steps.sort(key=lambda s: (s.superstep, s.index))
+
+    for step in completed_steps:
+        for input_name, consumed_version in (step.input_versions or {}).items():
+            versions[input_name] = max(versions.get(input_name, 0), int(consumed_version))
+        if step.values:
+            for out_name in step.values:
+                versions[out_name] = versions.get(out_name, 0) + 1
+
+    state.versions = versions
+
+    for step in completed_steps:
+        state.node_executions[step.node_name] = NodeExecution(
+            node_name=step.node_name,
+            input_versions=dict(step.input_versions or {}),
+            outputs=dict(step.values or {}),
+            duration_ms=step.duration_ms,
+            cached=step.cached,
+        )
+        if step.decision is not None:
+            decision = step.decision
+            if decision == "END":
+                decision = _END
+            elif isinstance(decision, list):
+                decision = [_END if d == "END" else d for d in decision]
+            state.routing_decisions[step.node_name] = decision
+
+    # Gate routing is derivable from internal gate output values.
+    for node in graph._nodes.values():
+        gate_out = f"_{node.name}"
+        if gate_out not in state.values:
+            continue
+        if isinstance(node, IfElseNode):
+            state.routing_decisions[node.name] = node.when_true if bool(state.values[gate_out]) else node.when_false
+        elif isinstance(node, RouteNode):
+            routed = state.values[gate_out]
+            state.routing_decisions[node.name] = _END if routed == "END" else routed
+
+    for name, value in runtime_values.items():
         state.update_value(name, value)
 
     return state
+
+
+def generate_workflow_id() -> str:
+    """Create a compact auto-generated workflow id."""
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return f"run-{day}-{uuid.uuid4().hex[:6]}"
+
+
+def is_interrupt_resume_payload(
+    graph: Graph,
+    values: dict[str, Any],
+) -> bool:
+    """Return True when runtime values only provide interrupt response outputs.
+
+    This enables paused workflow continuation with the same ``workflow_id``
+    while keeping strict no-override lineage semantics for normal inputs.
+    """
+    if not values:
+        return False
+
+    allowed_outputs: set[str] = set()
+    for interrupt_node in graph.interrupt_nodes:
+        allowed_outputs.update(interrupt_node.data_outputs)
+
+    return bool(allowed_outputs) and set(values).issubset(allowed_outputs)
 
 
 _UNSET_SELECT: Any = object()

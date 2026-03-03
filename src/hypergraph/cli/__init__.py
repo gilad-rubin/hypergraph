@@ -8,7 +8,7 @@ Commands:
     graph ls        List registered graphs from pyproject.toml
     graph inspect   Show graph structure (nodes, edges, inputs)
     runs ls         List runs with filters
-    runs show       Show execution trace for a run
+    runs show       Show run trace for a run
     runs values     Show accumulated output values
     runs steps      Show detailed step records
     runs search     Full-text search across step records

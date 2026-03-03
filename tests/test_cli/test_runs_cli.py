@@ -14,7 +14,7 @@ aiosqlite = pytest.importorskip("aiosqlite")
 from typer.testing import CliRunner  # noqa: E402
 
 from hypergraph import AsyncRunner, Graph, node  # noqa: E402
-from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer  # noqa: E402
+from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer, WorkflowStatus  # noqa: E402
 from hypergraph.cli import create_app  # noqa: E402
 
 
@@ -46,6 +46,41 @@ async def populated_db(db_path):
     r = AsyncRunner(checkpointer=cp)
     graph = Graph([double, triple])
     await r.run(graph, {"x": 5}, workflow_id="run-test")
+    await cp.close()
+
+    return db_path
+
+
+@pytest.fixture
+async def lineage_db(db_path):
+    """Create a DB with root + fork lineage."""
+    cp = SqliteCheckpointer(db_path)
+    cp.policy = CheckpointPolicy(durability="sync", retention="full")
+    await cp.initialize()
+
+    r = AsyncRunner(checkpointer=cp)
+    graph = Graph([double, triple])
+    await r.run(graph, {"x": 5}, workflow_id="run-test")
+    checkpoint = cp.checkpoint("run-test")
+    await r.run(graph, {"x": 7}, checkpoint=checkpoint, workflow_id="run-test-fork")
+    await cp.close()
+
+    return db_path
+
+
+@pytest.fixture
+async def hierarchy_db(db_path):
+    """Create DB with one parent run and two child runs."""
+    cp = SqliteCheckpointer(db_path)
+    cp.policy = CheckpointPolicy(durability="sync", retention="full")
+    await cp.initialize()
+
+    await cp.create_run("batch-1", graph_name="g")
+    await cp.update_run_status("batch-1", WorkflowStatus.COMPLETED, duration_ms=5300.0, node_count=10, error_count=0)
+    await cp.create_run("batch-1/0", graph_name="g", parent_run_id="batch-1")
+    await cp.update_run_status("batch-1/0", WorkflowStatus.COMPLETED, duration_ms=5200.0, node_count=2, error_count=0)
+    await cp.create_run("batch-1/1", graph_name="g", parent_run_id="batch-1")
+    await cp.update_run_status("batch-1/1", WorkflowStatus.FAILED, duration_ms=5400.0, node_count=2, error_count=1)
     await cp.close()
 
     return db_path
@@ -163,6 +198,43 @@ class TestRunsLs:
         result = runner_cli.invoke(app, ["runs", "ls", "--graph", "nonexistent", "--db", populated_db])
         assert "No runs" in result.output or "run-test" not in result.output
 
+    def test_ls_view_parents_hides_children(self, hierarchy_db):
+        """CLI: --view parents only shows parent runs."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "ls", "--db", hierarchy_db, "--view", "parents"])
+        assert result.exit_code == 0
+        assert "batch-1" in result.output
+        assert "batch-1/0" not in result.output
+        assert "batch-1/1" not in result.output
+
+    def test_ls_view_all_shows_children(self, hierarchy_db):
+        """CLI: --view all includes child runs."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "ls", "--db", hierarchy_db, "--view", "all"])
+        assert result.exit_code == 0
+        assert "batch-1" in result.output
+        assert "batch-1/0" in result.output
+        assert "batch-1/1" in result.output
+
+    def test_ls_sort_errors(self, hierarchy_db):
+        """CLI: --sort errors puts failed/error-heavy runs first."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "ls", "--db", hierarchy_db, "--view", "all", "--sort", "errors"])
+        assert result.exit_code == 0
+        # failed child has 1 error and should appear before zero-error parent
+        row_lines = [line for line in result.output.splitlines() if line.strip().startswith("batch-1")]
+        assert row_lines, result.output
+        assert row_lines[0].strip().startswith("batch-1/1"), result.output
+
+    def test_ls_traces_shows_grouped_breakdown(self, hierarchy_db):
+        """CLI: --traces prints grouped parent/child section."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "ls", "--db", hierarchy_db, "--view", "all", "--traces"])
+        assert result.exit_code == 0
+        assert "Run Traces" in result.output
+        assert "batch-1" in result.output
+        assert "Child" in result.output
+
 
 class TestRunsSteps:
     def test_steps_output(self, populated_db):
@@ -210,7 +282,7 @@ class TestRunsStats:
         assert result.exit_code == 0
         assert "double" in result.output
         assert "triple" in result.output
-        assert "Runs" in result.output
+        assert "Steps" in result.output
 
     def test_stats_json(self, populated_db):
         """CLI: stats --json returns per-node stats."""
@@ -220,6 +292,54 @@ class TestRunsStats:
         data = json.loads(result.output)
         assert data["command"] == "runs.stats"
         assert "double" in data["data"]["nodes"]
+        assert "steps" in data["data"]["nodes"]["double"]
+
+
+class TestRunsCheckpoint:
+    def test_checkpoint_output(self, populated_db):
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "checkpoint", "run-test", "--db", populated_db])
+        assert result.exit_code == 0
+        assert "Checkpoint: run-test" in result.output
+        assert "Values:" in result.output
+        assert "Steps:" in result.output
+
+    def test_checkpoint_json_deep(self, populated_db):
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "checkpoint", "run-test", "--db", populated_db, "--deep", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "runs.checkpoint"
+        assert data["data"]["source_run_id"] == "run-test"
+        assert data["data"]["value_count"] >= 1
+        assert isinstance(data["data"]["steps"], list)
+
+
+class TestRunsLineage:
+    def test_lineage_output(self, lineage_db):
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "lineage", "run-test-fork", "--db", lineage_db])
+        assert result.exit_code == 0
+        assert "Lineage:" in result.output
+        assert "run-test" in result.output
+        assert "run-test-fork" in result.output
+        assert "<selected>" in result.output
+
+    def test_lineage_json(self, lineage_db):
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "lineage", "run-test-fork", "--db", lineage_db, "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "runs.lineage"
+        assert data["data"]["selected_run_id"] == "run-test-fork"
+        assert data["data"]["root_run_id"] == "run-test"
+        assert any(row["run"]["id"] == "run-test-fork" for row in data["data"]["rows"])
+
+    def test_lineage_deep(self, lineage_db):
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "lineage", "run-test-fork", "--db", lineage_db, "--deep"])
+        assert result.exit_code == 0
+        assert "steps=" in result.output
 
 
 class TestJsonEnvelopeStructure:

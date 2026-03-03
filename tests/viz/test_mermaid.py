@@ -217,7 +217,7 @@ class TestNodeShapes:
         graph = Graph(nodes=[check_cache, fast_path, slow_path])
         mermaid = graph.to_mermaid()
 
-        assert 'check_cache{{"check_cache"}}' in mermaid
+        assert 'check_cache{{"check_cache' in mermaid
 
     def test_data_parallelogram_shape(self):
         """DATA nodes use parallelogram syntax in separate_outputs mode."""

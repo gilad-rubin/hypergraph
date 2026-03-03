@@ -88,17 +88,18 @@ class TestRunnerCheckpointIntegration:
         state = await checkpointer.get_state("wf-state")
         assert state == {"doubled": 8, "tripled": 24}
 
-    async def test_no_workflow_id_skips_checkpointing(self, checkpointer):
-        """Without workflow_id, no checkpointing occurs."""
+    async def test_no_workflow_id_auto_generates_and_checkpoints(self, checkpointer):
+        """With checkpointer, missing workflow_id auto-generates and persists."""
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
         result = await runner.run(graph, {"x": 1})
         assert result["tripled"] == 6
+        assert result.workflow_id is not None
 
-        # No runs should have been created
         run_list = await checkpointer.list_runs()
-        assert len(run_list) == 0
+        assert len(run_list) == 1
+        assert run_list[0].id == result.workflow_id
 
     async def test_no_checkpointer_runs_normally(self):
         """Runner without checkpointer still works, even with workflow_id."""

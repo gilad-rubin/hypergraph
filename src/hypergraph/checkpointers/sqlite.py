@@ -3,17 +3,35 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from hypergraph.checkpointers._migrate import ensure_schema
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
-from hypergraph.checkpointers.types import Checkpoint, Run, RunTable, StepRecord, StepStatus, StepTable, WorkflowStatus
+from hypergraph.checkpointers.types import (
+    Checkpoint,
+    LineageRow,
+    LineageView,
+    Run,
+    RunTable,
+    StepRecord,
+    StepStatus,
+    StepTable,
+    WorkflowStatus,
+)
 
 # Explicit column lists for SELECT queries — avoids column-order bugs after migration
-_RUNS_COLS = "id, graph_name, status, duration_ms, node_count, error_count, created_at, completed_at, parent_run_id, config"
+_RUNS_COLS = (
+    "id, graph_name, status, duration_ms, node_count, error_count, "
+    "created_at, completed_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config"
+)
 _STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at"
+_STEP_TIME_ORDER = "COALESCE(completed_at, created_at), created_at, id"
+_STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC"
+_STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC, s.created_at DESC, s.id DESC"
 
 # Sentinel for "parameter not provided" — distinct from None (which means "top-level only")
 _UNSET = object()
@@ -48,7 +66,7 @@ class SqliteCheckpointer(Checkpointer):
     Best for: local development, single-server deployments, simple production.
 
     Args:
-        path: Path to SQLite database file.
+        path: SQLite database path (`str` or `pathlib.Path`).
         durability: When to write — "sync", "async" (default), or "exit".
         retention: What to keep — "full" (default), "latest", or "windowed".
         policy: Full CheckpointPolicy (overrides durability/retention if given).
@@ -67,7 +85,7 @@ class SqliteCheckpointer(Checkpointer):
 
     def __init__(
         self,
-        path: str,
+        path: str | Path,
         *,
         durability: Literal["sync", "async", "exit"] | None = None,
         retention: Literal["full", "latest", "windowed"] | None = None,
@@ -82,7 +100,7 @@ class SqliteCheckpointer(Checkpointer):
                 retention=retention or "full",
             )
         super().__init__(policy=policy)
-        self._path = path
+        self._path = str(path)
         self._serializer = serializer or JsonSerializer()
         self._db: Any = None
         self._sync_conn: Any = None
@@ -120,13 +138,14 @@ class SqliteCheckpointer(Checkpointer):
             return f"SqliteCheckpointer: {self._path}"
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import MUTED_COLOR, _code, html_detail, html_kv, html_panel, theme_wrap
+        from hypergraph._repr import MUTED_COLOR, _code, html_detail, html_kv, html_panel, theme_wrap, widget_state_key
         from hypergraph._utils import plural
 
+        state_key = widget_state_key("checkpointer", self._path)
         try:
             stats = self._db_stats()
         except Exception:
-            return theme_wrap(_code(f"SqliteCheckpointer: {self._path}"))
+            return theme_wrap(_code(f"SqliteCheckpointer: {self._path}"), state_key=state_key)
 
         kvs = [html_kv("Path", _code(str(stats["path"])))]
         if stats["size_bytes"] is not None:
@@ -141,7 +160,11 @@ class SqliteCheckpointer(Checkpointer):
         try:
             recent = self.runs(limit=5)
             if recent:
-                body += html_detail(f"Recent runs ({plural(len(recent), 'shown')})", recent._repr_html_())
+                body += html_detail(
+                    f"Recent runs ({plural(len(recent), 'shown')})",
+                    recent._repr_html_(),
+                    state_key="recent-runs",
+                )
         except Exception:
             pass
 
@@ -152,7 +175,7 @@ class SqliteCheckpointer(Checkpointer):
             f"{_code('.search(query)')} {_code('.stats(run_id)')}"
             "</div>"
         )
-        return theme_wrap(html_panel("SqliteCheckpointer", body))
+        return theme_wrap(html_panel("SqliteCheckpointer", body), state_key=state_key)
 
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""
@@ -242,22 +265,40 @@ class SqliteCheckpointer(Checkpointer):
         *,
         graph_name: str | None = None,
         parent_run_id: str | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        config: dict[str, Any] | None = None,
     ) -> Run:
         """Create or reset a run record (upsert)."""
         await self._ensure_db()
         now = datetime.now(timezone.utc)
+        config_json = json.dumps(config) if config is not None else None
         await self._db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)"
-            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?",
+            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?, "
+            "forked_from = ?, fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
             (
                 run_id,
                 WorkflowStatus.ACTIVE.value,
                 graph_name or "",
                 now.isoformat(),
                 parent_run_id,
+                forked_from,
+                fork_superstep,
+                retry_of,
+                retry_index,
+                config_json,
                 WorkflowStatus.ACTIVE.value,
                 graph_name or "",
                 parent_run_id,
+                forked_from,
+                fork_superstep,
+                retry_of,
+                retry_index,
+                config_json,
             ),
         )
         await self._db.commit()
@@ -266,6 +307,11 @@ class SqliteCheckpointer(Checkpointer):
             status=WorkflowStatus.ACTIVE,
             graph_name=graph_name,
             parent_run_id=parent_run_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            config=config,
             created_at=now,
         )
 
@@ -306,17 +352,17 @@ class SqliteCheckpointer(Checkpointer):
     # === Read ===
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:
-        """Compute state by folding step values in index order."""
+        """Compute state by folding step values in timestamp execution order."""
         await self._ensure_db()
 
         if superstep is not None:
             cursor = await self._db.execute(
-                "SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id, superstep),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT values_data FROM steps WHERE run_id = ? ORDER BY step_index",
+                f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id,),
             )
 
@@ -334,17 +380,54 @@ class SqliteCheckpointer(Checkpointer):
 
         if superstep is not None:
             cursor = await self._db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id, superstep),
             )
         else:
             cursor = await self._db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY step_index",
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id,),
             )
 
         rows = await cursor.fetchall()
         return StepTable(self._row_to_step(row) for row in rows)
+
+    async def fork_workflow_async(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]:
+        """Prepare a fork checkpoint + target workflow id."""
+        await self._ensure_db()
+        source = await self.get_run_async(source_run_id)
+        if source is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
+        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
+        return new_workflow_id, checkpoint
+
+    async def retry_workflow_async(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]:
+        """Prepare a retry checkpoint + target workflow id."""
+        await self._ensure_db()
+        source = await self.get_run_async(source_run_id)
+        if source is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        cursor = await self._db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,))
+        (retry_count,) = await cursor.fetchone()
+        retry_index = int(retry_count or 0) + 1
+        checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
+        checkpoint.retry_of = source_run_id
+        checkpoint.retry_index = retry_index
+        new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
+        return new_workflow_id, checkpoint
 
     async def get_run_async(self, run_id: str) -> Run | None:
         """Get run metadata."""
@@ -404,7 +487,7 @@ class SqliteCheckpointer(Checkpointer):
             SELECT {cols} FROM steps s
             JOIN steps_fts fts ON s.id = fts.rowid
             WHERE steps_fts MATCH ?
-            ORDER BY s.created_at DESC
+            ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
             LIMIT ?
             """,
             (fts_query, limit),
@@ -447,12 +530,8 @@ class SqliteCheckpointer(Checkpointer):
         )
 
     def _row_to_run(self, row: tuple[Any, ...]) -> Run:
-        """Convert a v2 database row to Run.
-
-        v2 columns: id, graph_name, status, duration_ms, node_count,
-                     error_count, created_at, completed_at, parent_run_id, config
-        """
-        config_raw = row[9] if len(row) > 9 else None
+        """Convert a database row to Run."""
+        config_raw = row[13] if len(row) > 13 else None
         config = json.loads(config_raw) if config_raw else None
 
         return Run(
@@ -465,6 +544,10 @@ class SqliteCheckpointer(Checkpointer):
             created_at=_parse_dt(row[6]),
             completed_at=_parse_dt(row[7]),
             parent_run_id=row[8],
+            forked_from=row[9] if len(row) > 9 else None,
+            fork_superstep=row[10] if len(row) > 10 else None,
+            retry_of=row[11] if len(row) > 11 else None,
+            retry_index=row[12] if len(row) > 12 else None,
             config=config,
         )
 
@@ -494,12 +577,12 @@ class SqliteCheckpointer(Checkpointer):
         db = self._sync_db()
         if superstep is not None:
             cursor = db.execute(
-                "SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                f"SELECT values_data FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id, superstep),
             )
         else:
             cursor = db.execute(
-                "SELECT values_data FROM steps WHERE run_id = ? ORDER BY step_index",
+                f"SELECT values_data FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id,),
             )
 
@@ -516,12 +599,12 @@ class SqliteCheckpointer(Checkpointer):
         db = self._sync_db()
         if superstep is not None:
             cursor = db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY step_index",
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? AND superstep <= ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id, superstep),
             )
         else:
             cursor = db.execute(
-                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY step_index",
+                f"SELECT {_STEPS_COLS} FROM steps WHERE run_id = ? ORDER BY {_STEP_TIME_ORDER}",
                 (run_id,),
             )
         return StepTable(self._row_to_step(row) for row in cursor.fetchall())
@@ -581,6 +664,83 @@ class SqliteCheckpointer(Checkpointer):
         )
         return RunTable(self._row_to_run(row) for row in cursor.fetchall())
 
+    def lineage(
+        self,
+        workflow_id: str,
+        *,
+        include_steps: bool = True,
+        max_runs: int = 200,
+    ) -> LineageView:
+        """Render git-like fork lineage for a workflow id (sync).
+
+        Shows root ancestor + all fork descendants in tree order. When
+        ``include_steps=True`` each run can be expanded to inspect its steps.
+        """
+        selected = self.get_run(workflow_id)
+        if selected is None:
+            raise ValueError(f"Unknown workflow_id: {workflow_id!r}")
+
+        root = selected
+        seen_ancestors = {root.id}
+        while root.forked_from:
+            parent = self.get_run(root.forked_from)
+            if parent is None or parent.id in seen_ancestors:
+                break
+            root = parent
+            seen_ancestors.add(root.id)
+
+        db = self._sync_db()
+        run_by_id: dict[str, Run] = {root.id: root}
+        children_by_parent: dict[str, list[Run]] = {}
+
+        queue: list[str] = [root.id]
+        while queue and len(run_by_id) < max_runs:
+            parent_id = queue.pop(0)
+            cursor = db.execute(
+                f"SELECT {_RUNS_COLS} FROM runs WHERE forked_from = ? OR retry_of = ? ORDER BY created_at ASC LIMIT ?",
+                (parent_id, parent_id, max_runs),
+            )
+            children = [self._row_to_run(row) for row in cursor.fetchall()]
+            children_by_parent[parent_id] = children
+            for child in children:
+                if child.id in run_by_id:
+                    continue
+                run_by_id[child.id] = child
+                if len(run_by_id) >= max_runs:
+                    break
+                queue.append(child.id)
+
+        rows: list[LineageRow] = [LineageRow(lane="● ", run=root, depth=0, is_selected=(root.id == workflow_id))]
+
+        def _walk(parent_id: str, *, flags: list[bool], depth: int) -> None:
+            children = children_by_parent.get(parent_id, [])
+            for idx, child in enumerate(children):
+                has_next = idx < len(children) - 1
+                prefix = "".join("│  " if flag else "   " for flag in flags)
+                lane = f"{prefix}{'├─ ' if has_next else '└─ '}"
+                rows.append(
+                    LineageRow(
+                        lane=lane,
+                        run=child,
+                        depth=depth,
+                        is_selected=(child.id == workflow_id),
+                    )
+                )
+                _walk(child.id, flags=[*flags, has_next], depth=depth + 1)
+
+        _walk(root.id, flags=[], depth=1)
+
+        steps_by_run: dict[str, StepTable] | None = None
+        if include_steps:
+            steps_by_run = {row.run.id: self.steps(row.run.id) for row in rows}
+
+        return LineageView(
+            rows,
+            selected_run_id=workflow_id,
+            root_run_id=root.id,
+            steps_by_run=steps_by_run,
+        )
+
     def search(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS5 (sync)."""
         db = self._sync_db()
@@ -596,7 +756,7 @@ class SqliteCheckpointer(Checkpointer):
             SELECT {cols} FROM steps s
             JOIN steps_fts fts ON s.id = fts.rowid
             WHERE steps_fts MATCH ?
-            ORDER BY s.created_at DESC
+            ORDER BY {_STEP_TIME_ORDER_DESC_WITH_ALIAS}
             LIMIT ?
             """,
             (fts_query, limit),
@@ -616,7 +776,7 @@ class SqliteCheckpointer(Checkpointer):
         cursor = db.execute(
             """
             SELECT node_name, node_type,
-                   COUNT(*) as executions,
+                   COUNT(*) as step_runs,
                    SUM(duration_ms) as total_ms,
                    AVG(duration_ms) as avg_ms,
                    MAX(duration_ms) as max_ms,
@@ -631,7 +791,7 @@ class SqliteCheckpointer(Checkpointer):
         return {
             row[0]: {
                 "node_type": row[1],
-                "executions": row[2],
+                "steps": row[2],
                 "total_ms": row[3],
                 "avg_ms": round(row[4], 3) if row[4] else 0,
                 "max_ms": row[5],
@@ -646,7 +806,42 @@ class SqliteCheckpointer(Checkpointer):
         return Checkpoint(
             values=self.state(run_id, superstep=superstep),
             steps=self.steps(run_id, superstep=superstep),
+            source_run_id=run_id,
+            source_superstep=superstep,
         )
+
+    def fork_workflow(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]:
+        """Prepare a fork checkpoint + target workflow id (sync)."""
+        if self.get_run(source_run_id) is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        checkpoint = self.checkpoint(source_run_id, superstep=superstep)
+        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
+        return new_workflow_id, checkpoint
+
+    def retry_workflow(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]:
+        """Prepare a retry checkpoint + target workflow id (sync)."""
+        db = self._sync_db()
+        if self.get_run(source_run_id) is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
+        (retry_count,) = db.execute("SELECT COUNT(*) FROM runs WHERE retry_of = ?", (source_run_id,)).fetchone()
+        retry_index = int(retry_count or 0) + 1
+        checkpoint = self.checkpoint(source_run_id, superstep=superstep)
+        checkpoint.retry_of = source_run_id
+        checkpoint.retry_index = retry_index
+        new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
+        return new_workflow_id, checkpoint
 
     # === Sync Writes (SyncCheckpointerProtocol) ===
 
@@ -656,22 +851,40 @@ class SqliteCheckpointer(Checkpointer):
         *,
         graph_name: str | None = None,
         parent_run_id: str | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        config: dict[str, Any] | None = None,
     ) -> Run:
         """Create or reset a run record synchronously (upsert)."""
         db = self._sync_db()
         now = datetime.now(timezone.utc)
+        config_json = json.dumps(config) if config is not None else None
         db.execute(
-            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id) VALUES (?, ?, ?, ?, ?)"
-            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?",
+            "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?, "
+            "forked_from = ?, fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
             (
                 run_id,
                 WorkflowStatus.ACTIVE.value,
                 graph_name or "",
                 now.isoformat(),
                 parent_run_id,
+                forked_from,
+                fork_superstep,
+                retry_of,
+                retry_index,
+                config_json,
                 WorkflowStatus.ACTIVE.value,
                 graph_name or "",
                 parent_run_id,
+                forked_from,
+                fork_superstep,
+                retry_of,
+                retry_index,
+                config_json,
             ),
         )
         db.commit()
@@ -680,6 +893,11 @@ class SqliteCheckpointer(Checkpointer):
             status=WorkflowStatus.ACTIVE,
             graph_name=graph_name,
             parent_run_id=parent_run_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            config=config,
             created_at=now,
         )
 

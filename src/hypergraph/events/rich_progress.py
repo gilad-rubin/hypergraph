@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import html as _html
+import re
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from hypergraph._repr import ALIGNUI_WIDGET_THEME, FONT_MONO_STYLE, FONT_SANS_STYLE, MUTED_COLOR, STATUS_COLORS, theme_wrap
 from hypergraph.events.processor import TypedEventProcessor
 from hypergraph.events.types import RunStatus
 
@@ -35,13 +38,14 @@ def _patch_rich_jupyter() -> None:
     """Add adaptive text color to Rich's Jupyter ``<pre>`` for dark notebooks."""
     import rich.jupyter as rj
 
-    if getattr(rj, "_hypergraph_patched", False):
-        return
-    rj.JUPYTER_HTML_FORMAT = (
+    desired = (
         '<pre style="white-space:pre;overflow-x:auto;line-height:normal;'
-        "font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace;"
-        'color-scheme:light dark;color:light-dark(#111827,#d1d5db)">{code}</pre>\n'
+        f"{FONT_MONO_STYLE};"
+        f'background:transparent;color:{ALIGNUI_WIDGET_THEME["text_strong"]}">{{code}}</pre>\n'
     )
+    if getattr(rj, "_hypergraph_patched", False) and getattr(rj, "JUPYTER_HTML_FORMAT", None) == desired:
+        return
+    rj.JUPYTER_HTML_FORMAT = desired
     rj._hypergraph_patched = True  # type: ignore[attr-defined]
 
 
@@ -75,6 +79,145 @@ class _NodeBarInfo:
     map_span_id: str | None = None  # Parent map span (for tree chars)
 
 
+# Notebook task model for HTML progress rendering.
+@dataclass
+class _NotebookTask:
+    description: str
+    total: int
+    completed: int = 0
+    stats: str = ""
+    started_at: float = field(default_factory=time.monotonic)
+
+
+class _NotebookConsole:
+    """Minimal console shim for compatibility with Rich Progress API."""
+
+    def print(self, *_args: Any, **_kwargs: Any) -> None:
+        return
+
+
+class _NotebookProgress:
+    """Notebook-native HTML progress renderer with stable display updates."""
+
+    def __init__(self, *, transient: bool = False, state_key: str = "notebook-progress") -> None:
+        self.transient = transient
+        self.state_key = state_key
+        self._tasks: dict[int, _NotebookTask] = {}
+        self._task_order: list[int] = []
+        self._next_task_id = 0
+        self._started = False
+        self._display_handle: Any = None
+        self.console = _NotebookConsole()
+
+    def start(self) -> None:
+        self._started = True
+        self.refresh()
+
+    def stop(self) -> None:
+        if self.transient and self._display_handle is not None:
+            from IPython.display import HTML
+
+            self._display_handle.update(HTML(""))
+        self._started = False
+
+    def reset(self) -> None:
+        self._tasks.clear()
+        self._task_order.clear()
+        self._next_task_id = 0
+        if self._display_handle is not None:
+            self.refresh()
+
+    def add_task(self, description: str, *, total: int, stats: str = "") -> int:
+        task_id = self._next_task_id
+        self._next_task_id += 1
+        self._tasks[task_id] = _NotebookTask(description=description, total=max(0, int(total or 0)), stats=stats)
+        self._task_order.append(task_id)
+        return task_id
+
+    def update(
+        self,
+        task_id: int,
+        *,
+        description: str | None = None,
+        total: int | None = None,
+        stats: str | None = None,
+    ) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        if description is not None:
+            task.description = description
+        if total is not None:
+            task.total = max(0, int(total))
+            if task.total and task.completed > task.total:
+                task.completed = task.total
+        if stats is not None:
+            task.stats = stats
+
+    def advance(self, task_id: int, advance: int = 1) -> None:
+        task = self._tasks.get(task_id)
+        if task is None:
+            return
+        task.completed += int(advance)
+        if task.total > 0:
+            task.completed = min(task.completed, task.total)
+
+    def _format_elapsed(self, seconds: float) -> str:
+        total = max(0, int(seconds))
+        h = total // 3600
+        m = (total % 3600) // 60
+        s = total % 60
+        return f"{h}:{m:02d}:{s:02d}"
+
+    def _stats_html(self, stats: str) -> str:
+        txt = _html.escape(stats)
+        txt = re.sub(r"(\d+)✓", f'<span style="color:{STATUS_COLORS["completed"]}">\\1✓</span>', txt)
+        txt = re.sub(r"(\d+)✗", f'<span style="color:{STATUS_COLORS["failed"]}">\\1✗</span>', txt)
+        txt = re.sub(r"(\d+)◉", f'<span style="color:{STATUS_COLORS["cached"]}">\\1◉</span>', txt)
+        txt = re.sub(r"(~[0-9:.a-zA-Z]+)", f'<span style="color:{STATUS_COLORS["partial"]}">\\1</span>', txt)
+        return txt
+
+    def _render_html(self) -> str:
+        rows: list[str] = []
+        now = time.monotonic()
+        for task_id in self._task_order:
+            task = self._tasks[task_id]
+            total = task.total if task.total > 0 else 1
+            pct = max(0.0, min(1.0, task.completed / total))
+            pct_css = f"{pct * 100:.2f}%"
+            desc = _html.escape(task.description)
+            completed = task.completed if task.total > 0 else 0
+            elapsed = self._format_elapsed(now - task.started_at)
+            stats_html = self._stats_html(task.stats)
+            rows.append(
+                '<div style="display:flex; align-items:center; margin:2px 0">'
+                f'<span style="{FONT_SANS_STYLE}; white-space:pre; width:{_NB_DESC_WIDTH_PX}px; overflow:hidden; text-overflow:ellipsis; margin-right:4px; color:{ALIGNUI_WIDGET_THEME["text_strong"]}">{desc}</span>'
+                f'<div style="width:{_NB_BAR_WIDTH_PX}px; height:{_NB_BAR_HEIGHT_PX}px; border-radius:9999px; overflow:hidden; margin-right:10px; background:{ALIGNUI_WIDGET_THEME["border_soft"]}">'
+                f'<div style="height:100%; width:{pct_css}; background:{ALIGNUI_WIDGET_THEME["success_base"]}"></div>'
+                "</div>"
+                f'<span style="{FONT_SANS_STYLE}; width:{_NB_COUNT_WIDTH_PX}px; text-align:right; margin-right:10px; color:{ALIGNUI_WIDGET_THEME["text_strong"]}; font-variant-numeric:tabular-nums">{completed}/{task.total}</span>'
+                f'<span style="{FONT_SANS_STYLE}; width:{_NB_ELAPSED_WIDTH_PX}px; margin-right:10px; color:{MUTED_COLOR}; font-variant-numeric:tabular-nums">{elapsed}</span>'
+                f'<span style="{FONT_SANS_STYLE}; min-width:{_NB_STATS_MIN_WIDTH_PX}px; color:{MUTED_COLOR}">{stats_html}</span>'
+                "</div>"
+            )
+        content = (
+            '<div style="display:inline-block; max-width:100%; '
+            f'{FONT_SANS_STYLE}; font-size:{_NB_FONT_SIZE_PX}px; line-height:{_NB_LINE_HEIGHT}; color:{ALIGNUI_WIDGET_THEME["text_strong"]}">'
+            + "".join(rows)
+            + "</div>"
+        )
+        return theme_wrap(content, state_key=self.state_key)
+
+    def refresh(self) -> None:
+        from IPython.display import HTML, display
+
+        html = self._render_html()
+        if self._display_handle is None:
+            self._display_handle = display(HTML(html), display_id=True)
+        else:
+            self._display_handle.update(HTML(html))
+
+
 # Key type for node bar lookups: (graph_name, node_name, depth)
 _NodeKey = tuple[str, str, int]
 
@@ -85,7 +228,23 @@ def _is_notebook() -> bool:
         from IPython import get_ipython
 
         shell = get_ipython()
-        return shell is not None and "zmq" in type(shell).__module__
+        if shell is None:
+            return False
+        module = type(shell).__module__.lower()
+        name = type(shell).__name__.lower()
+        if "zmq" in module or "zmq" in name:
+            return True
+        if name == "zmqinteractiveshell":
+            return True
+        if getattr(shell, "kernel", None) is not None:
+            return True
+        cfg = getattr(shell, "config", {})
+        try:
+            if "IPKernelApp" in cfg:
+                return True
+        except Exception:
+            pass
+        return False
     except (ImportError, NameError):
         return False
 
@@ -123,7 +282,7 @@ def _format_stats(
     if succeeded:
         parts.append(f"{succeeded}✓")
     if failures:
-        parts.append(f"[red]{failures}✗[/red]")
+        parts.append(f"{failures}✗")
     if cached:
         parts.append(f"{cached}◉")
     if avg_ms is not None:
@@ -133,6 +292,16 @@ def _format_stats(
 
 # Milestones for map progress (percentages to log)
 _MAP_MILESTONES = frozenset({10, 25, 50, 75, 100})
+
+# Notebook HTML progress sizing (slightly compact).
+_NB_FONT_SIZE_PX = 12
+_NB_LINE_HEIGHT = 1.3
+_NB_DESC_WIDTH_PX = 168
+_NB_BAR_WIDTH_PX = 300
+_NB_BAR_HEIGHT_PX = 5
+_NB_COUNT_WIDTH_PX = 64
+_NB_ELAPSED_WIDTH_PX = 66
+_NB_STATS_MIN_WIDTH_PX = 140
 
 
 @dataclass
@@ -182,6 +351,8 @@ class RichProgressProcessor(TypedEventProcessor):
         self._started = False
         self._last_refresh: float = 0.0  # monotonic timestamp of last notebook refresh
         self._refresh_dirty = False  # pending refresh not yet flushed
+        self._manual_notebook_refresh = False
+        self._uses_rich_progress = False
 
         # Tree structure: ordered child node keys per map span
         self._map_children: dict[str, list[_NodeKey]] = {}
@@ -189,7 +360,7 @@ class RichProgressProcessor(TypedEventProcessor):
         # Non-TTY state
         self._nontty_map_states: dict[str, _NonTTYMapState] = {}  # span_id -> state
 
-        if self._tty_mode:
+        if mode == "tty":
             _require_rich()
             from rich.progress import (
                 BarColumn,
@@ -208,7 +379,16 @@ class RichProgressProcessor(TypedEventProcessor):
                 TimeElapsedColumn(),
                 TextColumn("{task.fields[stats]}"),
                 transient=transient,
+                auto_refresh=True,
             )
+            self._uses_rich_progress = True
+        elif mode == "notebook":
+            self._progress = _NotebookProgress(
+                transient=transient,
+                state_key=f"notebook-progress-{int(time.time() * 1000)}",
+            )
+            # Notebook rendering is refreshed manually in a throttled way.
+            self._manual_notebook_refresh = True
         else:
             self._progress = None  # type: ignore[assignment]
 
@@ -228,7 +408,7 @@ class RichProgressProcessor(TypedEventProcessor):
         are unnecessary.  In notebook mode we refresh at most every 100 ms
         to avoid flooding the IPython display protocol.
         """
-        if not self._notebook or self._progress is None:
+        if not self._notebook or self._progress is None or not self._manual_notebook_refresh:
             return
         now = time.monotonic()
         if now - self._last_refresh >= self._NOTEBOOK_REFRESH_INTERVAL:
@@ -240,7 +420,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
     def _flush_refresh(self) -> None:
         """Force a final refresh if any updates were throttled."""
-        if self._refresh_dirty and self._progress is not None:
+        if self._refresh_dirty and self._progress is not None and self._manual_notebook_refresh:
             self._progress.refresh()
             self._last_refresh = time.monotonic()
             self._refresh_dirty = False
@@ -248,7 +428,7 @@ class RichProgressProcessor(TypedEventProcessor):
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
         if not self._started:
-            if self._notebook:
+            if self._notebook and self._uses_rich_progress:
                 _patch_rich_jupyter()
             if self._tty_mode:
                 self._progress.start()
@@ -351,6 +531,16 @@ class RichProgressProcessor(TypedEventProcessor):
         self._ensure_started()
         span = event.span_id
         parent = event.parent_span_id
+
+        # New top-level run on a reused processor: clear old run state first.
+        if parent is None and self._spans and span not in self._spans:
+            self._spans.clear()
+            self._node_bars.clear()
+            self._map_children.clear()
+            self._nontty_map_states.clear()
+            self._refresh_dirty = False
+            if self._notebook and hasattr(self._progress, "reset"):
+                self._progress.reset()
 
         info = self._get_span(span)
         info.parent_span_id = parent
@@ -535,9 +725,6 @@ class RichProgressProcessor(TypedEventProcessor):
         """
         from IPython.display import HTML, display
 
-        from hypergraph._repr import STATUS_COLORS, theme_wrap
-
-        _font = "font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, monospace"
         name = event.graph_name or "Run"
         if event.status == RunStatus.COMPLETED:
             color = STATUS_COLORS["completed"]
@@ -546,7 +733,7 @@ class RichProgressProcessor(TypedEventProcessor):
             color = STATUS_COLORS["failed"]
             error_text = f": {event.error}" if event.error else ""
             msg = f"✗ {name} failed{error_text}"
-        html = f'<div style="{_font}; color:{color}; font-weight:700; padding:4px 0">{msg}</div>'
+        html = f'<div style="{FONT_SANS_STYLE}; color:{color}; font-weight:700; padding:4px 0">{msg}</div>'
         display(HTML(theme_wrap(html)))
 
     def shutdown(self) -> None:

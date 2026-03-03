@@ -1,5 +1,8 @@
 """Tests for SqliteCheckpointer."""
 
+from datetime import timedelta, timezone
+from pathlib import Path
+
 import pytest
 
 from hypergraph.checkpointers import (
@@ -93,6 +96,41 @@ class TestRunLifecycle:
         assert len(active) == 1
         assert active[0].id == "wf-2"
 
+    async def test_create_run_with_lineage_fields(self, checkpointer):
+        run = await checkpointer.create_run(
+            "wf-child",
+            forked_from="wf-parent",
+            fork_superstep=3,
+            retry_of="wf-root",
+            retry_index=2,
+        )
+        assert run.forked_from == "wf-parent"
+        assert run.fork_superstep == 3
+        assert run.retry_of == "wf-root"
+        assert run.retry_index == 2
+
+        fetched = await checkpointer.get_run_async("wf-child")
+        assert fetched is not None
+        assert fetched.forked_from == "wf-parent"
+        assert fetched.fork_superstep == 3
+        assert fetched.retry_of == "wf-root"
+        assert fetched.retry_index == 2
+
+    async def test_fork_and_retry_workflow_helpers(self, checkpointer):
+        await checkpointer.create_run("wf-root")
+        await checkpointer.save_step(_make_step(run_id="wf-root", values={"x_seed": 7}))
+
+        fork_id, fork_cp = await checkpointer.fork_workflow_async("wf-root")
+        assert fork_id.startswith("wf-root-fork-")
+        assert fork_cp.source_run_id == "wf-root"
+        assert fork_cp.retry_of is None
+
+        retry_id, retry_cp = await checkpointer.retry_workflow_async("wf-root")
+        assert retry_id == "wf-root-retry-1"
+        assert retry_cp.source_run_id == "wf-root"
+        assert retry_cp.retry_of == "wf-root"
+        assert retry_cp.retry_index == 1
+
 
 class TestStepPersistence:
     async def test_save_and_get_steps(self, checkpointer):
@@ -163,6 +201,22 @@ class TestStepPersistence:
         assert len(steps) == 2
         assert {s.node_name for s in steps} == {"a", "b"}
 
+    async def test_get_steps_orders_by_timestamp_not_index(self, checkpointer):
+        """Execution order is derived from timestamps, not raw step_index alone."""
+        await checkpointer.create_run("wf-1")
+        base = _make_step().created_at.replace(tzinfo=timezone.utc)
+        earlier = base
+        later = base + timedelta(seconds=10)
+
+        # Insert later first with same index to simulate tied/legacy indices.
+        await checkpointer.save_step(_make_step(node_name="later", index=0, created_at=later, completed_at=later))
+        await checkpointer.save_step(_make_step(node_name="earlier", index=0, created_at=earlier, completed_at=earlier))
+
+        async_steps = await checkpointer.get_steps("wf-1")
+        sync_steps = checkpointer.steps("wf-1")
+        assert [s.node_name for s in async_steps] == ["earlier", "later"]
+        assert [s.node_name for s in sync_steps] == ["earlier", "later"]
+
 
 class TestStateComputation:
     async def test_get_state_folds_values(self, checkpointer):
@@ -208,6 +262,20 @@ class TestStateComputation:
 
         state = await checkpointer.get_state("wf-1")
         assert state == {"x": 1}
+
+    async def test_state_folds_in_timestamp_order_when_indices_tie(self, checkpointer):
+        """State folding should follow execution timestamps, even with tied indices."""
+        await checkpointer.create_run("wf-1")
+        base = _make_step().created_at.replace(tzinfo=timezone.utc)
+        earlier = base
+        later = base + timedelta(seconds=10)
+
+        # Insert newer value first with same index, then older value.
+        await checkpointer.save_step(_make_step(node_name="newer", index=0, values={"x": "new"}, created_at=later, completed_at=later))
+        await checkpointer.save_step(_make_step(node_name="older", index=0, values={"x": "old"}, created_at=earlier, completed_at=earlier))
+
+        assert await checkpointer.get_state("wf-1") == {"x": "new"}
+        assert checkpointer.state("wf-1") == {"x": "new"}
 
 
 class TestCheckpoint:
@@ -274,6 +342,24 @@ class TestPolicyIntegration:
                 policy=CheckpointPolicy(),
                 durability="sync",
             )
+
+    async def test_accepts_path_instance(self, tmp_path):
+        """Constructor accepts pathlib.Path for filesystem databases."""
+        db_path = tmp_path / "path-instance.db"
+        cp = SqliteCheckpointer(db_path)
+        await cp.create_run("wf-1")
+        run = await cp.get_run_async("wf-1")
+        assert run is not None
+        await cp.close()
+
+    async def test_accepts_relative_path_instance(self, tmp_path, monkeypatch):
+        """Constructor accepts relative pathlib.Path values."""
+        monkeypatch.chdir(tmp_path)
+        cp = SqliteCheckpointer(Path("relative-path.db"))
+        await cp.create_run("wf-1")
+        run = await cp.get_run_async("wf-1")
+        assert run is not None
+        await cp.close()
 
 
 class TestSyncReads:
@@ -372,6 +458,66 @@ class TestSyncReads:
         assert checkpointer.values("wf-1", key="x") == {"x": 1}
         assert checkpointer.values("wf-1", key="missing") == {}
 
+    async def test_lineage_git_like_tree(self, checkpointer):
+        """lineage() returns root+fork tree with expandable step views."""
+        await checkpointer.create_run("wf-root")
+        await checkpointer.save_step(_make_step(run_id="wf-root", node_name="seed", index=0))
+
+        await checkpointer.create_run("wf-a", forked_from="wf-root", fork_superstep=0)
+        await checkpointer.save_step(_make_step(run_id="wf-a", node_name="a1", index=0))
+
+        await checkpointer.create_run("wf-b", forked_from="wf-root", fork_superstep=0)
+        await checkpointer.save_step(_make_step(run_id="wf-b", node_name="b1", index=0))
+
+        await checkpointer.create_run("wf-a1", forked_from="wf-a", fork_superstep=1)
+        await checkpointer.save_step(_make_step(run_id="wf-a1", node_name="a2", index=0))
+
+        lineage = checkpointer.lineage("wf-a1")
+        assert lineage.selected_run_id == "wf-a1"
+        assert lineage.root_run_id == "wf-root"
+        assert lineage[0].run.id == "wf-root"
+        assert {row.run.id for row in lineage} == {"wf-root", "wf-a", "wf-b", "wf-a1"}
+        assert any(row.is_selected and row.run.id == "wf-a1" for row in lineage)
+
+        text = repr(lineage)
+        assert "LineageView: wf-a1 (root=wf-root)" in text
+        assert "<selected>" in text
+        assert "wf-a1" in text
+
+        html = lineage._repr_html_()
+        assert "Workflow Lineage: wf-a1" in html
+        assert "Lineage from root wf-root" in html
+        assert "wf-root" in html
+        assert "wf-a1" in html
+
+    async def test_lineage_unknown_workflow_raises(self, checkpointer):
+        with pytest.raises(ValueError, match="Unknown workflow_id"):
+            checkpointer.lineage("no-such-run")
+
+    async def test_lineage_includes_retry_and_cache_counts(self, checkpointer):
+        """Retry branches and cached-step counts appear in lineage output."""
+        await checkpointer.create_run("wf-root")
+        await checkpointer.save_step(_make_step(run_id="wf-root", node_name="seed", index=0, cached=True))
+
+        retry_id, retry_cp = await checkpointer.retry_workflow_async("wf-root")
+        await checkpointer.create_run(
+            retry_id,
+            forked_from=retry_cp.source_run_id,
+            retry_of=retry_cp.retry_of,
+            retry_index=retry_cp.retry_index,
+        )
+        await checkpointer.save_step(_make_step(run_id=retry_id, node_name="retry-step", index=0, cached=False))
+
+        lineage = checkpointer.lineage(retry_id)
+        assert {row.run.id for row in lineage} == {"wf-root", retry_id}
+        text = repr(lineage)
+        assert "(retry)" in text
+        assert "cached=" in text
+
+        html = lineage._repr_html_()
+        assert "retry" in html
+        assert "Cached" in html
+
 
 class TestSearch:
     async def test_search_by_node_name(self, checkpointer):
@@ -417,10 +563,25 @@ class TestSearch:
         results = checkpointer.search("evaluate")
         assert len(results) == 2
 
+    async def test_search_orders_by_step_time_desc(self, checkpointer):
+        """Search results should be ordered by most recent execution time."""
+        await checkpointer.create_run("wf-1")
+        base = _make_step().created_at.replace(tzinfo=timezone.utc)
+        older = base
+        newer = base + timedelta(seconds=10)
+
+        await checkpointer.save_step(_make_step(node_name="embed", index=0, created_at=older, completed_at=older))
+        await checkpointer.save_step(_make_step(node_name="embed", index=1, superstep=1, created_at=newer, completed_at=newer))
+
+        sync_results = checkpointer.search("embed")
+        async_results = await checkpointer.search_async("embed")
+        assert [r.superstep for r in sync_results][:2] == [1, 0]
+        assert [r.superstep for r in async_results][:2] == [1, 0]
+
 
 class TestMigration:
-    def test_fresh_db_gets_v2_schema(self, tmp_path):
-        """A new database gets v2 schema automatically."""
+    def test_fresh_db_gets_v3_schema(self, tmp_path):
+        """A new database gets v3 schema automatically."""
         cp = SqliteCheckpointer(str(tmp_path / "fresh.db"))
         # Trigger sync schema creation
         assert cp.runs() == []
@@ -434,7 +595,7 @@ class TestMigration:
         assert "_schema_version" in tables
 
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 2
+        assert version == 3
         conn.close()
 
     def test_migration_idempotent(self, tmp_path):
@@ -448,7 +609,7 @@ class TestMigration:
         ensure_schema(conn)
         ensure_schema(conn)  # Second time should be a no-op
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        assert version == 2
+        assert version == 3
         conn.close()
 
     def test_unknown_schema_version_raises(self, tmp_path):

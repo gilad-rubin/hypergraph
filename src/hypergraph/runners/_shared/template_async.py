@@ -7,7 +7,13 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
-from hypergraph.exceptions import ExecutionError
+from hypergraph.exceptions import (
+    ExecutionError,
+    GraphChangedError,
+    InputOverrideRequiresForkError,
+    WorkflowAlreadyCompletedError,
+    WorkflowForkError,
+)
 from hypergraph.runners._shared.helpers import (
     _UNSET_SELECT,
     _validate_error_handling,
@@ -15,6 +21,8 @@ from hypergraph.runners._shared.helpers import (
     _validate_workflow_id,
     filter_outputs,
     generate_map_inputs,
+    generate_workflow_id,
+    is_interrupt_resume_payload,
 )
 from hypergraph.runners._shared.input_normalization import (
     ASYNC_MAP_RESERVED_OPTION_NAMES,
@@ -86,6 +94,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
+        checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
@@ -163,7 +172,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        checkpoint: Any | None = None,
         workflow_id: str | None = None,
+        override_workflow: bool = False,
+        fork_from: str | None = None,
+        retry_from: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
         _validation_ctx: _InputValidationContext | None = None,
@@ -184,26 +197,76 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             _validate_error_handling(error_handling)
             _validate_workflow_id(workflow_id, _parent_run_id)
 
-        # Checkpoint resume: load prior state and merge graph-input values.
-        # Only merge values the graph expects as inputs (required, optional, seeds) —
-        # intermediate edge-produced values are NOT merged (they'll be re-computed).
-        # Guard: skip for map() children (_validation_ctx is set) — they don't need resume merge.
         checkpointer = self._checkpointer
+        if _validation_ctx is None and (fork_from is not None or retry_from is not None) and checkpointer is None:
+            raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
+        resume_checkpoint = None
+        if checkpointer is not None and _validation_ctx is None:
+            if workflow_id is None:
+                workflow_id = generate_workflow_id()
+            if fork_from is not None and retry_from is not None:
+                raise ValueError("Cannot pass both fork_from and retry_from. Choose one lineage source.")
+            if checkpoint is not None and (fork_from is not None or retry_from is not None):
+                raise ValueError("Cannot combine checkpoint with fork_from/retry_from. Use one forking mechanism.")
+            if fork_from is not None:
+                workflow_id, resume_checkpoint = await checkpointer.fork_workflow_async(fork_from, workflow_id=workflow_id)
+                checkpoint = resume_checkpoint
+            elif retry_from is not None:
+                workflow_id, resume_checkpoint = await checkpointer.retry_workflow_async(retry_from, workflow_id=workflow_id)
+                checkpoint = resume_checkpoint
+
+            existing_run = await checkpointer.get_run_async(workflow_id)
+            graph_hash = graph.structural_hash
+            if checkpoint is not None:
+                if existing_run is not None:
+                    raise WorkflowForkError(f"Cannot fork into existing workflow '{workflow_id}'. Use a new workflow_id.")
+                resume_checkpoint = checkpoint
+            elif existing_run is not None:
+                if override_workflow:
+                    # Ergonomic shortcut: same workflow_id + override => auto-fork.
+                    workflow_id, resume_checkpoint = await checkpointer.fork_workflow_async(workflow_id)
+                    checkpoint = resume_checkpoint
+                else:
+                    previous_hash = (existing_run.config or {}).get("graph_struct_hash")
+                    if previous_hash is not None and previous_hash != graph_hash:
+                        raise GraphChangedError(workflow_id)
+                    if normalized_values and not is_interrupt_resume_payload(graph, normalized_values):
+                        raise InputOverrideRequiresForkError(workflow_id)
+                    if existing_run.status.value == "completed":
+                        raise WorkflowAlreadyCompletedError(workflow_id)
+                    resume_checkpoint = await checkpointer.get_checkpoint(workflow_id)
+
         has_checkpointer = checkpointer is not None and workflow_id is not None
-        if has_checkpointer and _validation_ctx is None:
-            checkpoint_state = await checkpointer.get_state(workflow_id)
-            if checkpoint_state:
-                graph_input_names = set(graph.inputs.all)
-                checkpoint_inputs = {k: v for k, v in checkpoint_state.items() if k in graph_input_names}
-                if checkpoint_inputs:
-                    normalized_values = {**checkpoint_inputs, **normalized_values}
+        forked_from: str | None = None
+        fork_superstep: int | None = None
+        retry_of: str | None = None
+        retry_index: int | None = None
+        if checkpoint is not None and resume_checkpoint is not None:
+            forked_from = getattr(resume_checkpoint, "source_run_id", None)
+            fork_superstep = getattr(resume_checkpoint, "source_superstep", None)
+            retry_of = getattr(resume_checkpoint, "retry_of", None)
+            retry_index = getattr(resume_checkpoint, "retry_index", None)
+
+        validation_values = normalized_values
+        if resume_checkpoint is not None:
+            if checkpoint is not None and normalized_values:
+                # Fork with runtime overrides: validate only graph inputs from
+                # checkpoint to avoid compute+inject conflicts on restored internals.
+                validation_values = dict(normalized_values)
+                for input_name in graph.inputs.all:
+                    if input_name not in validation_values and input_name in resume_checkpoint.values:
+                        validation_values[input_name] = resume_checkpoint.values[input_name]
+            else:
+                # Resume path: validate against full restored state so completed
+                # upstream nodes can bypass original entry inputs.
+                validation_values = {**resume_checkpoint.values, **normalized_values}
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:
             effective_selected = resolve_runtime_selected(select, graph)
             validate_inputs(
                 graph,
-                normalized_values,
+                validation_values,
                 entrypoint=entrypoint,
                 selected=effective_selected,
                 on_internal_override=on_internal_override,
@@ -228,6 +291,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id,
                 graph_name=graph.name,
                 parent_run_id=_parent_run_id,
+                forked_from=forked_from,
+                fork_superstep=fork_superstep,
+                retry_of=retry_of,
+                retry_index=retry_index,
+                config={
+                    "graph_struct_hash": graph.structural_hash,
+                    "graph_code_hash": graph.code_hash,
+                },
             )
 
         # Step buffer for "exit" durability — records are flushed after run completes
@@ -244,6 +315,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_span_id=run_span_id,
                 event_processors=event_processors,
                 workflow_id=workflow_id,
+                checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
@@ -415,6 +487,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id,
                 graph_name=graph.name,
                 parent_run_id=_parent_run_id,
+                config={
+                    "graph_struct_hash": graph.structural_hash,
+                    "graph_code_hash": graph.code_hash,
+                },
             )
 
         # Resume: find completed child runs to skip

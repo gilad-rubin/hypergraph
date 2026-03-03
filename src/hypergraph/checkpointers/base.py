@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
@@ -74,6 +75,11 @@ class Checkpointer(ABC):
         *,
         graph_name: str | None = None,
         parent_run_id: str | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        config: dict[str, Any] | None = None,
     ) -> Run:
         """Create or reset a run record (upsert). Called by runner at run start.
 
@@ -117,7 +123,41 @@ class Checkpointer(ABC):
         """
         values = await self.get_state(run_id, superstep=superstep)
         steps = await self.get_steps(run_id, superstep=superstep)
-        return Checkpoint(values=values, steps=steps)
+        return Checkpoint(
+            values=values,
+            steps=steps,
+            source_run_id=run_id,
+            source_superstep=superstep,
+        )
+
+    async def fork_workflow_async(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]:
+        """Prepare a fork by materializing a checkpoint and suggested workflow_id."""
+        checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
+        new_workflow_id = workflow_id or f"{source_run_id}-fork-{uuid.uuid4().hex[:6]}"
+        return new_workflow_id, checkpoint
+
+    async def retry_workflow_async(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]:
+        """Prepare a retry fork with retry lineage metadata."""
+        checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
+        siblings = await self.list_runs(limit=10_000)
+        retry_count = sum(1 for run in siblings if run.retry_of == source_run_id)
+        retry_index = retry_count + 1
+        new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
+        checkpoint.retry_of = source_run_id
+        checkpoint.retry_index = retry_index
+        return new_workflow_id, checkpoint
 
     @abstractmethod
     async def get_run_async(self, run_id: str) -> Run | None:

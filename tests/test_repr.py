@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from hypergraph._repr import _compact_html, error_html, values_html
+from hypergraph._repr import (
+    _compact_html,
+    error_html,
+    html_detail,
+    html_table_controls_script,
+    theme_wrap,
+    unique_dom_id,
+    values_html,
+    widget_state_key,
+)
 from hypergraph._utils import format_datetime, format_duration_ms
 from hypergraph.checkpointers.types import (
     Checkpoint,
+    LineageRow,
+    LineageView,
     Run,
     RunTable,
     StepRecord,
@@ -15,7 +26,7 @@ from hypergraph.checkpointers.types import (
     StepTable,
     WorkflowStatus,
 )
-from hypergraph.runners._shared.types import MapResult, NodeRecord, NodeStats, RunLog, RunResult, RunStatus
+from hypergraph.runners._shared.types import MapLog, MapResult, NodeRecord, NodeStats, RunLog, RunResult, RunStatus
 
 # ---------------------------------------------------------------------------
 # format_duration_ms
@@ -247,8 +258,28 @@ class TestRunTable:
         table = RunTable([Run(id="r-1", status=WorkflowStatus.COMPLETED, graph_name="test")])
         html = table._repr_html_()
         assert "<table" in html
+        assert "<details" in html
+        assert "Run Traces" in html
         assert "r-1" in html
         assert "completed" in html
+        assert "View:" in html
+        assert "Status:" in html
+        assert "Sort:" in html
+        assert "Show:" in html
+        assert "Open" not in html
+
+    def test_repr_html_groups_children_under_parent_controls(self):
+        parent = Run(id="batch-1", status=WorkflowStatus.COMPLETED, graph_name="g")
+        child = Run(
+            id="batch-1/0",
+            status=WorkflowStatus.COMPLETED,
+            graph_name="g",
+            parent_run_id="batch-1",
+        )
+        html = RunTable([parent, child])._repr_html_()
+        assert "Parents only" in html
+        assert 'data-parent="1"' in html
+        assert "batch-1/0" in html
 
 
 class TestStepTable:
@@ -268,6 +299,54 @@ class TestStepTable:
 
     def test_empty(self):
         assert "(empty)" in repr(StepTable())
+
+    def test_repr_html_has_step_drilldown(self):
+        table = StepTable(
+            [
+                StepRecord(
+                    run_id="r",
+                    superstep=0,
+                    node_name="classify",
+                    index=0,
+                    status=StepStatus.COMPLETED,
+                    input_versions={},
+                    values={"x": 1},
+                    duration_ms=95.0,
+                )
+            ]
+        )
+        html = table._repr_html_()
+        assert "<table" in html
+        assert "<details" in html
+        assert "Values" in html
+
+
+class TestLineageView:
+    def test_repr_and_html(self):
+        root = Run(id="wf-root", status=WorkflowStatus.COMPLETED)
+        child = Run(id="wf-child", status=WorkflowStatus.ACTIVE, forked_from="wf-root", fork_superstep=1)
+        view = LineageView(
+            [
+                LineageRow(lane="● ", run=root, depth=0),
+                LineageRow(lane="└─ ", run=child, depth=1, is_selected=True),
+            ],
+            selected_run_id="wf-child",
+            root_run_id="wf-root",
+        )
+
+        text = repr(view)
+        assert "LineageView: wf-child (root=wf-root)" in text
+        assert "wf-root" in text
+        assert "wf-child" in text
+        assert "<selected>" in text
+
+        html = view._repr_html_()
+        assert "Workflow Lineage: wf-child" in html
+        assert "Lineage from root wf-root" in html
+        assert "Kind" in html
+        assert "Cached" in html
+        assert "wf-root" in html
+        assert "wf-child" in html
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +395,7 @@ class TestHtmlReprs:
         )
         html = log._repr_html_()
         assert "<table" in html
+        assert "<details" not in html
         assert "test" in html
 
 
@@ -349,6 +429,7 @@ class TestGraphRepr:
         assert "<table" in html
         assert "step" in html
         assert "simple" in html
+        assert "Node: step" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +499,34 @@ class TestErrorHtml:
 
     def test_none(self):
         assert error_html(None) == ""
+
+
+class TestWidgetStatePersistence:
+    def test_theme_wrap_includes_state_key(self):
+        html = theme_wrap("<div>hello</div>", state_key="abc")
+        assert 'data-hg-state-key="abc"' in html
+        assert "hypergraph:details:" in html
+
+    def test_html_detail_marks_persistable_details(self):
+        html = html_detail("Summary", "<div>Body</div>", state_key="section-1")
+        assert 'data-hg-persist="1"' in html
+        assert 'data-hg-key="section-1"' in html
+
+    def test_widget_state_key_is_stable(self):
+        key1 = widget_state_key("checkpointer", "/tmp/runs.db")
+        key2 = widget_state_key("checkpointer", "/tmp/runs.db")
+        key3 = widget_state_key("checkpointer", "/tmp/other.db")
+        assert key1 == key2
+        assert key1 != key3
+
+    def test_table_controls_script_targets_direct_rows_only(self):
+        script = html_table_controls_script(table_id="t", view_id="v", status_id="s", sort_id="o", show_id="l")
+        assert "tb.children" in script
+
+    def test_unique_dom_id_changes_per_render(self):
+        first = unique_dom_id("map-log", "g", 5)
+        second = unique_dom_id("map-log", "g", 5)
+        assert first != second
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +607,7 @@ class TestRunResultProgressiveDisclosure:
         )
         r = RunResult(values={"result": 42}, status=RunStatus.COMPLETED, log=log)
         html = r._repr_html_()
-        assert "Execution Log" in html
+        assert "Run Log" in html
 
     def test_error_shown(self):
         r = RunResult(values={}, status=RunStatus.FAILED, error=ValueError("boom"))
@@ -555,6 +664,86 @@ class TestMapResultProgressiveDisclosure:
         html = mr._repr_html_()
         assert "ValueError" in html
 
+    def test_per_item_breakdown_has_status_filter(self):
+        mr = MapResult(
+            results=(
+                self._make_result(),
+                self._make_result(RunStatus.FAILED, ValueError("boom")),
+            ),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        html = mr._repr_html_()
+        assert "Filter:" in html
+        assert "Completed (1)" in html
+        assert "Failed (1)" in html
+        assert "Page size:" in html
+        assert "Prev" in html
+        assert "Next" in html
+        assert 'data-hg-map-item="1"' in html
+        assert 'data-status="completed"' in html
+        assert 'data-status="failed"' in html
+
+    def test_per_item_breakdown_paginates_without_truncating_items(self):
+        mr = MapResult(
+            results=tuple(self._make_result() for _ in range(100)),
+            run_id="r",
+            total_duration_ms=10.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="test",
+        )
+        html = mr._repr_html_()
+        assert "All (100)" in html
+        assert "Page size:" in html
+        assert "Prev" in html
+        assert "Next" in html
+        assert "Item 99:" in html
+        assert "more item" not in html
+
+
+class TestMapLogProgressiveDisclosure:
+    def test_map_log_html_has_item_drilldown(self):
+        log_a = RunLog(
+            graph_name="test",
+            run_id="r-a",
+            total_duration_ms=10.0,
+            steps=(NodeRecord(node_name="a", superstep=0, duration_ms=10.0, status="completed", span_id="s1"),),
+        )
+        log_b = RunLog(
+            graph_name="test",
+            run_id="r-b",
+            total_duration_ms=12.0,
+            steps=(NodeRecord(node_name="a", superstep=0, duration_ms=12.0, status="completed", span_id="s2"),),
+        )
+        mlog = MapLog(graph_name="test", total_duration_ms=22.0, items=(log_a, log_b))
+        html = mlog._repr_html_()
+        assert "<table" in html
+        assert "<details" in html
+        assert "Item Traces" in html
+        assert "Filter:" in html
+        assert "Page size:" in html
+
+    def test_map_log_html_has_show_more_control(self):
+        logs = tuple(
+            RunLog(
+                graph_name="test",
+                run_id=f"r-{i}",
+                total_duration_ms=10.0 + i,
+                steps=(NodeRecord(node_name="a", superstep=0, duration_ms=10.0, status="completed", span_id=f"s{i}"),),
+            )
+            for i in range(25)
+        )
+        mlog = MapLog(graph_name="test", total_duration_ms=100.0, items=logs)
+        html = mlog._repr_html_()
+        assert "Page size:" in html
+        assert "Prev" in html
+        assert "Next" in html
+        assert "All (25)" in html
+
 
 # ---------------------------------------------------------------------------
 # SqliteCheckpointer repr
@@ -578,3 +767,4 @@ class TestSqliteCheckpointerRepr:
         assert "SqliteCheckpointer" in html
         assert "Runs" in html
         assert ".runs()" in html
+        assert "data-hg-state-key" in html

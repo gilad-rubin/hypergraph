@@ -67,7 +67,8 @@ class TestRouteNodeConstruction:
         assert decide.targets == ["a", "b"]
         assert decide.descriptions == {}
         assert decide.inputs == ("x",)
-        assert decide.outputs == ()  # Gates produce no data
+        assert decide.outputs == ("_decide",)
+        assert decide.data_outputs == ("_decide",)
         assert decide.name == "decide"
 
     def test_construction_with_descriptions(self):
@@ -251,14 +252,14 @@ class TestRouteNodeConstruction:
 
         assert decide.is_generator is False
 
-    def test_outputs_always_empty(self):
-        """RouteNode.outputs should always be empty tuple."""
+    def test_outputs_include_internal_gate_value(self):
+        """RouteNode outputs include the internal gate value."""
 
         @route(targets=["a"])
         def decide(x):
             return "a"
 
-        assert decide.outputs == ()
+        assert decide.outputs == ("_decide",)
 
     def test_definition_hash_exists(self):
         """RouteNode should have a definition_hash."""

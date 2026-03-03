@@ -26,9 +26,13 @@ from hypergraph.events import (
 )
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.exceptions import (
+    GraphChangedError,
     IncompatibleRunnerError,
     InfiniteLoopError,
+    InputOverrideRequiresForkError,
     MissingInputError,
+    WorkflowAlreadyCompletedError,
+    WorkflowForkError,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
 from hypergraph.nodes import (
@@ -93,6 +97,10 @@ __all__ = [
     "MissingInputError",
     "InfiniteLoopError",
     "IncompatibleRunnerError",
+    "WorkflowAlreadyCompletedError",
+    "GraphChangedError",
+    "WorkflowForkError",
+    "InputOverrideRequiresForkError",
     # RunLog
     "RunLog",
     "MapLog",

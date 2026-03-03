@@ -254,6 +254,7 @@ class RunResult:
             status_badge,
             theme_wrap,
             values_html,
+            widget_state_key,
         )
 
         kvs = [html_kv("Status", status_badge(self.status.value))]
@@ -268,10 +269,17 @@ class RunResult:
         if self.error:
             body += error_html(self.error)
         if self.values:
-            body += html_detail(f"Values ({plural(len(self.values), 'key')})", values_html(self.values))
+            body += html_detail(
+                f"Values ({plural(len(self.values), 'key')})",
+                values_html(self.values),
+                state_key="values",
+            )
         if self.log:
-            body += html_detail("Execution Log", self.log._repr_html_())
-        return theme_wrap(html_panel(f"RunResult: {self.run_id}", body))
+            body += html_detail("Run Log", self.log._repr_html_(), state_key="run-log")
+        return theme_wrap(
+            html_panel(f"RunResult: {self.run_id}", body),
+            state_key=widget_state_key("run-result", self.workflow_id or "", self.run_id),
+        )
 
 
 @dataclass(frozen=True)
@@ -453,7 +461,16 @@ class MapResult:
         pretty_printer.text(repr(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import ERROR_COLOR, duration_html, html_detail, html_kv, html_panel, status_badge, theme_wrap
+        from hypergraph._repr import (
+            ERROR_COLOR,
+            duration_html,
+            html_detail,
+            html_kv,
+            html_panel,
+            status_badge,
+            theme_wrap,
+            widget_state_key,
+        )
 
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
@@ -474,33 +491,89 @@ class MapResult:
         body = " &nbsp;|&nbsp; ".join(kvs)
 
         # Nested drill-down: each item is expandable to its full RunResult
-        max_items = 30
-        items_html = _map_items_drilldown(self.results, max_items)
-        body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", items_html)
+        items_html = _map_items_drilldown(
+            self.results,
+            scope_key=widget_state_key("map-result-items", self.run_id or "", self.graph_name, n),
+        )
+        body += html_detail(f"Per-item breakdown ({plural(n, 'item')})", items_html, state_key="per-item-breakdown")
 
-        return theme_wrap(html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body))
+        return theme_wrap(
+            html_panel(f"MapResult: {self.graph_name} ({plural(n, 'item')})", body),
+            state_key=widget_state_key("map-result", self.run_id or "", self.graph_name, n),
+        )
 
 
-def _map_items_drilldown(results: tuple[RunResult, ...], max_items: int = 30) -> str:
+def _map_items_drilldown(
+    results: tuple[RunResult, ...],
+    *,
+    scope_key: str = "map-items",
+) -> str:
     """Render nested drill-down for MapResult items.
 
     Each item is a collapsible <details> showing a one-line summary.
     Expanding reveals the full RunResult HTML with values, execution log,
     and nested graph traces — clickable all the way down.
     """
-    from hypergraph._repr import ERROR_COLOR, MUTED_COLOR, duration_html, html_detail, status_badge
+    from hypergraph._repr import (
+        ERROR_COLOR,
+        duration_html,
+        html_detail,
+        html_filter_paginate_controls,
+        html_filter_paginate_script,
+        status_badge,
+        unique_dom_id,
+    )
+
+    total = len(results)
+    status_counts: dict[str, int] = {"all": total}
+    for status in RunStatus:
+        count = sum(1 for r in results if r.status == status)
+        if count:
+            status_counts[status.value] = count
+
+    # Intelligent default: moderate batches open at 50, larger ones at 100 to
+    # reduce unnecessary paging while keeping the view readable.
+    default_page_size = 100 if total > 200 else 50
+    dom_scope = unique_dom_id("map-items", scope_key, total)
+    filter_id = f"{dom_scope}-filter"
+    page_size_id = f"{dom_scope}-page-size"
+    prev_id = f"{dom_scope}-prev"
+    next_id = f"{dom_scope}-next"
+    page_info_id = f"{dom_scope}-page-info"
+    list_id = f"{dom_scope}-items"
 
     parts: list[str] = []
-    for i, r in enumerate(results[:max_items]):
+    for i, r in enumerate(results):
         dur = duration_html(r.log.total_duration_ms) if r.log else "—"
         err_label = f' — <span style="color:{ERROR_COLOR}">{type(r.error).__name__}</span>' if r.error else ""
         summary = f"Item {i}: {status_badge(r.status.value)} {dur}{err_label}"
-        # Render the full RunResult HTML inside each item's expandable section
-        parts.append(html_detail(summary, r._repr_html_()))
-    if len(results) > max_items:
-        remaining = len(results) - max_items
-        parts.append(f'<div style="color:{MUTED_COLOR}; font-size:0.85em; margin-top:4px">… and {plural(remaining, "more item")}</div>')
-    return "".join(parts)
+        # Render the full RunResult HTML inside each item's expandable section.
+        item_html = html_detail(summary, r._repr_html_(), state_key=f"item-{i}")
+        parts.append(f'<div data-hg-map-item="1" data-status="{r.status.value}" style="display:block">{item_html}</div>')
+
+    controls = html_filter_paginate_controls(
+        filter_id=filter_id,
+        page_size_id=page_size_id,
+        prev_id=prev_id,
+        next_id=next_id,
+        page_info_id=page_info_id,
+        counts=status_counts,
+        page_size_options=[20, 50, 100],
+        default_page_size=default_page_size,
+    )
+    items_block = f'<div id="{list_id}">{"".join(parts)}</div>'
+    script = html_filter_paginate_script(
+        list_id=list_id,
+        item_selector='[data-hg-map-item="1"]',
+        status_attr="data-status",
+        filter_id=filter_id,
+        page_size_id=page_size_id,
+        prev_id=prev_id,
+        next_id=next_id,
+        page_info_id=page_info_id,
+        item_display="block",
+    )
+    return controls + items_block + script
 
 
 Sequence.register(MapResult)
@@ -939,7 +1012,15 @@ class RunLog:
         pretty_printer.text(str(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import _code, duration_html, html_panel, html_table, status_badge, theme_wrap
+        from hypergraph._repr import (
+            _code,
+            duration_html,
+            html_panel,
+            html_table,
+            status_badge,
+            theme_wrap,
+            widget_state_key,
+        )
 
         headers = ["Step", "Node", "Status", "Duration"]
         has_decisions = any(s.decision is not None for s in self.steps)
@@ -964,7 +1045,11 @@ class RunLog:
             f"{plural(len({s.node_name for s in self.steps}), 'node')} &nbsp; "
             f"{plural(n_errors, 'error')}"
         )
-        return theme_wrap(html_panel(title, html_table(headers, rows)))
+        body = html_table(headers, rows)
+        return theme_wrap(
+            html_panel(title, body),
+            state_key=widget_state_key("run-log", self.run_id, self.graph_name),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1076,21 +1161,109 @@ class MapLog:
         pretty_printer.text(str(self))
 
     def _repr_html_(self) -> str:
-        from hypergraph._repr import duration_html, html_panel, html_table, status_badge, theme_wrap
+        from hypergraph._repr import (
+            BORDER_COLOR,
+            MUTED_COLOR,
+            SURFACE_COLOR,
+            duration_html,
+            html_detail,
+            html_filter_paginate_controls,
+            html_filter_paginate_script,
+            html_panel,
+            html_table_with_row_attrs,
+            status_badge,
+            theme_wrap,
+            unique_dom_id,
+            widget_state_key,
+        )
 
         headers = ["Item", "Duration", "Status", "Nodes"]
         rows = []
-        for i, log in enumerate(self.items[:_MAX_MAP_LOG_ROWS]):
+        row_attrs = []
+        trace_items = []
+        n_items = len(self.items)
+        status_counts: dict[str, int] = {"all": n_items}
+        n_completed = 0
+        for i, log in enumerate(self.items):
             status = "failed" if log.errors else "completed"
+            if status == "completed":
+                n_completed += 1
+            status_counts[status] = status_counts.get(status, 0) + 1
             n_nodes = len({s.node_name for s in log.steps})
             rows.append([str(i), duration_html(log.total_duration_ms), status_badge(status), str(n_nodes)])
-        n_succeeded = sum(1 for log in self.items if not log.errors)
+            row_attrs.append({"data-hg-map-log-item": "1", "data-status": status})
+
+            summary = (
+                f"Item {i}: {status_badge(status)} "
+                f"{duration_html(log.total_duration_ms)} "
+                f'<span style="color:{MUTED_COLOR}">({plural(n_nodes, "node")})</span>'
+            )
+            trace_detail = html_detail(summary, log._repr_html_(), state_key=f"map-log-item-{i}")
+            trace_items.append(
+                '<div data-hg-map-log-item="1" '
+                f'data-status="{status}" '
+                'style="display:block; margin:0 0 8px 0; padding:6px 8px; '
+                f"border:1px solid {BORDER_COLOR}; border-radius:10px; "
+                f'background:{SURFACE_COLOR}">'
+                f"{trace_detail}</div>"
+            )
+
         avg_part = ""
+        n_succeeded = n_completed
         if n_succeeded > 0:
             succeeded_items = [log for log in self.items if not log.errors]
             avg = sum(log.total_duration_ms for log in succeeded_items) / n_succeeded
             avg_part = f" &nbsp; avg {duration_html(avg)}/item"
-        remaining = len(self.items) - len(rows)
-        footer = f" (+{remaining} more)" if remaining > 0 else ""
-        title = f"MapLog: {self.graph_name} ({plural(len(self.items), 'item')}){footer}{avg_part}"
-        return theme_wrap(html_panel(title, html_table(headers, rows)))
+
+        title = f"MapLog: {self.graph_name} ({plural(n_items, 'item')}){avg_part}"
+        dom_scope = unique_dom_id("map-log-controls", self.graph_name, n_items, self.total_duration_ms)
+        table_id = f"{dom_scope}-table"
+        traces_id = f"{dom_scope}-traces"
+        filter_id = f"{dom_scope}-filter"
+        page_size_id = f"{dom_scope}-page-size"
+        prev_id = f"{dom_scope}-prev"
+        next_id = f"{dom_scope}-next"
+        page_info_id = f"{dom_scope}-page-info"
+        default_page_size = 100 if n_items > 200 else 50
+
+        controls = html_filter_paginate_controls(
+            filter_id=filter_id,
+            page_size_id=page_size_id,
+            prev_id=prev_id,
+            next_id=next_id,
+            page_info_id=page_info_id,
+            counts=status_counts,
+            page_size_options=[25, 50, 100],
+            default_page_size=default_page_size,
+        )
+        table_html = html_table_with_row_attrs(headers, rows, table_id=table_id, row_attrs=row_attrs)
+        traces_block = f'<div id="{traces_id}">{"".join(trace_items)}</div>'
+        traces = html_detail("Item Traces", traces_block, state_key="map-log-item-traces")
+        table_script = html_filter_paginate_script(
+            list_id=table_id,
+            item_selector='tbody tr[data-hg-map-log-item="1"]',
+            status_attr="data-status",
+            filter_id=filter_id,
+            page_size_id=page_size_id,
+            prev_id=prev_id,
+            next_id=next_id,
+            page_info_id=page_info_id,
+            item_display="table-row",
+        )
+        traces_script = html_filter_paginate_script(
+            list_id=traces_id,
+            item_selector='[data-hg-map-log-item="1"]',
+            status_attr="data-status",
+            filter_id=filter_id,
+            page_size_id=page_size_id,
+            prev_id=prev_id,
+            next_id=next_id,
+            page_info_id=page_info_id,
+            item_display="block",
+        )
+        body = controls + table_html + traces + table_script + traces_script
+
+        return theme_wrap(
+            html_panel(title, body),
+            state_key=widget_state_key("map-log", self.graph_name, len(self.items)),
+        )

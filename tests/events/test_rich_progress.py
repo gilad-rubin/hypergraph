@@ -448,6 +448,24 @@ class TestLifecycle:
         mock.add_task.assert_not_called()
 
 
+class TestNotebookRefresh:
+    def test_notebook_uses_manual_refresh(self):
+        proc = RichProgressProcessor(force_mode="notebook")
+        live = getattr(proc._progress, "live", None)
+        assert proc._manual_notebook_refresh is True
+        assert bool(getattr(live, "auto_refresh", False)) is False
+
+    def test_refresh_skips_when_manual_refresh_disabled(self):
+        proc = RichProgressProcessor(force_mode="notebook")
+        mock_progress = MagicMock()
+        proc._progress = mock_progress
+        proc._manual_notebook_refresh = False
+
+        proc._refresh()
+
+        mock_progress.refresh.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Import guard
 # ---------------------------------------------------------------------------

@@ -8,9 +8,9 @@ Three tools for running and understanding graph execution, from quick in-process
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
 | **CLI** | "Run this graph" / "Show me the failing run" | `pip install hypergraph[cli]` | Terminal, any process |
 
-## RunLog — Always-On Execution Trace
+## RunLog — Always-On Run Trace
 
-Every `runner.run()` and `runner.map()` call returns a `RunResult` with a `.log` attribute — an always-on execution trace that requires zero configuration.
+Every `runner.run()` and `runner.map()` call returns a `RunResult` with a `.log` attribute — an always-on run trace that requires zero configuration.
 
 ### Quick Start
 
@@ -192,9 +192,24 @@ cp.search("generate")                 # Match node names and errors
 
 # Time travel: state at a specific superstep
 cp.state("my-run-1", superstep=1)     # {"doubled": 10}
+
+# Git-like fork visualization (lanes + expandable step traces)
+cp.lineage("my-run-1")
 ```
 
 The sync read methods (`runs()`, `run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
+
+For branching semantics, use explicit checkpoints:
+`checkpoint = cp.checkpoint("workflow-id", superstep=...)` and pass it to
+`runner.run(..., checkpoint=checkpoint, workflow_id="new-id")`.
+
+CLI equivalents:
+
+```bash
+hypergraph runs checkpoint my-run-1 --deep
+hypergraph runs lineage my-run-1 --deep
+hypergraph runs lineage my-run-1 --json --output /tmp/my-run-1.lineage.json
+```
 
 ### Durability Modes
 
@@ -227,15 +242,18 @@ cp = SqliteCheckpointer(
 
 ### Without workflow_id
 
-If you don't pass `workflow_id`, no checkpointing occurs — the runner behaves exactly as before. Checkpointing is opt-in per run.
+For `runner.run()`, if a checkpointer is configured and you omit `workflow_id`, hypergraph auto-generates one and persists the run. This reduces boilerplate while keeping runs addressable.
 
 ```python
-# No checkpointing — workflow_id omitted
+# Auto-generated workflow_id (when checkpointer exists)
 result = await runner.run(graph, {"x": 5})
+print(result.workflow_id)  # e.g. run-20260302-a7b3c2
 
-# With checkpointing
+# Explicit workflow_id
 result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
 ```
+
+`runner.map()` still requires an explicit `workflow_id` to persist parent/child batch runs.
 
 ### Hierarchical Checkpointing
 
@@ -448,7 +466,7 @@ hypergraph graph ls
 
 The following commands inspect persisted runs (requires `--db` or a `db` setting in pyproject.toml).
 
-### runs show — Execution Trace
+### runs show — Run Trace
 
 ```bash
 hypergraph runs show my-run-1
@@ -591,7 +609,7 @@ hypergraph runs stats my-run-1
 
 # Stats: my-run-1 | completed
 #
-#   Node      Type          Runs  Total   Avg     Max     Errors  Cached
+#   Node      Type          Steps Total   Avg     Max     Errors  Cached
 #   ────────  ────────────  ────  ──────  ──────  ──────  ──────  ──────
 #   generate  FunctionNode  5     120ms   24ms    45ms    1       0
 #   embed     FunctionNode  5     15ms    3ms     5ms     0       3

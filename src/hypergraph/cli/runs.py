@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Annotated
 
 import typer
@@ -28,6 +29,74 @@ DbOption = Annotated[str | None, typer.Option("--db", help="Database path")]
 JsonFlag = Annotated[bool, typer.Option("--json", help="Output as JSON")]
 OutputOption = Annotated[str | None, typer.Option("--output", help="Write JSON to file")]
 LimitOption = Annotated[int, typer.Option("--limit", help="Max results")]
+
+
+def _sort_runs(run_list: list, sort: str) -> list:
+    """Sort runs with stable, user-facing order modes."""
+    mode = sort.lower()
+    if mode == "newest":
+        return sorted(run_list, key=lambda r: (r.created_at is not None, r.created_at), reverse=True)
+    if mode == "oldest":
+        return sorted(run_list, key=lambda r: (r.created_at is not None, r.created_at))
+    if mode == "duration":
+        return sorted(run_list, key=lambda r: (r.duration_ms or 0.0, r.created_at), reverse=True)
+    if mode == "errors":
+        return sorted(run_list, key=lambda r: (r.error_count, r.created_at), reverse=True)
+    if mode == "id":
+        return sorted(run_list, key=lambda r: r.id)
+    raise ValueError(f"Unknown sort mode: {sort!r}")
+
+
+def _print_run_traces(run_list: list) -> None:
+    """Print grouped run traces (parent + children summary) below ls table."""
+
+    def _group_key(run) -> str:
+        if run.parent_run_id:
+            return run.parent_run_id
+        if "/" in run.id:
+            return run.id.split("/", 1)[0]
+        return run.id
+
+    grouped = defaultdict(list)
+    by_id = {run.id: run for run in run_list}
+    for run in run_list:
+        grouped[_group_key(run)].append(run)
+
+    if not grouped:
+        return
+
+    print("\nRun Traces\n")
+    for group_id in sorted(grouped.keys()):
+        members = grouped[group_id]
+        parent = by_id.get(group_id)
+        children = sorted(
+            [r for r in members if r.id != group_id],
+            key=lambda r: (r.created_at is not None, r.created_at),
+            reverse=True,
+        )
+        if parent is None:
+            parent = max(
+                members,
+                key=lambda r: (
+                    r.status.value == "active",
+                    r.status.value == "failed",
+                    r.created_at is not None,
+                    r.created_at,
+                ),
+            )
+
+        child_label = f" | {len(children)} child runs" if children else ""
+        print(
+            f"  {group_id} | {format_status(parent.status.value)} | {format_duration(parent.duration_ms)}"
+            f" | {parent.node_count} steps | {parent.error_count} errors{child_label}"
+        )
+
+        if children:
+            child_rows = [
+                [c.id, format_status(c.status.value), format_duration(c.duration_ms), str(c.node_count), str(c.error_count)] for c in children
+            ]
+            print_lines(print_table(["Child", "Status", "Duration", "Steps", "Errors"], child_rows, indent=4))
+        print()
 
 
 @app.callback(invoke_without_command=True)
@@ -100,12 +169,20 @@ def _print_run_table(run_list, cp) -> None:
     print_lines(lines)
 
 
+def _dump_cta(command: str, filename: str) -> str:
+    """Standard CTA for dumping structured output to a file."""
+    return f"{command} --json --output {filename}"
+
+
 @app.command("ls")
 def runs_ls(
     db: DbOption = None,
     status: Annotated[list[str] | None, typer.Option("--status", help="Filter by status (repeatable)")] = None,
     graph: Annotated[str | None, typer.Option("--graph", help="Filter by graph name")] = None,
     since: Annotated[str | None, typer.Option("--since", help="Filter by time (e.g. 1h, 7d, 2w)")] = None,
+    view: Annotated[str, typer.Option("--view", help="Hierarchy view: parents or all")] = "parents",
+    sort: Annotated[str, typer.Option("--sort", help="Sort: newest, oldest, duration, errors, id")] = "newest",
+    traces: Annotated[bool, typer.Option("--traces", help="Show grouped run traces below the table")] = False,
     parent: Annotated[str | None, typer.Option("--parent", help="Show children of this run")] = None,
     show_all: Annotated[bool, typer.Option("--all", help="Show all runs (including children)")] = False,
     limit: LimitOption = DEFAULT_LIMIT,
@@ -116,17 +193,27 @@ def runs_ls(
     cp = open_checkpointer(db)
     from hypergraph.checkpointers import WorkflowStatus
 
+    view = view.lower()
+    if view not in {"parents", "all"}:
+        print(f"Error: Unknown view '{view}'. Use: parents, all")
+        raise typer.Exit(1)
+
+    sort = sort.lower()
+    if sort not in {"newest", "oldest", "duration", "errors", "id"}:
+        print(f"Error: Unknown sort '{sort}'. Use: newest, oldest, duration, errors, id")
+        raise typer.Exit(1)
+
     filter_kwargs: dict = {"limit": limit}
     if graph:
         filter_kwargs["graph_name"] = graph
     if since:
         filter_kwargs["since"] = parse_since(since)
 
-    # Hierarchy filtering: --parent takes precedence, --all shows everything,
+    # Hierarchy filtering: --parent takes precedence, --all/--view all shows everything,
     # default shows top-level only
     if parent:
         filter_kwargs["parent_run_id"] = parent
-    elif not show_all:
+    elif not show_all and view == "parents":
         filter_kwargs["parent_run_id"] = None
 
     if status:
@@ -139,9 +226,12 @@ def runs_ls(
                 print(f"Error: Unknown status '{s}'. Use: active, completed, failed")
                 raise typer.Exit(1) from e
             run_list.extend(cp.runs(status=ws, **filter_kwargs))
-        run_list = sorted(run_list, key=lambda r: r.created_at or "", reverse=True)[:limit]
+        # Deduplicate by ID before sorting/limiting.
+        run_list = list({r.id: r for r in run_list}.values())
     else:
         run_list = cp.runs(**filter_kwargs)
+
+    run_list = _sort_runs(run_list, sort)[:limit]
 
     if as_json:
         print_json("runs.ls", [r.to_dict() for r in run_list], output)
@@ -153,13 +243,15 @@ def runs_ls(
 
     print(f"\nRuns ({len(run_list)} total)\n")
 
-    headers = ["ID", "Graph", "Status", "Duration", "Created"]
+    headers = ["ID", "Graph", "Status", "Duration", "Steps", "Errors", "Created"]
     rows = [
         [
             r.id,
             r.graph_name or "—",
             format_status(r.status.value),
             format_duration(r.duration_ms),
+            str(r.node_count),
+            str(r.error_count),
             format_datetime(r.created_at),
         ]
         for r in run_list
@@ -167,12 +259,17 @@ def runs_ls(
     lines = print_table(headers, rows)
     print_lines(lines)
 
+    if traces:
+        _print_run_traces(run_list)
+
     ctas = [
         "hypergraph runs show <id>           to inspect a run",
         "hypergraph runs ls --graph <name>   to narrow results",
     ]
-    if not show_all and not parent:
+    if not show_all and not parent and view == "parents":
         ctas.append("hypergraph runs ls --all            to include child runs")
+    if not traces:
+        ctas.append("hypergraph runs ls --traces         for grouped parent/child breakdown")
     print_ctas(ctas)
 
 
@@ -187,7 +284,7 @@ def runs_show(
     as_json: JsonFlag = False,
     output: OutputOption = None,
 ):
-    """Show execution trace for a run."""
+    """Show run trace for a run."""
     cp = open_checkpointer(db)
     r = cp.get_run(run_id)
     if r is None:
@@ -211,6 +308,7 @@ def runs_show(
             [
                 f"hypergraph runs show {run_id} --step {step} --values  to see output values",
                 f"hypergraph runs values {run_id}                       for accumulated state",
+                _dump_cta(f"hypergraph runs show {run_id}", f"/tmp/{run_id}.show.step{step}.json"),
             ]
         )
         return
@@ -234,6 +332,14 @@ def runs_show(
     status_str = format_status(r.status.value)
     graph_label = f" ({r.graph_name})" if r.graph_name else ""
     print(f"\nRun: {r.id}{graph_label} | {status_str} | {len(step_list)} steps | {format_duration(total_ms)}\n")
+    if r.retry_of:
+        retry_num = f"#{r.retry_index}" if r.retry_index is not None else "?"
+        print(f"  Lineage: retry {retry_num} of {r.retry_of}")
+    elif r.forked_from:
+        at = f"@{r.fork_superstep}" if r.fork_superstep is not None else ""
+        print(f"  Lineage: forked from {r.forked_from}{at}")
+    if r.retry_of or r.forked_from:
+        print()
 
     # Check for child runs (batch parent or nested graph parent)
     children = cp.runs(parent_run_id=run_id)
@@ -281,6 +387,7 @@ def runs_show(
     ctas = [
         f"hypergraph runs values {run_id}            for output values",
         f"hypergraph runs stats {run_id}             for performance breakdown",
+        _dump_cta(f"hypergraph runs show {run_id}", f"/tmp/{run_id}.show.json"),
     ]
     if children:
         ctas.insert(0, f"hypergraph runs ls --parent {run_id}   to list child runs")
@@ -397,6 +504,7 @@ def runs_values(
             f"hypergraph runs values {run_id} --key <name>  for a single value",
             f"hypergraph runs values {run_id} --full        to show values inline",
             f"hypergraph runs values {run_id} --json        for full JSON",
+            _dump_cta(f"hypergraph runs values {run_id}", f"/tmp/{run_id}.values.json"),
         ]
     )
 
@@ -452,6 +560,7 @@ def runs_steps(
             f"hypergraph runs steps {run_id} --values --full  for all values",
             f"hypergraph runs steps {run_id} --node <name>    for a specific node",
             f"hypergraph runs steps {run_id} --json           for JSON export",
+            _dump_cta(f"hypergraph runs steps {run_id}", f"/tmp/{run_id}.steps.json"),
         ]
     )
 
@@ -497,6 +606,7 @@ def runs_search(
         [
             "hypergraph runs show <run-id>           to inspect a matching run",
             f'hypergraph runs search "{query}" --field error  to search errors only',
+            _dump_cta(f'hypergraph runs search "{query}"', "/tmp/runs.search.json"),
         ]
     )
 
@@ -528,12 +638,12 @@ def runs_stats(
     status_str = format_status(r.status.value)
     print(f"\nStats: {run_id} | {status_str}\n")
 
-    headers = ["Node", "Type", "Runs", "Total", "Avg", "Max", "Errors", "Cached"]
+    headers = ["Node", "Type", "Steps", "Total", "Avg", "Max", "Errors", "Cached"]
     rows = [
         [
             name,
             stats.get("node_type") or "—",
-            str(stats["executions"]),
+            str(stats["steps"]),
             format_duration(stats["total_ms"]),
             format_duration(stats["avg_ms"]),
             format_duration(stats["max_ms"]),
@@ -547,7 +657,136 @@ def runs_stats(
 
     print_ctas(
         [
-            f"hypergraph runs show {run_id}     for full execution trace",
+            f"hypergraph runs show {run_id}     for full run trace",
             f"hypergraph runs values {run_id}   for output values",
+            _dump_cta(f"hypergraph runs stats {run_id}", f"/tmp/{run_id}.stats.json"),
+        ]
+    )
+
+
+@app.command("checkpoint")
+def runs_checkpoint(
+    run_id: Annotated[str, typer.Argument(help="Run ID")],
+    db: DbOption = None,
+    superstep: Annotated[int | None, typer.Option("--superstep", help="Checkpoint through this superstep")] = None,
+    deep: Annotated[bool, typer.Option("--deep", help="Include full values + step list")] = False,
+    as_json: JsonFlag = False,
+    output: OutputOption = None,
+):
+    """Inspect a checkpoint snapshot for a run."""
+    cp = open_checkpointer(db)
+    run = cp.get_run(run_id)
+    if run is None:
+        print(f"Error: Run '{run_id}' not found.")
+        raise typer.Exit(1)
+
+    checkpoint = cp.checkpoint(run_id, superstep=superstep)
+    values = checkpoint.values
+    steps = checkpoint.steps
+
+    if as_json:
+        data = {
+            "source_run_id": checkpoint.source_run_id,
+            "source_superstep": checkpoint.source_superstep,
+            "value_count": len(values),
+            "step_count": len(steps),
+            "values": values if deep else None,
+            "steps": [s.to_dict() for s in steps] if deep else None,
+        }
+        print_json("runs.checkpoint", data, output)
+        return
+
+    source = checkpoint.source_run_id or run_id
+    source_at = f"{source}@{checkpoint.source_superstep}" if checkpoint.source_superstep is not None else source
+    print(f"\nCheckpoint: {source_at}\n")
+    print(f"  Values: {len(values)}")
+    print(f"  Steps: {len(steps)}")
+
+    if deep:
+        print("\nValues:")
+        for key in sorted(values.keys()):
+            print(f"  - {key}")
+        print("\nSteps:")
+        for s in steps:
+            status = "cached" if s.cached else s.status.value
+            print(f"  - [{s.index}] {s.node_name} ({status}, superstep={s.superstep})")
+
+    print_ctas(
+        [
+            f"hypergraph runs values {run_id} --superstep {superstep if superstep is not None else 0}   read state at a cut",
+            f"hypergraph runs steps {run_id} --all                                         inspect full step log",
+            f"hypergraph runs checkpoint {run_id} --deep                                   expand snapshot details",
+            _dump_cta(f"hypergraph runs checkpoint {run_id}", f"/tmp/{run_id}.checkpoint.json"),
+        ]
+    )
+
+
+@app.command("lineage")
+def runs_lineage(
+    run_id: Annotated[str, typer.Argument(help="Workflow ID to inspect lineage for")],
+    db: DbOption = None,
+    deep: Annotated[bool, typer.Option("--deep", help="Include step-level drilldown per run")] = False,
+    max_runs: Annotated[int, typer.Option("--max-runs", help="Maximum lineage runs to traverse")] = 200,
+    as_json: JsonFlag = False,
+    output: OutputOption = None,
+):
+    """Show git-like fork lineage for a workflow."""
+    cp = open_checkpointer(db)
+    try:
+        lineage = cp.lineage(run_id, include_steps=deep, max_runs=max_runs)
+    except ValueError as e:
+        print(f"Error: {e}")
+        raise typer.Exit(1) from e
+
+    if as_json:
+        rows = []
+        for row in lineage:
+            item = {
+                "lane": row.lane,
+                "depth": row.depth,
+                "is_selected": row.is_selected,
+                "run": row.run.to_dict(),
+            }
+            if deep and row.run.id in lineage.steps_by_run:
+                item["steps"] = [s.to_dict() for s in lineage.steps_by_run[row.run.id]]
+            rows.append(item)
+        print_json(
+            "runs.lineage",
+            {
+                "selected_run_id": lineage.selected_run_id,
+                "root_run_id": lineage.root_run_id,
+                "rows": rows,
+            },
+            output,
+        )
+        return
+
+    print(f"\nLineage: selected={lineage.selected_run_id} root={lineage.root_run_id}\n")
+    for row in lineage:
+        run = row.run
+        marker = " <selected>" if row.is_selected else ""
+        kind = "retry" if run.retry_of else ("fork" if run.forked_from else "root")
+        origin = ""
+        if run.forked_from:
+            at = f"@{run.fork_superstep}" if run.fork_superstep is not None else ""
+            origin = f" <- {run.forked_from}{at}"
+        print(f"{row.lane}{run.id} [{run.status.value}] ({kind}){origin}{marker}")
+        if deep and run.id in lineage.steps_by_run:
+            steps = lineage.steps_by_run[run.id]
+            cached = sum(1 for s in steps if s.cached)
+            failed = sum(1 for s in steps if s.status.value == "failed")
+            print(f"   steps={len(steps)} cached={cached} failed={failed}")
+            for s in steps[:5]:
+                status = "cached" if s.cached else s.status.value
+                print(f"     - [{s.index}] {s.node_name} ({status}, superstep={s.superstep})")
+            if len(steps) > 5:
+                print(f"     ... and {len(steps) - 5} more (use: hypergraph runs steps {run.id} --all)")
+
+    print_ctas(
+        [
+            f"hypergraph runs lineage {run_id} --deep                                    include per-run step drilldown",
+            f"hypergraph runs show {run_id}                                                inspect selected workflow trace",
+            "hypergraph runs ls --all                                                     include child/fork runs",
+            _dump_cta(f"hypergraph runs lineage {run_id}", f"/tmp/{run_id}.lineage.json"),
         ]
     )

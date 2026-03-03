@@ -316,9 +316,23 @@ hypergraph runs show batch-001/1
 
 Without `workflow_id`, `runner.map()` still works but results exist only in-process.
 
-### Resuming Runs
+### Run Lineage: Resume vs Fork
 
-When you call `run()` with a `workflow_id` and a checkpointer, the runner loads prior state from the checkpoint and merges it into the current inputs. Runtime values always win over checkpoint values:
+`run()` now uses strict, git-like lineage semantics when a checkpointer is configured:
+
+- Same `workflow_id` means "same lineage"
+- Resume is strict: no new runtime values
+- Structural graph changes require fork
+- Completed workflows are terminal (fork to branch)
+
+When `workflow_id` is omitted and a checkpointer exists, `run()` auto-generates one and returns it in `result.workflow_id`.
+
+```python
+result = await runner.run(graph, {"x": 5})  # auto-id when checkpointer is set
+print(result.workflow_id)  # e.g. "run-20260302-a7b3c2"
+```
+
+#### Resume (same workflow_id, no new values)
 
 ```python
 from hypergraph import Graph, node, AsyncRunner
@@ -335,20 +349,40 @@ def triple(doubled: int) -> int:
 cp = SqliteCheckpointer("./runs.db")
 runner = AsyncRunner(checkpointer=cp)
 
-# Step 1: produce 'doubled'
-await runner.run(Graph([double]), {"x": 5}, workflow_id="my-workflow")
+# First run
+await runner.run(Graph([double, triple]), {"x": 5}, workflow_id="job-1")
 
-# Step 2: 'doubled' comes from checkpoint — no need to provide it
-result = await runner.run(Graph([triple]), workflow_id="my-workflow")
-assert result["tripled"] == 30
+# Resume attempt on completed workflow raises WorkflowAlreadyCompletedError
+# await runner.run(Graph([double, triple]), workflow_id="job-1")
 ```
 
-This is useful for multi-step workflows where each step builds on prior results, and for resuming after failures without re-computing everything.
+Resume is intended for ACTIVE/FAILED workflows (e.g., retry after failure), not for appending new work to completed lineages.
 
-**How merge works:**
-- Only graph input values (required, optional, seeds) are loaded from the checkpoint
-- Intermediate edge-produced values are NOT loaded — they're re-computed during execution
-- Runtime values always override checkpoint values
+#### Fork (new workflow_id, optional overrides)
+
+Fork by workflow ID when you want to branch history, override inputs, or run a changed graph:
+
+```python
+forked = await runner.run(
+    Graph([double, triple]),
+    {"x": 100},                      # optional overrides
+    fork_from="job-1",
+)
+assert forked["tripled"] == 600
+```
+
+Retry is symmetrical:
+
+```python
+retried = await runner.run(
+    Graph([double, triple]),
+    retry_from="job-1",
+    on_internal_override="ignore",   # common for flaky-node recovery
+)
+```
+
+If you pass runtime values with an existing workflow ID, `run()` raises `InputOverrideRequiresForkError`.
+If graph structure changed for an existing workflow ID, `run()` raises `GraphChangedError`.
 
 ### Resuming Batches
 

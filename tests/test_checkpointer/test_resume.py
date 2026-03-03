@@ -4,6 +4,11 @@ import pytest
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+from hypergraph.exceptions import (
+    GraphChangedError,
+    InputOverrideRequiresForkError,
+    WorkflowAlreadyCompletedError,
+)
 from hypergraph.runners._shared.types import RunStatus
 
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -51,53 +56,111 @@ def sync_checkpointer(tmp_path):
 
 class TestAsyncRunResume:
     async def test_run_merges_checkpoint_state(self, checkpointer):
-        """Second run with same workflow_id gets checkpoint state merged in.
-
-        Pattern: first run produces 'doubled', second run uses it to produce 'tripled'
-        without the user providing 'doubled' explicitly.
-        """
+        """Changing graph under same workflow_id requires explicit fork."""
         runner = AsyncRunner(checkpointer=checkpointer)
         graph_step1 = Graph([double])
         graph_step2 = Graph([triple])
 
-        # First run: produce 'doubled'
         await runner.run(graph_step1, {"x": 5}, workflow_id="resume-1")
 
-        # Second run: 'doubled' comes from checkpoint, produces 'tripled'
-        result = await runner.run(graph_step2, workflow_id="resume-1")
+        with pytest.raises(GraphChangedError):
+            await runner.run(graph_step2, workflow_id="resume-1")
 
+        checkpoint = await checkpointer.get_checkpoint("resume-1")
+        result = await runner.run(graph_step2, checkpoint=checkpoint, workflow_id="resume-1-fork")
         assert result["tripled"] == 30
 
     async def test_run_runtime_values_override_checkpoint(self, checkpointer):
-        """Explicit runtime values win over checkpoint state."""
+        """Values on same workflow_id are disallowed; fork to branch."""
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
-        # First run: doubled=10, tripled=30
         await runner.run(graph, {"x": 5}, workflow_id="override-1")
 
-        # Second run: override 'x' with different value
-        result = await runner.run(graph, {"x": 100}, workflow_id="override-1")
+        with pytest.raises(InputOverrideRequiresForkError):
+            await runner.run(graph, {"x": 100}, workflow_id="override-1")
 
-        # Should use x=100 (runtime wins), not x=5 (checkpoint)
+        checkpoint = await checkpointer.get_checkpoint("override-1")
+        result = await runner.run(graph, {"x": 100}, checkpoint=checkpoint, workflow_id="override-1-fork")
         assert result["doubled"] == 200
         assert result["tripled"] == 600
 
     async def test_run_validation_passes_with_checkpoint_values(self, checkpointer):
-        """A required input satisfied by checkpoint doesn't raise MissingInputError."""
+        """Fork validation accepts required inputs satisfied by checkpoint values."""
         runner = AsyncRunner(checkpointer=checkpointer)
         graph_step1 = Graph([double])
         graph_step2 = Graph([triple])
 
-        # First run: produce 'doubled=10'
         await runner.run(graph_step1, {"x": 5}, workflow_id="valid-1")
-
-        # Second run needs 'doubled' — checkpoint provides it, no values needed
-        result = await runner.run(graph_step2, workflow_id="valid-1")
+        checkpoint = await checkpointer.get_checkpoint("valid-1")
+        result = await runner.run(graph_step2, checkpoint=checkpoint, workflow_id="valid-1-fork")
         assert result["tripled"] == 30
 
+    async def test_override_workflow_auto_forks_existing_id(self, checkpointer):
+        """override_workflow=True auto-forks instead of raising strict resume errors."""
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([double, triple])
+
+        await runner.run(graph, {"x": 5}, workflow_id="override-auto")
+
+        result = await runner.run(
+            graph,
+            {"x": 100},
+            workflow_id="override-auto",
+            override_workflow=True,
+        )
+        assert result["doubled"] == 200
+        assert result["tripled"] == 600
+        assert result.workflow_id is not None
+        assert result.workflow_id.startswith("override-auto-fork-")
+        assert result.workflow_id != "override-auto"
+
+        run = await checkpointer.get_run_async(result.workflow_id)
+        assert run is not None
+        assert run.forked_from == "override-auto"
+
+    async def test_fork_from_allows_fork_without_checkpoint_object(self, checkpointer):
+        """fork_from forks by workflow ID directly (no explicit checkpoint handling)."""
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([double, triple])
+
+        await runner.run(graph, {"x": 5}, workflow_id="fork-src")
+        result = await runner.run(graph, {"x": 100}, fork_from="fork-src")
+        assert result["tripled"] == 600
+        assert result.workflow_id is not None
+
+        run = await checkpointer.get_run_async(result.workflow_id)
+        assert run is not None
+        assert run.forked_from == "fork-src"
+
+    async def test_retry_from_allows_retry_without_checkpoint_object(self, checkpointer):
+        """retry_from retries by workflow ID directly (no explicit checkpoint handling)."""
+        should_fail = True
+
+        @node(output_name="seed")
+        def seed(x: int) -> int:
+            return x
+
+        @node(output_name="out")
+        def flaky(seed: int) -> int:
+            nonlocal should_fail
+            if should_fail:
+                raise RuntimeError("transient")
+            return seed * 10
+
+        graph = Graph([seed, flaky])
+        runner = AsyncRunner(checkpointer=checkpointer)
+        await runner.run(graph, {"x": 5}, workflow_id="retry-src", error_handling="continue")
+        should_fail = False
+
+        retried = await runner.run(graph, retry_from="retry-src", on_internal_override="ignore")
+        assert retried.status == RunStatus.COMPLETED
+        run = await checkpointer.get_run_async(retried.workflow_id)
+        assert run is not None
+        assert run.retry_of == "retry-src"
+
     async def test_run_cycle_graph_resume(self, checkpointer):
-        """Resume a cyclic graph: checkpoint provides the seed value."""
+        """Completed workflows are terminal (resume requires fork)."""
         from hypergraph import END, ifelse
 
         call_count = 0
@@ -121,9 +184,8 @@ class TestAsyncRunResume:
         # Reset counter
         call_count = 0
 
-        # Resume: checkpoint has count=3, gate immediately exits — no increments needed
-        result = await runner.run(graph, workflow_id="cycle-1")
-        assert result["count"] >= 3
+        with pytest.raises(WorkflowAlreadyCompletedError):
+            await runner.run(graph, workflow_id="cycle-1")
         assert call_count == 0
 
     async def test_no_checkpointer_resume_is_noop(self):
@@ -138,14 +200,24 @@ class TestAsyncRunResume:
         result = await runner.run(graph, {"x": 7}, workflow_id="noop-1")
         assert result["tripled"] == 42
 
+    async def test_fork_from_requires_checkpointer(self):
+        """fork_from should fail fast when no checkpointer is configured."""
+        runner = AsyncRunner()
+        graph = Graph([double, triple])
+
+        with pytest.raises(ValueError, match="require a checkpointer"):
+            await runner.run(graph, {"x": 7}, fork_from="noop-1")
+
     async def test_no_workflow_id_skips_resume(self, checkpointer):
-        """Without workflow_id, no resume even with checkpointer."""
+        """With checkpointer, missing workflow_id is auto-generated."""
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
-        # Run without workflow_id
         result = await runner.run(graph, {"x": 5})
         assert result["tripled"] == 30
+        assert result.workflow_id is not None
+        run = await checkpointer.get_run_async(result.workflow_id)
+        assert run is not None
 
     async def test_first_run_with_no_prior_state(self, checkpointer):
         """First run with workflow_id and checkpointer works normally (no prior state)."""
@@ -265,26 +337,75 @@ class TestAsyncMapResume:
 
 class TestSyncRunResume:
     def test_run_merges_checkpoint_state(self, sync_checkpointer):
-        """Sync mirror: second run with same workflow_id gets checkpoint state."""
+        """Sync mirror: graph change requires fork."""
         runner = SyncRunner(checkpointer=sync_checkpointer)
         graph_step1 = Graph([double])
         graph_step2 = Graph([triple])
 
         runner.run(graph_step1, {"x": 5}, workflow_id="sync-resume-1")
-        result = runner.run(graph_step2, workflow_id="sync-resume-1")
+        with pytest.raises(GraphChangedError):
+            runner.run(graph_step2, workflow_id="sync-resume-1")
 
+        checkpoint = sync_checkpointer.checkpoint("sync-resume-1")
+        result = runner.run(graph_step2, checkpoint=checkpoint, workflow_id="sync-resume-1-fork")
         assert result["tripled"] == 30
 
     def test_run_runtime_values_override_checkpoint(self, sync_checkpointer):
-        """Sync mirror: explicit runtime values win over checkpoint state."""
+        """Sync mirror: values on same workflow_id require fork."""
         runner = SyncRunner(checkpointer=sync_checkpointer)
         graph = Graph([double, triple])
 
         runner.run(graph, {"x": 5}, workflow_id="sync-override")
-        result = runner.run(graph, {"x": 100}, workflow_id="sync-override")
+        with pytest.raises(InputOverrideRequiresForkError):
+            runner.run(graph, {"x": 100}, workflow_id="sync-override")
 
+        checkpoint = sync_checkpointer.checkpoint("sync-override")
+        result = runner.run(graph, {"x": 100}, checkpoint=checkpoint, workflow_id="sync-override-fork")
         assert result["doubled"] == 200
         assert result["tripled"] == 600
+
+    def test_override_workflow_auto_forks_existing_id(self, sync_checkpointer):
+        """Sync mirror: override_workflow=True auto-forks existing workflow_id."""
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([double, triple])
+
+        runner.run(graph, {"x": 5}, workflow_id="sync-override-auto")
+
+        result = runner.run(
+            graph,
+            {"x": 100},
+            workflow_id="sync-override-auto",
+            override_workflow=True,
+        )
+        assert result["doubled"] == 200
+        assert result["tripled"] == 600
+        assert result.workflow_id is not None
+        assert result.workflow_id.startswith("sync-override-auto-fork-")
+        assert result.workflow_id != "sync-override-auto"
+
+        run = sync_checkpointer.get_run(result.workflow_id)
+        assert run is not None
+        assert run.forked_from == "sync-override-auto"
+
+    def test_fork_from_allows_fork_without_checkpoint_object(self, sync_checkpointer):
+        """Sync mirror: fork_from forks by workflow ID directly."""
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+        graph = Graph([double, triple])
+
+        runner.run(graph, {"x": 5}, workflow_id="sync-fork-src")
+        result = runner.run(graph, {"x": 100}, fork_from="sync-fork-src")
+        assert result["tripled"] == 600
+        run = sync_checkpointer.get_run(result.workflow_id)
+        assert run is not None
+        assert run.forked_from == "sync-fork-src"
+
+    def test_fork_from_requires_checkpointer(self):
+        """Sync mirror: fork_from should fail fast without a checkpointer."""
+        runner = SyncRunner()
+        graph = Graph([double, triple])
+
+        with pytest.raises(ValueError, match="require a checkpointer"):
+            runner.run(graph, {"x": 7}, fork_from="noop-1")
 
 
 # =============================================================================

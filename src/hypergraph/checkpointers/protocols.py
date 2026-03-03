@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from hypergraph.checkpointers.types import Run, StepRecord, WorkflowStatus
+    from hypergraph.checkpointers.types import Checkpoint, Run, StepRecord, WorkflowStatus
 
 
 @runtime_checkable
@@ -30,6 +30,11 @@ class SyncCheckpointerProtocol(Protocol):
         *,
         graph_name: str | None = None,
         parent_run_id: str | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        config: dict | None = None,
     ) -> Run: ...
 
     def save_step_sync(self, record: StepRecord) -> None: ...
@@ -43,3 +48,19 @@ class SyncCheckpointerProtocol(Protocol):
         node_count: int | None = None,
         error_count: int | None = None,
     ) -> None: ...
+
+    def fork_workflow(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]: ...
+
+    def retry_workflow(
+        self,
+        source_run_id: str,
+        *,
+        workflow_id: str | None = None,
+        superstep: int | None = None,
+    ) -> tuple[str, Checkpoint]: ...

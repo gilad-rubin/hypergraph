@@ -117,13 +117,14 @@ class SyncRunner(SyncRunnerTemplate):
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
         workflow_id: str | None = None,
+        checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
         On failure, raises ExecutionError wrapping the cause and partial state.
         """
-        state = initialize_state(graph, values)
+        state = initialize_state(graph, values, checkpoint=checkpoint)
         active_nodes = compute_active_node_set(graph)
 
         # Checkpointer setup — template already validated the protocol,

@@ -2,6 +2,8 @@
 
 This document captures the current visualization architecture, key invariants, and debugging workflow for the hypergraph viz stack.
 
+Cross-widget UX defaults live in: `dev/WIDGET-PREFERENCES.md`.
+
 ## System Overview
 
 **Python pipeline**

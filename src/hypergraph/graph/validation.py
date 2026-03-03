@@ -68,6 +68,7 @@ def _validate_graph_name(graph_name: str | None) -> None:
 
 def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
     """Node and output names must be valid Python identifiers (not keywords)."""
+    from hypergraph.nodes.gate import GateNode
     from hypergraph.nodes.graph_node import GraphNode
 
     for node in nodes.values():
@@ -101,12 +102,14 @@ def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
                     f"  Use a different name (e.g., '{output}_value' or '{output}_result')"
                 )
             if output.startswith("_"):
-                raise GraphConfigError(
-                    f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
-                    f"  -> Output names starting with '_' are reserved for internal use\n\n"
-                    f"How to fix:\n"
-                    f"  Remove the leading underscore (e.g., '{output.lstrip('_')}')"
-                )
+                is_gate_internal_output = isinstance(node, GateNode) and output == f"_{node.name}"
+                if not is_gate_internal_output:
+                    raise GraphConfigError(
+                        f"Invalid output name: '{output}' (from node '{node.name}')\n\n"
+                        f"  -> Output names starting with '_' are reserved for internal use\n\n"
+                        f"How to fix:\n"
+                        f"  Remove the leading underscore (e.g., '{output.lstrip('_')}')"
+                    )
 
 
 def _validate_no_namespace_collision(nodes: dict[str, HyperNode]) -> None:

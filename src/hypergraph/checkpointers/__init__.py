@@ -10,6 +10,8 @@ from hypergraph.checkpointers.serializers import JsonSerializer, PickleSerialize
 from hypergraph.checkpointers.sqlite import SqliteCheckpointer
 from hypergraph.checkpointers.types import (
     Checkpoint,
+    LineageRow,
+    LineageView,
     Run,
     RunTable,
     StepRecord,
@@ -23,6 +25,8 @@ __all__ = [
     "CheckpointPolicy",
     "Checkpoint",
     "JsonSerializer",
+    "LineageRow",
+    "LineageView",
     "PickleSerializer",
     "Run",
     "RunTable",

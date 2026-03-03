@@ -75,17 +75,19 @@ class TestSyncRunnerCheckpointing:
         steps = db.execute("SELECT node_name FROM steps WHERE run_id = ?", ("wf-exit",)).fetchall()
         assert len(steps) == 2
 
-    def test_no_workflow_id_skips_checkpointing(self, checkpointer):
-        """Without workflow_id, no checkpointing occurs."""
+    def test_no_workflow_id_auto_generates_and_checkpoints(self, checkpointer):
+        """With checkpointer, missing workflow_id auto-generates and persists."""
         runner = SyncRunner(checkpointer=checkpointer)
         graph = Graph([double, triple])
 
         result = runner.run(graph, {"x": 1})
         assert result["tripled"] == 6
+        assert result.workflow_id is not None
 
         db = checkpointer._sync_db()
         runs = db.execute("SELECT id FROM runs").fetchall()
-        assert len(runs) == 0
+        assert len(runs) == 1
+        assert runs[0][0] == result.workflow_id
 
     def test_no_checkpointer_runs_normally(self):
         """Runner without checkpointer still works, even with workflow_id."""
