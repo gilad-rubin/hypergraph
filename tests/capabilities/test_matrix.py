@@ -8,6 +8,8 @@ Test Strategy:
 All tests run in parallel via pytest-xdist.
 """
 
+import asyncio
+
 import pytest
 
 from hypergraph import InMemoryCache
@@ -138,9 +140,9 @@ class TestPairwiseAsync:
     """Pairwise async runner tests - covers all dimension pairs efficiently."""
 
     @pytest.mark.parametrize("cap", _async_pairwise, ids=str)
-    async def test_async_pairwise(self, cap: Capability):
+    def test_async_pairwise(self, cap: Capability):
         """Execute async capability from pairwise set."""
-        await run_capability_async(cap)
+        asyncio.run(run_capability_async(cap))
 
 
 # =============================================================================
@@ -171,9 +173,9 @@ class TestFullMatrixAsync:
     """
 
     @pytest.mark.parametrize("cap", list(combinations_for(runner=Runner.ASYNC)), ids=str)
-    async def test_all_async_combinations(self, cap: Capability):
+    def test_all_async_combinations(self, cap: Capability):
         """Every valid async combination should execute."""
-        await run_capability_async(cap)
+        asyncio.run(run_capability_async(cap))
 
 
 # =============================================================================

@@ -268,7 +268,7 @@ class TestEdgeTypes:
 
     def test_end_node_routing(self):
         """END node appears when a route targets END."""
-        graph = Graph(nodes=[embed, retrieve, generate, should_continue])
+        graph = Graph(nodes=[embed, retrieve, generate, should_continue], entrypoint="embed")
         mermaid = graph.to_mermaid()
 
         assert '(["End"])' in mermaid
@@ -283,7 +283,7 @@ class TestEdgeTypes:
 
     def test_route_edge_to_targets(self):
         """Route control edges connect gate to each target."""
-        graph = Graph(nodes=[embed, retrieve, generate, should_continue])
+        graph = Graph(nodes=[embed, retrieve, generate, should_continue], entrypoint="embed")
         mermaid = graph.to_mermaid()
 
         assert "should_continue --> retrieve" in mermaid

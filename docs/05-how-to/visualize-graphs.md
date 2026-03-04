@@ -88,6 +88,22 @@ Saves a standalone HTML file with all assets bundled (React, React Flow, Tailwin
 | **Data** | Green border | Output data nodes (in `separate_outputs` mode) |
 | **Input** | Gray | Graph input parameters |
 
+## START and Entrypoints
+
+If a graph has configured entrypoints (`Graph(..., entrypoint=...)` or `with_entrypoint(...)`), visualization renders a synthetic **START** marker connected to those entrypoint nodes.
+
+- START only appears when entrypoints are configured.
+- START is rendered above the graph and routes into the configured entry scope.
+- For expanded nested containers, START edges route to the visible internal entry node (not the container shell).
+
+## Expanded Container Edge Routing
+
+When nested graphs are expanded, cross-boundary edges remap to the visible internal producer/consumer nodes.
+
+- Containers are visual groups, not executable endpoints.
+- Dashed/control edges should never originate from a container START marker.
+- Shared values (for example `messages`) anchor to the correct internal endpoint and do not create phantom external links.
+
 ## Works Offline
 
 All JavaScript dependencies (React, React Flow, Kiwi constraint solver) are bundled with hypergraph. No CDN calls, no internet required.

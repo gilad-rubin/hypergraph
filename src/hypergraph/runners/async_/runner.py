@@ -12,7 +12,7 @@ from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.nodes.interrupt import InterruptNode
-from hypergraph.runners._shared.helpers import compute_active_node_set, get_ready_nodes, initialize_state
+from hypergraph.runners._shared.helpers import compute_execution_scope, get_ready_nodes, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
@@ -144,7 +144,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         On failure, raises ExecutionError wrapping the cause and partial state.
         """
         state = initialize_state(graph, values, checkpoint=checkpoint)
-        active_nodes = compute_active_node_set(graph)
+        scope = compute_execution_scope(graph)
 
         # Set up concurrency limiter only at top level (when none exists)
         # Nested graphs inherit the parent's semaphore via ContextVar
@@ -164,7 +164,12 @@ class AsyncRunner(AsyncRunnerTemplate):
 
         try:
             for superstep_idx in range(max_iterations):
-                ready_nodes = get_ready_nodes(graph, state, active_nodes=active_nodes)
+                ready_nodes = get_ready_nodes(
+                    graph,
+                    state,
+                    active_nodes=scope.active_nodes,
+                    startup_predecessors=scope.startup_predecessors,
+                )
 
                 if not ready_nodes:
                     break  # No more nodes to execute
@@ -233,7 +238,12 @@ class AsyncRunner(AsyncRunnerTemplate):
 
             else:
                 # Loop completed without break = hit max_iterations
-                if get_ready_nodes(graph, state, active_nodes=active_nodes):
+                if get_ready_nodes(
+                    graph,
+                    state,
+                    active_nodes=scope.active_nodes,
+                    startup_predecessors=scope.startup_predecessors,
+                ):
                     raise ExecutionError(
                         InfiniteLoopError(max_iterations),
                         state,

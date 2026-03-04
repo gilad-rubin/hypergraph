@@ -167,6 +167,7 @@ class TestRenderGraph:
             nodes=[first, second],
             edges=[(first, second), (second, first)],
             name="inner",
+            entrypoint="first",
         )
         outer = Graph(nodes=[inner.as_node()], entrypoint="inner")
 

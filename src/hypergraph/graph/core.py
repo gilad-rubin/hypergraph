@@ -292,6 +292,24 @@ class Graph:
             frozen[node_name] = {input_name: frozenset(names) for input_name, names in inputs.items()}
         return frozen
 
+    @functools.cached_property
+    def explicit_predecessors(self) -> dict[str, frozenset[str]]:
+        """Map node_name -> direct predecessors declared via explicit edges.
+
+        Only populated for graphs built with ``edges=[...]``. This captures the
+        user-declared topology directly from constructor edge specs (data and
+        ordering declarations alike), and is used by scheduler readiness checks
+        to enforce predecessor-driven startup semantics.
+        """
+        if self._explicit_edges is None:
+            return {}
+
+        predecessors: dict[str, set[str]] = {}
+        for src, dst, _value_names in self._explicit_edges:
+            predecessors.setdefault(dst, set()).add(src)
+
+        return {node_name: frozenset(sources) for node_name, sources in predecessors.items()}
+
     @property
     def has_explicit_edges(self) -> bool:
         """Whether the graph was built in explicit-edges mode."""
@@ -571,8 +589,6 @@ class Graph:
         InputSpec computation. However, at execution time all reachable nodes
         still run — use ``with_entrypoint()`` to skip upstream execution.
 
-        A runtime ``select=`` passed to runner.run() overrides this default.
-
         Args:
             *names: Output names to include. Must be valid graph outputs.
 
@@ -827,6 +843,13 @@ class Graph:
         # Note: Duplicate node names caught in _build_nodes_dict()
         # Note: Duplicate outputs caught in validate_output_conflicts()
         validate_graph(self._nodes, self._nx_graph, self.name, self._strict_types)
+        if self.has_cycles and self._entrypoints is None:
+            raise GraphConfigError(
+                "Cyclic graphs require an explicit entrypoint.\n\n"
+                "How to fix:\n"
+                "  graph = graph.with_entrypoint('<node_name>')\n"
+                "  # or Graph(..., entrypoint='<node_name>')"
+            )
 
     def as_node(self, *, name: str | None = None) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.

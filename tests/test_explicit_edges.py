@@ -128,6 +128,7 @@ class TestExplicitEdgesConstruction:
                 (add_response, ask_user),
                 (add_response, add_query),
             ],
+            entrypoint="ask_user",
         )
         assert g.has_cycles
         # Both add_query and add_response produce "messages"
@@ -160,6 +161,7 @@ class TestExplicitEdgesConstruction:
                 (generate, add_response),
                 (add_response, add_query),
             ],
+            entrypoint="ask_user",
         )
         assert g.has_cycles
 
@@ -179,7 +181,7 @@ class TestExplicitEdgesInputSpec:
         assert g.inputs.required == ("x",)
 
     def test_input_spec_with_entrypoints(self):
-        """Cycle entrypoint seeds are detected correctly."""
+        """Configured cycle entrypoint yields canonical required inputs."""
         g = Graph(
             [ask_user, add_query, generate, add_response],
             edges=[
@@ -188,9 +190,10 @@ class TestExplicitEdgesInputSpec:
                 (generate, add_response),
                 (add_response, add_query),
             ],
+            entrypoint="ask_user",
         )
-        # messages is a cycle seed (produced and consumed within cycle)
-        assert "messages" in {p for params in g.inputs.entrypoints.values() for p in params}
+        assert g.inputs.required == ()
+        assert g.inputs.entrypoints == {}
 
 
 # ── Execution tests ──────────────────────────────────────────────────────────
@@ -222,6 +225,7 @@ class TestExplicitEdgesExecution:
                 (add_response, add_query),
                 (add_response, ask_user),
             ],
+            entrypoint="ask_user",
         )
         # Both add_query and add_response produce "messages" — graph constructs
         assert g.has_cycles
@@ -347,8 +351,8 @@ class TestExplicitEdgesSubgraph:
             return [*messages, {"role": "assistant", "content": response}]
 
         # Inner graphs use auto-inference
-        ask_phase = Graph([_ask, _add_query], name="ask")
-        respond_phase = Graph([_generate, _add_response], name="respond")
+        ask_phase = Graph([_ask, _add_query], name="ask", entrypoint="_ask")
+        respond_phase = Graph([_generate, _add_response], name="respond", entrypoint="_generate")
 
         # Outer graph uses explicit edges
         chat = Graph(
@@ -357,6 +361,7 @@ class TestExplicitEdgesSubgraph:
                 ("ask", "respond"),
                 ("respond", "ask"),
             ],
+            entrypoint="ask",
         )
         assert chat.has_cycles
         # ask outputs messages, respond consumes messages
@@ -481,6 +486,7 @@ class TestExplicitEdgesVisualization:
         g = Graph(
             [ask_user, generate],
             edges=[(ask_user, generate), (generate, ask_user)],
+            entrypoint="ask_user",
         )
         flat = g.to_flat_graph()
         for u, _v, data in flat.edges(data=True):

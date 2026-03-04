@@ -750,8 +750,9 @@
     var inputNodeTargets = new Map();
     visibleNodes.forEach(function(n) {
       if (n.data && n.data.nodeType === 'INPUT') {
-        var c = paramToConsumer[n.data.label];
-        if (c) inputNodeTargets.set(n.id, c);
+        var targets = n.data.actualTargets;
+        if (!targets) targets = paramToConsumer[n.data.label];
+        if (targets) inputNodeTargets.set(n.id, targets);
       }
     });
 
@@ -828,8 +829,17 @@
         }
       }
       if (inputNodeTargets.has(e.source)) {
-        var consumer = inputNodeTargets.get(e.source);
-        if (nodePositions.has(consumer)) { actualTgt = consumer; tgtPos = nodePositions.get(consumer); tgtDims = nodeDimensions.get(consumer); }
+        var consumerTargets = inputNodeTargets.get(e.source);
+        var targetList = Array.isArray(consumerTargets) ? consumerTargets : [consumerTargets];
+        for (var j = 0; j < targetList.length; j++) {
+          var consumer = targetList[j];
+          if (nodePositions.has(consumer)) {
+            actualTgt = consumer;
+            tgtPos = nodePositions.get(consumer);
+            tgtDims = nodeDimensions.get(consumer);
+            break;
+          }
+        }
       }
       if (!tgtPos) { tgtPos = nodePositions.get(e.target); tgtDims = nodeDimensions.get(e.target); actualTgt = e.target; }
 

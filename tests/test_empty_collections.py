@@ -145,7 +145,7 @@ class TestEmptyListInCycleSeed:
         def accumulator_gate(acc: list, limit: int = 3) -> str:
             return END if len(acc) >= limit else "accumulator"
 
-        graph = Graph([accumulator, accumulator_gate])
+        graph = Graph([accumulator, accumulator_gate], entrypoint="accumulator")
         runner = SyncRunner()
 
         result = runner.run(graph, {"acc": [], "value": 42, "limit": 3})
@@ -162,7 +162,7 @@ class TestEmptyListInCycleSeed:
                 return items
             return items + [1]
 
-        graph = Graph([collector])
+        graph = Graph([collector], entrypoint="collector")
         runner = SyncRunner()
 
         # max_items=0 means we should stop immediately

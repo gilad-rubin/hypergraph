@@ -338,7 +338,7 @@ selected = g.select("a_val")
 print(selected.inputs.required)  # ('x',) - y is not needed for a_val
 ```
 
-At runtime, all nodes in the active subgraph still execute. `select` filters what is **returned to the caller** and narrows what is **required from the caller**.
+`select` is scope-defining: it narrows what executes, what is required from the caller, and what is returned to the caller.
 
 ```python
 g = Graph([embed, retrieve, generate])
@@ -348,11 +348,9 @@ print(g.outputs)  # ('embedding', 'docs', 'answer')
 g_selected = g.select("answer")
 result = runner.run(g_selected, {"text": "hello", "query": "what?"})
 print(result.values.keys())  # dict_keys(['answer'])
-
-# Runtime select= overrides graph default
-result = runner.run(g_selected, inputs, select=["docs", "answer"])
-print(result.values.keys())  # dict_keys(['docs', 'answer'])
 ```
+
+Runtime `select=` overrides are not supported. Use `graph.select(...)` to configure output scope before calling `run()`.
 
 **Args:**
 - `*names`: Output names to include. Must be valid graph outputs.
@@ -430,18 +428,15 @@ g2 = g.with_entrypoint("retrieve").with_entrypoint("generate")
 print(g2.entrypoints_config)  # ('retrieve', 'generate')
 ```
 
-#### Works with cycles
+#### Cycles
 
-For cyclic graphs, `with_entrypoint` determines which part of the cycle is active. The narrowed `inputs` reflects only the cycle parameters reachable from the entry point:
+Cyclic graphs must be configured with constructor `entrypoint`:
 
 ```python
-# In a cycle: accumulate → generate → should_continue → accumulate
-g = Graph([accumulate, generate, should_continue])
-
-# Start at generate, skip accumulate as bootstrap
-g2 = g.with_entrypoint("generate")
-# g2.inputs shows only what generate needs to enter the cycle
+g = Graph([accumulate, generate, should_continue], entrypoint="accumulate")
 ```
+
+`with_entrypoint(...)` remains useful for DAG slicing and for adding additional entrypoints to an already configured graph.
 
 #### Composes with select and bind
 

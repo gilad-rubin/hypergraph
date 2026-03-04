@@ -170,10 +170,8 @@ class TestBindCycleEntryPoints:
         def counter(count: int) -> int:
             return count + 1
 
-        g = Graph([counter])
-
-        # count is an entrypoint param (self-loop cycle)
-        assert "counter" in g.inputs.entrypoints
+        g = Graph([counter], entrypoint="counter")
+        assert "count" in g.inputs.required
 
         # Binding is allowed — acts as first-iteration bootstrap
         configured = g.bind(count=0)
@@ -190,7 +188,7 @@ class TestBindCycleEntryPoints:
         def node_b(a: int) -> int:
             return a * 2
 
-        g = Graph([node_a, node_b])
+        g = Graph([node_a, node_b], entrypoint="node_a")
 
         assert g.has_cycles
 

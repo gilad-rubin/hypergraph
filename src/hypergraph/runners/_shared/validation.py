@@ -7,7 +7,6 @@ from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
-from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners._shared.types import RunnerCapabilities
 
 if TYPE_CHECKING:
@@ -34,7 +33,6 @@ class _InputValidationContext:
     edge_produced: set[str]
     interrupt_outputs: set[str]
     cycle_ep_params: set[str]
-    entrypoint: str | None
 
 
 def precompute_input_validation(
@@ -46,8 +44,17 @@ def precompute_input_validation(
     """Graph-structural validation — call once, reuse across items."""
     from hypergraph.graph._helpers import get_edge_produced_values
 
-    active_nodes, active_subgraph = _resolve_active_scope(graph, selected)
-    input_spec = _resolve_effective_input_spec(graph, selected, active_scope=(active_nodes, active_subgraph))
+    if entrypoint is not None:
+        raise ValueError(
+            "Runtime entrypoint overrides are no longer supported. "
+            "Configure entrypoints on the graph via Graph(..., entrypoint=...) "
+            "or graph.with_entrypoint(...)."
+        )
+    effective_selected = graph.selected if selected is None else selected
+    if effective_selected != graph.selected:
+        raise ValueError("Runtime select overrides are no longer supported. Configure output scope on the graph via graph.select(...).")
+    active_nodes, active_subgraph = _resolve_active_scope(graph, graph.selected)
+    input_spec = graph.inputs
     cycle_ep_params = {p for params in input_spec.entrypoints.values() for p in params}
     edge_produced = get_edge_produced_values(active_subgraph)
     interrupt_outputs = _get_interrupt_outputs(active_nodes)
@@ -60,7 +67,6 @@ def precompute_input_validation(
         edge_produced=edge_produced,
         interrupt_outputs=interrupt_outputs,
         cycle_ep_params=cycle_ep_params,
-        entrypoint=entrypoint,
     )
 
 
@@ -92,32 +98,35 @@ def validate_item_inputs(
     internal_edge = unexpected & ctx.edge_produced
     unknown = unexpected - ctx.edge_produced
 
-    conflict_errors = _find_internal_override_conflicts(
-        active_nodes=ctx.active_nodes,
-        provided=provided,
-        internal_edge=internal_edge,
-        cycle_ep_params=ctx.cycle_ep_params,
-    )
-    if conflict_errors:
-        raise ValueError("Cannot determine whether to run or skip node(s):\n" + "\n".join(conflict_errors))
+    if internal_edge:
+        conflict_errors = _find_internal_override_conflicts(
+            active_nodes=ctx.active_nodes,
+            provided=provided,
+            internal_edge=internal_edge,
+            cycle_ep_params=ctx.cycle_ep_params,
+        )
+        if conflict_errors:
+            raise ValueError("Cannot determine whether to run or skip node(s):\n" + "\n".join(conflict_errors))
+        raise ValueError(
+            _build_internal_override_message(
+                internal_edge=internal_edge,
+                unknown=set(),
+                expected_inputs=expected_inputs,
+                active_nodes=ctx.active_nodes,
+            )
+        )
 
-    _handle_internal_override_policy(
-        on_internal_override=on_internal_override,
-        internal_edge=internal_edge,
-        unknown=unknown,
-        expected_inputs=expected_inputs,
-        active_nodes=ctx.active_nodes,
-    )
+    if unknown:
+        _handle_internal_override_policy(
+            on_internal_override=on_internal_override,
+            internal_edge=set(),
+            unknown=unknown,
+            expected_inputs=expected_inputs,
+            active_nodes=ctx.active_nodes,
+        )
 
-    # Step 4: Bypass detection (considering merged values)
-    bypassed_inputs = _find_bypassed_inputs(ctx.graph, provided, inputs_spec)
-
-    # Step 5: Cycle entry point matching
-    if inputs_spec.entrypoints:
-        _validate_cycle_entry(ctx.graph, provided, bypassed_inputs, ctx.entrypoint, inputs_spec)
-
-    # Step 6: Completeness check for required (acyclic) inputs
-    required = set(inputs_spec.required) - bypassed_inputs
+    # Step 4: Completeness check for required inputs
+    required = set(inputs_spec.required)
     missing_required = required - provided
 
     if not missing_required:
@@ -155,133 +164,6 @@ def validate_inputs(
     """
     ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=selected)
     validate_item_inputs(ctx, values, on_internal_override=on_internal_override)
-
-
-def _validate_cycle_entry(
-    graph: Graph,
-    provided: set[str],
-    bypassed: set[str],
-    entrypoint: str | None,
-    inputs_spec: InputSpec,
-) -> None:
-    """Validate cycle entry points.
-
-    For each cycle, exactly one entry point must be satisfied by provided values.
-    If entrypoint is explicit, validate that it matches.
-
-    Raises:
-        ValueError: If entrypoint is invalid, ambiguous, or mismatched.
-        MissingInputError: If no entry point is satisfied for a cycle.
-    """
-    ep = inputs_spec.entrypoints
-
-    # If explicit entrypoint, validate it then check remaining cycles
-    if entrypoint is not None:
-        if entrypoint not in ep:
-            valid = sorted(ep.keys())
-            raise ValueError(f"'{entrypoint}' is not a valid entry point. Valid entry points: {valid}")
-        needed = set(ep[entrypoint]) - bypassed
-        if not needed <= provided:
-            missing = sorted(needed - provided)
-            raise ValueError(f"Entry point '{entrypoint}' needs: {', '.join(sorted(ep[entrypoint]))}. Missing: {', '.join(missing)}")
-        # Still validate other independent cycles
-        scc_groups = _group_entrypoints_by_scc(graph, ep)
-        ep_scc = _find_scc_for_node(entrypoint, scc_groups)
-        for scc_idx, scc_entries in scc_groups.items():
-            if scc_idx == ep_scc:
-                continue  # Already validated via explicit entrypoint
-            _check_cycle_entry(scc_entries, ep, provided, bypassed)
-        return
-
-    # Implicit: group entry points by SCC and check each cycle
-    scc_groups = _group_entrypoints_by_scc(graph, ep)
-    for scc_entries in scc_groups.values():
-        _check_cycle_entry(scc_entries, ep, provided, bypassed)
-
-
-def _group_entrypoints_by_scc(
-    graph: Graph,
-    entrypoints: dict[str, tuple[str, ...]],
-) -> dict[int, list[str]]:
-    """Group entry point node names by which cycle (SCC) they belong to.
-
-    Uses the graph's data-only subgraph to compute SCCs. Entry points
-    from independent cycles get separate groups — ambiguity is checked
-    per cycle, not across cycles.
-    """
-    if not entrypoints:
-        return {}
-
-    import networkx as nx
-
-    from hypergraph.graph.input_spec import _data_only_subgraph
-
-    data_graph = _data_only_subgraph(graph.nx_graph)
-    sccs = list(nx.strongly_connected_components(data_graph))
-
-    # Map node_name → scc_index
-    node_to_scc: dict[str, int] = {}
-    for idx, scc in enumerate(sccs):
-        for node_name in scc:
-            node_to_scc[node_name] = idx
-
-    # Group entry points by SCC
-    groups: dict[int, list[str]] = {}
-    for node_name in entrypoints:
-        scc_idx = node_to_scc.get(node_name)
-        if scc_idx is not None:
-            groups.setdefault(scc_idx, []).append(node_name)
-
-    return groups
-
-
-def _find_scc_for_node(
-    node_name: str,
-    scc_groups: dict[int, list[str]],
-) -> int | None:
-    """Find which SCC group a node belongs to."""
-    for scc_idx, members in scc_groups.items():
-        if node_name in members:
-            return scc_idx
-    return None
-
-
-def _check_cycle_entry(
-    node_names: list[str],
-    entrypoints: dict[str, tuple[str, ...]],
-    provided: set[str],
-    bypassed: set[str],
-) -> None:
-    """Check that exactly one entry point in a cycle is satisfied."""
-    satisfied = []
-    for name in node_names:
-        needed = set(entrypoints[name]) - bypassed
-        if needed <= provided:
-            satisfied.append(name)
-
-    if len(satisfied) == 0:
-        # No entry point matched — build helpful error
-        lines = ["No entry point for cycle. Provide values for one of:"]
-        for name in sorted(node_names):
-            params = ", ".join(entrypoints[name]) if entrypoints[name] else "(no params needed)"
-            lines.append(f"  {name} → {params}")
-        raise MissingInputError(
-            missing=[],
-            provided=list(provided),
-            message="\n".join(lines),
-        )
-
-    if len(satisfied) > 1:
-        # If all satisfied entry points need the same params, it's not ambiguous —
-        # the user is seeding the cycle regardless of which node runs first.
-        distinct_param_sets = {entrypoints[name] for name in satisfied}
-        if len(distinct_param_sets) > 1:
-            lines = ["Ambiguous cycle entry — provided values match multiple entry points:"]
-            for name in satisfied:
-                params = ", ".join(entrypoints[name])
-                lines.append(f"  {name} (needs: {params})")
-            lines.append("Provide values for exactly one entry point.")
-            raise ValueError("\n".join(lines))
 
 
 def _get_suggestions(
@@ -615,37 +497,13 @@ def resolve_runtime_selected(
     select: Any,
     graph: Graph,
 ) -> tuple[str, ...] | None:
-    """Convert runtime select parameter into a tuple for validation.
-
-    Handles the ``_UNSET_SELECT`` sentinel, ``"**"``, single strings,
-    and lists.  Returns ``None`` when all outputs are requested (no
-    narrowing).
-    """
+    """Resolve effective select under canonical graph scope semantics."""
     from hypergraph.runners._shared.helpers import _UNSET_SELECT
 
     if select is _UNSET_SELECT:
-        # Fall back to graph-level selection
-        return graph.selected  # already tuple | None
-    if select == "**":
-        return None  # all outputs — no narrowing
-    if isinstance(select, str):
-        sel: tuple[str, ...] = (select,)
-    elif isinstance(select, list):
-        sel = tuple(select)
-    else:
-        # Unexpected type — treat as "no narrowing" rather than raising, since
-        # run() signature already constrains the type at the public API level.
-        return None
+        return graph.selected
 
-    invalid = [n for n in sel if n not in graph.outputs]
-    if invalid:
-        valid_outputs = sorted(graph.outputs)
-        raise GraphConfigError(
-            f"Invalid select: {invalid} not in graph outputs.\n\n"
-            f"Valid outputs: {valid_outputs}\n\n"
-            f"How to fix: Check spelling or use select='**' to select all outputs."
-        )
-    return sel
+    raise ValueError("Runtime select overrides are no longer supported. Configure output scope on the graph via graph.select(...).")
 
 
 def _resolve_effective_input_spec(
@@ -654,25 +512,11 @@ def _resolve_effective_input_spec(
     *,
     active_scope: tuple[dict[str, HyperNode], Any] | None = None,
 ) -> InputSpec:
-    """Compute InputSpec scoped to runtime selection if different from graph config.
-
-    When the runner passes a runtime ``selected`` that differs from
-    ``graph.selected``, we recompute InputSpec so validation uses the
-    narrower scope. Otherwise, return the cached ``graph.inputs``.
-    """
-    if selected == graph.selected:
-        return graph.inputs
-
-    from hypergraph.graph.input_spec import compute_input_spec
-
-    return compute_input_spec(
-        graph._nodes,
-        graph._nx_graph,
-        graph._bound,
-        entrypoints=graph._entrypoints,
-        selected=selected,
-        _active_scope=active_scope,
-    )
+    """Return canonical graph InputSpec (runtime selection overrides removed)."""
+    effective_selected = graph.selected if selected is None else selected
+    if effective_selected != graph.selected:
+        raise ValueError("Runtime select overrides are no longer supported. Configure output scope on the graph via graph.select(...).")
+    return graph.inputs
 
 
 def validate_node_types(

@@ -725,6 +725,14 @@ def to_mermaid(
 
     lines: list[str] = [f"flowchart {direction}"]
     node_class_map: dict[str, str] = {}
+    start_targets = get_start_targets(flat_graph, expansion_state)
+
+    # --- START node (emit early so layout keeps START visually above flow) ---
+    if start_targets:
+        start_id = "__start__"
+        lines.append("    %% Start")
+        lines.append(_format_node(_sanitize_id(start_id), "Start", "START"))
+        node_class_map[start_id] = "start"
 
     # --- Input nodes ---
     input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
@@ -801,13 +809,6 @@ def to_mermaid(
                 )
                 lines.append(_format_node(_sanitize_id(data_id), data_label, "DATA"))
                 node_class_map[data_id] = "data"
-
-    # --- START node ---
-    start_targets = get_start_targets(flat_graph, expansion_state)
-    if start_targets:
-        start_id = "__start__"
-        lines.append(_format_node(_sanitize_id(start_id), "Start", "START"))
-        node_class_map[start_id] = "start"
 
     # --- END node ---
     if has_end_routing(flat_graph, expansion_state):

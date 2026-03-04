@@ -636,10 +636,10 @@ print([r["result"] for r in results])  # [11, 21, 12, 22]
 
 ### Selecting Specific Outputs
 
-By default, `run()` returns all graph outputs. Use `select` to filter:
+By default, `run()` returns all graph outputs. Configure output scope on the graph to filter:
 
 ```python
-result = runner.run(graph, values, select=["final_answer"])
+result = runner.run(graph.select("final_answer"), values)
 print(result.values.keys())  # Only "final_answer"
 ```
 

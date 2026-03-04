@@ -58,7 +58,6 @@ def run(
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
-    entrypoint: str | None = None,
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -76,17 +75,12 @@ Execute a graph once.
 **Args:**
 - `graph` - The graph to execute
 - `values` - Optional input values as `{param_name: value}`
-- `select` - Which outputs to return. `"**"` (default) returns all outputs. Pass a list of names for specific outputs. Also narrows input validation -- only inputs needed to produce the selected outputs are required. See [InputSpec](inputspec.md) for details on scope narrowing.
+- `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs:
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
   - `"error"`: raise error if any selected output is missing
-- `on_internal_override` - How to handle non-conflicting internal/unknown override-style inputs:
-  - `"warn"` (default): emit warning
-  - `"ignore"`: allow silently
-  - `"error"`: fail fast
-  - Note: contradictory compute+inject inputs for the same node always fail
-- `entrypoint` - Optional explicit cycle entrypoint node name. Disambiguates when multiple entrypoints match.
+- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
@@ -108,7 +102,8 @@ Execute a graph once.
 **Raises:**
 - `MissingInputError` - Required input not provided
 - `IncompatibleRunnerError` - Graph contains async nodes
-- `ValueError` - If `entrypoint` is invalid or ambiguous
+- `GraphConfigError` - If graph is cyclic and has no configured entrypoint
+- `ValueError` - If runtime `select` or `entrypoint` overrides are passed
 - Node execution errors (e.g., `ValueError`, `TypeError`) when `error_handling="raise"` (the default)
 
 **Example:**
@@ -120,17 +115,15 @@ result = runner.run(graph, {"query": "What is RAG?"})
 # kwargs shorthand
 result = runner.run(graph, query="What is RAG?")
 
-# Select specific outputs (also narrows required inputs)
-result = runner.run(graph, values, select=["final_answer"])
+# Configure output scope on the graph
+scoped = graph.select("final_answer")
+result = runner.run(scoped, values)
 
 # Limit iterations for cyclic graphs
 result = runner.run(cyclic_graph, values, max_iterations=50)
 
 # Strict output checking
-result = runner.run(graph, values, select=["answer"], on_missing="error")
-
-# Explicit cycle entrypoint
-result = runner.run(cyclic_graph, {"messages": []}, entrypoint="generate")
+result = runner.run(graph.select("answer"), values, on_missing="error")
 
 # With progress bars
 from hypergraph import RichProgressProcessor
@@ -178,7 +171,6 @@ def map(
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     on_internal_override: Literal["ignore", "warn", "error"] = "warn",
-    entrypoint: str | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     workflow_id: str | None = None,
@@ -194,10 +186,9 @@ Execute a graph multiple times with different inputs.
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` for parallel iteration, `"product"` for cartesian product
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively. Prevents cross-iteration mutation.
-- `select` - Which outputs to return. `"**"` (default) returns all outputs.
+- `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
-- `entrypoint` - Optional explicit cycle entrypoint (passed to each `run()` call)
+- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -325,10 +316,10 @@ Execute a graph asynchronously.
 **Args:**
 - `graph` - The graph to execute
 - `values` - Optional input values
-- `select` - Which outputs to return. `"**"` (default) returns all outputs. Also narrows input validation to only what's needed for the selected outputs.
+- `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`). Contradictory compute+inject inputs always fail.
-- `entrypoint` - Optional explicit cycle entrypoint node name
+- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
+- `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
 - `error_handling` - How to handle node execution errors:
@@ -417,10 +408,10 @@ Execute graph multiple times concurrently.
 - `map_over` - Parameter name(s) to iterate over
 - `map_mode` - `"zip"` or `"product"`
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively.
-- `select` - Which outputs to return. `"**"` (default) returns all outputs.
+- `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - How to handle non-conflicting internal/unknown overrides (`"ignore"`, `"warn"`, or `"error"`)
-- `entrypoint` - Optional explicit cycle entrypoint (passed to each `run()` call)
+- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
+- `entrypoint` - Runtime entrypoint overrides are not supported.
 - `max_concurrency` - Shared limit across all executions
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
@@ -725,7 +716,7 @@ Rules:
 
 ```python
 # input named "select" must go through values
-runner.run(graph, values={"select": "fast"}, select=["answer"])
+runner.run(graph, values={"select": "fast"})
 ```
 
 ### Supersteps

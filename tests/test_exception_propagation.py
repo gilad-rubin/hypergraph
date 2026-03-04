@@ -171,7 +171,7 @@ class TestExceptionInCycle:
         def cycle_gate(count: int) -> str:
             return END if count >= 10 else "counter_with_error"
 
-        graph = Graph([counter_with_error, cycle_gate])
+        graph = Graph([counter_with_error, cycle_gate], entrypoint="counter_with_error")
         runner = SyncRunner()
 
         with pytest.raises(CustomError, match="failed at iteration"):
@@ -190,7 +190,7 @@ class TestExceptionInCycle:
         def converge_gate(value: float, target: float = 10.0) -> str:
             return END if abs(target - value) < 0.01 else "converge_with_error"
 
-        graph = Graph([converge_with_error, converge_gate])
+        graph = Graph([converge_with_error, converge_gate], entrypoint="converge_with_error")
         runner = SyncRunner()
 
         with pytest.raises(CustomError, match="convergence error"):
@@ -280,7 +280,7 @@ class TestExceptionPreservesPartialResults:
             runner.run(graph, {"x": 5})
 
     def test_partial_values_with_select(self):
-        """Partial values respect the select parameter."""
+        """Partial values respect graph-level select configuration."""
 
         @node(output_name="a")
         def step_a(x: int) -> int:
@@ -290,12 +290,12 @@ class TestExceptionPreservesPartialResults:
         def step_b(a: int) -> int:
             raise CustomError("step b failed")
 
-        graph = Graph([step_a, step_b])
+        graph = Graph([step_a, step_b]).select("a")
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5}, select=["a"], error_handling="continue")
+        result = runner.run(graph, {"x": 5}, error_handling="continue")
 
-        assert result.status == RunStatus.FAILED
+        assert result.status == RunStatus.COMPLETED
         assert result.values == {"a": 10}
 
     def test_failure_at_first_node_returns_empty_values(self):

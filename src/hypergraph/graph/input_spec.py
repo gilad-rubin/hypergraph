@@ -1,7 +1,7 @@
 """Input specification calculation for graphs.
 
 This module contains the InputSpec dataclass and logic for computing
-which parameters are required, optional, or cycle entrypoints.
+which parameters are required or optional for a configured graph scope.
 """
 
 from __future__ import annotations
@@ -25,8 +25,7 @@ class InputSpec:
     Categories follow the "edge cancels default" rule:
     - required: No edge, no default, not bound -> must always provide
     - optional: No edge, has default OR bound -> can omit (fallback exists)
-    - entrypoints: dict mapping cycle node name -> tuple of params needed
-      to enter the cycle at that node. Pick ONE entrypoint per cycle.
+    - entrypoints: Reserved for compatibility; empty for configured graphs.
     """
 
     required: tuple[str, ...]
@@ -36,7 +35,7 @@ class InputSpec:
 
     @property
     def all(self) -> tuple[str, ...]:
-        """All input names (required + optional + entrypoint params)."""
+        """All input names (required + optional)."""
         seen = set(self.required + self.optional)
         entry_params: list[str] = []
         for params in self.entrypoints.values():
@@ -86,15 +85,25 @@ def compute_input_spec(
             selected=selected,
         )
 
+    data_subgraph = _data_only_subgraph(active_subgraph)
     edge_produced = get_edge_produced_values(active_subgraph)
-    cycle_entrypoints = _compute_entrypoints(active_nodes, active_subgraph, edge_produced, bound)
-    all_entry_params = {p for params in cycle_entrypoints.values() for p in params}
+    cycle_seed_params = _compute_cycle_seed_params(
+        active_nodes,
+        data_subgraph,
+        edge_produced,
+        bound,
+        configured_entrypoints=entrypoints or (),
+    )
 
     required, optional = [], []
 
     for param in _unique_params(active_nodes):
-        if param in all_entry_params:
-            continue  # Handled by entrypoints
+        if param in cycle_seed_params:
+            if param in bound or _any_node_has_default(param, active_nodes):
+                optional.append(param)
+            else:
+                required.append(param)
+            continue
         category = _categorize_param(param, edge_produced, bound, active_nodes)
         if category == "required":
             required.append(param)
@@ -106,9 +115,44 @@ def compute_input_spec(
     return InputSpec(
         required=tuple(required),
         optional=tuple(optional),
-        entrypoints=cycle_entrypoints,
+        entrypoints={},
         bound=all_bound,
     )
+
+
+def _compute_cycle_seed_params(
+    nodes: dict[str, HyperNode],
+    data_graph: nx.DiGraph,
+    edge_produced: set[str],
+    bound: dict[str, Any],
+    *,
+    configured_entrypoints: tuple[str, ...],
+) -> set[str]:
+    """Compute cycle bootstrap params required by configured entrypoint nodes."""
+    if not configured_entrypoints:
+        return set()
+
+    cycle_params = _get_all_cycle_params(nodes, data_graph, edge_produced)
+    if not cycle_params:
+        return set()
+
+    required: set[str] = set()
+    for ep_name in configured_entrypoints:
+        node = nodes.get(ep_name)
+        if node is None:
+            continue
+        for param in node.inputs:
+            if param not in cycle_params:
+                continue
+            if param in bound:
+                continue
+            if _is_interrupt_produced(param, nodes):
+                continue
+            if node.has_default_for(param):
+                continue
+            required.add(param)
+
+    return required
 
 
 def _unique_params(nodes: dict[str, HyperNode]) -> Iterator[str]:
@@ -145,63 +189,6 @@ def _is_interrupt_produced(param: str, nodes: dict[str, HyperNode]) -> bool:
 def _any_node_has_default(param: str, nodes: dict[str, HyperNode]) -> bool:
     """Check if any node consuming this param has a default value."""
     return any(param in node.inputs and node.has_default_for(param) for node in nodes.values())
-
-
-def _compute_entrypoints(
-    nodes: dict[str, HyperNode],
-    nx_graph: nx.DiGraph,
-    edge_produced: set[str],
-    bound: dict[str, Any],
-) -> dict[str, tuple[str, ...]]:
-    """Compute entrypoints for each cycle in the graph.
-
-    For each SCC (strongly connected component) with >1 node or a self-loop,
-    find non-gate nodes and compute which cycle-params they need as inputs.
-    Each such node is an entrypoint — the user picks one per cycle.
-
-    Returns:
-        Dict mapping node name -> tuple of cycle params needed to enter there.
-        Empty dict for DAGs (no cycles).
-    """
-    from hypergraph.nodes.gate import GateNode
-
-    data_graph = _data_only_subgraph(nx_graph)
-    cycle_params = _get_all_cycle_params(nodes, data_graph, edge_produced)
-
-    if not cycle_params:
-        return {}
-
-    sccs = list(nx.strongly_connected_components(data_graph))
-    entrypoints: dict[str, tuple[str, ...]] = {}
-
-    for scc in sccs:
-        if not _is_cyclic_scc(scc, data_graph):
-            continue
-
-        for node_name in sorted(scc):  # sorted for deterministic order
-            node = nodes[node_name]
-            if isinstance(node, GateNode):
-                continue  # Gates control cycles, not start them
-
-            # Params this node needs that are cycle-produced
-            # (minus bound, minus interrupt-produced, minus defaulted)
-            needed = tuple(
-                p
-                for p in node.inputs
-                if p in cycle_params and p not in bound and not _is_interrupt_produced(p, nodes) and not node.has_default_for(p)
-            )
-            if needed:  # Only include if node needs user-provided cycle params
-                entrypoints[node_name] = needed
-
-    return entrypoints
-
-
-def _is_cyclic_scc(scc: set[str], graph: nx.DiGraph) -> bool:
-    """Check if an SCC represents a cycle (>1 node, or self-loop)."""
-    if len(scc) > 1:
-        return True
-    node = next(iter(scc))
-    return graph.has_edge(node, node)
 
 
 def _get_all_cycle_params(

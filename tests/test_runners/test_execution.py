@@ -147,8 +147,8 @@ class TestGetReadyNodes:
         assert ready[0].name == "double"
 
     def test_cycle_node_ready_with_seed(self):
-        """Cyclic node is ready when seed input is provided."""
-        graph = Graph([counter])
+        """Cyclic node is ready when seeded and explicit entrypoint is configured."""
+        graph = Graph([counter], entrypoint="counter")
         state = initialize_state(graph, {"count": 0})
 
         ready = get_ready_nodes(graph, state)
@@ -162,7 +162,7 @@ class TestGetReadyNodes:
         def cycle_gate(count: int) -> str:
             return "counter" if count < 10 else END
 
-        graph = Graph([counter, cycle_gate])
+        graph = Graph([counter, cycle_gate], entrypoint="counter")
         state = initialize_state(graph, {"count": 0})
 
         # Execute counter once
@@ -258,6 +258,99 @@ class TestGetReadyNodes:
 
         ready_names = {n.name for n in get_ready_nodes(graph, state)}
         assert "should_continue" in ready_names
+
+    def test_explicit_edges_startup_is_predecessor_driven(self):
+        """Explicit-edge graphs should only start at entrypoint before predecessors run."""
+
+        @node(output_name="messages")
+        def ask_user(messages: list[str], user_input: str) -> list[str]:
+            return [*messages, f"user: {user_input}"]
+
+        @node(output_name="messages")
+        def llm(messages: list[str]) -> list[str]:
+            return [*messages, "assistant: ok"]
+
+        @route(targets=["ask_user", END])
+        def should_continue(messages: list[str], max_turns: int) -> str:
+            turns = sum(1 for m in messages if m.startswith("assistant: "))
+            return END if turns >= max_turns else "ask_user"
+
+        graph = Graph(
+            [ask_user, llm, should_continue],
+            edges=[
+                (ask_user, llm, "messages"),
+                (llm, should_continue, "messages"),
+                (llm, ask_user, "messages"),
+            ],
+            entrypoint="ask_user",
+        )
+        state = initialize_state(
+            graph,
+            {"messages": [], "user_input": "hello", "max_turns": 2},
+        )
+
+        ready_names = {n.name for n in get_ready_nodes(graph, state)}
+        assert ready_names == {"ask_user"}
+
+    def test_explicit_edges_gate_runs_only_after_declared_predecessor(self):
+        """In explicit mode, should_continue runs only after llm has executed."""
+
+        @node(output_name="messages")
+        def ask_user(messages: list[str], user_input: str) -> list[str]:
+            return [*messages, f"user: {user_input}"]
+
+        @node(output_name="messages")
+        def llm(messages: list[str]) -> list[str]:
+            return [*messages, "assistant: ok"]
+
+        @route(targets=["ask_user", END])
+        def should_continue(messages: list[str], max_turns: int) -> str:
+            turns = sum(1 for m in messages if m.startswith("assistant: "))
+            return END if turns >= max_turns else "ask_user"
+
+        graph = Graph(
+            [ask_user, llm, should_continue],
+            edges=[
+                (ask_user, llm, "messages"),
+                (llm, should_continue, "messages"),
+                (llm, ask_user, "messages"),
+            ],
+            entrypoint="ask_user",
+        )
+        state = initialize_state(
+            graph,
+            {"messages": [], "user_input": "hello", "max_turns": 2},
+        )
+
+        # First successful entrypoint execution.
+        consumed_messages = state.get_version("messages")
+        state.update_value("messages", ["user: hello"])
+        state.node_executions["ask_user"] = NodeExecution(
+            node_name="ask_user",
+            input_versions={
+                "messages": consumed_messages,
+                "user_input": state.get_version("user_input"),
+            },
+            outputs={"messages": state.values["messages"]},
+            output_versions={"messages": state.get_version("messages")},
+        )
+
+        ready_names = {n.name for n in get_ready_nodes(graph, state)}
+        assert ready_names == {"llm"}
+
+        # Once llm executes, gate becomes the only ready node in this superstep
+        # (ask_user is blocked because a ready gate decision applies first).
+        llm_consumed_messages = state.get_version("messages")
+        state.update_value("messages", ["user: hello", "assistant: ok"])
+        state.node_executions["llm"] = NodeExecution(
+            node_name="llm",
+            input_versions={"messages": llm_consumed_messages},
+            outputs={"messages": state.values["messages"]},
+            output_versions={"messages": state.get_version("messages")},
+        )
+
+        ready_names = {n.name for n in get_ready_nodes(graph, state)}
+        assert ready_names == {"should_continue"}
 
 
 # === Tests for collect_inputs_for_node ===

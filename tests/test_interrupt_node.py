@@ -703,11 +703,10 @@ class TestInterruptNodeInCycle:
         def decide(messages: list) -> str:
             return END if len(messages) > 2 else "ask_user"
 
-        graph = Graph([ask_user, process, accumulate, decide])
-        # query should NOT be an entrypoint param since it's produced by an InterruptNode
-        all_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
-        assert "query" not in all_ep_params
-        assert "messages" in all_ep_params
+        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
+        assert "query" not in graph.inputs.required
+        assert "query" not in graph.inputs.optional
+        assert "messages" in graph.inputs.required
 
     @pytest.mark.asyncio
     async def test_cycle_interrupt_pauses_first_run(self):
@@ -728,7 +727,7 @@ class TestInterruptNodeInCycle:
         def decide(messages: list) -> str:
             return END if len(messages) > 2 else "ask_user"
 
-        graph = Graph([ask_user, process, accumulate, decide])
+        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"messages": []})
@@ -755,7 +754,7 @@ class TestInterruptNodeInCycle:
         def decide(messages: list) -> str:
             return END if len(messages) > 2 else "ask_user"
 
-        graph = Graph([ask_user, process, accumulate, decide])
+        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
         runner = AsyncRunner()
 
         # Run 1: pause immediately
@@ -788,7 +787,7 @@ class TestInterruptNodeInCycle:
         def decide(messages: list) -> str:
             return END if len(messages) >= 1 else "ask_user"
 
-        graph = Graph([ask_user, process, accumulate, decide])
+        graph = Graph([ask_user, process, accumulate, decide], entrypoint="ask_user")
         runner = AsyncRunner()
 
         # Provide query, process completes, decide returns END

@@ -84,7 +84,7 @@ class TestCycleTermination:
         def check(count: int) -> str:
             return END if count >= 3 else "increment"
 
-        graph = Graph(nodes=[increment, check])
+        graph = Graph(nodes=[increment, check], entrypoint="increment")
         runner = SyncRunner()
         result = runner.run(graph, {"count": 0})
 
@@ -101,7 +101,7 @@ class TestCycleTermination:
         def check(count: int) -> str:
             return END if count >= 1 else "increment"
 
-        graph = Graph(nodes=[increment, check])
+        graph = Graph(nodes=[increment, check], entrypoint="increment")
         runner = SyncRunner()
         result = runner.run(graph, {"count": 0})
 
@@ -126,9 +126,8 @@ class TestIntermediateInjection:
         graph = Graph(nodes=[step1, step2])
         runner = SyncRunner()
 
-        # Provide "mid" directly — step1 should be skipped
-        result = runner.run(graph, {"mid": "SKIP"})
-        assert result["end"] == "SKIP_end"
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.run(graph, {"mid": "SKIP"})
 
     def test_normal_execution_still_works(self):
         """Normal execution (no intermediate injection) still works."""
@@ -192,10 +191,8 @@ class TestIntermediateInjection:
         graph = Graph(nodes=[split, use_left, use_right])
         runner = SyncRunner()
 
-        # Provide BOTH outputs — split is fully bypassed, no need for "x"
-        result = runner.run(graph, {"left": 100, "right": 200})
-        assert result["double_left"] == 200
-        assert result["double_right"] == 400
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.run(graph, {"left": 100, "right": 200})
 
     def test_multi_output_unused_output_can_be_skipped(self):
         """If a multi-output node has an unused output, partial injection works."""
@@ -213,9 +210,8 @@ class TestIntermediateInjection:
         graph = Graph(nodes=[split, use_left])
         runner = SyncRunner()
 
-        # Provide only "left" - and "right" is unused, so split can be bypassed
-        result = runner.run(graph, {"left": 100})
-        assert result["double_left"] == 200
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.run(graph, {"left": 100})
 
 
 # === Fix #6: Rename collision silently allowed ===
@@ -324,13 +320,11 @@ class TestControlOnlyCycles:
         def check(result: str) -> str:
             return END if len(result) > 5 else "process"
 
-        graph = Graph(nodes=[process, check])
+        graph = Graph(nodes=[process, check], entrypoint="process")
 
         # "data" feeds process but is NOT part of any data cycle
         assert "data" in graph.inputs.required, f"'data' should be required, got: {graph.inputs.required}"
-        # 'data' should not be an entrypoint param (it's required, not a cycle param)
-        all_ep_params = {p for params in graph.inputs.entrypoints.values() for p in params}
-        assert "data" not in all_ep_params, f"'data' should NOT be an entrypoint param: {graph.inputs.entrypoints}"
+        assert graph.inputs.entrypoints == {}
 
 
 # === Fix #11: Output rename propagation in GraphNode ===

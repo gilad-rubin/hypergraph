@@ -254,17 +254,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         validation_values = normalized_values
         if resume_checkpoint is not None:
-            if checkpoint is not None and normalized_values:
-                # Fork with runtime overrides: validate only graph inputs from
-                # checkpoint to avoid compute+inject conflicts on restored internals.
-                validation_values = dict(normalized_values)
-                for input_name in graph.inputs.all:
-                    if input_name not in validation_values and input_name in resume_checkpoint.values:
-                        validation_values[input_name] = resume_checkpoint.values[input_name]
-            else:
-                # Resume path: validate against full restored state so completed
-                # upstream nodes can bypass original entry inputs.
-                validation_values = {**resume_checkpoint.values, **normalized_values}
+            # Validate only canonical graph inputs from checkpoint state.
+            # Internal produced values are not user inputs in the canonical model.
+            validation_values = dict(normalized_values)
+            for input_name in graph.inputs.all:
+                if input_name not in validation_values and input_name in resume_checkpoint.values:
+                    validation_values[input_name] = resume_checkpoint.values[input_name]
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:

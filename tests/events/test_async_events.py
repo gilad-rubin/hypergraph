@@ -247,7 +247,7 @@ class TestRoutingEvents:
         def check(count: int) -> str:
             return END if count >= 1 else "increment"
 
-        graph = Graph([increment, check])
+        graph = Graph([increment, check], entrypoint="increment")
         runner = AsyncRunner()
         lp = ListProcessor()
 
@@ -277,7 +277,7 @@ class TestCyclicGraphEvents:
         def check(count: int) -> str:
             return END if count >= 3 else "increment"
 
-        graph = Graph([increment, check])
+        graph = Graph([increment, check], entrypoint="increment")
         runner = AsyncRunner()
         lp = ListProcessor()
 

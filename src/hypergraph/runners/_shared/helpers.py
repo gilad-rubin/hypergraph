@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import uuid
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -24,25 +25,47 @@ if TYPE_CHECKING:
     from hypergraph.nodes.graph_node import GraphNode
 
 
-def compute_active_node_set(graph: Graph) -> set[str] | None:
-    """Compute active node names from graph's entrypoint config.
+@dataclass(frozen=True)
+class ExecutionScope:
+    """Resolved execution scope shared by scheduler and validation."""
 
-    Returns None when no entrypoints are configured (all nodes active).
-    Delegates to input_spec._active_from_entrypoints to avoid duplicating
-    the forward-reachability logic.
+    active_nodes: set[str] | None
+    startup_predecessors: dict[str, frozenset[str]]
 
-    Note: This only considers entrypoints, not select. This is intentional —
-    ``with_entrypoint()`` narrows *execution* (which nodes run), while
-    ``select()`` narrows *validation* (which inputs are required) and
-    *output filtering* (what run() returns). Use ``with_entrypoint()`` when
-    you need to skip upstream node execution entirely.
+
+def compute_execution_scope(graph: Graph) -> ExecutionScope:
+    """Resolve active nodes and startup predecessors from graph configuration.
+
+    Scope is computed from graph-level entrypoint/select settings (no runtime
+    overrides). Startup predecessors include DATA + ORDERING edges and exclude
+    CONTROL edges (gate activation is handled separately by routing logic).
     """
-    if graph.entrypoints_config is None:
-        return None
+    from hypergraph.graph.input_spec import _compute_active_scope
 
-    from hypergraph.graph.input_spec import _active_from_entrypoints
+    if graph.entrypoints_config is None and graph.selected is None:
+        active_nodes: set[str] | None = None
+        active_subgraph = graph._nx_graph
+    else:
+        active_nodes_dict, active_subgraph = _compute_active_scope(
+            graph._nodes,
+            graph._nx_graph,
+            entrypoints=graph.entrypoints_config,
+            selected=graph.selected,
+        )
+        active_nodes = set(active_nodes_dict)
 
-    return _active_from_entrypoints(graph.entrypoints_config, graph._nodes, graph._nx_graph)
+    predecessors: dict[str, set[str]] = {}
+    for src, dst, data in active_subgraph.edges(data=True):
+        if src == dst:
+            continue
+        if data.get("edge_type") == "control":
+            continue
+        predecessors.setdefault(dst, set()).add(src)
+
+    return ExecutionScope(
+        active_nodes=active_nodes,
+        startup_predecessors={name: frozenset(preds) for name, preds in predecessors.items()},
+    )
 
 
 class ValueSource(Enum):
@@ -143,6 +166,7 @@ def get_ready_nodes(
     state: GraphState,
     *,
     active_nodes: set[str] | None = None,
+    startup_predecessors: dict[str, frozenset[str]] | None = None,
 ) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
@@ -159,18 +183,22 @@ def get_ready_nodes(
         active_nodes: Optional set of node names to restrict scheduling to.
             When set (from with_entrypoint), nodes outside this set are never
             scheduled even if their inputs are available.
+        startup_predecessors: Optional map of node -> startup predecessors in
+            the active scope. If omitted, no startup predecessor gating applies.
 
     Returns:
         List of nodes ready to execute
     """
     # First, identify which nodes are activated by gates
     activated_nodes = _get_activated_nodes(graph, state)
+    if startup_predecessors is None:
+        startup_predecessors = _compute_startup_predecessors(graph, active_nodes=active_nodes)
 
     ready = []
     for node in graph._nodes.values():
         if active_nodes is not None and node.name not in active_nodes:
             continue
-        if _is_node_ready(node, graph, state, activated_nodes):
+        if _is_node_ready(node, graph, state, activated_nodes, startup_predecessors=startup_predecessors):
             ready.append(node)
 
     # If a gate is ready, its routing decision should apply before targets run.
@@ -198,6 +226,27 @@ def get_ready_nodes(
     ready = _defer_wait_for_nodes(ready, graph)
 
     return ready
+
+
+def _compute_startup_predecessors(
+    graph: Graph,
+    *,
+    active_nodes: set[str] | None,
+) -> dict[str, frozenset[str]]:
+    """Compute startup predecessors from graph topology.
+
+    Uses DATA + ORDERING edges and excludes CONTROL edges.
+    """
+    predecessors: dict[str, set[str]] = {}
+    for src, dst, data in graph._nx_graph.edges(data=True):
+        if src == dst:
+            continue
+        if active_nodes is not None and (src not in active_nodes or dst not in active_nodes):
+            continue
+        if data.get("edge_type") == "control":
+            continue
+        predecessors.setdefault(dst, set()).add(src)
+    return {name: frozenset(preds) for name, preds in predecessors.items()}
 
 
 def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
@@ -283,10 +332,16 @@ def _is_node_ready(
     graph: Graph,
     state: GraphState,
     activated_nodes: set[str],
+    *,
+    startup_predecessors: dict[str, frozenset[str]] | None = None,
 ) -> bool:
     """Check if a single node is ready to execute."""
     # Check if node is activated (not blocked by gate decisions)
     if node.name not in activated_nodes:
+        return False
+
+    # Startup is predecessor-driven in both implicit and explicit modes.
+    if not _startup_predecessors_satisfied(node, graph, state, startup_predecessors=startup_predecessors):
         return False
 
     # Check if all inputs are available
@@ -299,6 +354,25 @@ def _is_node_ready(
 
     # Check if node needs execution (not executed or stale)
     return _needs_execution(node, graph, state)
+
+
+def _startup_predecessors_satisfied(
+    node: HyperNode,
+    graph: Graph,
+    state: GraphState,
+    *,
+    startup_predecessors: dict[str, frozenset[str]] | None = None,
+) -> bool:
+    """Whether startup predecessor constraints allow node execution."""
+    predecessors = (startup_predecessors or {}).get(node.name, frozenset())
+    if not predecessors:
+        return True
+
+    entrypoints = graph.entrypoints_config or ()
+    if node.name in entrypoints and node.name not in state.node_executions:
+        return True
+
+    return all(pred in state.node_executions for pred in predecessors)
 
 
 def _is_controlled_by_gate(node: HyperNode, graph: Graph) -> bool:
@@ -421,8 +495,7 @@ def _is_stale(
     self_producers = graph.self_producers
     is_gated = _is_controlled_by_gate(node, graph)
     downstream = graph.downstream_produced.get(node.name, frozenset())
-    explicit_mode = graph.has_explicit_edges
-    explicit_input_producers = graph.input_data_producers.get(node.name, {}) if explicit_mode else {}
+    input_data_producers = graph.input_data_producers.get(node.name, {})
 
     for param in node.inputs:
         if not is_gated:
@@ -437,14 +510,10 @@ def _is_stale(
         if current_version == consumed_version:
             continue
 
-        if explicit_mode:
-            # In explicit-edge mode, only data producers wired to this input
-            # should trigger staleness for this node.
-            upstream = explicit_input_producers.get(param, frozenset())
-            if upstream and _latest_upstream_output_version(param, upstream, state) <= consumed_version:
-                continue
-            return True
-
+        # Only producers wired to this node/input should trigger staleness.
+        upstream = input_data_producers.get(param, frozenset())
+        if upstream and _latest_upstream_output_version(param, upstream, state) <= consumed_version:
+            continue
         return True
     return False
 

@@ -362,19 +362,19 @@ class TestGraphInputs:
         assert "a" in g.inputs.all
         assert "b" in g.inputs.all
 
-    def test_cycle_creates_entrypoint(self):
-        """Test parameter in cycle becomes an entrypoint."""
+    def test_cycle_requires_explicit_entrypoint(self):
+        """Cycles must declare entrypoint and expose canonical required inputs."""
 
         @node(output_name="count")
         def counter(count):
             return count + 1
 
-        g = Graph([counter])
+        with pytest.raises(GraphConfigError, match="explicit entrypoint"):
+            Graph([counter])
 
-        # 'count' is both consumed and produced by same node -> cycle -> entrypoint
-        assert "counter" in g.inputs.entrypoints
-        assert "count" in g.inputs.entrypoints["counter"]
-        assert g.inputs.required == ()
+        g = Graph([counter], entrypoint="counter")
+        assert g.inputs.entrypoints == {}
+        assert g.inputs.required == ("count",)
         assert g.inputs.optional == ()
 
     def test_complex_graph(self):
@@ -624,7 +624,7 @@ class TestGraphFeatureProperties:
         def counter(count):
             return count + 1
 
-        g = Graph([counter])
+        g = Graph([counter], entrypoint="counter")
 
         assert g.has_cycles is True
 
@@ -1827,7 +1827,7 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        graph = Graph([accumulate_query, accumulate_response, should_continue], entrypoint="accumulate_query")
         assert graph is not None
 
     def test_ordered_via_emit_wait_for_runs(self):
@@ -1847,7 +1847,7 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        graph = Graph([accumulate_query, accumulate_response, should_continue], entrypoint="accumulate_query")
         runner = SyncRunner()
         result = runner.run(graph, {"messages": [], "query": "hi", "response": "hello"})
         assert "messages" in result
@@ -1883,7 +1883,7 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        graph = Graph([accumulate_query, accumulate_response, should_continue], entrypoint="accumulate_query")
 
         assert hasattr(graph, "self_producers")
         producers = graph.self_producers
@@ -1934,7 +1934,7 @@ class TestCycleSameOutput:
         def loop(x: int, y: int) -> str:
             return END if x > 10 else "producer_a"
 
-        graph = Graph([producer_a, producer_b, loop])
+        graph = Graph([producer_a, producer_b, loop], entrypoint="producer_a")
         assert graph is not None
 
     def test_error_message_suggests_fix(self):

@@ -384,10 +384,10 @@ class TestImmutability:
 
 
 class TestRuntimeSelectNarrowsValidation:
-    """runner.run(select=...) should only require inputs for selected outputs."""
+    """Runtime select overrides are rejected; use graph.select() instead."""
 
     def test_runtime_select_narrows_validation(self):
-        """runner.run(select="a_val") only validates inputs for a_val."""
+        """runner.run(select=...) is no longer supported."""
 
         @node(output_name="a_val")
         def node_a(x):
@@ -404,12 +404,11 @@ class TestRuntimeSelectNarrowsValidation:
         with pytest.raises(MissingInputError, match="y"):
             runner.run(graph, {"x": 1})
 
-        # With select="a_val", only x is required → succeeds
-        result = runner.run(graph, {"x": 1}, select="a_val")
-        assert result["a_val"] == 1
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
+            runner.run(graph, {"x": 1}, select="a_val")
 
     def test_runtime_select_overrides_graph_select(self):
-        """Runtime select takes precedence over graph.select()."""
+        """Runtime select no longer overrides graph.select()."""
 
         @node(output_name="a_val")
         def node_a(x):
@@ -423,12 +422,11 @@ class TestRuntimeSelectNarrowsValidation:
         graph = Graph([node_a, node_b]).select("b_val")
         runner = SyncRunner()
 
-        # Runtime select="a_val" should narrow validation to just x
-        result = runner.run(graph, {"x": 1}, select="a_val")
-        assert result["a_val"] == 1
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
+            runner.run(graph, {"x": 1}, select="a_val")
 
     def test_runtime_select_all_overrides_graph_select(self):
-        """select='**' at runtime overrides graph.select() and validates all inputs."""
+        """Runtime select='**' is also rejected."""
 
         @node(output_name="a_val")
         def node_a(x):
@@ -442,14 +440,8 @@ class TestRuntimeSelectNarrowsValidation:
         graph = Graph([node_a, node_b]).select("a_val")
         runner = SyncRunner()
 
-        # select="**" at runtime means "all outputs" → y becomes required
-        with pytest.raises(MissingInputError, match="y"):
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
             runner.run(graph, {"x": 1}, select="**")
-
-        # Providing both inputs should succeed with all outputs
-        result = runner.run(graph, {"x": 1, "y": 2}, select="**")
-        assert "a_val" in result
-        assert "b_val" in result
 
 
 # === Entrypoint execution tests ===
@@ -571,12 +563,9 @@ class TestEntrypointCycleInteraction:
         def node_c(b: int) -> int:
             return b - 1
 
-        graph = Graph([node_a, node_b, node_c])
+        graph = Graph([node_a, node_b, node_c], entrypoint="node_b")
         assert graph.has_cycles
-
-        # Entrypoint at node_b: skip node_a, so 'a' is the bootstrap param
-        g2 = graph.with_entrypoint("node_b")
-        assert "a" in g2.inputs.entrypoints.get("node_b", ())
+        assert "a" in graph.inputs.required
 
     def test_dag_upstream_of_cycle_excluded_by_entrypoint(self):
         """with_entrypoint at cycle member excludes DAG nodes upstream.
@@ -601,15 +590,9 @@ class TestEntrypointCycleInteraction:
         def cycle_c(b):
             return b - 1
 
-        graph = Graph([root, cycle_a, cycle_b, cycle_c])
-        # Full graph: x is required (root's input)
-        assert "x" in graph.inputs.required
-
-        # Entrypoint at cycle_a: root is upstream → skipped
-        g2 = graph.with_entrypoint("cycle_a")
-        assert "x" not in set(g2.inputs.required) | set(g2.inputs.optional)
-        # 'a' is now user-provided since root is skipped
-        assert "a" in set(g2.inputs.required) | set(g2.inputs.optional) | {p for params in g2.inputs.entrypoints.values() for p in params}
+        graph = Graph([root, cycle_a, cycle_b, cycle_c], entrypoint="cycle_a")
+        assert "x" not in set(graph.inputs.required) | set(graph.inputs.optional)
+        assert "a" in set(graph.inputs.required) | set(graph.inputs.optional)
 
 
 # === Async runner path ===
@@ -641,7 +624,7 @@ class TestAsyncRunnerEntrypoint:
 
     @pytest.mark.asyncio
     async def test_async_runtime_select_narrows_validation(self):
-        """AsyncRunner runtime select narrows validation like SyncRunner."""
+        """AsyncRunner rejects runtime select overrides like SyncRunner."""
 
         @node(output_name="a_val")
         async def node_a(x):
@@ -658,6 +641,5 @@ class TestAsyncRunnerEntrypoint:
         with pytest.raises(MissingInputError, match="y"):
             await runner.run(graph, {"x": 1})
 
-        # With select="a_val", only x is required
-        result = await runner.run(graph, {"x": 1}, select="a_val")
-        assert result["a_val"] == 1
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
+            await runner.run(graph, {"x": 1}, select="a_val")

@@ -153,12 +153,12 @@ class TestMultiNodeCycle:
         def node_c(b: int) -> int:
             return b - 1
 
-        g = Graph([node_a, node_b, node_c])
+        g = Graph([node_a, node_b, node_c], entrypoint="node_a")
 
         assert g.has_cycles is True
 
-    def test_three_node_cycle_entrypoints(self):
-        """Three-node cycle computes entrypoints for cycle nodes."""
+    def test_three_node_cycle_entrypoint_seed_required(self):
+        """Configured entrypoint defines the canonical cycle seed input."""
 
         @node(output_name="a")
         def node_a(c: int) -> int:
@@ -172,15 +172,9 @@ class TestMultiNodeCycle:
         def node_c(b: int) -> int:
             return b - 1
 
-        g = Graph([node_a, node_b, node_c])
-
-        # Each non-gate cycle node is an entrypoint
-        assert len(g.inputs.entrypoints) > 0
-        # All cycle nodes should appear as entrypoints
-        all_ep_params = {p for params in g.inputs.entrypoints.values() for p in params}
-        cycle_params = {"a", "b", "c"}
-        for param in cycle_params:
-            assert param in all_ep_params or param not in g.inputs.all
+        g = Graph([node_a, node_b, node_c], entrypoint="node_a")
+        assert g.inputs.entrypoints == {}
+        assert g.inputs.required == ("c",)
 
     def test_three_node_cycle_no_required_inputs(self):
         """If all inputs are from cycle, required should be empty."""
@@ -197,13 +191,11 @@ class TestMultiNodeCycle:
         def node_c(b: int) -> int:
             return b - 1
 
-        g = Graph([node_a, node_b, node_c])
-
-        # No external inputs needed (all come from cycle)
-        assert g.inputs.required == ()
+        g = Graph([node_a, node_b, node_c], entrypoint="node_a")
+        assert g.inputs.required == ("c",)
 
     def test_cycle_with_external_input(self):
-        """Cycle with external input: x is required, cycle params are entrypoints."""
+        """Cycle with external input includes both external + seed inputs."""
 
         @node(output_name="a")
         def node_a(c: int, x: int) -> int:
@@ -217,12 +209,9 @@ class TestMultiNodeCycle:
         def node_c(b: int) -> int:
             return b - 1
 
-        g = Graph([node_a, node_b, node_c])
-
-        # 'x' is external input
-        assert "x" in g.inputs.required
-        # Cycle parameters appear in entrypoints
-        assert len(g.inputs.entrypoints) > 0
+        g = Graph([node_a, node_b, node_c], entrypoint="node_a")
+        assert set(g.inputs.required) == {"c", "x"}
+        assert g.inputs.entrypoints == {}
 
 
 class TestMultipleCycles:
@@ -258,12 +247,12 @@ class TestMultipleCycles:
         def r_node(q: int) -> int:
             return q - 5
 
-        g = Graph([x_node, y_node, p_node, q_node, r_node])
+        g = Graph([x_node, y_node, p_node, q_node, r_node], entrypoint=["x_node", "p_node"])
 
         assert g.has_cycles is True
 
-    def test_two_independent_cycles_entrypoints(self):
-        """Entry points from both cycles are detected."""
+    def test_two_independent_cycles_require_seed_per_entrypoint(self):
+        """Each configured cycle entrypoint contributes its own seed input."""
 
         @node(output_name="x")
         def x_node(y: int) -> int:
@@ -285,10 +274,9 @@ class TestMultipleCycles:
         def r_node(q: int) -> int:
             return q - 5
 
-        g = Graph([x_node, y_node, p_node, q_node, r_node])
-
-        # Both cycles need entrypoints — at least one node per cycle
-        assert len(g.inputs.entrypoints) >= 2
+        g = Graph([x_node, y_node, p_node, q_node, r_node], entrypoint=["x_node", "p_node"])
+        assert g.inputs.entrypoints == {}
+        assert set(g.inputs.required) == {"y", "r"}
 
     def test_cycles_with_shared_external_input(self):
         """Two cycles sharing external input 'config'."""
@@ -313,11 +301,11 @@ class TestMultipleCycles:
         def r_node(q: int) -> int:
             return q - 5
 
-        g = Graph([x_node, y_node, p_node, q_node, r_node])
-
-        # 'config' is required (external), cycle nodes have entrypoints
+        g = Graph([x_node, y_node, p_node, q_node, r_node], entrypoint=["x_node", "p_node"])
         assert "config" in g.inputs.required
-        assert len(g.inputs.entrypoints) > 0
+        assert "y" in g.inputs.required
+        assert "r" in g.inputs.required
+        assert g.inputs.entrypoints == {}
 
 
 class TestIsolatedSubgraphs:

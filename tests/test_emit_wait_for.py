@@ -281,7 +281,7 @@ class TestCyclicOrdering:
                 return END
             return "generate"
 
-        graph = Graph(nodes=[generate, accumulate, should_continue])
+        graph = Graph(nodes=[generate, accumulate, should_continue], entrypoint="generate")
         runner = SyncRunner()
         result = runner.run(graph, {"messages": ["hello"]})
 
