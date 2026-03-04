@@ -29,7 +29,7 @@ graph.visualize(
     theme="auto",           # "dark", "light", or "auto"
     show_types=False,       # Show type annotations on nodes
     separate_outputs=False, # Render outputs as separate DATA nodes
-    show_external_inputs=False, # Show root-level INPUT/INPUT_GROUP nodes
+    show_external_inputs=False, # Show external INPUT/INPUT_GROUP nodes
     filepath=None,          # Save to HTML file instead of displaying
 )
 ```
@@ -77,7 +77,7 @@ By default, edges connect functions directly. With `separate_outputs=True`, each
 graph.visualize(show_external_inputs=True)
 ```
 
-Root-level external INPUT/INPUT_GROUP nodes are hidden by default to reduce clutter in cyclic graphs.  
+External INPUT/INPUT_GROUP nodes are hidden by default to reduce clutter in cyclic graphs.  
 Use this option (or the side-panel toggle in the widget) to show or hide them interactively.
 
 ### `filepath` — Save to HTML

@@ -81,7 +81,7 @@ def visualize(
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
-        show_external_inputs: Whether to show root-level external INPUT/INPUT_GROUP nodes (default: False)
+        show_external_inputs: Whether to show external INPUT/INPUT_GROUP nodes (default: False)
         filepath: Path to save HTML file (default: None, display in notebook)
         _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 

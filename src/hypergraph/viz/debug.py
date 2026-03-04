@@ -582,7 +582,7 @@ async def _extract_debug_data_async(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = False,
+    show_external_inputs: bool = True,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -635,7 +635,7 @@ def _extract_debug_data_sync(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = False,
+    show_external_inputs: bool = True,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -783,7 +783,7 @@ def extract_debug_data(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = False,
+    show_external_inputs: bool = True,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -799,7 +799,7 @@ def extract_debug_data(
         depth: How many levels of nested graphs to expand (default: 0)
         theme: "dark", "light", or "auto" (default: "auto")
         separate_outputs: Show outputs as separate DATA nodes (default: False)
-        show_external_inputs: Show root-level external INPUT/INPUT_GROUP nodes (default: False)
+        show_external_inputs: Show external INPUT/INPUT_GROUP nodes (default: True)
         headless: Run browser in headless mode (default: True)
         timeout: Max time to wait for layout in ms (default: 5000)
 

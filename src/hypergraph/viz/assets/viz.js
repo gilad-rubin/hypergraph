@@ -1520,19 +1520,13 @@
     var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
 
-    var expansionStateToKey = function(es, sep) {
+    var expansionStateToKey = function(es, sep, showExternalInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');
-      if (!expandableNodes.length) return sepKey;
+      var extKey = 'ext:' + (showExternalInputs ? '1' : '0');
+      if (!expandableNodes.length) return sepKey + '|' + extKey;
       var parts = [];
       expandableNodes.forEach(function(id) { parts.push(id + ':' + (es.get(id) ? '1' : '0')); });
-      return parts.join(',') + '|' + sepKey;
-    };
-
-    var isExternalInputNode = function(node) {
-      var data = node && node.data ? node.data : {};
-      var nodeType = data.nodeType;
-      if (nodeType !== 'INPUT' && nodeType !== 'INPUT_GROUP') return false;
-      return !data.ownerContainer;
+      return parts.join(',') + '|' + sepKey + '|' + extKey;
     };
 
     var nsState = useNodesState([]);
@@ -1572,16 +1566,13 @@
 
     // Select precomputed nodes
     var selectedNodes = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs);
-      var base = Object.prototype.hasOwnProperty.call(nodesByState, key) ? nodesByState[key] : initialData.nodes;
-      return base.map(function(n) {
-        var hideExternalInput = !showExternalInputs && isExternalInputNode(n);
-        return {
-          ...n,
-          hidden: Boolean(n.hidden) || hideExternalInput,
-          data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs },
-        };
-      });
+      var key = expansionStateToKey(expansionState, separateOutputs, showExternalInputs);
+      var base = Object.prototype.hasOwnProperty.call(nodesByState, key)
+        ? nodesByState[key]
+        : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
+          ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
+          : initialData.nodes);
+      return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
     }, [expansionState, separateOutputs, showTypes, showExternalInputs, activeTheme, nodesByState, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
@@ -1620,22 +1611,16 @@
 
     // Select edges
     var selectedEdges = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs);
-      return Object.prototype.hasOwnProperty.call(edgesByState, key) ? edgesByState[key] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, edgesByState, initialData.edges]);
-
-    var visibleEdges = useMemo(function() {
-      var hiddenIds = new Set(
-        selectedNodes.filter(function(n) { return n.hidden; }).map(function(n) { return n.id; })
-      );
-      if (!hiddenIds.size) return selectedEdges;
-      return selectedEdges.filter(function(e) { return !hiddenIds.has(e.source) && !hiddenIds.has(e.target); });
-    }, [selectedEdges, selectedNodes]);
+      var key = expansionStateToKey(expansionState, separateOutputs, showExternalInputs);
+      if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
+      var fallback = expansionStateToKey(expansionState, separateOutputs, true);
+      return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
+    }, [expansionState, separateOutputs, showExternalInputs, edgesByState, initialData.edges]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
-      setNodes(nodesWithCb); setEdges(visibleEdges);
-    }, [nodesWithCb, visibleEdges, setNodes, setEdges]);
+      setNodes(nodesWithCb); setEdges(selectedEdges);
+    }, [nodesWithCb, selectedEdges, setNodes, setEdges]);
 
     var routingData = useMemo(function() {
       return {
@@ -1645,7 +1630,7 @@
       };
     }, [initialData]);
 
-    var layoutResult = useLayout(nodesWithCb, visibleEdges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
+    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
     var layoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
@@ -1873,9 +1858,7 @@
         var isControl = edgeType === 'control';
         var isOrdering = edgeType === 'ordering';
         var st = { ...edgeOpts.style, strokeWidth: (e.data && e.data.isDataLink) ? 1.5 : 2 };
-        // Keep decision-labeled control edges dashed; unlabeled control back-edges
-        // are rendered solid to reduce visual confusion in cyclic graphs.
-        if (isControl && e.data && e.data.label) st.strokeDasharray = '6 4';
+        if (isControl) st.strokeDasharray = '6 4';
         if (isOrdering) { st.stroke = '#8b5cf6'; st.strokeWidth = 1.5; st.strokeDasharray = '6 3'; }
         return { ...e, id: e.id + '_exp_' + (expansionKey ? expansionKey.replace(/,/g, '_') : 'none') + '_mode_' + renderModeKey,
           ...edgeOpts, style: st, markerEnd: edgeOpts.markerEnd, data: e.data };

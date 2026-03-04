@@ -954,7 +954,7 @@ class Graph:
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
-            show_external_inputs: Whether to show root-level external INPUT/INPUT_GROUP nodes
+            show_external_inputs: Whether to show external INPUT/INPUT_GROUP nodes
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:

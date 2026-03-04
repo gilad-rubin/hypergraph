@@ -36,6 +36,7 @@ def compute_nodes_for_state(
     show_types: bool,
     theme: str,
     separate_outputs: bool = False,
+    show_external_inputs: bool = True,
     input_groups: list[dict[str, Any]] | None = None,
     input_consumer_mode: str = "all",
     graph_output_visibility: dict[str, set[str]] | None = None,
@@ -46,25 +47,26 @@ def compute_nodes_for_state(
     self_loop_nodes = {source for source, target in flat_graph.edges() if source == target and is_node_visible(source, flat_graph, expansion_state)}
 
     bound_params = set(input_spec.get("bound", {}).keys())
-    param_to_consumer = build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
-        mode=input_consumer_mode,
-    )
-    if input_groups is None:
-        input_groups = build_input_groups(input_spec, param_to_consumer, bound_params)
+    if show_external_inputs:
+        param_to_consumer = build_param_to_consumer_map(
+            flat_graph,
+            expansion_state,
+            mode=input_consumer_mode,
+        )
+        if input_groups is None:
+            input_groups = build_input_groups(input_spec, param_to_consumer, bound_params)
 
-    create_input_nodes(
-        nodes,
-        flat_graph,
-        input_spec,
-        bound_params,
-        theme,
-        show_types,
-        param_to_consumer,
-        expansion_state,
-        input_groups,
-    )
+        create_input_nodes(
+            nodes,
+            flat_graph,
+            input_spec,
+            bound_params,
+            theme,
+            show_types,
+            param_to_consumer,
+            expansion_state,
+            input_groups,
+        )
 
     for node_id, attrs in flat_graph.nodes(data=True):
         if attrs.get("hide", False):
@@ -124,63 +126,50 @@ def precompute_all_edges(
     expandable_nodes = get_expandable_nodes(flat_graph)
 
     if not expandable_nodes:
-        edges_merged = compute_edges_for_state(
-            flat_graph,
-            {},
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=False,
-            input_groups=input_groups,
-            graph_output_visibility=graph_output_visibility,
-            input_consumer_mode=input_consumer_mode,
-        )
-        edges_separate = compute_edges_for_state(
-            flat_graph,
-            {},
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=True,
-            input_groups=input_groups,
-            graph_output_visibility=graph_output_visibility,
-            input_consumer_mode=input_consumer_mode,
-        )
-        return {"sep:0": edges_merged, "sep:1": edges_separate}, []
+        edges_by_state: dict[str, list[dict[str, Any]]] = {}
+        for separate_outputs in (False, True):
+            for show_external_inputs in (False, True):
+                edges = compute_edges_for_state(
+                    flat_graph,
+                    {},
+                    input_spec,
+                    show_types,
+                    theme,
+                    separate_outputs=separate_outputs,
+                    show_external_inputs=show_external_inputs,
+                    input_groups=input_groups,
+                    graph_output_visibility=graph_output_visibility,
+                    input_consumer_mode=input_consumer_mode,
+                )
+                key = _compose_state_key("", separate_outputs, show_external_inputs)
+                edges_by_state[key] = edges
+                if show_external_inputs:
+                    edges_by_state[_compose_legacy_state_key("", separate_outputs)] = edges
+        return edges_by_state, []
 
     edges_by_state: dict[str, list[dict[str, Any]]] = {}
     valid_states = enumerate_valid_expansion_states(flat_graph, expandable_nodes)
 
     for state in valid_states:
         exp_key = expansion_state_to_key(state)
-
-        key_merged = f"{exp_key}|sep:0"
-        edges_merged = compute_edges_for_state(
-            flat_graph,
-            state,
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=False,
-            input_groups=input_groups,
-            graph_output_visibility=graph_output_visibility,
-            input_consumer_mode=input_consumer_mode,
-        )
-        edges_by_state[key_merged] = edges_merged
-
-        key_separate = f"{exp_key}|sep:1"
-        edges_separate = compute_edges_for_state(
-            flat_graph,
-            state,
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=True,
-            input_groups=input_groups,
-            graph_output_visibility=graph_output_visibility,
-            input_consumer_mode=input_consumer_mode,
-        )
-        edges_by_state[key_separate] = edges_separate
+        for separate_outputs in (False, True):
+            for show_external_inputs in (False, True):
+                edges = compute_edges_for_state(
+                    flat_graph,
+                    state,
+                    input_spec,
+                    show_types,
+                    theme,
+                    separate_outputs=separate_outputs,
+                    show_external_inputs=show_external_inputs,
+                    input_groups=input_groups,
+                    graph_output_visibility=graph_output_visibility,
+                    input_consumer_mode=input_consumer_mode,
+                )
+                key = _compose_state_key(exp_key, separate_outputs, show_external_inputs)
+                edges_by_state[key] = edges
+                if show_external_inputs:
+                    edges_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = edges
 
     return edges_by_state, expandable_nodes
 
@@ -198,60 +187,66 @@ def precompute_all_nodes(
     expandable_nodes = get_expandable_nodes(flat_graph)
 
     if not expandable_nodes:
-        nodes_merged = compute_nodes_for_state(
-            flat_graph,
-            {},
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=False,
-            graph_output_visibility=graph_output_visibility,
-            input_groups=input_groups,
-            input_consumer_mode=input_consumer_mode,
-        )
-        nodes_separate = compute_nodes_for_state(
-            flat_graph,
-            {},
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=True,
-            graph_output_visibility=graph_output_visibility,
-            input_groups=input_groups,
-            input_consumer_mode=input_consumer_mode,
-        )
-        return {"sep:0": nodes_merged, "sep:1": nodes_separate}, []
+        nodes_by_state: dict[str, list[dict[str, Any]]] = {}
+        for separate_outputs in (False, True):
+            for show_external_inputs in (False, True):
+                nodes = compute_nodes_for_state(
+                    flat_graph,
+                    {},
+                    input_spec,
+                    show_types,
+                    theme,
+                    separate_outputs=separate_outputs,
+                    show_external_inputs=show_external_inputs,
+                    graph_output_visibility=graph_output_visibility,
+                    input_groups=input_groups,
+                    input_consumer_mode=input_consumer_mode,
+                )
+                key = _compose_state_key("", separate_outputs, show_external_inputs)
+                nodes_by_state[key] = nodes
+                if show_external_inputs:
+                    nodes_by_state[_compose_legacy_state_key("", separate_outputs)] = nodes
+        return nodes_by_state, []
 
     nodes_by_state: dict[str, list[dict[str, Any]]] = {}
     valid_states = enumerate_valid_expansion_states(flat_graph, expandable_nodes)
 
     for state in valid_states:
         exp_key = expansion_state_to_key(state)
-
-        key_merged = f"{exp_key}|sep:0"
-        nodes_by_state[key_merged] = compute_nodes_for_state(
-            flat_graph,
-            state,
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=False,
-            graph_output_visibility=graph_output_visibility,
-            input_groups=input_groups,
-            input_consumer_mode=input_consumer_mode,
-        )
-
-        key_separate = f"{exp_key}|sep:1"
-        nodes_by_state[key_separate] = compute_nodes_for_state(
-            flat_graph,
-            state,
-            input_spec,
-            show_types,
-            theme,
-            separate_outputs=True,
-            graph_output_visibility=graph_output_visibility,
-            input_groups=input_groups,
-            input_consumer_mode=input_consumer_mode,
-        )
+        for separate_outputs in (False, True):
+            for show_external_inputs in (False, True):
+                nodes = compute_nodes_for_state(
+                    flat_graph,
+                    state,
+                    input_spec,
+                    show_types,
+                    theme,
+                    separate_outputs=separate_outputs,
+                    show_external_inputs=show_external_inputs,
+                    graph_output_visibility=graph_output_visibility,
+                    input_groups=input_groups,
+                    input_consumer_mode=input_consumer_mode,
+                )
+                key = _compose_state_key(exp_key, separate_outputs, show_external_inputs)
+                nodes_by_state[key] = nodes
+                if show_external_inputs:
+                    nodes_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = nodes
 
     return nodes_by_state, expandable_nodes
+
+
+def _compose_legacy_state_key(expansion_key: str, separate_outputs: bool) -> str:
+    """State key format used before external-input visibility was added."""
+    sep_key = "sep:1" if separate_outputs else "sep:0"
+    return f"{expansion_key}|{sep_key}" if expansion_key else sep_key
+
+
+def _compose_state_key(
+    expansion_key: str,
+    separate_outputs: bool,
+    show_external_inputs: bool,
+) -> str:
+    """State key including separate-outputs and external-input visibility flags."""
+    base = _compose_legacy_state_key(expansion_key, separate_outputs)
+    ext_key = "ext:1" if show_external_inputs else "ext:0"
+    return f"{base}|{ext_key}"

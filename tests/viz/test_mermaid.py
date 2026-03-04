@@ -255,8 +255,8 @@ class TestEdgeTypes:
         graph = Graph(nodes=[check_cache, fast_path, slow_path])
         mermaid = graph.to_mermaid()
 
-        assert "-->|True|" in mermaid
-        assert "-->|False|" in mermaid
+        assert "-.->|True|" in mermaid
+        assert "-.->|False|" in mermaid
 
     def test_ordering_edge_dotted(self):
         """Ordering edges use dotted arrow syntax."""
@@ -286,7 +286,7 @@ class TestEdgeTypes:
         graph = Graph(nodes=[embed, retrieve, generate, should_continue], entrypoint="embed")
         mermaid = graph.to_mermaid()
 
-        assert "should_continue --> retrieve" in mermaid
+        assert "should_continue -.-> retrieve" in mermaid
 
     def test_both_ifelse_branches_to_end(self):
         """Both True and False END edges emitted when both branches route to END.

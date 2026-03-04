@@ -709,7 +709,7 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
 - `show_types` (bool): Display type annotations on nodes. Default: False.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
-- `show_external_inputs` (bool): Show root-level external INPUT/INPUT_GROUP nodes. Default: False.
+- `show_external_inputs` (bool): Show external INPUT/INPUT_GROUP nodes. Default: False.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 
 **Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).

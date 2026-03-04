@@ -27,7 +27,7 @@
 - **Runtime scope overrides removed** — passing runtime `select=` or `entrypoint=` to runners now raises `ValueError`. Configure scope on the graph instance instead.
 - **Cycles require constructor entrypoint** — constructing a cyclic graph without `Graph(..., entrypoint=...)` now raises `GraphConfigError`.
 - **Internal output injection tightened** — user-provided values for edge-produced internal parameters are rejected deterministically.
-- **Visualization defaults simplified** — root-level external inputs are hidden by default in `.visualize()` and can be toggled with `show_external_inputs` (API) or the side-panel control.
+- **Visualization defaults simplified** — external inputs are hidden by default in `.visualize()` and can be toggled with `show_external_inputs` (API) or the side-panel control.
 - **Visualization dependency edges simplified** — transitive execution edges are pruned in rendered views (for example, hiding `B→A` when `B→C→A` is already present).
 
 ## Recent Merged PRs

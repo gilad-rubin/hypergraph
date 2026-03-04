@@ -168,7 +168,7 @@ def _cached_html_path(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    show_external_inputs: bool = False,
+    show_external_inputs: bool = True,
     debug_overlays: bool = False,
 ) -> str:
     """Render HTML once per cache key and return the cached file path."""
@@ -560,7 +560,7 @@ def click_to_collapse_container(page, container_id: str) -> None:
     )
 
 
-def render_and_extract(page, graph: Graph, depth: int, temp_path: str, *, show_external_inputs: bool = False) -> dict:
+def render_and_extract(page, graph: Graph, depth: int, temp_path: str, *, show_external_inputs: bool = True) -> dict:
     """Render graph at given depth and extract edge routing."""
     cache_path = _cached_html_path(graph, depth=depth, show_external_inputs=show_external_inputs)
     shutil.copyfile(cache_path, temp_path)
@@ -568,7 +568,7 @@ def render_and_extract(page, graph: Graph, depth: int, temp_path: str, *, show_e
     return extract_edge_routing(page)
 
 
-def render_to_page(page, graph: Graph, depth: int, temp_path: str, *, show_external_inputs: bool = False) -> None:
+def render_to_page(page, graph: Graph, depth: int, temp_path: str, *, show_external_inputs: bool = True) -> None:
     """Render graph to a temp HTML file and navigate the page to it."""
     cache_path = _cached_html_path(graph, depth=depth, show_external_inputs=show_external_inputs)
     shutil.copyfile(cache_path, temp_path)
