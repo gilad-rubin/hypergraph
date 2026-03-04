@@ -694,7 +694,7 @@ When a 2-tuple has no overlapping output/input names, it becomes an **ordering-o
 - Auto-inference and explicit edges don't mix. When `edges` is provided, only declared edges exist.
 - Gate control edges and `emit`/`wait_for` ordering edges are still auto-wired in explicit mode. Don't declare edges from gate nodes to their targets — the explicit edge would override the auto-wired control edge type, affecting visualization.
 
-### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, filepath=None)`
+### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_external_inputs=False, filepath=None)`
 
 Render an interactive visualization of the graph.
 
@@ -709,6 +709,7 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
 - `show_types` (bool): Display type annotations on nodes. Default: False.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
+- `show_external_inputs` (bool): Show root-level external INPUT/INPUT_GROUP nodes. Default: False.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 
 **Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).

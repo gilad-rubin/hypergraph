@@ -1125,6 +1125,7 @@
     Data: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>`; },
     SplitOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M16 3h5v5"></path><path d="M8 3H3v5"></path><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"></path><path d="m15 9 6-6"></path></svg>`; },
     MergeOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 3H3v5"></path><path d="m3 3 5.586 5.586a2 2 0 0 1 .586 1.414V22"></path><path d="M16 3h5v5"></path><path d="m21 3-5.586 5.586a2 2 0 0 0-.586 1.414V22"></path></svg>`; },
+    ExternalInputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M4 7h16"></path><path d="M4 12h10"></path><path d="M4 17h7"></path><circle cx="18" cy="12" r="3"></circle></svg>`; },
     Type: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`; },
     Start: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8" fill="currentColor"></polygon></svg>`; },
     End: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>`; },
@@ -1353,6 +1354,7 @@
         <${TooltipButton} onClick=${props.onToggleSeparate} tooltip=${props.separateOutputs ? "Merge Outputs" : "Separate Outputs"} isActive=${props.separateOutputs} theme=${props.theme}>
           ${props.separateOutputs ? html`<${Icons.MergeOutputs} />` : html`<${Icons.SplitOutputs} />`}
         <//>
+        <${TooltipButton} onClick=${props.onToggleExternalInputs} tooltip=${props.showExternalInputs ? "Hide External Inputs" : "Show External Inputs"} isActive=${props.showExternalInputs} theme=${props.theme}><${Icons.ExternalInputs} /><//>
         <${TooltipButton} onClick=${props.onToggleTypes} tooltip=${props.showTypes ? "Hide Types" : "Show Types"} isActive=${props.showTypes} theme=${props.theme}><${Icons.Type} /><//>
         <div className=${'h-px my-1 ' + (props.theme === 'light' ? 'bg-slate-200' : 'bg-slate-700')}></div>
         <${TooltipButton} onClick=${props.onToggleTheme} tooltip=${props.theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"} theme=${props.theme}>
@@ -1432,6 +1434,8 @@
     var separateOutputs = sepState[0], setSeparateOutputs = sepState[1];
     var typState = useState(props.initialShowTypes);
     var showTypes = typState[0], setShowTypes = typState[1];
+    var extInputsState = useState(props.initialShowExternalInputs);
+    var showExternalInputs = extInputsState[0], setShowExternalInputs = extInputsState[1];
 
     // Edge convergence state (dev-only controls)
     var convState = useState(EDGE_CONVERGE_TO_CENTER);
@@ -1451,6 +1455,10 @@
       root.__hypergraphVizReady = false;
       setShowTypes(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
+    var onToggleExternalInputs = useCallback(function(v) {
+      root.__hypergraphVizReady = false;
+      setShowExternalInputs(function(p) { return typeof v === 'boolean' ? v : !p; });
+    }, []);
 
     // Render options hook for tests and dev gallery
     useEffect(function() {
@@ -1458,6 +1466,7 @@
         if (!opts) return;
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
+        if (Object.prototype.hasOwnProperty.call(opts, 'showExternalInputs')) onToggleExternalInputs(!!opts.showExternalInputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'convergeToCenter')) {
           root.__hypergraphVizReady = false;
           setConvergeToCenter(!!opts.convergeToCenter);
@@ -1489,7 +1498,7 @@
         delete root.__hypergraphVizSetRenderOptions;
         root.removeEventListener('message', onMessage);
       };
-    }, [onToggleSep, onToggleTyp, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
+    }, [onToggleSep, onToggleTyp, onToggleExternalInputs, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
@@ -1517,6 +1526,13 @@
       var parts = [];
       expandableNodes.forEach(function(id) { parts.push(id + ':' + (es.get(id) ? '1' : '0')); });
       return parts.join(',') + '|' + sepKey;
+    };
+
+    var isExternalInputNode = function(node) {
+      var data = node && node.data ? node.data : {};
+      var nodeType = data.nodeType;
+      if (nodeType !== 'INPUT' && nodeType !== 'INPUT_GROUP') return false;
+      return !data.ownerContainer;
     };
 
     var nsState = useNodesState([]);
@@ -1558,8 +1574,15 @@
     var selectedNodes = useMemo(function() {
       var key = expansionStateToKey(expansionState, separateOutputs);
       var base = Object.prototype.hasOwnProperty.call(nodesByState, key) ? nodesByState[key] : initialData.nodes;
-      return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, activeTheme, nodesByState, initialData.nodes]);
+      return base.map(function(n) {
+        var hideExternalInput = !showExternalInputs && isExternalInputNode(n);
+        return {
+          ...n,
+          hidden: Boolean(n.hidden) || hideExternalInput,
+          data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs },
+        };
+      });
+    }, [expansionState, separateOutputs, showTypes, showExternalInputs, activeTheme, nodesByState, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1601,10 +1624,18 @@
       return Object.prototype.hasOwnProperty.call(edgesByState, key) ? edgesByState[key] : (initialData.edges || []);
     }, [expansionState, separateOutputs, edgesByState, initialData.edges]);
 
+    var visibleEdges = useMemo(function() {
+      var hiddenIds = new Set(
+        selectedNodes.filter(function(n) { return n.hidden; }).map(function(n) { return n.id; })
+      );
+      if (!hiddenIds.size) return selectedEdges;
+      return selectedEdges.filter(function(e) { return !hiddenIds.has(e.source) && !hiddenIds.has(e.target); });
+    }, [selectedEdges, selectedNodes]);
+
     useEffect(function() {
       nodesRef.current = nodesWithCb;
-      setNodes(nodesWithCb); setEdges(selectedEdges);
-    }, [nodesWithCb, selectedEdges, setNodes, setEdges]);
+      setNodes(nodesWithCb); setEdges(visibleEdges);
+    }, [nodesWithCb, visibleEdges, setNodes, setEdges]);
 
     var routingData = useMemo(function() {
       return {
@@ -1614,7 +1645,7 @@
       };
     }, [initialData]);
 
-    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
+    var layoutResult = useLayout(nodesWithCb, visibleEdges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
     var layoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
@@ -1687,7 +1718,9 @@
     var expansionKey = useMemo(function() {
       return Array.from(expansionState.entries()).filter(function(e) { return !e[1]; }).map(function(e) { return e[0]; }).sort().join(',');
     }, [expansionState]);
-    var renderModeKey = useMemo(function() { return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0'); }, [separateOutputs, showTypes]);
+    var renderModeKey = useMemo(function() {
+      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0') + '|ext_inputs:' + (showExternalInputs ? '1' : '0');
+    }, [separateOutputs, showTypes, showExternalInputs]);
     var refreshKey = useMemo(function() { return expansionKey + '|' + renderModeKey; }, [expansionKey, renderModeKey]);
     var prevRefresh = useRef(null);
     useEffect(function() {
@@ -1863,7 +1896,8 @@
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls} theme=${theme} onToggleTheme=${toggleTheme} separateOutputs=${separateOutputs}
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}
-            onToggleTypes=${function() { onToggleTyp(); }} onFitView=${fitWithFixedPadding} />
+            onToggleTypes=${function() { onToggleTyp(); }} showExternalInputs=${showExternalInputs}
+            onToggleExternalInputs=${function() { onToggleExternalInputs(); }} onFitView=${fitWithFixedPadding} />
           ${root.__hypergraph_debug_viz ? html`
             <${DevEdgeControls} theme=${theme} convergeToCenter=${convergeToCenter}
               convergenceOffset=${convergenceOffset} endpointPadding=${endpointPadding} ranksep=${ranksep}
@@ -1895,7 +1929,8 @@
         <${App} initialData=${initialData} themePreference=${themePreference}
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
-          initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)} />
+          initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
+          initialShowExternalInputs=${Boolean(initialData.meta && initialData.meta.show_external_inputs)} />
       <//>
     `);
     if (fallback) fallback.remove();

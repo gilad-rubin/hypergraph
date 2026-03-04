@@ -139,6 +139,7 @@ def _viz_cache_key(
     theme: str,
     show_types: bool,
     separate_outputs: bool,
+    show_external_inputs: bool,
     debug_overlays: bool,
 ) -> tuple:
     """Build a stable cache key for HTML rendering within a test run."""
@@ -155,6 +156,7 @@ def _viz_cache_key(
         theme,
         show_types,
         separate_outputs,
+        show_external_inputs,
         debug_overlays,
     )
 
@@ -166,6 +168,7 @@ def _cached_html_path(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
+    show_external_inputs: bool = False,
     debug_overlays: bool = False,
 ) -> str:
     """Render HTML once per cache key and return the cached file path."""
@@ -175,6 +178,7 @@ def _cached_html_path(
         theme,
         show_types,
         separate_outputs,
+        show_external_inputs,
         debug_overlays,
     )
     digest = hashlib.sha256(repr(cache_key).encode("utf-8")).hexdigest()
@@ -188,6 +192,7 @@ def _cached_html_path(
             theme=theme,
             show_types=show_types,
             separate_outputs=separate_outputs,
+            show_external_inputs=show_external_inputs,
             debug_overlays=debug_overlays,
         )
         html_content = generate_widget_html(graph_data)
@@ -555,17 +560,17 @@ def click_to_collapse_container(page, container_id: str) -> None:
     )
 
 
-def render_and_extract(page, graph: Graph, depth: int, temp_path: str) -> dict:
+def render_and_extract(page, graph: Graph, depth: int, temp_path: str, *, show_external_inputs: bool = False) -> dict:
     """Render graph at given depth and extract edge routing."""
-    cache_path = _cached_html_path(graph, depth=depth)
+    cache_path = _cached_html_path(graph, depth=depth, show_external_inputs=show_external_inputs)
     shutil.copyfile(cache_path, temp_path)
     page.goto(f"file://{temp_path}")
     return extract_edge_routing(page)
 
 
-def render_to_page(page, graph: Graph, depth: int, temp_path: str) -> None:
+def render_to_page(page, graph: Graph, depth: int, temp_path: str, *, show_external_inputs: bool = False) -> None:
     """Render graph to a temp HTML file and navigate the page to it."""
-    cache_path = _cached_html_path(graph, depth=depth)
+    cache_path = _cached_html_path(graph, depth=depth, show_external_inputs=show_external_inputs)
     shutil.copyfile(cache_path, temp_path)
     page.goto(f"file://{temp_path}")
     wait_for_debug_ready(page)

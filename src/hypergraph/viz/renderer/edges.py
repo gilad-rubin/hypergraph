@@ -6,6 +6,7 @@ handling container expansion and re-routing to internal nodes.
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from typing import Any
 
 import networkx as nx
@@ -27,6 +28,89 @@ from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
     find_internal_producer_for_output,
 )
+
+_SYNTHETIC_NODE_PREFIXES = ("input_", "input_group_", "data_")
+_SYNTHETIC_NODE_IDS = {"__start__", "__end__"}
+
+
+def _is_synthetic_node_id(node_id: str) -> bool:
+    return node_id in _SYNTHETIC_NODE_IDS or node_id.startswith(_SYNTHETIC_NODE_PREFIXES)
+
+
+def _is_reducible_execution_edge(edge: dict[str, Any]) -> bool:
+    """Whether an edge can participate in transitive execution simplification."""
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
+    if not source or not target:
+        return False
+    if _is_synthetic_node_id(source) or _is_synthetic_node_id(target):
+        return False
+
+    edge_data = edge.get("data", {})
+    edge_type = edge_data.get("edgeType")
+    if edge_type not in {"data", "control", "ordering"}:
+        return False
+
+    # Keep explicitly labeled control edges (True/False) because they carry
+    # branch semantics that users expect to see.
+    return not (edge_type == "control" and edge_data.get("label"))
+
+
+def _has_alternate_path(
+    adjacency: dict[str, list[tuple[str, int]]],
+    source: str,
+    target: str,
+    *,
+    skip_edge_idx: int,
+) -> bool:
+    """Return True if target is reachable from source without the skipped edge."""
+    queue: deque[str] = deque([source])
+    visited: set[str] = {source}
+
+    while queue:
+        current = queue.popleft()
+        for next_node, edge_idx in adjacency.get(current, []):
+            if edge_idx == skip_edge_idx:
+                continue
+            if next_node == target:
+                return True
+            if next_node in visited:
+                continue
+            visited.add(next_node)
+            queue.append(next_node)
+    return False
+
+
+def _prune_redundant_execution_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove edges implied by transitive execution dependencies.
+
+    Example:
+        If edges include A->B, B->C, C->A, and B->A, remove B->A because
+        B can already reach A via B->C->A.
+    """
+    reducible: list[tuple[int, str, str]] = []
+    adjacency: dict[str, list[tuple[str, int]]] = defaultdict(list)
+
+    for idx, edge in enumerate(edges):
+        if not _is_reducible_execution_edge(edge):
+            continue
+        source = str(edge["source"])
+        target = str(edge["target"])
+        reducible.append((idx, source, target))
+        adjacency[source].append((target, idx))
+
+    if len(reducible) < 2:
+        return edges
+
+    removable_indices: set[int] = set()
+    for idx, source, target in reducible:
+        if _has_alternate_path(adjacency, source, target, skip_edge_idx=idx):
+            removable_indices.add(idx)
+
+    if not removable_indices:
+        return edges
+
+    return [edge for idx, edge in enumerate(edges) if idx not in removable_indices]
 
 
 def add_end_node_edges(
@@ -474,4 +558,4 @@ def compute_edges_for_state(
     # 4. Add edges to END node
     add_end_node_edges(edges, flat_graph, expansion_state)
 
-    return edges
+    return _prune_redundant_execution_edges(edges)

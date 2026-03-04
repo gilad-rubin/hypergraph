@@ -22,6 +22,26 @@ def triple(x: int) -> int:
     return x * 3
 
 
+@node(output_name="a_val")
+def step_a(x: int) -> int:
+    return x + 1
+
+
+@node(output_name="b_val")
+def step_b(a_val: int) -> int:
+    return a_val + 1
+
+
+@node(output_name="c_val")
+def step_c(b_val: int) -> int:
+    return b_val + 1
+
+
+@node(output_name="result_val")
+def step_d(b_val: int, c_val: int) -> int:
+    return b_val + c_val
+
+
 class TestRenderGraph:
     """Tests for render_graph function."""
 
@@ -122,11 +142,36 @@ class TestRenderGraph:
     def test_render_options_passthrough(self):
         """Test that options are included in the result."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph.to_flat_graph(), theme="dark", show_types=True, depth=2)
+        result = render_graph(
+            graph.to_flat_graph(),
+            theme="dark",
+            show_types=True,
+            depth=2,
+            show_external_inputs=True,
+        )
 
         assert result["meta"]["theme_preference"] == "dark"
         assert result["meta"]["show_types"] is True
         assert result["meta"]["initial_depth"] == 2
+        assert result["meta"]["show_external_inputs"] is True
+
+    def test_render_options_external_inputs_hidden_by_default(self):
+        """External INPUT/INPUT_GROUP visibility defaults to hidden in the UI."""
+        graph = Graph(nodes=[double])
+        result = render_graph(graph.to_flat_graph())
+        assert result["meta"]["show_external_inputs"] is False
+
+    def test_prunes_transitively_redundant_execution_edges(self):
+        """If B->D is already implied by B->C->D, hide B->D in rendered edges."""
+        graph = Graph(nodes=[step_a, step_b, step_c, step_d])
+        result = render_graph(graph.to_flat_graph())
+
+        edge_pairs = {(edge["source"], edge["target"]) for edge in result["edges"]}
+
+        assert ("step_a", "step_b") in edge_pairs
+        assert ("step_b", "step_c") in edge_pairs
+        assert ("step_c", "step_d") in edge_pairs
+        assert ("step_b", "step_d") not in edge_pairs
 
     def test_start_node_for_explicit_entrypoint(self):
         """Configured entrypoints get a synthetic START node and edge."""
