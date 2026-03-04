@@ -122,8 +122,8 @@ async def main() -> None:
     with_receiver(ask_slack, receive_slack)
 
     @node(output_name="assistant_text")
-    def llm_step(messages: list[str], user_input: str) -> str:
-        return fake_llm([*messages, f"user: {user_input}"])
+    def llm_step(messages: list[str]) -> str:
+        return fake_llm(messages)
 
     @node(output_name="messages")
     def add_user_message(messages: list[str], user_input: str) -> list[str]:
@@ -161,9 +161,9 @@ async def main() -> None:
     graph = Graph(
         [ask_user_node, llm_node, should_continue],
         edges=[
-            (ask_user_node, llm_node),
-            (llm_node, should_continue),
-            (llm_node, ask_user_node),
+            (ask_user_node, llm_node, "messages"),
+            (llm_node, should_continue, "messages"),
+            (llm_node, ask_user_node, "messages"),
         ],
         name="slack_cycle",
         entrypoint="ask_user",
