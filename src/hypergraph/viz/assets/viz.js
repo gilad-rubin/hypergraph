@@ -1203,9 +1203,13 @@
 
     // ── START node ──
     if (nodeType === 'START') {
+      var startTone = isLight
+        ? { borderColor: '#7dd3fc', color: '#0369a1' }
+        : { borderColor: 'rgba(14, 165, 233, 0.5)', color: '#38bdf8' };
       return html`
         <div className="w-full h-full relative" style=${wrapStyle}>
-          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white border-sky-300 text-sky-600 shadow-slate-200 hover:border-sky-400' : ' bg-slate-900 border-sky-500/50 text-sky-400 shadow-black/50 hover:border-sky-400/70')}>
+          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white shadow-slate-200' : ' bg-slate-900 shadow-black/50')}
+               style=${startTone}>
             <${Icons.Start} /> <span className="text-xs font-semibold uppercase tracking-wide">Start</span>
           </div>
           <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
@@ -1214,9 +1218,13 @@
 
     // ── END node ──
     if (nodeType === 'END') {
+      var endTone = isLight
+        ? { borderColor: '#6ee7b7', color: '#047857' }
+        : { borderColor: 'rgba(16, 185, 129, 0.5)', color: '#34d399' };
       return html`
         <div className="w-full h-full relative" style=${wrapStyle}>
-          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white border-emerald-300 text-emerald-600 shadow-slate-200 hover:border-emerald-400' : ' bg-slate-900 border-emerald-500/50 text-emerald-400 shadow-black/50 hover:border-emerald-400/70')}>
+          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white shadow-slate-200' : ' bg-slate-900 shadow-black/50')}
+               style=${endTone}>
             <${Icons.End} /> <span className="text-xs font-semibold uppercase tracking-wide">End</span>
           </div>
           <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${tgtStyle} />
@@ -1802,7 +1810,9 @@
         var isControl = edgeType === 'control';
         var isOrdering = edgeType === 'ordering';
         var st = { ...edgeOpts.style, strokeWidth: (e.data && e.data.isDataLink) ? 1.5 : 2 };
-        if (isControl) st.strokeDasharray = '6 4';
+        // Keep decision-labeled control edges dashed; unlabeled control back-edges
+        // are rendered solid to reduce visual confusion in cyclic graphs.
+        if (isControl && e.data && e.data.label) st.strokeDasharray = '6 4';
         if (isOrdering) { st.stroke = '#8b5cf6'; st.strokeWidth = 1.5; st.strokeDasharray = '6 3'; }
         return { ...e, id: e.id + '_exp_' + (expansionKey ? expansionKey.replace(/,/g, '_') : 'none') + '_mode_' + renderModeKey,
           ...edgeOpts, style: st, markerEnd: edgeOpts.markerEnd, data: e.data };
