@@ -732,6 +732,16 @@
     var paramToConsumer = (routingData && routingData.param_to_consumer) || {};
     var nodeToParent = (routingData && routingData.node_to_parent) || {};
 
+    var isDescendantOf = function(nodeId, ancestorId) {
+      if (!nodeId || !ancestorId || nodeId === ancestorId) return false;
+      var cur = nodeId;
+      while (cur && nodeToParent[cur]) {
+        if (nodeToParent[cur] === ancestorId) return true;
+        cur = nodeToParent[cur];
+      }
+      return false;
+    };
+
     var inputGroupTargets = new Map();
     visibleNodes.forEach(function(n) {
       if (n.data && n.data.nodeType === 'INPUT_GROUP' && n.data.actualTargets)
@@ -786,6 +796,16 @@
       var valueName = e.data && e.data.valueName;
       if (valueName && outputToProducer[valueName]) {
         var producer = outputToProducer[valueName];
+        var srcType = nodeTypes.get(e.source) || 'FUNCTION';
+        var srcIsExpandedContainer = srcType === 'PIPELINE' && expansionState.get(e.source);
+
+        // If source is an expanded container, never anchor this edge to a
+        // producer outside that container subtree (prevents cross-side jumps,
+        // e.g. llm->should_continue being anchored to ask_user internals).
+        if (srcIsExpandedContainer && producer !== e.source && !isDescendantOf(producer, e.source)) {
+          producer = e.source;
+        }
+
         var isAncestor = false;
         var cur = e.source;
         while (cur && nodeToParent[cur]) {
