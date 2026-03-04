@@ -48,12 +48,47 @@ def _is_reducible_execution_edge(edge: dict[str, Any]) -> bool:
 
     edge_data = edge.get("data", {})
     edge_type = edge_data.get("edgeType")
-    if edge_type not in {"data", "control", "ordering"}:
+    # Keep control edges explicit — they encode routing semantics and are
+    # expected to remain visible even if data edges imply a path.
+    return edge_type in {"data", "ordering"}
+
+
+def _is_execution_edge(edge: dict[str, Any]) -> bool:
+    """Whether an edge participates in execution-cycle analysis."""
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
+    if not source or not target:
+        return False
+    if _is_synthetic_node_id(source) or _is_synthetic_node_id(target):
         return False
 
-    # Keep explicitly labeled control edges (True/False) because they carry
-    # branch semantics that users expect to see.
-    return not (edge_type == "control" and edge_data.get("label"))
+    edge_type = edge.get("data", {}).get("edgeType")
+    return edge_type in {"data", "control", "ordering"}
+
+
+def _is_reachable(
+    adjacency: dict[str, list[tuple[str, int]]],
+    start: str,
+    goal: str,
+    *,
+    skip_edge_idx: int | None = None,
+) -> bool:
+    """Return True if goal is reachable from start (optionally skipping one edge)."""
+    queue: deque[str] = deque([start])
+    visited: set[str] = {start}
+
+    while queue:
+        current = queue.popleft()
+        for next_node, edge_idx in adjacency.get(current, []):
+            if skip_edge_idx is not None and edge_idx == skip_edge_idx:
+                continue
+            if next_node == goal:
+                return True
+            if next_node in visited:
+                continue
+            visited.add(next_node)
+            queue.append(next_node)
+    return False
 
 
 def _has_alternate_path(
@@ -64,21 +99,37 @@ def _has_alternate_path(
     skip_edge_idx: int,
 ) -> bool:
     """Return True if target is reachable from source without the skipped edge."""
-    queue: deque[str] = deque([source])
-    visited: set[str] = {source}
+    return _is_reachable(adjacency, source, target, skip_edge_idx=skip_edge_idx)
 
-    while queue:
-        current = queue.popleft()
-        for next_node, edge_idx in adjacency.get(current, []):
-            if edge_idx == skip_edge_idx:
-                continue
-            if next_node == target:
-                return True
-            if next_node in visited:
-                continue
-            visited.add(next_node)
-            queue.append(next_node)
-    return False
+
+def _mark_feedback_hints(edges: list[dict[str, Any]], flat_graph: nx.DiGraph) -> None:
+    """Mark edges that should be routed as feedback loops.
+
+    Rules:
+    - Control edges that close a cycle are feedback.
+    """
+    execution: list[tuple[int, str, str]] = []
+    adjacency: dict[str, list[tuple[str, int]]] = defaultdict(list)
+
+    for idx, edge in enumerate(edges):
+        if not _is_execution_edge(edge):
+            continue
+        source = str(edge["source"])
+        target = str(edge["target"])
+        execution.append((idx, source, target))
+        adjacency[source].append((target, idx))
+
+    if not execution:
+        return
+
+    for idx, source, target in execution:
+        edge = edges[idx]
+        edge_type = edge.get("data", {}).get("edgeType")
+        if not _is_reachable(adjacency, target, source):
+            continue
+
+        if edge_type == "control":
+            edge.setdefault("data", {})["forceFeedback"] = True
 
 
 def _prune_redundant_execution_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -88,29 +139,10 @@ def _prune_redundant_execution_edges(edges: list[dict[str, Any]]) -> list[dict[s
         If edges include A->B, B->C, C->A, and B->A, remove B->A because
         B can already reach A via B->C->A.
     """
-    reducible: list[tuple[int, str, str]] = []
-    adjacency: dict[str, list[tuple[str, int]]] = defaultdict(list)
-
-    for idx, edge in enumerate(edges):
-        if not _is_reducible_execution_edge(edge):
-            continue
-        source = str(edge["source"])
-        target = str(edge["target"])
-        reducible.append((idx, source, target))
-        adjacency[source].append((target, idx))
-
-    if len(reducible) < 2:
-        return edges
-
-    removable_indices: set[int] = set()
-    for idx, source, target in reducible:
-        if _has_alternate_path(adjacency, source, target, skip_edge_idx=idx):
-            removable_indices.add(idx)
-
-    if not removable_indices:
-        return edges
-
-    return [edge for idx, edge in enumerate(edges) if idx not in removable_indices]
+    # Dependency simplification now happens during graph construction for
+    # cycle-shadowed implicit edges. Visualization should render the exact
+    # Python-precomputed semantic edge set.
+    return edges
 
 
 def add_end_node_edges(
@@ -330,6 +362,7 @@ def add_separate_output_edges(
     - DATA node -> consumer functions
     """
     output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+    param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
 
     # 1. Add edges from function nodes to their DATA nodes
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -388,7 +421,11 @@ def add_separate_output_edges(
                         continue
 
                 if is_source_container and is_source_expanded:
-                    actual_producer = output_to_producer.get(value_name, source)
+                    mapped_producer = output_to_producer.get(value_name)
+                    if mapped_producer and mapped_producer != source and is_descendant_of(mapped_producer, source, flat_graph):
+                        actual_producer = mapped_producer
+                    else:
+                        actual_producer = source
                     data_value = value_name
                     if actual_producer == source:
                         internal_producer = find_internal_producer_for_output(source, value_name, flat_graph, expansion_state)
@@ -410,13 +447,27 @@ def add_separate_output_edges(
                         continue
                     data_node_id = f"data_{source}_{value_name}"
 
-                edge_id = f"e_{data_node_id}_to_{target}"
+                actual_target = target
+                target_attrs = flat_graph.nodes.get(target, {})
+                is_target_container = target_attrs.get("node_type") == "GRAPH"
+                is_target_expanded = expansion_state.get(target, False)
+                if is_target_container and is_target_expanded:
+                    consumers = param_to_consumers.get(value_name, [])
+                    internal_consumers = [c for c in consumers if c != target and is_descendant_of(c, target, flat_graph)]
+                    if internal_consumers:
+                        actual_target = internal_consumers[0]
+                    else:
+                        entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
+                        if entrypoints:
+                            actual_target = entrypoints[0]
+
+                edge_id = f"e_{data_node_id}_to_{actual_target}"
 
                 edges.append(
                     {
                         "id": edge_id,
                         "source": data_node_id,
-                        "target": target,
+                        "target": actual_target,
                         "animated": False,
                         "style": {"stroke": "#64748b", "strokeWidth": 2},
                         "data": {
@@ -560,4 +611,5 @@ def compute_edges_for_state(
     # 4. Add edges to END node
     add_end_node_edges(edges, flat_graph, expansion_state)
 
+    _mark_feedback_hints(edges, flat_graph)
     return _prune_redundant_execution_edges(edges)

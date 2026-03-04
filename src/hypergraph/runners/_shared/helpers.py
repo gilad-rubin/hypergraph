@@ -223,7 +223,7 @@ def get_ready_nodes(
             ready = [n for n in ready if n.name not in blocked_targets]
 
     # Defer wait_for consumers whose producers are also ready this superstep
-    ready = _defer_wait_for_nodes(ready, graph)
+    ready = _defer_wait_for_nodes(ready, graph, state)
 
     return ready
 
@@ -407,6 +407,7 @@ def _wait_for_satisfied(node: HyperNode, state: GraphState) -> bool:
 def _defer_wait_for_nodes(
     ready: list[HyperNode],
     graph: Graph,
+    state: GraphState,
 ) -> list[HyperNode]:
     """If a producer and its wait_for consumer are both ready, defer the consumer.
 
@@ -425,6 +426,10 @@ def _defer_wait_for_nodes(
     deferred: set[str] = set()
     for node in ready:
         if not node.wait_for:
+            continue
+        # Only defer on first execution. Once the consumer has executed at least
+        # once, perpetual deferral can starve cyclic wait_for patterns.
+        if node.name in state.node_executions:
             continue
         for name in node.wait_for:
             if name in ready_outputs:
@@ -492,6 +497,13 @@ def _is_stale(
     EXCEPTION: For gate-controlled nodes, neither rule applies.  Gates
     explicitly drive cycle re-execution.
     """
+    # wait_for freshness is an explicit re-trigger signal.
+    for wait_name in node.wait_for:
+        current_wait_version = state.get_version(wait_name)
+        consumed_wait_version = last_exec.wait_for_versions.get(wait_name, 0)
+        if current_wait_version > consumed_wait_version:
+            return True
+
     self_producers = graph.self_producers
     is_gated = _is_controlled_by_gate(node, graph)
     downstream = graph.downstream_produced.get(node.name, frozenset())

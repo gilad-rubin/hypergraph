@@ -25,6 +25,15 @@ g = Graph([double, add_one])
 
 Edges are inferred automatically: if node A produces output "x" and node B has input "x", an edge A→B is created.
 
+When multiple producers can satisfy the same consumer input `p`, implicit
+inference applies **producer shadow-elimination**:
+
+- Remove edge `u -> v (p)` iff every valid execution path by which `p` could
+  flow from `u` to `v` passes through another producer of `p` first.
+- If elimination leaves no realizable producer for `(v, p)`, graph
+  construction fails with `GraphConfigError` and asks you to add ordering,
+  explicit edges, or rename channels.
+
 ## Constructor
 
 ### `Graph(nodes, *, edges=None, name=None, strict_types=False)`

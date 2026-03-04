@@ -42,6 +42,58 @@ def step_d(b_val: int, c_val: int) -> int:
     return b_val + c_val
 
 
+def _build_interrupt_cycle_graph() -> Graph:
+    """Notebook demo graph: ask_user <-> llm with should_continue gate."""
+
+    @interrupt(output_name="user_input")
+    def ask_slack(messages: list[str], slack: object) -> None:
+        return None
+
+    @node(output_name="assistant_text")
+    def llm_step(messages: list[str]) -> str:
+        return "assistant draft"
+
+    @node(output_name="messages")
+    def add_user_message(messages: list[str], user_input: str) -> list[str]:
+        return [*messages, f"user: {user_input}"]
+
+    @node(output_name="messages")
+    def add_assistant_message(messages: list[str], assistant_text: str) -> list[str]:
+        return [*messages, f"assistant: {assistant_text}"]
+
+    @route(targets=["ask_user", END])
+    def should_continue(messages: list[str], max_turns: int) -> str:
+        return "ask_user"
+
+    ask_user_node = Graph(
+        [ask_slack, add_user_message],
+        edges=[(ask_slack, add_user_message)],
+        name="ask_user",
+        entrypoint="ask_slack",
+    ).as_node()
+    llm_node = Graph(
+        [llm_step, add_assistant_message],
+        edges=[(llm_step, add_assistant_message)],
+        name="llm",
+        entrypoint="llm_step",
+    ).as_node()
+    return Graph(
+        [ask_user_node, llm_node, should_continue],
+        edges=[
+            (ask_user_node, llm_node),
+            (llm_node, should_continue),
+            (llm_node, ask_user_node),
+        ],
+        name="slack_cycle",
+        entrypoint="ask_user",
+    )
+
+
+def _edge_signature(edge: dict) -> tuple[str, str, str]:
+    data = edge.get("data", {})
+    return (str(edge["source"]), str(edge["target"]), str(data.get("edgeType")))
+
+
 class TestRenderGraph:
     """Tests for render_graph function."""
 
@@ -161,8 +213,8 @@ class TestRenderGraph:
         result = render_graph(graph.to_flat_graph())
         assert result["meta"]["show_external_inputs"] is True
 
-    def test_prunes_transitively_redundant_execution_edges(self):
-        """If B->D is already implied by B->C->D, hide B->D in rendered edges."""
+    def test_keeps_dag_dependencies_without_transitive_pruning(self):
+        """DAG visualization should keep all declared/inferred dependencies."""
         graph = Graph(nodes=[step_a, step_b, step_c, step_d])
         result = render_graph(graph.to_flat_graph())
 
@@ -171,7 +223,7 @@ class TestRenderGraph:
         assert ("step_a", "step_b") in edge_pairs
         assert ("step_b", "step_c") in edge_pairs
         assert ("step_c", "step_d") in edge_pairs
-        assert ("step_b", "step_d") not in edge_pairs
+        assert ("step_b", "step_d") in edge_pairs
 
     def test_start_node_for_explicit_entrypoint(self):
         """Configured entrypoints get a synthetic START node and edge."""
@@ -272,39 +324,7 @@ class TestRenderGraph:
 
     def test_interrupt_cycle_hides_all_inputs_when_external_inputs_disabled(self):
         """Notebook regression: no INPUT nodes/edges should appear in any ext:0 state."""
-
-        @interrupt(output_name="user_input")
-        def ask_slack(messages: list[str], slack: object) -> None:
-            return None
-
-        @node(output_name="assistant_text")
-        def llm_step(messages: list[str]) -> str:
-            return "assistant draft"
-
-        @node(output_name="messages")
-        def add_user_message(messages: list[str], user_input: str) -> list[str]:
-            return [*messages, f"user: {user_input}"]
-
-        @node(output_name="messages")
-        def add_assistant_message(messages: list[str], assistant_text: str) -> list[str]:
-            return [*messages, f"assistant: {assistant_text}"]
-
-        @route(targets=["ask_user", END])
-        def should_continue(messages: list[str], max_turns: int) -> str:
-            return "ask_user"
-
-        ask_user_node = Graph([ask_slack, add_user_message], edges=[(ask_slack, add_user_message)], name="ask_user").as_node()
-        llm_node = Graph([llm_step, add_assistant_message], edges=[(llm_step, add_assistant_message)], name="llm").as_node()
-        graph = Graph(
-            [ask_user_node, llm_node, should_continue],
-            edges=[
-                (ask_user_node, llm_node, "messages"),
-                (llm_node, should_continue, "messages"),
-                (llm_node, ask_user_node, "messages"),
-            ],
-            name="slack_cycle",
-            entrypoint="ask_user",
-        )
+        graph = _build_interrupt_cycle_graph()
 
         result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
 
@@ -326,39 +346,7 @@ class TestRenderGraph:
 
     def test_interrupt_cycle_control_edge_persists_across_expansion_states(self):
         """Notebook regression: should_continue -> ask_user control edge must not disappear."""
-
-        @interrupt(output_name="user_input")
-        def ask_slack(messages: list[str], slack: object) -> None:
-            return None
-
-        @node(output_name="assistant_text")
-        def llm_step(messages: list[str]) -> str:
-            return "assistant draft"
-
-        @node(output_name="messages")
-        def add_user_message(messages: list[str], user_input: str) -> list[str]:
-            return [*messages, f"user: {user_input}"]
-
-        @node(output_name="messages")
-        def add_assistant_message(messages: list[str], assistant_text: str) -> list[str]:
-            return [*messages, f"assistant: {assistant_text}"]
-
-        @route(targets=["ask_user", END])
-        def should_continue(messages: list[str], max_turns: int) -> str:
-            return "ask_user"
-
-        ask_user_node = Graph([ask_slack, add_user_message], edges=[(ask_slack, add_user_message)], name="ask_user").as_node()
-        llm_node = Graph([llm_step, add_assistant_message], edges=[(llm_step, add_assistant_message)], name="llm").as_node()
-        graph = Graph(
-            [ask_user_node, llm_node, should_continue],
-            edges=[
-                (ask_user_node, llm_node, "messages"),
-                (llm_node, should_continue, "messages"),
-                (llm_node, ask_user_node, "messages"),
-            ],
-            name="slack_cycle",
-            entrypoint="ask_user",
-        )
+        graph = _build_interrupt_cycle_graph()
 
         result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
         edges_by_state = result["meta"]["edgesByState"]
@@ -378,6 +366,79 @@ class TestRenderGraph:
             assert all(e.get("style", {}).get("strokeDasharray") for e in ask_user_targets), (
                 f"Control edge should be dashed in state {key}: {ask_user_targets}"
             )
+
+    def test_interrupt_cycle_expected_edges_for_0_1_2_expanded_graph_nodes(self):
+        """Notebook demo: edge routing should be correct for collapsed/1-expanded/2-expanded states."""
+        graph = _build_interrupt_cycle_graph()
+        result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
+        edges_by_state = result["meta"]["edgesByState"]
+
+        expected_by_state = {
+            "ask_user:0,llm:0|sep:0|ext:0": {
+                ("__start__", "ask_user", "start"),
+                ("ask_user", "llm", "data"),
+                ("llm", "should_continue", "data"),
+                ("llm", "ask_user", "data"),
+                ("should_continue", "ask_user", "control"),
+                ("should_continue", "__end__", "end"),
+            },
+            "ask_user:1,llm:0|sep:0|ext:0": {
+                ("__start__", "ask_user/ask_slack", "start"),
+                ("ask_user/ask_slack", "ask_user/add_user_message", "data"),
+                ("ask_user/add_user_message", "llm", "data"),
+                ("llm", "should_continue", "data"),
+                ("llm", "ask_user/ask_slack", "data"),
+                ("should_continue", "ask_user/ask_slack", "control"),
+                ("should_continue", "__end__", "end"),
+            },
+            "ask_user:0,llm:1|sep:0|ext:0": {
+                ("__start__", "ask_user", "start"),
+                ("ask_user", "llm/llm_step", "data"),
+                ("llm/llm_step", "llm/add_assistant_message", "data"),
+                ("llm/add_assistant_message", "should_continue", "data"),
+                ("llm/add_assistant_message", "ask_user", "data"),
+                ("should_continue", "ask_user", "control"),
+                ("should_continue", "__end__", "end"),
+            },
+            "ask_user:1,llm:1|sep:0|ext:0": {
+                ("__start__", "ask_user/ask_slack", "start"),
+                ("ask_user/ask_slack", "ask_user/add_user_message", "data"),
+                ("ask_user/add_user_message", "llm/llm_step", "data"),
+                ("llm/llm_step", "llm/add_assistant_message", "data"),
+                ("llm/add_assistant_message", "should_continue", "data"),
+                ("llm/add_assistant_message", "ask_user/ask_slack", "data"),
+                ("should_continue", "ask_user/ask_slack", "control"),
+                ("should_continue", "__end__", "end"),
+            },
+        }
+
+        for state_key, expected in expected_by_state.items():
+            assert state_key in edges_by_state, f"Missing precomputed state: {state_key}"
+            actual = {_edge_signature(edge) for edge in edges_by_state[state_key]}
+            assert actual == expected, f"Unexpected edges for state {state_key}"
+
+            control_edges = [e for e in edges_by_state[state_key] if e.get("data", {}).get("edgeType") == "control"]
+            assert control_edges, f"Expected control edge in state {state_key}"
+            assert all(edge.get("style", {}).get("strokeDasharray") for edge in control_edges), (
+                f"Control edges must be dashed in state {state_key}: {control_edges}"
+            )
+
+    def test_interrupt_cycle_messages_feedback_edge_present_in_separate_outputs_mode(self):
+        """Notebook regression: llm messages edge to ask_user should not disappear in sep mode."""
+        graph = _build_interrupt_cycle_graph()
+        result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
+        edges_by_state = result["meta"]["edgesByState"]
+
+        state_collapsed_target = "ask_user:0,llm:1|sep:1|ext:0"
+        state_expanded_target = "ask_user:1,llm:1|sep:1|ext:0"
+        assert state_collapsed_target in edges_by_state
+        assert state_expanded_target in edges_by_state
+
+        collapsed_signatures = {_edge_signature(edge) for edge in edges_by_state[state_collapsed_target]}
+        expanded_signatures = {_edge_signature(edge) for edge in edges_by_state[state_expanded_target]}
+
+        assert ("data_llm/add_assistant_message_messages", "ask_user", "data") in collapsed_signatures
+        assert ("data_llm/add_assistant_message_messages", "ask_user/ask_slack", "data") in expanded_signatures
 
 
 class TestNodeType:

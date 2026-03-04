@@ -1952,6 +1952,57 @@ class TestCycleSameOutput:
             Graph([producer_a, producer_b])
 
 
+class TestImplicitShadowElimination:
+    """Implicit producer-edge shadow elimination semantics."""
+
+    def test_removes_shadowed_producer_edge_when_all_paths_cross_other_producer(self):
+        """For input p on consumer v, keep only realizable producer edge(s)."""
+
+        @node(output_name="p", emit="a_done")
+        def producer_a(seed: int) -> int:
+            return seed + 1
+
+        @node(output_name="p", wait_for="a_done")
+        def producer_b(p: int) -> int:
+            return p * 2
+
+        @node(output_name="out")
+        def consumer(p: int) -> int:
+            return p
+
+        graph = Graph([producer_a, producer_b, consumer], entrypoint="producer_a")
+
+        # a -> consumer(p) is shadowed by a -> b -> consumer where b is another
+        # producer of p, so only b should remain wired to consumer.p.
+        producers = graph.input_data_producers["consumer"]["p"]
+        assert producers == frozenset({"producer_b"})
+        assert not graph.nx_graph.has_edge("producer_a", "consumer")
+        assert graph.nx_graph.has_edge("producer_b", "consumer")
+
+    def test_raises_when_shadow_elimination_leaves_no_realizable_producer(self):
+        """If all candidate producer edges are shadowed, construction fails."""
+        from hypergraph.nodes.gate import END, route
+
+        @node(output_name="x")
+        def producer_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="x")
+        def producer_b(x: int) -> int:
+            return x + 2
+
+        @node(output_name="y")
+        def consumer(x: int) -> int:
+            return x
+
+        @route(targets=["producer_a", END])
+        def loop(y: int) -> str:
+            return "producer_a"
+
+        with pytest.raises(GraphConfigError, match="no realizable producer"):
+            Graph([producer_a, producer_b, consumer, loop], entrypoint="producer_a")
+
+
 class TestAddNodes:
     """Test Graph.add_nodes() for incremental graph construction."""
 

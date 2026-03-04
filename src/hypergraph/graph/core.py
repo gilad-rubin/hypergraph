@@ -447,13 +447,12 @@ class Graph:
         self._add_nodes_to_graph(G, nodes)
 
         output_to_sources = self._collect_output_sources(nodes)
-        output_to_source = {k: v[0] for k, v in output_to_sources.items()}
 
         if self._explicit_edges is not None:
             # Explicit mode: user-declared data edges
             self._add_explicit_data_edges(G, self._explicit_edges)
             self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_source)
+            self._add_ordering_edges(G, nodes, output_to_sources)
             validate_output_conflicts(
                 G,
                 nodes,
@@ -462,9 +461,9 @@ class Graph:
             )
         else:
             # Auto-inference mode (default)
-            self._add_data_edges(G, nodes, output_to_source)
+            self._add_data_edges(G, nodes, output_to_sources)
             self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_source)
+            self._add_ordering_edges(G, nodes, output_to_sources)
             validate_output_conflicts(G, nodes, output_to_sources)
 
         return G
@@ -480,24 +479,53 @@ class Graph:
         self,
         G: nx.DiGraph,
         nodes: list[HyperNode],
-        output_to_source: dict[str, str],
+        output_to_sources: dict[str, list[str]],
     ) -> None:
-        """Infer data edges by matching parameter names to output names.
+        """Infer implicit data edges by realizable producer->consumer handoff.
 
-        Multiple values between the same node pair are merged into a single
-        edge with a ``value_names`` list, since NetworkX DiGraph only allows
-        one edge per (source, target) pair.
+        For each consumer input name, all matching producers are considered.
+        Then producer-shadow elimination is applied:
+        remove producer ``u -> v (p)`` iff every valid alternate path by which
+        ``p`` could flow from ``u`` to ``v`` passes through another producer of
+        ``p`` first.
+
+        Ambiguous cycle inputs are rejected when multiple non-shadowed
+        producers remain for the same ``(consumer, input_name)`` pair.
         """
         from collections import defaultdict
 
-        # Group values by (source, target) pair
-        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
-        for n in nodes:
-            for param in n.inputs:
-                if param in output_to_source:
-                    edge_values[(output_to_source[param], n.name)].append(param)
+        # Build producer candidates per (consumer, input_name).
+        by_input: dict[tuple[str, str], list[str]] = {}
+        for consumer in nodes:
+            for param in consumer.inputs:
+                producers = [producer for producer in output_to_sources.get(param, [])]
+                if producers:
+                    by_input[(consumer.name, param)] = list(dict.fromkeys(producers))
 
-        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": names}) for (src, dst), names in edge_values.items())
+        if not by_input:
+            return
+
+        by_input = self._apply_shadow_elimination(nodes, by_input, output_to_sources)
+        self._validate_no_cycle_input_ambiguity(nodes, by_input)
+
+        # Group value names by (source, target) pair because DiGraph supports
+        # one edge per pair.
+        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for (consumer, param), producers in by_input.items():
+            for producer in producers:
+                edge_values[(producer, consumer)].append(param)
+
+        G.add_edges_from(
+            (
+                src,
+                dst,
+                {
+                    "edge_type": "data",
+                    "value_names": list(dict.fromkeys(names)),
+                },
+            )
+            for (src, dst), names in edge_values.items()
+        )
 
     def _add_control_edges(
         self,
@@ -525,28 +553,236 @@ class Graph:
         self,
         G: nx.DiGraph,
         nodes: list[HyperNode],
-        output_to_source: dict[str, str],
+        output_to_sources: dict[str, list[str]],
     ) -> None:
         """Add ordering edges for wait_for dependencies.
 
-        Ordering edges connect the producer of a wait_for value to the
+        Ordering edges connect each producer of a wait_for value to the
         consumer node. They carry no data but express execution order.
         Only added if no data or control edge already exists between the pair.
         """
         for node in nodes:
             for name in node.wait_for:
-                producer = output_to_source.get(name)
-                if producer is None:
+                producers = output_to_sources.get(name, [])
+                if not producers:
                     continue  # Validation catches missing producers
-                if producer == node.name:
-                    continue  # Skip self-loops
-                if not G.has_edge(producer, node.name):
-                    G.add_edge(
-                        producer,
-                        node.name,
-                        edge_type="ordering",
-                        value_names=[name],
-                    )
+                for producer in producers:
+                    if producer == node.name:
+                        continue  # Skip self-loops
+                    if not G.has_edge(producer, node.name):
+                        G.add_edge(
+                            producer,
+                            node.name,
+                            edge_type="ordering",
+                            value_names=[name],
+                        )
+
+    def _apply_shadow_elimination(
+        self,
+        nodes: list[HyperNode],
+        by_input: dict[tuple[str, str], list[str]],
+        output_to_sources: dict[str, list[str]],
+    ) -> dict[tuple[str, str], list[str]]:
+        """Remove shadowed producer candidates from implicit input wiring.
+
+        Shadow rule:
+        For consumer input ``p``, producer edge ``u -> v (p)`` is removed iff:
+        1) ``u -> v`` has at least one alternate execution path
+           (excluding the direct candidate edge), and
+        2) every such path passes through another producer of ``p`` first.
+        """
+        candidate_graph = nx.DiGraph()
+        candidate_graph.add_nodes_from(node.name for node in nodes)
+        for (consumer, _param), producers in by_input.items():
+            for producer in producers:
+                candidate_graph.add_edge(producer, consumer)
+        self._add_candidate_control_and_ordering_edges(candidate_graph, nodes, output_to_sources)
+        invalid_nodes_by_consumer = self._invalid_shadow_path_nodes_by_consumer(nodes)
+
+        pruned: dict[tuple[str, str], list[str]] = {}
+        for key, producers in by_input.items():
+            consumer, param = key
+            if len(producers) <= 1:
+                pruned[key] = producers
+                continue
+
+            kept = [
+                producer
+                for producer in producers
+                if not self._is_shadowed_producer(
+                    candidate_graph=candidate_graph,
+                    producer=producer,
+                    consumer=consumer,
+                    competing_producers=set(producers),
+                    invalid_path_nodes=invalid_nodes_by_consumer.get(consumer),
+                )
+            ]
+
+            if kept:
+                pruned[key] = kept
+            else:
+                raise GraphConfigError(
+                    f"Input '{param}' on node '{consumer}' has no realizable producer after implicit shadow elimination.\n\n"
+                    f"Candidate producers were: {sorted(producers)}\n\n"
+                    f"How to fix:\n"
+                    f"  - Add ordering (emit/wait_for) to make producer flow unambiguous, OR\n"
+                    f"  - Use explicit edges to declare the intended dependency, OR\n"
+                    f"  - Rename value channels to avoid contested producers."
+                )
+
+        return pruned
+
+    def _invalid_shadow_path_nodes_by_consumer(self, nodes: list[HyperNode]) -> dict[str, set[str]]:
+        """Nodes that should not be traversed in shadow-path checks per consumer.
+
+        For gate consumers, paths that route through the gate's own targets are
+        not considered valid evidence of upstream shadowing. Those targets are
+        activated by the gate decision itself and would otherwise create
+        circular self-justifying paths (gate -> target ... -> gate).
+        """
+        from hypergraph.nodes.gate import END, GateNode
+
+        invalid: dict[str, set[str]] = {}
+        for node in nodes:
+            if not isinstance(node, GateNode):
+                continue
+            blocked = {target for target in node.targets if target is not END and isinstance(target, str) and target != node.name}
+            if blocked:
+                invalid[node.name] = blocked
+        return invalid
+
+    def _is_shadowed_producer(
+        self,
+        *,
+        candidate_graph: nx.DiGraph,
+        producer: str,
+        consumer: str,
+        competing_producers: set[str],
+        invalid_path_nodes: set[str] | None = None,
+    ) -> bool:
+        """Whether producer->consumer is shadowed by other producers.
+
+        Edge ``producer -> consumer`` is shadowed when every alternate path from
+        producer to consumer (excluding the direct edge) must pass through at
+        least one other competing producer first.
+        """
+        others = competing_producers - {producer}
+        if not others:
+            return False
+
+        blocked = set(invalid_path_nodes or ())
+
+        has_alt_path = self._has_path_avoiding_nodes(
+            candidate_graph,
+            producer,
+            consumer,
+            blocked_nodes=blocked,
+            skip_edge=(producer, consumer),
+        )
+        if not has_alt_path:
+            return False
+
+        has_path_without_others = self._has_path_avoiding_nodes(
+            candidate_graph,
+            producer,
+            consumer,
+            blocked_nodes=blocked | (others - {consumer}),
+            skip_edge=(producer, consumer),
+        )
+        return not has_path_without_others
+
+    def _add_candidate_control_and_ordering_edges(
+        self,
+        graph: nx.DiGraph,
+        nodes: list[HyperNode],
+        output_to_sources: dict[str, list[str]],
+    ) -> None:
+        """Add control/order precedence edges used for cycle-context detection."""
+        from hypergraph.nodes.gate import END, GateNode
+
+        node_names = {node.name for node in nodes}
+
+        for node in nodes:
+            if isinstance(node, GateNode):
+                for target in node.targets:
+                    if target is END or target not in node_names:
+                        continue
+                    graph.add_edge(node.name, target)
+
+            for wait_name in node.wait_for:
+                for producer in output_to_sources.get(wait_name, []):
+                    if producer != node.name:
+                        graph.add_edge(producer, node.name)
+
+    def _validate_no_cycle_input_ambiguity(
+        self,
+        nodes: list[HyperNode],
+        by_input: dict[tuple[str, str], list[str]],
+    ) -> None:
+        """Reject cycle inputs that still have multiple producer candidates."""
+        from hypergraph.nodes.gate import GateNode
+
+        node_by_name = {node.name: node for node in nodes}
+        candidate_graph = nx.DiGraph()
+        candidate_graph.add_nodes_from(node.name for node in nodes)
+        for (consumer, _param), producers in by_input.items():
+            for producer in producers:
+                candidate_graph.add_edge(producer, consumer)
+
+        cycle_nodes: set[str] = set()
+        for component in nx.strongly_connected_components(candidate_graph):
+            comp = set(component)
+            if len(comp) > 1 or any(candidate_graph.has_edge(n, n) for n in comp):
+                cycle_nodes.update(comp)
+
+        for (consumer, param), producers in by_input.items():
+            if consumer not in cycle_nodes:
+                continue
+            if isinstance(node_by_name.get(consumer), GateNode):
+                continue
+            external_producers = [p for p in producers if p != consumer]
+            if len(external_producers) <= 1:
+                continue
+            raise GraphConfigError(
+                f"Ambiguous implicit dependency for input '{param}' on node '{consumer}'.\n\n"
+                f"  -> Candidate producers: {sorted(external_producers)}\n\n"
+                f"This cycle input cannot be resolved unambiguously.\n"
+                f"How to fix:\n"
+                f"  - Add ordering (emit/wait_for) so one producer is shadowed, OR\n"
+                f"  - Use explicit edges to declare the intended topology, OR\n"
+                f"  - Rename value channels to make dependencies explicit."
+            )
+
+    def _has_path_avoiding_nodes(
+        self,
+        graph: nx.DiGraph,
+        source: str,
+        target: str,
+        *,
+        blocked_nodes: set[str],
+        skip_edge: tuple[str, str] | None = None,
+    ) -> bool:
+        """Return True if a path exists while avoiding blocked nodes."""
+        from collections import deque
+
+        queue: deque[str] = deque([source])
+        visited: set[str] = {source}
+
+        while queue:
+            node_name = queue.popleft()
+            for nxt in graph.successors(node_name):
+                if skip_edge is not None and (node_name, nxt) == skip_edge:
+                    continue
+                if nxt in blocked_nodes and nxt != target:
+                    continue
+                if nxt == target:
+                    return True
+                if nxt in visited:
+                    continue
+                visited.add(nxt)
+                queue.append(nxt)
+
+        return False
 
     def bind(self, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).

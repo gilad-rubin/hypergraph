@@ -450,31 +450,16 @@
     });
   }
 
-  // ── Feedback edge detection (DFS cycle detection) ──
+  // ── Feedback edge selection (Python-precomputed hints) ──
 
   function computeFeedbackEdgeKeys(nodes, edges) {
-    var nodeIds = new Set(nodes.map(function(n) { return n.id; }));
-    var adj = new Map();
-    nodes.forEach(function(n) { adj.set(n.id, []); });
-    edges.forEach(function(e) {
-      if (nodeIds.has(e.source) && nodeIds.has(e.target)) adj.get(e.source).push(e);
-    });
-
-    var state = new Map();
-    nodes.forEach(function(n) { state.set(n.id, 0); });
     var feedback = new Set();
 
-    var dfs = function(id) {
-      state.set(id, 1);
-      (adj.get(id) || []).forEach(function(edge) {
-        if (!nodeIds.has(edge.target)) return;
-        var s = state.get(edge.target) || 0;
-        if (s === 0) dfs(edge.target);
-        else if (s === 1) feedback.add(edge.source + '->' + edge.target);
-      });
-      state.set(id, 2);
-    };
-    nodes.forEach(function(n) { if (state.get(n.id) === 0) dfs(n.id); });
+    // Python-precomputed contract: this edge must be routed as feedback.
+    edges.forEach(function(edge) {
+      var d = edge.data || (edge._original && edge._original.data) || {};
+      if (d && d.forceFeedback) feedback.add(edge.source + '->' + edge.target);
+    });
     return feedback;
   }
 
@@ -543,10 +528,9 @@
     return deepToChild;
   }
 
-  // Note: deduplicates by (source, target) pair because dagre uses a simple graph.
-  // If two edges share the same endpoints (e.g., data + ordering), only the first
-  // survives in the recursive layout. This is a known simplification — parallel edges
-  // inside expanded containers may lose one edge visually.
+  // Note: dagre uses a simple graph for layout, so we dedupe by (source,target)
+  // only for the internal layout pass. Original edges are restored later so the
+  // rendered edge set still matches Python exactly.
   function collectEdgesForGroup(edges, memberIds, deepToChild) {
     var seen = new Set(), result = [];
     edges.forEach(function(e) {
@@ -726,35 +710,7 @@
     });
 
     // Phase 4: Route cross-boundary edges
-    var handledKeys = new Set(allEdges.map(function(e) { return e.source + '->' + e.target; }));
-
-    var outputToProducer = (routingData && routingData.output_to_producer) || {};
-    var paramToConsumer = (routingData && routingData.param_to_consumer) || {};
-    var nodeToParent = (routingData && routingData.node_to_parent) || {};
-
-    var isDescendantOf = function(nodeId, ancestorId) {
-      if (!nodeId || !ancestorId || nodeId === ancestorId) return false;
-      var cur = nodeId;
-      while (cur && nodeToParent[cur]) {
-        if (nodeToParent[cur] === ancestorId) return true;
-        cur = nodeToParent[cur];
-      }
-      return false;
-    };
-
-    var inputGroupTargets = new Map();
-    visibleNodes.forEach(function(n) {
-      if (n.data && n.data.nodeType === 'INPUT_GROUP' && n.data.actualTargets)
-        inputGroupTargets.set(n.id, n.data.actualTargets);
-    });
-    var inputNodeTargets = new Map();
-    visibleNodes.forEach(function(n) {
-      if (n.data && n.data.nodeType === 'INPUT') {
-        var targets = n.data.actualTargets;
-        if (!targets) targets = paramToConsumer[n.data.label];
-        if (targets) inputNodeTargets.set(n.id, targets);
-      }
-    });
+    var handledEdgeIds = new Set(allEdges.map(function(e) { return e.id; }));
 
     var pickExpandedContainerAnchor = function(nodeId, direction) {
       if (!expansionState.get(nodeId)) return null;
@@ -788,73 +744,11 @@
     };
 
     edges.forEach(function(e) {
-      if (handledKeys.has(e.source + '->' + e.target)) return;
+      if (handledEdgeIds.has(e.id)) return;
 
       var actualSrc = e.source, actualTgt = e.target;
-      var srcPos = null, tgtPos = null, srcDims = null, tgtDims = null;
-
-      // Resolve actual source via output_to_producer
-      var valueName = e.data && e.data.valueName;
-      if (valueName && outputToProducer[valueName]) {
-        var producer = outputToProducer[valueName];
-        var srcType = nodeTypes.get(e.source) || 'FUNCTION';
-        var srcIsExpandedContainer = srcType === 'PIPELINE' && expansionState.get(e.source);
-
-        // If source is an expanded container, never anchor this edge to a
-        // producer outside that container subtree (prevents cross-side jumps,
-        // e.g. llm->should_continue being anchored to ask_user internals).
-        if (srcIsExpandedContainer && producer !== e.source && !isDescendantOf(producer, e.source)) {
-          producer = e.source;
-        }
-
-        var isAncestor = false;
-        var cur = e.source;
-        while (cur && nodeToParent[cur]) {
-          if (nodeToParent[cur] === producer) { isAncestor = true; break; }
-          cur = nodeToParent[cur];
-        }
-        if (!isAncestor) {
-          var dataId = 'data_' + producer + '_' + valueName;
-          if (nodePositions.has(dataId)) { actualSrc = dataId; srcPos = nodePositions.get(dataId); srcDims = nodeDimensions.get(dataId); }
-          else if (nodePositions.has(producer)) { actualSrc = producer; srcPos = nodePositions.get(producer); srcDims = nodeDimensions.get(producer); }
-        }
-      }
-      if (!srcPos) { srcPos = nodePositions.get(e.source); srcDims = nodeDimensions.get(e.source); actualSrc = e.source; }
-
-      // Resolve actual target via input groups / input nodes
-      if (inputGroupTargets.has(e.source)) {
-        var targets = inputGroupTargets.get(e.source);
-        for (var i = 0; i < targets.length; i++) {
-          if (nodePositions.has(targets[i])) { actualTgt = targets[i]; tgtPos = nodePositions.get(targets[i]); tgtDims = nodeDimensions.get(targets[i]); break; }
-        }
-      }
-      if (inputNodeTargets.has(e.source)) {
-        var consumerTargets = inputNodeTargets.get(e.source);
-        var targetList = Array.isArray(consumerTargets) ? consumerTargets : [consumerTargets];
-        for (var j = 0; j < targetList.length; j++) {
-          var consumer = targetList[j];
-          if (nodePositions.has(consumer)) {
-            actualTgt = consumer;
-            tgtPos = nodePositions.get(consumer);
-            tgtDims = nodeDimensions.get(consumer);
-            break;
-          }
-        }
-      }
-      if (!tgtPos) { tgtPos = nodePositions.get(e.target); tgtDims = nodeDimensions.get(e.target); actualTgt = e.target; }
-
-      var srcAnchor = pickExpandedContainerAnchor(actualSrc, 'out');
-      if (srcAnchor && srcAnchor !== actualSrc) {
-        actualSrc = srcAnchor;
-        srcPos = nodePositions.get(actualSrc);
-        srcDims = nodeDimensions.get(actualSrc);
-      }
-      var tgtAnchor = pickExpandedContainerAnchor(actualTgt, 'in');
-      if (tgtAnchor && tgtAnchor !== actualTgt) {
-        actualTgt = tgtAnchor;
-        tgtPos = nodePositions.get(actualTgt);
-        tgtDims = nodeDimensions.get(actualTgt);
-      }
+      var srcPos = nodePositions.get(actualSrc), tgtPos = nodePositions.get(actualTgt);
+      var srcDims = nodeDimensions.get(actualSrc), tgtDims = nodeDimensions.get(actualTgt);
 
       if (!srcPos || !tgtPos || !srcDims || !tgtDims) return;
       if (actualSrc === actualTgt) return;

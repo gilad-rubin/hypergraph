@@ -709,11 +709,20 @@ class GraphState:
         Only increments version if:
         - Name is new (not previously set), or
         - Value is different from previous value
+        - Value is the emit sentinel (emit signals always advance freshness)
         """
+        from hypergraph.nodes.base import _EMIT_SENTINEL
+
         old_value = self.values.get(name)
         is_new = name not in self.values
 
         self.values[name] = value
+
+        # Emit signals are event-like: every write should advance version even
+        # though the sentinel object instance is stable across emissions.
+        if value is _EMIT_SENTINEL:
+            self.versions[name] = self.versions.get(name, 0) + 1
+            return
 
         # Only increment version if value actually changed
         if is_new:

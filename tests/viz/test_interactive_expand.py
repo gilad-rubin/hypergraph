@@ -26,6 +26,8 @@ For collapse:
 
 import pytest
 
+from hypergraph import END, Graph, interrupt, node, route
+
 # Import shared fixtures and helpers from conftest
 from tests.viz.conftest import (
     HAS_PLAYWRIGHT,
@@ -34,7 +36,56 @@ from tests.viz.conftest import (
     extract_edge_routing,
     make_workflow,
     render_and_extract,
+    render_to_page,
 )
+
+
+def make_interrupt_cycle_graph() -> Graph:
+    """Build the interrupt-cycle graph used in the notebook regression reports."""
+
+    @interrupt(output_name="user_input")
+    def ask_slack(messages: list[str], slack: object) -> None:
+        return None
+
+    @node(output_name="assistant_text")
+    def llm_step(messages: list[str]) -> str:
+        return "assistant draft"
+
+    @node(output_name="messages")
+    def add_user_message(messages: list[str], user_input: str) -> list[str]:
+        return [*messages, f"user: {user_input}"]
+
+    @node(output_name="messages")
+    def add_assistant_message(messages: list[str], assistant_text: str) -> list[str]:
+        return [*messages, f"assistant: {assistant_text}"]
+
+    @route(targets=["ask_user", END])
+    def should_continue(messages: list[str], max_turns: int) -> str:
+        return "ask_user"
+
+    ask_user_node = Graph(
+        [ask_slack, add_user_message],
+        edges=[(ask_slack, add_user_message)],
+        name="ask_user",
+    ).as_node()
+
+    llm_node = Graph(
+        [llm_step, add_assistant_message],
+        edges=[(llm_step, add_assistant_message)],
+        name="llm",
+    ).as_node()
+
+    return Graph(
+        [ask_user_node, llm_node, should_continue],
+        edges=[
+            (ask_user_node, llm_node, "messages"),
+            (llm_node, should_continue, "messages"),
+            (llm_node, ask_user_node, "messages"),
+        ],
+        name="slack_cycle",
+        entrypoint="ask_user",
+    )
+
 
 # =============================================================================
 # Tests for Interactive Expand Edge Routing
@@ -207,6 +258,69 @@ class TestInteractiveExpandEdgeRouting:
             f"\nAfter expanding preprocess, the output edge should route from\n"
             f"normalize_text (or its data node) which produces the 'normalized' output.\n"
             f"Instead, the edge stays connected to the container boundary."
+        )
+
+    def test_interrupt_cycle_control_back_edge_stays_visible_when_llm_expands(self, page, temp_html_file):
+        """Regression: expanding llm must keep should_continue -> ask_user* as feedback edge."""
+        graph = make_interrupt_cycle_graph()
+
+        render_and_extract(page, graph, depth=0, temp_path=temp_html_file, show_external_inputs=False)
+        click_to_expand_container(page, "llm")
+
+        edge = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const edges = debug.layoutedEdges || [];
+            return edges.find(e =>
+                e.source === 'should_continue' &&
+                e.data &&
+                ((e.data.actualTarget && e.data.actualTarget.startsWith('ask_user')) ||
+                 (e.target && e.target.startsWith('ask_user')))
+            ) || null;
+        }""")
+
+        assert edge is not None, "Missing should_continue -> ask_user* control edge after expanding llm."
+
+        data = edge.get("data", {})
+        assert data.get("edgeType") == "control", f"Expected control edge, got: {edge}"
+        assert data.get("isFeedbackEdge") is True, (
+            "should_continue -> ask_user* should be routed as a feedback edge so it remains visible when llm is expanded."
+        )
+        points = data.get("points") or []
+        assert len(points) >= 4, f"Feedback edge should have routed polyline points (loop/stem), got points={points}"
+
+    def test_interrupt_cycle_depth2_keeps_llm_messages_edge_to_ask_user_entry(self, page, temp_html_file):
+        """Depth=2 should render the Python edge llm/add_assistant_message -> ask_user/ask_slack."""
+        graph = make_interrupt_cycle_graph()
+        data = render_and_extract(page, graph, depth=2, temp_path=temp_html_file, show_external_inputs=False)
+
+        matches = [
+            edge for edge in data["edges"].values() if edge["source"] == "llm/add_assistant_message" and edge["target"] == "ask_user/ask_slack"
+        ]
+        assert matches, f"Missing llm/add_assistant_message -> ask_user/ask_slack at depth=2. Observed edges: {list(data['edges'].values())}"
+
+    def test_interrupt_cycle_after_collapsing_llm_keeps_edge_and_vertical_order(self, page, temp_html_file):
+        """Interactive state: collapse llm after depth=2 keeps edge + should_continue below llm."""
+        graph = make_interrupt_cycle_graph()
+        render_to_page(page, graph, depth=2, temp_path=temp_html_file, show_external_inputs=False)
+        click_to_collapse_container(page, "llm")
+
+        data = extract_edge_routing(page)
+        matches = [edge for edge in data["edges"].values() if edge["source"] == "llm" and edge["target"] == "ask_user/ask_slack"]
+        assert matches, f"After collapsing llm, missing llm -> ask_user/ask_slack data edge. Observed edges: {list(data['edges'].values())}"
+
+        node_positions = page.evaluate(
+            """() => {
+                const debug = window.__hypergraphVizDebug || {};
+                const byId = {};
+                for (const n of (debug.nodes || [])) byId[n.id] = n;
+                return byId;
+            }"""
+        )
+        assert "llm" in node_positions, f"llm missing from debug nodes: {node_positions}"
+        assert "should_continue" in node_positions, f"should_continue missing from debug nodes: {node_positions}"
+        assert node_positions["should_continue"]["y"] > node_positions["llm"]["y"], (
+            "Expected should_continue below llm after collapsing llm. "
+            f"llm.y={node_positions['llm']['y']} should_continue.y={node_positions['should_continue']['y']}"
         )
 
 

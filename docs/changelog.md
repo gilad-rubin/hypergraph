@@ -28,7 +28,8 @@
 - **Cycles require constructor entrypoint** — constructing a cyclic graph without `Graph(..., entrypoint=...)` now raises `GraphConfigError`.
 - **Internal output injection tightened** — user-provided values for edge-produced internal parameters are rejected deterministically.
 - **Visualization defaults simplified** — external inputs are hidden by default in `.visualize()` and can be toggled with `show_external_inputs` (API) or the side-panel control.
-- **Visualization dependency edges simplified** — transitive execution edges are pruned in rendered views (for example, hiding `B→A` when `B→C→A` is already present).
+- **Visualization edge contract tightened** — rendered views now follow the Python-precomputed edge set (no JS-only transitive pruning), so what you see matches the canonical NetworkX topology.
+- **Implicit producer shadow-elimination** — for contested input `p`, edge `u -> v (p)` is removed iff every valid path from `u` to `v` for `p` crosses another producer of `p` first; unresolved cases raise `GraphConfigError` at build time.
 
 ## Recent Merged PRs
 
