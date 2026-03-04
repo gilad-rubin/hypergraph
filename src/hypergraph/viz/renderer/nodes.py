@@ -18,6 +18,7 @@ from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.scope import (
     compute_deepest_input_scope,
     compute_input_scope,
+    find_container_entrypoints,
     is_output_externally_consumed,
 )
 
@@ -308,7 +309,16 @@ def get_start_targets(
         while resolved is not None and not is_node_visible(resolved, flat_graph, expansion_state):
             resolved = flat_graph.nodes[resolved].get("parent")
 
-        if resolved is None or resolved in seen:
+        if resolved is None:
+            continue
+
+        attrs = flat_graph.nodes.get(resolved, {})
+        if attrs.get("node_type") == "GRAPH" and expansion_state.get(resolved, False):
+            entrypoints = find_container_entrypoints(resolved, flat_graph, expansion_state)
+            if entrypoints:
+                resolved = entrypoints[0]
+
+        if resolved in seen:
             continue
 
         seen.add(resolved)

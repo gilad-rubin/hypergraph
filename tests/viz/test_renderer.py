@@ -148,6 +148,35 @@ class TestRenderGraph:
 
         assert all(n["data"]["nodeType"] != "START" for n in result["nodes"])
 
+    def test_start_edge_targets_internal_node_when_entrypoint_container_expanded(self):
+        """When an entrypoint container is expanded, START should target an inner node.
+
+        This avoids rendering START->container edges that visually appear to attach
+        to container chrome instead of executable nodes.
+        """
+
+        @node(output_name="messages")
+        def first(messages: list[str], seed: str) -> list[str]:
+            return [*messages, seed]
+
+        @node(output_name="messages")
+        def second(messages: list[str]) -> list[str]:
+            return messages
+
+        inner = Graph(
+            nodes=[first, second],
+            edges=[(first, second), (second, first)],
+            name="inner",
+        )
+        outer = Graph(nodes=[inner.as_node()], entrypoint="inner")
+
+        result = render_graph(outer.to_flat_graph(), depth=1)
+
+        start_edges = [e for e in result["edges"] if e["source"] == "__start__"]
+        assert len(start_edges) == 1
+        assert start_edges[0]["target"] != "inner"
+        assert start_edges[0]["target"].startswith("inner/")
+
     def test_render_nested_graph(self):
         """Test rendering a nested graph."""
         inner = Graph(nodes=[double], name="inner")

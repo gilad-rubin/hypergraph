@@ -745,6 +745,37 @@
       }
     });
 
+    var pickExpandedContainerAnchor = function(nodeId, direction) {
+      if (!expansionState.get(nodeId)) return null;
+      if ((nodeTypes.get(nodeId) || 'FUNCTION') !== 'PIPELINE') return null;
+
+      var candidates = [];
+      visibleNodes.forEach(function(n) {
+        if (n.hidden || n.parentNode !== nodeId) return;
+        var nt = (n.data && n.data.nodeType) || 'FUNCTION';
+        if (nt === 'DATA' || nt === 'INPUT' || nt === 'INPUT_GROUP' || nt === 'START' || nt === 'END') return;
+
+        var pos = nodePositions.get(n.id);
+        var dims = nodeDimensions.get(n.id);
+        if (!pos || !dims) return;
+
+        candidates.push({ id: n.id, x: pos.x, y: pos.y, bottom: pos.y + dims.height });
+      });
+
+      if (!candidates.length) return null;
+
+      candidates.sort(function(a, b) {
+        if (direction === 'out') {
+          if (b.bottom !== a.bottom) return b.bottom - a.bottom;
+          return a.x - b.x;
+        }
+        if (a.y !== b.y) return a.y - b.y;
+        return a.x - b.x;
+      });
+
+      return candidates[0].id;
+    };
+
     edges.forEach(function(e) {
       if (handledKeys.has(e.source + '->' + e.target)) return;
 
@@ -782,7 +813,21 @@
       }
       if (!tgtPos) { tgtPos = nodePositions.get(e.target); tgtDims = nodeDimensions.get(e.target); actualTgt = e.target; }
 
+      var srcAnchor = pickExpandedContainerAnchor(actualSrc, 'out');
+      if (srcAnchor && srcAnchor !== actualSrc) {
+        actualSrc = srcAnchor;
+        srcPos = nodePositions.get(actualSrc);
+        srcDims = nodeDimensions.get(actualSrc);
+      }
+      var tgtAnchor = pickExpandedContainerAnchor(actualTgt, 'in');
+      if (tgtAnchor && tgtAnchor !== actualTgt) {
+        actualTgt = tgtAnchor;
+        tgtPos = nodePositions.get(actualTgt);
+        tgtDims = nodeDimensions.get(actualTgt);
+      }
+
       if (!srcPos || !tgtPos || !srcDims || !tgtDims) return;
+      if (actualSrc === actualTgt) return;
 
       var srcCX = srcPos.x + srcDims.width / 2;
       var srcNT = nodeTypes.get(actualSrc) || 'FUNCTION';

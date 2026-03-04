@@ -187,7 +187,14 @@ def find_container_entrypoints(
         if not consumes_internal and is_node_visible(node_id, flat_graph, expansion_state):
             entrypoints.append(node_id)
 
-    return entrypoints
+    if entrypoints:
+        return entrypoints
+
+    # Cyclic containers can have no "pure external" child by this heuristic.
+    # Fall back to visible direct children so expanded containers are not used
+    # as edge endpoints in the visualization.
+    fallback = [node_id for node_id in direct_children if is_node_visible(node_id, flat_graph, expansion_state)]
+    return fallback
 
 
 def find_container_exit_points(
