@@ -194,53 +194,13 @@ class TestEdgeGaps:
                 .filter(Boolean)
                 .filter((l) => l.text.includes('True') || l.text.includes('False'));
 
-            const midpointOnOutgoingLeg = (pts) => {
+            const midpointOnPolyline = (pts) => {
                 if (!pts || pts.length < 2) return null;
-                const MIN_SIGNIFICANT_SEGMENT = 6;
-                const TURN_THRESHOLD_DEG = 38;
-
-                const segments = [];
-                let cumulative = 0;
+                let total = 0;
                 for (let i = 0; i < pts.length - 1; i += 1) {
-                    const a = pts[i];
-                    const b = pts[i + 1];
-                    const dx = b.x - a.x;
-                    const dy = b.y - a.y;
-                    const len = Math.hypot(dx, dy);
-                    cumulative += len;
-                    segments.push({ x: dx, y: dy, len: len, endDistance: cumulative });
+                    total += Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
                 }
-                if (!segments.length) return null;
-
-                let firstSig = -1;
-                for (let i = 0; i < segments.length; i += 1) {
-                    if (segments[i].len >= MIN_SIGNIFICANT_SEGMENT) {
-                        firstSig = i;
-                        break;
-                    }
-                }
-                if (firstSig < 0) return null;
-
-                const base = segments[firstSig];
-                const baseLen = base.len || 1;
-                const baseX = base.x / baseLen;
-                const baseY = base.y / baseLen;
-                let outgoingLength = cumulative;
-
-                for (let i = firstSig + 1; i < segments.length; i += 1) {
-                    const seg = segments[i];
-                    if (seg.len < MIN_SIGNIFICANT_SEGMENT) continue;
-                    const segX = seg.x / seg.len;
-                    const segY = seg.y / seg.len;
-                    const dot = Math.max(-1, Math.min(1, baseX * segX + baseY * segY));
-                    const angleDeg = Math.acos(dot) * 180 / Math.PI;
-                    if (angleDeg >= TURN_THRESHOLD_DEG) {
-                        outgoingLength = segments[i - 1].endDistance;
-                        break;
-                    }
-                }
-
-                const target = outgoingLength * 0.5;
+                const target = total * 0.5;
                 let walked = 0;
                 for (let i = 0; i < pts.length - 1; i += 1) {
                     const p0 = pts[i];
@@ -263,7 +223,7 @@ class TestEdgeGaps:
                 const label = (edge.data && edge.data.label) || '';
                 if (label !== 'True' && label !== 'False') continue;
                 const pts = (edge.data && edge.data.points) || [];
-                const expected = midpointOnOutgoingLeg(pts);
+                const expected = midpointOnPolyline(pts);
                 if (!expected) continue;
 
                 let best = null;
@@ -306,7 +266,7 @@ class TestEdgeGaps:
         for report in result["reports"]:
             assert report["actual"] is not None, f"Label not found for edge {report['edge']} ({stage}). Parsed labels: {result['parsedLabels']}"
             assert report["distance"] <= 2.5, (
-                f"Branch label not centered on outgoing leg for {report['edge']} ({report['label']}) [{stage}].\n"
+                f"Branch label not centered on full edge for {report['edge']} ({report['label']}) [{stage}].\n"
                 f"Expected: ({report['expected']['x']:.2f}, {report['expected']['y']:.2f})\n"
                 f"Actual: ({report['actual']['x']:.2f}, {report['actual']['y']:.2f})\n"
                 f"Distance: {report['distance']:.2f}px"
@@ -546,8 +506,8 @@ class TestEdgeGaps:
             f"  - {i['edge']} ({i['source']} -> {i['target']}) crosses {i['node']}" for i in result["issues"][:10]
         )
 
-    def test_branch_labels_center_on_outgoing_leg(self, page, temp_html_file):
-        """True/False labels should be centered on the outgoing branch leg."""
+    def test_branch_labels_center_on_edge_midpoint(self, page, temp_html_file):
+        """True/False labels should be centered on the full branch edge."""
         graph = make_branch_anchor_graph()
         render_to_page(page, graph, depth=0, temp_path=temp_html_file)
         self._assert_branch_labels_centered(
