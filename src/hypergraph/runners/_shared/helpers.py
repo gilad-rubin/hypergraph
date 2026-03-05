@@ -281,8 +281,12 @@ def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
                         if gate is None:
                             continue
                         default_open = getattr(gate, "default_open", True)
-                        if default_open:
-                            # Gate has never executed — default to open (configurable)
+                        if default_open and node_name not in state.node_executions:
+                            # Gate has never executed, target has never executed —
+                            # allow first-pass startup.  Once the target has executed,
+                            # it must wait for the gate's actual routing decision
+                            # before re-firing (prevents mid-pipeline re-trigger
+                            # when shared params cause staleness).
                             activated.add(node_name)
                             break
                         continue
@@ -701,8 +705,12 @@ def initialize_state_with_checkpoint(
 
     versions: dict[str, int] = {}
     graph_input_names = set(graph.inputs.all)
+    bound_names = set(graph.inputs.bound)
     for name in checkpoint_values:
-        if name in graph_input_names:
+        # Runtime-provided graph inputs start at version 1 (set by update_value
+        # during initialize_state). Bound values start at version 0 (resolved
+        # lazily via collect_inputs_for_node, never entering state.versions).
+        if name in graph_input_names and name not in bound_names:
             versions[name] = 1
 
     completed_steps = [s for s in steps if getattr(s, "status", None) is not None and s.status.value == "completed"]
@@ -752,7 +760,7 @@ def initialize_state_with_checkpoint(
     # changes to explicit upstream producers after checkpoint restore.
     replay_versions: dict[str, int] = {}
     for name in checkpoint_values:
-        if name in graph_input_names:
+        if name in graph_input_names and name not in bound_names:
             replay_versions[name] = 1
     for step in completed_steps:
         output_versions: dict[str, int] = {}

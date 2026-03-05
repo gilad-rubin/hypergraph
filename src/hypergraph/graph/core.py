@@ -365,18 +365,31 @@ class Graph:
 
     @functools.cached_property
     def input_data_producers(self) -> dict[str, dict[str, frozenset[str]]]:
-        """Map node_name -> input_name -> producers on incoming DATA edges.
+        """Map node_name -> input_name -> producers on incoming DATA/ORDERING edges.
 
         In explicit-edge graphs, this captures exactly which producers are
         wired to each input. The runner uses it to avoid marking a node stale
         when an identically named value changes via a non-wired producer.
+
+        For shared params, the explicit edge becomes ordering-only (data flows
+        through state). We include ordering-edge predecessors that produce a
+        shared param consumed by the target, so the staleness check can
+        distinguish "my upstream updated messages" from "some downstream node
+        updated messages".
         """
         producer_map: dict[str, dict[str, set[str]]] = {}
         for src, dst, data in self._nx_graph.edges(data=True):
-            if data.get("edge_type") != "data":
-                continue
-            for value_name in data.get("value_names", []):
-                producer_map.setdefault(dst, {}).setdefault(value_name, set()).add(src)
+            edge_type = data.get("edge_type")
+            if edge_type == "data":
+                for value_name in data.get("value_names", []):
+                    producer_map.setdefault(dst, {}).setdefault(value_name, set()).add(src)
+            elif edge_type == "ordering" and self._shared:
+                # Ordering edges from shared params: src produces a shared
+                # param that dst consumes — record as a legitimate producer.
+                src_outputs = set(self._nodes[src].outputs)
+                dst_inputs = set(self._nodes[dst].inputs)
+                for param in src_outputs & dst_inputs & self._shared:
+                    producer_map.setdefault(dst, {}).setdefault(param, set()).add(src)
 
         frozen: dict[str, dict[str, frozenset[str]]] = {}
         for node_name, inputs in producer_map.items():

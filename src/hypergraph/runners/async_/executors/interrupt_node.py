@@ -21,6 +21,8 @@ class AsyncInterruptNodeExecutor:
         node: InterruptNode,
         state: GraphState,
         inputs: dict[str, Any],
+        *,
+        provided_values: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
 
@@ -33,12 +35,16 @@ class AsyncInterruptNodeExecutor:
                 )
             input_values[name] = inputs[name]
 
-        # Resume path: ALL data outputs already in state (provided via values dict)
-        # Skip pause only if all values exist AND node hasn't executed yet this run
-        # (in cycles, the node re-executes and should pause again)
-        all_outputs_present = all(o in state.values for o in data_outputs)
-        if all_outputs_present and node.name not in state.node_executions:
-            result = {o: state.values[o] for o in data_outputs}
+        # Resume path: all data outputs were provided by the caller THIS run.
+        # We check provided_values (what the user passed to runner.run()),
+        # not state.values, to distinguish fresh resume values from stale
+        # values left over from a previous cycle iteration in checkpointed state.
+        # After consuming, we remove the keys so a second cycle iteration
+        # through this node will correctly invoke the handler and pause.
+        pv = provided_values or {}
+        all_outputs_provided = all(o in pv for o in data_outputs)
+        if all_outputs_provided:
+            result = {o: pv.pop(o) for o in data_outputs}
             return _add_emit_sentinels(result, node)
 
         # Handler path: invoke the function
