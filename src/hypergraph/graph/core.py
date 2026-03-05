@@ -115,10 +115,10 @@ class Graph:
         nodes: list[HyperNode],
         *,
         edges: list[tuple] | None = None,
-        entrypoint: str | list[str] | tuple[str, ...] | None = None,
+        entrypoint: str | HyperNode | list[str | HyperNode] | tuple[str | HyperNode, ...] | None = None,
         name: str | None = None,
         strict_types: bool = False,
-        shared: list[str] | None = None,
+        shared: str | list[str] | tuple[str, ...] | None = None,
     ) -> None:
         """Create a graph from nodes.
 
@@ -133,14 +133,16 @@ class Graph:
                 with no matching values become ordering-only edges.
                 When ``edges`` is provided, auto-inference is disabled.
             entrypoint: Convenience shortcut for ``with_entrypoint(...)``.
-                Accepts a node name or a list/tuple of node names and applies
-                the same validation and semantics as ``with_entrypoint``.
+                Accepts a node name/object or a list/tuple of node names/objects
+                and applies the same validation and semantics as
+                ``with_entrypoint``.
             name: Optional graph name for nesting
             strict_types: If True, validate type compatibility between connected
                          nodes at graph construction time. Calls _validate_types()
                          which raises GraphConfigError on missing annotations or
                          type mismatches. Default is False (no type checking).
             shared: Parameter names that are shared state across the graph.
+                Accepts a single parameter name or a list/tuple of names.
                 Shared params are excluded from auto-wiring (no data edges
                 inferred) and allow multiple producers without conflict.
                 Nodes read the latest value from run state. The user must
@@ -149,7 +151,7 @@ class Graph:
         """
         self.name = name
         self._strict_types = strict_types
-        self._shared: frozenset[str] = frozenset(shared) if shared else frozenset()
+        self._shared = self._normalize_shared(shared)
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
@@ -164,24 +166,42 @@ class Graph:
 
     def _normalize_constructor_entrypoints(
         self,
-        entrypoint: str | list[str] | tuple[str, ...] | None,
+        entrypoint: str | HyperNode | list[str | HyperNode] | tuple[str | HyperNode, ...] | None,
     ) -> tuple[str, ...] | None:
         """Normalize constructor ``entrypoint=`` into validated tuple form."""
         if entrypoint is None:
             return None
 
-        if isinstance(entrypoint, str):
-            node_names = (entrypoint,)
+        if isinstance(entrypoint, (str, HyperNode)):
+            node_names = (entrypoint.name,) if isinstance(entrypoint, HyperNode) else (entrypoint,)
         elif isinstance(entrypoint, (list, tuple)):
-            node_names = tuple(entrypoint)
+            node_names = tuple(name.name if isinstance(name, HyperNode) else name for name in entrypoint)
         else:
-            raise GraphConfigError("entrypoint must be a node name (str) or a list/tuple of node names")
+            raise GraphConfigError("entrypoint must be a node name (str), node object, or a list/tuple of node names/objects")
 
         if not node_names:
             raise GraphConfigError("entrypoint cannot be empty")
 
         self._validate_entrypoint_names(node_names)
         return tuple(dict.fromkeys(node_names))
+
+    def _normalize_shared(self, shared: str | list[str] | tuple[str, ...] | None) -> frozenset[str]:
+        """Normalize constructor ``shared=`` into a deduplicated frozenset."""
+        if shared is None:
+            return frozenset()
+
+        if isinstance(shared, str):
+            names = (shared,)
+        elif isinstance(shared, (list, tuple)):
+            names = tuple(shared)
+        else:
+            raise GraphConfigError("shared must be a parameter name (str) or a list/tuple of parameter names")
+
+        for name in names:
+            if not isinstance(name, str):
+                raise GraphConfigError(f"shared parameter names must be strings, got {type(name).__name__}")
+
+        return frozenset(dict.fromkeys(names))
 
     def _validate_shared_params(self) -> None:
         """Validate that shared param names actually exist as outputs in the graph."""
@@ -1015,7 +1035,7 @@ class Graph:
         """Default output selection, or None if all outputs are returned."""
         return self._selected
 
-    def with_entrypoint(self, *node_names: str) -> Graph:
+    def with_entrypoint(self, *node_names: str | HyperNode) -> Graph:
         """Set execution entry points. Returns new Graph (immutable).
 
         Entry points define where execution enters the graph. Upstream
@@ -1028,7 +1048,7 @@ class Graph:
         Chainable: ``graph.with_entrypoint("A").with_entrypoint("B")``
 
         Args:
-            *node_names: One or more node names to use as entry points.
+            *node_names: One or more node names/objects to use as entry points.
 
         Returns:
             New Graph with entry points configured.
@@ -1042,11 +1062,12 @@ class Graph:
             >>> g2 = g.with_entrypoint("process")
             >>> g2.inputs.required  # only process's unproduced inputs
         """
-        self._validate_entrypoint_names(node_names)
+        normalized_names = tuple(name.name if isinstance(name, HyperNode) else name for name in node_names)
+        self._validate_entrypoint_names(normalized_names)
 
         new_graph = self._shallow_copy()
         existing = self._entrypoints or ()
-        new_graph._entrypoints = tuple(dict.fromkeys(existing + tuple(node_names)))
+        new_graph._entrypoints = tuple(dict.fromkeys(existing + normalized_names))
         return new_graph
 
     @property

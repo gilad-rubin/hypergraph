@@ -929,29 +929,6 @@
     return { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
   }
 
-  function outgoingMidpointDistance(pts) {
-    if (!pts || pts.length < 2) return 0;
-    var segments = [], cumulative = 0;
-    for (var i = 0; i < pts.length - 1; i++) {
-      var dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
-      var len = Math.sqrt(dx * dx + dy * dy);
-      cumulative += len;
-      segments.push({ x: dx, y: dy, len: len, end: cumulative });
-    }
-    var first = -1;
-    for (var j = 0; j < segments.length; j++) { if (segments[j].len >= 6) { first = j; break; } }
-    if (first < 0) return cumulative * 0.5;
-    var base = segments[first], bx = base.x / (base.len || 1), by = base.y / (base.len || 1);
-    var outLen = cumulative;
-    for (var k = first + 1; k < segments.length; k++) {
-      var s = segments[k];
-      if (s.len < 6) continue;
-      var dot = Math.max(-1, Math.min(1, bx * (s.x / s.len) + by * (s.y / s.len)));
-      if (Math.acos(dot) * 180 / Math.PI >= 38) { outLen = segments[k - 1].end; break; }
-    }
-    return outLen * 0.5;
-  }
-
   var CustomEdge = function(props) {
     var id = props.id, data = props.data, label = props.label;
     var sourceX = props.sourceX, sourceY = props.sourceY;
@@ -966,17 +943,17 @@
       edgePath = curveBasis(points);
       var isBranch = edgeLabel === 'True' || edgeLabel === 'False';
       var lp = isBranch
-        ? pointAlongPolyline(points, outgoingMidpointDistance(points) / (function() {
-            var t = 0; for (var i = 0; i < points.length - 1; i++) t += Math.sqrt(Math.pow(points[i+1].x-points[i].x,2)+Math.pow(points[i+1].y-points[i].y,2)); return t || 1;
-          })())
+        ? pointAlongPolyline(points, 0.5)
         : pointAlongPolyline(points, 0.35);
       labelX = lp.x; labelY = lp.y;
     } else {
       var r = getBezierPath({ sourceX: props.sourceX, sourceY: props.sourceY, sourcePosition: props.sourcePosition,
         targetX: props.targetX, targetY: props.targetY, targetPosition: props.targetPosition });
       edgePath = r[0];
-      labelX = sourceX + (props.targetX - sourceX) * 0.35;
-      labelY = sourceY + (props.targetY - sourceY) * 0.35;
+      var isBranchFallback = edgeLabel === 'True' || edgeLabel === 'False';
+      var t = isBranchFallback ? 0.5 : 0.35;
+      labelX = sourceX + (props.targetX - sourceX) * t;
+      labelY = sourceY + (props.targetY - sourceY) * t;
     }
     var labelStyle = {};
     if (edgeLabel === 'True') labelStyle = { background: 'rgba(16,185,129,0.9)', border: '1px solid #34d399', color: '#fff', boxShadow: '0 2px 6px rgba(16,185,129,0.3)' };
@@ -1398,9 +1375,6 @@
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
     var manState = useState(null);
     var manualTheme = manState[0], setManualTheme = manState[1];
-    var bgState = useState((detectedTheme && detectedTheme.background) || 'transparent');
-    var bgColor = bgState[0], setBgColor = bgState[1];
-
     var expState = useState(function() {
       var map = new Map();
       initialData.nodes.forEach(function(n) {
@@ -1432,10 +1406,23 @@
     var resolved = detectedTheme || { theme: themePreference === 'auto' ? 'dark' : themePreference, background: 'transparent', luminance: null, source: 'init' };
     var activeTheme = useMemo(function() { return manualTheme || (themePreference === 'auto' ? (resolved.theme || 'dark') : themePreference); }, [manualTheme, resolved.theme, themePreference]);
     var activeBg = useMemo(function() {
-      if (manualTheme) return manualTheme === 'light' ? '#f8fafc' : '#020617';
+      var themeCanvasBg = activeTheme === 'light' ? '#f8fafc' : '#020617';
+      // Explicit visualize(theme='light'|'dark') should always force canvas background.
+      if (manualTheme || themePreference === 'light' || themePreference === 'dark') return themeCanvasBg;
+
       var bg = resolved.background;
-      return (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') ? (activeTheme === 'light' ? '#f8fafc' : '#020617') : bg;
-    }, [manualTheme, resolved.background, activeTheme]);
+      var transparent = !bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)';
+      if (transparent) return themeCanvasBg;
+
+      // Auto mode safety: if detected background contradicts active theme,
+      // prefer the theme canvas color to avoid dark-controls-on-white-canvas.
+      var lum = typeof resolved.luminance === 'number' ? resolved.luminance : null;
+      if (lum !== null) {
+        var bgLooksLight = lum > 150;
+        if ((activeTheme === 'dark' && bgLooksLight) || (activeTheme === 'light' && !bgLooksLight)) return themeCanvasBg;
+      }
+      return bg;
+    }, [manualTheme, themePreference, resolved.background, resolved.luminance, activeTheme]);
 
     var theme = activeTheme;
 
@@ -1496,12 +1483,22 @@
     }, []);
 
     // Apply theme
-    useEffect(function() { setBgColor(activeBg); document.body.classList.toggle('light-mode', activeTheme === 'light'); }, [activeTheme, activeBg]);
+    useEffect(function() {
+      document.body.classList.toggle('light-mode', activeTheme === 'light');
+      document.body.style.backgroundColor = activeBg;
+
+      // Some hosts/ReactFlow layers keep a white canvas background unless
+      // explicitly painted. Force all canvas layers to the selected bg.
+      var selectors = ['#root', '.react-flow', '.react-flow__renderer', '.react-flow__pane'];
+      selectors.forEach(function(sel) {
+        document.querySelectorAll(sel).forEach(function(el) { el.style.backgroundColor = activeBg; });
+      });
+    }, [activeTheme, activeBg]);
 
     var toggleTheme = useCallback(function() {
-      if (manualTheme === null) setManualTheme((resolved.theme || 'dark') === 'dark' ? 'light' : 'dark');
+      if (manualTheme === null) setManualTheme(activeTheme === 'dark' ? 'light' : 'dark');
       else setManualTheme(null);
-    }, [manualTheme, resolved.theme]);
+    }, [manualTheme, activeTheme]);
 
     // Select edges
     var selectedEdges = useMemo(function() {
@@ -1763,7 +1760,7 @@
 
     return html`
       <div className="w-full relative overflow-hidden transition-colors duration-300"
-           style=${{ backgroundColor: bgColor, height: '100vh', width: '100vw' }}
+           style=${{ backgroundColor: activeBg, height: '100vh', width: '100vw' }}
            onClick=${function() { try { root.parent.postMessage({ type: 'hypergraph-viz-click' }, '*'); } catch(e) {} }}>
         <${ReactFlowComp}
           nodes=${layoutedNodes} edges=${styledEdges} nodeTypes=${nodeTypes} edgeTypes=${edgeTypes}
@@ -1771,7 +1768,7 @@
           onNodeClick=${function(e, n) { if (n.data && n.data.nodeType === 'PIPELINE' && !n.data.isExpanded && n.data.onToggleExpand) { e.stopPropagation(); n.data.onToggleExpand(); } }}
           minZoom=${0.1} maxZoom=${2} className="bg-transparent" panOnScroll=${panOnScroll}
           zoomOnScroll=${false} panOnDrag=${true} zoomOnPinch=${true} preventScrolling=${false}
-          style=${{ width: '100%', height: '100%' }}>
+          style=${{ width: '100%', height: '100%', backgroundColor: activeBg }}>
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls} theme=${theme} onToggleTheme=${toggleTheme} separateOutputs=${separateOutputs}
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}

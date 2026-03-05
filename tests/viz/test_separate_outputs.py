@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import END, Graph, ifelse, node, route
 from hypergraph.viz.renderer import render_graph
 from tests.viz.conftest import HAS_PLAYWRIGHT
 
@@ -106,6 +106,113 @@ class TestSeparateOutputsNodeVisibility:
         assert "cleaned" in data_labels
         assert "normalized" in data_labels
         assert "result" in data_labels
+
+    def test_internal_gate_output_not_rendered_as_data_node(self):
+        """Gate internal output (_{gate_name}) should not appear as a DATA node."""
+
+        @node(output_name="value")
+        def source(seed: int) -> int:
+            return seed
+
+        @ifelse(when_true="accept", when_false="reject")
+        def gate_decision(value: int) -> bool:
+            return value > 0
+
+        @node(output_name="accepted")
+        def accept(value: int) -> int:
+            return value
+
+        @node(output_name="rejected")
+        def reject(value: int) -> int:
+            return value
+
+        graph = Graph(nodes=[source, gate_decision, accept, reject])
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+
+        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
+        data_labels = {n["data"]["label"] for n in data_nodes}
+        data_ids = {n["id"] for n in data_nodes}
+
+        assert "_gate_decision" not in data_labels
+        assert "data_gate_decision__gate_decision" not in data_ids
+        assert "value" in data_labels
+
+    def test_gate_emit_output_still_rendered(self):
+        """Filtering should remove only internal gate output, not gate emit outputs."""
+
+        @node(output_name="value")
+        def source(seed: int) -> int:
+            return seed
+
+        @ifelse(when_true="accept", when_false="reject", emit="decision_made")
+        def gate_decision(value: int) -> bool:
+            return value > 0
+
+        @node(output_name="accepted")
+        def accept(value: int) -> int:
+            return value
+
+        @node(output_name="rejected")
+        def reject(value: int) -> int:
+            return value
+
+        graph = Graph(nodes=[source, gate_decision, accept, reject])
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+
+        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
+        data_labels = {n["data"]["label"] for n in data_nodes}
+
+        assert "_gate_decision" not in data_labels
+        assert "decision_made" in data_labels
+
+    def test_route_internal_output_not_rendered_as_data_node(self):
+        """Route internal output (_{route_name}) should not appear as DATA."""
+
+        @node(output_name="value")
+        def source(seed: int) -> int:
+            return seed
+
+        @route(targets=["accept", END], emit="route_done")
+        def choose(value: int):
+            return "accept" if value > 0 else END
+
+        @node(output_name="accepted")
+        def accept(value: int) -> int:
+            return value
+
+        graph = Graph(nodes=[source, choose, accept])
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
+
+        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
+        data_labels = {n["data"]["label"] for n in data_nodes}
+
+        assert "_choose" not in data_labels
+        assert "route_done" in data_labels
+
+    def test_nested_route_internal_output_not_rendered_as_data_node(self):
+        """Nested route should not leak local internal output in separate mode."""
+
+        @node(output_name="value")
+        def source(seed: int) -> int:
+            return seed
+
+        @route(targets=["accept", END], emit="route_done")
+        def choose(value: int):
+            return "accept" if value > 0 else END
+
+        @node(output_name="accepted")
+        def accept(value: int) -> int:
+            return value
+
+        inner = Graph(nodes=[source, choose, accept], name="inner")
+        outer = Graph(nodes=[inner.as_node(name="inner_node")])
+
+        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True)
+        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
+        data_labels = {n["data"]["label"] for n in data_nodes}
+
+        assert "_choose" not in data_labels
+        assert "route_done" in data_labels
 
 
 class TestDeeplyNestedSeparateOutputs:

@@ -23,6 +23,7 @@ from hypergraph.viz.renderer.nodes import (
     get_start_targets,
     has_end_routing,
     is_data_node_visible,
+    is_internal_gate_output,
 )
 from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
@@ -419,6 +420,8 @@ def add_separate_output_edges(
             allowed_outputs = graph_output_visibility.get(node_id, set())
 
         for output_name in attrs.get("outputs", ()):
+            if is_internal_gate_output(node_id, output_name, attrs):
+                continue
             if allowed_outputs is not None and output_name not in allowed_outputs:
                 continue
             if not is_data_node_visible(node_id, output_name, flat_graph, expansion_state):

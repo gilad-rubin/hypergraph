@@ -400,6 +400,8 @@ def create_data_nodes(
             allowed_outputs = graph_output_visibility.get(node_id, set())
 
         for output_name in attrs.get("outputs", ()):
+            if is_internal_gate_output(node_id, output_name, attrs):
+                continue
             if allowed_outputs is not None and output_name not in allowed_outputs:
                 continue
             data_node_id = f"data_{node_id}_{output_name}"
@@ -428,6 +430,18 @@ def create_data_nodes(
                 data_node["extent"] = "parent"
 
             nodes.append(data_node)
+
+
+def is_internal_gate_output(node_id: str, output_name: str, attrs: dict[str, Any]) -> bool:
+    """Whether output_name is the gate's internal routing signal output.
+
+    Gate nodes expose an internal data output ``_{gate_name}`` for runtime
+    bookkeeping. It should not be rendered as a user-facing DATA node.
+    """
+    if attrs.get("node_type") != "BRANCH":
+        return False
+    local_name = node_id.rsplit("/", 1)[-1]
+    return output_name == f"_{local_name}"
 
 
 def is_data_node_visible(

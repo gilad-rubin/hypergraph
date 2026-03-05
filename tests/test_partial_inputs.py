@@ -305,6 +305,13 @@ class TestEntrypointValidation:
         with pytest.raises(GraphConfigError, match="gate"):
             graph.with_entrypoint("gate_val")
 
+    def test_with_entrypoint_node_object_supported(self):
+        base = Graph([root1, root2, root3, merge_node, process_node])
+        via_method = base.with_entrypoint(merge_node)
+        via_name = base.with_entrypoint("merge_node")
+        assert via_method.entrypoints_config == ("merge_node",)
+        assert set(via_method.inputs.required) == set(via_name.inputs.required)
+
 
 class TestConstructorEntrypointShortcut:
     """Validation and parity for Graph(..., entrypoint=...)."""
@@ -320,6 +327,20 @@ class TestConstructorEntrypointShortcut:
 
     def test_constructor_multi_entrypoint_supported(self):
         graph = Graph([root1, root2, root3, merge_node, process_node], entrypoint=["root1", "root2"])
+        assert graph.entrypoints_config == ("root1", "root2")
+        assert "x" in graph.inputs.required
+        assert "y" in graph.inputs.required
+
+    def test_constructor_entrypoint_node_object_supported(self):
+        base = Graph([root1, root2, root3, merge_node, process_node])
+        via_ctor = Graph([root1, root2, root3, merge_node, process_node], entrypoint=merge_node)
+        via_method = base.with_entrypoint("merge_node")
+        assert via_ctor.entrypoints_config == ("merge_node",)
+        assert set(via_ctor.inputs.required) == set(via_method.inputs.required)
+        assert set(via_ctor.inputs.optional) == set(via_method.inputs.optional)
+
+    def test_constructor_multi_entrypoint_node_objects_supported(self):
+        graph = Graph([root1, root2, root3, merge_node, process_node], entrypoint=[root1, root2])
         assert graph.entrypoints_config == ("root1", "root2")
         assert "x" in graph.inputs.required
         assert "y" in graph.inputs.required
