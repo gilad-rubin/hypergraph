@@ -29,6 +29,7 @@ graph.visualize(
     theme="auto",           # "dark", "light", or "auto"
     show_types=False,       # Show type annotations on nodes
     separate_outputs=False, # Render outputs as separate DATA nodes
+    show_external_inputs=False, # Show external INPUT/INPUT_GROUP nodes
     filepath=None,          # Save to HTML file instead of displaying
 )
 ```
@@ -70,6 +71,15 @@ graph.visualize(separate_outputs=True)
 
 By default, edges connect functions directly. With `separate_outputs=True`, each output becomes a visible DATA node, making the data flow explicit.
 
+### `show_external_inputs` — Root input visibility
+
+```python
+graph.visualize(show_external_inputs=True)
+```
+
+External INPUT/INPUT_GROUP nodes are hidden by default to reduce clutter in cyclic graphs.  
+Use this option (or the side-panel toggle in the widget) to show or hide them interactively.
+
 ### `filepath` — Save to HTML
 
 ```python
@@ -87,6 +97,22 @@ Saves a standalone HTML file with all assets bundled (React, React Flow, Tailwin
 | **Route** | Purple border | `@route` and `@ifelse` gate nodes |
 | **Data** | Green border | Output data nodes (in `separate_outputs` mode) |
 | **Input** | Gray | Graph input parameters |
+
+## START and Entrypoints
+
+If a graph has configured entrypoints (`Graph(..., entrypoint=...)` or `with_entrypoint(...)`), visualization renders a synthetic **START** marker connected to those entrypoint nodes.
+
+- START only appears when entrypoints are configured.
+- START is rendered above the graph and routes into the configured entry scope.
+- For expanded nested containers, START edges route to the visible internal entry node (not the container shell).
+
+## Expanded Container Edge Routing
+
+When nested graphs are expanded, cross-boundary edges remap to the visible internal producer/consumer nodes.
+
+- Containers are visual groups, not executable endpoints.
+- Dashed/control edges should never originate from a container START marker.
+- Shared values (for example `messages`) anchor to the correct internal endpoint and do not create phantom external links.
 
 ## Works Offline
 

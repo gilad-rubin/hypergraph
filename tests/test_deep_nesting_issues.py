@@ -127,7 +127,7 @@ class TestOutputMatchesInput:
     def test_non_converging_self_loop_hits_max_iterations(self):
         """With Sole Producer Rule, self-loops need gates to cycle.
         Without a gate, the node runs once and stops."""
-        graph = Graph(nodes=[transform_x])
+        graph = Graph(nodes=[transform_x], entrypoint="transform_x")
         runner = SyncRunner()
         result = runner.run(graph, {"x": 0})
         # Sole Producer Rule: node runs once, produces x=1, then stops
@@ -145,7 +145,7 @@ class TestOutputMatchesInput:
         def check_done(val: int) -> str:
             return END if val >= 5 else "clamp"
 
-        graph = Graph(nodes=[clamp, check_done])
+        graph = Graph(nodes=[clamp, check_done], entrypoint="clamp")
         runner = SyncRunner()
         result = runner.run(graph, {"val": 0})
         assert result.status.name == "COMPLETED"

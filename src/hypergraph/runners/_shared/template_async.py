@@ -254,17 +254,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
         validation_values = normalized_values
         if resume_checkpoint is not None:
-            if checkpoint is not None and normalized_values:
-                # Fork with runtime overrides: validate only graph inputs from
-                # checkpoint to avoid compute+inject conflicts on restored internals.
-                validation_values = dict(normalized_values)
-                for input_name in graph.inputs.all:
-                    if input_name not in validation_values and input_name in resume_checkpoint.values:
-                        validation_values[input_name] = resume_checkpoint.values[input_name]
-            else:
-                # Resume path: validate against full restored state so completed
-                # upstream nodes can bypass original entry inputs.
-                validation_values = {**resume_checkpoint.values, **normalized_values}
+            # Validate only canonical graph inputs from checkpoint state.
+            # Internal produced values are not user inputs in the canonical model.
+            validation_values = dict(normalized_values)
+            for input_name in graph.inputs.all:
+                if input_name not in validation_values and input_name in resume_checkpoint.values:
+                    validation_values[input_name] = resume_checkpoint.values[input_name]
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:
@@ -348,8 +343,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 for record in step_buffer:
                     await checkpointer.save_step(record)
                 from hypergraph.checkpointers.types import WorkflowStatus
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
-                step_count = len(collector._records)
+                _, step_offset = checkpoint_offsets(resume_checkpoint)
+                step_count = step_offset + len(collector._records)
                 error_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,
@@ -399,7 +396,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 for record in step_buffer:
                     await checkpointer.save_step(record)
                 total_duration_ms_fail = (time.time() - start_time) * 1000
-                fail_count = len(collector._records)
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
+
+                _, _step_offset = _cp_offsets(resume_checkpoint)
+                fail_count = _step_offset + len(collector._records)
                 err_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,

@@ -228,10 +228,10 @@ class TestSyncRunnerRun:
         def echo_select(select: str) -> str:
             return select
 
-        graph = Graph([echo_select])
+        graph = Graph([echo_select]).select("result")
         runner = SyncRunner()
 
-        result = runner.run(graph, values={"select": "fast"}, select=["result"])
+        result = runner.run(graph, values={"select": "fast"})
 
         assert result["result"] == "fast"
 
@@ -262,7 +262,7 @@ class TestSyncRunnerRun:
         assert result["result"] == 15  # 5 + 10 (default)
 
     def test_on_internal_override_policy_is_enforced(self):
-        """run() forwards on_internal_override policy into validation."""
+        """Internal edge-produced overrides are rejected for all policies."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -279,27 +279,13 @@ class TestSyncRunnerRun:
         graph = Graph([split, use_left, use_right])
         runner = SyncRunner()
 
-        with pytest.raises(ValueError, match="internal parameters"):
-            runner.run(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="error",
-            )
-
-        result = runner.run(
-            graph,
-            {"left": 100, "right": 200},
-            on_internal_override="ignore",
-        )
-        assert result["double_left"] == 200
-        assert result["double_right"] == 400
-
-        with pytest.warns(UserWarning, match="left <- split"):
-            runner.run(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="warn",
-            )
+        for policy in ("error", "ignore", "warn"):
+            with pytest.raises(ValueError, match="internal parameters"):
+                runner.run(
+                    graph,
+                    {"left": 100, "right": 200},
+                    on_internal_override=policy,
+                )
 
     def test_input_overrides_bound(self):
         """Explicit input overrides bound value."""
@@ -335,11 +321,11 @@ class TestSyncRunnerRun:
         assert "sum" in result
 
     def test_select_filters_outputs(self):
-        """Select parameter filters which outputs to return."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        """Graph-level select filters which outputs to return."""
+        graph = Graph([double, add.with_inputs(a="doubled")]).select("sum")
         runner = SyncRunner()
 
-        result = runner.run(graph, {"x": 5, "b": 3}, select=["sum"])
+        result = runner.run(graph, {"x": 5, "b": 3})
 
         assert "sum" in result
         assert "doubled" not in result
@@ -367,7 +353,7 @@ class TestSyncRunnerRun:
 
     def test_cycle_executes_until_stable(self):
         """Cyclic graph runs until outputs stabilize."""
-        graph = Graph([counter_stop, counter_gate])
+        graph = Graph([counter_stop, counter_gate], entrypoint="counter_stop")
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0, "limit": 5})
@@ -381,7 +367,7 @@ class TestSyncRunnerRun:
         def always_continue(count: int) -> str:
             return "counter"
 
-        graph = Graph([counter, always_continue])
+        graph = Graph([counter, always_continue], entrypoint="counter")
         runner = SyncRunner()
 
         with pytest.raises(InfiniteLoopError):
@@ -394,7 +380,7 @@ class TestSyncRunnerRun:
         def always_continue(count: int) -> str:
             return "counter"
 
-        graph = Graph([counter, always_continue])
+        graph = Graph([counter, always_continue], entrypoint="counter")
         runner = SyncRunner()
 
         with pytest.raises(InfiniteLoopError, match="10"):
@@ -580,7 +566,7 @@ class TestSyncRunnerMap:
             runner.map(graph, map_over="x", x=[1, 2], max_concurrency=1)
 
     def test_map_forwards_on_internal_override_policy(self):
-        """map() forwards on_internal_override to per-item run() validation."""
+        """Internal edge-produced overrides are rejected for all policies."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -597,31 +583,14 @@ class TestSyncRunnerMap:
         graph = Graph([split, use_left, use_right])
         runner = SyncRunner()
 
-        with pytest.raises(ValueError, match="internal parameters"):
-            runner.map(
-                graph,
-                {"left": [100], "right": 200},
-                map_over="left",
-                on_internal_override="error",
-            )
-
-        results = runner.map(
-            graph,
-            {"left": [100], "right": 200},
-            map_over="left",
-            on_internal_override="ignore",
-        )
-        assert len(results) == 1
-        assert results[0]["double_left"] == 200
-        assert results[0]["double_right"] == 400
-
-        with pytest.warns(UserWarning, match="left <- split"):
-            runner.map(
-                graph,
-                {"left": [100], "right": 200},
-                map_over="left",
-                on_internal_override="warn",
-            )
+        for policy in ("error", "ignore", "warn"):
+            with pytest.raises(ValueError, match="internal parameters"):
+                runner.map(
+                    graph,
+                    {"left": [100], "right": 200},
+                    map_over="left",
+                    on_internal_override=policy,
+                )
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""
@@ -739,15 +708,14 @@ class TestSyncRunnerMap:
         assert sums == [11, 12, 21, 22]
 
     def test_map_select(self):
-        """Map respects select parameter."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        """Map respects graph-level selected outputs."""
+        graph = Graph([double, add.with_inputs(a="doubled")]).select("sum")
         runner = SyncRunner()
 
         results = runner.map(
             graph,
             {"x": [1, 2], "b": 10},
             map_over="x",
-            select=["sum"],
         )
 
         for r in results:

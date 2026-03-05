@@ -73,10 +73,10 @@ class TestSelectRunner:
         result = SyncRunner().run(g, {"x": 5, "b": 3})
         assert set(result.values.keys()) == {"final"}
 
-    def test_runtime_select_overrides_graph_default(self):
+    def test_runtime_select_override_rejected(self):
         g = _build_graph().select("final")
-        result = SyncRunner().run(g, {"x": 5, "b": 3}, select=["doubled", "sum"])
-        assert set(result.values.keys()) == {"doubled", "sum"}
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
+            SyncRunner().run(g, {"x": 5, "b": 3}, select=["doubled", "sum"])
 
     def test_no_select_returns_all(self):
         g = _build_graph()

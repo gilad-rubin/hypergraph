@@ -55,24 +55,24 @@
   var NODE_BASE_PADDING = 52;
   var FUNCTION_NODE_BASE_PADDING = 48;
   var MAX_NODE_WIDTH = 280;
-  var GRAPH_PADDING = 24;
+  var GRAPH_PADDING = 12;
   var HEADER_HEIGHT = 32;
-  var LAYOUT_PADDING = 70;
+  var LAYOUT_PADDING = 36;
   var EDGE_CONVERGE_TO_CENTER = false;
   var EDGE_CONVERGENCE_OFFSET = 20;
   var EDGE_ENDPOINT_PADDING = 0.25;  // fraction of node width (0-0.5)
-  var LAYOUT_RANKSEP = 140;
+  var LAYOUT_RANKSEP = 80;
   var FEEDBACK_EDGE_GUTTER = 70;
   var FEEDBACK_EDGE_HEADROOM = 40;
   var FEEDBACK_EDGE_STEM = 32;
 
   var NODE_TYPE_OFFSETS = {
     PIPELINE: 26, GRAPH: 26, FUNCTION: 14,
-    DATA: 6, INPUT: 6, INPUT_GROUP: 6, BRANCH: 10, END: 6,
+    DATA: 6, INPUT: 6, INPUT_GROUP: 6, BRANCH: 10, START: 6, END: 6,
   };
   var NODE_TYPE_TOP_INSETS = {
     PIPELINE: 0, GRAPH: 0, FUNCTION: 0,
-    DATA: 0, INPUT: 0, INPUT_GROUP: 0, BRANCH: 3, END: 0,
+    DATA: 0, INPUT: 0, INPUT_GROUP: 0, BRANCH: 3, START: 0, END: 0,
   };
   var DEFAULT_OFFSET = 10;
   var DEFAULT_TOP_INSET = 0;
@@ -346,9 +346,9 @@
       var srcBottom = src.y + src.height * 0.5 - getOffset(srcType);
       var tgtTop = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
 
-      // BRANCH/END nodes always use center-x (diamond has single entry/exit point)
-      var srcForceCenterX = srcType === 'BRANCH' || srcType === 'END';
-      var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'END';
+      // BRANCH/START/END nodes always use center-x for clean vertical anchors
+      var srcForceCenterX = srcType === 'BRANCH' || srcType === 'START' || srcType === 'END';
+      var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'START' || tgtType === 'END';
 
       var dagreEdge = g.edge(e.source, e.target);
       if (dagreEdge && dagreEdge.points && dagreEdge.points.length > 0) {
@@ -450,31 +450,16 @@
     });
   }
 
-  // ── Feedback edge detection (DFS cycle detection) ──
+  // ── Feedback edge selection (Python-precomputed hints) ──
 
   function computeFeedbackEdgeKeys(nodes, edges) {
-    var nodeIds = new Set(nodes.map(function(n) { return n.id; }));
-    var adj = new Map();
-    nodes.forEach(function(n) { adj.set(n.id, []); });
-    edges.forEach(function(e) {
-      if (nodeIds.has(e.source) && nodeIds.has(e.target)) adj.get(e.source).push(e);
-    });
-
-    var state = new Map();
-    nodes.forEach(function(n) { state.set(n.id, 0); });
     var feedback = new Set();
 
-    var dfs = function(id) {
-      state.set(id, 1);
-      (adj.get(id) || []).forEach(function(edge) {
-        if (!nodeIds.has(edge.target)) return;
-        var s = state.get(edge.target) || 0;
-        if (s === 0) dfs(edge.target);
-        else if (s === 1) feedback.add(edge.source + '->' + edge.target);
-      });
-      state.set(id, 2);
-    };
-    nodes.forEach(function(n) { if (state.get(n.id) === 0) dfs(n.id); });
+    // Python-precomputed contract: this edge must be routed as feedback.
+    edges.forEach(function(edge) {
+      var d = edge.data || (edge._original && edge._original.data) || {};
+      if (d && d.forceFeedback) feedback.add(edge.source + '->' + edge.target);
+    });
     return feedback;
   }
 
@@ -543,10 +528,9 @@
     return deepToChild;
   }
 
-  // Note: deduplicates by (source, target) pair because dagre uses a simple graph.
-  // If two edges share the same endpoints (e.g., data + ordering), only the first
-  // survives in the recursive layout. This is a known simplification — parallel edges
-  // inside expanded containers may lose one edge visually.
+  // Note: dagre uses a simple graph for layout, so we dedupe by (source,target)
+  // only for the internal layout pass. Original edges are restored later so the
+  // rendered edge set still matches Python exactly.
   function collectEdgesForGroup(edges, memberIds, deepToChild) {
     var seen = new Set(), result = [];
     edges.forEach(function(e) {
@@ -652,7 +636,7 @@
     var filteredRootEdges = rootEdges.filter(function(e) { return !rootFbKeys.has(e.source + '->' + e.target); });
 
     var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
-    rootResult.size = computeBounds(rootResult.nodes, GRAPH_PADDING);
+    rootResult.size = computeBounds(rootResult.nodes, LAYOUT_PADDING);
 
     // Phase 3: Compose positions
     var nodePositions = new Map();
@@ -726,63 +710,48 @@
     });
 
     // Phase 4: Route cross-boundary edges
-    var handledKeys = new Set(allEdges.map(function(e) { return e.source + '->' + e.target; }));
+    var handledEdgeIds = new Set(allEdges.map(function(e) { return e.id; }));
 
-    var outputToProducer = (routingData && routingData.output_to_producer) || {};
-    var paramToConsumer = (routingData && routingData.param_to_consumer) || {};
-    var nodeToParent = (routingData && routingData.node_to_parent) || {};
+    var pickExpandedContainerAnchor = function(nodeId, direction) {
+      if (!expansionState.get(nodeId)) return null;
+      if ((nodeTypes.get(nodeId) || 'FUNCTION') !== 'PIPELINE') return null;
 
-    var inputGroupTargets = new Map();
-    visibleNodes.forEach(function(n) {
-      if (n.data && n.data.nodeType === 'INPUT_GROUP' && n.data.actualTargets)
-        inputGroupTargets.set(n.id, n.data.actualTargets);
-    });
-    var inputNodeTargets = new Map();
-    visibleNodes.forEach(function(n) {
-      if (n.data && n.data.nodeType === 'INPUT') {
-        var c = paramToConsumer[n.data.label];
-        if (c) inputNodeTargets.set(n.id, c);
-      }
-    });
+      var candidates = [];
+      visibleNodes.forEach(function(n) {
+        if (n.hidden || n.parentNode !== nodeId) return;
+        var nt = (n.data && n.data.nodeType) || 'FUNCTION';
+        if (nt === 'DATA' || nt === 'INPUT' || nt === 'INPUT_GROUP' || nt === 'START' || nt === 'END') return;
+
+        var pos = nodePositions.get(n.id);
+        var dims = nodeDimensions.get(n.id);
+        if (!pos || !dims) return;
+
+        candidates.push({ id: n.id, x: pos.x, y: pos.y, bottom: pos.y + dims.height });
+      });
+
+      if (!candidates.length) return null;
+
+      candidates.sort(function(a, b) {
+        if (direction === 'out') {
+          if (b.bottom !== a.bottom) return b.bottom - a.bottom;
+          return a.x - b.x;
+        }
+        if (a.y !== b.y) return a.y - b.y;
+        return a.x - b.x;
+      });
+
+      return candidates[0].id;
+    };
 
     edges.forEach(function(e) {
-      if (handledKeys.has(e.source + '->' + e.target)) return;
+      if (handledEdgeIds.has(e.id)) return;
 
       var actualSrc = e.source, actualTgt = e.target;
-      var srcPos = null, tgtPos = null, srcDims = null, tgtDims = null;
-
-      // Resolve actual source via output_to_producer
-      var valueName = e.data && e.data.valueName;
-      if (valueName && outputToProducer[valueName]) {
-        var producer = outputToProducer[valueName];
-        var isAncestor = false;
-        var cur = e.source;
-        while (cur && nodeToParent[cur]) {
-          if (nodeToParent[cur] === producer) { isAncestor = true; break; }
-          cur = nodeToParent[cur];
-        }
-        if (!isAncestor) {
-          var dataId = 'data_' + producer + '_' + valueName;
-          if (nodePositions.has(dataId)) { actualSrc = dataId; srcPos = nodePositions.get(dataId); srcDims = nodeDimensions.get(dataId); }
-          else if (nodePositions.has(producer)) { actualSrc = producer; srcPos = nodePositions.get(producer); srcDims = nodeDimensions.get(producer); }
-        }
-      }
-      if (!srcPos) { srcPos = nodePositions.get(e.source); srcDims = nodeDimensions.get(e.source); actualSrc = e.source; }
-
-      // Resolve actual target via input groups / input nodes
-      if (inputGroupTargets.has(e.source)) {
-        var targets = inputGroupTargets.get(e.source);
-        for (var i = 0; i < targets.length; i++) {
-          if (nodePositions.has(targets[i])) { actualTgt = targets[i]; tgtPos = nodePositions.get(targets[i]); tgtDims = nodeDimensions.get(targets[i]); break; }
-        }
-      }
-      if (inputNodeTargets.has(e.source)) {
-        var consumer = inputNodeTargets.get(e.source);
-        if (nodePositions.has(consumer)) { actualTgt = consumer; tgtPos = nodePositions.get(consumer); tgtDims = nodeDimensions.get(consumer); }
-      }
-      if (!tgtPos) { tgtPos = nodePositions.get(e.target); tgtDims = nodeDimensions.get(e.target); actualTgt = e.target; }
+      var srcPos = nodePositions.get(actualSrc), tgtPos = nodePositions.get(actualTgt);
+      var srcDims = nodeDimensions.get(actualSrc), tgtDims = nodeDimensions.get(actualTgt);
 
       if (!srcPos || !tgtPos || !srcDims || !tgtDims) return;
+      if (actualSrc === actualTgt) return;
 
       var srcCX = srcPos.x + srcDims.width / 2;
       var srcNT = nodeTypes.get(actualSrc) || 'FUNCTION';
@@ -1050,7 +1019,9 @@
     Data: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><line x1="10" y1="9" x2="8" y2="9"></line></svg>`; },
     SplitOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M16 3h5v5"></path><path d="M8 3H3v5"></path><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"></path><path d="m15 9 6-6"></path></svg>`; },
     MergeOutputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 3H3v5"></path><path d="m3 3 5.586 5.586a2 2 0 0 1 .586 1.414V22"></path><path d="M16 3h5v5"></path><path d="m21 3-5.586 5.586a2 2 0 0 0-.586 1.414V22"></path></svg>`; },
+    ExternalInputs: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M4 7h16"></path><path d="M4 12h10"></path><path d="M4 17h7"></path><circle cx="18" cy="12" r="3"></circle></svg>`; },
     Type: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`; },
+    Start: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8" fill="currentColor"></polygon></svg>`; },
     End: function() { return html`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="4" fill="currentColor"></circle></svg>`; },
   };
 
@@ -1155,11 +1126,30 @@
         </div>`;
     }
 
-    // ── END node ──
-    if (nodeType === 'END') {
+    // ── START node ──
+    if (nodeType === 'START') {
+      var startTone = isLight
+        ? { borderColor: '#7dd3fc', color: '#0369a1' }
+        : { borderColor: 'rgba(14, 165, 233, 0.5)', color: '#38bdf8' };
       return html`
         <div className="w-full h-full relative" style=${wrapStyle}>
-          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white border-emerald-300 text-emerald-600 shadow-slate-200 hover:border-emerald-400' : ' bg-slate-900 border-emerald-500/50 text-emerald-400 shadow-black/50 hover:border-emerald-400/70')}>
+          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white shadow-slate-200' : ' bg-slate-900 shadow-black/50')}
+               style=${startTone}>
+            <${Icons.Start} /> <span className="text-xs font-semibold uppercase tracking-wide">Start</span>
+          </div>
+          <${Handle} type="source" position=${Position.Bottom} className="!w-2 !h-2 !opacity-0" style=${srcStyle} />
+        </div>`;
+    }
+
+    // ── END node ──
+    if (nodeType === 'END') {
+      var endTone = isLight
+        ? { borderColor: '#6ee7b7', color: '#047857' }
+        : { borderColor: 'rgba(16, 185, 129, 0.5)', color: '#34d399' };
+      return html`
+        <div className="w-full h-full relative" style=${wrapStyle}>
+          <div className=${'px-3 py-2 w-full h-full relative rounded-full border shadow-sm flex items-center justify-center gap-2 transition-colors transition-shadow duration-200 hover:shadow-lg' + (isLight ? ' bg-white shadow-slate-200' : ' bg-slate-900 shadow-black/50')}
+               style=${endTone}>
             <${Icons.End} /> <span className="text-xs font-semibold uppercase tracking-wide">End</span>
           </div>
           <${Handle} type="target" position=${Position.Top} className="!w-2 !h-2 !opacity-0" style=${tgtStyle} />
@@ -1258,6 +1248,7 @@
         <${TooltipButton} onClick=${props.onToggleSeparate} tooltip=${props.separateOutputs ? "Merge Outputs" : "Separate Outputs"} isActive=${props.separateOutputs} theme=${props.theme}>
           ${props.separateOutputs ? html`<${Icons.MergeOutputs} />` : html`<${Icons.SplitOutputs} />`}
         <//>
+        <${TooltipButton} onClick=${props.onToggleExternalInputs} tooltip=${props.showExternalInputs ? "Hide External Inputs" : "Show External Inputs"} isActive=${props.showExternalInputs} theme=${props.theme}><${Icons.ExternalInputs} /><//>
         <${TooltipButton} onClick=${props.onToggleTypes} tooltip=${props.showTypes ? "Hide Types" : "Show Types"} isActive=${props.showTypes} theme=${props.theme}><${Icons.Type} /><//>
         <div className=${'h-px my-1 ' + (props.theme === 'light' ? 'bg-slate-200' : 'bg-slate-700')}></div>
         <${TooltipButton} onClick=${props.onToggleTheme} tooltip=${props.theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"} theme=${props.theme}>
@@ -1337,6 +1328,8 @@
     var separateOutputs = sepState[0], setSeparateOutputs = sepState[1];
     var typState = useState(props.initialShowTypes);
     var showTypes = typState[0], setShowTypes = typState[1];
+    var extInputsState = useState(props.initialShowExternalInputs);
+    var showExternalInputs = extInputsState[0], setShowExternalInputs = extInputsState[1];
 
     // Edge convergence state (dev-only controls)
     var convState = useState(EDGE_CONVERGE_TO_CENTER);
@@ -1356,6 +1349,10 @@
       root.__hypergraphVizReady = false;
       setShowTypes(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
+    var onToggleExternalInputs = useCallback(function(v) {
+      root.__hypergraphVizReady = false;
+      setShowExternalInputs(function(p) { return typeof v === 'boolean' ? v : !p; });
+    }, []);
 
     // Render options hook for tests and dev gallery
     useEffect(function() {
@@ -1363,6 +1360,7 @@
         if (!opts) return;
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
+        if (Object.prototype.hasOwnProperty.call(opts, 'showExternalInputs')) onToggleExternalInputs(!!opts.showExternalInputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'convergeToCenter')) {
           root.__hypergraphVizReady = false;
           setConvergeToCenter(!!opts.convergeToCenter);
@@ -1394,7 +1392,7 @@
         delete root.__hypergraphVizSetRenderOptions;
         root.removeEventListener('message', onMessage);
       };
-    }, [onToggleSep, onToggleTyp, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
+    }, [onToggleSep, onToggleTyp, onToggleExternalInputs, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
@@ -1416,12 +1414,13 @@
     var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
 
-    var expansionStateToKey = function(es, sep) {
+    var expansionStateToKey = function(es, sep, showExternalInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');
-      if (!expandableNodes.length) return sepKey;
+      var extKey = 'ext:' + (showExternalInputs ? '1' : '0');
+      if (!expandableNodes.length) return sepKey + '|' + extKey;
       var parts = [];
       expandableNodes.forEach(function(id) { parts.push(id + ':' + (es.get(id) ? '1' : '0')); });
-      return parts.join(',') + '|' + sepKey;
+      return parts.join(',') + '|' + sepKey + '|' + extKey;
     };
 
     var nsState = useNodesState([]);
@@ -1461,10 +1460,14 @@
 
     // Select precomputed nodes
     var selectedNodes = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs);
-      var base = Object.prototype.hasOwnProperty.call(nodesByState, key) ? nodesByState[key] : initialData.nodes;
+      var key = expansionStateToKey(expansionState, separateOutputs, showExternalInputs);
+      var base = Object.prototype.hasOwnProperty.call(nodesByState, key)
+        ? nodesByState[key]
+        : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
+          ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
+          : initialData.nodes);
       return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, activeTheme, nodesByState, initialData.nodes]);
+    }, [expansionState, separateOutputs, showTypes, showExternalInputs, activeTheme, nodesByState, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1502,9 +1505,11 @@
 
     // Select edges
     var selectedEdges = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs);
-      return Object.prototype.hasOwnProperty.call(edgesByState, key) ? edgesByState[key] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, edgesByState, initialData.edges]);
+      var key = expansionStateToKey(expansionState, separateOutputs, showExternalInputs);
+      if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
+      var fallback = expansionStateToKey(expansionState, separateOutputs, true);
+      return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
+    }, [expansionState, separateOutputs, showExternalInputs, edgesByState, initialData.edges]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1525,6 +1530,8 @@
     var layoutError = layoutResult.layoutError;
     var layoutVersion = layoutResult.layoutVersion;
     var isLayouting = layoutResult.isLayouting;
+
+    var sharedParams = (initialData.meta && initialData.meta.shared) || [];
 
     var rf = useReactFlow();
     var updateNI = useUpdateNodeInternals();
@@ -1592,7 +1599,9 @@
     var expansionKey = useMemo(function() {
       return Array.from(expansionState.entries()).filter(function(e) { return !e[1]; }).map(function(e) { return e[0]; }).sort().join(',');
     }, [expansionState]);
-    var renderModeKey = useMemo(function() { return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0'); }, [separateOutputs, showTypes]);
+    var renderModeKey = useMemo(function() {
+      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0') + '|ext_inputs:' + (showExternalInputs ? '1' : '0');
+    }, [separateOutputs, showTypes, showExternalInputs]);
     var refreshKey = useMemo(function() { return expansionKey + '|' + renderModeKey; }, [expansionKey, renderModeKey]);
     var prevRefresh = useRef(null);
     useEffect(function() {
@@ -1766,7 +1775,8 @@
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls} theme=${theme} onToggleTheme=${toggleTheme} separateOutputs=${separateOutputs}
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}
-            onToggleTypes=${function() { onToggleTyp(); }} onFitView=${fitWithFixedPadding} />
+            onToggleTypes=${function() { onToggleTyp(); }} showExternalInputs=${showExternalInputs}
+            onToggleExternalInputs=${function() { onToggleExternalInputs(); }} onFitView=${fitWithFixedPadding} />
           ${root.__hypergraph_debug_viz ? html`
             <${DevEdgeControls} theme=${theme} convergeToCenter=${convergeToCenter}
               convergenceOffset=${convergenceOffset} endpointPadding=${endpointPadding} ranksep=${ranksep}
@@ -1776,6 +1786,19 @@
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
         <//>
+        ${sharedParams.length ? html`
+          <div style=${{ position: 'absolute', top: '12px', left: '12px', display: 'flex', gap: '6px', alignItems: 'center', pointerEvents: 'none', zIndex: 5 }}>
+            ${sharedParams.map(function(p) {
+              return html`<span key=${p} style=${{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 10px', borderRadius: '12px', fontSize: '11px', fontFamily: 'monospace',
+                background: theme === 'light' ? 'rgba(139,92,246,0.1)' : 'rgba(139,92,246,0.15)',
+                border: '1px solid ' + (theme === 'light' ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.3)'),
+                color: theme === 'light' ? '#6d28d9' : '#a78bfa',
+              }}>↕ ${p}</span>`;
+            })}
+          </div>
+        ` : null}
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="px-4 py-2 rounded-lg border text-xs font-mono bg-slate-900/80 text-amber-200 border-amber-500/40 shadow-lg pointer-events-auto">
@@ -1798,7 +1821,8 @@
         <${App} initialData=${initialData} themePreference=${themePreference}
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
-          initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)} />
+          initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
+          initialShowExternalInputs=${Boolean(initialData.meta && initialData.meta.show_external_inputs)} />
       <//>
     `);
     if (fallback) fallback.remove();

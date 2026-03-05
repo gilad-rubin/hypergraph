@@ -155,10 +155,10 @@ class TestAsyncRunnerRun:
         def echo_select(select: str) -> str:
             return select
 
-        graph = Graph([echo_select])
+        graph = Graph([echo_select]).select("result")
         runner = AsyncRunner()
 
-        result = await runner.run(graph, values={"select": "fast"}, select=["result"])
+        result = await runner.run(graph, values={"select": "fast"})
 
         assert result["result"] == "fast"
 
@@ -327,17 +327,17 @@ class TestAsyncRunnerRun:
         assert hasattr(result, "run_id")
 
     async def test_select_filters_outputs(self):
-        """Select parameter filters outputs."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        """Graph-level select filters outputs."""
+        graph = Graph([double, add.with_inputs(a="doubled")]).select("sum")
         runner = AsyncRunner()
 
-        result = await runner.run(graph, {"x": 5, "b": 3}, select=["sum"])
+        result = await runner.run(graph, {"x": 5, "b": 3})
 
         assert "sum" in result
         assert "doubled" not in result
 
     async def test_on_internal_override_policy_is_enforced(self):
-        """run() forwards on_internal_override policy into validation."""
+        """Internal edge-produced overrides are rejected for all policies."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -354,27 +354,13 @@ class TestAsyncRunnerRun:
         graph = Graph([split, use_left, use_right])
         runner = AsyncRunner()
 
-        with pytest.raises(ValueError, match="internal parameters"):
-            await runner.run(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="error",
-            )
-
-        result = await runner.run(
-            graph,
-            {"left": 100, "right": 200},
-            on_internal_override="ignore",
-        )
-        assert result["double_left"] == 200
-        assert result["double_right"] == 400
-
-        with pytest.warns(UserWarning, match="left <- split"):
-            await runner.run(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="warn",
-            )
+        for policy in ("error", "ignore", "warn"):
+            with pytest.raises(ValueError, match="internal parameters"):
+                await runner.run(
+                    graph,
+                    {"left": 100, "right": 200},
+                    on_internal_override=policy,
+                )
 
     # Cycles
 
@@ -385,7 +371,7 @@ class TestAsyncRunnerRun:
         def cycle_gate(count: int, limit: int = 10) -> str:
             return END if count >= limit else "counter_stop"
 
-        graph = Graph([counter_stop, cycle_gate])
+        graph = Graph([counter_stop, cycle_gate], entrypoint="counter_stop")
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"count": 0, "limit": 5})
@@ -405,7 +391,7 @@ class TestAsyncRunnerRun:
         def async_cycle_gate(count: int, limit: int = 10) -> str:
             return END if count >= limit else "async_counter_stop"
 
-        graph = Graph([async_counter_stop, async_cycle_gate])
+        graph = Graph([async_counter_stop, async_cycle_gate], entrypoint="async_counter_stop")
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"count": 0, "limit": 5})
@@ -523,7 +509,7 @@ class TestAsyncRunnerMap:
         assert [r["sum"] for r in results] == [11, 12]
 
     async def test_map_forwards_on_internal_override_policy(self):
-        """map() forwards on_internal_override to per-item run() validation."""
+        """Internal edge-produced overrides are rejected for all policies."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -540,31 +526,14 @@ class TestAsyncRunnerMap:
         graph = Graph([split, use_left, use_right])
         runner = AsyncRunner()
 
-        with pytest.raises(ValueError, match="internal parameters"):
-            await runner.map(
-                graph,
-                {"left": [100], "right": 200},
-                map_over="left",
-                on_internal_override="error",
-            )
-
-        results = await runner.map(
-            graph,
-            {"left": [100], "right": 200},
-            map_over="left",
-            on_internal_override="ignore",
-        )
-        assert len(results) == 1
-        assert results[0]["double_left"] == 200
-        assert results[0]["double_right"] == 400
-
-        with pytest.warns(UserWarning, match="left <- split"):
-            await runner.map(
-                graph,
-                {"left": [100], "right": 200},
-                map_over="left",
-                on_internal_override="warn",
-            )
+        for policy in ("error", "ignore", "warn"):
+            with pytest.raises(ValueError, match="internal parameters"):
+                await runner.map(
+                    graph,
+                    {"left": [100], "right": 200},
+                    map_over="left",
+                    on_internal_override=policy,
+                )
 
     async def test_map_runs_concurrently(self):
         """Map executions run concurrently."""
@@ -709,7 +678,7 @@ class TestDisconnectedSubgraphs:
         assert timestamps["b_start"] < timestamps["a_end"]
 
     async def test_select_from_disconnected_subgraph(self):
-        """select= works correctly with disconnected graphs."""
+        """Graph-level select works with disconnected graphs."""
 
         @node(output_name="a")
         async def subgraph_a(x: int) -> int:
@@ -719,11 +688,11 @@ class TestDisconnectedSubgraphs:
         async def subgraph_b(y: int) -> int:
             return y * 3
 
-        graph = Graph([subgraph_a, subgraph_b])
+        graph = Graph([subgraph_a, subgraph_b]).select("a")
         runner = AsyncRunner()
 
         # Select only from one subgraph
-        result = await runner.run(graph, {"x": 5, "y": 10}, select=["a"])
+        result = await runner.run(graph, {"x": 5, "y": 10})
 
         assert result.status == RunStatus.COMPLETED
         assert "a" in result

@@ -134,6 +134,13 @@ class TestBasicMermaid:
 
         assert "input_x --> double" in mermaid
 
+    def test_no_start_node_without_explicit_entrypoint(self):
+        """START node is not rendered unless entrypoints are explicitly configured."""
+        graph = Graph(nodes=[double, add_one])
+        mermaid = graph.to_mermaid()
+
+        assert "__start__" not in mermaid
+
     def test_multi_input_graph(self):
         """Graph with multiple inputs creates multiple input nodes."""
         graph = Graph(nodes=[embed, retrieve, generate])
@@ -248,8 +255,8 @@ class TestEdgeTypes:
         graph = Graph(nodes=[check_cache, fast_path, slow_path])
         mermaid = graph.to_mermaid()
 
-        assert "-->|True|" in mermaid
-        assert "-->|False|" in mermaid
+        assert "-.->|True|" in mermaid
+        assert "-.->|False|" in mermaid
 
     def test_ordering_edge_dotted(self):
         """Ordering edges use dotted arrow syntax."""
@@ -261,17 +268,25 @@ class TestEdgeTypes:
 
     def test_end_node_routing(self):
         """END node appears when a route targets END."""
-        graph = Graph(nodes=[embed, retrieve, generate, should_continue])
+        graph = Graph(nodes=[embed, retrieve, generate, should_continue], entrypoint="embed")
         mermaid = graph.to_mermaid()
 
         assert '(["End"])' in mermaid
 
-    def test_route_edge_to_targets(self):
-        """Route control edges connect gate to each target."""
-        graph = Graph(nodes=[embed, retrieve, generate, should_continue])
+    def test_start_node_for_explicit_entrypoint(self):
+        """START node appears and points to configured entrypoint."""
+        graph = Graph(nodes=[double, add_one]).with_entrypoint("add_one")
         mermaid = graph.to_mermaid()
 
-        assert "should_continue --> retrieve" in mermaid
+        assert '(("Start"))' in mermaid
+        assert "__start__ --> add_one" in mermaid
+
+    def test_route_edge_to_targets(self):
+        """Route control edges connect gate to each target."""
+        graph = Graph(nodes=[embed, retrieve, generate, should_continue], entrypoint="embed")
+        mermaid = graph.to_mermaid()
+
+        assert "should_continue -.-> retrieve" in mermaid
 
     def test_both_ifelse_branches_to_end(self):
         """Both True and False END edges emitted when both branches route to END.

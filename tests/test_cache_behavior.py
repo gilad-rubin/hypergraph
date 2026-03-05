@@ -127,7 +127,7 @@ class TestCachedNodeExecution:
         def cycle_gate(count: int, limit: int = 3) -> str:
             return END if count >= limit else "counting_node"
 
-        graph = Graph([counting_node, cycle_gate])
+        graph = Graph([counting_node, cycle_gate], entrypoint="counting_node")
         runner = SyncRunner()
 
         result = runner.run(graph, {"count": 0, "limit": 3})
@@ -183,7 +183,7 @@ class TestCacheWithCycles:
         def cycle_gate(count: int, limit: int = 3) -> str:
             return END if count >= limit else "counter_node"
 
-        graph = Graph([counter_node, cycle_gate])
+        graph = Graph([counter_node, cycle_gate], entrypoint="counter_node")
         runner = SyncRunner(cache=InMemoryCache())
 
         result = runner.run(graph, {"count": 0, "limit": 3})
@@ -380,7 +380,7 @@ class TestCacheWithGates:
             counter.increment()
             return END if count >= 3 else "producer"
 
-        graph = Graph([producer, gate])
+        graph = Graph([producer, gate], entrypoint="producer")
         cache = InMemoryCache()
         runner = SyncRunner(cache=cache)
 
@@ -407,7 +407,7 @@ class TestCacheWithGates:
             counter.increment()
             return END if count >= 3 else "producer"
 
-        graph = Graph([producer, gate])
+        graph = Graph([producer, gate], entrypoint="producer")
         runner = SyncRunner(cache=InMemoryCache())
 
         runner.run(graph, {"count": 5})
@@ -464,7 +464,7 @@ class TestCacheWithGates:
             gate_counter.increment()
             return END if count >= 3 else "increment"
 
-        graph = Graph([increment, loop_gate])
+        graph = Graph([increment, loop_gate], entrypoint="increment")
         runner = SyncRunner(cache=InMemoryCache())
 
         r1 = runner.run(graph, {"count": 0})

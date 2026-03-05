@@ -4,6 +4,7 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
+from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners import RunnerCapabilities
 from hypergraph.runners._shared.input_normalization import normalize_inputs
 from hypergraph.runners._shared.validation import (
@@ -72,20 +73,13 @@ class TestValidateInputs:
         validate_inputs(graph, {"b": 10})
 
     def test_entrypoint_required_for_cycles(self):
-        """Entry point params must be provided for cyclic graphs."""
-        # Create a cycle: counter -> counter
-        # count is both input and output
-        graph = Graph([counter])
-        # count should be an entrypoint param
-        assert "counter" in graph.inputs.entrypoints
-        assert "count" in graph.inputs.entrypoints["counter"]
-
-        with pytest.raises(MissingInputError):
-            validate_inputs(graph, {})
+        """Cycles require graph-level entrypoint configuration."""
+        with pytest.raises(GraphConfigError, match="Cyclic graphs require an explicit entrypoint"):
+            Graph([counter])
 
     def test_entrypoint_input_provided_passes(self):
-        """No error when entrypoint input is provided."""
-        graph = Graph([counter])
+        """Cycle validation passes when configured with an entrypoint."""
+        graph = Graph([counter], entrypoint="counter")
         validate_inputs(graph, {"count": 0})
 
     def test_extra_inputs_ignored(self):
@@ -144,21 +138,22 @@ class TestInternalOverrideValidation:
     def test_mixed_compute_and_inject_for_same_node_errors(self):
         """Providing producer inputs + produced outputs is a hard conflict."""
         graph = self._make_split_graph()
-        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             validate_inputs(
                 graph,
                 {"left": 100, "x": 5},
                 on_internal_override="ignore",
             )
 
-    def test_full_internal_injection_allowed_with_ignore(self):
-        """Non-conflicting internal injection is allowed with ignore policy."""
+    def test_full_internal_injection_rejected_with_ignore(self):
+        """Internal output injection is always rejected (deterministic error)."""
         graph = self._make_split_graph()
-        validate_inputs(
-            graph,
-            {"left": 100, "right": 200},
-            on_internal_override="ignore",
-        )
+        with pytest.raises(ValueError, match="internal parameters"):
+            validate_inputs(
+                graph,
+                {"left": 100, "right": 200},
+                on_internal_override="ignore",
+            )
 
     def test_full_internal_injection_rejected_with_error_policy(self):
         """Non-conflicting internal injection can be rejected via policy."""
@@ -171,9 +166,9 @@ class TestInternalOverrideValidation:
             )
 
     def test_internal_override_warning_includes_producer_mapping(self):
-        """Warning text should identify which node produces each internal key."""
+        """Error text should identify which node produces each internal key."""
         graph = self._make_split_graph()
-        with pytest.warns(UserWarning, match="left <- split"):
+        with pytest.raises(ValueError, match="left <- split"):
             validate_inputs(
                 graph,
                 {"left": 100, "right": 200},
@@ -193,7 +188,7 @@ class TestInternalOverrideValidation:
         value to bootstrap the cycle. Providing it should NOT be treated as an
         internal override conflict.
         """
-        graph = Graph([counter])
+        graph = Graph([counter], entrypoint="counter")
         # 'count' is a cycle entrypoint param — should pass cleanly
         validate_inputs(graph, {"count": 0}, on_internal_override="error")
 
@@ -299,7 +294,7 @@ class TestValidateRunnerCompatibility:
 
     def test_runner_without_cycle_support(self):
         """Runner without cycle support rejects cyclic graphs."""
-        graph = Graph([counter])
+        graph = Graph([counter], entrypoint="counter")
         no_cycles_caps = RunnerCapabilities(supports_cycles=False)
 
         with pytest.raises(IncompatibleRunnerError) as exc_info:
@@ -308,7 +303,7 @@ class TestValidateRunnerCompatibility:
 
     def test_runner_with_cycle_support_accepts_cycles(self):
         """Runner with cycle support accepts cyclic graphs."""
-        graph = Graph([counter])
+        graph = Graph([counter], entrypoint="counter")
         caps = RunnerCapabilities(supports_cycles=True)
         # Should not raise
         validate_runner_compatibility(graph, caps)
@@ -325,6 +320,26 @@ class TestValidateMapCompatible:
 
     def test_cyclic_graph_passes(self):
         """Cyclic graphs are currently map-compatible."""
-        graph = Graph([counter])
+        graph = Graph([counter], entrypoint="counter")
         # Should not raise (Phase 2 will add interrupt checks)
         validate_map_compatible(graph)
+
+
+class TestRuntimeOverrideRejection:
+    """Runtime entrypoint/select overrides are rejected with clear messages."""
+
+    def test_runtime_entrypoint_rejected(self):
+        """Runtime entrypoint= raises ValueError pointing to graph config."""
+        from hypergraph.runners._shared.validation import precompute_input_validation
+
+        graph = Graph([double])
+        with pytest.raises(ValueError, match="Runtime entrypoint overrides are no longer supported"):
+            precompute_input_validation(graph, entrypoint="double")
+
+    def test_runtime_select_rejected(self):
+        """Runtime select= override raises ValueError pointing to graph.select()."""
+        from hypergraph.runners._shared.validation import precompute_input_validation
+
+        graph = Graph([double])
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
+            precompute_input_validation(graph, selected=("doubled",))

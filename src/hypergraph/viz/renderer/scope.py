@@ -6,6 +6,7 @@ and which outputs are externally consumed (visible outside their container).
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from hypergraph.viz._common import (
@@ -187,7 +188,14 @@ def find_container_entrypoints(
         if not consumes_internal and is_node_visible(node_id, flat_graph, expansion_state):
             entrypoints.append(node_id)
 
-    return entrypoints
+    if entrypoints:
+        return entrypoints
+
+    # Cyclic containers can have no "pure external" child by this heuristic.
+    # Fall back to visible direct children so expanded containers are not used
+    # as edge endpoints in the visualization.
+    fallback = [node_id for node_id in direct_children if is_node_visible(node_id, flat_graph, expansion_state)]
+    return fallback
 
 
 def find_container_exit_points(
@@ -220,32 +228,46 @@ def find_internal_producer_for_output(
     `retrieval_eval_results` but internally `compute_recall` produces
     `retrieval_eval_result`, we need to find `compute_recall`.
     """
-    internal_producers: dict[str, str] = {}
+    internal_producers: dict[str, list[str]] = defaultdict(list)
     for node_id, attrs in flat_graph.nodes(data=True):
         if attrs.get("parent") != container_id:
             continue
         for output in attrs.get("outputs", ()):
-            internal_producers[output] = node_id
+            internal_producers[output].append(node_id)
 
-    internal_consumed: set[str] = set()
-    for _node_id, attrs in flat_graph.nodes(data=True):
-        if attrs.get("parent") != container_id:
+    # An output is internally consumed only if there is an actual internal
+    # data edge carrying that value from its producer to another internal node.
+    # Name overlap alone is not enough (e.g. input "messages" + output "messages").
+    consumed_by_producer: set[tuple[str, str]] = set()
+    for source, target, edge_data in flat_graph.edges(data=True):
+        if get_parent(source, flat_graph) != container_id:
             continue
-        for inp in attrs.get("inputs", ()):
-            if inp in internal_producers:
-                internal_consumed.add(inp)
+        if get_parent(target, flat_graph) != container_id:
+            continue
+        if edge_data.get("edge_type", "data") != "data":
+            continue
 
-    terminal_outputs = {out: prod for out, prod in internal_producers.items() if out not in internal_consumed}
+        source_outputs = set(flat_graph.nodes.get(source, {}).get("outputs", ()))
+        for value_name in edge_data.get("value_names", ()):
+            if value_name in source_outputs:
+                consumed_by_producer.add((value_name, source))
+
+    terminal_outputs: dict[str, list[str]] = {}
+    for value_name, producers in internal_producers.items():
+        terminals = [producer for producer in producers if (value_name, producer) not in consumed_by_producer]
+        terminal_outputs[value_name] = terminals or producers
 
     if output_name in terminal_outputs:
-        producer = terminal_outputs[output_name]
-        if is_node_visible(producer, flat_graph, expansion_state):
-            return producer
+        for producer in reversed(terminal_outputs[output_name]):
+            if is_node_visible(producer, flat_graph, expansion_state):
+                return producer
 
     # Fuzzy fallback: with_outputs renames can differ slightly (e.g. pluralization).
     # Substring matching is intentionally loose to maximize recall in visualization.
-    for internal_out, producer in terminal_outputs.items():
-        if (internal_out in output_name or output_name in internal_out) and is_node_visible(producer, flat_graph, expansion_state):
-            return producer
+    for internal_out, producers in terminal_outputs.items():
+        if internal_out in output_name or output_name in internal_out:
+            for producer in reversed(producers):
+                if is_node_visible(producer, flat_graph, expansion_state):
+                    return producer
 
     return None

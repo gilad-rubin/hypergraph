@@ -240,8 +240,8 @@ def _build_cyclic(prefer_async: bool = False) -> Graph:
         return count + 1
 
     if prefer_async:
-        return Graph([async_counter_stop], name="cyclic")
-    return Graph([counter_stop], name="cyclic")
+        return Graph([async_counter_stop], name="cyclic", entrypoint="async_counter_stop")
+    return Graph([counter_stop], name="cyclic", entrypoint="counter_stop")
 
 
 def _build_topology(topology: Topology, prefer_async: bool = False) -> Graph:
@@ -279,7 +279,7 @@ def _wrap_in_nesting(graph: Graph, depth: NestingDepth, map_mode: MapMode, map_i
                 mode = "zip" if map_mode == MapMode.ZIP else "product"
                 gn = gn.map_over(input_to_map, mode=mode)
 
-        current = Graph([gn], name=f"level_{level + 1}")
+        current = Graph([gn], name=f"level_{level + 1}", entrypoint=gn.name) if current.has_cycles else Graph([gn], name=f"level_{level + 1}")
 
     return current
 
@@ -302,12 +302,14 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
         return graph
 
     new_nodes = list(nodes)
+    renamed_nodes: dict[str, str] = {}
 
     if renaming == Renaming.NODE_NAME:
         # Rename the first node
         target_node = nodes[0]
         renamed = target_node.with_name(f"{target_node.name}_renamed")
         new_nodes[0] = renamed
+        renamed_nodes[target_node.name] = renamed.name
 
     elif renaming == Renaming.INPUTS:
         # Rename an input on the first node (if it has external inputs)
@@ -329,7 +331,16 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
             renamed = target_node.with_outputs({old_output: new_output})
             new_nodes[idx] = renamed
 
-    return Graph(new_nodes, name=graph.name, strict_types=graph.strict_types)
+    entrypoint = graph.entrypoints_config
+    if entrypoint is not None and renamed_nodes:
+        entrypoint = tuple(renamed_nodes.get(name, name) for name in entrypoint)
+
+    return Graph(
+        new_nodes,
+        name=graph.name,
+        strict_types=graph.strict_types,
+        entrypoint=entrypoint,
+    )
 
 
 def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:

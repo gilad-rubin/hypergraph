@@ -12,11 +12,9 @@ TDD tests for issues identified in the code review:
 - Edge 4: Input validation allows overriding internal values
 """
 
-import warnings
-
 import pytest
 
-from hypergraph import END, Graph, GraphConfigError
+from hypergraph import END, Graph
 from hypergraph.nodes.function import node
 from hypergraph.nodes.gate import route
 from hypergraph.runners import AsyncRunner
@@ -286,14 +284,10 @@ class TestGraphNodeInputTypeConsistency:
 
 
 class TestSelectParameterValidation:
-    """Edge 2: Invalid select parameter handling.
-
-    Runner.run() with select=["typo_output"] raises GraphConfigError immediately —
-    invalid select names are caught before execution starts.
-    """
+    """Edge 2: Runtime select overrides are rejected."""
 
     def test_invalid_select_raises_config_error(self):
-        """Invalid select parameter raises GraphConfigError before execution."""
+        """Any runtime select override raises a configuration error."""
 
         @node(output_name="result")
         def identity(x: int) -> int:
@@ -302,11 +296,11 @@ class TestSelectParameterValidation:
         graph = Graph([identity])
         runner = SyncRunner()
 
-        with pytest.raises(GraphConfigError, match="typo_result"):
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
             runner.run(graph, {"x": 10}, select=["typo_result"])
 
     def test_invalid_select_with_on_missing_still_errors(self):
-        """Invalid select names raise GraphConfigError regardless of on_missing."""
+        """Runtime select is rejected regardless of on_missing."""
 
         @node(output_name="result")
         def identity(x: int) -> int:
@@ -315,12 +309,11 @@ class TestSelectParameterValidation:
         graph = Graph([identity])
         runner = SyncRunner()
 
-        # on_missing governs missing run-time inputs, not invalid select names
-        with pytest.raises(GraphConfigError, match="typo_result"):
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
             runner.run(graph, {"x": 10}, select=["typo_result"], on_missing="warn")
 
     def test_valid_select_no_warning(self):
-        """Valid select parameter should not warn."""
+        """Use graph.select() instead of runtime select."""
 
         @node(output_name="result")
         def identity(x: int) -> int:
@@ -329,13 +322,9 @@ class TestSelectParameterValidation:
         graph = Graph([identity])
         runner = SyncRunner()
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            result = runner.run(graph, {"x": 10}, select=["result"])
-
-            # No warnings for valid select
-            assert len(w) == 0
-            assert result["result"] == 10
+        graph = graph.select("result")
+        result = runner.run(graph, {"x": 10})
+        assert result["result"] == 10
 
 
 class TestGraphNodeNameValidation:
@@ -439,7 +428,7 @@ class TestInputValidationOverrides:
         runner = SyncRunner()
 
         # 'intermediate' is produced by step1, and 'x' makes step1 runnable.
-        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             runner.run(graph, {"x": 10, "intermediate": 999})
 
     async def test_async_runner_rejects_override_edge_produced_values(self):
@@ -456,15 +445,15 @@ class TestInputValidationOverrides:
         graph = Graph([step1, step2])
         runner = AsyncRunner()
 
-        with pytest.raises(ValueError, match="Cannot mix compute and inject"):
+        with pytest.raises(ValueError, match="conflict.*you provided"):
             await runner.run(graph, {"x": 10, "intermediate": 999})
 
 
 class TestMultiCycleEntryPointValidation:
     """Explicit entrypoint must still validate other independent cycles."""
 
-    def test_explicit_entrypoint_validates_other_cycles(self):
-        """Providing entrypoint for cycle A must still check cycle B."""
+    def test_entrypoint_slices_away_independent_cycles(self):
+        """Configured entrypoint defines active scope for execution."""
 
         @node(output_name="a")
         def node_a(b: int) -> int:
@@ -490,17 +479,14 @@ class TestMultiCycleEntryPointValidation:
         def gate_xy(x: int) -> str:
             return END if x > 3 else "node_x"
 
-        graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy])
+        graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy], entrypoint="node_a")
         runner = SyncRunner()
 
-        # Cycle A entrypoint satisfied (b=1 for node_a), but cycle B has no entry
-        from hypergraph.exceptions import MissingInputError
-
-        with pytest.raises((ValueError, MissingInputError)):
-            runner.run(graph, {"b": 1}, entrypoint="node_a")
+        result = runner.run(graph, {"b": 1})
+        assert result.status.value == "completed"
 
     def test_explicit_entrypoint_passes_with_both_cycles_satisfied(self):
-        """Both cycles satisfied: explicit on A, implicit on B."""
+        """Both cycles run when both entrypoints are configured."""
 
         @node(output_name="a")
         def node_a(b: int) -> int:
@@ -526,11 +512,10 @@ class TestMultiCycleEntryPointValidation:
         def gate_xy(x: int) -> str:
             return END if x > 3 else "node_x"
 
-        graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy])
+        graph = Graph([node_a, node_b, gate_ab, node_x, node_y, gate_xy], entrypoint=["node_a", "node_x"])
         runner = SyncRunner()
 
-        # Both cycles satisfied (node_a needs b, node_x needs y)
-        result = runner.run(graph, {"b": 1, "y": 1}, entrypoint="node_a")
+        result = runner.run(graph, {"b": 1, "y": 1})
         assert result.status.value == "completed"
 
 
@@ -552,13 +537,9 @@ class TestDefaultedCycleParams:
         def gate(a: int) -> str:
             return END if a > 3 else "node_a"
 
-        graph = Graph([node_a, node_b, gate])
-
-        # extra has a default, so node_b's entrypoint should only need 'b'
-        # (not 'b' AND 'extra')
-        ep = graph.inputs.entrypoints
-        if "node_b" in ep:
-            assert "extra" not in ep["node_b"]
+        graph = Graph([node_a, node_b, gate], entrypoint="node_b")
+        assert "b" in graph.inputs.required
+        assert "extra" in graph.inputs.optional
 
 
 class TestEarlyOnMissingValidation:

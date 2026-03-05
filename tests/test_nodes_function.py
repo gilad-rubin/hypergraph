@@ -1072,7 +1072,7 @@ class TestGeneratorExecution:
             if len(items) < limit:
                 yield len(items)
 
-        graph = Graph([growing_gen])
+        graph = Graph([growing_gen], entrypoint="growing_gen")
         runner = SyncRunner()
 
         result = runner.run(graph, {"items": [], "limit": 3})

@@ -134,6 +134,43 @@ chat_loop = Graph([
 ])
 ```
 
+### Shared State for Chat Loops
+
+When multiple nodes read and write `messages`, auto-wiring may struggle with ambiguity. Use `shared` to declare `messages` as shared state — auto-wiring handles everything else, and you only add ordering edges for the gaps:
+
+```python
+@node(output_name="messages")
+def add_user_message(messages: list, user_input: str) -> list:
+    return [*messages, {"role": "user", "content": user_input}]
+
+@node(output_name="response")
+def generate_response(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+@route(targets=["add_user_message", END])
+def should_continue_chat(messages: list) -> str:
+    return "add_user_message" if len(messages) < 20 else END
+
+chat_loop = Graph(
+    [add_user_message, generate_response, add_response, should_continue_chat],
+    shared=["messages"],
+    entrypoint="add_user_message",
+    edges=[
+        (add_user_message, generate_response),   # ordering
+        (add_response, should_continue_chat),     # ordering
+    ],
+)
+
+# messages needs an initial value
+result = runner.run(chat_loop, {"messages": [], "user_input": "Hello!"})
+```
+
+See [Shared State](../06-api-reference/graph.md#shared-state) for details.
+
 ## Tool-Using Agent
 
 An agent that decides which tool to call:

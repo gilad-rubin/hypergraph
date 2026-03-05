@@ -362,19 +362,19 @@ class TestGraphInputs:
         assert "a" in g.inputs.all
         assert "b" in g.inputs.all
 
-    def test_cycle_creates_entrypoint(self):
-        """Test parameter in cycle becomes an entrypoint."""
+    def test_cycle_requires_explicit_entrypoint(self):
+        """Cycles must declare entrypoint and expose canonical required inputs."""
 
         @node(output_name="count")
         def counter(count):
             return count + 1
 
-        g = Graph([counter])
+        with pytest.raises(GraphConfigError, match="explicit entrypoint"):
+            Graph([counter])
 
-        # 'count' is both consumed and produced by same node -> cycle -> entrypoint
-        assert "counter" in g.inputs.entrypoints
-        assert "count" in g.inputs.entrypoints["counter"]
-        assert g.inputs.required == ()
+        g = Graph([counter], entrypoint="counter")
+        assert g.inputs.entrypoints == {}
+        assert g.inputs.required == ("count",)
         assert g.inputs.optional == ()
 
     def test_complex_graph(self):
@@ -624,7 +624,7 @@ class TestGraphFeatureProperties:
         def counter(count):
             return count + 1
 
-        g = Graph([counter])
+        g = Graph([counter], entrypoint="counter")
 
         assert g.has_cycles is True
 
@@ -1827,7 +1827,7 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        graph = Graph([accumulate_query, accumulate_response, should_continue], entrypoint="accumulate_query")
         assert graph is not None
 
     def test_ordered_via_emit_wait_for_runs(self):
@@ -1847,7 +1847,7 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        graph = Graph([accumulate_query, accumulate_response, should_continue], entrypoint="accumulate_query")
         runner = SyncRunner()
         result = runner.run(graph, {"messages": [], "query": "hi", "response": "hello"})
         assert "messages" in result
@@ -1883,7 +1883,7 @@ class TestCycleSameOutput:
         def should_continue(messages: list) -> str:
             return END if len(messages) >= 4 else "accumulate_query"
 
-        graph = Graph([accumulate_query, accumulate_response, should_continue])
+        graph = Graph([accumulate_query, accumulate_response, should_continue], entrypoint="accumulate_query")
 
         assert hasattr(graph, "self_producers")
         producers = graph.self_producers
@@ -1934,7 +1934,7 @@ class TestCycleSameOutput:
         def loop(x: int, y: int) -> str:
             return END if x > 10 else "producer_a"
 
-        graph = Graph([producer_a, producer_b, loop])
+        graph = Graph([producer_a, producer_b, loop], entrypoint="producer_a")
         assert graph is not None
 
     def test_error_message_suggests_fix(self):
@@ -1950,6 +1950,57 @@ class TestCycleSameOutput:
 
         with pytest.raises(GraphConfigError, match=r"emit.*wait_for|wait_for.*emit"):
             Graph([producer_a, producer_b])
+
+
+class TestImplicitShadowElimination:
+    """Implicit producer-edge shadow elimination semantics."""
+
+    def test_removes_shadowed_producer_edge_when_all_paths_cross_other_producer(self):
+        """For input p on consumer v, keep only realizable producer edge(s)."""
+
+        @node(output_name="p", emit="a_done")
+        def producer_a(seed: int) -> int:
+            return seed + 1
+
+        @node(output_name="p", wait_for="a_done")
+        def producer_b(p: int) -> int:
+            return p * 2
+
+        @node(output_name="out")
+        def consumer(p: int) -> int:
+            return p
+
+        graph = Graph([producer_a, producer_b, consumer], entrypoint="producer_a")
+
+        # a -> consumer(p) is shadowed by a -> b -> consumer where b is another
+        # producer of p, so only b should remain wired to consumer.p.
+        producers = graph.input_data_producers["consumer"]["p"]
+        assert producers == frozenset({"producer_b"})
+        assert not graph.nx_graph.has_edge("producer_a", "consumer")
+        assert graph.nx_graph.has_edge("producer_b", "consumer")
+
+    def test_raises_when_shadow_elimination_leaves_no_realizable_producer(self):
+        """If all candidate producer edges are shadowed, construction fails."""
+        from hypergraph.nodes.gate import END, route
+
+        @node(output_name="x")
+        def producer_a(x: int) -> int:
+            return x + 1
+
+        @node(output_name="x")
+        def producer_b(x: int) -> int:
+            return x + 2
+
+        @node(output_name="y")
+        def consumer(x: int) -> int:
+            return x
+
+        @route(targets=["producer_a", END])
+        def loop(y: int) -> str:
+            return "producer_a"
+
+        with pytest.raises(GraphConfigError, match="competing producers"):
+            Graph([producer_a, producer_b, consumer, loop], entrypoint="producer_a")
 
 
 class TestAddNodes:
@@ -2185,3 +2236,75 @@ class TestAddNodes:
         g.add_nodes(step2)
 
         assert set(g.nodes.keys()) == original_nodes
+
+
+class TestSharedParams:
+    """Tests for Graph(shared=...) parameter."""
+
+    def test_shared_excludes_from_auto_wiring(self):
+        """Shared params don't create data edges."""
+
+        @node(output_name="messages")
+        def add_msg(messages: list, text: str) -> list:
+            return [*messages, text]
+
+        @node(output_name="response")
+        def respond(messages: list) -> str:
+            return "ok"
+
+        g = Graph(
+            [add_msg, respond],
+            shared=["messages"],
+            edges=[(add_msg, respond)],
+            entrypoint="add_msg",
+        )
+        # messages is shared — no data edge for it, only ordering
+        edge_data = g.nx_graph.edges["add_msg", "respond"]
+        assert "messages" not in edge_data.get("value_names", [])
+
+    def test_shared_plus_explicit_does_not_drop_inferred(self):
+        """Explicit edges in shared mode union with auto-inferred data edges."""
+
+        @node(output_name=("a", "b", "s"))
+        def producer(seed: int) -> tuple[int, int, int]:
+            return seed, seed + 1, seed + 2
+
+        @node(output_name="out")
+        def consumer(a: int, b: int) -> int:
+            return a + b
+
+        # shared=["s"] excludes s. Explicit edge for "a" should NOT drop "b".
+        g = Graph([producer, consumer], shared=["s"], edges=[(producer, consumer, "a")])
+        assert g.inputs.required == ("seed",)
+        edge_vals = g.nx_graph.edges["producer", "consumer"]["value_names"]
+        assert "a" in edge_vals
+        assert "b" in edge_vals
+
+    def test_shared_unknown_param_rejected(self):
+        """Shared params must be produced by at least one node."""
+
+        @node(output_name="x")
+        def step(seed: int) -> int:
+            return seed
+
+        with pytest.raises(GraphConfigError, match="shared params"):
+            Graph([step], shared=["nonexistent"])
+
+    def test_shared_required_at_run_time(self):
+        """Shared params appear in required inputs."""
+
+        @node(output_name="messages")
+        def add_msg(messages: list, text: str) -> list:
+            return [*messages, text]
+
+        @node(output_name="response")
+        def respond(messages: list) -> str:
+            return "ok"
+
+        g = Graph(
+            [add_msg, respond],
+            shared=["messages"],
+            edges=[(add_msg, respond)],
+            entrypoint="add_msg",
+        )
+        assert "messages" in g.inputs.required

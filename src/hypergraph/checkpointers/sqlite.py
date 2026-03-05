@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import uuid
 from datetime import datetime, timezone
@@ -166,10 +167,15 @@ class SqliteCheckpointer(Checkpointer):
             kvs.append(html_kv("Steps", str(stats["step_count"])))
         body = " &nbsp;|&nbsp; ".join(kvs)
 
-        # Collapsible recent runs
+        # Collapsible recent runs with inline steps
         try:
             recent = self.runs(limit=5)
             if recent:
+                steps_by_run = {}
+                for run in recent:
+                    with contextlib.suppress(Exception):
+                        steps_by_run[run.id] = self.steps(run.id)
+                recent._steps_by_run = steps_by_run
                 body += html_detail(
                     f"Recent runs ({plural(len(recent), 'shown')})",
                     recent._repr_html_(),

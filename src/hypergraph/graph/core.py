@@ -21,6 +21,39 @@ if TYPE_CHECKING:
     from hypergraph.viz.debug import VizDebugger
 
 
+def _ambiguous_producer_message(param: str, consumer: str, producers: list[str]) -> str:
+    """Build a human-readable error for ambiguous implicit wiring."""
+    # ASCII diagram showing competing producers
+    pad = max(len(p) for p in producers)
+    lines = []
+    for i, p in enumerate(producers):
+        connector = "├" if i < len(producers) - 1 else "└"
+        if len(producers) == 2:
+            connector = "┐" if i == 0 else "┘"
+        lines.append(f"  {p:<{pad}} ──({param})──{connector}")
+
+    target = f"──> {consumer}({param})"
+    mid = len(lines) // 2
+    diagram_lines = []
+    for i, line in enumerate(lines):
+        if i == mid:
+            diagram_lines.append(f"{line}{target}")
+        else:
+            diagram_lines.append(f"{line}")
+
+    diagram = "\n".join(diagram_lines)
+
+    return (
+        f"Input '{param}' on node '{consumer}' has {len(producers)} competing producers "
+        f"and auto-wiring can't pick one.\n\n"
+        f"{diagram}\n\n"
+        f"How to fix:\n"
+        f"  - Add explicit edges to declare the intended dependency, OR\n"
+        f"  - Add ordering (emit/wait_for) so one producer is shadowed, OR\n"
+        f"  - Rename output channels to avoid the conflict."
+    )
+
+
 def _build_hierarchical_id(node_name: str, parent_id: str | None) -> str:
     """Build hierarchical ID: root nodes keep bare name, nested get 'parent/child'."""
     if parent_id is None:
@@ -82,8 +115,10 @@ class Graph:
         nodes: list[HyperNode],
         *,
         edges: list[tuple] | None = None,
+        entrypoint: str | list[str] | tuple[str, ...] | None = None,
         name: str | None = None,
         strict_types: bool = False,
+        shared: list[str] | None = None,
     ) -> None:
         """Create a graph from nodes.
 
@@ -97,24 +132,122 @@ class Graph:
                 the intersection of source outputs and target inputs. Edges
                 with no matching values become ordering-only edges.
                 When ``edges`` is provided, auto-inference is disabled.
+            entrypoint: Convenience shortcut for ``with_entrypoint(...)``.
+                Accepts a node name or a list/tuple of node names and applies
+                the same validation and semantics as ``with_entrypoint``.
             name: Optional graph name for nesting
             strict_types: If True, validate type compatibility between connected
                          nodes at graph construction time. Calls _validate_types()
                          which raises GraphConfigError on missing annotations or
                          type mismatches. Default is False (no type checking).
+            shared: Parameter names that are shared state across the graph.
+                Shared params are excluded from auto-wiring (no data edges
+                inferred) and allow multiple producers without conflict.
+                Nodes read the latest value from run state. The user must
+                provide ordering via ``edges`` or ``emit/wait_for``.
+                Shared params are required at ``run()`` time unless bound.
         """
         self.name = name
         self._strict_types = strict_types
+        self._shared: frozenset[str] = frozenset(shared) if shared else frozenset()
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
-        self._entrypoints: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
+        self._validate_shared_params()
+        self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
         self._cached_hash: str | None = None
         self._cached_structural_hash: str | None = None
         self._controlled_by: dict[str, list[str]] | None = None
         self._validate()
+
+    def _normalize_constructor_entrypoints(
+        self,
+        entrypoint: str | list[str] | tuple[str, ...] | None,
+    ) -> tuple[str, ...] | None:
+        """Normalize constructor ``entrypoint=`` into validated tuple form."""
+        if entrypoint is None:
+            return None
+
+        if isinstance(entrypoint, str):
+            node_names = (entrypoint,)
+        elif isinstance(entrypoint, (list, tuple)):
+            node_names = tuple(entrypoint)
+        else:
+            raise GraphConfigError("entrypoint must be a node name (str) or a list/tuple of node names")
+
+        if not node_names:
+            raise GraphConfigError("entrypoint cannot be empty")
+
+        self._validate_entrypoint_names(node_names)
+        return tuple(dict.fromkeys(node_names))
+
+    def _validate_shared_params(self) -> None:
+        """Validate that shared param names actually exist as outputs in the graph."""
+        if not self._shared:
+            return
+        all_outputs: set[str] = set()
+        for node in self._nodes.values():
+            all_outputs.update(node.outputs)
+        unknown = sorted(self._shared - all_outputs)
+        if unknown:
+            raise GraphConfigError(f"shared params {unknown} are not produced by any node.\nAvailable outputs: {sorted(all_outputs)}")
+
+    def _validate_shared_connectivity(self, G: nx.DiGraph, nodes: list[HyperNode]) -> None:
+        """Validate that shared params don't leave the graph disconnected.
+
+        After auto-wiring with shared params excluded, some nodes may become
+        unreachable. Report the gap so the user can add ordering edges.
+        """
+        undirected = G.to_undirected()
+        components = list(nx.connected_components(undirected))
+        if len(components) <= 1:
+            return
+
+        # Build a readable description of each island
+        islands: list[str] = []
+        for component in sorted(components, key=lambda c: min(c)):
+            # Show edges within this island
+            edges_in = []
+            for u, v, data in G.edges(data=True):
+                if u in component and v in component:
+                    value_names = data.get("value_names", [])
+                    label = f"({', '.join(value_names)})" if value_names else ""
+                    edge_type = data.get("edge_type", "data")
+                    style = " (control)" if edge_type == "control" else ""
+                    edges_in.append(f"    {u} -> {v}{' ' + label if label else ''}{style}")
+
+            node_list = sorted(component)
+            edge_desc = "\n".join(edges_in) if edges_in else "    (no edges)"
+            islands.append(f"  [{', '.join(node_list)}]\n{edge_desc}")
+
+        raise GraphConfigError(
+            f"Graph is disconnected after auto-wiring with shared={sorted(self._shared)}.\n\n"
+            f"These groups of nodes have no edges connecting them:\n\n" + "\n\n".join(islands) + "\n\n"
+            "How to fix:\n"
+            "  Add edges=[(node_a, node_b), ...] or emit/wait_for to connect them."
+        )
+
+    def _validate_entrypoint_names(self, node_names: tuple[str, ...]) -> None:
+        """Validate entrypoint node names and ensure they are non-gate nodes."""
+        from hypergraph.nodes.gate import GateNode
+
+        for name in node_names:
+            if not isinstance(name, str):
+                raise GraphConfigError(f"Entry point names must be strings, got {type(name).__name__}")
+
+            if name not in self._nodes:
+                raise GraphConfigError(
+                    f"Unknown entry point node: '{name}'\n\n  -> '{name}' is not in the graph\n  -> Available nodes: {sorted(self._nodes.keys())}"
+                )
+            if isinstance(self._nodes[name], GateNode):
+                raise GraphConfigError(
+                    f"Cannot use gate '{name}' as entry point\n\n"
+                    f"  -> Gates control routing, they cannot be entry points\n\n"
+                    f"How to fix:\n"
+                    f"  Use a non-gate node as the entry point"
+                )
 
     @property
     def controlled_by(self) -> dict[str, list[str]]:
@@ -194,12 +327,97 @@ class Graph:
         return {output: set(sources) for output, sources in output_sources.items()}
 
     @functools.cached_property
+    def downstream_produced(self) -> dict[str, frozenset[str]]:
+        """Map node_name → frozenset of params produced by descendants only.
+
+        In a DAG, when ALL producers of a param are descendants (downstream)
+        of the consuming node, their writes should not trigger re-execution —
+        the natural execution order is consumer-first, producer-second, and
+        the producer's output is the final value, not a signal to loop.
+
+        Only computed for acyclic graphs; returns empty for cyclic ones
+        (where staleness is driven by gates instead).
+        """
+        if self.has_cycles:
+            return {}
+
+        from hypergraph.graph.input_spec import _data_only_subgraph
+
+        data_graph = _data_only_subgraph(self._nx_graph)
+        result: dict[str, frozenset[str]] = {}
+        for node_name in data_graph.nodes():
+            node = self._nodes.get(node_name)
+            if node is None:
+                continue
+            descendants = nx.descendants(data_graph, node_name)
+            exempt = frozenset(param for param in node.inputs if (producers := self.self_producers.get(param)) and producers <= descendants)
+            if exempt:
+                result[node_name] = exempt
+        return result
+
+    @functools.cached_property
     def sole_producers(self) -> dict[str, str]:
         """Map output_name → node_name for outputs with exactly one producer.
 
         Convenience accessor; prefer ``self_producers`` for staleness checks.
         """
         return {output: next(iter(nodes)) for output, nodes in self.self_producers.items() if len(nodes) == 1}
+
+    @functools.cached_property
+    def input_data_producers(self) -> dict[str, dict[str, frozenset[str]]]:
+        """Map node_name -> input_name -> producers on incoming DATA/ORDERING edges.
+
+        In explicit-edge graphs, this captures exactly which producers are
+        wired to each input. The runner uses it to avoid marking a node stale
+        when an identically named value changes via a non-wired producer.
+
+        For shared params, the explicit edge becomes ordering-only (data flows
+        through state). We include ordering-edge predecessors that produce a
+        shared param consumed by the target, so the staleness check can
+        distinguish "my upstream updated messages" from "some downstream node
+        updated messages".
+        """
+        producer_map: dict[str, dict[str, set[str]]] = {}
+        for src, dst, data in self._nx_graph.edges(data=True):
+            edge_type = data.get("edge_type")
+            if edge_type == "data":
+                for value_name in data.get("value_names", []):
+                    producer_map.setdefault(dst, {}).setdefault(value_name, set()).add(src)
+            elif edge_type == "ordering" and self._shared:
+                # Ordering edges from shared params: src produces a shared
+                # param that dst consumes — record as a legitimate producer.
+                src_outputs = set(self._nodes[src].outputs)
+                dst_inputs = set(self._nodes[dst].inputs)
+                for param in src_outputs & dst_inputs & self._shared:
+                    producer_map.setdefault(dst, {}).setdefault(param, set()).add(src)
+
+        frozen: dict[str, dict[str, frozenset[str]]] = {}
+        for node_name, inputs in producer_map.items():
+            frozen[node_name] = {input_name: frozenset(names) for input_name, names in inputs.items()}
+        return frozen
+
+    @functools.cached_property
+    def explicit_predecessors(self) -> dict[str, frozenset[str]]:
+        """Map node_name -> direct predecessors declared via explicit edges.
+
+        Only populated for graphs built with ``edges=[...]``. This captures the
+        user-declared topology directly from constructor edge specs (data and
+        ordering declarations alike), and is used by scheduler readiness checks
+        to enforce predecessor-driven startup semantics.
+        """
+        if self._explicit_edges is None:
+            return {}
+
+        predecessors: dict[str, set[str]] = {}
+        for src, dst, _value_names in self._explicit_edges:
+            predecessors.setdefault(dst, set()).add(src)
+
+        return {node_name: frozenset(sources) for node_name, sources in predecessors.items()}
+
+    @property
+    def has_explicit_edges(self) -> bool:
+        """Whether the graph was built in explicit-edges mode."""
+        return self._explicit_edges is not None
 
     def _get_edge_produced_values(self) -> set[str]:
         """Get all value names that are produced by data edges."""
@@ -283,11 +501,13 @@ class Graph:
                         raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an output of '{src}'. Outputs: {self._nodes[src].outputs}")
                     if v not in dst_inputs:
                         raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an input of '{dst}'. Inputs: {self._nodes[dst].inputs}")
-                value_names = tuple(dict.fromkeys(values))
+                # Shared params become ordering-only (data flows through state)
+                value_names = tuple(v for v in dict.fromkeys(values) if v not in self._shared)
             else:
                 # Infer from intersection (preserve target input order)
+                # Shared params excluded — they don't create data edges
                 src_outputs = set(self._nodes[src].outputs)
-                value_names = tuple(v for v in self._nodes[dst].inputs if v in src_outputs)
+                value_names = tuple(v for v in self._nodes[dst].inputs if v in src_outputs and v not in self._shared)
                 # Empty intersection is allowed — creates ordering-only edge
 
             normalized.append((src, dst, value_names))
@@ -315,8 +535,15 @@ class Graph:
             else:
                 ordering_pairs.add((src, dst))
 
-        # Add data edges (dedup value_names per pair)
-        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": list(dict.fromkeys(names))}) for (src, dst), names in data_edges.items())
+        # Add data edges (dedup value_names per pair, union with existing)
+        for (src, dst), names in data_edges.items():
+            deduped = list(dict.fromkeys(names))
+            if G.has_edge(src, dst) and G[src][dst].get("edge_type") == "data":
+                existing = G[src][dst].get("value_names", [])
+                merged = list(dict.fromkeys(existing + deduped))
+                G[src][dst]["value_names"] = merged
+            else:
+                G.add_edge(src, dst, edge_type="data", value_names=deduped)
 
         # Add ordering-only edges (skip if data edge already exists)
         for src, dst in ordering_pairs:
@@ -333,25 +560,37 @@ class Graph:
         self._add_nodes_to_graph(G, nodes)
 
         output_to_sources = self._collect_output_sources(nodes)
-        output_to_source = {k: v[0] for k, v in output_to_sources.items()}
+        # Shared params allow multiple producers — exclude from conflict checks
+        conflict_sources = {k: v for k, v in output_to_sources.items() if k not in self._shared} if self._shared else output_to_sources
 
-        if self._explicit_edges is not None:
-            # Explicit mode: user-declared data edges
+        if self._explicit_edges is not None and not self._shared:
+            # Explicit mode: user-declared data edges (no auto-inference)
             self._add_explicit_data_edges(G, self._explicit_edges)
             self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_source)
+            self._add_ordering_edges(G, nodes, output_to_sources)
             validate_output_conflicts(
                 G,
                 nodes,
-                output_to_sources,
+                conflict_sources,
                 explicit_edges=True,
             )
+        elif self._shared:
+            # Shared mode: auto-infer non-shared edges, add explicit as ordering
+            self._add_data_edges(G, nodes, output_to_sources)
+            if self._explicit_edges is not None:
+                self._add_explicit_data_edges(G, self._explicit_edges)
+            self._add_control_edges(G, nodes)
+            self._add_ordering_edges(G, nodes, output_to_sources)
+            validate_output_conflicts(G, nodes, conflict_sources)
         else:
             # Auto-inference mode (default)
-            self._add_data_edges(G, nodes, output_to_source)
+            self._add_data_edges(G, nodes, output_to_sources)
             self._add_control_edges(G, nodes)
-            self._add_ordering_edges(G, nodes, output_to_source)
-            validate_output_conflicts(G, nodes, output_to_sources)
+            self._add_ordering_edges(G, nodes, output_to_sources)
+            validate_output_conflicts(G, nodes, conflict_sources)
+
+        if self._shared:
+            self._validate_shared_connectivity(G, nodes)
 
         return G
 
@@ -366,24 +605,56 @@ class Graph:
         self,
         G: nx.DiGraph,
         nodes: list[HyperNode],
-        output_to_source: dict[str, str],
+        output_to_sources: dict[str, list[str]],
     ) -> None:
-        """Infer data edges by matching parameter names to output names.
+        """Infer implicit data edges by realizable producer->consumer handoff.
 
-        Multiple values between the same node pair are merged into a single
-        edge with a ``value_names`` list, since NetworkX DiGraph only allows
-        one edge per (source, target) pair.
+        For each consumer input name, all matching producers are considered.
+        Then producer-shadow elimination is applied:
+        remove producer ``u -> v (p)`` iff every valid alternate path by which
+        ``p`` could flow from ``u`` to ``v`` passes through another producer of
+        ``p`` first.
+
+        Ambiguous cycle inputs are rejected when multiple non-shadowed
+        producers remain for the same ``(consumer, input_name)`` pair.
         """
         from collections import defaultdict
 
-        # Group values by (source, target) pair
-        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
-        for n in nodes:
-            for param in n.inputs:
-                if param in output_to_source:
-                    edge_values[(output_to_source[param], n.name)].append(param)
+        # Build producer candidates per (consumer, input_name).
+        # Shared params are excluded — they flow through run state, not edges.
+        by_input: dict[tuple[str, str], list[str]] = {}
+        for consumer in nodes:
+            for param in consumer.inputs:
+                if param in self._shared:
+                    continue
+                producers = [producer for producer in output_to_sources.get(param, [])]
+                if producers:
+                    by_input[(consumer.name, param)] = list(dict.fromkeys(producers))
 
-        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": names}) for (src, dst), names in edge_values.items())
+        if not by_input:
+            return
+
+        by_input = self._apply_shadow_elimination(nodes, by_input, output_to_sources)
+        self._validate_no_cycle_input_ambiguity(nodes, by_input)
+
+        # Group value names by (source, target) pair because DiGraph supports
+        # one edge per pair.
+        edge_values: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for (consumer, param), producers in by_input.items():
+            for producer in producers:
+                edge_values[(producer, consumer)].append(param)
+
+        G.add_edges_from(
+            (
+                src,
+                dst,
+                {
+                    "edge_type": "data",
+                    "value_names": list(dict.fromkeys(names)),
+                },
+            )
+            for (src, dst), names in edge_values.items()
+        )
 
     def _add_control_edges(
         self,
@@ -411,28 +682,221 @@ class Graph:
         self,
         G: nx.DiGraph,
         nodes: list[HyperNode],
-        output_to_source: dict[str, str],
+        output_to_sources: dict[str, list[str]],
     ) -> None:
         """Add ordering edges for wait_for dependencies.
 
-        Ordering edges connect the producer of a wait_for value to the
+        Ordering edges connect each producer of a wait_for value to the
         consumer node. They carry no data but express execution order.
         Only added if no data or control edge already exists between the pair.
         """
         for node in nodes:
             for name in node.wait_for:
-                producer = output_to_source.get(name)
-                if producer is None:
+                producers = output_to_sources.get(name, [])
+                if not producers:
                     continue  # Validation catches missing producers
-                if producer == node.name:
-                    continue  # Skip self-loops
-                if not G.has_edge(producer, node.name):
-                    G.add_edge(
-                        producer,
-                        node.name,
-                        edge_type="ordering",
-                        value_names=[name],
-                    )
+                for producer in producers:
+                    if producer == node.name:
+                        continue  # Skip self-loops
+                    if not G.has_edge(producer, node.name):
+                        G.add_edge(
+                            producer,
+                            node.name,
+                            edge_type="ordering",
+                            value_names=[name],
+                        )
+
+    def _apply_shadow_elimination(
+        self,
+        nodes: list[HyperNode],
+        by_input: dict[tuple[str, str], list[str]],
+        output_to_sources: dict[str, list[str]],
+    ) -> dict[tuple[str, str], list[str]]:
+        """Remove shadowed producer candidates from implicit input wiring.
+
+        Shadow rule:
+        For consumer input ``p``, producer edge ``u -> v (p)`` is removed iff:
+        1) ``u -> v`` has at least one alternate execution path
+           (excluding the direct candidate edge), and
+        2) every such path passes through another producer of ``p`` first.
+        """
+        candidate_graph = nx.DiGraph()
+        candidate_graph.add_nodes_from(node.name for node in nodes)
+        for (consumer, _param), producers in by_input.items():
+            for producer in producers:
+                candidate_graph.add_edge(producer, consumer)
+        self._add_candidate_control_and_ordering_edges(candidate_graph, nodes, output_to_sources)
+        invalid_nodes_by_consumer = self._invalid_shadow_path_nodes_by_consumer(nodes)
+
+        pruned: dict[tuple[str, str], list[str]] = {}
+        for key, producers in by_input.items():
+            consumer, param = key
+            if len(producers) <= 1:
+                pruned[key] = producers
+                continue
+
+            kept = [
+                producer
+                for producer in producers
+                if not self._is_shadowed_producer(
+                    candidate_graph=candidate_graph,
+                    producer=producer,
+                    consumer=consumer,
+                    competing_producers=set(producers),
+                    invalid_path_nodes=invalid_nodes_by_consumer.get(consumer),
+                )
+            ]
+
+            if kept:
+                pruned[key] = kept
+            else:
+                raise GraphConfigError(_ambiguous_producer_message(param, consumer, sorted(producers)))
+
+        return pruned
+
+    def _invalid_shadow_path_nodes_by_consumer(self, nodes: list[HyperNode]) -> dict[str, set[str]]:
+        """Nodes that should not be traversed in shadow-path checks per consumer.
+
+        For gate consumers, paths that route through the gate's own targets are
+        not considered valid evidence of upstream shadowing. Those targets are
+        activated by the gate decision itself and would otherwise create
+        circular self-justifying paths (gate -> target ... -> gate).
+        """
+        from hypergraph.nodes.gate import END, GateNode
+
+        invalid: dict[str, set[str]] = {}
+        for node in nodes:
+            if not isinstance(node, GateNode):
+                continue
+            blocked = {target for target in node.targets if target is not END and isinstance(target, str) and target != node.name}
+            if blocked:
+                invalid[node.name] = blocked
+        return invalid
+
+    def _is_shadowed_producer(
+        self,
+        *,
+        candidate_graph: nx.DiGraph,
+        producer: str,
+        consumer: str,
+        competing_producers: set[str],
+        invalid_path_nodes: set[str] | None = None,
+    ) -> bool:
+        """Whether producer->consumer is shadowed by other producers.
+
+        Edge ``producer -> consumer`` is shadowed when every alternate path from
+        producer to consumer (excluding the direct edge) must pass through at
+        least one other competing producer first.
+        """
+        others = competing_producers - {producer}
+        if not others:
+            return False
+
+        blocked = set(invalid_path_nodes or ())
+
+        has_alt_path = self._has_path_avoiding_nodes(
+            candidate_graph,
+            producer,
+            consumer,
+            blocked_nodes=blocked,
+            skip_edge=(producer, consumer),
+        )
+        if not has_alt_path:
+            return False
+
+        has_path_without_others = self._has_path_avoiding_nodes(
+            candidate_graph,
+            producer,
+            consumer,
+            blocked_nodes=blocked | (others - {consumer}),
+            skip_edge=(producer, consumer),
+        )
+        return not has_path_without_others
+
+    def _add_candidate_control_and_ordering_edges(
+        self,
+        graph: nx.DiGraph,
+        nodes: list[HyperNode],
+        output_to_sources: dict[str, list[str]],
+    ) -> None:
+        """Add control/order precedence edges used for cycle-context detection."""
+        from hypergraph.nodes.gate import END, GateNode
+
+        node_names = {node.name for node in nodes}
+
+        for node in nodes:
+            if isinstance(node, GateNode):
+                for target in node.targets:
+                    if target is END or target not in node_names:
+                        continue
+                    graph.add_edge(node.name, target)
+
+            for wait_name in node.wait_for:
+                for producer in output_to_sources.get(wait_name, []):
+                    if producer != node.name:
+                        graph.add_edge(producer, node.name)
+
+    def _validate_no_cycle_input_ambiguity(
+        self,
+        nodes: list[HyperNode],
+        by_input: dict[tuple[str, str], list[str]],
+    ) -> None:
+        """Reject cycle inputs that still have multiple producer candidates."""
+        from hypergraph.nodes.gate import GateNode
+
+        node_by_name = {node.name: node for node in nodes}
+        candidate_graph = nx.DiGraph()
+        candidate_graph.add_nodes_from(node.name for node in nodes)
+        for (consumer, _param), producers in by_input.items():
+            for producer in producers:
+                candidate_graph.add_edge(producer, consumer)
+
+        cycle_nodes: set[str] = set()
+        for component in nx.strongly_connected_components(candidate_graph):
+            comp = set(component)
+            if len(comp) > 1 or any(candidate_graph.has_edge(n, n) for n in comp):
+                cycle_nodes.update(comp)
+
+        for (consumer, param), producers in by_input.items():
+            if consumer not in cycle_nodes:
+                continue
+            if isinstance(node_by_name.get(consumer), GateNode):
+                continue
+            external_producers = [p for p in producers if p != consumer]
+            if len(external_producers) <= 1:
+                continue
+            raise GraphConfigError(_ambiguous_producer_message(param, consumer, sorted(external_producers)))
+
+    def _has_path_avoiding_nodes(
+        self,
+        graph: nx.DiGraph,
+        source: str,
+        target: str,
+        *,
+        blocked_nodes: set[str],
+        skip_edge: tuple[str, str] | None = None,
+    ) -> bool:
+        """Return True if a path exists while avoiding blocked nodes."""
+        from collections import deque
+
+        queue: deque[str] = deque([source])
+        visited: set[str] = {source}
+
+        while queue:
+            node_name = queue.popleft()
+            for nxt in graph.successors(node_name):
+                if skip_edge is not None and (node_name, nxt) == skip_edge:
+                    continue
+                if nxt in blocked_nodes and nxt != target:
+                    continue
+                if nxt == target:
+                    return True
+                if nxt in visited:
+                    continue
+                visited.add(nxt)
+                queue.append(nxt)
+
+        return False
 
     def bind(self, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).
@@ -474,8 +938,6 @@ class Graph:
         the selected outputs. Nodes that don't contribute are excluded from
         InputSpec computation. However, at execution time all reachable nodes
         still run — use ``with_entrypoint()`` to skip upstream execution.
-
-        A runtime ``select=`` passed to runner.run() overrides this default.
 
         Args:
             *names: Output names to include. Must be valid graph outputs.
@@ -525,7 +987,12 @@ class Graph:
             return self
 
         all_nodes = list(self._nodes.values()) + list(nodes)
-        new_graph = Graph(all_nodes, name=self.name, strict_types=self._strict_types)
+        new_graph = Graph(
+            all_nodes,
+            name=self.name,
+            strict_types=self._strict_types,
+            shared=sorted(self._shared) if self._shared else None,
+        )
 
         if self._bound:
             valid_names = set(new_graph.inputs.all) | set(new_graph.outputs)
@@ -575,24 +1042,11 @@ class Graph:
             >>> g2 = g.with_entrypoint("process")
             >>> g2.inputs.required  # only process's unproduced inputs
         """
-        from hypergraph.nodes.gate import GateNode
-
-        for name in node_names:
-            if name not in self._nodes:
-                raise GraphConfigError(
-                    f"Unknown entry point node: '{name}'\n\n  -> '{name}' is not in the graph\n  -> Available nodes: {sorted(self._nodes.keys())}"
-                )
-            if isinstance(self._nodes[name], GateNode):
-                raise GraphConfigError(
-                    f"Cannot use gate '{name}' as entry point\n\n"
-                    f"  -> Gates control routing, they cannot be entry points\n\n"
-                    f"How to fix:\n"
-                    f"  Use a non-gate node as the entry point"
-                )
+        self._validate_entrypoint_names(node_names)
 
         new_graph = self._shallow_copy()
         existing = self._entrypoints or ()
-        new_graph._entrypoints = tuple(dict.fromkeys(existing + node_names))
+        new_graph._entrypoints = tuple(dict.fromkeys(existing + tuple(node_names)))
         return new_graph
 
     @property
@@ -744,6 +1198,13 @@ class Graph:
         # Note: Duplicate node names caught in _build_nodes_dict()
         # Note: Duplicate outputs caught in validate_output_conflicts()
         validate_graph(self._nodes, self._nx_graph, self.name, self._strict_types)
+        if self.has_cycles and self._entrypoints is None:
+            raise GraphConfigError(
+                "Cyclic graphs require an explicit entrypoint.\n\n"
+                "How to fix:\n"
+                "  graph = graph.with_entrypoint('<node_name>')\n"
+                "  # or Graph(..., entrypoint='<node_name>')"
+            )
 
     def as_node(self, *, name: str | None = None) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.
@@ -835,6 +1296,7 @@ class Graph:
         theme: str = "auto",
         show_types: bool = False,
         separate_outputs: bool = False,
+        show_external_inputs: bool = False,
         filepath: str | None = None,
     ) -> Any:
         """Create an interactive visualization of this graph.
@@ -847,6 +1309,7 @@ class Graph:
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
+            show_external_inputs: Whether to show external INPUT/INPUT_GROUP nodes
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
@@ -866,6 +1329,7 @@ class Graph:
             theme=theme,
             show_types=show_types,
             separate_outputs=separate_outputs,
+            show_external_inputs=show_external_inputs,
             filepath=filepath,
         )
 
@@ -919,7 +1383,8 @@ class Graph:
         - Node attributes include `parent` for hierarchy
         - Node IDs are hierarchical to prevent collisions (e.g., "pipeline1/process")
         - Edges include both root-level and nested edges
-        - Graph attributes include `input_spec` and `output_to_sources`
+        - Graph attributes include `input_spec`, `output_to_sources`, and
+          configured execution entrypoints (if any)
 
         This is the canonical representation for visualization and analysis.
         """
@@ -944,6 +1409,8 @@ class Graph:
             "entrypoints": {k: list(v) for k, v in input_spec.entrypoints.items()},
         }
         G.graph["output_to_sources"] = output_to_sources
+        G.graph["configured_entrypoints"] = list(self._entrypoints or ())
+        G.graph["shared"] = sorted(self._shared) if self._shared else []
         return G
 
     def _flatten_nodes(

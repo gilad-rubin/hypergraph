@@ -25,9 +25,18 @@ g = Graph([double, add_one])
 
 Edges are inferred automatically: if node A produces output "x" and node B has input "x", an edge A→B is created.
 
+When multiple producers can satisfy the same consumer input `p`, implicit
+inference applies **producer shadow-elimination**:
+
+- Remove edge `u -> v (p)` iff every valid execution path by which `p` could
+  flow from `u` to `v` passes through another producer of `p` first.
+- If elimination leaves no realizable producer for `(v, p)`, graph
+  construction fails with `GraphConfigError` and asks you to add ordering,
+  explicit edges, or rename channels.
+
 ## Constructor
 
-### `Graph(nodes, *, edges=None, name=None, strict_types=False)`
+### `Graph(nodes, *, edges=None, entrypoint=None, name=None, strict_types=False, shared=None)`
 
 Create a graph from nodes.
 
@@ -50,9 +59,11 @@ g = Graph([process], strict_types=True)
 
 **Args:**
 - `nodes` (list[HyperNode]): List of nodes to include in the graph
-- `edges` (list[tuple] | None): Explicit edge declarations. Disables auto-inference when provided. See [Explicit Edges](#explicit-edges) below.
+- `edges` (list[tuple] | None): Explicit edge declarations. When `shared` is set, explicit edges are additive (ordering hints on top of auto-inferred edges). Otherwise, disables auto-inference when provided. See [Explicit Edges](#explicit-edges) below.
+- `entrypoint` (str | list[str] | tuple[str, ...] | None): Convenience shortcut for `with_entrypoint()`. Required for cyclic graphs. Accepts a node name or list/tuple of node names. See [Entrypoints](#with_entrypointnode_names---graph) below.
 - `name` (str | None): Optional graph name. Required if using `as_node()` for composition.
 - `strict_types` (bool): If True, validate type compatibility between connected nodes at construction time. Default: False.
+- `shared` (list[str] | None): Parameter names that are shared state. Shared params are excluded from auto-wiring — multiple producers are allowed, and nodes read the latest value from run state. The user provides ordering via `edges` or `emit/wait_for`. Shared params are required at `run()` time unless bound. See [Shared State](#shared-state) below.
 
 **Raises:**
 - `GraphConfigError` - If duplicate node names exist
@@ -338,7 +349,7 @@ selected = g.select("a_val")
 print(selected.inputs.required)  # ('x',) - y is not needed for a_val
 ```
 
-At runtime, all nodes in the active subgraph still execute. `select` filters what is **returned to the caller** and narrows what is **required from the caller**.
+`select` is scope-defining: it narrows what executes, what is required from the caller, and what is returned to the caller.
 
 ```python
 g = Graph([embed, retrieve, generate])
@@ -348,11 +359,9 @@ print(g.outputs)  # ('embedding', 'docs', 'answer')
 g_selected = g.select("answer")
 result = runner.run(g_selected, {"text": "hello", "query": "what?"})
 print(result.values.keys())  # dict_keys(['answer'])
-
-# Runtime select= overrides graph default
-result = runner.run(g_selected, inputs, select=["docs", "answer"])
-print(result.values.keys())  # dict_keys(['docs', 'answer'])
 ```
+
+Runtime `select=` overrides are not supported. Use `graph.select(...)` to configure output scope before calling `run()`.
 
 **Args:**
 - `*names`: Output names to include. Must be valid graph outputs.
@@ -430,18 +439,15 @@ g2 = g.with_entrypoint("retrieve").with_entrypoint("generate")
 print(g2.entrypoints_config)  # ('retrieve', 'generate')
 ```
 
-#### Works with cycles
+#### Cycles
 
-For cyclic graphs, `with_entrypoint` determines which part of the cycle is active. The narrowed `inputs` reflects only the cycle parameters reachable from the entry point:
+Cyclic graphs must be configured with constructor `entrypoint`:
 
 ```python
-# In a cycle: accumulate → generate → should_continue → accumulate
-g = Graph([accumulate, generate, should_continue])
-
-# Start at generate, skip accumulate as bootstrap
-g2 = g.with_entrypoint("generate")
-# g2.inputs shows only what generate needs to enter the cycle
+g = Graph([accumulate, generate, should_continue], entrypoint="accumulate")
 ```
+
+`with_entrypoint(...)` remains useful for DAG slicing and for adding additional entrypoints to an already configured graph.
 
 #### Composes with select and bind
 
@@ -699,7 +705,72 @@ When a 2-tuple has no overlapping output/input names, it becomes an **ordering-o
 - Auto-inference and explicit edges don't mix. When `edges` is provided, only declared edges exist.
 - Gate control edges and `emit`/`wait_for` ordering edges are still auto-wired in explicit mode. Don't declare edges from gate nodes to their targets — the explicit edge would override the auto-wired control edge type, affecting visualization.
 
-### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, filepath=None)`
+## Shared State
+
+When multiple nodes read and write the same value (e.g., `messages` in a chat loop), auto-wiring can't determine which producer feeds which consumer. Instead of requiring nested graphs or fully explicit edges, declare the param as **shared**:
+
+```python
+from hypergraph import Graph, node, route, END
+
+@node(output_name="messages")
+def add_user_message(messages: list, user_input: str) -> list:
+    return [*messages, {"role": "user", "content": user_input}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+@route(targets=["add_user_message", END])
+def should_continue(messages: list) -> str:
+    return "add_user_message" if len(messages) < 10 else END
+
+graph = Graph(
+    [add_user_message, generate, add_response, should_continue],
+    shared=["messages"],
+    entrypoint="add_user_message",
+    edges=[
+        (add_user_message, generate),
+        (add_response, should_continue),
+    ],
+)
+```
+
+### How it works
+
+1. **No data edges** are inferred for `messages` — it's excluded from auto-wiring
+2. **Multiple producers** (`add_user_message`, `add_response`) are allowed without conflict
+3. **Non-shared params** (`user_input`, `response`) are still auto-wired normally
+4. **Ordering** must be provided via `edges` or `emit/wait_for` — the explicit edges above become ordering-only edges (since `messages` is shared, no data flows through them)
+5. **Initial value** is required at `run()` time: `runner.run(graph, {"messages": [], ...})`
+
+### Connectivity validation
+
+If auto-wiring with shared params leaves the graph disconnected, construction fails with a helpful error showing which node groups need connecting:
+
+```text
+Graph is disconnected after auto-wiring with shared=['messages'].
+
+These groups of nodes have no edges connecting them:
+
+  [add_response, generate]
+    generate -> add_response (response)
+
+  [add_user_message, should_continue]
+    should_continue -> add_user_message (control)
+
+How to fix:
+  Add edges=[(node_a, node_b), ...] or emit/wait_for to connect them.
+```
+
+### In the visualization
+
+Shared params appear as a purple `↕` badge at the bottom-left of the interactive visualization, and as a `%% shared state: messages` comment in Mermaid output.
+
+### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_external_inputs=False, filepath=None)`
 
 Render an interactive visualization of the graph.
 
@@ -714,6 +785,7 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
 - `show_types` (bool): Display type annotations on nodes. Default: False.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
+- `show_external_inputs` (bool): Show external INPUT/INPUT_GROUP nodes. Default: False.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 
 **Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).

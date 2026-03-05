@@ -1,5 +1,6 @@
 """Tests for runner types: RunStatus, RunResult, RunnerCapabilities, GraphState."""
 
+from hypergraph.nodes.base import _EMIT_SENTINEL
 from hypergraph.runners import (
     GraphState,
     MapResult,
@@ -265,6 +266,13 @@ class TestGraphState:
 
         state.update_value("x", 3)
         assert state.versions["x"] == 3
+
+    def test_emit_sentinel_always_increments_version(self):
+        state = GraphState()
+        state.update_value("done", _EMIT_SENTINEL)
+        state.update_value("done", _EMIT_SENTINEL)
+        state.update_value("done", _EMIT_SENTINEL)
+        assert state.versions["done"] == 3
 
     def test_initial_version_is_one(self):
         state = GraphState()

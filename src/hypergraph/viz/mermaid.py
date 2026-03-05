@@ -26,7 +26,11 @@ from hypergraph.viz._common import (
     is_node_visible,
 )
 from hypergraph.viz.renderer._format import format_type
-from hypergraph.viz.renderer.nodes import build_input_groups, has_end_routing
+from hypergraph.viz.renderer.nodes import (
+    build_input_groups,
+    get_start_targets,
+    has_end_routing,
+)
 from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
     find_internal_producer_for_output,
@@ -94,6 +98,12 @@ DEFAULT_COLORS: dict[str, dict[str, str]] = {
         "stroke-width": "2px",
         "color": "#263238",
     },
+    "start": {
+        "fill": "#ECFDF5",
+        "stroke": "#10B981",
+        "stroke-width": "2px",
+        "color": "#065F46",
+    },
 }
 
 # Maps HyperGraph node_type to Mermaid classDef name
@@ -104,6 +114,7 @@ _NODE_TYPE_TO_CLASS = {
     "INPUT": "input",
     "INPUT_GROUP": "input",
     "DATA": "data",
+    "START": "start",
     "END": "end",
 }
 
@@ -267,6 +278,7 @@ _SHAPE_DELIMITERS: dict[str, tuple[str, str]] = {
     "INPUT": ('(["', '"])'),
     "INPUT_GROUP": ('(["', '"])'),
     "DATA": ('[/"', '"/]'),
+    "START": ('(("', '"))'),
     "END": ('(["', '"])'),
 }
 
@@ -323,7 +335,7 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            lines.append(_format_edge(source, actual_target, label))
+            lines.append(_format_control_edge(source, actual_target, label))
             continue
 
         if edge_type == "ordering":
@@ -446,7 +458,7 @@ def _render_separate_edges(
             edge_key = (_sanitize_id(source), _sanitize_id(actual_target), label or "")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                lines.append(_format_edge(source, actual_target, label))
+                lines.append(_format_control_edge(source, actual_target, label))
 
     return lines
 
@@ -470,6 +482,18 @@ def _format_edge(
 
 def _format_ordering_edge(source: str, target: str, label: str) -> str:
     """Format a dotted-arrow Mermaid edge (for ordering/emit edges)."""
+    s, t = _sanitize_id(source), _sanitize_id(target)
+    if label:
+        return f"    {s} -.->|{label}| {t}"
+    return f"    {s} -.-> {t}"
+
+
+def _format_control_edge(
+    source: str,
+    target: str,
+    label: str | None,
+) -> str:
+    """Format a dotted-arrow Mermaid control edge (for gate-origin edges)."""
     s, t = _sanitize_id(source), _sanitize_id(target)
     if label:
         return f"    {s} -.->|{label}| {t}"
@@ -714,6 +738,20 @@ def to_mermaid(
     lines: list[str] = [f"flowchart {direction}"]
     node_class_map: dict[str, str] = {}
 
+    # --- Shared state annotation ---
+    shared_params = flat_graph.graph.get("shared", [])
+    if shared_params:
+        lines.append(f"    %% shared state: {', '.join(shared_params)}")
+
+    start_targets = get_start_targets(flat_graph, expansion_state)
+
+    # --- START node (emit early so layout keeps START visually above flow) ---
+    if start_targets:
+        start_id = "__start__"
+        lines.append("    %% Start")
+        lines.append(_format_node(_sanitize_id(start_id), "Start", "START"))
+        node_class_map[start_id] = "start"
+
     # --- Input nodes ---
     input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
     if input_groups:
@@ -798,6 +836,8 @@ def to_mermaid(
 
     # --- Input → consumer edges ---
     lines.append("    %% Edges")
+    lines.extend(_render_start_edges(start_targets))
+
     for group in input_groups:
         params = group["params"]
         input_node_id = f"input_{params[0]}" if len(params) == 1 else f"input_group_{'_'.join(params)}"
@@ -911,18 +951,23 @@ def _render_end_edges(
 
         emitted = False
         if branch_data.get("when_true") == "END":
-            lines.append(_format_edge(node_id, "__end__", "True"))
+            lines.append(_format_control_edge(node_id, "__end__", "True"))
             emitted = True
         if branch_data.get("when_false") == "END":
-            lines.append(_format_edge(node_id, "__end__", "False"))
+            lines.append(_format_control_edge(node_id, "__end__", "False"))
             emitted = True
         if not emitted and "targets" in branch_data:
             targets = branch_data["targets"]
             target_values = targets.values() if isinstance(targets, dict) else targets
             if "END" in target_values:
-                lines.append(_format_edge(node_id, "__end__", None))
+                lines.append(_format_control_edge(node_id, "__end__", None))
 
     return lines
+
+
+def _render_start_edges(start_targets: list[str]) -> list[str]:
+    """Render edges from START to explicitly configured entrypoints."""
+    return [_format_edge("__start__", target, None) for target in start_targets]
 
 
 def _find_ordering_edge_indices(lines: list[str]) -> list[int]:

@@ -6,6 +6,7 @@ handling container expansion and re-routing to internal nodes.
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from typing import Any
 
 import networkx as nx
@@ -19,6 +20,7 @@ from hypergraph.viz._common import (
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
     get_group_targets,
+    get_start_targets,
     has_end_routing,
     is_data_node_visible,
 )
@@ -26,6 +28,161 @@ from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
     find_internal_producer_for_output,
 )
+
+_SYNTHETIC_NODE_PREFIXES = ("input_", "input_group_", "data_")
+_SYNTHETIC_NODE_IDS = {"__start__", "__end__"}
+
+
+def _is_synthetic_node_id(node_id: str) -> bool:
+    return node_id in _SYNTHETIC_NODE_IDS or node_id.startswith(_SYNTHETIC_NODE_PREFIXES)
+
+
+def _is_reducible_execution_edge(edge: dict[str, Any]) -> bool:
+    """Whether an edge can participate in transitive execution simplification."""
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
+    if not source or not target:
+        return False
+    if _is_synthetic_node_id(source) or _is_synthetic_node_id(target):
+        return False
+
+    edge_data = edge.get("data", {})
+    edge_type = edge_data.get("edgeType")
+    # Keep control edges explicit — they encode routing semantics and are
+    # expected to remain visible even if data edges imply a path.
+    return edge_type in {"data", "ordering"}
+
+
+def _is_execution_edge(edge: dict[str, Any]) -> bool:
+    """Whether an edge participates in execution-cycle analysis."""
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
+    if not source or not target:
+        return False
+    if _is_synthetic_node_id(source) or _is_synthetic_node_id(target):
+        return False
+
+    edge_type = edge.get("data", {}).get("edgeType")
+    return edge_type in {"data", "control", "ordering"}
+
+
+def _is_reachable(
+    adjacency: dict[str, list[tuple[str, int]]],
+    start: str,
+    goal: str,
+    *,
+    skip_edge_idx: int | None = None,
+) -> bool:
+    """Return True if goal is reachable from start (optionally skipping one edge)."""
+    queue: deque[str] = deque([start])
+    visited: set[str] = {start}
+
+    while queue:
+        current = queue.popleft()
+        for next_node, edge_idx in adjacency.get(current, []):
+            if skip_edge_idx is not None and edge_idx == skip_edge_idx:
+                continue
+            if next_node == goal:
+                return True
+            if next_node in visited:
+                continue
+            visited.add(next_node)
+            queue.append(next_node)
+    return False
+
+
+def _has_alternate_path(
+    adjacency: dict[str, list[tuple[str, int]]],
+    source: str,
+    target: str,
+    *,
+    skip_edge_idx: int,
+) -> bool:
+    """Return True if target is reachable from source without the skipped edge."""
+    return _is_reachable(adjacency, source, target, skip_edge_idx=skip_edge_idx)
+
+
+def _find_back_edges(
+    edges: list[dict[str, Any]],
+    adjacency: dict[str, list[tuple[str, int]]],
+    execution: list[tuple[int, str, str]],
+) -> set[int]:
+    """Return edge indices that are back edges via DFS.
+
+    A back edge points to a node still on the DFS stack (GRAY), which means
+    it closes a cycle.  Forward and cross edges are left unmarked.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = defaultdict(int)  # WHITE
+    back: set[int] = set()
+
+    def dfs(node: str) -> None:
+        color[node] = GRAY
+        for next_node, edge_idx in adjacency.get(node, []):
+            if color[next_node] == GRAY:
+                back.add(edge_idx)
+            elif color[next_node] == WHITE:
+                dfs(next_node)
+        color[node] = BLACK
+
+    all_nodes: set[str] = set()
+    has_incoming: set[str] = set()
+    for _, src, tgt in execution:
+        all_nodes.add(src)
+        all_nodes.add(tgt)
+        has_incoming.add(tgt)
+
+    # Prefer start-edge targets as DFS roots so that back edges align with
+    # the graph's declared entrypoints rather than alphabetical order.
+    start_targets: set[str] = set()
+    for edge in edges:
+        if edge.get("data", {}).get("edgeType") == "start":
+            start_targets.add(str(edge["target"]))
+
+    roots = sorted(start_targets & all_nodes) or sorted(all_nodes - has_incoming) or sorted(all_nodes)
+    for root in roots:
+        if color[root] == WHITE:
+            dfs(root)
+
+    return back
+
+
+def _mark_feedback_hints(edges: list[dict[str, Any]], flat_graph: nx.DiGraph) -> None:
+    """Mark edges that should be routed as feedback loops.
+
+    Uses DFS back-edge detection so both data and control edges that close
+    a cycle get feedback routing.
+    """
+    execution: list[tuple[int, str, str]] = []
+    adjacency: dict[str, list[tuple[str, int]]] = defaultdict(list)
+
+    for idx, edge in enumerate(edges):
+        if not _is_execution_edge(edge):
+            continue
+        source = str(edge["source"])
+        target = str(edge["target"])
+        execution.append((idx, source, target))
+        adjacency[source].append((target, idx))
+
+    if not execution:
+        return
+
+    back_edge_indices = _find_back_edges(edges, adjacency, execution)
+    for idx in back_edge_indices:
+        edges[idx].setdefault("data", {})["forceFeedback"] = True
+
+
+def _prune_redundant_execution_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove edges implied by transitive execution dependencies.
+
+    Example:
+        If edges include A->B, B->C, C->A, and B->A, remove B->A because
+        B can already reach A via B->C->A.
+    """
+    # Dependency simplification now happens during graph construction for
+    # cycle-shadowed implicit edges. Visualization should render the exact
+    # Python-precomputed semantic edge set.
+    return edges
 
 
 def add_end_node_edges(
@@ -66,10 +223,29 @@ def add_end_node_edges(
                     "source": node_id,
                     "target": "__end__",
                     "animated": False,
-                    "style": {"stroke": "#10b981", "strokeWidth": 2},
+                    "style": {"stroke": "#10b981", "strokeWidth": 2, "strokeDasharray": "6 4"},
                     "data": {"edgeType": "end", "label": label},
                 }
             )
+
+
+def add_start_node_edges(
+    edges: list[dict[str, Any]],
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> None:
+    """Add edges from the synthetic START node to configured entrypoints."""
+    for target in get_start_targets(flat_graph, expansion_state):
+        edges.append(
+            {
+                "id": f"e___start___to_{target}",
+                "source": "__start__",
+                "target": target,
+                "animated": False,
+                "style": {"stroke": "#0ea5e9", "strokeWidth": 2},
+                "data": {"edgeType": "start"},
+            }
+        )
 
 
 def add_merged_output_edges(
@@ -112,7 +288,7 @@ def add_merged_output_edges(
                 "source": source,
                 "target": actual_target,
                 "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "style": {"stroke": "#64748b", "strokeWidth": 2, "strokeDasharray": "6 4"},
                 "data": {
                     "edgeType": edge_type,
                     "valueName": "",
@@ -226,6 +402,7 @@ def add_separate_output_edges(
     - DATA node -> consumer functions
     """
     output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+    param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
 
     # 1. Add edges from function nodes to their DATA nodes
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -284,7 +461,11 @@ def add_separate_output_edges(
                         continue
 
                 if is_source_container and is_source_expanded:
-                    actual_producer = output_to_producer.get(value_name, source)
+                    mapped_producer = output_to_producer.get(value_name)
+                    if mapped_producer and mapped_producer != source and is_descendant_of(mapped_producer, source, flat_graph):
+                        actual_producer = mapped_producer
+                    else:
+                        actual_producer = source
                     data_value = value_name
                     if actual_producer == source:
                         internal_producer = find_internal_producer_for_output(source, value_name, flat_graph, expansion_state)
@@ -306,13 +487,27 @@ def add_separate_output_edges(
                         continue
                     data_node_id = f"data_{source}_{value_name}"
 
-                edge_id = f"e_{data_node_id}_to_{target}"
+                actual_target = target
+                target_attrs = flat_graph.nodes.get(target, {})
+                is_target_container = target_attrs.get("node_type") == "GRAPH"
+                is_target_expanded = expansion_state.get(target, False)
+                if is_target_container and is_target_expanded:
+                    consumers = param_to_consumers.get(value_name, [])
+                    internal_consumers = [c for c in consumers if c != target and is_descendant_of(c, target, flat_graph)]
+                    if internal_consumers:
+                        actual_target = internal_consumers[0]
+                    else:
+                        entrypoints = find_container_entrypoints(target, flat_graph, expansion_state)
+                        if entrypoints:
+                            actual_target = entrypoints[0]
+
+                edge_id = f"e_{data_node_id}_to_{actual_target}"
 
                 edges.append(
                     {
                         "id": edge_id,
                         "source": data_node_id,
-                        "target": target,
+                        "target": actual_target,
                         "animated": False,
                         "style": {"stroke": "#64748b", "strokeWidth": 2},
                         "data": {
@@ -364,7 +559,7 @@ def add_separate_output_edges(
                 "source": source,
                 "target": actual_target,
                 "animated": False,
-                "style": {"stroke": "#64748b", "strokeWidth": 2},
+                "style": {"stroke": "#64748b", "strokeWidth": 2, "strokeDasharray": "6 4"},
                 "data": {
                     "edgeType": edge_type,
                     "valueName": "",
@@ -390,6 +585,7 @@ def compute_edges_for_state(
     show_types: bool,
     theme: str,
     separate_outputs: bool = False,
+    show_external_inputs: bool = True,
     input_groups: list[dict[str, Any]] | None = None,
     graph_output_visibility: dict[str, set[str]] | None = None,
     input_consumer_mode: str = "all",
@@ -397,50 +593,51 @@ def compute_edges_for_state(
     """Compute edges for a specific expansion state."""
     edges: list[dict[str, Any]] = []
 
-    param_to_consumers = build_param_to_consumer_map(
-        flat_graph,
-        expansion_state,
-        mode=input_consumer_mode,
-    )
+    if show_external_inputs:
+        param_to_consumers = build_param_to_consumer_map(
+            flat_graph,
+            expansion_state,
+            mode=input_consumer_mode,
+        )
 
-    bound_params = set(input_spec.get("bound", {}).keys())
-    if input_groups is None:
-        input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
+        bound_params = set(input_spec.get("bound", {}).keys())
+        if input_groups is None:
+            input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
 
-    # 1. Add edges from INPUT/INPUT_GROUP nodes to their consumers
-    for group in input_groups:
-        params = group["params"]
-        actual_targets = get_group_targets(params, flat_graph, param_to_consumers)
-        if not actual_targets:
-            continue
+        # 1. Add edges from INPUT/INPUT_GROUP nodes to their consumers
+        for group in input_groups:
+            params = group["params"]
+            actual_targets = get_group_targets(params, flat_graph, param_to_consumers)
+            if not actual_targets:
+                continue
 
-        if len(params) == 1:
-            param = params[0]
-            input_node_id = f"input_{param}"
-            for actual_target in actual_targets:
-                edges.append(
-                    {
-                        "id": f"e_{input_node_id}_to_{actual_target}",
-                        "source": input_node_id,
-                        "target": actual_target,
-                        "animated": False,
-                        "style": {"stroke": "#64748b", "strokeWidth": 2},
-                        "data": {"edgeType": "input"},
-                    }
-                )
-        else:
-            group_id = f"input_group_{'_'.join(params)}"
-            for actual_target in actual_targets:
-                edges.append(
-                    {
-                        "id": f"e_{group_id}_{actual_target}",
-                        "source": group_id,
-                        "target": actual_target,
-                        "animated": False,
-                        "style": {"stroke": "#64748b", "strokeWidth": 2},
-                        "data": {"edgeType": "input"},
-                    }
-                )
+            if len(params) == 1:
+                param = params[0]
+                input_node_id = f"input_{param}"
+                for actual_target in actual_targets:
+                    edges.append(
+                        {
+                            "id": f"e_{input_node_id}_to_{actual_target}",
+                            "source": input_node_id,
+                            "target": actual_target,
+                            "animated": False,
+                            "style": {"stroke": "#64748b", "strokeWidth": 2},
+                            "data": {"edgeType": "input"},
+                        }
+                    )
+            else:
+                group_id = f"input_group_{'_'.join(sorted(params))}"
+                for actual_target in actual_targets:
+                    edges.append(
+                        {
+                            "id": f"e_{group_id}_{actual_target}",
+                            "source": group_id,
+                            "target": actual_target,
+                            "animated": False,
+                            "style": {"stroke": "#64748b", "strokeWidth": 2},
+                            "data": {"edgeType": "input"},
+                        }
+                    )
 
     # 2. Add edges between function nodes
     if separate_outputs:
@@ -448,7 +645,11 @@ def compute_edges_for_state(
     else:
         add_merged_output_edges(edges, flat_graph, expansion_state)
 
-    # 3. Add edges to END node
+    # 3. Add edges from START node
+    add_start_node_edges(edges, flat_graph, expansion_state)
+
+    # 4. Add edges to END node
     add_end_node_edges(edges, flat_graph, expansion_state)
 
-    return edges
+    _mark_feedback_hints(edges, flat_graph)
+    return _prune_redundant_execution_edges(edges)

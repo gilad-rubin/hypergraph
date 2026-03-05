@@ -247,17 +247,12 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
         validation_values = normalized_values
         if resume_checkpoint is not None:
-            if checkpoint is not None and normalized_values:
-                # Fork with runtime overrides: validate only graph inputs from
-                # checkpoint to avoid compute+inject conflicts on restored internals.
-                validation_values = dict(normalized_values)
-                for input_name in graph.inputs.all:
-                    if input_name not in validation_values and input_name in resume_checkpoint.values:
-                        validation_values[input_name] = resume_checkpoint.values[input_name]
-            else:
-                # Resume path: validate against full restored state so completed
-                # upstream nodes can bypass original entry inputs.
-                validation_values = {**resume_checkpoint.values, **normalized_values}
+            # Validate only canonical graph inputs from checkpoint state.
+            # Internal produced values are not user inputs in the canonical model.
+            validation_values = dict(normalized_values)
+            for input_name in graph.inputs.all:
+                if input_name not in validation_values and input_name in resume_checkpoint.values:
+                    validation_values[input_name] = resume_checkpoint.values[input_name]
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:
@@ -332,7 +327,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             )
             # Flush buffered steps and mark run completed
             if sync_cp is not None:
-                _flush_and_complete(sync_cp, workflow_id, step_buffer, collector, total_duration_ms)
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+                _, _step_offset = checkpoint_offsets(resume_checkpoint)
+                _flush_and_complete(sync_cp, workflow_id, step_buffer, collector, total_duration_ms, step_offset=_step_offset)
             return result
         except Exception as e:
             error = e
@@ -353,7 +351,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
             # Flush buffered steps and mark run failed
             if sync_cp is not None:
-                _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time)
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
+
+                _, _step_off = _cp_offsets(resume_checkpoint)
+                _flush_and_fail(sync_cp, workflow_id, step_buffer, collector, start_time, step_offset=_step_off)
 
             if error_handling == "raise":
                 raise error from None
@@ -553,13 +554,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 self._shutdown_dispatcher_sync(dispatcher)
 
 
-def _flush_and_complete(sync_cp: Any, workflow_id: str, step_buffer: list, collector: RunLogCollector, total_duration_ms: float) -> None:
+def _flush_and_complete(
+    sync_cp: Any, workflow_id: str, step_buffer: list, collector: RunLogCollector, total_duration_ms: float, *, step_offset: int = 0
+) -> None:
     """Flush buffered steps and mark run completed."""
     for record in step_buffer:
         sync_cp.save_step_sync(record)
     from hypergraph.checkpointers.types import WorkflowStatus
 
-    step_count = len(collector._records)
+    step_count = step_offset + len(collector._records)
     error_count = sum(1 for r in collector._records if r.status == "failed")
     sync_cp.update_run_status_sync(
         workflow_id,
@@ -570,14 +573,16 @@ def _flush_and_complete(sync_cp: Any, workflow_id: str, step_buffer: list, colle
     )
 
 
-def _flush_and_fail(sync_cp: Any, workflow_id: str, step_buffer: list, collector: RunLogCollector, start_time: float) -> None:
+def _flush_and_fail(
+    sync_cp: Any, workflow_id: str, step_buffer: list, collector: RunLogCollector, start_time: float, *, step_offset: int = 0
+) -> None:
     """Flush buffered steps and mark run failed."""
     for record in step_buffer:
         sync_cp.save_step_sync(record)
     from hypergraph.checkpointers.types import WorkflowStatus as _WS
 
     total_ms = (time.time() - start_time) * 1000
-    fail_count = len(collector._records)
+    fail_count = step_offset + len(collector._records)
     err_count = sum(1 for r in collector._records if r.status == "failed")
     sync_cp.update_run_status_sync(
         workflow_id,

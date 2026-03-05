@@ -92,33 +92,9 @@ print(g.inputs.optional)  # ('scale',)
 
 ### `entrypoints: dict[str, tuple[str, ...]]`
 
-For cyclic graphs, entrypoints group cycle parameters by the node where execution can start. Each key is a node name, and the value is a tuple of parameters needed to enter the cycle at that node.
+Reserved for compatibility. For configured graphs, this field is `{}`.
 
-**Pick ONE entrypoint per cycle** — provide the parameters it needs, and the runner starts execution from there.
-
-```python
-@node(output_name="messages", emit="turn_done")
-def accumulate(messages: list, response: str) -> list:
-    return messages + [{"role": "assistant", "content": response}]
-
-@node(output_name="response")
-def generate(messages: list) -> str:
-    return llm.chat(messages)
-
-@route(targets=["generate", END], wait_for="turn_done")
-def should_continue(messages: list) -> str:
-    return END if len(messages) >= 10 else "generate"
-
-g = Graph([generate, accumulate, should_continue])
-
-print(g.inputs.entrypoints)
-# {'accumulate': ('messages',), 'generate': ('messages',)}
-# Pick ONE: provide messages to start at either node
-```
-
-For DAGs (no cycles), `entrypoints` is an empty dict `{}`.
-
-**Ambiguity detection**: If your provided values match multiple entrypoints in the same cycle, the runner raises `ValueError`. Use `entrypoint=` on `runner.run()` to disambiguate.
+Cyclic graphs must be constructed with graph-level `entrypoint` configuration (`Graph(..., entrypoint=...)`). Cycle bootstrap parameters are represented directly in canonical `required`/`optional`.
 
 ### `bound: dict[str, Any]`
 
@@ -145,7 +121,6 @@ Categorization happens in two phases:
 |-----------|----------|
 | No incoming edge, no default, not bound | **required** |
 | No incoming edge, has default OR is bound | **optional** |
-| Has incoming edge from cycle | **entrypoint** (grouped by node) |
 | Has incoming edge from another node | Not in InputSpec |
 | Is bound via `bind()` | In `bound` dict, moves from required to optional |
 | Node excluded by `with_entrypoint()` or `select()` | Not in InputSpec |
@@ -168,18 +143,19 @@ print(g.inputs.required)  # ('x',) - only x
 # 'doubled' is not in inputs - it comes from the double node
 ```
 
-### Cycles Create Entry Points
-
-When parameters participate in a cycle, they become entrypoint parameters grouped by which node consumes them:
+### Cycles Require Entrypoint At Construction
 
 ```python
 @node(output_name="state")
 def update(state: dict, input: int) -> dict:
     return {**state, "value": input}
 
-g = Graph([update])
-print(g.inputs.required)      # ('input',)
-print(g.inputs.entrypoints)  # {'update': ('state',)}
+# Invalid: cycle with no constructor entrypoint
+# Graph([update])  # GraphConfigError
+
+g = Graph([update], entrypoint="update")
+print(g.inputs.required)    # ('state', 'input')
+print(g.inputs.entrypoints) # {}
 ```
 
 ### Scope Narrowing (Entrypoint and Select)
@@ -227,7 +203,7 @@ spec = g.inputs  # Returns InputSpec
 
 print(spec.required)      # tuple of required param names
 print(spec.optional)      # tuple of optional param names
-print(spec.entrypoints)  # dict of cycle entrypoints
+print(spec.entrypoints)  # {} (reserved for compatibility)
 print(spec.bound)         # dict of bound values
 ```
 
@@ -237,7 +213,7 @@ Use the `all` property to get all input names:
 
 ```python
 spec = g.inputs
-print(spec.all)  # ('x', 'offset') - required + optional + entrypoint params
+print(spec.all)  # ('x',) - required + optional
 ```
 
 ### Iteration
@@ -251,6 +227,28 @@ for param in g.inputs.required:
 for param in g.inputs.optional:
     print(f"Optional: {param}")
 ```
+
+## DAG Slicing Matrix
+
+```python
+from hypergraph import Graph, node
+
+@node(output_name="a")
+def step_a(x: int) -> int: return x * 2
+
+@node(output_name="b")
+def step_b(a: int, y: int) -> int: return a + y
+
+@node(output_name="c")
+def step_c(b: int, z: int = 10) -> int: return b * z
+
+base = Graph([step_a, step_b, step_c])
+```
+
+- `base`: `required=('x', 'y')`, `optional=('z',)`
+- `base.with_entrypoint("step_b")`: `required=('a', 'y')`, `optional=('z',)`
+- `base.select("b")`: `required=('x', 'y')`, `optional=()`
+- `base.with_entrypoint("step_b").select("b")`: `required=('a', 'y')`, `optional=()`
 
 ## Examples
 
@@ -292,23 +290,20 @@ print(fully_bound.inputs.required)  # ()
 print(fully_bound.inputs.bound)     # {'top_k': 10, 'text': 'hello'}
 ```
 
-### Graph with Cycles (Entry Points)
+### Graph with Cycles
 
 ```python
 @node(output_name="messages")
 def chat(messages: list[str], user_input: str) -> list[str]:
     return messages + [user_input]
 
-g = Graph([chat])
+# Invalid (cycle without constructor entrypoint):
+# Graph([chat])
 
-print(g.inputs.required)      # ('user_input',)
-print(g.inputs.entrypoints)  # {'chat': ('messages',)}
+g = Graph([chat], entrypoint="chat")
+print(g.inputs.required)      # ('messages', 'user_input')
+print(g.inputs.entrypoints)   # {}
 ```
-
-The `messages` parameter appears as an entrypoint because:
-1. `chat` outputs `messages`
-2. `chat` takes `messages` as input
-3. This creates a cycle — provide `messages` to start at the `chat` node
 
 ### Multiple Nodes Sharing a Parameter
 
@@ -344,45 +339,22 @@ Graph([a, b])
 
 ## Design Decisions
 
-### bind() accepts outputs — intentional bypass
+### Canonical Scope
 
-`bind()` accepts both input parameter names and node output names. When you bind an output, you're providing a value that the producing node *would* have computed. If the producer can't run (because its own inputs are missing), your bound value is used instead.
+InputSpec is computed from graph-level scope only:
 
-This enables "run from anywhere" — provide an intermediate value and skip all upstream nodes:
+- `entrypoint` / `with_entrypoint(...)`
+- `select(...)`
+- `bind(...)`
 
-```python
-# embed(text) → embedding → retrieve(embedding) → docs
-graph = Graph([embed, retrieve])
+Runtime scope switching (`run(..., select=...)`, `run(..., entrypoint=...)`) is not supported.
 
-# Skip embed entirely — start from embedding
-result = runner.run(graph, {"embedding": [1, 2, 3]})
-```
-
-Emit-only outputs (ordering signals from `emit=`) cannot be bound — they are internal coordination, not data.
-
-### Value resolution order
+### Value Resolution Order
 
 When multiple sources provide the same value, the runner uses: **EDGE > PROVIDED > BOUND > DEFAULT**
 
-- A node that CAN run WILL run (absent a compute/inject conflict), and its output overwrites any provided/bound value
-- Hard conflict rule: **either compute or inject, never both for the same node**
-  - Injecting a node's outputs while also making that node runnable raises `ValueError` unconditionally
-  - Partial injection of a multi-output producer is rejected when downstream still needs missing outputs
-- For non-conflicting internal overrides, `run(..., on_internal_override="ignore"|"warn"|"error")` controls policy (default: `"warn"`)
-  - `map(...)` inherits the same policy and applies it per iteration
-- Bound values bootstrap cycles: on the first iteration the bound value is used, then the cycle produces subsequent values
-
-### Cycle entrypoints exclude certain parameters
-
-Entry point computation intentionally excludes:
-
-- **Bound parameters**: Already available, not needed from the user
-- **Interrupt-produced parameters**: Produced by InterruptNode at runtime, not user-provided
-- **Defaulted parameters**: Have fallback values, so the node can start without them
-
-### Bypass preserves cycle semantics
-
-When you provide a node's output, that node may be "bypassed" (its exclusive inputs aren't required). But cycle entrypoint parameters are excluded from bypass checks — providing a cycle entrypoint value means *bootstrapping the cycle*, not bypassing the producer node.
+- Internal edge-produced parameters supplied at runtime are rejected deterministically (`ValueError`).
+- `on_internal_override` is retained for compatibility, but does not allow internal edge-produced injections.
 
 ## Complete Example
 
@@ -402,24 +374,23 @@ def search(embedding: list[float], top_k: int = 5, threshold: float = 0.8) -> li
 
 @node(output_name="history")
 def update_history(history: list[str], results: list[str]) -> list[str]:
-    """Entry point input: history (forms cycle)"""
     return history + results
 
-# Build graph
-g = Graph([embed, search, update_history])
+# Build graph (cycle -> constructor entrypoint required)
+g = Graph([embed, search, update_history], entrypoint="update_history")
 
 # Inspect InputSpec
-print("Required:", g.inputs.required)        # ('text',)
+print("Required:", g.inputs.required)        # ('text', 'history')
 print("Optional:", g.inputs.optional)        # ('top_k', 'threshold')
-print("Entry points:", g.inputs.entrypoints)  # {'update_history': ('history',)}
+print("Entry points:", g.inputs.entrypoints)  # {}
 print("Bound:", g.inputs.bound)              # {}
-print("All:", g.inputs.all)                  # ('text', 'top_k', 'threshold', 'history')
+print("All:", g.inputs.all)                  # ('text', 'history', 'top_k', 'threshold')
 
 # Bind some values
 configured = g.bind(top_k=10, threshold=0.9)
 print("\nAfter bind:")
-print("Required:", configured.inputs.required)        # ('text',)
+print("Required:", configured.inputs.required)        # ('text', 'history')
 print("Optional:", configured.inputs.optional)        # ('top_k', 'threshold') - still have fallback
-print("Entry points:", configured.inputs.entrypoints)  # {'update_history': ('history',)}
+print("Entry points:", configured.inputs.entrypoints)  # {}
 print("Bound:", configured.inputs.bound)              # {'top_k': 10, 'threshold': 0.9}
 ```

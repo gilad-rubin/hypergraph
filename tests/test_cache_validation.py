@@ -20,7 +20,7 @@ class TestCacheValidationOnGates:
             return END
 
         # Should build without error
-        graph = Graph([producer, gate])
+        graph = Graph([producer, gate], entrypoint="producer")
         assert graph is not None
 
 
