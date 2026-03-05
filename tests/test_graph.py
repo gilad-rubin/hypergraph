@@ -2308,3 +2308,24 @@ class TestSharedParams:
             entrypoint="add_msg",
         )
         assert "messages" in g.inputs.required
+
+    def test_shared_accepts_single_string(self):
+        """shared='x' is normalized to one shared param (not split chars)."""
+
+        @node(output_name="messages")
+        def add_msg(messages: list, text: str) -> list:
+            return [*messages, text]
+
+        @node(output_name="response")
+        def respond(messages: list) -> str:
+            return "ok"
+
+        g = Graph(
+            [add_msg, respond],
+            shared="messages",
+            edges=[(add_msg, respond)],
+            entrypoint=add_msg,
+        )
+        edge_data = g.nx_graph.edges["add_msg", "respond"]
+        assert "messages" not in edge_data.get("value_names", [])
+        assert "messages" in g.inputs.required
