@@ -323,3 +323,23 @@ class TestValidateMapCompatible:
         graph = Graph([counter], entrypoint="counter")
         # Should not raise (Phase 2 will add interrupt checks)
         validate_map_compatible(graph)
+
+
+class TestRuntimeOverrideRejection:
+    """Runtime entrypoint/select overrides are rejected with clear messages."""
+
+    def test_runtime_entrypoint_rejected(self):
+        """Runtime entrypoint= raises ValueError pointing to graph config."""
+        from hypergraph.runners._shared.validation import precompute_input_validation
+
+        graph = Graph([double])
+        with pytest.raises(ValueError, match="Runtime entrypoint overrides are no longer supported"):
+            precompute_input_validation(graph, entrypoint="double")
+
+    def test_runtime_select_rejected(self):
+        """Runtime select= override raises ValueError pointing to graph.select()."""
+        from hypergraph.runners._shared.validation import precompute_input_validation
+
+        graph = Graph([double])
+        with pytest.raises(ValueError, match="Runtime select overrides are no longer supported"):
+            precompute_input_validation(graph, selected=("doubled",))

@@ -2236,3 +2236,75 @@ class TestAddNodes:
         g.add_nodes(step2)
 
         assert set(g.nodes.keys()) == original_nodes
+
+
+class TestSharedParams:
+    """Tests for Graph(shared=...) parameter."""
+
+    def test_shared_excludes_from_auto_wiring(self):
+        """Shared params don't create data edges."""
+
+        @node(output_name="messages")
+        def add_msg(messages: list, text: str) -> list:
+            return [*messages, text]
+
+        @node(output_name="response")
+        def respond(messages: list) -> str:
+            return "ok"
+
+        g = Graph(
+            [add_msg, respond],
+            shared=["messages"],
+            edges=[(add_msg, respond)],
+            entrypoint="add_msg",
+        )
+        # messages is shared — no data edge for it, only ordering
+        edge_data = g.nx_graph.edges["add_msg", "respond"]
+        assert "messages" not in edge_data.get("value_names", [])
+
+    def test_shared_plus_explicit_does_not_drop_inferred(self):
+        """Explicit edges in shared mode union with auto-inferred data edges."""
+
+        @node(output_name=("a", "b", "s"))
+        def producer(seed: int) -> tuple[int, int, int]:
+            return seed, seed + 1, seed + 2
+
+        @node(output_name="out")
+        def consumer(a: int, b: int) -> int:
+            return a + b
+
+        # shared=["s"] excludes s. Explicit edge for "a" should NOT drop "b".
+        g = Graph([producer, consumer], shared=["s"], edges=[(producer, consumer, "a")])
+        assert g.inputs.required == ("seed",)
+        edge_vals = g.nx_graph.edges["producer", "consumer"]["value_names"]
+        assert "a" in edge_vals
+        assert "b" in edge_vals
+
+    def test_shared_unknown_param_rejected(self):
+        """Shared params must be produced by at least one node."""
+
+        @node(output_name="x")
+        def step(seed: int) -> int:
+            return seed
+
+        with pytest.raises(GraphConfigError, match="shared params"):
+            Graph([step], shared=["nonexistent"])
+
+    def test_shared_required_at_run_time(self):
+        """Shared params appear in required inputs."""
+
+        @node(output_name="messages")
+        def add_msg(messages: list, text: str) -> list:
+            return [*messages, text]
+
+        @node(output_name="response")
+        def respond(messages: list) -> str:
+            return "ok"
+
+        g = Graph(
+            [add_msg, respond],
+            shared=["messages"],
+            edges=[(add_msg, respond)],
+            entrypoint="add_msg",
+        )
+        assert "messages" in g.inputs.required

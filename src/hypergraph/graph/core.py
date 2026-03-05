@@ -519,8 +519,15 @@ class Graph:
             else:
                 ordering_pairs.add((src, dst))
 
-        # Add data edges (dedup value_names per pair)
-        G.add_edges_from((src, dst, {"edge_type": "data", "value_names": list(dict.fromkeys(names))}) for (src, dst), names in data_edges.items())
+        # Add data edges (dedup value_names per pair, union with existing)
+        for (src, dst), names in data_edges.items():
+            deduped = list(dict.fromkeys(names))
+            if G.has_edge(src, dst) and G[src][dst].get("edge_type") == "data":
+                existing = G[src][dst].get("value_names", [])
+                merged = list(dict.fromkeys(existing + deduped))
+                G[src][dst]["value_names"] = merged
+            else:
+                G.add_edge(src, dst, edge_type="data", value_names=deduped)
 
         # Add ordering-only edges (skip if data edge already exists)
         for src, dst in ordering_pairs:
