@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.gate import END as _END
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -155,5 +156,21 @@ def run_superstep_sync(
             duration_ms=node_duration,
             cached=node_cached,
         )
+        # Consume routing decisions that activated this node.
+        # Once a gated node executes, the decision is spent — the gate
+        # must re-execute and re-route before this node fires again.
+        for gate_name in graph.controlled_by.get(node.name, []):
+            decision = new_state.routing_decisions.get(gate_name)
+            if decision is not None and _decision_activates_node(node.name, decision):
+                del new_state.routing_decisions[gate_name]
 
     return new_state
+
+
+def _decision_activates_node(node_name: str, decision: Any) -> bool:
+    """Check if a routing decision activates a specific node."""
+    if decision is _END or decision is None:
+        return False
+    if isinstance(decision, list):
+        return node_name in decision
+    return decision == node_name

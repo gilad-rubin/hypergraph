@@ -343,8 +343,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 for record in step_buffer:
                     await checkpointer.save_step(record)
                 from hypergraph.checkpointers.types import WorkflowStatus
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
-                step_count = len(collector._records)
+                _, step_offset = checkpoint_offsets(resume_checkpoint)
+                step_count = step_offset + len(collector._records)
                 error_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,
@@ -394,7 +396,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 for record in step_buffer:
                     await checkpointer.save_step(record)
                 total_duration_ms_fail = (time.time() - start_time) * 1000
-                fail_count = len(collector._records)
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets as _cp_offsets
+
+                _, _step_offset = _cp_offsets(resume_checkpoint)
+                fail_count = _step_offset + len(collector._records)
                 err_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,

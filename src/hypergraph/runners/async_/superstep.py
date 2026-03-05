@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
+from hypergraph.nodes.gate import END as _END
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -23,6 +24,16 @@ from hypergraph.runners._shared.event_helpers import (
 )
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
 from hypergraph.runners._shared.types import GraphState, NodeExecution
+
+
+def _decision_activates(node_name: str, decision: Any) -> bool:
+    """Check if a routing decision activates a specific node."""
+    if decision is _END or decision is None:
+        return False
+    if isinstance(decision, list):
+        return node_name in decision
+    return decision == node_name
+
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
@@ -98,6 +109,12 @@ async def run_superstep_async(
     ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
+
+        # Stash provided_values so the execute_node closure can forward
+        # them to the interrupt executor (distinguishes fresh resume
+        # values from stale cycle values in checkpointed state).
+        if hasattr(execute_node, "provided_values"):
+            execute_node.provided_values[0] = provided_values  # type: ignore[attr-defined]
         input_versions = {param: state.get_version(param) for param in node.inputs}
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
@@ -182,6 +199,13 @@ async def run_superstep_async(
             duration_ms=duration_ms,
             cached=cached,
         )
+        # Consume routing decisions that activated this node.
+        # Once a gated node executes, the decision is spent — the gate
+        # must re-execute and re-route before this node fires again.
+        for gate_name in graph.controlled_by.get(node.name, []):
+            decision = new_state.routing_decisions.get(gate_name)
+            if decision is not None and _decision_activates(node.name, decision):
+                del new_state.routing_decisions[gate_name]
 
     if first_error is not None:
         # PauseExecution (BaseException) must propagate unwrapped for the

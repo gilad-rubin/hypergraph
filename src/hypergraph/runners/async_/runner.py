@@ -158,7 +158,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         # Checkpointer setup — deterministic node ordering for index assignment
         checkpointer = self._checkpointer_instance
         has_checkpointer = checkpointer is not None and workflow_id is not None
-        step_counter = 0
+        # When resuming, offset counters so new steps don't overwrite prior ones
+        from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+        superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
         save_tasks: list[asyncio.Task[None]] = []
 
@@ -210,6 +213,26 @@ class AsyncRunner(AsyncRunnerTemplate):
                         run_id=run_id,
                         run_span_id=run_span_id,
                     )
+                except PauseExecution:
+                    # Save step records before propagating the pause.
+                    # The interrupt node gets a "paused" status record.
+                    if has_checkpointer:
+                        step_counter = await self._save_superstep_records(
+                            checkpointer,
+                            workflow_id,
+                            superstep_idx + superstep_offset,
+                            state,
+                            ready_node_names,
+                            prev_input_versions,
+                            node_order,
+                            step_counter,
+                            step_buffer,
+                            save_tasks,
+                            graph,
+                            superstep_error=None,
+                            is_pause=True,
+                        )
+                    raise
                 except ExecutionError as e:
                     superstep_error = e
                     state = e.partial_state  # type: ignore[assignment]
@@ -221,7 +244,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                     step_counter = await self._save_superstep_records(
                         checkpointer,
                         workflow_id,
-                        superstep_idx,
+                        superstep_idx + superstep_offset,
                         state,
                         ready_node_names,
                         prev_input_versions,
@@ -291,6 +314,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         save_tasks: list[asyncio.Task[None]],
         graph: Graph,
         superstep_error: BaseException | None = None,
+        is_pause: bool = False,
     ) -> int:
         """Build StepRecords and dispatch to the appropriate durability mode."""
         from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
@@ -305,6 +329,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             step_counter=step_counter,
             graph=graph,
             superstep_error=superstep_error,
+            is_pause=is_pause,
         )
 
         durability = checkpointer.policy.durability
@@ -333,6 +358,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         call so that nested graph runs know their parent span.
         """
         current_span_id: list[str | None] = [None]
+        provided_values_holder: list[dict[str, Any]] = [{}]
 
         async def execute_node(
             node: HyperNode,
@@ -358,6 +384,16 @@ class AsyncRunner(AsyncRunnerTemplate):
                 )
                 return result
 
+            # For InterruptNodeExecutor, pass provided_values so it can
+            # distinguish fresh resume values from stale cycle values.
+            if isinstance(executor, AsyncInterruptNodeExecutor):
+                return await executor(
+                    node,
+                    state,
+                    inputs,
+                    provided_values=provided_values_holder[0],
+                )
+
             return await executor(node, state, inputs)
 
         def consume_last_inner_logs() -> tuple:
@@ -367,8 +403,10 @@ class AsyncRunner(AsyncRunnerTemplate):
                 return graph_executor.consume_last_inner_logs()
             return ()
 
-        # Expose holders so superstep can set parent span and read nested logs
+        # Expose holders so superstep can set parent span, provided_values,
+        # and read nested logs
         execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
+        execute_node.provided_values = provided_values_holder  # type: ignore[attr-defined]
         execute_node.consume_last_inner_logs = consume_last_inner_logs  # type: ignore[attr-defined]
         return execute_node
 

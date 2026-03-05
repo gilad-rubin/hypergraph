@@ -130,7 +130,10 @@ class SyncRunner(SyncRunnerTemplate):
         # Checkpointer setup — template already validated the protocol,
         # so we just check if checkpointing is active for this run
         sync_cp = self._checkpointer_instance if (self._checkpointer_instance and workflow_id) else None
-        step_counter = 0
+        # When resuming, offset counters so new steps don't overwrite prior ones
+        from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+        superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
         for superstep_idx in range(max_iterations):
@@ -188,7 +191,7 @@ class SyncRunner(SyncRunnerTemplate):
                 step_counter = _save_superstep_sync(
                     sync_cp,
                     workflow_id,
-                    superstep_idx,
+                    superstep_idx + superstep_offset,
                     state,
                     ready_node_names,
                     prev_input_versions,
