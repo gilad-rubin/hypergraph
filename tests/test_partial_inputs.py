@@ -388,13 +388,13 @@ class TestImmutability:
         assert g3.entrypoints_config is None
 
 
-# === Runtime select narrows validation ===
+# === Runtime select rejected ===
 
 
-class TestRuntimeSelectNarrowsValidation:
+class TestRuntimeSelectRejected:
     """Runtime select overrides are rejected; use graph.select() instead."""
 
-    def test_runtime_select_narrows_validation(self):
+    def test_runtime_select_is_rejected(self):
         """runner.run(select=...) is no longer supported."""
 
         @node(output_name="a_val")

@@ -165,4 +165,5 @@ class MockSlackServer:
         self._server.serve_forever()
 
     def close(self) -> None:
+        self._server.shutdown()
         self._server.server_close()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import uuid
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -184,7 +184,7 @@ def get_ready_nodes(
             When set (from with_entrypoint), nodes outside this set are never
             scheduled even if their inputs are available.
         startup_predecessors: Optional map of node -> startup predecessors in
-            the active scope. If omitted, no startup predecessor gating applies.
+            the active scope. If omitted, computed from the graph.
 
     Returns:
         List of nodes ready to execute
@@ -345,7 +345,7 @@ def _is_node_ready(
         return False
 
     # Startup is predecessor-driven in both implicit and explicit modes.
-    if not _startup_predecessors_satisfied(node, graph, state, startup_predecessors=startup_predecessors):
+    if not _startup_predecessors_satisfied(node, graph, state, activated_nodes=activated_nodes, startup_predecessors=startup_predecessors):
         return False
 
     # Check if all inputs are available
@@ -365,9 +365,15 @@ def _startup_predecessors_satisfied(
     graph: Graph,
     state: GraphState,
     *,
+    activated_nodes: set[str] | None = None,
     startup_predecessors: dict[str, frozenset[str]] | None = None,
 ) -> bool:
-    """Whether startup predecessor constraints allow node execution."""
+    """Whether startup predecessor constraints allow node execution.
+
+    Only gates on predecessors that are activated (reachable via routing).
+    Non-activated predecessors (e.g., on the non-selected branch of a route)
+    are excluded to prevent deadlocks in mutually exclusive routes.
+    """
     predecessors = (startup_predecessors or {}).get(node.name, frozenset())
     if not predecessors:
         return True
@@ -376,7 +382,9 @@ def _startup_predecessors_satisfied(
     if node.name in entrypoints and node.name not in state.node_executions:
         return True
 
-    return all(pred in state.node_executions for pred in predecessors)
+    # Only require predecessors that are activated or already executed
+    relevant = frozenset(pred for pred in predecessors if (activated_nodes is not None and pred in activated_nodes) or pred in state.node_executions)
+    return all(pred in state.node_executions for pred in relevant)
 
 
 def _is_controlled_by_gate(node: HyperNode, graph: Graph) -> bool:
@@ -548,10 +556,10 @@ def _latest_upstream_output_version(
 
         produced_version = execution.output_versions.get(param)
         if produced_version is None:
-            # Backward compatibility for older execution records that do not
-            # capture output_versions yet.
             if param in execution.outputs:
-                produced_version = state.get_version(param)
+                # Backward compat: treat missing output_versions as definitely
+                # stale so the consumer re-executes after checkpoint restore.
+                produced_version = state.get_version(param) + 1
             else:
                 continue
 
@@ -769,7 +777,7 @@ def initialize_state_with_checkpoint(
             output_versions[out_name] = replay_versions[out_name]
         execution = state.node_executions.get(step.node_name)
         if execution is not None:
-            execution.output_versions = output_versions
+            state.node_executions[step.node_name] = replace(execution, output_versions=output_versions)
 
     return state
 

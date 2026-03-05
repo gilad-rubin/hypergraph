@@ -99,7 +99,7 @@ def compute_input_spec(
 
     for param in _unique_params(active_nodes):
         if param in cycle_seed_params:
-            if param in bound or _any_node_has_default(param, active_nodes):
+            if param in bound:
                 optional.append(param)
             else:
                 required.append(param)

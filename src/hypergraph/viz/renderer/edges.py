@@ -626,7 +626,7 @@ def compute_edges_for_state(
                         }
                     )
             else:
-                group_id = f"input_group_{'_'.join(params)}"
+                group_id = f"input_group_{'_'.join(sorted(params))}"
                 for actual_target in actual_targets:
                     edges.append(
                         {

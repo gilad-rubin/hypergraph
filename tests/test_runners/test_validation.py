@@ -145,7 +145,7 @@ class TestInternalOverrideValidation:
                 on_internal_override="ignore",
             )
 
-    def test_full_internal_injection_allowed_with_ignore(self):
+    def test_full_internal_injection_rejected_with_ignore(self):
         """Internal output injection is always rejected (deterministic error)."""
         graph = self._make_split_graph()
         with pytest.raises(ValueError, match="internal parameters"):

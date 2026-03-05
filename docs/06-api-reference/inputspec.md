@@ -213,7 +213,7 @@ Use the `all` property to get all input names:
 
 ```python
 spec = g.inputs
-print(spec.all)  # ('x', 'offset') - required + optional
+print(spec.all)  # ('x',) - required + optional
 ```
 
 ### Iteration

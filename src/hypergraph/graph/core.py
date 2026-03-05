@@ -987,7 +987,12 @@ class Graph:
             return self
 
         all_nodes = list(self._nodes.values()) + list(nodes)
-        new_graph = Graph(all_nodes, name=self.name, strict_types=self._strict_types)
+        new_graph = Graph(
+            all_nodes,
+            name=self.name,
+            strict_types=self._strict_types,
+            shared=sorted(self._shared) if self._shared else None,
+        )
 
         if self._bound:
             valid_names = set(new_graph.inputs.all) | set(new_graph.outputs)
