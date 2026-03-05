@@ -111,6 +111,7 @@ def render_graph(
             "output_to_producer": output_to_producer_deepest,
             "param_to_consumer": param_to_consumer_deepest,
             "node_to_parent": node_to_parent,
+            "shared": flat_graph.graph.get("shared", []),
             "edgesByState": edges_by_state,
             "nodesByState": nodes_by_state,
             "expandableNodes": expandable_nodes,

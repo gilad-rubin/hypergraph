@@ -737,6 +737,12 @@ def to_mermaid(
 
     lines: list[str] = [f"flowchart {direction}"]
     node_class_map: dict[str, str] = {}
+
+    # --- Shared state annotation ---
+    shared_params = flat_graph.graph.get("shared", [])
+    if shared_params:
+        lines.append(f"    %% shared state: {', '.join(shared_params)}")
+
     start_targets = get_start_targets(flat_graph, expansion_state)
 
     # --- START node (emit early so layout keeps START visually above flow) ---

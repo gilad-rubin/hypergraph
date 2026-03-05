@@ -36,7 +36,7 @@ inference applies **producer shadow-elimination**:
 
 ## Constructor
 
-### `Graph(nodes, *, edges=None, name=None, strict_types=False)`
+### `Graph(nodes, *, edges=None, name=None, strict_types=False, shared=None)`
 
 Create a graph from nodes.
 
@@ -59,9 +59,10 @@ g = Graph([process], strict_types=True)
 
 **Args:**
 - `nodes` (list[HyperNode]): List of nodes to include in the graph
-- `edges` (list[tuple] | None): Explicit edge declarations. Disables auto-inference when provided. See [Explicit Edges](#explicit-edges) below.
+- `edges` (list[tuple] | None): Explicit edge declarations. When `shared` is set, explicit edges are additive (ordering hints on top of auto-inferred edges). Otherwise, disables auto-inference when provided. See [Explicit Edges](#explicit-edges) below.
 - `name` (str | None): Optional graph name. Required if using `as_node()` for composition.
 - `strict_types` (bool): If True, validate type compatibility between connected nodes at construction time. Default: False.
+- `shared` (list[str] | None): Parameter names that are shared state. Shared params are excluded from auto-wiring — multiple producers are allowed, and nodes read the latest value from run state. The user provides ordering via `edges` or `emit/wait_for`. Shared params are required at `run()` time unless bound. See [Shared State](#shared-state) below.
 
 **Raises:**
 - `GraphConfigError` - If duplicate node names exist
@@ -702,6 +703,71 @@ When a 2-tuple has no overlapping output/input names, it becomes an **ordering-o
 - `add_nodes()` raises `GraphConfigError` on a graph with explicit edges. Create a new `Graph` with the complete node and edge lists instead.
 - Auto-inference and explicit edges don't mix. When `edges` is provided, only declared edges exist.
 - Gate control edges and `emit`/`wait_for` ordering edges are still auto-wired in explicit mode. Don't declare edges from gate nodes to their targets — the explicit edge would override the auto-wired control edge type, affecting visualization.
+
+## Shared State
+
+When multiple nodes read and write the same value (e.g., `messages` in a chat loop), auto-wiring can't determine which producer feeds which consumer. Instead of requiring nested graphs or fully explicit edges, declare the param as **shared**:
+
+```python
+from hypergraph import Graph, node, route, END
+
+@node(output_name="messages")
+def add_user_message(messages: list, user_input: str) -> list:
+    return [*messages, {"role": "user", "content": user_input}]
+
+@node(output_name="response")
+def generate(messages: list) -> str:
+    return llm.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+@route(targets=["add_user_message", END])
+def should_continue(messages: list) -> str:
+    return "add_user_message" if len(messages) < 10 else END
+
+graph = Graph(
+    [add_user_message, generate, add_response, should_continue],
+    shared=["messages"],
+    entrypoint="add_user_message",
+    edges=[
+        (add_user_message, generate),
+        (add_response, should_continue),
+    ],
+)
+```
+
+### How it works
+
+1. **No data edges** are inferred for `messages` — it's excluded from auto-wiring
+2. **Multiple producers** (`add_user_message`, `add_response`) are allowed without conflict
+3. **Non-shared params** (`user_input`, `response`) are still auto-wired normally
+4. **Ordering** must be provided via `edges` or `emit/wait_for` — the explicit edges above become ordering-only edges (since `messages` is shared, no data flows through them)
+5. **Initial value** is required at `run()` time: `runner.run(graph, {"messages": [], ...})`
+
+### Connectivity validation
+
+If auto-wiring with shared params leaves the graph disconnected, construction fails with a helpful error showing which node groups need connecting:
+
+```
+Graph is disconnected after auto-wiring with shared=['messages'].
+
+These groups of nodes have no edges connecting them:
+
+  [add_response, generate]
+    generate -> add_response (response)
+
+  [add_user_message, should_continue]
+    should_continue -> add_user_message (control)
+
+How to fix:
+  Add edges=[(node_a, node_b), ...] or emit/wait_for to connect them.
+```
+
+### In the visualization
+
+Shared params appear as a purple `↕` badge at the bottom-left of the interactive visualization, and as a `%% shared state: messages` comment in Mermaid output.
 
 ### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_external_inputs=False, filepath=None)`
 

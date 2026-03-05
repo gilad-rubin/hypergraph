@@ -21,6 +21,39 @@ if TYPE_CHECKING:
     from hypergraph.viz.debug import VizDebugger
 
 
+def _ambiguous_producer_message(param: str, consumer: str, producers: list[str]) -> str:
+    """Build a human-readable error for ambiguous implicit wiring."""
+    # ASCII diagram showing competing producers
+    pad = max(len(p) for p in producers)
+    lines = []
+    for i, p in enumerate(producers):
+        connector = "├" if i < len(producers) - 1 else "└"
+        if len(producers) == 2:
+            connector = "┐" if i == 0 else "┘"
+        lines.append(f"  {p:<{pad}} ──({param})──{connector}")
+
+    target = f"──> {consumer}({param})"
+    mid = len(lines) // 2
+    diagram_lines = []
+    for i, line in enumerate(lines):
+        if i == mid:
+            diagram_lines.append(f"{line}{target}")
+        else:
+            diagram_lines.append(f"{line}")
+
+    diagram = "\n".join(diagram_lines)
+
+    return (
+        f"Input '{param}' on node '{consumer}' has {len(producers)} competing producers "
+        f"and auto-wiring can't pick one.\n\n"
+        f"{diagram}\n\n"
+        f"How to fix:\n"
+        f"  - Add explicit edges to declare the intended dependency, OR\n"
+        f"  - Add ordering (emit/wait_for) so one producer is shadowed, OR\n"
+        f"  - Rename output channels to avoid the conflict."
+    )
+
+
 def _build_hierarchical_id(node_name: str, parent_id: str | None) -> str:
     """Build hierarchical ID: root nodes keep bare name, nested get 'parent/child'."""
     if parent_id is None:
@@ -85,6 +118,7 @@ class Graph:
         entrypoint: str | list[str] | tuple[str, ...] | None = None,
         name: str | None = None,
         strict_types: bool = False,
+        shared: list[str] | None = None,
     ) -> None:
         """Create a graph from nodes.
 
@@ -106,12 +140,20 @@ class Graph:
                          nodes at graph construction time. Calls _validate_types()
                          which raises GraphConfigError on missing annotations or
                          type mismatches. Default is False (no type checking).
+            shared: Parameter names that are shared state across the graph.
+                Shared params are excluded from auto-wiring (no data edges
+                inferred) and allow multiple producers without conflict.
+                Nodes read the latest value from run state. The user must
+                provide ordering via ``edges`` or ``emit/wait_for``.
+                Shared params are required at ``run()`` time unless bound.
         """
         self.name = name
         self._strict_types = strict_types
+        self._shared: frozenset[str] = frozenset(shared) if shared else frozenset()
         self._bound: dict[str, Any] = {}
         self._selected: tuple[str, ...] | None = None
         self._nodes = self._build_nodes_dict(nodes)
+        self._validate_shared_params()
         self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
         self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
         self._nx_graph = self._build_graph(nodes)
@@ -137,6 +179,52 @@ class Graph:
 
         self._validate_entrypoint_names(node_names)
         return tuple(dict.fromkeys(node_names))
+
+    def _validate_shared_params(self) -> None:
+        """Validate that shared param names actually exist as outputs in the graph."""
+        if not self._shared:
+            return
+        all_outputs: set[str] = set()
+        for node in self._nodes.values():
+            all_outputs.update(node.outputs)
+        unknown = sorted(self._shared - all_outputs)
+        if unknown:
+            raise GraphConfigError(f"shared params {unknown} are not produced by any node.\nAvailable outputs: {sorted(all_outputs)}")
+
+    def _validate_shared_connectivity(self, G: nx.DiGraph, nodes: list[HyperNode]) -> None:
+        """Validate that shared params don't leave the graph disconnected.
+
+        After auto-wiring with shared params excluded, some nodes may become
+        unreachable. Report the gap so the user can add ordering edges.
+        """
+        undirected = G.to_undirected()
+        components = list(nx.connected_components(undirected))
+        if len(components) <= 1:
+            return
+
+        # Build a readable description of each island
+        islands: list[str] = []
+        for component in sorted(components, key=lambda c: min(c)):
+            # Show edges within this island
+            edges_in = []
+            for u, v, data in G.edges(data=True):
+                if u in component and v in component:
+                    value_names = data.get("value_names", [])
+                    label = f"({', '.join(value_names)})" if value_names else ""
+                    edge_type = data.get("edge_type", "data")
+                    style = " (control)" if edge_type == "control" else ""
+                    edges_in.append(f"    {u} -> {v}{' ' + label if label else ''}{style}")
+
+            node_list = sorted(component)
+            edge_desc = "\n".join(edges_in) if edges_in else "    (no edges)"
+            islands.append(f"  [{', '.join(node_list)}]\n{edge_desc}")
+
+        raise GraphConfigError(
+            f"Graph is disconnected after auto-wiring with shared={sorted(self._shared)}.\n\n"
+            f"These groups of nodes have no edges connecting them:\n\n" + "\n\n".join(islands) + "\n\n"
+            "How to fix:\n"
+            "  Add edges=[(node_a, node_b), ...] or emit/wait_for to connect them."
+        )
 
     def _validate_entrypoint_names(self, node_names: tuple[str, ...]) -> None:
         """Validate entrypoint node names and ensure they are non-gate nodes."""
@@ -397,11 +485,13 @@ class Graph:
                         raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an output of '{src}'. Outputs: {self._nodes[src].outputs}")
                     if v not in dst_inputs:
                         raise GraphConfigError(f"Edge ({src}, {dst}): '{v}' is not an input of '{dst}'. Inputs: {self._nodes[dst].inputs}")
-                value_names = tuple(dict.fromkeys(values))
+                # Shared params become ordering-only (data flows through state)
+                value_names = tuple(v for v in dict.fromkeys(values) if v not in self._shared)
             else:
                 # Infer from intersection (preserve target input order)
+                # Shared params excluded — they don't create data edges
                 src_outputs = set(self._nodes[src].outputs)
-                value_names = tuple(v for v in self._nodes[dst].inputs if v in src_outputs)
+                value_names = tuple(v for v in self._nodes[dst].inputs if v in src_outputs and v not in self._shared)
                 # Empty intersection is allowed — creates ordering-only edge
 
             normalized.append((src, dst, value_names))
@@ -447,24 +537,37 @@ class Graph:
         self._add_nodes_to_graph(G, nodes)
 
         output_to_sources = self._collect_output_sources(nodes)
+        # Shared params allow multiple producers — exclude from conflict checks
+        conflict_sources = {k: v for k, v in output_to_sources.items() if k not in self._shared} if self._shared else output_to_sources
 
-        if self._explicit_edges is not None:
-            # Explicit mode: user-declared data edges
+        if self._explicit_edges is not None and not self._shared:
+            # Explicit mode: user-declared data edges (no auto-inference)
             self._add_explicit_data_edges(G, self._explicit_edges)
             self._add_control_edges(G, nodes)
             self._add_ordering_edges(G, nodes, output_to_sources)
             validate_output_conflicts(
                 G,
                 nodes,
-                output_to_sources,
+                conflict_sources,
                 explicit_edges=True,
             )
+        elif self._shared:
+            # Shared mode: auto-infer non-shared edges, add explicit as ordering
+            self._add_data_edges(G, nodes, output_to_sources)
+            if self._explicit_edges is not None:
+                self._add_explicit_data_edges(G, self._explicit_edges)
+            self._add_control_edges(G, nodes)
+            self._add_ordering_edges(G, nodes, output_to_sources)
+            validate_output_conflicts(G, nodes, conflict_sources)
         else:
             # Auto-inference mode (default)
             self._add_data_edges(G, nodes, output_to_sources)
             self._add_control_edges(G, nodes)
             self._add_ordering_edges(G, nodes, output_to_sources)
-            validate_output_conflicts(G, nodes, output_to_sources)
+            validate_output_conflicts(G, nodes, conflict_sources)
+
+        if self._shared:
+            self._validate_shared_connectivity(G, nodes)
 
         return G
 
@@ -495,9 +598,12 @@ class Graph:
         from collections import defaultdict
 
         # Build producer candidates per (consumer, input_name).
+        # Shared params are excluded — they flow through run state, not edges.
         by_input: dict[tuple[str, str], list[str]] = {}
         for consumer in nodes:
             for param in consumer.inputs:
+                if param in self._shared:
+                    continue
                 producers = [producer for producer in output_to_sources.get(param, [])]
                 if producers:
                     by_input[(consumer.name, param)] = list(dict.fromkeys(producers))
@@ -621,14 +727,7 @@ class Graph:
             if kept:
                 pruned[key] = kept
             else:
-                raise GraphConfigError(
-                    f"Input '{param}' on node '{consumer}' has no realizable producer after implicit shadow elimination.\n\n"
-                    f"Candidate producers were: {sorted(producers)}\n\n"
-                    f"How to fix:\n"
-                    f"  - Add ordering (emit/wait_for) to make producer flow unambiguous, OR\n"
-                    f"  - Use explicit edges to declare the intended dependency, OR\n"
-                    f"  - Rename value channels to avoid contested producers."
-                )
+                raise GraphConfigError(_ambiguous_producer_message(param, consumer, sorted(producers)))
 
         return pruned
 
@@ -743,15 +842,7 @@ class Graph:
             external_producers = [p for p in producers if p != consumer]
             if len(external_producers) <= 1:
                 continue
-            raise GraphConfigError(
-                f"Ambiguous implicit dependency for input '{param}' on node '{consumer}'.\n\n"
-                f"  -> Candidate producers: {sorted(external_producers)}\n\n"
-                f"This cycle input cannot be resolved unambiguously.\n"
-                f"How to fix:\n"
-                f"  - Add ordering (emit/wait_for) so one producer is shadowed, OR\n"
-                f"  - Use explicit edges to declare the intended topology, OR\n"
-                f"  - Rename value channels to make dependencies explicit."
-            )
+            raise GraphConfigError(_ambiguous_producer_message(param, consumer, sorted(external_producers)))
 
     def _has_path_avoiding_nodes(
         self,
@@ -1291,6 +1382,7 @@ class Graph:
         }
         G.graph["output_to_sources"] = output_to_sources
         G.graph["configured_entrypoints"] = list(self._entrypoints or ())
+        G.graph["shared"] = sorted(self._shared) if self._shared else []
         return G
 
     def _flatten_nodes(

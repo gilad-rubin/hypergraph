@@ -102,11 +102,56 @@ def _has_alternate_path(
     return _is_reachable(adjacency, source, target, skip_edge_idx=skip_edge_idx)
 
 
+def _find_back_edges(
+    edges: list[dict[str, Any]],
+    adjacency: dict[str, list[tuple[str, int]]],
+    execution: list[tuple[int, str, str]],
+) -> set[int]:
+    """Return edge indices that are back edges via DFS.
+
+    A back edge points to a node still on the DFS stack (GRAY), which means
+    it closes a cycle.  Forward and cross edges are left unmarked.
+    """
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = defaultdict(int)  # WHITE
+    back: set[int] = set()
+
+    def dfs(node: str) -> None:
+        color[node] = GRAY
+        for next_node, edge_idx in adjacency.get(node, []):
+            if color[next_node] == GRAY:
+                back.add(edge_idx)
+            elif color[next_node] == WHITE:
+                dfs(next_node)
+        color[node] = BLACK
+
+    all_nodes: set[str] = set()
+    has_incoming: set[str] = set()
+    for _, src, tgt in execution:
+        all_nodes.add(src)
+        all_nodes.add(tgt)
+        has_incoming.add(tgt)
+
+    # Prefer start-edge targets as DFS roots so that back edges align with
+    # the graph's declared entrypoints rather than alphabetical order.
+    start_targets: set[str] = set()
+    for edge in edges:
+        if edge.get("data", {}).get("edgeType") == "start":
+            start_targets.add(str(edge["target"]))
+
+    roots = sorted(start_targets & all_nodes) or sorted(all_nodes - has_incoming) or sorted(all_nodes)
+    for root in roots:
+        if color[root] == WHITE:
+            dfs(root)
+
+    return back
+
+
 def _mark_feedback_hints(edges: list[dict[str, Any]], flat_graph: nx.DiGraph) -> None:
     """Mark edges that should be routed as feedback loops.
 
-    Rules:
-    - Control edges that close a cycle are feedback.
+    Uses DFS back-edge detection so both data and control edges that close
+    a cycle get feedback routing.
     """
     execution: list[tuple[int, str, str]] = []
     adjacency: dict[str, list[tuple[str, int]]] = defaultdict(list)
@@ -122,14 +167,9 @@ def _mark_feedback_hints(edges: list[dict[str, Any]], flat_graph: nx.DiGraph) ->
     if not execution:
         return
 
-    for idx, source, target in execution:
-        edge = edges[idx]
-        edge_type = edge.get("data", {}).get("edgeType")
-        if not _is_reachable(adjacency, target, source):
-            continue
-
-        if edge_type == "control":
-            edge.setdefault("data", {})["forceFeedback"] = True
+    back_edge_indices = _find_back_edges(edges, adjacency, execution)
+    for idx in back_edge_indices:
+        edges[idx].setdefault("data", {})["forceFeedback"] = True
 
 
 def _prune_redundant_execution_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:

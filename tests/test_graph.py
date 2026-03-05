@@ -1999,7 +1999,7 @@ class TestImplicitShadowElimination:
         def loop(y: int) -> str:
             return "producer_a"
 
-        with pytest.raises(GraphConfigError, match="no realizable producer"):
+        with pytest.raises(GraphConfigError, match="competing producers"):
             Graph([producer_a, producer_b, consumer, loop], entrypoint="producer_a")
 
 

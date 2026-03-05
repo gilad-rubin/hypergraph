@@ -55,13 +55,13 @@
   var NODE_BASE_PADDING = 52;
   var FUNCTION_NODE_BASE_PADDING = 48;
   var MAX_NODE_WIDTH = 280;
-  var GRAPH_PADDING = 24;
+  var GRAPH_PADDING = 12;
   var HEADER_HEIGHT = 32;
-  var LAYOUT_PADDING = 70;
+  var LAYOUT_PADDING = 36;
   var EDGE_CONVERGE_TO_CENTER = false;
   var EDGE_CONVERGENCE_OFFSET = 20;
   var EDGE_ENDPOINT_PADDING = 0.25;  // fraction of node width (0-0.5)
-  var LAYOUT_RANKSEP = 140;
+  var LAYOUT_RANKSEP = 80;
   var FEEDBACK_EDGE_GUTTER = 70;
   var FEEDBACK_EDGE_HEADROOM = 40;
   var FEEDBACK_EDGE_STEM = 32;
@@ -636,7 +636,7 @@
     var filteredRootEdges = rootEdges.filter(function(e) { return !rootFbKeys.has(e.source + '->' + e.target); });
 
     var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
-    rootResult.size = computeBounds(rootResult.nodes, GRAPH_PADDING);
+    rootResult.size = computeBounds(rootResult.nodes, LAYOUT_PADDING);
 
     // Phase 3: Compose positions
     var nodePositions = new Map();
@@ -1531,6 +1531,8 @@
     var layoutVersion = layoutResult.layoutVersion;
     var isLayouting = layoutResult.isLayouting;
 
+    var sharedParams = (initialData.meta && initialData.meta.shared) || [];
+
     var rf = useReactFlow();
     var updateNI = useUpdateNodeInternals();
 
@@ -1784,6 +1786,19 @@
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
         <//>
+        ${sharedParams.length ? html`
+          <div style=${{ position: 'absolute', top: '12px', left: '12px', display: 'flex', gap: '6px', alignItems: 'center', pointerEvents: 'none', zIndex: 5 }}>
+            ${sharedParams.map(function(p) {
+              return html`<span key=${p} style=${{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '3px 10px', borderRadius: '12px', fontSize: '11px', fontFamily: 'monospace',
+                background: theme === 'light' ? 'rgba(139,92,246,0.1)' : 'rgba(139,92,246,0.15)',
+                border: '1px solid ' + (theme === 'light' ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.3)'),
+                color: theme === 'light' ? '#6d28d9' : '#a78bfa',
+              }}>↕ ${p}</span>`;
+            })}
+          </div>
+        ` : null}
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="px-4 py-2 rounded-lg border text-xs font-mono bg-slate-900/80 text-amber-200 border-amber-500/40 shadow-lg pointer-events-auto">
