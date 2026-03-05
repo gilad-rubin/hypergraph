@@ -20,6 +20,7 @@ class StepStatus(Enum):
 
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
 
 
 class WorkflowStatus(Enum):
@@ -237,7 +238,16 @@ class RunTable(list):
 
     Extends list for full backward compatibility — all list operations
     (len, iter, indexing, slicing) work as expected.
+
+    When created by the checkpointer widget, ``_steps_by_run`` maps
+    ``run_id → StepTable`` so each run trace can inline its steps.
     """
+
+    _steps_by_run: dict[str, StepTable]
+
+    def __init__(self, items: Any = (), *, steps_by_run: dict[str, Any] | None = None):
+        super().__init__(items)
+        self._steps_by_run = steps_by_run or {}
 
     def __repr__(self) -> str:
         if not self:
@@ -369,6 +379,17 @@ class RunTable(list):
                     for c in children
                 ]
                 detail_parts.append(html_table(["ID", "Graph", "Status", "Duration", "Steps", "Errors"], child_rows))
+
+            # Inline step history when available
+            run_steps = getattr(self, "_steps_by_run", {}).get(group_id)
+            if run_steps:
+                detail_parts.append(
+                    html_detail(
+                        f"Steps ({plural(len(run_steps), 'step')})",
+                        run_steps._repr_html_(),
+                        state_key=f"run-steps-{group_id}",
+                    )
+                )
 
             detail_sections.append(html_detail(summary, "<br>".join(detail_parts), state_key=f"run-{group_id}"))
 
