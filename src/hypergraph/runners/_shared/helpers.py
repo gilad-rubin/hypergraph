@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 class ExecutionScope:
     """Resolved execution scope shared by scheduler and validation."""
 
-    active_nodes: set[str] | None
+    active_nodes: frozenset[str] | None
     startup_predecessors: dict[str, frozenset[str]]
 
 
@@ -52,7 +52,7 @@ def compute_execution_scope(graph: Graph) -> ExecutionScope:
             entrypoints=graph.entrypoints_config,
             selected=graph.selected,
         )
-        active_nodes = set(active_nodes_dict)
+        active_nodes = frozenset(active_nodes_dict)
 
     predecessors: dict[str, set[str]] = {}
     for src, dst, data in active_subgraph.edges(data=True):

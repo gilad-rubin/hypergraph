@@ -60,7 +60,7 @@ g = Graph([process], strict_types=True)
 **Args:**
 - `nodes` (list[HyperNode]): List of nodes to include in the graph
 - `edges` (list[tuple] | None): Explicit edge declarations. When `shared` is set, explicit edges are additive (ordering hints on top of auto-inferred edges). Otherwise, disables auto-inference when provided. See [Explicit Edges](#explicit-edges) below.
-- `entrypoint` (str | list[str] | None): Convenience shortcut for `with_entrypoint()`. Required for cyclic graphs. Accepts a node name or list of node names. See [Entrypoints](#with_entrypoint--entrypoint-narrowing) below.
+- `entrypoint` (str | Sequence[str] | None): Convenience shortcut for `with_entrypoint()`. Required for cyclic graphs. Accepts a node name or sequence of node names (list or tuple). See [Entrypoints](#with_entrypoint--entrypoint-narrowing) below.
 - `name` (str | None): Optional graph name. Required if using `as_node()` for composition.
 - `strict_types` (bool): If True, validate type compatibility between connected nodes at construction time. Default: False.
 - `shared` (list[str] | None): Parameter names that are shared state. Shared params are excluded from auto-wiring — multiple producers are allowed, and nodes read the latest value from run state. The user provides ordering via `edges` or `emit/wait_for`. Shared params are required at `run()` time unless bound. See [Shared State](#shared-state) below.
@@ -751,7 +751,7 @@ graph = Graph(
 
 If auto-wiring with shared params leaves the graph disconnected, construction fails with a helpful error showing which node groups need connecting:
 
-```
+```text
 Graph is disconnected after auto-wiring with shared=['messages'].
 
 These groups of nodes have no edges connecting them:
