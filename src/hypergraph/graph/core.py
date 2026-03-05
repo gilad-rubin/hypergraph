@@ -177,6 +177,9 @@ class Graph:
         else:
             raise GraphConfigError("entrypoint must be a node name (str) or a list/tuple of node names")
 
+        if not node_names:
+            raise GraphConfigError("entrypoint cannot be empty")
+
         self._validate_entrypoint_names(node_names)
         return tuple(dict.fromkeys(node_names))
 

@@ -342,6 +342,14 @@ class TestConstructorEntrypointShortcut:
         with pytest.raises(GraphConfigError, match="entrypoint must be a node name"):
             Graph([root1], entrypoint=123)  # type: ignore[arg-type]
 
+    def test_constructor_empty_entrypoint_rejected(self):
+        with pytest.raises(GraphConfigError, match="entrypoint cannot be empty"):
+            Graph([root1], entrypoint=[])
+
+    def test_constructor_empty_tuple_entrypoint_rejected(self):
+        with pytest.raises(GraphConfigError, match="entrypoint cannot be empty"):
+            Graph([root1], entrypoint=())
+
 
 # === Immutability ===
 
