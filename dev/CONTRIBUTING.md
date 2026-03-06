@@ -19,9 +19,18 @@ uv sync --group dev
 uv run pre-commit install
 uv run pre-commit install --hook-type pre-push
 
+# Notebook diff/cleanup integration
+uv run nbstripout --install --attributes .gitattributes
+uv run nbdime config-git --enable
+
 # Playwright (only needed for viz tests)
 uv run playwright install chromium
 ```
+
+The notebook setup does two separate jobs:
+
+- `nbstripout` removes notebook outputs and transient metadata from the Git-tracked version so HTML-heavy cells do not explode diffs.
+- `nbdime` gives `.ipynb` files notebook-aware diffs and merges instead of raw JSON diffs.
 
 ## Commands
 
