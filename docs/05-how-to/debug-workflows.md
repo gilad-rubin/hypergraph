@@ -199,6 +199,25 @@ cp.lineage("my-run-1")
 
 The sync read methods (`runs()`, `run()`, `values()`, `steps()`, `search()`, `stats()`, `checkpoint()`) work without async/await, making them ideal for debugging scripts, notebooks, and the CLI. No `initialize()` call needed.
 
+#### Interrupt Steps
+
+For workflows with `@interrupt` nodes, the step log shows the pause/resume cycle. Each interrupt appears twice: first as `paused` (waiting for input), then as `completed` (resolved with the provided value):
+
+```python
+steps = cp.steps("my-chat")
+for s in steps:
+    print(f"  ss={s.superstep}  {s.node_name:20s}  {s.status}")
+
+#   ss=0   add_user_message      completed
+#   ss=1   llm_reply             completed
+#   ss=2   add_response          completed
+#   ss=3   should_continue       completed    (decision: wait_for_user)
+#   ss=4   wait_for_user         paused
+#   ss=5   wait_for_user         completed    (values: {user_input: "..."})
+```
+
+Routing decisions are stored on the step record (`s.decision`), and resolved interrupt values appear in `s.values`. See [Human-in-the-Loop](../03-patterns/07-human-in-the-loop.md#inspecting-checkpoint-history) for the full pattern.
+
 For branching semantics, use explicit checkpoints:
 `checkpoint = cp.checkpoint("workflow-id", superstep=...)` and pass it to
 `runner.run(..., checkpoint=checkpoint, workflow_id="new-id")`.

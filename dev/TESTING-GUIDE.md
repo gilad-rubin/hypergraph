@@ -135,6 +135,54 @@ tests/
 - Fixtures: prefer `conftest.py` for shared fixtures, local for one-file fixtures
 - Marks: `@pytest.mark.slow` for slow tests, `@pytest.mark.full_matrix` for exhaustive
 
+### Scheduling: Test Node Readiness Directly
+
+For subtle scheduling bugs, test `get_ready_nodes` directly against `GraphState`:
+
+```python
+from hypergraph.runners._shared.helpers import compute_execution_scope, get_ready_nodes
+from hypergraph.runners._shared.types import GraphState, NodeExecution
+
+scope = compute_execution_scope(graph)
+state = GraphState()
+state.update_value("x", 42)
+
+ready = get_ready_nodes(
+    graph, state,
+    active_nodes=scope.active_nodes,
+    startup_predecessors=scope.startup_predecessors,
+)
+assert "my_node" in [n.name for n in ready]
+```
+
+Simulate execution by adding `NodeExecution` entries to `state.node_executions` and routing decisions to `state.routing_decisions`. This lets you verify scheduling invariants superstep-by-superstep without running the full engine.
+
+See `tests/test_gate_activation_scheduling.py` and `tests/test_interrupt_shared_cycle_bug.py` for examples.
+
+### Interrupt: Test Pause/Resume with Checkpointer
+
+Multi-turn interrupt tests need a checkpointer — each `.run()` call simulates a separate request:
+
+```python
+@pytest.mark.asyncio
+async def test_pause_resume(self, tmp_path):
+    from hypergraph.checkpointers import SqliteCheckpointer
+
+    cp = SqliteCheckpointer(str(tmp_path / "test.db"))
+    await cp.initialize()
+    runner = AsyncRunner(checkpointer=cp)
+
+    r1 = await runner.run(graph, workflow_id="w", user_input="hello")
+    assert r1.paused
+
+    r2 = await runner.run(graph, workflow_id="w", user_input="more")
+    assert r2.paused  # or not, depending on graph logic
+
+    await cp.close()
+```
+
+Without a checkpointer, the runner has no state between calls — each run starts fresh.
+
 ## Common Gotchas
 
 ### Never Use `asyncio.run()` in Tests
