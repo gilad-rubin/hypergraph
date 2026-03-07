@@ -74,7 +74,13 @@ Execution engines. Template Method pattern with pluggable `NodeExecutor` per nod
 | `async_/superstep.py` | Superstep loop (async) |
 | `async_/executors/` | Per-node-type executors (function, graph, ifelse, route, interrupt) |
 
-**Execution model**: Superstep-based. Each superstep executes all ready nodes (those with satisfied inputs), then loops until no new nodes are ready or convergence.
+**Execution model**: Superstep-based. Each superstep:
+1. `get_ready_nodes` finds nodes with satisfied inputs, gate activation, and changed state
+2. All ready nodes execute concurrently (async) or sequentially (sync)
+3. Results are applied to state; routing decisions are recorded and consumed
+4. Loop until no nodes are ready or convergence
+
+Gate targets are blocked until their controlling gate fires and routes to them. Routing decisions are consumed after the target executes — the gate must re-fire to re-activate the target. See `src/hypergraph/runners/_shared/AGENTS.md` for scheduling rules.
 
 **`_shared/` contents**:
 - `caching.py` — Cache key computation and lookup

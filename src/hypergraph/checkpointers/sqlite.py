@@ -114,7 +114,7 @@ class SqliteCheckpointer(Checkpointer):
         self._serializer = serializer or JsonSerializer()
         self._db: Any = None
         self._sync_conn: Any = None
-        self._init_lock = asyncio.Lock()
+        self._init_lock: asyncio.Lock | None = None
         self._aiosqlite = _require_aiosqlite()
 
     def _db_stats(self) -> dict[str, Any]:
@@ -226,11 +226,14 @@ class SqliteCheckpointer(Checkpointer):
         if self._db is not None:
             await self._db.close()
             self._db = None
+        self._init_lock = None
 
     async def _ensure_db(self) -> None:
         """Lazy-initialize on first use."""
         if self._db is not None:
             return
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
         async with self._init_lock:
             if self._db is None:
                 await self.initialize()

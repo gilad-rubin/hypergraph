@@ -25,12 +25,10 @@ def triple(doubled: int) -> int:
 
 
 @pytest.fixture
-async def async_cp(tmp_path):
+def async_cp(tmp_path):
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
     yield cp
-    await cp.close()
 
 
 @pytest.fixture
@@ -56,7 +54,7 @@ class TestAsyncMapCheckpointing:
 
         await runner.map(graph, {"x": [1, 2, 3]}, map_over="x", workflow_id="batch")
 
-        runs = await async_cp.list_runs()
+        runs = async_cp.runs()
         run_ids = {r.id for r in runs}
         assert "batch" in run_ids
         assert "batch/0" in run_ids
@@ -75,7 +73,7 @@ class TestAsyncMapCheckpointing:
 
         await runner.map(graph, {"x": [10, 20]}, map_over="x", workflow_id="batch-stats")
 
-        run = await async_cp.get_run_async("batch-stats")
+        run = async_cp.get_run("batch-stats")
         assert run.status.value == "completed"
         assert run.node_count == 2
 
@@ -93,12 +91,12 @@ class TestAsyncMapCheckpointing:
 
         await runner.map(graph, {"x": [1, 2, 3]}, map_over="x", workflow_id="batch-fail", error_handling="continue")
 
-        runs = await async_cp.list_runs()
+        runs = async_cp.runs()
         child_runs = {r.id: r for r in runs if r.parent_run_id == "batch-fail"}
         assert len(child_runs) == 3
 
         # Item 1 failed
-        failed = await async_cp.get_run_async("batch-fail/1")
+        failed = async_cp.get_run("batch-fail/1")
         assert failed.status.value == "failed"
 
     async def test_top_level_only_filter(self, async_cp):
@@ -150,7 +148,7 @@ class TestNestedGraphCheckpointing:
         assert result["tripled"] == 30
 
         # Should have parent and child runs
-        runs = await async_cp.list_runs()
+        runs = async_cp.runs()
         run_map = {r.id: r for r in runs}
         assert "nested" in run_map
         assert "nested/embed" in run_map
@@ -164,7 +162,7 @@ class TestNestedGraphCheckpointing:
 
         await runner.run(outer, {"x": 5}, workflow_id="nested-step")
 
-        steps = await async_cp.get_steps("nested-step")
+        steps = async_cp.steps("nested-step")
         embed_step = next(s for s in steps if s.node_name == "embed")
         assert embed_step.child_run_id == "nested-step/embed"
 
@@ -180,7 +178,7 @@ class TestNestedGraphCheckpointing:
 
         await runner.run(outer, {"x": [1, 2]}, workflow_id="nested-map")
 
-        runs = await async_cp.list_runs()
+        runs = async_cp.runs()
         run_ids = {r.id for r in runs}
 
         # outer → embed (batch) → embed/0, embed/1
@@ -206,7 +204,7 @@ class TestNestedGraphCheckpointing:
         result = await runner.run(outer, {"x": 5}, workflow_id="deep")
         assert result["result"] == 6
 
-        runs = await async_cp.list_runs()
+        runs = async_cp.runs()
         run_ids = {r.id for r in runs}
         assert "deep" in run_ids
         assert "deep/A" in run_ids
@@ -222,7 +220,7 @@ class TestNestedGraphCheckpointing:
         assert result["tripled"] == 30
         assert result.workflow_id is not None
 
-        runs = await async_cp.list_runs()
+        runs = async_cp.runs()
         run_ids = {r.id for r in runs}
         assert result.workflow_id in run_ids
         assert f"{result.workflow_id}/embed" in run_ids
@@ -234,15 +232,15 @@ class TestNestedGraphCheckpointing:
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
         await runner.run(outer, {"x": 5}, workflow_id="nested-root")
-        fork_id, fork_cp = await async_cp.fork_workflow_async("nested-root", workflow_id="nested-root-fork")
+        fork_id, fork_cp = async_cp.fork_workflow("nested-root", workflow_id="nested-root-fork")
         await runner.run(outer, {"x": 10}, checkpoint=fork_cp, workflow_id=fork_id)
 
-        fork_run = await async_cp.get_run_async("nested-root-fork")
+        fork_run = async_cp.get_run("nested-root-fork")
         assert fork_run is not None
         assert fork_run.forked_from == "nested-root"
         assert fork_run.retry_of is None
 
-        child = await async_cp.get_run_async("nested-root-fork/embed")
+        child = async_cp.get_run("nested-root-fork/embed")
         assert child is not None
         assert child.parent_run_id == "nested-root-fork"
 

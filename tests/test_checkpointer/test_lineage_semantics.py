@@ -26,11 +26,9 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 
 @pytest.fixture
-async def checkpointer(tmp_path):
+def checkpointer(tmp_path):
     cp = SqliteCheckpointer(str(tmp_path / "lineage.db"))
-    await cp.initialize()
     yield cp
-    await cp.close()
 
 
 @node(output_name="doubled")
@@ -52,7 +50,7 @@ class TestLineageSemantics:
 
         assert result.workflow_id is not None
         assert result.workflow_id.startswith("run-")
-        run = await checkpointer.get_run_async(result.workflow_id)
+        run = checkpointer.get_run(result.workflow_id)
         assert run is not None
         assert run.config is not None
         assert "graph_struct_hash" in run.config
@@ -91,7 +89,7 @@ class TestLineageSemantics:
         graph = Graph([double, triple])
 
         await runner.run(graph, {"x": 5}, workflow_id="wf-parent")
-        checkpoint = await checkpointer.get_checkpoint("wf-parent")
+        checkpoint = checkpointer.checkpoint("wf-parent")
 
         forked = await runner.run(
             graph,
@@ -108,7 +106,7 @@ class TestLineageSemantics:
 
         await runner.run(graph, {"x": 5}, workflow_id="wf-a")
         await runner.run(graph, {"x": 6}, workflow_id="wf-b")
-        checkpoint = await checkpointer.get_checkpoint("wf-a")
+        checkpoint = checkpointer.checkpoint("wf-a")
 
         with pytest.raises(WorkflowForkError):
             await runner.run(graph, checkpoint=checkpoint, workflow_id="wf-b")
@@ -123,10 +121,10 @@ class TestLineageSemantics:
             return next_count >= 2
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([increment, done])
+        graph = Graph([increment, done], entrypoint="increment")
         await runner.run(graph, {"count": 2}, workflow_id="wf-gate")
 
-        state = await checkpointer.get_state("wf-gate")
+        state = checkpointer.state("wf-gate")
         assert "_done" in state
         assert state["_done"] is True
 
@@ -151,7 +149,8 @@ class TestLineageSemantics:
         assert first.status == RunStatus.FAILED
 
         should_fail = False
-        resumed = await runner.run(graph, workflow_id="wf-failed", on_internal_override="ignore")
+        retry_graph = graph.with_entrypoint("maybe_fail")
+        resumed = await runner.run(retry_graph, workflow_id="wf-failed", on_internal_override="ignore")
         assert resumed.status == RunStatus.COMPLETED
         assert resumed["out"] == 50
 
@@ -183,10 +182,10 @@ class TestLineageSemantics:
         graph = Graph([double])
 
         await runner.run(graph, {"x": 5}, workflow_id="wf-root")
-        checkpoint = await checkpointer.get_checkpoint("wf-root")
+        checkpoint = checkpointer.checkpoint("wf-root")
         await runner.run(graph, {"x": 7}, checkpoint=checkpoint, workflow_id="wf-root-fork")
 
-        run = await checkpointer.get_run_async("wf-root-fork")
+        run = checkpointer.get_run("wf-root-fork")
         assert run is not None
         assert run.forked_from == "wf-root"
         assert run.fork_superstep is None
@@ -214,18 +213,19 @@ class TestLineageSemantics:
         assert failed.status == RunStatus.FAILED
 
         should_fail = False
-        retry_id_1, retry_cp_1 = await checkpointer.retry_workflow_async("wf-retry-root")
-        retried_1 = await runner.run(graph, checkpoint=retry_cp_1, workflow_id=retry_id_1, on_internal_override="ignore")
+        retry_graph = graph.with_entrypoint("maybe_fail")
+        retry_id_1, retry_cp_1 = checkpointer.retry_workflow("wf-retry-root")
+        retried_1 = await runner.run(retry_graph, checkpoint=retry_cp_1, workflow_id=retry_id_1, on_internal_override="ignore")
         assert retried_1["out"] == 10
-        run_1 = await checkpointer.get_run_async(retry_id_1)
+        run_1 = checkpointer.get_run(retry_id_1)
         assert run_1 is not None
         assert run_1.retry_of == "wf-retry-root"
         assert run_1.retry_index == 1
         assert run_1.forked_from == "wf-retry-root"
 
-        retry_id_2, retry_cp_2 = await checkpointer.retry_workflow_async("wf-retry-root")
-        await runner.run(graph, checkpoint=retry_cp_2, workflow_id=retry_id_2, on_internal_override="ignore")
-        run_2 = await checkpointer.get_run_async(retry_id_2)
+        retry_id_2, retry_cp_2 = checkpointer.retry_workflow("wf-retry-root")
+        await runner.run(retry_graph, checkpoint=retry_cp_2, workflow_id=retry_id_2, on_internal_override="ignore")
+        run_2 = checkpointer.get_run(retry_id_2)
         assert run_2 is not None
         assert run_2.retry_of == "wf-retry-root"
         assert run_2.retry_index == 2
