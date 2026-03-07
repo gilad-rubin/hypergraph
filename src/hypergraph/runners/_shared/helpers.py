@@ -287,6 +287,14 @@ def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:
                             # it must wait for the gate's actual routing decision
                             # before re-firing (prevents mid-pipeline re-trigger
                             # when shared params cause staleness).
+                            #
+                            # Exception: when entrypoints are configured, non-entrypoint
+                            # gate targets must wait for the gate to actually route to
+                            # them.  Without this, an inputless gate target (e.g. an
+                            # interrupt node) would fire before the gate on the first pass.
+                            entrypoints = graph.entrypoints_config
+                            if entrypoints and node_name not in entrypoints:
+                                continue
                             activated.add(node_name)
                             break
                         continue
@@ -482,9 +490,24 @@ def _needs_execution(node: HyperNode, graph: Graph, state: GraphState) -> bool:
     if node.name not in state.node_executions:
         return True  # Never executed
 
+    # A pending routing decision targeting this node is an explicit re-trigger.
+    # Without this, inputless gate targets (e.g. interrupt nodes) would never
+    # be considered stale and would not re-execute on subsequent cycles.
+    if _has_pending_activation(node, graph, state):
+        return True
+
     # Check if any input has changed since last execution
     last_exec = state.node_executions[node.name]
     return _is_stale(node, graph, state, last_exec)
+
+
+def _has_pending_activation(node: HyperNode, graph: Graph, state: GraphState) -> bool:
+    """Check if a gate routing decision is actively targeting this node."""
+    for gate_name in graph.controlled_by.get(node.name, []):
+        decision = state.routing_decisions.get(gate_name)
+        if decision is not None and _is_node_activated_by_decision(node.name, decision):
+            return True
+    return False
 
 
 def _is_stale(

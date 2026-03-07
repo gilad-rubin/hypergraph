@@ -23,6 +23,7 @@ class AsyncInterruptNodeExecutor:
         inputs: dict[str, Any],
         *,
         provided_values: dict[str, Any] | None = None,
+        is_resuming: bool = False,
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
 
@@ -35,17 +36,20 @@ class AsyncInterruptNodeExecutor:
                 )
             input_values[name] = inputs[name]
 
-        # Resume path: all data outputs were provided by the caller THIS run.
-        # We check provided_values (what the user passed to runner.run()),
-        # not state.values, to distinguish fresh resume values from stale
-        # values left over from a previous cycle iteration in checkpointed state.
-        # After consuming, we remove the keys so a second cycle iteration
-        # through this node will correctly invoke the handler and pause.
-        pv = provided_values or {}
-        all_outputs_provided = all(o in pv for o in data_outputs)
-        if all_outputs_provided:
-            result = {o: pv.pop(o) for o in data_outputs}
-            return _add_emit_sentinels(result, node)
+        # Resume path: only auto-resolve when the runner is actually resuming
+        # a paused workflow AND all data outputs are in provided_values.
+        # Without the is_resuming guard, output names that happen to match
+        # regular graph inputs (e.g. user_input used by both add_user_message
+        # and the interrupt) would cause the interrupt to skip its handler
+        # on a fresh run instead of pausing.
+        # After consuming, we pop the keys so a second cycle iteration
+        # through this node correctly invokes the handler and pauses.
+        if is_resuming:
+            pv = provided_values or {}
+            all_outputs_provided = all(o in pv for o in data_outputs)
+            if all_outputs_provided:
+                result = {o: pv.pop(o) for o in data_outputs}
+                return _add_emit_sentinels(result, node)
 
         # Handler path: invoke the function
         try:
