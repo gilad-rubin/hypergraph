@@ -66,7 +66,6 @@ async def test_support_inbox_nested_interrupt_propagates_and_resumes():
             **values,
             paused.pause.response_key: "Hotfix deployed and refund requests are safe to retry.",
         },
-        on_internal_override="ignore",
     )
 
     assert resumed.paused is False

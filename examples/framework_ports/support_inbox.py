@@ -128,7 +128,6 @@ async def demo() -> dict[str, object]:
             **values,
             first_run.pause.response_key: "Hotfix deployed and refund requests are safe to retry.",
         },
-        on_internal_override="ignore",
     )
     return resumed.values
 
