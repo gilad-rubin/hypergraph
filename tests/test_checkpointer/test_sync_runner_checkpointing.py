@@ -211,7 +211,7 @@ class TestSyncRunnerCheckpointing:
             return count >= 3
 
         runner = SyncRunner(checkpointer=checkpointer)
-        graph = Graph([increment, check_done])
+        graph = Graph([increment, check_done], entrypoint="increment")
 
         runner.run(graph, {"count": 0}, workflow_id="wf-cycle")
 
