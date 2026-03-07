@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
 from hypergraph.runners._shared.types import RunnerCapabilities
@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from hypergraph.graph import Graph
     from hypergraph.graph.input_spec import InputSpec
     from hypergraph.nodes.base import HyperNode
-
-_VALID_ON_INTERNAL_OVERRIDE = ("ignore", "warn", "error")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +72,7 @@ def validate_item_inputs(
     ctx: _InputValidationContext,
     values: dict[str, Any],
     *,
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
+    skip_missing_required: bool = False,
 ) -> None:
     """Per-item value validation using pre-computed context.
 
@@ -82,7 +80,6 @@ def validate_item_inputs(
     graph context.  Handles bound/provided merge, internal override
     detection, bypass detection, cycle entry, and completeness checks.
     """
-    _validate_on_internal_override(on_internal_override)
     inputs_spec = ctx.input_spec
 
     # Step 1: Merge bound + provided
@@ -117,9 +114,7 @@ def validate_item_inputs(
         )
 
     if unknown:
-        _handle_internal_override_policy(
-            on_internal_override=on_internal_override,
-            internal_edge=set(),
+        _warn_on_unrecognized_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
             active_nodes=ctx.active_nodes,
@@ -129,7 +124,7 @@ def validate_item_inputs(
     required = set(inputs_spec.required)
     missing_required = required - provided
 
-    if not missing_required:
+    if skip_missing_required or not missing_required:
         return
 
     all_inputs = set(inputs_spec.all)
@@ -154,7 +149,7 @@ def validate_inputs(
     *,
     entrypoint: str | None = None,
     selected: tuple[str, ...] | None = None,
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
+    skip_missing_required: bool = False,
 ) -> None:
     """Validate that all required inputs are provided.
 
@@ -163,7 +158,11 @@ def validate_inputs(
     ``precompute_input_validation`` + ``validate_item_inputs`` directly.
     """
     ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=selected)
-    validate_item_inputs(ctx, values, on_internal_override=on_internal_override)
+    validate_item_inputs(
+        ctx,
+        values,
+        skip_missing_required=skip_missing_required,
+    )
 
 
 def _get_suggestions(
@@ -282,13 +281,6 @@ def validate_map_compatible(graph: Graph) -> None:
         )
 
 
-def _validate_on_internal_override(policy: str) -> None:
-    """Validate on_internal_override parameter."""
-    if policy not in _VALID_ON_INTERNAL_OVERRIDE:
-        valid = ", ".join(_VALID_ON_INTERNAL_OVERRIDE)
-        raise ValueError(f"Invalid on_internal_override={policy!r}. Expected one of: {valid}")
-
-
 def _resolve_active_scope(
     graph: Graph,
     selected: tuple[str, ...] | None,
@@ -304,9 +296,22 @@ def _resolve_active_scope(
     )
 
 
-def _get_interrupt_outputs(nodes: dict[str, HyperNode]) -> set[str]:
-    """Get output names produced by interrupt nodes in the active scope."""
-    return {output for n in nodes.values() if n.is_interrupt for output in n.outputs}
+def _get_interrupt_outputs(
+    nodes: dict[str, HyperNode],
+    *,
+    prefix: str = "",
+) -> set[str]:
+    """Get interrupt resume keys in the active scope, including nested GraphNodes."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    outputs: set[str] = set()
+    for node in nodes.values():
+        if node.is_interrupt:
+            outputs.update(f"{prefix}{output}" for output in node.data_outputs)
+            continue
+        if isinstance(node, GraphNode):
+            outputs.update(_get_interrupt_outputs(node.graph._nodes, prefix=f"{prefix}{node.name}."))
+    return outputs
 
 
 def _find_internal_override_conflicts(
@@ -371,33 +376,28 @@ def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> b
     return all(param in provided or node.has_default_for(param) for param in node.inputs)
 
 
-def _handle_internal_override_policy(
+def _warn_on_unrecognized_inputs(
     *,
-    on_internal_override: Literal["ignore", "warn", "error"],
-    internal_edge: set[str],
     unknown: set[str],
     expected_inputs: set[str],
     active_nodes: dict[str, HyperNode],
 ) -> None:
-    """Apply policy for non-conflicting internal/unknown parameters."""
-    if not internal_edge and not unknown:
-        return
-    if on_internal_override == "ignore":
+    """Warn when extra provided keys are outside the active graph scope."""
+    if not unknown:
         return
 
-    message = _build_internal_override_message(
-        internal_edge=internal_edge,
-        unknown=unknown,
-        expected_inputs=expected_inputs,
-        active_nodes=active_nodes,
+    import warnings
+
+    warnings.warn(
+        _build_internal_override_message(
+            internal_edge=set(),
+            unknown=unknown,
+            expected_inputs=expected_inputs,
+            active_nodes=active_nodes,
+        ),
+        UserWarning,
+        stacklevel=4,
     )
-
-    if on_internal_override == "warn":
-        import warnings
-
-        warnings.warn(message, UserWarning, stacklevel=4)
-        return
-    raise ValueError(message)
 
 
 def _build_internal_override_message(

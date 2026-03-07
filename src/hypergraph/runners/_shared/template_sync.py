@@ -13,6 +13,7 @@ from hypergraph.exceptions import (
     ExecutionError,
     GraphChangedError,
     InputOverrideRequiresForkError,
+    MissingInputError,
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
 )
@@ -21,9 +22,13 @@ from hypergraph.runners._shared.helpers import (
     _validate_error_handling,
     _validate_on_missing,
     _validate_workflow_id,
+    compute_execution_scope,
     filter_outputs,
+    find_missing_resume_seed_inputs,
     generate_map_inputs,
     generate_workflow_id,
+    get_ready_nodes,
+    initialize_state,
     is_interrupt_resume_payload,
 )
 from hypergraph.runners._shared.input_normalization import (
@@ -165,7 +170,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         error_handling: ErrorHandling = "raise",
@@ -202,6 +206,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         if _validation_ctx is None and (fork_from is not None or retry_from is not None) and sync_cp is None:
             raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
         resume_checkpoint = None
+        skip_missing_input_validation = False
         if sync_cp is not None and _validation_ctx is None:
             if fork_from is not None and retry_from is not None:
                 raise ValueError("Cannot pass both fork_from and retry_from. Choose one lineage source.")
@@ -234,6 +239,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     if existing_run.status.value == "completed":
                         raise WorkflowAlreadyCompletedError(workflow_id)
                     resume_checkpoint = sync_cp.checkpoint(workflow_id)
+            if resume_checkpoint is not None:
+                # Runs that start from checkpoint state (resume, fork, retry)
+                # should not re-require original graph inputs that were already
+                # consumed by upstream completed steps.
+                skip_missing_input_validation = True
 
         forked_from: str | None = None
         fork_superstep: int | None = None
@@ -262,10 +272,39 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 validation_values,
                 entrypoint=entrypoint,
                 selected=effective_selected,
-                on_internal_override=on_internal_override,
+                skip_missing_required=skip_missing_input_validation,
             )
         else:
-            validate_item_inputs(_validation_ctx, normalized_values, on_internal_override=on_internal_override)
+            validate_item_inputs(_validation_ctx, normalized_values)
+
+        if resume_checkpoint is not None and skip_missing_input_validation:
+            resume_state = initialize_state(graph, normalized_values, checkpoint=resume_checkpoint)
+            scope = compute_execution_scope(graph)
+            ready_nodes = get_ready_nodes(
+                graph,
+                resume_state,
+                active_nodes=scope.active_nodes,
+                startup_predecessors=scope.startup_predecessors,
+            )
+            if not ready_nodes:
+                missing_seed_inputs = sorted(
+                    find_missing_resume_seed_inputs(
+                        graph,
+                        resume_state,
+                        active_nodes=scope.active_nodes,
+                        startup_predecessors=scope.startup_predecessors,
+                    )
+                )
+                if missing_seed_inputs:
+                    raise MissingInputError(
+                        missing=missing_seed_inputs,
+                        provided=sorted(normalized_values),
+                        message=(
+                            "Checkpoint resume is missing required seed inputs: "
+                            + ", ".join(repr(name) for name in missing_seed_inputs)
+                            + ". The restored checkpoint state does not make any pending nodes runnable."
+                        ),
+                    )
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()
@@ -383,7 +422,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
@@ -480,7 +518,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
-                    on_internal_override=on_internal_override,
                     entrypoint=entrypoint,
                     error_handling="continue",
                     event_processors=event_processors,

@@ -377,7 +377,6 @@ Retry is symmetrical:
 retried = await runner.run(
     Graph([double, triple]),
     retry_from="job-1",
-    on_internal_override="ignore",   # common for flaky-node recovery
 )
 ```
 
