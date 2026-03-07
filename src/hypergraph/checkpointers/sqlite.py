@@ -226,6 +226,7 @@ class SqliteCheckpointer(Checkpointer):
         if self._db is not None:
             await self._db.close()
             self._db = None
+        self._init_lock = None
 
     async def _ensure_db(self) -> None:
         """Lazy-initialize on first use."""
