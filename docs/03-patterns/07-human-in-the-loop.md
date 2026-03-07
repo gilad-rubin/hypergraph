@@ -10,6 +10,21 @@ Pause execution for human input. Resume when ready.
 
 Many workflows need human judgment at key points: approving a draft, confirming a destructive action, providing feedback on generated content. You need a way to pause the graph, surface a value to the user, and resume with their response.
 
+This page focuses on the **graph-level** pause/resume pattern:
+
+- a run pauses at an interrupt
+- the caller inspects the pause payload
+- the caller later resumes the workflow with a response
+
+That makes interrupts a strong fit for:
+
+- interactive apps
+- review UIs
+- multi-step assistants
+- application-managed human approval flows
+
+For longer-lived event-driven orchestration, checkpointing gives you the persistence foundation, but more of the surrounding runtime shell still lives in your app today.
+
 ## Basic Pause and Resume
 
 The `@interrupt` decorator creates a pause point. Inputs come from the function signature, outputs from `output_name`. When the handler returns `None`, execution pauses.
@@ -53,6 +68,8 @@ The key flow:
 1. **Run** the graph. Execution pauses at the interrupt.
 2. **Inspect** `result.pause.value` to see what the user needs to review.
 3. **Resume** by passing the response via `result.pause.response_key`.
+
+This is intentionally different from event-driven workflow systems like Inngest, DBOS, or Restate, where the runtime often owns external event delivery directly. In hypergraph, the pause/resume primitive is already there; the application typically decides how the later response gets routed back into the run.
 
 ### RunResult Properties
 
@@ -399,6 +416,45 @@ assert result.pause.response_key == "inner.y"
 ```
 
 The `response_key` uses dot-separated paths for nested interrupts: `"inner.y"` means the output `y` inside the graph node `inner`.
+
+Think of `response_key` as a **resume slot identifier**. It is precise and stable, but it is primarily a runtime-facing detail. In user-facing applications, you will often wrap it behind your own inbox, form, or webhook layer.
+
+## Checkpointed Pauses
+
+For durable pause/resume across process restarts, pair interrupts with a checkpointer and a `workflow_id`:
+
+```python
+from hypergraph import AsyncRunner, Graph, interrupt, node
+from hypergraph.checkpointers import SqliteCheckpointer
+
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    return None
+
+@node(output_name="result")
+def finalize(decision: str) -> str:
+    return f"Final: {decision}"
+
+graph = Graph([approval, finalize])
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./runs.db"))
+
+paused = await runner.run(graph, {"draft": "hello"}, workflow_id="review-1")
+
+# ... later, possibly in another process ...
+resumed = await runner.run(
+    graph,
+    {paused.pause.response_key: "approved"},
+    workflow_id="review-1",
+)
+```
+
+This is the current durable HITL story:
+
+- checkpoint state stores the paused execution
+- `workflow_id` identifies the workflow instance
+- `response_key` identifies the waiting output slot
+
+If your application needs approval inboxes, event matching, or webhook-driven resume, build those on top of this pause primitive today.
 
 ## Runner Compatibility
 
