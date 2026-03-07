@@ -848,7 +848,6 @@ class TestInterruptNodeInCycle:
         r2 = await runner.run(
             graph,
             {"messages": r1.pause.value, r1.pause.response_key: "What is RAG?"},
-            on_internal_override="ignore",
         )
         assert r2.paused
         assert r2.pause.node_name == "ask/ask_user"
@@ -859,7 +858,6 @@ class TestInterruptNodeInCycle:
         r3 = await runner.run(
             graph,
             {"messages": r2.pause.value, r2.pause.response_key: "What is LLM?"},
-            on_internal_override="ignore",
         )
         assert r3.status == RunStatus.COMPLETED
         assert r3["messages"] == [

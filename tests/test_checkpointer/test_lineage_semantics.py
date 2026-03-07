@@ -150,7 +150,7 @@ class TestLineageSemantics:
 
         should_fail = False
         retry_graph = graph.with_entrypoint("maybe_fail")
-        resumed = await runner.run(retry_graph, workflow_id="wf-failed", on_internal_override="ignore")
+        resumed = await runner.run(retry_graph, workflow_id="wf-failed")
         assert resumed.status == RunStatus.COMPLETED
         assert resumed["out"] == 50
 
@@ -173,6 +173,36 @@ class TestLineageSemantics:
             graph,
             {paused.pause.response_key: "approved"},
             workflow_id="wf-paused",
+        )
+        assert resumed.status == RunStatus.COMPLETED
+        assert resumed["result"] == "Final: approved"
+
+    async def test_nested_paused_workflow_accepts_dotted_interrupt_response_on_resume(self, checkpointer):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @node(output_name="result")
+        def finalize(decision: str) -> str:
+            return f"Final: {decision}"
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([make_draft, inner.as_node(), finalize])
+
+        paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-nested-paused")
+        assert paused.status == RunStatus.PAUSED
+        assert paused.pause is not None
+        assert paused.pause.response_key == "inner.decision"
+
+        resumed = await runner.run(
+            graph,
+            {paused.pause.response_key: "approved"},
+            workflow_id="wf-nested-paused",
         )
         assert resumed.status == RunStatus.COMPLETED
         assert resumed["result"] == "Final: approved"
@@ -215,7 +245,7 @@ class TestLineageSemantics:
         should_fail = False
         retry_graph = graph.with_entrypoint("maybe_fail")
         retry_id_1, retry_cp_1 = checkpointer.retry_workflow("wf-retry-root")
-        retried_1 = await runner.run(retry_graph, checkpoint=retry_cp_1, workflow_id=retry_id_1, on_internal_override="ignore")
+        retried_1 = await runner.run(retry_graph, checkpoint=retry_cp_1, workflow_id=retry_id_1)
         assert retried_1["out"] == 10
         run_1 = checkpointer.get_run(retry_id_1)
         assert run_1 is not None
@@ -224,7 +254,7 @@ class TestLineageSemantics:
         assert run_1.forked_from == "wf-retry-root"
 
         retry_id_2, retry_cp_2 = checkpointer.retry_workflow("wf-retry-root")
-        await runner.run(retry_graph, checkpoint=retry_cp_2, workflow_id=retry_id_2, on_internal_override="ignore")
+        await runner.run(retry_graph, checkpoint=retry_cp_2, workflow_id=retry_id_2)
         run_2 = checkpointer.get_run(retry_id_2)
         assert run_2 is not None
         assert run_2.retry_of == "wf-retry-root"

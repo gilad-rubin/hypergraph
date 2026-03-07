@@ -206,7 +206,6 @@ class TestInterruptSharedCycleE2E:
         r2 = await runner.run(
             GRAPH,
             {"messages": [], "user_input": "hello"},
-            on_internal_override="ignore",
         )
         assert r2.paused, "Should pause at ask again after pipeline completes"
 

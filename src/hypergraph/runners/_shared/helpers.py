@@ -823,11 +823,34 @@ def is_interrupt_resume_payload(
     if not values:
         return False
 
-    allowed_outputs: set[str] = set()
-    for interrupt_node in graph.interrupt_nodes:
-        allowed_outputs.update(interrupt_node.data_outputs)
+    allowed_outputs = _collect_interrupt_resume_keys(graph)
 
     return bool(allowed_outputs) and set(values).issubset(allowed_outputs)
+
+
+def _collect_interrupt_resume_keys(
+    graph: Graph,
+    *,
+    prefix: str = "",
+) -> set[str]:
+    """Collect valid interrupt resume keys for this graph scope.
+
+    Top-level interrupt outputs are exposed directly (``decision``).
+    Nested graph interrupts are exposed with dotted graph-node prefixes
+    (``inner.decision`` / ``outer.inner.decision``), matching
+    ``PauseInfo.response_key``.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    allowed_outputs: set[str] = set()
+    for node in graph.iter_nodes():
+        if node.is_interrupt:
+            allowed_outputs.update(f"{prefix}{output}" for output in node.data_outputs)
+            continue
+        if isinstance(node, GraphNode):
+            nested_prefix = f"{prefix}{node.name}."
+            allowed_outputs.update(_collect_interrupt_resume_keys(node.graph, prefix=nested_prefix))
+    return allowed_outputs
 
 
 _UNSET_SELECT: Any = object()

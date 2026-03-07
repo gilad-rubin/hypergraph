@@ -170,7 +170,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
@@ -206,6 +205,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         if _validation_ctx is None and (fork_from is not None or retry_from is not None) and checkpointer is None:
             raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
         resume_checkpoint = None
+        skip_missing_input_validation = False
         if checkpointer is not None and _validation_ctx is None:
             if workflow_id is None:
                 workflow_id = generate_workflow_id()
@@ -240,6 +240,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     if existing_run.status.value == "completed":
                         raise WorkflowAlreadyCompletedError(workflow_id)
                     resume_checkpoint = await checkpointer.get_checkpoint(workflow_id)
+            if resume_checkpoint is not None:
+                # Runs that start from checkpoint state (resume, fork, retry)
+                # should not re-require original graph inputs that were already
+                # consumed by upstream completed steps.
+                skip_missing_input_validation = True
 
         has_checkpointer = checkpointer is not None and workflow_id is not None
         forked_from: str | None = None
@@ -269,10 +274,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 validation_values,
                 entrypoint=entrypoint,
                 selected=effective_selected,
-                on_internal_override=on_internal_override,
+                skip_missing_required=skip_missing_input_validation,
             )
         else:
-            validate_item_inputs(_validation_ctx, normalized_values, on_internal_override=on_internal_override)
+            validate_item_inputs(_validation_ctx, normalized_values)
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()
@@ -436,7 +441,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
@@ -540,7 +544,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
-                    on_internal_override=on_internal_override,
                     entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
                     error_handling="continue",

@@ -64,7 +64,6 @@ async def run_auto_resume_cycle(
         result = await runner.run(
             graph,
             merged,
-            on_internal_override="ignore",
         )
         if not result.paused:
             return result

@@ -354,7 +354,6 @@ Runtime scope switching (`run(..., select=...)`, `run(..., entrypoint=...)`) is 
 When multiple sources provide the same value, the runner uses: **EDGE > PROVIDED > BOUND > DEFAULT**
 
 - Internal edge-produced parameters supplied at runtime are rejected deterministically (`ValueError`).
-- `on_internal_override` is retained for compatibility, but does not allow internal edge-produced injections.
 
 ## Complete Example
 

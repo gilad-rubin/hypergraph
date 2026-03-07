@@ -57,7 +57,6 @@ def run(
     *,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -80,7 +79,6 @@ Execute a graph once.
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
   - `"error"`: raise error if any selected output is missing
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
@@ -170,7 +168,6 @@ def map(
     clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     workflow_id: str | None = None,
@@ -188,7 +185,6 @@ Execute a graph multiple times with different inputs.
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively. Prevents cross-iteration mutation.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -296,7 +292,6 @@ async def run(
     *,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
@@ -318,7 +313,6 @@ Execute a graph asynchronously.
 - `values` - Optional input values
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
@@ -390,7 +384,6 @@ async def map(
     clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
@@ -410,7 +403,6 @@ Execute graph multiple times concurrently.
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `entrypoint` - Runtime entrypoint overrides are not supported.
 - `max_concurrency` - Shared limit across all executions
 - `error_handling` - How to handle failures:

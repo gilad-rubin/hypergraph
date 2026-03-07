@@ -152,7 +152,7 @@ class TestAsyncRunResume:
         should_fail = False
 
         retry_graph = graph.with_entrypoint("flaky")
-        retried = await runner.run(retry_graph, retry_from="retry-src", on_internal_override="ignore")
+        retried = await runner.run(retry_graph, retry_from="retry-src")
         assert retried.status == RunStatus.COMPLETED
         run = checkpointer.get_run(retried.workflow_id)
         assert run is not None
