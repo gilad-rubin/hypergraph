@@ -169,7 +169,6 @@ async def test_pause_resume(self, tmp_path):
     from hypergraph.checkpointers import SqliteCheckpointer
 
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
-    await cp.initialize()
     runner = AsyncRunner(checkpointer=cp)
 
     r1 = await runner.run(graph, workflow_id="w", user_input="hello")
@@ -177,8 +176,6 @@ async def test_pause_resume(self, tmp_path):
 
     r2 = await runner.run(graph, workflow_id="w", user_input="more")
     assert r2.paused  # or not, depending on graph logic
-
-    await cp.close()
 ```
 
 Without a checkpointer, the runner has no state between calls — each run starts fresh.

@@ -204,6 +204,9 @@ class TestEntrypointAwareDefaultOpen:
         assert "step_a" in ready_names, f"Entrypoint gate target should fire on first pass. Got: {ready_names}"
 
 
+aiosqlite = pytest.importorskip("aiosqlite")
+
+
 class TestChatAppE2E:
     """End-to-end: multi-turn chat with interrupt pause/resume.
 
