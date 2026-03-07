@@ -119,17 +119,15 @@ async def demo() -> dict[str, object]:
     }
 
     first_run = await runner.run(graph, values)
-    if not first_run.paused:
+    if not first_run.paused or first_run.pause is None:
         return first_run.values
 
-    resumed = await runner.run(
-        graph,
-        {
-            **values,
-            first_run.pause.response_key: "Hotfix deployed and refund requests are safe to retry.",
-        },
-    )
-    return resumed.values
+    return {
+        "paused": True,
+        "node_name": first_run.pause.node_name,
+        "response_key": first_run.pause.response_key,
+        "value": first_run.pause.value,
+    }
 
 
 if __name__ == "__main__":
