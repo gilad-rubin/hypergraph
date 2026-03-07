@@ -228,6 +228,54 @@ def get_ready_nodes(
     return ready
 
 
+def find_missing_resume_seed_inputs(
+    graph: Graph,
+    state: GraphState,
+    *,
+    active_nodes: set[str] | None = None,
+    startup_predecessors: dict[str, frozenset[str]] | None = None,
+) -> set[str]:
+    """Return graph inputs that block checkpoint-started execution from resuming.
+
+    This is used after restoring checkpoint state. If no nodes are ready, but an
+    activated node would become runnable once a graph-level seed input existed,
+    returning that input lets callers raise a clear error instead of silently
+    no-op completing the run.
+    """
+    activated_nodes = _get_activated_nodes(graph, state)
+    if startup_predecessors is None:
+        startup_predecessors = _compute_startup_predecessors(graph, active_nodes=active_nodes)
+
+    missing: set[str] = set()
+    graph_inputs = set(graph.inputs.all)
+
+    for node in graph._nodes.values():
+        if active_nodes is not None and node.name not in active_nodes:
+            continue
+        if node.name not in activated_nodes:
+            continue
+        if node.is_interrupt and all(output in state.values for output in node.data_outputs):
+            continue
+        if not _startup_predecessors_satisfied(
+            node,
+            graph,
+            state,
+            activated_nodes=activated_nodes,
+            startup_predecessors=startup_predecessors,
+        ):
+            continue
+        if not _wait_for_satisfied(node, state):
+            continue
+        if not _needs_execution(node, graph, state):
+            continue
+
+        for param in node.inputs:
+            if param in graph_inputs and not _has_input(param, node, graph, state):
+                missing.add(param)
+
+    return missing
+
+
 def _compute_startup_predecessors(
     graph: Graph,
     *,

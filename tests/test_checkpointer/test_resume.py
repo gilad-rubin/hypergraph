@@ -7,6 +7,7 @@ from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
 from hypergraph.exceptions import (
     GraphChangedError,
     InputOverrideRequiresForkError,
+    MissingInputError,
     WorkflowAlreadyCompletedError,
 )
 from hypergraph.runners._shared.types import RunStatus
@@ -93,6 +94,24 @@ class TestAsyncRunResume:
         checkpoint = checkpointer.checkpoint("valid-1")
         result = await runner.run(graph_step2, checkpoint=checkpoint, workflow_id="valid-1-fork")
         assert result["tripled"] == 30
+
+    async def test_checkpoint_resume_missing_seed_inputs_raises(self, checkpointer):
+        """Checkpoint-started runs should fail clearly instead of no-op completing."""
+        runner = AsyncRunner(checkpointer=checkpointer)
+
+        @node(output_name="consumed")
+        def consume_x(x: int) -> int:
+            return x + 1
+
+        await runner.run(Graph([double]), {"x": 5}, workflow_id="missing-seed-src")
+        checkpoint = checkpointer.checkpoint("missing-seed-src")
+
+        with pytest.raises(MissingInputError, match="missing required seed inputs"):
+            await runner.run(
+                Graph([consume_x]),
+                checkpoint=checkpoint,
+                workflow_id="missing-seed-fork",
+            )
 
     async def test_override_workflow_auto_forks_existing_id(self, checkpointer):
         """override_workflow=True auto-forks instead of raising strict resume errors."""
@@ -409,6 +428,24 @@ class TestSyncRunResume:
         result = runner.run(graph, {"x": 100}, checkpoint=checkpoint, workflow_id="sync-override-fork")
         assert result["doubled"] == 200
         assert result["tripled"] == 600
+
+    def test_checkpoint_resume_missing_seed_inputs_raises(self, sync_checkpointer):
+        """Sync mirror: checkpoint-started no-op resumes should fail clearly."""
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+
+        @node(output_name="consumed")
+        def consume_x(x: int) -> int:
+            return x + 1
+
+        runner.run(Graph([double]), {"x": 5}, workflow_id="sync-missing-seed-src")
+        checkpoint = sync_checkpointer.checkpoint("sync-missing-seed-src")
+
+        with pytest.raises(MissingInputError, match="missing required seed inputs"):
+            runner.run(
+                Graph([consume_x]),
+                checkpoint=checkpoint,
+                workflow_id="sync-missing-seed-fork",
+            )
 
     def test_override_workflow_auto_forks_existing_id(self, sync_checkpointer):
         """Sync mirror: override_workflow=True auto-forks existing workflow_id."""
