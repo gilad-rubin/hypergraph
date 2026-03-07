@@ -1,25 +1,26 @@
 # Framework Comparison
 
-How hypergraph compares to other Python workflow frameworks.
+How hypergraph compares to adjacent workflow frameworks.
 
-- **vs LangGraph/Pydantic-Graph** - No state schemas, pure functions, automatic edge inference
-- **vs Hamilton/Pipefunc** - Same clean DAG model, plus cycles and agentic patterns
-- **Best of both** - DAG simplicity meets agent flexibility
+- **vs LangGraph / Pydantic-Graph** - Less state-schema ceremony, more value flow through named edges
+- **vs Hamilton / pipefunc** - Similar functional DAG ergonomics, but with cycles and first-class nesting
+- **vs DBOS / Inngest / Restate** - Stronger graph composition model today, lighter durable runtime story today
 
 ## Quick Comparison
 
-| Feature | hypergraph | LangGraph | Hamilton | Pipefunc | Pydantic-Graph |
-|---------|:---:|:---:|:---:|:---:|:---:|
-| DAG Pipelines | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Agentic Loops | ✓ | ✓ | — | — | ✓ |
-| Hierarchical | First-class | ✓ | ✓ | ✓ | ✓ |
-| Human-in-the-Loop | ✓ | ✓ | — | — | ✓ |
+| Feature | hypergraph | LangGraph | Hamilton | pipefunc | Pydantic-Graph | DBOS / Inngest / Restate |
+|---------|:---:|:---:|:---:|:---:|:---:|:---:|
+| DAG Pipelines | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Agentic Loops | ✓ | ✓ | — | — | ✓ | ✓ |
+| Graphs Inside Graphs | First-class | ✓ | partial / DAG-oriented | partial / DAG-oriented | ✓ | workflow/runtime oriented |
+| Human-in-the-Loop | ✓ | ✓ | — | — | ✓ | ✓ |
+| Turnkey External Event Waits | partial / app-managed | partial | — | — | partial | strong |
 
 ## The Design Space
 
 ### DAG-First Frameworks
 
-**Hamilton** and **Pipefunc** excel at data pipelines. Functions define nodes, edges are inferred from parameter names. Clean, testable, minimal boilerplate.
+**Hamilton** and **pipefunc** excel at data pipelines. Functions define nodes, edges are inferred from parameter names. Clean, testable, minimal boilerplate.
 
 But they can't express cycles. Multi-turn conversations, agentic workflows, iterative refinement - none of these are possible when the framework fundamentally assumes DAG execution.
 
@@ -29,12 +30,24 @@ But they can't express cycles. Multi-turn conversations, agentic workflows, iter
 
 But they require explicit state schemas. Every node reads from and writes to a shared state object. Functions become framework-coupled. Testing requires mocking state.
 
-### Hypergraph: The Middle Path
+### Durable Workflow Platforms
+
+**DBOS**, **Inngest**, and **Restate** push farther on orchestration runtime concerns:
+
+- waiting for external events
+- resuming after long pauses
+- approval inboxes
+- workflow inspection and lifecycle operations
+
+Hypergraph can model the same business flows, but more of the orchestration shell still lives in your application code. Hypergraph's current center of gravity is the graph model itself: named values, nested graphs, routes, interrupts, and mapped subgraphs.
+
+### Hypergraph: The Structural Middle Path
 
 Hypergraph takes the best of both:
 
 - **From DAG frameworks**: Functions are pure. Edges are inferred. No state schema.
 - **From agent frameworks**: Cycles, routing, and human-in-the-loop.
+- **From neither extreme**: Hierarchical composition is the primary abstraction, so DAGs, loops, and mapped subgraphs can be combined in one model.
 
 ## Code Comparison: RAG Pipeline
 
@@ -223,6 +236,25 @@ Hamilton and pipefunc are DAG frameworks — cycles are outside their scope. For
 | Hamilton | Outputs flow forward, no shared state |
 | Pipefunc | Outputs flow forward, no shared state |
 
+### Where Hypergraph Is Strongest
+
+Hypergraph usually looks best when the workflow has real structure, not just "an agent loop":
+
+- a retrieval DAG inside a chat loop
+- a nested approval or escalation subgraph
+- a graph written for one item, then mapped across a batch
+- an evaluation DAG containing the workflow under test
+
+That is the core comparison story: one model for DAGs, loops, hierarchy, and scale-out.
+
+### Where Hypergraph Is Lighter Today
+
+Hypergraph already has checkpointing, lineage, and interrupts, but it is still lighter on runtime orchestration than DBOS / Inngest / Restate:
+
+- external-event resume is more app-managed
+- approval inboxes are buildable but not first-class
+- workflow lifecycle operations are less prominent than the graph API
+
 ### Function Portability
 
 Can you test functions without the framework?
@@ -252,6 +284,7 @@ Can you test functions without the framework?
 - You need both DAGs and agentic patterns
 - You want minimal boilerplate
 - Hierarchical composition is important
+- You want to write one workflow, then scale it with `runner.map()` or `map_over()`
 - You're building multi-agent systems
 
 ### Choose LangGraph when
