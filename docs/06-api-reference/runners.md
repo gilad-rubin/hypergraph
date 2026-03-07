@@ -18,6 +18,10 @@ Runners execute graphs. They handle the execution loop, node scheduling, and con
 
 Sequential execution for synchronous graphs.
 
+`SyncRunner` is not built for interrupts or HITL flows. If a graph contains
+`InterruptNode`s, `SyncRunner` raises `IncompatibleRunnerError`; use
+`AsyncRunner` instead.
+
 ```python
 from hypergraph import Graph, node, SyncRunner
 
