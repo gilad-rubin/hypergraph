@@ -56,6 +56,7 @@ class SyncGraphNodeExecutor:
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
         child_workflow_id = f"{workflow_id}/{node.name}" if workflow_id else None
+        map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
         # On pause, _handle_nested_result prefixes the node_name ("ask_user/ask_slack")
@@ -69,14 +70,12 @@ class SyncGraphNodeExecutor:
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
             sync_cp = self.runner._get_sync_checkpointer(child_workflow_id)
-            if sync_cp is not None and sync_cp.get_run(child_workflow_id) is not None:
+            if map_config is None and sync_cp is not None and sync_cp.get_run(child_workflow_id) is not None:
                 inner_inputs = {}
             prefix = f"{node.name}."
             for key in state.values:
                 if key.startswith(prefix):
                     inner_inputs[key[len(prefix) :]] = state.values[key]
-
-        map_config = node.map_config
 
         if map_config:
             _, mode, error_handling = map_config

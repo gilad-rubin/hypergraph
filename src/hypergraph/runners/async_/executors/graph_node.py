@@ -78,6 +78,7 @@ class AsyncGraphNodeExecutor:
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
         child_workflow_id = f"{workflow_id}/{node.name}" if workflow_id else None
+        map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
         # On pause, _handle_nested_result prefixes the node_name ("ask_user/ask_slack")
@@ -90,7 +91,7 @@ class AsyncGraphNodeExecutor:
         # Only inject on first execution: on cycle loop-back the node has already
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
-            if child_workflow_id is not None and self.runner._checkpointer is not None:
+            if map_config is None and child_workflow_id is not None and self.runner._checkpointer is not None:
                 existing_child_run = await self.runner._checkpointer.get_run_async(child_workflow_id)
                 if existing_child_run is not None:
                     inner_inputs = {}
@@ -98,8 +99,6 @@ class AsyncGraphNodeExecutor:
             for key in state.values:
                 if key.startswith(prefix):
                     inner_inputs[key[len(prefix) :]] = state.values[key]
-
-        map_config = node.map_config
 
         if map_config:
             _, mode, error_handling = map_config
