@@ -65,6 +65,14 @@ class TestRunLifecycle:
         assert r.status == WorkflowStatus.COMPLETED
         assert r.completed_at is not None
 
+    async def test_update_status_paused_keeps_run_resumable(self, checkpointer):
+        await checkpointer.create_run("wf-1")
+        await checkpointer.update_run_status("wf-1", WorkflowStatus.PAUSED, duration_ms=10.0, node_count=1)
+        r = checkpointer.get_run("wf-1")
+        assert r.status == WorkflowStatus.PAUSED
+        assert r.completed_at is None
+        assert r.node_count == 1
+
     async def test_update_status_with_stats(self, checkpointer):
         await checkpointer.create_run("wf-1")
         await checkpointer.update_run_status(
@@ -94,6 +102,15 @@ class TestRunLifecycle:
         active = checkpointer.runs(status=WorkflowStatus.ACTIVE)
         assert len(active) == 1
         assert active[0].id == "wf-2"
+
+    async def test_list_runs_paused(self, checkpointer):
+        await checkpointer.create_run("wf-active")
+        await checkpointer.create_run("wf-paused")
+        await checkpointer.update_run_status("wf-paused", WorkflowStatus.PAUSED)
+
+        paused = checkpointer.runs(status=WorkflowStatus.PAUSED)
+        assert len(paused) == 1
+        assert paused[0].id == "wf-paused"
 
     async def test_create_run_with_lineage_fields(self, checkpointer):
         run = await checkpointer.create_run(
@@ -129,6 +146,28 @@ class TestRunLifecycle:
         assert retry_cp.source_run_id == "wf-root"
         assert retry_cp.retry_of == "wf-root"
         assert retry_cp.retry_index == 1
+
+    async def test_create_run_resets_stale_completion_metadata(self, checkpointer):
+        await checkpointer.create_run("wf-reused", graph_name="before")
+        await checkpointer.update_run_status(
+            "wf-reused",
+            WorkflowStatus.FAILED,
+            duration_ms=123.0,
+            node_count=4,
+            error_count=2,
+        )
+
+        reset = await checkpointer.create_run("wf-reused", graph_name="after")
+        fetched = checkpointer.get_run("wf-reused")
+
+        assert reset.status == WorkflowStatus.ACTIVE
+        assert fetched is not None
+        assert fetched.status == WorkflowStatus.ACTIVE
+        assert fetched.graph_name == "after"
+        assert fetched.duration_ms is None
+        assert fetched.node_count == 0
+        assert fetched.error_count == 0
+        assert fetched.completed_at is None
 
 
 class TestStepPersistence:
@@ -542,6 +581,16 @@ class TestSyncReads:
         html = lineage._repr_html_()
         assert "retry" in html
         assert "Cached" in html
+
+    async def test_lineage_uses_retry_parent_when_fork_parent_missing(self, checkpointer):
+        """Retry-only lineage metadata still resolves the root ancestor."""
+        await checkpointer.create_run("wf-root")
+        await checkpointer.create_run("wf-root-retry-1", retry_of="wf-root", retry_index=1)
+
+        lineage = checkpointer.lineage("wf-root-retry-1", include_steps=False)
+
+        assert lineage.root_run_id == "wf-root"
+        assert [row.run.id for row in lineage] == ["wf-root", "wf-root-retry-1"]
 
 
 class TestRetentionPolicyBehavior:

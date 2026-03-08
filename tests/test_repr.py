@@ -118,6 +118,12 @@ class TestRunRepr:
         assert "(pipeline)" in r
         assert "active" in r
 
+    def test_paused_repr(self):
+        run = Run(id="my-run", status=WorkflowStatus.PAUSED, graph_name="pipeline")
+        r = repr(run)
+        assert "(pipeline)" in r
+        assert "paused" in r
+
     def test_no_enum_repr(self):
         """Enum should show .value, not <WorkflowStatus.COMPLETED: 'completed'>."""
         run = Run(id="x", status=WorkflowStatus.COMPLETED)
@@ -772,3 +778,5 @@ class TestSqliteCheckpointerRepr:
         assert "Runs" in html
         assert ".runs()" in html
         assert "data-hg-state-key" in html
+        assert 'data-hg-explorer="checkpointer"' in html
+        assert "Run Explorer" in html

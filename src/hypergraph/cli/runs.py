@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from hypergraph.cli._db import open_checkpointer
+from hypergraph.cli._db import open_run_inspector
 from hypergraph.cli._format import (
     DEFAULT_LIMIT,
     describe_value,
@@ -79,6 +79,7 @@ def _print_run_traces(run_list: list) -> None:
                 members,
                 key=lambda r: (
                     r.status.value == "active",
+                    r.status.value == "paused",
                     r.status.value == "failed",
                     r.created_at is not None,
                     r.created_at,
@@ -110,24 +111,26 @@ def runs_dashboard(
     if ctx.invoked_subcommand is not None:
         return
 
-    cp = open_checkpointer(db)
-    all_runs = cp.runs(parent_run_id=None)
+    inspector = open_run_inspector(db)
+    all_runs = inspector.runs(parent_run_id=None)
 
     if not all_runs:
         if as_json:
             print_json("runs", {"active": [], "recent": []}, output)
         else:
             print("No runs found.")
-            print(f"\n  Database: {cp._path}")
+            print(f"\n  Database: {inspector.db_path}")
             print("  To create runs, use: runner.run(graph, inputs, workflow_id='my-run')")
         return
 
     active = [r for r in all_runs if r.status.value == "active"]
-    recent = [r for r in all_runs if r.status.value != "active"][:5]
+    paused = [r for r in all_runs if r.status.value == "paused"]
+    recent = [r for r in all_runs if r.status.value not in {"active", "paused"}][:5]
 
     if as_json:
         data = {
             "active": [r.to_dict() for r in active],
+            "paused": [r.to_dict() for r in paused],
             "recent": [r.to_dict() for r in recent],
         }
         print_json("runs", data, output)
@@ -135,10 +138,13 @@ def runs_dashboard(
 
     if active:
         print(f"\nActive ({len(active)} running)\n")
-        _print_run_table(active, cp)
+        _print_run_table(active, inspector)
+    if paused:
+        print(f"\nPaused ({len(paused)} resumable)\n")
+        _print_run_table(paused, inspector)
     if recent:
         print(f"\nRecent (last {len(recent)})\n")
-        _print_run_table(recent, cp)
+        _print_run_table(recent, inspector)
 
     print_ctas(
         [
@@ -149,9 +155,9 @@ def runs_dashboard(
     )
 
 
-def _print_run_table(run_list, cp) -> None:
+def _print_run_table(run_list, inspector) -> None:
     """Print a table of runs with step count info."""
-    step_counts = {r.id: len(cp.steps(r.id)) for r in run_list}
+    step_counts = {r.id: len(inspector.steps(r.id)) for r in run_list}
 
     headers = ["ID", "Graph", "Status", "Steps", "Duration", "Created"]
     rows = [
@@ -190,7 +196,7 @@ def runs_ls(
     output: OutputOption = None,
 ):
     """List runs with filters. Shows top-level runs by default."""
-    cp = open_checkpointer(db)
+    inspector = open_run_inspector(db)
     from hypergraph.checkpointers import WorkflowStatus
 
     view = view.lower()
@@ -223,13 +229,13 @@ def runs_ls(
             try:
                 ws = WorkflowStatus(s.lower())
             except ValueError as e:
-                print(f"Error: Unknown status '{s}'. Use: active, completed, failed")
+                print(f"Error: Unknown status '{s}'. Use: active, paused, completed, failed")
                 raise typer.Exit(1) from e
-            run_list.extend(cp.runs(status=ws, **filter_kwargs))
+            run_list.extend(inspector.runs(status=ws, **filter_kwargs))
         # Deduplicate by ID before sorting/limiting.
         run_list = list({r.id: r for r in run_list}.values())
     else:
-        run_list = cp.runs(**filter_kwargs)
+        run_list = inspector.runs(**filter_kwargs)
 
     run_list = _sort_runs(run_list, sort)[:limit]
 
@@ -285,13 +291,13 @@ def runs_show(
     output: OutputOption = None,
 ):
     """Show run trace for a run."""
-    cp = open_checkpointer(db)
-    r = cp.get_run(run_id)
+    inspector = open_run_inspector(db)
+    r = inspector.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
 
-    step_list = cp.steps(run_id)
+    step_list = inspector.steps(run_id)
 
     # Single step mode
     if step is not None:
@@ -342,7 +348,7 @@ def runs_show(
         print()
 
     # Check for child runs (batch parent or nested graph parent)
-    children = cp.runs(parent_run_id=run_id)
+    children = inspector.runs(parent_run_id=run_id)
 
     if not step_list:
         print("  No steps recorded.")
@@ -395,6 +401,8 @@ def runs_show(
         ctas.insert(0, f"hypergraph runs show {run_id} --errors   for failures only")
     if r.status.value == "active":
         ctas.insert(0, "Run is still active. Re-run to see new steps.")
+    if r.status.value == "paused":
+        ctas.insert(0, "Run is paused and resumable.")
     print_ctas(ctas)
 
 
@@ -440,14 +448,14 @@ def runs_values(
     output: OutputOption = None,
 ):
     """Show accumulated output values for a run."""
-    cp = open_checkpointer(db)
-    r = cp.get_run(run_id)
+    inspector = open_run_inspector(db)
+    r = inspector.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
 
-    current_state = cp.state(run_id, superstep=superstep)
-    step_list = cp.steps(run_id, superstep=superstep)
+    current_state = inspector.state(run_id, superstep=superstep)
+    step_list = inspector.steps(run_id, superstep=superstep)
 
     # Single key mode
     if key is not None:
@@ -474,7 +482,7 @@ def runs_values(
 
     # Status header
     step_label = f"through superstep {superstep}" if superstep is not None else f"through step {len(step_list) - 1}" if step_list else "no steps"
-    status_note = f", {format_status(r.status.value)}" if r.status.value == "active" else ""
+    status_note = f", {format_status(r.status.value)}" if r.status.value in {"active", "paused"} else ""
     print(f"\nValues: {run_id} ({step_label}{status_note})\n")
 
     if not current_state:
@@ -526,13 +534,13 @@ def runs_steps(
     output: OutputOption = None,
 ):
     """Show detailed step records."""
-    cp = open_checkpointer(db)
-    r = cp.get_run(run_id)
+    inspector = open_run_inspector(db)
+    r = inspector.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
 
-    step_list = cp.steps(run_id)
+    step_list = inspector.steps(run_id)
 
     if node:
         step_list = [s for s in step_list if s.node_name == node]
@@ -580,8 +588,8 @@ def runs_search(
     output: OutputOption = None,
 ):
     """Search step records using full-text search."""
-    cp = open_checkpointer(db)
-    results = cp.search(query, field=field, limit=limit)
+    inspector = open_run_inspector(db)
+    results = inspector.search(query, field=field, limit=limit)
 
     if as_json:
         print_json("runs.search", [s.to_dict() for s in results], output)
@@ -624,13 +632,13 @@ def runs_stats(
     output: OutputOption = None,
 ):
     """Show per-node performance statistics for a run."""
-    cp = open_checkpointer(db)
-    r = cp.get_run(run_id)
+    inspector = open_run_inspector(db)
+    r = inspector.get_run(run_id)
     if r is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
 
-    node_stats = cp.stats(run_id)
+    node_stats = inspector.stats(run_id)
 
     if as_json:
         print_json("runs.stats", {"run_id": run_id, "nodes": node_stats}, output)
@@ -679,13 +687,13 @@ def runs_checkpoint(
     output: OutputOption = None,
 ):
     """Inspect a checkpoint snapshot for a run."""
-    cp = open_checkpointer(db)
-    run = cp.get_run(run_id)
+    inspector = open_run_inspector(db)
+    run = inspector.get_run(run_id)
     if run is None:
         print(f"Error: Run '{run_id}' not found.")
         raise typer.Exit(1)
 
-    checkpoint = cp.checkpoint(run_id, superstep=superstep)
+    checkpoint = inspector.checkpoint(run_id, superstep=superstep)
     values = checkpoint.values
     steps = checkpoint.steps
 
@@ -736,9 +744,9 @@ def runs_lineage(
     output: OutputOption = None,
 ):
     """Show git-like fork lineage for a workflow."""
-    cp = open_checkpointer(db)
+    inspector = open_run_inspector(db)
     try:
-        lineage = cp.lineage(run_id, include_steps=deep, max_runs=max_runs)
+        lineage = inspector.lineage(run_id, include_steps=deep, max_runs=max_runs)
     except ValueError as e:
         print(f"Error: {e}")
         raise typer.Exit(1) from e

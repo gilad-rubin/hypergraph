@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import END, AsyncRunner, Graph, RunStatus, ifelse, interrupt, node
-from hypergraph.checkpointers import SqliteCheckpointer
+from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
 from hypergraph.exceptions import (
     GraphChangedError,
     InputOverrideRequiresForkError,
@@ -168,6 +168,9 @@ class TestLineageSemantics:
         paused = await runner.run(graph, workflow_id="wf-paused")
         assert paused.status == RunStatus.PAUSED
         assert paused.pause is not None
+        stored = checkpointer.get_run("wf-paused")
+        assert stored is not None
+        assert stored.status == WorkflowStatus.PAUSED
 
         resumed = await runner.run(
             graph,
@@ -198,6 +201,10 @@ class TestLineageSemantics:
         assert paused.status == RunStatus.PAUSED
         assert paused.pause is not None
         assert paused.pause.response_key == "inner.decision"
+        stored_parent = checkpointer.get_run("wf-nested-paused")
+        stored_child = checkpointer.get_run("wf-nested-paused/inner")
+        assert stored_parent is not None and stored_parent.status == WorkflowStatus.PAUSED
+        assert stored_child is not None and stored_child.status == WorkflowStatus.PAUSED
 
         resumed = await runner.run(
             graph,

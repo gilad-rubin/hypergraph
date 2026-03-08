@@ -91,7 +91,7 @@ Execute a graph once.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted: auto-generated for `run()`
-  - existing: strict resume only (no runtime values; same graph structure)
+  - existing: strict resume only (no runtime values; same graph structure). Existing persisted workflows may be `active`, `paused`, or `failed`; completed workflows are terminal.
   - new + `checkpoint`: explicit fork
 - `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
 - `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
@@ -327,7 +327,7 @@ Execute a graph asynchronously.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted: auto-generated for `run()`
-  - existing: strict resume only (no runtime values; same graph structure)
+  - existing: strict resume only (no runtime values; same graph structure). Existing persisted workflows may be `active`, `paused`, or `failed`; completed workflows are terminal.
   - new + `checkpoint`: explicit fork
 - `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
 - `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.

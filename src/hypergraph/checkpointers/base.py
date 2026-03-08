@@ -154,8 +154,11 @@ class Checkpointer(ABC):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a retry fork with retry lineage metadata."""
+        source = await self.get_run_async(source_run_id)
+        if source is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
         checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
-        siblings = await self.list_runs(limit=10_000)
+        siblings = await self.list_runs(limit=None)
         retry_count = sum(1 for run in siblings if run.retry_of == source_run_id)
         retry_index = retry_count + 1
         new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
@@ -174,14 +177,14 @@ class Checkpointer(ABC):
         *,
         status: WorkflowStatus | None = None,
         parent_run_id: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent.
 
         Args:
             status: Filter to runs with this status (None = all).
             parent_run_id: Filter to children of this run (None = no filter).
-            limit: Max results to return.
+            limit: Max results to return. ``None`` returns all matches.
         """
         ...
 
