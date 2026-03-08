@@ -945,8 +945,11 @@ def graphnode_child_workflow_id(
     if execution is None:
         return base
 
-    previous_versions = tuple(execution.input_versions.values()) or tuple(execution.output_versions.values())
-    iteration = max(previous_versions, default=1)
+    # output_versions are recorded after the previous execution completed, so
+    # they already reflect the suffix we want for the next child run. For nodes
+    # without recorded outputs, input_versions reflect the pre-execution state,
+    # so advance one step beyond the highest seen value.
+    iteration = max(execution.output_versions.values()) if execution.output_versions else max(execution.input_versions.values(), default=0) + 1
     return f"{base}/{iteration}"
 
 
