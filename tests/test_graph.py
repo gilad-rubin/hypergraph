@@ -491,8 +491,8 @@ class TestGraphBind:
 
         assert g2.inputs.bound == {"x": 2}
 
-    def test_bind_edge_produced_accepted(self):
-        """Test binding an edge-produced value is accepted (bypass if producer doesn't run)."""
+    def test_bind_edge_produced_rejected(self):
+        """Binding an active edge-produced value should be rejected."""
 
         @node(output_name="x")
         def source(a):
@@ -504,12 +504,26 @@ class TestGraphBind:
 
         g = Graph([source, destination])
 
-        # 'x' is produced by source node — binding is now allowed
+        with pytest.raises(ValueError, match="bind\\(\\) only accepts graph inputs in the current scope"):
+            g.bind(x=10)
+
+    def test_bind_former_intermediate_allowed_after_entrypoint_slice(self):
+        """A former intermediate can be bound once slicing makes it an input."""
+
+        @node(output_name="x")
+        def source(a):
+            return a * 2
+
+        @node(output_name="result")
+        def destination(x):
+            return x + 1
+
+        g = Graph([source, destination]).with_entrypoint("destination")
         configured = g.bind(x=10)
         assert configured.inputs.bound["x"] == 10
 
     def test_bind_unknown_key_raises(self):
-        """Test binding a key not in graph.inputs.all or graph.outputs raises ValueError."""
+        """Test binding a key not in graph.inputs.all raises ValueError."""
 
         @node(output_name="result")
         def foo(x):
@@ -517,8 +531,8 @@ class TestGraphBind:
 
         g = Graph([foo])
 
-        # 'unknown' is not a graph input or output
-        with pytest.raises(ValueError, match="not a graph input or output"):
+        # 'unknown' is not a graph input
+        with pytest.raises(ValueError, match="not a graph input in the current scope"):
             g.bind(unknown=42)
 
     def test_original_unchanged_after_bind(self):
@@ -2114,8 +2128,8 @@ class TestAddNodes:
         g2 = g.add_nodes(bar)
         assert g2.inputs.bound == {"x": 10}
 
-    def test_bind_edge_produced_still_valid(self):
-        """Bound key that becomes edge-produced stays valid (can override at runtime)."""
+    def test_bind_becomes_edge_produced_after_add_nodes_raises(self):
+        """Bound key that becomes edge-produced after add_nodes must be unbound first."""
 
         @node(output_name="result")
         def consumer(x: int) -> int:
@@ -2127,9 +2141,8 @@ class TestAddNodes:
         def producer(a: int) -> int:
             return a * 2
 
-        # x is still a valid output, so binding is preserved
-        g2 = g.add_nodes(producer)
-        assert g2.inputs.bound == {"x": 10}
+        with pytest.raises(ValueError, match=r"no longer valid.*unbind"):
+            g.add_nodes(producer)
 
     def test_bind_becomes_emit_only_raises(self):
         """Bound key that becomes emit-only after add_nodes raises ValueError."""

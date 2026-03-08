@@ -1,5 +1,7 @@
 """Tests for bind/unbind edge cases."""
 
+import pytest
+
 from hypergraph.graph import Graph
 from hypergraph.nodes.function import node
 
@@ -178,7 +180,7 @@ class TestBindCycleEntryPoints:
         assert configured.inputs.bound["count"] == 0
 
     def test_bind_multi_node_cycle_param(self):
-        """Multi-node cycle params are bindable."""
+        """Only the configured cycle bootstrap param is bindable."""
 
         @node(output_name="a")
         def node_a(b: int) -> int:
@@ -192,15 +194,15 @@ class TestBindCycleEntryPoints:
 
         assert g.has_cycles
 
-        # Both a and b are cycle params — binding is allowed
-        configured = g.bind(a=0)
-        assert configured.inputs.bound["a"] == 0
+        # Only the active bootstrap input is bindable under the current scope.
+        with pytest.raises(ValueError, match="bind\\(\\) only accepts graph inputs in the current scope"):
+            g.bind(a=0)
 
         configured = g.bind(b=0)
         assert configured.inputs.bound["b"] == 0
 
-    def test_bind_node_output_accepted(self):
-        """Node outputs can be bound (bypass if producer doesn't run)."""
+    def test_bind_node_output_rejected_until_graph_is_sliced(self):
+        """Node outputs cannot be bound until slicing makes them graph inputs."""
 
         @node(output_name="x")
         def producer(input_val: int) -> int:
@@ -214,8 +216,11 @@ class TestBindCycleEntryPoints:
 
         assert "input_val" in g.inputs.required
 
-        # Binding an output is allowed — acts as fallback when producer can't run
-        configured = g.bind(x=10)
+        with pytest.raises(ValueError, match="bind\\(\\) only accepts graph inputs in the current scope"):
+            g.bind(x=10)
+
+        scoped = g.with_entrypoint("consumer")
+        configured = scoped.bind(x=10)
         assert configured.inputs.bound["x"] == 10
 
 
