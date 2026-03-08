@@ -312,6 +312,23 @@ class TestInterruptEvents:
         assert len(run_ends) == 2
         assert all(event.status == RunStatus.PAUSED for event in run_ends)
 
+    @pytest.mark.asyncio
+    async def test_interrupt_event_reuses_paused_node_span_id(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return None
+
+        graph = Graph([approval], name="review")
+        runner = AsyncRunner()
+        lp = ListProcessor()
+
+        result = await runner.run(graph, {"draft": "hello"}, event_processors=[lp])
+
+        assert result.paused
+        node_start = lp.of_type(NodeStartEvent)[0]
+        interrupt_event = lp.of_type(InterruptEvent)[0]
+        assert interrupt_event.span_id == node_start.span_id
+
 
 # ---------------------------------------------------------------------------
 # Cyclic graph

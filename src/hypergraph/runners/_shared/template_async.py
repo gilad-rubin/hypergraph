@@ -406,6 +406,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 await dispatcher.emit_async(
                     InterruptEvent(
                         run_id=run_id,
+                        span_id=pause.span_id or run_span_id,
                         parent_span_id=run_span_id,
                         node_name=pause.pause_info.node_name,
                         graph_name=graph.name,

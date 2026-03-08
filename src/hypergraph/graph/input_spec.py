@@ -175,7 +175,7 @@ def _categorize_param(
     if param in edge_produced:
         return None  # Produced by an edge, not a user input
 
-    if param in bound or _any_node_has_default(param, nodes):
+    if param in bound or _all_consumers_have_default(param, nodes):
         return "optional"
 
     return "required"
@@ -186,9 +186,12 @@ def _is_interrupt_produced(param: str, nodes: dict[str, HyperNode]) -> bool:
     return any(n.is_interrupt and param in n.outputs for n in nodes.values())
 
 
-def _any_node_has_default(param: str, nodes: dict[str, HyperNode]) -> bool:
-    """Check if any node consuming this param has a default value."""
-    return any(param in node.inputs and node.has_default_for(param) for node in nodes.values())
+def _all_consumers_have_default(param: str, nodes: dict[str, HyperNode]) -> bool:
+    """Check if every node consuming this param has a fallback value."""
+    consumers = [node for node in nodes.values() if param in node.inputs]
+    if not consumers:
+        return False
+    return all(node.has_default_for(param) for node in consumers)
 
 
 def _get_all_cycle_params(

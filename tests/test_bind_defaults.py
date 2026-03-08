@@ -305,3 +305,21 @@ def test_sibling_nested_bindings_do_not_leak():
     result = SyncRunner().run(graph, {"x": 1})
     assert result["out_a"] == "A:1:CFG_A"
     assert result["out_b"] == "B:1:CFG_B"
+
+
+def test_nested_bound_value_does_not_make_shared_param_optional_for_other_nodes():
+    """A nested bind should not make a sibling consumer think it has a fallback."""
+
+    @node(output_name="nested_out")
+    def nested_consumer(x: int, cfg: str) -> str:
+        return f"{x}:{cfg}"
+
+    @node(output_name="final")
+    def sibling_consumer(nested_out: str, cfg: str) -> str:
+        return f"{nested_out}:{cfg}"
+
+    inner = Graph([nested_consumer], name="inner").bind(cfg="inner-cfg")
+    outer = Graph([inner.as_node(), sibling_consumer], name="outer")
+
+    assert "cfg" in outer.inputs.required
+    assert "cfg" not in outer.inputs.optional

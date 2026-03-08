@@ -636,6 +636,7 @@ class PauseExecution(BaseException):
 
     def __init__(self, pause_info: PauseInfo):
         self.pause_info = pause_info
+        self.span_id: str | None = None
         super().__init__(f"Paused at {pause_info.node_name}")
 
 

@@ -268,6 +268,35 @@ class TestNestedGraphCheckpointing:
         assert "nested-cycle/inner/2" in run_ids
         assert "nested-cycle/inner/3" in run_ids
 
+    async def test_nested_graph_in_outer_cycle_uses_distinct_child_ids_when_output_repeats(self, async_cp):
+        """Repeated nested executions should still get new child ids if outputs stay equal."""
+
+        @node(output_name="tick")
+        def tick(tick: int) -> int:
+            return tick + 1
+
+        @node(output_name="stable")
+        def constant(_tick: int) -> int:
+            return 1
+
+        inner = Graph([tick, constant], name="inner", entrypoint="tick")
+
+        @route(targets=["inner", END])
+        def decide(tick: int) -> str:
+            return END if tick >= 3 else "inner"
+
+        runner = AsyncRunner(checkpointer=async_cp)
+        outer = Graph([inner.as_node(), decide], entrypoint="inner")
+
+        result = await runner.run(outer, {"tick": 0}, workflow_id="nested-stable")
+        assert result["tick"] == 3
+        assert result["stable"] == 1
+
+        run_ids = {run.id for run in async_cp.runs()}
+        assert "nested-stable/inner" in run_ids
+        assert "nested-stable/inner/2" in run_ids
+        assert "nested-stable/inner/3" in run_ids
+
 
 # --- SyncRunner nested + map ---
 

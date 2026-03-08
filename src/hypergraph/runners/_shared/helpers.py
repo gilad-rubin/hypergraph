@@ -925,7 +925,7 @@ def graphnode_child_workflow_id(
     if execution is None:
         return base
 
-    previous_versions = tuple(execution.output_versions.values()) or tuple(execution.input_versions.values())
+    previous_versions = tuple(execution.input_versions.values()) or tuple(execution.output_versions.values())
     iteration = max(previous_versions, default=1)
     return f"{base}/{iteration}"
 
