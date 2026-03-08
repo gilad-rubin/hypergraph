@@ -688,6 +688,8 @@ class RichProgressProcessor(TypedEventProcessor):
 
                     if event.status == RunStatus.FAILED:
                         map_info.failures += 1
+                    elif event.status == RunStatus.PAUSED:
+                        pass
                     else:
                         map_info.succeeded += 1
                     self._update_map_stats(map_info)

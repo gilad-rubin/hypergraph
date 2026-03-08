@@ -474,8 +474,8 @@ Similarly, `AsyncRunner.map()` does not support interrupts — a graph with inte
 
 The same restriction applies to `GraphNode.map_over(...)`: a nested graph that
 contains interrupts cannot be wrapped in `map_over()`. If you need batched
-human-in-the-loop processing, use `AsyncRunner.map()` on the item graph itself
-rather than mapping a nested interrupting graph inside a larger workflow.
+human-in-the-loop processing today, orchestrate the batch at the application
+layer rather than nesting an interrupting graph inside `map_over()`.
 
 ## With emit/wait_for
 

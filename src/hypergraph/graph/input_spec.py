@@ -365,9 +365,10 @@ def _collect_bound_values(
             # the same key to different values, that key is ambiguous at the
             # outer graph level and should stay out of graph.inputs.bound.
             for key, value in inner_bound.items():
-                if key in all_bound:
+                public_key = node.map_input_name_from_original(key)
+                if public_key in all_bound:
                     continue
-                nested_candidates.setdefault(key, []).append(value)
+                nested_candidates.setdefault(public_key, []).append(value)
 
     for key, candidates in nested_candidates.items():
         if len(candidates) == 1 or _all_values_equal(candidates):

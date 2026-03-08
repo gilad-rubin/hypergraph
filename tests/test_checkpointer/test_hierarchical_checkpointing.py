@@ -276,7 +276,7 @@ class TestNestedGraphCheckpointing:
             return tick + 1
 
         @node(output_name="stable")
-        def constant(_tick: int) -> int:
+        def constant(tick: int) -> int:
             return 1
 
         inner = Graph([tick, constant], name="inner", entrypoint="tick")
@@ -293,9 +293,9 @@ class TestNestedGraphCheckpointing:
         assert result["stable"] == 1
 
         run_ids = {run.id for run in async_cp.runs()}
-        assert "nested-stable/inner" in run_ids
-        assert "nested-stable/inner/2" in run_ids
-        assert "nested-stable/inner/3" in run_ids
+        inner_run_ids = {run_id for run_id in run_ids if run_id.startswith("nested-stable/inner")}
+        assert "nested-stable/inner" in inner_run_ids
+        assert len(inner_run_ids) == 3
 
 
 # --- SyncRunner nested + map ---

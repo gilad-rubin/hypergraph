@@ -323,3 +323,19 @@ def test_nested_bound_value_does_not_make_shared_param_optional_for_other_nodes(
 
     assert "cfg" in outer.inputs.required
     assert "cfg" not in outer.inputs.optional
+
+
+def test_nested_bound_values_use_graphnode_public_input_names():
+    """Outer InputSpec.bound should expose aliased GraphNode input names."""
+
+    @node(output_name="result")
+    def inner_func(x: int, cfg: str) -> str:
+        return f"{x}:{cfg}"
+
+    inner = Graph([inner_func], name="inner").bind(cfg="inner-cfg")
+    nested = inner.as_node().with_inputs(cfg="public_cfg")
+    outer = Graph([nested], name="outer")
+
+    assert "public_cfg" in outer.inputs.bound
+    assert "cfg" not in outer.inputs.bound
+    assert outer.inputs.bound["public_cfg"] == "inner-cfg"

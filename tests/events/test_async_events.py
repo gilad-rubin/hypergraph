@@ -266,7 +266,7 @@ class TestInterruptEvents:
     @pytest.mark.asyncio
     async def test_paused_run_emits_interrupt_and_paused_run_end(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
+        def approval(draft: str) -> str | None:
             return None
 
         graph = Graph([approval], name="review")
@@ -288,7 +288,7 @@ class TestInterruptEvents:
     @pytest.mark.asyncio
     async def test_nested_paused_run_emits_interrupt_for_nested_node(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
+        def approval(draft: str) -> str | None:
             return None
 
         inner = Graph([approval], name="inner")
@@ -315,7 +315,7 @@ class TestInterruptEvents:
     @pytest.mark.asyncio
     async def test_interrupt_event_reuses_paused_node_span_id(self):
         @interrupt(output_name="decision")
-        def approval(draft: str) -> str:
+        def approval(draft: str) -> str | None:
             return None
 
         graph = Graph([approval], name="review")

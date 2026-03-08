@@ -329,6 +329,14 @@ class GraphNode(HyperNode):
         reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
         return reverse_map.get(output_name, output_name)
 
+    def map_input_name_from_original(self, input_name: str) -> str:
+        """Map a single inner input name to its external renamed name."""
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return input_name
+        forward_map = {v: k for k, v in reverse_map.items()}
+        return forward_map.get(input_name, input_name)
+
     def map_resume_key_from_original(self, resume_key: str) -> str:
         """Map a nested resume key from inner names to external names.
 
@@ -341,6 +349,18 @@ class GraphNode(HyperNode):
         if not sep:
             return mapped_head
         return f"{mapped_head}.{tail}"
+
+    def iter_active_inner_nodes(self) -> tuple[HyperNode, ...]:
+        """Return the inner graph nodes visible through this GraphNode boundary."""
+        from hypergraph.graph.input_spec import _compute_active_scope
+
+        active_nodes, _ = _compute_active_scope(
+            self._graph._nodes,
+            self._graph._nx_graph,
+            entrypoints=self._graph.entrypoints_config,
+            selected=self._graph.selected,
+        )
+        return tuple(active_nodes.values())
 
     def has_default_for(self, param: str) -> bool:
         """Check if a parameter has a default or bound value in the inner graph.
