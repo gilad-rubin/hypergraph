@@ -310,7 +310,8 @@ def _get_interrupt_outputs(
             outputs.update(f"{prefix}{output}" for output in node.data_outputs)
             continue
         if isinstance(node, GraphNode):
-            outputs.update(_get_interrupt_outputs(node.graph._nodes, prefix=f"{prefix}{node.name}."))
+            nested_outputs = _get_interrupt_outputs(node.graph._nodes)
+            outputs.update(f"{prefix}{node.name}.{node.map_resume_key_from_original(output)}" for output in nested_outputs)
     return outputs
 
 

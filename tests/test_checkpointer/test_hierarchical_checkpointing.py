@@ -1,8 +1,8 @@
-"""Integration tests for hierarchical checkpointing: map() and nested graphs."""
+"""Integration tests for hierarchical checkpointing: map(), nested graphs, and cycles."""
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, node
+from hypergraph import END, AsyncRunner, Graph, SyncRunner, node, route
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
 
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -240,9 +240,33 @@ class TestNestedGraphCheckpointing:
         assert fork_run.forked_from == "nested-root"
         assert fork_run.retry_of is None
 
-        child = async_cp.get_run("nested-root-fork/embed")
+        child = next((run for run in async_cp.runs(parent_run_id="nested-root-fork") if run.id.startswith("nested-root-fork/embed")), None)
         assert child is not None
         assert child.parent_run_id == "nested-root-fork"
+
+    async def test_nested_graph_in_outer_cycle_uses_distinct_child_run_ids(self, async_cp):
+        """Checkpointed outer cycles should not collide on repeated nested executions."""
+
+        @node(output_name="count")
+        def increment(count: int, limit: int = 3) -> int:
+            return count + 1
+
+        inner = Graph([increment], name="inner", entrypoint="increment")
+
+        @route(targets=["inner", END])
+        def decide(count: int, limit: int = 3) -> str:
+            return END if count >= limit else "inner"
+
+        runner = AsyncRunner(checkpointer=async_cp)
+        outer = Graph([inner.as_node(), decide], entrypoint="inner")
+
+        result = await runner.run(outer, {"count": 0, "limit": 3}, workflow_id="nested-cycle")
+        assert result["count"] == 3
+
+        run_ids = {run.id for run in async_cp.runs()}
+        assert "nested-cycle/inner" in run_ids
+        assert "nested-cycle/inner/2" in run_ids
+        assert "nested-cycle/inner/3" in run_ids
 
 
 # --- SyncRunner nested + map ---

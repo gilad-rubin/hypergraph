@@ -865,6 +865,25 @@ class TestGraphAsNode:
         assert gnode.outputs == g.outputs
         assert gnode.outputs == ("x", "y")
 
+    def test_graphnode_outputs_follow_active_entrypoint_scope(self):
+        """GraphNode should not expose outputs from inactive upstream nodes."""
+
+        @node(output_name="a")
+        def produce(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def consume(a: int) -> int:
+            return a * 2
+
+        scoped = Graph([produce, consume], name="inner").with_entrypoint("consume")
+        gnode = scoped.as_node()
+
+        assert gnode.inputs == ("a",)
+        assert gnode.outputs == ("b",)
+        outer = Graph([gnode])
+        assert outer.has_cycles is False
+
     def test_graphnode_definition_hash(self):
         """Test GraphNode.definition_hash returns graph's hash."""
 

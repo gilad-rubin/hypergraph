@@ -351,15 +351,43 @@ def _collect_bound_values(
 
     # Start with current graph's bound values
     all_bound = dict(bound)
+    nested_candidates: dict[str, list[Any]] = {}
 
     # Merge bound values from nested GraphNodes
     for node in nodes.values():
         if isinstance(node, GraphNode):
             # Get bound values from the inner graph
             inner_bound = node.graph.inputs.bound
-            # Merge into all_bound (current graph's values take precedence)
+            # Merge unique nested bindings only. If sibling nested graphs bind
+            # the same key to different values, that key is ambiguous at the
+            # outer graph level and should stay out of graph.inputs.bound.
             for key, value in inner_bound.items():
-                if key not in all_bound:
-                    all_bound[key] = value
+                if key in all_bound:
+                    continue
+                nested_candidates.setdefault(key, []).append(value)
+
+    for key, candidates in nested_candidates.items():
+        if len(candidates) == 1 or _all_values_equal(candidates):
+            all_bound[key] = candidates[0]
 
     return all_bound
+
+
+def _all_values_equal(values: list[Any]) -> bool:
+    """Best-effort equality check for merged nested bound values."""
+    if len(values) <= 1:
+        return True
+    first = values[0]
+    for value in values[1:]:
+        if first is value:
+            continue
+        try:
+            equal = first == value
+            if hasattr(equal, "__iter__"):
+                if not all(equal):
+                    return False
+            elif not bool(equal):
+                return False
+        except Exception:
+            return False
+    return True

@@ -707,12 +707,16 @@ class RichProgressProcessor(TypedEventProcessor):
             elif self._tty_mode:
                 if event.status == RunStatus.COMPLETED:
                     self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
+                elif event.status == RunStatus.PAUSED:
+                    self._progress.console.print(f"[bold yellow]‖ {event.graph_name or 'Run'} paused[/bold yellow]")
                 else:
                     self._progress.console.print(f"[bold red]✗ {event.graph_name or 'Run'} failed: {event.error}[/bold red]")
             else:
                 name = event.graph_name or "Run"
                 if event.status == RunStatus.COMPLETED:
                     self._print(f"✓ {name} completed!")
+                elif event.status == RunStatus.PAUSED:
+                    self._print(f"‖ {name} paused")
                 else:
                     error_msg = f": {event.error}" if event.error else ""
                     self._print(f"✗ {name} failed{error_msg}")
@@ -729,6 +733,9 @@ class RichProgressProcessor(TypedEventProcessor):
         if event.status == RunStatus.COMPLETED:
             color = STATUS_COLORS["completed"]
             msg = f"✓ {name} completed!"
+        elif event.status == RunStatus.PAUSED:
+            color = STATUS_COLORS["paused"]
+            msg = f"‖ {name} paused"
         else:
             color = STATUS_COLORS["failed"]
             error_text = f": {event.error}" if event.error else ""

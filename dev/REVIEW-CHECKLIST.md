@@ -35,6 +35,8 @@ When reviewing code changes:
 - [ ] No unnecessary state mutation?
 - [ ] Composition used instead of configuration flags?
 - [ ] Active-set enforcement: does `with_entrypoint` / `select` properly scope both validation AND execution? (Not just one or the other)
+- [ ] Nested graph boundaries preserve the configured public interface? (`with_inputs`/`with_outputs`, scoped outputs, and bound values don't leak across sibling GraphNodes)
+- [ ] Checkpointed nested execution can re-run safely? (Repeated GraphNode execution, especially inside cycles, must not collide with child workflow IDs)
 
 ### Code Quality
 - [ ] Error messages follow three-part structure? (Problem → Context → How to fix)
@@ -47,6 +49,7 @@ When reviewing code changes:
 - [ ] Validation tests assert specific error messages?
 - [ ] Async tests if async code was changed?
 - [ ] No new dependencies unless justified?
+- [ ] Nested regressions covered when touching GraphNode/interrupt/checkpointing code? Include renamed outputs, pause/resume, and checkpointed re-execution where relevant.
 
 ### Sync/Async Parity
 - [ ] Changes to `sync/` mirrored in `async_/`?

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from hypergraph import END, AsyncRunner, Graph, node, route
+from hypergraph import END, AsyncRunner, Graph, interrupt, node, route
 from hypergraph.events import AsyncEventProcessor, EventProcessor
 from hypergraph.events.types import (
+    InterruptEvent,
     NodeEndEvent,
     NodeErrorEvent,
     NodeStartEvent,
@@ -259,6 +260,57 @@ class TestRoutingEvents:
         assert decisions[0].node_name == "check"
         # Last decision should be END (count >= 1)
         assert decisions[-1].decision == END
+
+
+class TestInterruptEvents:
+    @pytest.mark.asyncio
+    async def test_paused_run_emits_interrupt_and_paused_run_end(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return None
+
+        graph = Graph([approval], name="review")
+        runner = AsyncRunner()
+        lp = ListProcessor()
+
+        result = await runner.run(graph, {"draft": "hello"}, event_processors=[lp])
+
+        assert result.paused
+        interrupts = lp.of_type(InterruptEvent)
+        assert len(interrupts) == 1
+        assert interrupts[0].node_name == "approval"
+        assert interrupts[0].response_param == "decision"
+
+        run_ends = lp.of_type(RunEndEvent)
+        assert len(run_ends) == 1
+        assert run_ends[0].status == RunStatus.PAUSED
+
+    @pytest.mark.asyncio
+    async def test_nested_paused_run_emits_interrupt_for_nested_node(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str:
+            return None
+
+        inner = Graph([approval], name="inner")
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return query
+
+        outer = Graph([make_draft, inner.as_node()], name="outer")
+        runner = AsyncRunner()
+        lp = ListProcessor()
+
+        result = await runner.run(outer, {"query": "hello"}, event_processors=[lp])
+
+        assert result.paused
+        interrupts = lp.of_type(InterruptEvent)
+        assert len(interrupts) == 2
+        assert {event.node_name for event in interrupts} == {"approval", "inner/approval"}
+
+        run_ends = lp.of_type(RunEndEvent)
+        assert len(run_ends) == 2
+        assert all(event.status == RunStatus.PAUSED for event in run_ends)
 
 
 # ---------------------------------------------------------------------------

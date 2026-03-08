@@ -142,9 +142,12 @@ def get_value_source(
     if param in provided_values:
         return (ValueSource.PROVIDED, provided_values[param])
 
-    # 3. Bound value (from graph.bind()) - check both graph and GraphNode
-    if param in graph.inputs.bound:
-        return (ValueSource.BOUND, graph.inputs.bound[param])
+    # 3. Bound value from this graph instance only (graph.bind()).
+    # graph.inputs.bound also includes nested GraphNode bindings for introspection,
+    # so runtime resolution must use the graph's own bound dict to avoid sibling
+    # nested bindings leaking across GraphNodes.
+    if param in graph._bound:
+        return (ValueSource.BOUND, graph._bound[param])
 
     # 3b. For GraphNode: check if inner graph has it bound
     if isinstance(node, GraphNode):
@@ -897,8 +900,34 @@ def _collect_interrupt_resume_keys(
             continue
         if isinstance(node, GraphNode):
             nested_prefix = f"{prefix}{node.name}."
-            allowed_outputs.update(_collect_interrupt_resume_keys(node.graph, prefix=nested_prefix))
+            nested_keys = _collect_interrupt_resume_keys(node.graph)
+            allowed_outputs.update(f"{nested_prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
     return allowed_outputs
+
+
+def graphnode_child_workflow_id(
+    workflow_id: str | None,
+    node_name: str,
+    state: GraphState,
+) -> str | None:
+    """Return a child workflow id for a GraphNode execution.
+
+    The first execution keeps the historical ``parent/node`` form so paused
+    nested workflows can resume with the same id. Re-executions append a stable
+    suffix derived from the previous execution's versions so checkpointed outer
+    cycles don't collide with completed child runs.
+    """
+    if workflow_id is None:
+        return None
+
+    base = f"{workflow_id}/{node_name}"
+    execution = state.node_executions.get(node_name)
+    if execution is None:
+        return base
+
+    previous_versions = tuple(execution.output_versions.values()) or tuple(execution.input_versions.values())
+    iteration = max(previous_versions, default=1)
+    return f"{base}/{iteration}"
 
 
 _UNSET_SELECT: Any = object()

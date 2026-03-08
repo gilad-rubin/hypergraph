@@ -779,7 +779,7 @@ class NodeRecord:
         node_name: Name of the executed node.
         superstep: Parallel execution round (0-indexed).
         duration_ms: Wall-clock execution time in milliseconds.
-        status: "completed" or "failed".
+        status: "completed", "failed", or "paused".
         span_id: Correlates with OTel traces.
         error: Error message if status is "failed".
         cached: Whether this was a cache hit.
@@ -789,7 +789,7 @@ class NodeRecord:
     node_name: str
     superstep: int
     duration_ms: float
-    status: Literal["completed", "failed"]
+    status: Literal["completed", "failed", "paused"]
     span_id: str
     error: str | None = None
     cached: bool = False
@@ -989,7 +989,12 @@ class RunLog:
 
         for i, step in enumerate(self.steps):
             dur = _format_duration(step.duration_ms) if step.status != "failed" or step.duration_ms > 0 else "—"
-            status = "completed" if step.status == "completed" else f"FAILED: {step.error or 'unknown'}"
+            if step.status == "completed":
+                status = "completed"
+            elif step.status == "paused":
+                status = "paused"
+            else:
+                status = f"FAILED: {step.error or 'unknown'}"
             if step.cached:
                 status = "cached"
             if step._inner_logs:

@@ -14,10 +14,12 @@ class RunStatus(Enum):
     Values:
         COMPLETED: Run finished successfully.
         FAILED: Run encountered an error.
+        PAUSED: Run paused at an interrupt.
     """
 
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
 
 
 def _generate_span_id() -> str:
@@ -70,7 +72,7 @@ class RunEndEvent(BaseEvent):
 
     Attributes:
         graph_name: Name of the graph that was executed.
-        status: Outcome of the run (RunStatus.COMPLETED or RunStatus.FAILED).
+        status: Outcome of the run (completed, failed, or paused).
         error: Error message if status is FAILED.
         duration_ms: Wall-clock duration in milliseconds.
     """

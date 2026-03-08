@@ -256,6 +256,11 @@ result = runner.run(batch, {"path": "data.txt"})
 # None entries correspond to failed items
 ```
 
+`map_over()` does not support nested graphs that contain interrupts. If the
+wrapped graph has an `@interrupt`, graph construction raises a
+`GraphConfigError`. For human-in-the-loop batch workflows, use
+`AsyncRunner.map()` with one item per run instead.
+
 ## runner.map() vs map_over
 
 Two batch patterns, different tradeoffs. Both start from the same idea — **write logic for one item, scale to many** — but they give different guarantees:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_func_params
+from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
 from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ class AsyncGraphNodeExecutor:
         """
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
-        child_workflow_id = f"{workflow_id}/{node.name}" if workflow_id else None
+        child_workflow_id = graphnode_child_workflow_id(workflow_id, node.name, state)
         map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
@@ -98,7 +98,8 @@ class AsyncGraphNodeExecutor:
             prefix = f"{node.name}."
             for key in state.values:
                 if key.startswith(prefix):
-                    inner_inputs[key[len(prefix) :]] = state.values[key]
+                    inner_key = node.resolve_original_output_name(key[len(prefix) :])
+                    inner_inputs[inner_key] = state.values[key]
 
         if map_config:
             _, mode, error_handling = map_config
@@ -136,10 +137,14 @@ class AsyncGraphNodeExecutor:
             assert result.pause is not None, "PAUSED status requires pause info"
             nested_pause = PauseInfo(
                 node_name=f"{node.name}/{result.pause.node_name}",
-                output_param=result.pause.output_param,
+                output_param=node.map_output_name_from_original(result.pause.output_param),
                 value=result.pause.value,
                 # Propagate multi-output fields (new in PR #40)
-                output_params=result.pause.output_params,
+                output_params=(
+                    tuple(node.map_output_name_from_original(name) for name in result.pause.output_params)
+                    if result.pause.output_params is not None
+                    else None
+                ),
                 values=result.pause.values,
             )
             raise PauseExecution(nested_pause)
