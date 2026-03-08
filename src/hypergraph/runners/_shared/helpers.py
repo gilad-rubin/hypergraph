@@ -142,7 +142,10 @@ def get_value_source(
     if param in provided_values:
         return (ValueSource.PROVIDED, provided_values[param])
 
-    # 3. Bound value (from graph.bind()) - check both graph and GraphNode
+    # 3. Bound value resolved at this graph boundary.
+    # graph.inputs.bound includes this graph's own bindings plus any unique,
+    # non-ambiguous nested GraphNode bindings that are intentionally exposed as
+    # outer defaults.
     if param in graph.inputs.bound:
         return (ValueSource.BOUND, graph.inputs.bound[param])
 
@@ -897,8 +900,57 @@ def _collect_interrupt_resume_keys(
             continue
         if isinstance(node, GraphNode):
             nested_prefix = f"{prefix}{node.name}."
-            allowed_outputs.update(_collect_interrupt_resume_keys(node.graph, prefix=nested_prefix))
+            nested_keys = _collect_interrupt_resume_keys_from_nodes(node.iter_active_inner_nodes())
+            allowed_outputs.update(f"{nested_prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
     return allowed_outputs
+
+
+def _collect_interrupt_resume_keys_from_nodes(
+    nodes: tuple[HyperNode, ...],
+    *,
+    prefix: str = "",
+) -> set[str]:
+    """Collect interrupt resume keys from an explicit active node scope."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    allowed_outputs: set[str] = set()
+    for node in nodes:
+        if node.is_interrupt:
+            allowed_outputs.update(f"{prefix}{output}" for output in node.data_outputs)
+            continue
+        if isinstance(node, GraphNode):
+            nested_prefix = f"{prefix}{node.name}."
+            nested_keys = _collect_interrupt_resume_keys_from_nodes(node.iter_active_inner_nodes())
+            allowed_outputs.update(f"{nested_prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
+    return allowed_outputs
+
+
+def graphnode_child_workflow_id(
+    workflow_id: str | None,
+    node_name: str,
+    state: GraphState,
+) -> str | None:
+    """Return a child workflow id for a GraphNode execution.
+
+    The first execution keeps the historical ``parent/node`` form so paused
+    nested workflows can resume with the same id. Re-executions append a stable
+    suffix derived from the previous execution's versions so checkpointed outer
+    cycles don't collide with completed child runs.
+    """
+    if workflow_id is None:
+        return None
+
+    base = f"{workflow_id}/{node_name}"
+    execution = state.node_executions.get(node_name)
+    if execution is None:
+        return base
+
+    # output_versions are recorded after the previous execution completed, so
+    # they already reflect the suffix we want for the next child run. For nodes
+    # without recorded outputs, input_versions reflect the pre-execution state,
+    # so advance one step beyond the highest seen value.
+    iteration = max(execution.output_versions.values()) if execution.output_versions else max(execution.input_versions.values(), default=0) + 1
+    return f"{base}/{iteration}"
 
 
 _UNSET_SELECT: Any = object()

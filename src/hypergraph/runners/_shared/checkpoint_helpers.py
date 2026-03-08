@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.checkpointers.types import StepRecord, StepStatus, _utcnow
+from hypergraph.runners._shared.helpers import graphnode_child_workflow_id
 
 if TYPE_CHECKING:
     from hypergraph.graph import Graph
@@ -43,7 +44,13 @@ def build_superstep_records(
         execution = state.node_executions.get(name)
         now = _utcnow()
         node_type = type(graph._nodes[name]).__name__ if name in graph._nodes else None
-        child_run_id = _compute_child_run_id(workflow_id, name, graph)
+        child_run_id = _compute_child_run_id(
+            workflow_id,
+            name,
+            graph,
+            state,
+            had_previous_execution=name in prev_input_versions,
+        )
 
         if is_pause and (execution is None or not _is_fresh(name, execution, prev_input_versions)):
             # Interrupt node raised PauseExecution before producing outputs.
@@ -120,13 +127,22 @@ def _is_fresh(name: str, execution: Any, prev_input_versions: dict[str, dict[str
     return name not in prev_input_versions or execution.input_versions != prev_input_versions[name]
 
 
-def _compute_child_run_id(workflow_id: str, node_name: str, graph: Graph) -> str | None:
+def _compute_child_run_id(
+    workflow_id: str,
+    node_name: str,
+    graph: Graph,
+    state: GraphState,
+    *,
+    had_previous_execution: bool,
+) -> str | None:
     """Deterministic child_run_id for GraphNode steps."""
     from hypergraph.nodes.graph_node import GraphNode
 
     node = graph._nodes.get(node_name)
     if isinstance(node, GraphNode):
-        return f"{workflow_id}/{node_name}"
+        if not had_previous_execution:
+            return f"{workflow_id}/{node_name}"
+        return graphnode_child_workflow_id(workflow_id, node_name, state)
     return None
 
 

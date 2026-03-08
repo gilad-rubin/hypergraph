@@ -283,3 +283,41 @@ def test_three_level_nested_binding():
     )
 
     assert result["judgment"] == "Judged: Answer: test query"
+
+
+def test_sibling_nested_bindings_do_not_leak():
+    """Sibling GraphNodes should resolve their own bound values independently."""
+
+    @node(output_name="out_a")
+    def use_a(x: int, cfg: str) -> str:
+        return f"A:{x}:{cfg}"
+
+    @node(output_name="out_b")
+    def use_b(x: int, cfg: str) -> str:
+        return f"B:{x}:{cfg}"
+
+    inner_a = Graph([use_a], name="inner_a").bind(cfg="CFG_A")
+    inner_b = Graph([use_b], name="inner_b").bind(cfg="CFG_B")
+    graph = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+
+    assert "cfg" not in graph.inputs.bound
+
+    result = SyncRunner().run(graph, {"x": 1})
+    assert result["out_a"] == "A:1:CFG_A"
+    assert result["out_b"] == "B:1:CFG_B"
+
+
+def test_nested_bound_values_use_graphnode_public_input_names():
+    """Outer InputSpec.bound should expose aliased GraphNode input names."""
+
+    @node(output_name="result")
+    def inner_func(x: int, cfg: str) -> str:
+        return f"{x}:{cfg}"
+
+    inner = Graph([inner_func], name="inner").bind(cfg="inner-cfg")
+    nested = inner.as_node().with_inputs(cfg="public_cfg")
+    outer = Graph([nested], name="outer")
+
+    assert "public_cfg" in outer.inputs.bound
+    assert "cfg" not in outer.inputs.bound
+    assert outer.inputs.bound["public_cfg"] == "inner-cfg"

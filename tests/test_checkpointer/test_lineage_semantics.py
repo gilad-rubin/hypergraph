@@ -207,6 +207,68 @@ class TestLineageSemantics:
         assert resumed.status == RunStatus.COMPLETED
         assert resumed["result"] == "Final: approved"
 
+    async def test_nested_paused_workflow_accepts_renamed_dotted_interrupt_response_on_resume(self, checkpointer):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @node(output_name="result")
+        def finalize(verdict: str) -> str:
+            return f"Final: {verdict}"
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([make_draft, inner.as_node().with_outputs(decision="verdict"), finalize])
+
+        paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-renamed-nested-paused")
+        assert paused.status == RunStatus.PAUSED
+        assert paused.pause is not None
+        assert paused.pause.response_key == "inner.verdict"
+
+        resumed = await runner.run(
+            graph,
+            {paused.pause.response_key: "approved"},
+            workflow_id="wf-renamed-nested-paused",
+        )
+        assert resumed.status == RunStatus.COMPLETED
+        assert resumed["result"] == "Final: approved"
+
+    async def test_inactive_nested_interrupt_key_does_not_count_as_resume_payload(self, checkpointer):
+        @interrupt(output_name="decision_a")
+        def approval_a(draft: str) -> str: ...
+
+        @interrupt(output_name="decision_b")
+        def approval_b(draft: str) -> str: ...
+
+        inner = Graph([approval_a, approval_b], name="inner").select("decision_a")
+
+        @node(output_name="draft")
+        def make_draft(query: str) -> str:
+            return f"Draft for: {query}"
+
+        @node(output_name="result")
+        def finalize(verdict: str) -> str:
+            return f"Final: {verdict}"
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([make_draft, inner.as_node().with_outputs(decision_a="verdict"), finalize])
+
+        paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-inactive-interrupt")
+        assert paused.status == RunStatus.PAUSED
+        assert paused.pause is not None
+        assert paused.pause.response_key == "inner.verdict"
+
+        with pytest.raises(InputOverrideRequiresForkError):
+            await runner.run(
+                graph,
+                {"inner.decision_b": "wrong"},
+                workflow_id="wf-inactive-interrupt",
+            )
+
     async def test_fork_metadata_is_persisted(self, checkpointer):
         runner = AsyncRunner(checkpointer=checkpointer)
         graph = Graph([double])

@@ -91,7 +91,7 @@ class GraphNode(HyperNode):
         # Core HyperNode attributes
         self.name = resolved_name
         self.inputs = graph.inputs.all
-        self.outputs = graph.selected if graph.selected is not None else graph.outputs
+        self.outputs = self._derive_outputs(graph)
 
     @property
     def graph(self) -> "Graph":
@@ -316,6 +316,52 @@ class GraphNode(HyperNode):
         forward_map = {v: k for k, v in reverse_map.items()}
         return {forward_map.get(key, key): value for key, value in outputs.items()}
 
+    def map_output_name_from_original(self, output_name: str) -> str:
+        """Map a single inner output name to its external renamed name."""
+        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
+        if not reverse_map:
+            return output_name
+        forward_map = {v: k for k, v in reverse_map.items()}
+        return forward_map.get(output_name, output_name)
+
+    def resolve_original_output_name(self, output_name: str) -> str:
+        """Resolve an external output name back to the inner graph's name."""
+        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
+        return reverse_map.get(output_name, output_name)
+
+    def map_input_name_from_original(self, input_name: str) -> str:
+        """Map a single inner input name to its external renamed name."""
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        if not reverse_map:
+            return input_name
+        forward_map = {v: k for k, v in reverse_map.items()}
+        return forward_map.get(input_name, input_name)
+
+    def map_resume_key_from_original(self, resume_key: str) -> str:
+        """Map a nested resume key from inner names to external names.
+
+        Only the first path component can be renamed by the GraphNode boundary.
+        For example, ``decision`` may become ``verdict`` while
+        ``review.decision`` remains unchanged because ``review`` is internal.
+        """
+        head, sep, tail = resume_key.partition(".")
+        mapped_head = self.map_output_name_from_original(head)
+        if not sep:
+            return mapped_head
+        return f"{mapped_head}.{tail}"
+
+    def iter_active_inner_nodes(self) -> tuple[HyperNode, ...]:
+        """Return the inner graph nodes visible through this GraphNode boundary."""
+        from hypergraph.graph.input_spec import _compute_active_scope
+
+        active_nodes, _ = _compute_active_scope(
+            self._graph._nodes,
+            self._graph._nx_graph,
+            entrypoints=self._graph.entrypoints_config,
+            selected=self._graph.selected,
+        )
+        return tuple(active_nodes.values())
+
     def has_default_for(self, param: str) -> bool:
         """Check if a parameter has a default or bound value in the inner graph.
 
@@ -334,11 +380,14 @@ class GraphNode(HyperNode):
         # Resolve to original name for inner graph lookup
         original_param = self._resolve_original_input_name(param)
 
-        # Check if bound in inner graph
+        # Check if bound anywhere in the visible inner graph scope
         if original_param in self._graph.inputs.bound:
             return True
         # Check if any inner node has a default
-        return any(original_param in inner_node.inputs and inner_node.has_default_for(original_param) for inner_node in self._graph.iter_nodes())
+        inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
+        if not inner_nodes_with_param:
+            return False
+        return all(inner_node.has_default_for(original_param) for inner_node in inner_nodes_with_param)
 
     def get_default_for(self, param: str) -> Any:
         """Get the default or bound value for a parameter from the inner graph.
@@ -570,6 +619,25 @@ class GraphNode(HyperNode):
             renamed._clone = [combined.get(p, p) for p in renamed._clone]
 
         return renamed
+
+    @staticmethod
+    def _derive_outputs(graph: "Graph") -> tuple[str, ...]:
+        """Resolve the GraphNode's visible outputs for the current graph scope."""
+        if graph.selected is not None:
+            return graph.selected
+
+        if graph.entrypoints_config is None:
+            return graph.outputs
+
+        from hypergraph.graph.input_spec import _compute_active_scope
+
+        active_nodes, _ = _compute_active_scope(
+            graph._nodes,
+            graph._nx_graph,
+            entrypoints=graph.entrypoints_config,
+            selected=None,
+        )
+        return tuple(dict.fromkeys(output for node in active_nodes.values() for output in node.outputs))
 
 
 def _validate_clone(

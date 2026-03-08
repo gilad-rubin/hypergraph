@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_func_params
+from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
@@ -55,7 +55,7 @@ class SyncGraphNodeExecutor:
         """
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
-        child_workflow_id = f"{workflow_id}/{node.name}" if workflow_id else None
+        child_workflow_id = graphnode_child_workflow_id(workflow_id, node.name, state)
         map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
@@ -75,7 +75,8 @@ class SyncGraphNodeExecutor:
             prefix = f"{node.name}."
             for key in state.values:
                 if key.startswith(prefix):
-                    inner_inputs[key[len(prefix) :]] = state.values[key]
+                    inner_key = node.resolve_original_output_name(key[len(prefix) :])
+                    inner_inputs[inner_key] = state.values[key]
 
         if map_config:
             _, mode, error_handling = map_config

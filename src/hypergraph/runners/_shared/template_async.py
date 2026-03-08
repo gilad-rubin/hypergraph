@@ -399,6 +399,32 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_state = getattr(pause, "_partial_state", None)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
+            if dispatcher.active:
+                from hypergraph.events.types import InterruptEvent, RunEndEvent
+                from hypergraph.events.types import RunStatus as EventRunStatus
+
+                await dispatcher.emit_async(
+                    InterruptEvent(
+                        run_id=run_id,
+                        span_id=pause.span_id or run_span_id,
+                        parent_span_id=run_span_id,
+                        node_name=pause.pause_info.node_name,
+                        graph_name=graph.name,
+                        workflow_id=workflow_id,
+                        value=pause.pause_info.value,
+                        response_param=pause.pause_info.output_param,
+                    )
+                )
+                await dispatcher.emit_async(
+                    RunEndEvent(
+                        run_id=run_id,
+                        span_id=run_span_id,
+                        parent_span_id=_parent_span_id,
+                        graph_name=graph.name,
+                        status=EventRunStatus.PAUSED,
+                        duration_ms=total_duration_ms,
+                    )
+                )
             if has_checkpointer:
                 for record in step_buffer:
                     await checkpointer.save_step(record)

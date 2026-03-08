@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from hypergraph.events.processor import TypedEventProcessor
 from hypergraph.events.types import (
+    InterruptEvent,
     NodeEndEvent,
     NodeErrorEvent,
     NodeStartEvent,
@@ -74,6 +75,17 @@ class RunLogCollector(TypedEventProcessor):
                 span_id=event.span_id,
                 error=event.error,
                 decision=decision,
+            )
+        )
+
+    def on_interrupt(self, event: InterruptEvent) -> None:
+        self._records.append(
+            NodeRecord(
+                node_name=event.node_name,
+                superstep=self._current_superstep,
+                duration_ms=0.0,
+                status="paused",
+                span_id=event.span_id,
             )
         )
 

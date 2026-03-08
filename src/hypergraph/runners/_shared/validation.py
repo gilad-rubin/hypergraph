@@ -310,7 +310,8 @@ def _get_interrupt_outputs(
             outputs.update(f"{prefix}{output}" for output in node.data_outputs)
             continue
         if isinstance(node, GraphNode):
-            outputs.update(_get_interrupt_outputs(node.graph._nodes, prefix=f"{prefix}{node.name}."))
+            nested_outputs = _get_interrupt_outputs({inner.name: inner for inner in node.iter_active_inner_nodes()})
+            outputs.update(f"{prefix}{node.name}.{node.map_resume_key_from_original(output)}" for output in nested_outputs)
     return outputs
 
 
@@ -429,19 +430,12 @@ def _build_internal_override_message(
 
 
 def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSpec) -> set[str]:
-    """Find inputs that belong to nodes fully bypassed by intermediate injection.
+    """Legacy helper for classifying impossible compute-vs-inject mixes.
 
-    A node is bypassed ONLY if ALL of its outputs that are consumed downstream
-    are provided by the user. If any consumed output is missing, the node must
-    still run to produce it.
-
-    When a node is bypassed, its exclusive inputs (not needed by other nodes)
-    can be removed from the required set.
-
-    Note: This iterates ``graph._nodes`` (the full graph), not just the active
-    subgraph. This is safe because bypassed inputs are subtracted from
-    ``inputs_spec.required``, which is already scoped to active nodes.
-    Extra bypassed inputs from inactive nodes are no-ops.
+    The runtime no longer supports supplying active internal edge-produced
+    values to skip execution. This helper remains as topology analysis for
+    conflict reporting, describing which inputs would become irrelevant if a
+    user tries to provide all outputs of some active producer nodes.
     """
     # Build output -> producer nodes mapping (handle mutex branches)
     output_to_nodes: dict[str, list[str]] = {}
@@ -454,26 +448,27 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSp
     for node in graph._nodes.values():
         consumed_outputs.update(node.inputs)
 
-    # Cycle entry point params: providing these means bootstrapping a cycle,
-    # NOT bypassing the producer node. Exclude from bypass check.
+    # Cycle entry point params bootstrap a cycle and do not imply that an
+    # active producer has been replaced.
     cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
 
-    # A node is bypassed only if ALL its non-cycle consumed outputs are provided
+    # A node is considered fully replaced only if ALL its non-cycle consumed
+    # outputs are provided by the user.
     bypassed_nodes: set[str] = set()
     for node in graph._nodes.values():
         node_consumed_outputs = (set(node.outputs) & consumed_outputs) - cycle_ep_params
         if node_consumed_outputs and node_consumed_outputs <= provided:
-            # All consumed outputs are provided — node is bypassed
+            # All consumed outputs are provided — treat the node as replaced for
+            # conflict analysis.
             bypassed_nodes.add(node.name)
 
     if not bypassed_nodes:
         return set()
 
-    # Also mark nodes as bypassed if ALL their non-cycle outputs are provided.
+    # Also mark nodes as replaced if ALL their non-cycle outputs are provided.
     # Unlike the first pass (consumed only), this catches nodes whose outputs
-    # aren't consumed downstream but are still fully overridden by user values.
-    # Cycle entry point params are excluded: providing them means bootstrapping
-    # the cycle, NOT bypassing the producer.
+    # are not consumed downstream but are still being fully supplied by the
+    # user in a contradictory request.
     for node in graph._nodes.values():
         non_cycle_outputs = set(node.outputs) - cycle_ep_params
         if non_cycle_outputs and non_cycle_outputs <= provided:

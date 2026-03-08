@@ -1,8 +1,8 @@
-"""Integration tests for hierarchical checkpointing: map() and nested graphs."""
+"""Integration tests for hierarchical checkpointing: map(), nested graphs, and cycles."""
 
 import pytest
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, node
+from hypergraph import END, AsyncRunner, Graph, SyncRunner, node, route
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
 
 aiosqlite = pytest.importorskip("aiosqlite")
@@ -240,9 +240,61 @@ class TestNestedGraphCheckpointing:
         assert fork_run.forked_from == "nested-root"
         assert fork_run.retry_of is None
 
-        child = async_cp.get_run("nested-root-fork/embed")
+        child = next((run for run in async_cp.runs(parent_run_id="nested-root-fork") if run.id.startswith("nested-root-fork/embed")), None)
         assert child is not None
         assert child.parent_run_id == "nested-root-fork"
+
+    async def test_nested_graph_in_outer_cycle_uses_distinct_child_run_ids(self, async_cp):
+        """Checkpointed outer cycles should not collide on repeated nested executions."""
+
+        @node(output_name="count")
+        def increment(count: int, limit: int = 3) -> int:
+            return count + 1
+
+        inner = Graph([increment], name="inner", entrypoint="increment")
+
+        @route(targets=["inner", END])
+        def decide(count: int, limit: int = 3) -> str:
+            return END if count >= limit else "inner"
+
+        runner = AsyncRunner(checkpointer=async_cp)
+        outer = Graph([inner.as_node(), decide], entrypoint="inner")
+
+        result = await runner.run(outer, {"count": 0, "limit": 3}, workflow_id="nested-cycle")
+        assert result["count"] == 3
+
+        run_ids = {run.id for run in async_cp.runs()}
+        inner_run_ids = {run_id for run_id in run_ids if run_id.startswith("nested-cycle/inner")}
+        assert "nested-cycle/inner" in inner_run_ids
+        assert inner_run_ids == {"nested-cycle/inner", "nested-cycle/inner/2", "nested-cycle/inner/3"}
+
+    async def test_nested_graph_in_outer_cycle_uses_distinct_child_ids_when_output_repeats(self, async_cp):
+        """Repeated nested executions should still get new child ids if outputs stay equal."""
+
+        @node(output_name="tick")
+        def tick(tick: int) -> int:
+            return tick + 1
+
+        @node(output_name="stable")
+        def constant(tick: int) -> int:
+            return 1
+
+        inner = Graph([tick, constant], name="inner", entrypoint="tick")
+
+        @route(targets=["inner", END])
+        def decide(tick: int) -> str:
+            return END if tick >= 3 else "inner"
+
+        runner = AsyncRunner(checkpointer=async_cp)
+        outer = Graph([inner.as_node(), decide], entrypoint="inner")
+
+        result = await runner.run(outer, {"tick": 0}, workflow_id="nested-stable")
+        assert result["tick"] == 3
+        assert result["stable"] == 1
+
+        run_ids = {run.id for run in async_cp.runs()}
+        inner_run_ids = {run_id for run_id in run_ids if run_id.startswith("nested-stable/inner")}
+        assert inner_run_ids == {"nested-stable/inner", "nested-stable/inner/2", "nested-stable/inner/3"}
 
 
 # --- SyncRunner nested + map ---
@@ -297,3 +349,56 @@ class TestSyncNestedCheckpointing:
         assert "sync-map-nest/embed" in run_ids
         assert "sync-map-nest/embed/0" in run_ids
         assert "sync-map-nest/embed/1" in run_ids
+
+    def test_sync_nested_graph_in_outer_cycle_uses_distinct_child_run_ids(self, sync_cp):
+        """SyncRunner uses the same child-run suffixes for repeated nested executions."""
+
+        @node(output_name="count")
+        def increment(count: int, limit: int = 3) -> int:
+            return count + 1
+
+        inner = Graph([increment], name="inner", entrypoint="increment")
+
+        @route(targets=["inner", END])
+        def decide(count: int, limit: int = 3) -> str:
+            return END if count >= limit else "inner"
+
+        runner = SyncRunner(checkpointer=sync_cp)
+        outer = Graph([inner.as_node(), decide], entrypoint="inner")
+
+        result = runner.run(outer, {"count": 0, "limit": 3}, workflow_id="sync-nested-cycle")
+        assert result["count"] == 3
+
+        db = sync_cp._sync_db()
+        runs = db.execute("SELECT id FROM runs ORDER BY id").fetchall()
+        inner_run_ids = {row[0] for row in runs if row[0].startswith("sync-nested-cycle/inner")}
+        assert inner_run_ids == {"sync-nested-cycle/inner", "sync-nested-cycle/inner/2", "sync-nested-cycle/inner/3"}
+
+    def test_sync_nested_graph_in_outer_cycle_uses_distinct_child_ids_when_output_repeats(self, sync_cp):
+        """SyncRunner also handles repeated nested executions with stable outputs."""
+
+        @node(output_name="tick")
+        def tick(tick: int) -> int:
+            return tick + 1
+
+        @node(output_name="stable")
+        def constant(tick: int) -> int:
+            return 1
+
+        inner = Graph([tick, constant], name="inner", entrypoint="tick")
+
+        @route(targets=["inner", END])
+        def decide(tick: int) -> str:
+            return END if tick >= 3 else "inner"
+
+        runner = SyncRunner(checkpointer=sync_cp)
+        outer = Graph([inner.as_node(), decide], entrypoint="inner")
+
+        result = runner.run(outer, {"tick": 0}, workflow_id="sync-nested-stable")
+        assert result["tick"] == 3
+        assert result["stable"] == 1
+
+        db = sync_cp._sync_db()
+        runs = db.execute("SELECT id FROM runs ORDER BY id").fetchall()
+        inner_run_ids = {row[0] for row in runs if row[0].startswith("sync-nested-stable/inner")}
+        assert inner_run_ids == {"sync-nested-stable/inner", "sync-nested-stable/inner/2", "sync-nested-stable/inner/3"}

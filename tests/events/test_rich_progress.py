@@ -402,6 +402,25 @@ class TestMapFailures:
         assert "1✓" in last_stats
         assert "1✗" in last_stats
 
+    def test_paused_map_child_does_not_increment_success_stats(self):
+        proc, mock = _make_processor()
+        proc.on_run_start(_run_start(span_id="map1", is_map=True, map_size=2))
+
+        proc.on_run_start(_run_start(run_id="r2", span_id="item1", parent_span_id="map1"))
+        proc.on_run_end(
+            _run_end(
+                run_id="r2",
+                span_id="item1",
+                parent_span_id="map1",
+                status="paused",
+            )
+        )
+
+        stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
+        last_stats = stats_calls[-1].kwargs["stats"]
+        assert "✓" not in last_stats
+        assert "✗" not in last_stats
+
 
 class TestNodeError:
     def test_error_advances_bar_and_tracks_stats(self):

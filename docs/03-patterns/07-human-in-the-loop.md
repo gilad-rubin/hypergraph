@@ -472,6 +472,11 @@ runner.run(graph_with_interrupt, {"query": "hello"})
 
 Similarly, `AsyncRunner.map()` does not support interrupts — a graph with interrupts cannot be used with `map()`.
 
+The same restriction applies to `GraphNode.map_over(...)`: a nested graph that
+contains interrupts cannot be wrapped in `map_over()`. If you need batched
+human-in-the-loop processing today, orchestrate the batch at the application
+layer rather than nesting an interrupting graph inside `map_over()`.
+
 ## With emit/wait_for
 
 InterruptNode supports ordering signals like FunctionNode:

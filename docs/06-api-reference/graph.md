@@ -246,13 +246,12 @@ print(g.inputs.required)  # ('x',)
 ```
 
 **Args:**
-- `**values`: Named values to bind
+- `**values`: Named values to bind. Keys must be graph inputs in the current scope.
 
 **Returns:** New Graph with bindings applied
 
 **Raises:**
-- `ValueError` - If binding a name not recognized as a graph input or output
-- `ValueError` - If binding an emit-only output (ordering signal, not data)
+- `ValueError` - If binding a name not recognized as a graph input in the current scope
 
 #### Shared State and Non-Copyable Objects
 
@@ -260,6 +259,15 @@ Bound values are **intentionally shared** across runs, not deep-copied. This mak
 - **Stateful objects** (database connections, vector stores, embedders)
 - **Non-copyable objects** (objects with thread locks, file handles, C extensions)
 - **Dependency injection** (providing shared resources to multiple nodes)
+
+`bind()` is not an override mechanism for active internal graph outputs. If a
+value is still produced by an upstream node in the current graph scope, that
+producer wins at runtime. To provide a formerly-intermediate value yourself,
+first slice the graph so it becomes an input:
+
+```python
+scoped = graph.with_entrypoint("retrieve").bind(embedding=my_embedding)
+```
 
 ```python
 class Embedder:
