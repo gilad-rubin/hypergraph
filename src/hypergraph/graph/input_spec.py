@@ -87,11 +87,12 @@ def compute_input_spec(
 
     data_subgraph = _data_only_subgraph(active_subgraph)
     edge_produced = get_edge_produced_values(active_subgraph)
+    all_bound = _collect_bound_values(active_nodes, bound)
     cycle_seed_params = _compute_cycle_seed_params(
         active_nodes,
         data_subgraph,
         edge_produced,
-        bound,
+        all_bound,
         configured_entrypoints=entrypoints or (),
     )
 
@@ -104,13 +105,11 @@ def compute_input_spec(
             else:
                 required.append(param)
             continue
-        category = _categorize_param(param, edge_produced, bound, active_nodes)
+        category = _categorize_param(param, edge_produced, all_bound, active_nodes)
         if category == "required":
             required.append(param)
         elif category == "optional":
             optional.append(param)
-
-    all_bound = _collect_bound_values(active_nodes, bound)
 
     return InputSpec(
         required=tuple(required),

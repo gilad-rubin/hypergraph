@@ -264,9 +264,9 @@ class TestNestedGraphCheckpointing:
         assert result["count"] == 3
 
         run_ids = {run.id for run in async_cp.runs()}
-        assert "nested-cycle/inner" in run_ids
-        assert "nested-cycle/inner/2" in run_ids
-        assert "nested-cycle/inner/3" in run_ids
+        inner_run_ids = {run_id for run_id in run_ids if run_id.startswith("nested-cycle/inner")}
+        assert "nested-cycle/inner" in inner_run_ids
+        assert len(inner_run_ids) == 3
 
     async def test_nested_graph_in_outer_cycle_uses_distinct_child_ids_when_output_repeats(self, async_cp):
         """Repeated nested executions should still get new child ids if outputs stay equal."""

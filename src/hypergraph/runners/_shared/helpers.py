@@ -142,18 +142,18 @@ def get_value_source(
     if param in provided_values:
         return (ValueSource.PROVIDED, provided_values[param])
 
-    # 3. Bound value from this graph instance only (graph.bind()).
-    # graph.inputs.bound also includes nested GraphNode bindings for introspection,
-    # so runtime resolution must use the graph's own bound dict to avoid sibling
-    # nested bindings leaking across GraphNodes.
-    if param in graph._bound:
-        return (ValueSource.BOUND, graph._bound[param])
+    # 3. Bound value resolved at this graph boundary.
+    # graph.inputs.bound includes this graph's own bindings plus any unique,
+    # non-ambiguous nested GraphNode bindings that are intentionally exposed as
+    # outer defaults.
+    if param in graph.inputs.bound:
+        return (ValueSource.BOUND, graph.inputs.bound[param])
 
     # 3b. For GraphNode: check if inner graph has it bound
     if isinstance(node, GraphNode):
         original_param = node._resolve_original_input_name(param)
-        if original_param in node._graph._bound:
-            return (ValueSource.BOUND, node._graph._bound[original_param])
+        if original_param in node._graph.inputs.bound:
+            return (ValueSource.BOUND, node._graph.inputs.bound[original_param])
 
     # 4. Function default (from signature)
     if node.has_signature_default_for(param):
@@ -529,7 +529,7 @@ def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> 
         return True
 
     # Bound value in graph
-    if param in graph._bound:
+    if param in graph.inputs.bound:
         return True
 
     # Node has default for this parameter
@@ -787,7 +787,7 @@ def initialize_state_with_checkpoint(
 
     versions: dict[str, int] = {}
     graph_input_names = set(graph.inputs.all)
-    bound_names = set(graph._bound)
+    bound_names = set(graph.inputs.bound)
     for name in checkpoint_values:
         # Runtime-provided graph inputs start at version 1 (set by update_value
         # during initialize_state). Bound values start at version 0 (resolved

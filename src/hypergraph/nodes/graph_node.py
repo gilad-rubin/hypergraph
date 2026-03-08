@@ -380,8 +380,8 @@ class GraphNode(HyperNode):
         # Resolve to original name for inner graph lookup
         original_param = self._resolve_original_input_name(param)
 
-        # Check if bound in the immediate inner graph
-        if original_param in self._graph._bound:
+        # Check if bound anywhere in the visible inner graph scope
+        if original_param in self._graph.inputs.bound:
             return True
         # Check if any inner node has a default
         inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
@@ -408,8 +408,8 @@ class GraphNode(HyperNode):
         original_param = self._resolve_original_input_name(param)
 
         # Check if bound in inner graph first
-        if original_param in self._graph._bound:
-            return self._graph._bound[original_param]
+        if original_param in self._graph.inputs.bound:
+            return self._graph.inputs.bound[original_param]
         # Check inner nodes for defaults
         for inner_node in self._graph.iter_nodes():
             if original_param in inner_node.inputs and inner_node.has_default_for(original_param):
@@ -436,7 +436,7 @@ class GraphNode(HyperNode):
         original_param = self._resolve_original_input_name(param)
 
         # Bound parameters don't have signature defaults (they're configuration)
-        if original_param in self._graph._bound:
+        if original_param in self._graph.inputs.bound:
             return False
 
         # Check if ALL inner nodes using this param have signature defaults
@@ -466,7 +466,7 @@ class GraphNode(HyperNode):
         original_param = self._resolve_original_input_name(param)
 
         # Bound parameters don't have signature defaults
-        if original_param in self._graph._bound:
+        if original_param in self._graph.inputs.bound:
             raise KeyError(f"Parameter '{param}' is bound, not a signature default")
 
         # Get signature default from inner nodes (not bound values)
