@@ -80,12 +80,12 @@ Execution engines. Template Method pattern with pluggable `NodeExecutor` per nod
 - `caching.py` — Cache key computation and lookup
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
-- `helpers.py` — Input resolution, output storage, active-set computation (`compute_active_node_set`), ready-node scheduling (`get_ready_nodes`)
+- `helpers.py` — Input resolution, output storage, active-set computation (`compute_active_node_set`), ready-node scheduling (`get_ready_nodes`), post-execution state mutation (`apply_node_result`)
 - `input_normalization.py` — Normalize user inputs for execution
 - `routing_validation.py` — Validate routing decisions at runtime
 - `template_sync.py` / `template_async.py` — Template Method base for superstep loops. Threads runtime select and entrypoint config into validation.
-- `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`
-- `protocols.py` — `NodeExecutor` protocol
+- `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`, `ExecutionContext`
+- `protocols.py` — `NodeExecutor` / `AsyncNodeExecutor` protocols (executors receive node, state, inputs, ctx)
 - `validation.py` — Runner-level validation, runtime select resolution, InputSpec scoping
 
 **Rule**: Sync and async runners have parallel implementations. Adding a feature to one means adding it to both.
