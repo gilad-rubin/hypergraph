@@ -385,7 +385,7 @@ await runner.run(Graph([double, triple]), {"x": 5}, workflow_id="job-1")
 # await runner.run(Graph([double, triple]), workflow_id="job-1")
 ```
 
-Resume is intended for ACTIVE/FAILED workflows (e.g., retry after failure), not for appending new work to completed lineages.
+Resume is intended for ACTIVE/PAUSED/FAILED workflows (for example: still-running work, interrupt-paused workflows, or retry after failure), not for appending new work to completed lineages.
 
 #### Fork (new workflow_id, optional overrides)
 

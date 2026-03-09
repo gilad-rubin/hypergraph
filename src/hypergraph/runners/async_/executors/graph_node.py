@@ -91,15 +91,38 @@ class AsyncGraphNodeExecutor:
         # Only inject on first execution: on cycle loop-back the node has already
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
+            child_fork_from: str | None = None
+            child_retry_from: str | None = None
+            prefix = f"{node.name}."
+            resume_values = {
+                node.resolve_original_output_name(key[len(prefix) :]): value for key, value in state.values.items() if key.startswith(prefix)
+            }
+
             if map_config is None and child_workflow_id is not None and self.runner._checkpointer is not None:
                 existing_child_run = await self.runner._checkpointer.get_run_async(child_workflow_id)
                 if existing_child_run is not None:
                     inner_inputs = {}
-            prefix = f"{node.name}."
-            for key in state.values:
-                if key.startswith(prefix):
-                    inner_key = node.resolve_original_output_name(key[len(prefix) :])
-                    inner_inputs[inner_key] = state.values[key]
+                elif resume_values:
+                    current_parent_run = await self.runner._checkpointer.get_run_async(workflow_id) if workflow_id else None
+                    source_parent_run_id = None
+                    if current_parent_run is not None:
+                        source_parent_run_id = current_parent_run.retry_of or current_parent_run.forked_from
+                    if source_parent_run_id is not None:
+                        source_child_run_id = graphnode_child_workflow_id(source_parent_run_id, node.name, state)
+                        source_child_run = (
+                            await self.runner._checkpointer.get_run_async(source_child_run_id) if source_child_run_id is not None else None
+                        )
+                        if source_child_run is not None:
+                            inner_inputs = {}
+                            if current_parent_run is not None and current_parent_run.retry_of is not None:
+                                child_retry_from = source_child_run_id
+                            else:
+                                child_fork_from = source_child_run_id
+
+            inner_inputs.update(resume_values)
+        else:
+            child_fork_from = None
+            child_retry_from = None
 
         if map_config:
             _, mode, error_handling = map_config
@@ -125,6 +148,8 @@ class AsyncGraphNodeExecutor:
             inner_inputs,
             event_processors=event_processors,
             workflow_id=child_workflow_id,
+            fork_from=child_fork_from,
+            retry_from=child_retry_from,
             _parent_span_id=parent_span_id,
             _parent_run_id=workflow_id,
         )

@@ -428,7 +428,19 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             if has_checkpointer:
                 for record in step_buffer:
                     await checkpointer.save_step(record)
-            # Workflow stays ACTIVE when paused (can be resumed)
+                from hypergraph.checkpointers.types import WorkflowStatus
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+                _, step_offset = checkpoint_offsets(resume_checkpoint)
+                step_count = step_offset + len(collector._records)
+                error_count = sum(1 for r in collector._records if r.status == "failed")
+                await checkpointer.update_run_status(
+                    workflow_id,
+                    WorkflowStatus.PAUSED,
+                    duration_ms=total_duration_ms,
+                    node_count=step_count,
+                    error_count=error_count,
+                )
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
@@ -682,14 +694,18 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             )
             total_duration_ms = (time.time() - start_time) * 1000
 
-            # Complete parent batch run
+            # Persist parent batch run status
             if has_checkpointer:
                 from hypergraph.checkpointers.types import WorkflowStatus
 
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
+                paused_count = sum(1 for r in results if r.status == RunStatus.PAUSED)
+                persisted_status = (
+                    WorkflowStatus.FAILED if error_count > 0 else WorkflowStatus.PAUSED if paused_count > 0 else WorkflowStatus.COMPLETED
+                )
                 await checkpointer.update_run_status(
                     workflow_id,
-                    WorkflowStatus.COMPLETED,
+                    persisted_status,
                     duration_ms=total_duration_ms,
                     node_count=len(results),
                     error_count=error_count,

@@ -272,6 +272,12 @@ print(result.workflow_id)  # e.g. run-20260302-a7b3c2
 result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
 ```
 
+Paused interrupt-driven workflows are now persisted as **`PAUSED`** runs rather than overloading `ACTIVE`. In the CLI and notebook explorer, that means:
+
+- `active` means currently executing and non-terminal
+- `paused` means waiting for interrupt input, resumable, and also non-terminal
+- `completed` and `failed` remain terminal
+
 `runner.map()` still requires an explicit `workflow_id` to persist parent/child batch runs.
 
 ### Hierarchical Checkpointing
@@ -703,6 +709,7 @@ hypergraph runs ls --db /path/to/runs.db
 | "What happened in yesterday's run?" | Checkpointer + CLI |
 | "What values were produced at step 3?" | CLI (`runs values --superstep 3`) |
 | "What failed runs exist?" | CLI (`runs ls --status failed`) |
+| "What paused runs can I resume?" | CLI (`runs ls --status paused`) |
 | "What did the nested graph produce?" | CLI (`runs show <id>` + `runs ls --parent <id>`) |
 | "What happened in batch item 5?" | CLI (`runs show <batch-id>/5`) |
 | "Find all steps that hit a specific error" | CLI (`runs search "error message"`) |

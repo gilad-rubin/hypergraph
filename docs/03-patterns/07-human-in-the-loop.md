@@ -272,7 +272,7 @@ checkpointer = SqliteCheckpointer("chat.db")
 
 # Sync reads — no await needed
 run = checkpointer.get_run("conv-1")
-print(run.status)  # "active" (paused) or "completed"
+print(run.status)  # "paused" or "completed"
 
 steps = checkpointer.steps("conv-1")
 for s in steps:

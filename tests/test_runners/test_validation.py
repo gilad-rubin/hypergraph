@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, interrupt, node
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners import RunnerCapabilities
@@ -295,8 +295,16 @@ class TestValidateMapCompatible:
     def test_cyclic_graph_passes(self):
         """Cyclic graphs are currently map-compatible."""
         graph = Graph([counter], entrypoint="counter")
-        # Should not raise (Phase 2 will add interrupt checks)
         validate_map_compatible(graph)
+
+    def test_graphnode_map_over_rejects_interrupts(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+
+        with pytest.raises(GraphConfigError, match="InterruptNode\\(s\\).*incompatible with map execution"):
+            Graph([inner.as_node().map_over("draft")])
 
 
 class TestRuntimeOverrideRejection:

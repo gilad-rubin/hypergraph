@@ -12,3 +12,10 @@ def open_checkpointer(db: str | None = None):
     from hypergraph.cli._config import resolve_db_path
 
     return SqliteCheckpointer(resolve_db_path(db))
+
+
+def open_run_inspector(db: str | None = None):
+    """Open the default run inspection adapter for CLI queries."""
+    from hypergraph.checkpointers import SqliteRunInspector
+
+    return SqliteRunInspector(open_checkpointer(db))

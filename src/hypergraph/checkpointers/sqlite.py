@@ -12,6 +12,7 @@ from typing import Any, Literal
 
 from hypergraph.checkpointers._migrate import ensure_schema
 from hypergraph.checkpointers.base import Checkpointer, CheckpointPolicy
+from hypergraph.checkpointers.presenters import render_checkpointer_explorer_html
 from hypergraph.checkpointers.serializers import JsonSerializer, Serializer
 from hypergraph.checkpointers.types import (
     Checkpoint,
@@ -50,6 +51,11 @@ def _parse_dt(value: str | None) -> datetime | None:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
     return datetime.fromisoformat(value)
+
+
+def _lineage_parent_id(run: Run) -> str | None:
+    """Return the workflow-lineage parent for fork/retry traversal."""
+    return run.forked_from or run.retry_of
 
 
 def _require_aiosqlite() -> Any:
@@ -148,9 +154,13 @@ class SqliteCheckpointer(Checkpointer):
         except Exception:
             return f"SqliteCheckpointer: {self._path}"
 
+    @property
+    def path(self) -> str:
+        """Database path."""
+        return self._path
+
     def _repr_html_(self) -> str:
-        from hypergraph._repr import MUTED_COLOR, _code, html_detail, html_kv, html_panel, theme_wrap, widget_state_key
-        from hypergraph._utils import plural
+        from hypergraph._repr import _code, theme_wrap, widget_state_key
 
         state_key = widget_state_key("checkpointer", self._path)
         try:
@@ -158,40 +168,29 @@ class SqliteCheckpointer(Checkpointer):
         except Exception:
             return theme_wrap(_code(f"SqliteCheckpointer: {self._path}"), state_key=state_key)
 
-        kvs = [html_kv("Path", _code(str(stats["path"])))]
-        if stats["size_bytes"] is not None:
-            size_mb = stats["size_bytes"] / (1024 * 1024)
-            kvs.append(html_kv("Size", f"{size_mb:.1f} MB" if size_mb >= 1 else f"{stats['size_bytes'] / 1024:.0f} KB"))
-        if stats["run_count"] is not None:
-            kvs.append(html_kv("Runs", str(stats["run_count"])))
-            kvs.append(html_kv("Steps", str(stats["step_count"])))
-        body = " &nbsp;|&nbsp; ".join(kvs)
-
-        # Collapsible recent runs with inline steps
+        explorer_runs: list[Run] = []
+        steps_by_run: dict[str, list[StepRecord]] = {}
+        explorer_limit = 30
         try:
-            recent = self.runs(limit=5)
-            if recent:
-                steps_by_run = {}
-                for run in recent:
+            explorer_runs = list(self.runs(limit=explorer_limit))
+            if explorer_runs:
+                for run in explorer_runs:
                     with contextlib.suppress(Exception):
-                        steps_by_run[run.id] = self.steps(run.id)
-                recent._steps_by_run = steps_by_run
-                body += html_detail(
-                    f"Recent runs ({plural(len(recent), 'shown')})",
-                    recent._repr_html_(),
-                    state_key="recent-runs",
-                )
+                        steps_by_run[run.id] = list(self.steps(run.id))
         except Exception:
             pass
 
-        # API hints
-        body += (
-            f'<div style="color:{MUTED_COLOR}; font-size:0.85em; margin-top:8px">'
-            f"Explore: {_code('.runs()')} {_code('.steps(run_id)')} "
-            f"{_code('.search(query)')} {_code('.stats(run_id)')}"
-            "</div>"
+        return render_checkpointer_explorer_html(
+            title="SqliteCheckpointer",
+            path=str(stats["path"]),
+            state_key=state_key,
+            run_count=stats["run_count"],
+            step_count=stats["step_count"],
+            size_bytes=stats["size_bytes"],
+            runs=explorer_runs,
+            steps_by_run=steps_by_run,
+            run_limit=explorer_limit,
         )
-        return theme_wrap(html_panel("SqliteCheckpointer", body), state_key=state_key)
 
     async def initialize(self) -> None:
         """Create database and tables if they don't exist."""
@@ -305,8 +304,9 @@ class SqliteCheckpointer(Checkpointer):
         await self._db.execute(
             "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?, "
-            "forked_from = ?, fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
+            "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
+            "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
             (
                 run_id,
                 WorkflowStatus.ACTIVE.value,
@@ -353,7 +353,7 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats."""
         await self._ensure_db()
-        completed_at = datetime.now(timezone.utc).isoformat() if status != WorkflowStatus.ACTIVE else None
+        completed_at = datetime.now(timezone.utc).isoformat() if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED} else None
 
         # Build SET clause dynamically based on what's provided
         sets = ["status = ?", "completed_at = ?"]
@@ -473,7 +473,7 @@ class SqliteCheckpointer(Checkpointer):
         *,
         status: WorkflowStatus | None = None,
         parent_run_id: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent."""
         await self._ensure_db()
@@ -489,14 +489,41 @@ class SqliteCheckpointer(Checkpointer):
             params.append(parent_run_id)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        params.append(limit)
+        query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
 
-        cursor = await self._db.execute(
-            f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC LIMIT ?",
-            params,
-        )
+        cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
         return RunTable(self._row_to_run(row) for row in rows)
+
+    async def count_runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        parent_run_id: str | None = None,
+        retry_of: str | None = None,
+    ) -> int:
+        """Count runs without materializing full run records."""
+        await self._ensure_db()
+
+        conditions: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status.value)
+        if parent_run_id is not None:
+            conditions.append("parent_run_id = ?")
+            params.append(parent_run_id)
+        if retry_of is not None:
+            conditions.append("retry_of = ?")
+            params.append(retry_of)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(f"SELECT COUNT(*) FROM runs{where}", params)
+        (count,) = await cursor.fetchone()
+        return int(count or 0)
 
     _FTS_FIELDS = frozenset({"node_name", "error"})
 
@@ -652,7 +679,7 @@ class SqliteCheckpointer(Checkpointer):
         graph_name: str | None = None,
         since: datetime | None = None,
         parent_run_id: str | None | object = _UNSET,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[Run]:
         """List runs synchronously with optional filters.
 
@@ -683,12 +710,12 @@ class SqliteCheckpointer(Checkpointer):
                 params.append(parent_run_id)
 
         where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-        params.append(limit)
+        query = f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
 
-        cursor = db.execute(
-            f"SELECT {_RUNS_COLS} FROM runs{where} ORDER BY created_at DESC LIMIT ?",
-            params,
-        )
+        cursor = db.execute(query, params)
         return RunTable(self._row_to_run(row) for row in cursor.fetchall())
 
     def lineage(
@@ -709,8 +736,11 @@ class SqliteCheckpointer(Checkpointer):
 
         root = selected
         seen_ancestors = {root.id}
-        while root.forked_from:
-            parent = self.get_run(root.forked_from)
+        while _lineage_parent_id(root):
+            parent_id = _lineage_parent_id(root)
+            if parent_id is None:
+                break
+            parent = self.get_run(parent_id)
             if parent is None or parent.id in seen_ancestors:
                 break
             root = parent
@@ -891,8 +921,9 @@ class SqliteCheckpointer(Checkpointer):
         db.execute(
             "INSERT INTO runs (id, status, graph_name, created_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, parent_run_id = ?, "
-            "forked_from = ?, fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
+            " ON CONFLICT(id) DO UPDATE SET status = ?, graph_name = ?, duration_ms = NULL, node_count = 0, "
+            "error_count = 0, completed_at = NULL, parent_run_id = ?, forked_from = ?, "
+            "fork_superstep = ?, retry_of = ?, retry_index = ?, config = ?",
             (
                 run_id,
                 WorkflowStatus.ACTIVE.value,
@@ -1068,7 +1099,7 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats synchronously."""
         db = self._sync_db()
-        completed_at = datetime.now(timezone.utc).isoformat() if status != WorkflowStatus.ACTIVE else None
+        completed_at = datetime.now(timezone.utc).isoformat() if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED} else None
 
         sets = ["status = ?", "completed_at = ?"]
         params: list[Any] = [status.value, completed_at]
