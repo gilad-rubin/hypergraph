@@ -1,16 +1,12 @@
-"""Daft DataFrame runner for hypergraph.
+"""Compatibility re-export for the public Daft runner.
 
-Translates a hypergraph Graph into a Daft DataFrame pipeline,
-executing each node as a UDF column operation in topological order.
+Prefer:
 
-Usage:
-    from hypergraph.integrations.daft import DaftRunner
+    from hypergraph import DaftRunner
 
-    runner = DaftRunner()
-    result = runner.run(graph, x=42)
-    results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x")
+This module remains as a stable import path for older examples and notebooks.
 """
 
-from hypergraph.integrations.daft.runner import DaftRunner
+from hypergraph.runners.daft import DaftRunner
 
 __all__ = ["DaftRunner"]
