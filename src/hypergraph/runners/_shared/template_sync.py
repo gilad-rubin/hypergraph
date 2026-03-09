@@ -22,6 +22,7 @@ from hypergraph.runners._shared.helpers import (
     _validate_error_handling,
     _validate_on_missing,
     _validate_workflow_id,
+    build_resume_validation_values,
     compute_execution_scope,
     filter_outputs,
     find_missing_resume_seed_inputs,
@@ -255,22 +256,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             retry_of = getattr(resume_checkpoint, "retry_of", None)
             retry_index = getattr(resume_checkpoint, "retry_index", None)
 
-        validation_values = normalized_values
-        if resume_checkpoint is not None:
-            # Validate only canonical graph inputs from checkpoint state.
-            # Internal produced values are not user inputs in the canonical model.
-            validation_values = dict(normalized_values)
-            for input_name in graph.inputs.all:
-                if input_name not in validation_values and input_name in resume_checkpoint.values:
-                    validation_values[input_name] = resume_checkpoint.values[input_name]
-                elif input_name not in validation_values and any(
-                    input_name in (step.input_versions or {}) for step in getattr(resume_checkpoint, "steps", ())
-                ):
-                    # Resume checkpoints may omit original graph inputs from
-                    # checkpoint.values once downstream state is sufficient to
-                    # continue. Presence in prior step inputs is enough to
-                    # satisfy canonical input validation for resume/retry.
-                    validation_values[input_name] = None
+        validation_values = build_resume_validation_values(graph, normalized_values, resume_checkpoint)
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:

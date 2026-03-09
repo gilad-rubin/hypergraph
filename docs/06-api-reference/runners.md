@@ -718,7 +718,7 @@ runner.run(graph, values={"select": "fast"})
 
 ### Execution Model
 
-Runners execute graphs in two layers:
+Runners execute graphs in two phases:
 
 1. Build a static execution plan from the active graph
 2. Walk that plan until each region reaches quiescence

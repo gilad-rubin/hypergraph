@@ -257,8 +257,8 @@ Hypergraph spans the full spectrum — from batch data pipelines to multi-turn A
 
 Execution mental model:
 - **DAGs** execute in topological order
-- **Cycles** execute as local feedback regions until quiescent
-- **Gates** are runtime activation on top of the same model
+- **Cycles** execute as local feedback regions until quiescence
+- **Gates** are runtime activation on top of the same model, and control edges participate in SCC planning so gate-driven loops stay in the same execution region
 
 ## Architecture Notes
 

@@ -1441,6 +1441,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "rich" },
     { name = "ruff" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
 ]
 
@@ -1506,6 +1507,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.5.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.9.0" },
 ]
 

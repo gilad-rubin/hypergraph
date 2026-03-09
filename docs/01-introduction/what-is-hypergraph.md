@@ -55,7 +55,7 @@ print(result["answer"])
 At execution time, hypergraph uses one mental model for everything:
 
 - **DAGs** run in topological order
-- **Cycles** run as local feedback regions until quiescent
+- **Cycles** run as local feedback regions until quiescence
 - **Gates** activate branches at runtime without changing the core model
 
 ## Key Differentiators

@@ -435,7 +435,7 @@ hypergraph run my_module:graph x=5 --verbose
 
 The runner is auto-detected: SyncRunner for sync-only graphs, AsyncRunner if the graph has async nodes or `--db` is used. Override with `--runner sync` or `--runner async`.
 
-> **Note:** Runtime `--select` overrides are not supported. Configure output scope on the graph itself with `graph.select(...)`, then expose that configured graph object or registry entry to the CLI.
+> **Note:** The `select` parameter cannot be passed to `runner.run()` at execution time. Instead, configure output scope on the graph itself with `graph.select(...)` before running. The CLI `--select` flag is supported and applies that selection before execution.
 
 ### map — Batch Execution
 

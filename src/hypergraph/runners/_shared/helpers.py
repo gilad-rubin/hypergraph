@@ -947,6 +947,31 @@ def _resolve_input(
     return value
 
 
+def build_resume_validation_values(
+    graph: Graph,
+    normalized_values: dict[str, Any],
+    resume_checkpoint: Any | None,
+) -> dict[str, Any]:
+    """Build canonical validation inputs for resume/fork/retry runs."""
+    validation_values = dict(normalized_values)
+    if resume_checkpoint is None:
+        return validation_values
+
+    for input_name in graph.inputs.all:
+        if input_name in validation_values:
+            continue
+        if input_name in resume_checkpoint.values:
+            validation_values[input_name] = resume_checkpoint.values[input_name]
+            continue
+        if any(input_name in (step.input_versions or {}) for step in getattr(resume_checkpoint, "steps", ())):
+            # The checkpoint may omit original graph inputs once downstream
+            # state is sufficient to resume. A prior consumed version is enough
+            # to satisfy canonical key-presence validation.
+            validation_values[input_name] = None
+
+    return validation_values
+
+
 def map_inputs_to_func_params(node: HyperNode, inputs: dict[str, Any]) -> dict[str, Any]:
     """Map renamed input names back to original function parameter names.
 
