@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
-from hypergraph.nodes.gate import END as _END
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -21,9 +20,9 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
-from hypergraph.runners._shared.helpers import collect_inputs_for_node
+from hypergraph.runners._shared.helpers import apply_node_result, collect_inputs_for_node
 from hypergraph.runners._shared.protocols import NodeExecutor
-from hypergraph.runners._shared.types import ExecutionContext, GraphState, NodeExecution, PauseExecution
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
@@ -132,44 +131,19 @@ def run_superstep_sync(
                 # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
                 raise
 
-        # Update state with outputs
-        for name, value in outputs.items():
-            new_state.update_value(name, value)
-
-        output_versions = {name: new_state.get_version(name) for name in outputs}
-
-        # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
-
-        # Determine duration and cache status for this node
         node_duration = 0.0 if cached_outputs is not None else duration_ms
         node_cached = cached_outputs is not None
 
-        # Record execution
-        new_state.node_executions[node.name] = NodeExecution(
-            node_name=node.name,
-            input_versions=input_versions,
-            outputs=outputs,
-            output_versions=output_versions,
-            wait_for_versions=wait_for_versions,
-            duration_ms=node_duration,
-            cached=node_cached,
+        apply_node_result(
+            graph,
+            new_state,
+            node,
+            outputs,
+            input_versions,
+            wait_for_versions,
+            node_duration,
+            node_cached,
         )
-        # Consume routing decisions that activated this node.
-        # Once a gated node executes, the decision is spent — the gate
-        # must re-execute and re-route before this node fires again.
-        for gate_name in graph.controlled_by.get(node.name, []):
-            decision = new_state.routing_decisions.get(gate_name)
-            if decision is not None and _decision_activates_node(node.name, decision):
-                del new_state.routing_decisions[gate_name]
 
     return new_state
-
-
-def _decision_activates_node(node_name: str, decision: Any) -> bool:
-    """Check if a routing decision activates a specific node."""
-    if decision is _END or decision is None:
-        return False
-    if isinstance(decision, list):
-        return node_name in decision
-    return decision == node_name

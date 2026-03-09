@@ -568,6 +568,45 @@ def _latest_upstream_output_version(
     return latest
 
 
+def apply_node_result(
+    graph: Graph,
+    state: GraphState,
+    node: HyperNode,
+    outputs: dict[str, Any],
+    input_versions: dict[str, int],
+    wait_for_versions: dict[str, int],
+    duration_ms: float,
+    cached: bool,
+) -> None:
+    """Apply node execution results to state (mutates in place).
+
+    Updates output values, records NodeExecution, and consumes routing
+    decisions that activated this node.
+    """
+    for name, value in outputs.items():
+        state.update_value(name, value)
+
+    output_versions = {name: state.get_version(name) for name in outputs}
+
+    state.node_executions[node.name] = NodeExecution(
+        node_name=node.name,
+        input_versions=input_versions,
+        outputs=outputs,
+        output_versions=output_versions,
+        wait_for_versions=wait_for_versions,
+        duration_ms=duration_ms,
+        cached=cached,
+    )
+
+    # Consume routing decisions that activated this node.
+    # Once a gated node executes, the decision is spent — the gate
+    # must re-execute and re-route before this node fires again.
+    for gate_name in graph.controlled_by.get(node.name, []):
+        decision = state.routing_decisions.get(gate_name)
+        if decision is not None and _is_node_activated_by_decision(node.name, decision):
+            del state.routing_decisions[gate_name]
+
+
 def collect_inputs_for_node(
     node: HyperNode,
     graph: Graph,
