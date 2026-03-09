@@ -13,7 +13,7 @@ from hypergraph.runners.async_.superstep import get_concurrency_limiter
 
 if TYPE_CHECKING:
     from hypergraph.nodes.function import FunctionNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
 
 
 class AsyncFunctionNodeExecutor:
@@ -35,6 +35,7 @@ class AsyncFunctionNodeExecutor:
         node: FunctionNode,
         state: GraphState,
         inputs: dict[str, Any],
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         """Execute a FunctionNode asynchronously.
 
@@ -45,6 +46,7 @@ class AsyncFunctionNodeExecutor:
             node: The FunctionNode to execute
             state: Current graph execution state (unused for FunctionNode)
             inputs: Input values for the node
+            ctx: Execution context (unused for FunctionNode)
 
         Returns:
             Dict mapping output names to their values

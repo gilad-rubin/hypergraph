@@ -10,7 +10,7 @@ from hypergraph.runners._shared.types import PauseExecution, PauseInfo
 
 if TYPE_CHECKING:
     from hypergraph.nodes.interrupt import InterruptNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
 
 
 class AsyncInterruptNodeExecutor:
@@ -21,8 +21,7 @@ class AsyncInterruptNodeExecutor:
         node: InterruptNode,
         state: GraphState,
         inputs: dict[str, Any],
-        *,
-        provided_values: dict[str, Any] | None = None,
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         data_outputs = node.data_outputs
 
@@ -41,7 +40,7 @@ class AsyncInterruptNodeExecutor:
         # values left over from a previous cycle iteration in checkpointed state.
         # After consuming, we remove the keys so a second cycle iteration
         # through this node will correctly invoke the handler and pause.
-        pv = provided_values or {}
+        pv = ctx.provided_values
         all_outputs_provided = all(o in pv for o in data_outputs)
         if all_outputs_provided:
             result = {o: pv.pop(o) for o in data_outputs}

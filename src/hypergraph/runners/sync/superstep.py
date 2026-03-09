@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
@@ -22,7 +22,8 @@ from hypergraph.runners._shared.event_helpers import (
     build_route_decision_event,
 )
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
-from hypergraph.runners._shared.types import GraphState, NodeExecution, PauseExecution
+from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, NodeExecution, PauseExecution
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
@@ -35,8 +36,9 @@ def run_superstep_sync(
     state: GraphState,
     ready_nodes: list[HyperNode],
     provided_values: dict[str, Any],
-    execute_node: Callable,
+    executors: dict[type[HyperNode], NodeExecutor],
     *,
+    ctx_base: ExecutionContext,
     cache: CacheBackend | None = None,
     dispatcher: EventDispatcher | None = None,
     run_id: str = "",
@@ -51,7 +53,9 @@ def run_superstep_sync(
         state: Current state (will be copied, not mutated)
         ready_nodes: Nodes to execute in this superstep
         provided_values: Values provided to runner.run()
-        execute_node: Function to execute a single node
+        executors: Registry mapping node types to their executors
+        ctx_base: Per-run execution context (missing per-node fields)
+        cache: Optional cache backend
         dispatcher: Optional event dispatcher for emitting node events
         run_id: Run ID for event correlation
         run_span_id: Span ID of the parent run
@@ -95,20 +99,15 @@ def run_superstep_sync(
 
             node_start = time.time()
             try:
-                # Set node span_id on executor for nested graph propagation
-                if hasattr(execute_node, "current_span_id"):
-                    execute_node.current_span_id[0] = node_span_id  # type: ignore[attr-defined]
+                # Per-node context with push callback for inner logs
+                inner_logs: list = []
+                ctx = replace(ctx_base, parent_span_id=node_span_id, on_inner_log=inner_logs.append)
 
-                # Execute node
-                outputs = execute_node(node, new_state, inputs)
+                # Dispatch to the appropriate executor
+                executor = executors[type(node)]
+                outputs = executor(node, new_state, inputs, ctx)
 
                 duration_ms = (time.time() - node_start) * 1000
-
-                # Capture inner logs from nested graph execution (if any)
-                inner_logs: tuple = ()
-                if hasattr(execute_node, "last_inner_logs"):
-                    inner_logs = execute_node.last_inner_logs[0]  # type: ignore[attr-defined]
-                    execute_node.last_inner_logs[0] = ()  # type: ignore[attr-defined]
 
                 # Store result in cache
                 if cache is not None and cache_key:
@@ -118,7 +117,7 @@ def run_superstep_sync(
                     route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
                     if route_evt is not None:
                         dispatcher.emit(route_evt)
-                    dispatcher.emit(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=inner_logs))
+                    dispatcher.emit(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=tuple(inner_logs)))
 
             except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000

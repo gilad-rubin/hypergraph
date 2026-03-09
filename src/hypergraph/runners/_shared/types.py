@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from hypergraph.events.processor import EventProcessor
 
 from hypergraph._utils import plural
 
@@ -658,6 +661,29 @@ class RunnerCapabilities:
     returns_coroutine: bool = False
     supports_interrupts: bool = False
     supports_checkpointing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContext:
+    """Per-node execution environment passed to every executor.
+
+    Created once per run as a base, then specialized per node via
+    ``dataclasses.replace(ctx_base, parent_span_id=..., on_inner_log=...)``.
+
+    Most executors ignore most fields — that's fine. The alternative
+    (isinstance dispatch in a closure) is what this replaces.
+
+    Note: ``provided_values`` is intentionally a shared mutable dict.
+    The InterruptNode executor calls ``pv.pop(key)`` to consume resume
+    values so they don't re-trigger on cycle loop-back. This cross-superstep
+    mutation through the frozen context is load-bearing behavior.
+    """
+
+    event_processors: list[EventProcessor] | None = None
+    parent_span_id: str | None = None
+    workflow_id: str | None = None
+    provided_values: dict[str, Any] = field(default_factory=dict)
+    on_inner_log: Callable[[RunLog], None] | None = None
 
 
 @dataclass

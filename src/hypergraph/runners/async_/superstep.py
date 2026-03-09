@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
@@ -23,7 +24,8 @@ from hypergraph.runners._shared.event_helpers import (
     build_route_decision_event,
 )
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, NodeExecution
 
 
 def _decision_activates(node_name: str, decision: Any) -> bool:
@@ -39,7 +41,6 @@ if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.graph import Graph
-    from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 
 # Context variable for concurrency limiting across nested graphs
 _concurrency_limiter: ContextVar[asyncio.Semaphore | None] = ContextVar("_concurrency_limiter", default=None)
@@ -65,9 +66,10 @@ async def run_superstep_async(
     state: GraphState,
     ready_nodes: list[HyperNode],
     provided_values: dict[str, Any],
-    execute_node: AsyncNodeExecutor,
+    executors: dict[type[HyperNode], AsyncNodeExecutor],
     max_concurrency: int | None = None,
     *,
+    ctx_base: ExecutionContext,
     cache: CacheBackend | None = None,
     dispatcher: EventDispatcher | None = None,
     run_id: str = "",
@@ -84,8 +86,10 @@ async def run_superstep_async(
         state: Current state (will be copied, not mutated)
         ready_nodes: Nodes to execute in this superstep
         provided_values: Values provided to runner.run()
-        execute_node: Async function to execute a single node
+        executors: Registry mapping node types to their executors
         max_concurrency: Unused (kept for API compatibility)
+        ctx_base: Per-run execution context (missing per-node fields)
+        cache: Optional cache backend
         dispatcher: Optional event dispatcher for emitting node events
         run_id: Run ID for event correlation
         run_span_id: Span ID of the parent run
@@ -106,15 +110,10 @@ async def run_superstep_async(
 
     async def execute_one(
         node: HyperNode,
-    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool]:
+    ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool, tuple]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
 
-        # Stash provided_values so the execute_node closure can forward
-        # them to the interrupt executor (distinguishes fresh resume
-        # values from stale cycle values in checkpointed state).
-        if hasattr(execute_node, "provided_values"):
-            execute_node.provided_values[0] = provided_values  # type: ignore[attr-defined]
         input_versions = {param: state.get_version(param) for param in node.inputs}
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
@@ -135,28 +134,24 @@ async def run_superstep_async(
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
                 await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
-            return node, outputs, input_versions, wait_for_versions, 0.0, True
+            return node, outputs, input_versions, wait_for_versions, 0.0, True, ()
 
         # Emit NodeStartEvent
         node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
         if active:
             await dispatcher.emit_async(start_evt)
 
-        # Set node span_id on executor for nested graph propagation
-        if hasattr(execute_node, "current_span_id"):
-            execute_node.current_span_id[0] = node_span_id  # type: ignore[attr-defined]
+        # Per-node context with its own inner_logs list — no shared state
+        inner_logs: list = []
+        ctx = replace(ctx_base, parent_span_id=node_span_id, on_inner_log=inner_logs.append)
 
         node_start = time.time()
         try:
-            # Pass new_state so routing decisions are stored in the updated state
-            outputs = await execute_node(node, new_state, inputs)
+            # Dispatch to the appropriate executor
+            executor = executors[type(node)]
+            outputs = await executor(node, new_state, inputs, ctx)
 
             duration_ms = (time.time() - node_start) * 1000
-
-            # Capture inner logs from nested graph execution (if any)
-            inner_logs: tuple = ()
-            if hasattr(execute_node, "consume_last_inner_logs"):
-                inner_logs = execute_node.consume_last_inner_logs()  # type: ignore[attr-defined]
 
             # Store result in cache
             if cache is not None and cache_key:
@@ -166,9 +161,11 @@ async def run_superstep_async(
                 route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
-                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=inner_logs))
+                await dispatcher.emit_async(
+                    build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=tuple(inner_logs))
+                )
 
-            return node, outputs, input_versions, wait_for_versions, duration_ms, False
+            return node, outputs, input_versions, wait_for_versions, duration_ms, False, tuple(inner_logs)
         except Exception:
             if active:
                 await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
@@ -186,7 +183,7 @@ async def run_superstep_async(
             if first_error is None:
                 first_error = result
             continue
-        node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
+        node, outputs, input_versions, wait_for_versions, duration_ms, cached, _inner_logs = result
         for name, value in outputs.items():
             new_state.update_value(name, value)
         output_versions = {name: new_state.get_version(name) for name in outputs}
