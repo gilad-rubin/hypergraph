@@ -254,7 +254,14 @@ class DaftRunner(BaseRunner):
         clone: bool | list[str] = False,
         **input_values: Any,
     ) -> MapResult:
-        """Execute one graph run per Daft DataFrame row."""
+        """Execute one graph run per Daft DataFrame row.
+
+        Note:
+            This method currently materializes the selected columns to the driver
+            before execution (``df.collect()``). Avoid using it with DataFrames
+            too large to fit in driver memory. For large-scale distributed workloads,
+            prefer ``map()`` with Python lists instead.
+        """
         normalized = normalize_inputs(
             values,
             input_values,

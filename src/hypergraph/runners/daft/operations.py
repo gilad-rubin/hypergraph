@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
@@ -124,7 +123,6 @@ class FunctionNodeOperation(DaftOperation):
 
         node = self.node
         bound = self.bound_values
-        clone = self.clone
         input_cols = self.input_columns
         # For multi-output nodes we pack all outputs into a single Python column
         output_col = self.output_columns[0] if len(self.output_columns) == 1 else f"_pack_{node.name}"
@@ -134,15 +132,13 @@ class FunctionNodeOperation(DaftOperation):
         col_names = input_cols  # capture for closure
 
         def wrapper(*args: Any) -> Any:
-            local_bound = _clone_values(bound, clone) if clone else bound
-            kwargs = {**local_bound, **dict(zip(col_names, args, strict=True))}
+            kwargs = {**bound, **dict(zip(col_names, args, strict=True))}
             return func(**kwargs)
 
         if asyncio.iscoroutinefunction(func):
 
             async def async_wrapper(*args: Any) -> Any:
-                local_bound = _clone_values(bound, clone) if clone else bound
-                kwargs = {**local_bound, **dict(zip(col_names, args, strict=True))}
+                kwargs = {**bound, **dict(zip(col_names, args, strict=True))}
                 return await func(**kwargs)
 
             udf = daft_mod.func(return_dtype=daft_mod.DataType.python())(async_wrapper)
@@ -260,7 +256,6 @@ class GraphNodeOperation(DaftOperation):
         multi_output = len(self.output_columns) > 1
         cache = self.cache
         bound = self.bound_values
-        clone = self.clone
 
         inner_graph = node.graph
         # map_config is (params, mode, error_handling) or None
@@ -275,8 +270,7 @@ class GraphNodeOperation(DaftOperation):
             )
             from hypergraph.runners.sync.runner import SyncRunner
 
-            local_bound = _clone_values(bound, clone) if clone else bound
-            raw_inputs = {**local_bound, **dict(zip(col_names, args, strict=True))}
+            raw_inputs = {**bound, **dict(zip(col_names, args, strict=True))}
             # Translate renamed input keys back to original inner graph names
             inner_inputs = map_inputs_to_func_params(node, raw_inputs)
             runner = SyncRunner(cache=cache)
@@ -342,6 +336,14 @@ def create_operation(
     output_cols = list(node.data_outputs)
 
     if isinstance(node, GraphNode):
+        if node.graph.has_async_nodes:
+            from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+            raise IncompatibleRunnerError(
+                f"DaftRunner does not support nested graphs with async nodes (GraphNode {node.name!r} contains async nodes). "
+                f"Use SyncRunner or AsyncRunner for graphs with async nested subgraphs.",
+                capability="node_types",
+            )
         return GraphNodeOperation(
             node=node,
             input_columns=input_cols,
@@ -417,15 +419,6 @@ def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:
                 f"zero-arg construction for per-worker re-initialization. Got: {e}\n\n"
                 f"How to fix: Ensure {type(v).__name__}.__init__() works with no arguments."
             ) from e
-
-
-def _clone_values(values: dict[str, Any], clone: bool | list[str]) -> dict[str, Any]:
-    """Deep-copy values when clone is requested."""
-    if clone is True:
-        return copy.deepcopy(values)
-    if isinstance(clone, list):
-        return {k: copy.deepcopy(v) if k in clone else v for k, v in values.items()}
-    return dict(values)
 
 
 def _unpack_multi_output(

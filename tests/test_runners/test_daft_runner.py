@@ -97,3 +97,18 @@ def test_daft_runner_raise_mode_re_raises_first_failure():
 
     with pytest.raises(ValueError, match="boom"):
         DaftRunner().map(graph, {"x": [1, 2, 3]}, map_over="x")
+
+
+def test_daft_runner_rejects_nested_graph_with_async_nodes():
+    """DaftRunner must raise at plan time for GraphNodes with async inner graphs."""
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    @node(output_name="result")
+    async def async_step(x: int) -> int:
+        return x + 1
+
+    inner = Graph([async_step], name="async_inner")
+    outer = Graph([inner.as_node(name="sub").with_inputs(x="val")], name="outer")
+
+    with pytest.raises(IncompatibleRunnerError, match="async nodes"):
+        DaftRunner().run(outer, {"val": 1})
