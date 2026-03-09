@@ -67,9 +67,14 @@ def is_batch_marked(node: HyperNode) -> bool:
     return getattr(func, "__daft_batch__", False) is True
 
 
+def _is_stateful(v: Any) -> bool:
+    """Check if a value is DaftStateful (attribute exists AND is truthy)."""
+    return getattr(type(v), "__daft_stateful__", False) is True
+
+
 def has_stateful_values(bound_values: dict[str, Any]) -> bool:
     """Check if any bound values implement DaftStateful protocol."""
-    return any(isinstance(v, DaftStateful) for v in bound_values.values())
+    return any(_is_stateful(v) for v in bound_values.values())
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +177,8 @@ class StatefulNodeOperation(DaftOperation):
         col_names = input_cols  # capture for closure
 
         # Separate stateful from plain bound values
-        stateful_vals = {k: v for k, v in bound.items() if isinstance(v, DaftStateful)}
-        plain_vals = {k: v for k, v in bound.items() if not isinstance(v, DaftStateful)}
+        stateful_vals = {k: v for k, v in bound.items() if _is_stateful(v)}
+        plain_vals = {k: v for k, v in bound.items() if not _is_stateful(v)}
 
         @daft_mod.cls
         class StatefulWrapper:
@@ -349,6 +354,13 @@ def create_operation(
     if isinstance(node, FunctionNode):
         if has_stateful_values(node_bound):
             _validate_stateful_constructable(node_bound)
+            if asyncio.iscoroutinefunction(node.func):
+                from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+                raise IncompatibleRunnerError(
+                    f"Stateful UDFs with async node functions are not supported (node {node.name!r}).",
+                    capability="node_types",
+                )
             return StatefulNodeOperation(
                 node=node,
                 input_columns=input_cols,
@@ -357,6 +369,13 @@ def create_operation(
                 clone=clone,
             )
         if is_batch_marked(node):
+            if len(output_cols) > 1:
+                from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+                raise IncompatibleRunnerError(
+                    f"Batch UDFs with multiple outputs are not supported (node {node.name!r} has {output_cols}).",
+                    capability="node_types",
+                )
             return BatchNodeOperation(
                 node=node,
                 input_columns=input_cols,
