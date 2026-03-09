@@ -95,9 +95,7 @@ class AsyncGraphNodeExecutor:
             child_retry_from: str | None = None
             prefix = f"{node.name}."
             resume_values = {
-                node.resolve_original_output_name(key[len(prefix) :]): value
-                for key, value in state.values.items()
-                if key.startswith(prefix)
+                node.resolve_original_output_name(key[len(prefix) :]): value for key, value in state.values.items() if key.startswith(prefix)
             }
 
             if map_config is None and child_workflow_id is not None and self.runner._checkpointer is not None:
