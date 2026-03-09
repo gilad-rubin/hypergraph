@@ -3,7 +3,7 @@
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RunStatus, interrupt, node
-from hypergraph.checkpointers import MemoryCheckpointer, WorkflowStatus
+from hypergraph.checkpointers import CheckpointPolicy, MemoryCheckpointer, StepRecord, StepStatus, WorkflowStatus
 
 
 @node(output_name="doubled")
@@ -140,3 +140,43 @@ class TestMemoryCheckpointer:
         assert child is not None
         assert child.parent_run_id == "wf-nested-pause-retry-1"
         assert child.retry_of == "wf-nested-pause-retry/inner"
+
+    async def test_latest_retention_preserves_reconstructible_state(self, checkpointer):
+        checkpointer.policy = CheckpointPolicy(retention="latest")
+        await checkpointer.create_run("wf-retained")
+        await checkpointer.save_step(
+            StepRecord(
+                run_id="wf-retained",
+                superstep=0,
+                node_name="a",
+                index=0,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+                values={"x": 1},
+            )
+        )
+        await checkpointer.save_step(
+            StepRecord(
+                run_id="wf-retained",
+                superstep=1,
+                node_name="b",
+                index=1,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+                values={"y": 2},
+            )
+        )
+        await checkpointer.save_step(
+            StepRecord(
+                run_id="wf-retained",
+                superstep=2,
+                node_name="a",
+                index=2,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+                values={"x": 3},
+            )
+        )
+
+        state = await checkpointer.get_state("wf-retained")
+        assert state == {"x": 3, "y": 2}

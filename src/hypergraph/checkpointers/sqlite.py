@@ -154,6 +154,11 @@ class SqliteCheckpointer(Checkpointer):
         except Exception:
             return f"SqliteCheckpointer: {self._path}"
 
+    @property
+    def path(self) -> str:
+        """Database path."""
+        return self._path
+
     def _repr_html_(self) -> str:
         from hypergraph._repr import _code, theme_wrap, widget_state_key
 
@@ -492,6 +497,33 @@ class SqliteCheckpointer(Checkpointer):
         cursor = await self._db.execute(query, params)
         rows = await cursor.fetchall()
         return RunTable(self._row_to_run(row) for row in rows)
+
+    async def count_runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        parent_run_id: str | None = None,
+        retry_of: str | None = None,
+    ) -> int:
+        """Count runs without materializing full run records."""
+        await self._ensure_db()
+
+        conditions: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status.value)
+        if parent_run_id is not None:
+            conditions.append("parent_run_id = ?")
+            params.append(parent_run_id)
+        if retry_of is not None:
+            conditions.append("retry_of = ?")
+            params.append(retry_of)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(f"SELECT COUNT(*) FROM runs{where}", params)
+        (count,) = await cursor.fetchone()
+        return int(count or 0)
 
     _FTS_FIELDS = frozenset({"node_name", "error"})
 

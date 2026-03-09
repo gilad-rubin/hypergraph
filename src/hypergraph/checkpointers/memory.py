@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from hypergraph.checkpointers.base import Checkpointer
-from hypergraph.checkpointers.types import Run, StepRecord, WorkflowStatus
+from hypergraph.checkpointers.types import Run, StepRecord, StepStatus, WorkflowStatus
+
+_BASELINE_NODE_NAME = "__retained_state__"
 
 
 def _step_sort_key(record: StepRecord) -> tuple[datetime, datetime, int, str]:
@@ -118,6 +120,22 @@ class MemoryCheckpointer(Checkpointer):
             runs = runs[:limit]
         return runs
 
+    async def count_runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        parent_run_id: str | None = None,
+        retry_of: str | None = None,
+    ) -> int:
+        runs = self._runs.values()
+        return sum(
+            1
+            for run in runs
+            if (status is None or run.status == status)
+            and (parent_run_id is None or run.parent_run_id == parent_run_id)
+            and (retry_of is None or run.retry_of == retry_of)
+        )
+
     def _apply_retention_policy(self, run_id: str) -> None:
         retention = self.policy.retention
         if retention == "full":
@@ -128,15 +146,67 @@ class MemoryCheckpointer(Checkpointer):
             return
 
         if retention == "latest":
+            ordered = sorted(run_steps.values(), key=_step_sort_key)
             latest_by_node: dict[str, StepRecord] = {}
-            for record in sorted(run_steps.values(), key=_step_sort_key):
+            for record in ordered:
+                if record.node_name == _BASELINE_NODE_NAME:
+                    continue
                 latest_by_node[record.node_name] = record
-            self._steps[run_id] = {(record.superstep, record.node_name): record for record in latest_by_node.values()}
+            kept = list(latest_by_node.values())
+            dropped = [record for record in ordered if record.node_name != _BASELINE_NODE_NAME and record not in kept]
+            baseline = _make_baseline_record(
+                run_id,
+                dropped,
+                baseline_superstep=(min((record.superstep for record in kept), default=0) - 1),
+            )
+            retained = [*([baseline] if baseline is not None else []), *kept]
+            self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
             return
 
         if retention == "windowed" and self.policy.window is not None:
-            max_superstep = max(record.superstep for record in run_steps.values())
+            ordered = sorted(run_steps.values(), key=_step_sort_key)
+            max_superstep = max(record.superstep for record in ordered)
             cutoff = max_superstep - self.policy.window + 1
             if cutoff <= 0:
                 return
-            self._steps[run_id] = {key: record for key, record in run_steps.items() if record.superstep >= cutoff}
+            kept = [record for record in ordered if record.superstep >= cutoff and record.node_name != _BASELINE_NODE_NAME]
+            dropped = [record for record in ordered if record.superstep < cutoff and record.node_name != _BASELINE_NODE_NAME]
+            baseline = _make_baseline_record(run_id, dropped, baseline_superstep=cutoff - 1)
+            retained = [*([baseline] if baseline is not None else []), *kept]
+            self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
+
+
+def _merge_state(records: list[StepRecord]) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    for record in sorted(records, key=_step_sort_key):
+        if record.values:
+            state.update(record.values)
+    return state
+
+
+def _make_baseline_record(
+    run_id: str,
+    records: list[StepRecord],
+    *,
+    baseline_superstep: int,
+) -> StepRecord | None:
+    if not records:
+        return None
+    values = _merge_state(records)
+    if not values:
+        return None
+    created_at = min(record.created_at for record in records)
+    completed_candidates = [record.completed_at for record in records if record.completed_at is not None]
+    completed_at = max(completed_candidates) if completed_candidates else created_at
+    return StepRecord(
+        run_id=run_id,
+        superstep=baseline_superstep,
+        node_name=_BASELINE_NODE_NAME,
+        index=min(record.index for record in records),
+        status=StepStatus.COMPLETED,
+        input_versions={},
+        values=values,
+        created_at=created_at,
+        completed_at=completed_at,
+        node_type="RetentionBaseline",
+    )

@@ -592,6 +592,16 @@ class TestSyncReads:
         assert lineage.root_run_id == "wf-root"
         assert [row.run.id for row in lineage] == ["wf-root", "wf-root-retry-1"]
 
+    async def test_count_runs_can_filter_retry_of(self, checkpointer):
+        await checkpointer.create_run("wf-root")
+        await checkpointer.create_run("wf-root-retry-1", retry_of="wf-root", retry_index=1)
+        await checkpointer.create_run("wf-root-retry-2", retry_of="wf-root", retry_index=2)
+        await checkpointer.create_run("wf-other")
+
+        count = await checkpointer.count_runs(retry_of="wf-root")
+
+        assert count == 2
+
 
 class TestRetentionPolicyBehavior:
     async def test_latest_retention_keeps_latest_per_node(self, checkpointer):

@@ -9,6 +9,11 @@ if TYPE_CHECKING:
     from hypergraph.checkpointers.types import Run, StepRecord
 
 
+def _safe_json_payload(payload: dict[str, Any]) -> str:
+    """Serialize JSON safely for embedding inside a script tag."""
+    return json.dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
 def render_checkpointer_explorer_html(
     *,
     title: str,
@@ -92,7 +97,7 @@ def render_checkpointer_explorer_html(
         f'<div id="{panel_body_id}" style="{panel_style}"></div>'
         f"</section>"
         f"</div>"
-        f'<script type="application/json" id="{data_id}">{json.dumps(payload)}</script>'
+        f'<script type="application/json" id="{data_id}">{_safe_json_payload(payload)}</script>'
         f"<script>{_explorer_script(explorer_id, data_id, header_id, run_list_id, empty_id, summary_id, panel_nav_id, panel_body_id)}</script>"
         f"</div>"
     )

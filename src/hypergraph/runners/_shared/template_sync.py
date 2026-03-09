@@ -383,12 +383,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     sync_cp.save_step_sync(record)
                 _, step_offset = checkpoint_offsets(resume_checkpoint)
                 step_count = step_offset + len(collector._records)
+                error_count = sum(1 for r in collector._records if r.status == "failed")
                 sync_cp.update_run_status_sync(
                     workflow_id,
                     WorkflowStatus.PAUSED,
                     duration_ms=total_duration_ms,
                     node_count=step_count,
-                    error_count=0,
+                    error_count=error_count,
                 )
             return RunResult(
                 values=partial_values,

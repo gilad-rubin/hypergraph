@@ -57,7 +57,7 @@ class SqliteRunInspector:
 
     @property
     def db_path(self) -> str:
-        return self.checkpointer._path
+        return self.checkpointer.path
 
     def get_run(self, run_id: str) -> Run | None:
         return self.checkpointer.get_run(run_id)

@@ -780,3 +780,26 @@ class TestSqliteCheckpointerRepr:
         assert "data-hg-state-key" in html
         assert 'data-hg-explorer="checkpointer"' in html
         assert "Run Explorer" in html
+
+    def test_repr_html_escapes_explorer_payload(self):
+        pytest.importorskip("aiosqlite")
+        from hypergraph.checkpointers import StepRecord, StepStatus
+        from hypergraph.checkpointers.sqlite import SqliteCheckpointer
+
+        cp = SqliteCheckpointer(":memory:")
+        cp.create_run_sync("xss-run")
+        cp.save_step_sync(
+            StepRecord(
+                run_id="xss-run",
+                superstep=0,
+                node_name="emit",
+                index=0,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+                values={"payload": "</script><script>alert('xss')</script>"},
+            )
+        )
+
+        html = cp._repr_html_()
+        assert "</script><script>alert('xss')</script>" not in html
+        assert "\\u003c/script\\u003e\\u003cscript\\u003ealert('xss')\\u003c/script\\u003e" in html
