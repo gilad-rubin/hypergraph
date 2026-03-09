@@ -251,9 +251,14 @@ Hypergraph spans the full spectrum — from batch data pipelines to multi-turn A
 
 1. **Pure functions** - Nodes are testable without the framework
 2. **Composition over configuration** - Nest graphs, don't configure flags
-3. **Unified execution** - Same algorithm for DAGs, branches, and loops
+3. **Unified execution** - Topo over SCCs, local iteration for feedback
 4. **Fail fast** - Validate at build time, not runtime
 5. **Explicit dependencies** - All inputs visible in function signatures
+
+Execution mental model:
+- **DAGs** execute in topological order
+- **Cycles** execute as local feedback regions until quiescence
+- **Gates** are runtime activation on top of the same model, and control edges participate in SCC planning so gate-driven loops stay in the same execution region
 
 ## Architecture Notes
 

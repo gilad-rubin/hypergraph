@@ -379,13 +379,13 @@ class TestAsyncMapResume:
         graph = Graph([double, triple]).select("tripled")
 
         await runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [2, 3]},
             map_over="x",
             workflow_id="select-batch",
         )
         resumed = await runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [3, 2]},
             map_over="x",
             workflow_id="select-batch",
@@ -577,13 +577,13 @@ class TestSyncMapResume:
         graph = Graph([double, triple]).select("tripled")
 
         runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [2, 3]},
             map_over="x",
             workflow_id="sync-select-batch",
         )
         resumed = runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [3, 2]},
             map_over="x",
             workflow_id="sync-select-batch",

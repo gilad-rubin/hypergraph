@@ -52,11 +52,17 @@ print(result["answer"])
 
 `embed` produces `embedding`. `retrieve` takes `embedding`. Connected automatically.
 
+At execution time, hypergraph uses one mental model for everything:
+
+- **DAGs** run in topological order
+- **Cycles** run as local feedback regions until quiescence
+- **Gates** activate branches at runtime without changing the core model
+
 ## Key Differentiators
 
 ### 1. One Framework to Master
 
-Learn one tool that works for everything — from simple ETL to complex multi-agent systems. The same patterns and APIs apply across the entire spectrum.
+Learn one tool that works for everything — from simple ETL to complex multi-agent systems. The same patterns and APIs apply across the entire spectrum, including the execution model.
 
 ### 2. Natural Hierarchy
 

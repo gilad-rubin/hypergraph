@@ -419,8 +419,9 @@ hypergraph run my_module:graph --values params.json
 # key=value args override --values
 hypergraph run my_module:graph --values params.json x=10
 
-# Select specific outputs
-hypergraph run my_module:graph x=5 --select doubled
+# Configure output scope in Python, then run that graph object
+# my_module:selected_graph = graph.select("doubled")
+hypergraph run my_module:selected_graph x=5
 
 # JSON output
 hypergraph run my_module:graph x=5 --json
@@ -433,6 +434,8 @@ hypergraph run my_module:graph x=5 --verbose
 ```
 
 The runner is auto-detected: SyncRunner for sync-only graphs, AsyncRunner if the graph has async nodes or `--db` is used. Override with `--runner sync` or `--runner async`.
+
+> **Note:** The `select` parameter cannot be passed to `runner.run()` at execution time. Instead, configure output scope on the graph itself with `graph.select(...)` before running. The CLI `--select` flag is supported and applies that selection before execution.
 
 ### map — Batch Execution
 

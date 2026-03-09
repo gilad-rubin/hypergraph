@@ -73,6 +73,24 @@ def _resolve_values(values_option: str | None, extra_args: list[str]) -> dict[st
     return result
 
 
+def _parse_csv_names(option_name: str, raw: str) -> list[str]:
+    """Parse a comma-separated option into a non-empty list of names."""
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    if not names:
+        print(f"Error: {option_name} requires at least one name")
+        raise typer.Exit(1)
+    return names
+
+
+def _apply_cli_graph_config(graph, *, select: str | None, entrypoint: str | None):
+    """Apply CLI graph-configuration flags before runner execution."""
+    if select is not None:
+        graph = graph.select(*_parse_csv_names("--select", select))
+    if entrypoint:
+        graph = graph.with_entrypoint(entrypoint)
+    return graph
+
+
 # ---------------------------------------------------------------------------
 # Runner creation
 # ---------------------------------------------------------------------------
@@ -197,7 +215,7 @@ def register_commands(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show detailed output")] = False,
     ):
         """Run a graph with the given inputs."""
-        graph = load_graph(target)
+        graph = _apply_cli_graph_config(load_graph(target), select=select, entrypoint=entrypoint)
         input_values = _resolve_values(values, ctx.args)
 
         # Resolve --db from config if not explicit
@@ -210,10 +228,6 @@ def register_commands(app: typer.Typer) -> None:
         run_kwargs: dict[str, Any] = {
             "error_handling": error_handling,
         }
-        if select:
-            run_kwargs["select"] = select.split(",")
-        if entrypoint:
-            run_kwargs["entrypoint"] = entrypoint
         if max_iterations is not None:
             run_kwargs["max_iterations"] = max_iterations
         if workflow_id:
@@ -247,7 +261,7 @@ def register_commands(app: typer.Typer) -> None:
         verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show detailed output")] = False,
     ):
         """Map a graph over multiple input values."""
-        graph = load_graph(target)
+        graph = _apply_cli_graph_config(load_graph(target), select=select, entrypoint=None)
         input_values = _resolve_values(values, ctx.args)
 
         if db is None:
@@ -261,8 +275,6 @@ def register_commands(app: typer.Typer) -> None:
             "map_mode": map_mode,
             "error_handling": error_handling,
         }
-        if select:
-            map_kwargs["select"] = select.split(",")
         if workflow_id:
             map_kwargs["workflow_id"] = workflow_id
 

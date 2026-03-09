@@ -1426,10 +1426,14 @@ viz = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aiosqlite" },
     { name = "allpairspy" },
     { name = "diskcache" },
+    { name = "ipykernel" },
     { name = "nbdime" },
     { name = "nbstripout" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
     { name = "playwright" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1437,6 +1441,8 @@ dev = [
     { name = "pytest-xdist" },
     { name = "rich" },
     { name = "ruff" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+    { name = "typer" },
 ]
 
 [package.metadata]
@@ -1486,10 +1492,14 @@ provides-extras = ["batch", "daft", "viz", "notebook", "cache", "checkpoint", "c
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "allpairspy", specifier = ">=2.5.1" },
     { name = "diskcache", specifier = ">=5.6.3" },
+    { name = "ipykernel", specifier = ">=6.31.0" },
     { name = "nbdime", specifier = ">=4.0.0" },
     { name = "nbstripout", specifier = ">=0.9.0" },
+    { name = "opentelemetry-api", specifier = ">=1.20.0" },
+    { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
     { name = "playwright", specifier = ">=1.56.0" },
     { name = "pre-commit", specifier = ">=4.0.0" },
     { name = "pytest", specifier = ">=8.4.2" },
@@ -1497,6 +1507,8 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.5.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
+    { name = "typer", specifier = ">=0.9.0" },
 ]
 
 [[package]]

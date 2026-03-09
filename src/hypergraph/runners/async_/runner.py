@@ -12,7 +12,7 @@ from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.nodes.interrupt import InterruptNode
-from hypergraph.runners._shared.helpers import compute_execution_scope, get_ready_nodes, initialize_state
+from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
@@ -166,16 +166,22 @@ class AsyncRunner(AsyncRunnerTemplate):
         save_tasks: list[asyncio.Task[None]] = []
 
         try:
-            for superstep_idx in range(max_iterations):
-                ready_nodes = get_ready_nodes(
-                    graph,
-                    state,
-                    active_nodes=scope.active_nodes,
-                    startup_predecessors=scope.startup_predecessors,
-                )
+            superstep_idx = 0
+            frontier = ExecutionFrontier.from_scope(scope, max_iterations)
+
+            while frontier.has_pending_components():
+                try:
+                    ready_nodes = frontier.next_ready_batch(
+                        graph,
+                        state,
+                        active_nodes=scope.active_nodes,
+                        startup_predecessors=scope.startup_predecessors,
+                    )
+                except InfiniteLoopError as e:
+                    raise ExecutionError(e, state) from e
 
                 if not ready_nodes:
-                    break  # No more nodes to execute
+                    continue
 
                 if dispatcher.active:
                     from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
@@ -267,18 +273,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                 if superstep_error is not None:
                     raise superstep_error
 
-            else:
-                # Loop completed without break = hit max_iterations
-                if get_ready_nodes(
-                    graph,
-                    state,
-                    active_nodes=scope.active_nodes,
-                    startup_predecessors=scope.startup_predecessors,
-                ):
-                    raise ExecutionError(
-                        InfiniteLoopError(max_iterations),
-                        state,
-                    )
+                superstep_idx += 1
 
         except PauseExecution as pause:
             pause._partial_state = state  # type: ignore[attr-defined]

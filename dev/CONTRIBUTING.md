@@ -27,6 +27,24 @@ uv run nbdime config-git --enable
 uv run playwright install chromium
 ```
 
+`uv sync --group dev` is the default local setup for contributors. It includes the optional tooling used by this repo's broader test surface, including CLI, SQLite checkpointing, notebook kernels, Rich progress, and OTel processors.
+
+## Worktrees
+
+When working in a Git worktree, treat each worktree as owning its own `.venv`.
+
+```bash
+cd /path/to/worktree
+uv sync --group dev
+```
+
+Guidelines:
+
+- If `.venv` is missing, run `uv sync --group dev`
+- If `pyproject.toml` or `uv.lock` is newer than `.venv`, run `uv sync --group dev` again
+- Do not reuse another worktree's virtualenv
+- Prefer `uv run ...` so commands execute against the local worktree environment
+
 The notebook setup does two separate jobs:
 
 - `nbstripout` removes notebook outputs and transient metadata from the Git-tracked version so HTML-heavy cells do not explode diffs.
@@ -54,10 +72,11 @@ uv run pytest tests/viz/                   # requires Playwright
 ## Workflow
 
 1. Create a feature branch from `master`
-2. Implement with TDD: write failing test first, then make it pass
-3. Run `uv run pytest` after each logical step
-4. Commit with conventional commits: `feat(graph): add X`, `fix(runners): handle Y`
-5. Push and create PR
+2. If using a fresh worktree, bootstrap it with `uv sync --group dev`
+3. Implement with TDD: write failing test first, then make it pass
+4. Run `uv run pytest` after each logical step
+5. Commit with conventional commits: `feat(graph): add X`, `fix(runners): handle Y`
+6. Push and create PR
 
 ## PR Expectations
 

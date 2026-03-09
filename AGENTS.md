@@ -26,6 +26,12 @@ Primary code areas (coarse map only):
 
 Use `uv` for all Python tooling in this repo.
 
+Worktree bootstrap:
+- Treat each worktree as owning its own `.venv`.
+- On first use of a fresh worktree, if `.venv` is missing or older than `pyproject.toml` / `uv.lock`, run `uv sync --group dev`.
+- Do not reuse another worktree's virtualenv.
+- Prefer `uv run ...` after bootstrap so commands execute against the local worktree environment.
+
 Core commands:
 ```bash
 uv run pytest

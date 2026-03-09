@@ -83,7 +83,8 @@ Execute a graph once.
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
   - `"error"`: raise error if any selected output is missing
-- `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
+- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
+- `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
@@ -318,7 +319,7 @@ Execute a graph asynchronously.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
-- `max_iterations` - Max supersteps for cyclic graphs (default: 1000)
+- `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
@@ -715,19 +716,37 @@ Rules:
 runner.run(graph, values={"select": "fast"})
 ```
 
-### Supersteps
+### Execution Model
 
-Runners execute graphs in **supersteps**. Each superstep:
+Runners execute graphs in two phases:
 
-1. Finds all "ready" nodes (inputs satisfied)
-2. Executes them (sequentially for Sync, concurrently for Async)
-3. Updates outputs
-4. Repeats until no nodes are ready
+1. Build a static execution plan from the active graph
+2. Walk that plan until each region reaches quiescence
 
+The static plan is a DAG of **strongly connected components** (SCCs):
+
+- **DAG region** — a component with no feedback loop, usually runs in one pass
+- **Cyclic region** — a component with feedback, iterates locally until no node in that region is ready
+- **Gate edges** — participate in planning so gate-driven loops stay in one region, but gate decisions still act as runtime activation
+
+Within one topo layer, runners still use supersteps as the execution batch:
+
+1. Find ready nodes inside the current layer
+2. Execute them (sequentially for Sync, concurrently for Async)
+3. Update values, versions, and routing decisions
+4. Repeat until that layer reaches quiescence
+
+```text
+Layer 1: [embed]
+Layer 2: [retrieve]
+Layer 3: [generate]
 ```
-Superstep 1: [embed]           → produces "embedding"
-Superstep 2: [retrieve]        → produces "docs"
-Superstep 3: [generate]        → produces "answer"
+
+For cycles:
+
+```text
+Layer 1: [generate, should_continue]  → local iteration until quiescent
+Layer 2: [finalize]
 ```
 
 ### Value Resolution Order
@@ -756,7 +775,7 @@ graph = Graph([process]).bind(x=5)  # bound=5
 
 ### Cyclic Graphs
 
-Graphs with cycles (feedback loops) execute until stable:
+Graphs with cycles (feedback loops) execute as local SCC regions until quiescent:
 
 ```python
 @node(output_name="count")
@@ -764,13 +783,13 @@ def increment(count: int) -> int:
     return count + 1 if count < 5 else count
 
 # Cycle: count feeds back into increment
-# Runs until count stops changing (stability)
+# Runs until the cyclic region has no more ready work
 ```
 
 The runner:
-1. Tracks value versions
-2. Re-executes nodes when inputs change
-3. Stops when no values changed (stable) or max_iterations hit
+1. Tracks value and `wait_for` freshness via versions
+2. Re-executes nodes in the current cyclic region when their inputs become fresh
+3. Stops when that region has no more ready nodes, or `max_iterations` is hit
 
 ---
 

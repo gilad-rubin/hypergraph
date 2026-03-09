@@ -74,22 +74,27 @@ Execution engines. Template Method pattern with pluggable `NodeExecutor` per nod
 | `async_/superstep.py` | Superstep loop (async) |
 | `async_/executors/` | Per-node-type executors (function, graph, ifelse, route, interrupt) |
 
-**Execution model**: Superstep-based. Each superstep:
-1. `get_ready_nodes` finds nodes with satisfied inputs, gate activation, and changed state
-2. All ready nodes execute concurrently (async) or sequentially (sync)
-3. Results are applied to state; routing decisions are recorded and consumed
-4. Loop until no nodes are ready or convergence
+**Execution model**: SCC-based.
 
-Gate targets are blocked until their controlling gate fires and routes to them. Routing decisions are consumed after the target executes — the gate must re-fire to re-activate the target. See `src/hypergraph/runners/_shared/AGENTS.md` for scheduling rules.
+- Build a static execution plan by collapsing the active graph into strongly connected components (SCCs)
+- Topologically order the SCC DAG
+- Execute one topo layer at a time
+- Within each layer, run local supersteps until the layer reaches quiescence
+- Gates are dynamic activation, not static startup dependencies
+
+Practical mental model:
+- **DAGs**: execute in topo order
+- **Cycles**: execute as one local fixed-point region
+- **Gates**: decide which nodes inside the current region are activated
 
 **`_shared/` contents**:
 - `caching.py` — Cache key computation and lookup
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
-- `helpers.py` — Input resolution, output storage, active-set computation (`compute_active_node_set`), ready-node scheduling (`get_ready_nodes`)
+- `helpers.py` — Input resolution, output storage, active-scope computation, SCC planning, and localized readiness scheduling
 - `input_normalization.py` — Normalize user inputs for execution
 - `routing_validation.py` — Validate routing decisions at runtime
-- `template_sync.py` / `template_async.py` — Template Method base for superstep loops. Threads runtime select and entrypoint config into validation.
+- `template_sync.py` / `template_async.py` — Template Method base for runner lifecycle. Threads runtime select and entrypoint config into validation.
 - `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`
 - `protocols.py` — `NodeExecutor` protocol
 - `validation.py` — Runner-level validation, runtime select resolution, InputSpec scoping
