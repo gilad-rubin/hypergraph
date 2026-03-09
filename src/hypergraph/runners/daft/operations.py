@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
@@ -101,16 +102,6 @@ class DaftOperation(ABC):
         """Apply this operation to a DataFrame, returning one with new column(s)."""
         ...
 
-    def _clone_bound(self) -> dict[str, Any]:
-        """Deep-copy bound values when clone is requested."""
-        if not self.bound_values:
-            return {}
-        if self.clone is True:
-            return copy.deepcopy(self.bound_values)
-        if isinstance(self.clone, list):
-            return {k: copy.deepcopy(v) if k in self.clone else v for k, v in self.bound_values.items()}
-        return dict(self.bound_values)
-
 
 # ---------------------------------------------------------------------------
 # Concrete operations
@@ -140,13 +131,7 @@ class FunctionNodeOperation(DaftOperation):
         def wrapper(*args: Any) -> Any:
             local_bound = _clone_values(bound, clone) if clone else bound
             kwargs = {**local_bound, **dict(zip(col_names, args, strict=True))}
-            result = func(**kwargs)
-            if multi_output:
-                return result  # tuple or dict — unpacked later
-            return result
-
-        # Check if async — Daft handles async UDFs natively
-        import asyncio
+            return func(**kwargs)
 
         if asyncio.iscoroutinefunction(func):
 
@@ -363,6 +348,7 @@ def create_operation(
 
     if isinstance(node, FunctionNode):
         if has_stateful_values(node_bound):
+            _validate_stateful_constructable(node_bound)
             return StatefulNodeOperation(
                 node=node,
                 input_columns=input_cols,
@@ -386,12 +372,32 @@ def create_operation(
             clone=clone,
         )
 
-    raise TypeError(f"DaftRunner does not support {type(node).__name__}")
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    raise IncompatibleRunnerError(
+        f"DaftRunner does not support {type(node).__name__}. Only FunctionNode and GraphNode are supported.",
+        capability="node_types",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:
+    """Validate that DaftStateful objects support zero-arg construction."""
+    for k, v in bound_values.items():
+        if not isinstance(v, DaftStateful):
+            continue
+        try:
+            type(v)()
+        except TypeError as e:
+            raise TypeError(
+                f"DaftStateful object {k!r} ({type(v).__name__}) must support "
+                f"zero-arg construction for per-worker re-initialization. Got: {e}\n\n"
+                f"How to fix: Ensure {type(v).__name__}.__init__() works with no arguments."
+            ) from e
 
 
 def _clone_values(values: dict[str, Any], clone: bool | list[str]) -> dict[str, Any]:

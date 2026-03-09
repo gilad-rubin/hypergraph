@@ -202,3 +202,16 @@ class TestGraphNodeOperation:
         df = daft.from_pydict({"items": [[1, 2, 3]]})
         result = op.apply(df).collect().to_pydict()
         assert result["doubled"] == [[2, 4, 6]]
+
+    def test_multi_output_function_node(self):
+        @node(output_name=("lo", "hi"))
+        def split(x: int) -> tuple[int, int]:
+            return (x - 1, x + 1)
+
+        graph = Graph([split], name="multi")
+        op = create_operation(split, graph, bound_values={})
+        df = daft.from_pydict({"x": [5, 10]})
+        result = op.apply(df).collect().to_pydict()
+        assert result["lo"] == [4, 9]
+        assert result["hi"] == [6, 11]
+        assert "_pack_split" not in result

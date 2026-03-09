@@ -454,7 +454,14 @@ def _resolve_columns(
 
     for name in column_names:
         if name not in dataframe.column_names:
-            raise ValueError(f"Daft DataFrame is missing requested column {name!r}. Available columns: {list(dataframe.column_names)!r}")
+            from hypergraph.graph.validation import GraphConfigError
+
+            raise GraphConfigError(
+                f"Daft DataFrame is missing requested column {name!r}.\n\n"
+                f"Available columns: {list(dataframe.column_names)}\n\n"
+                f"How to fix: Check column names or use the 'columns' parameter "
+                f"to specify which columns to map."
+            )
     return column_names
 
 
@@ -465,7 +472,11 @@ def _check_column_overlap(
     """Reject overlapping column/broadcast names."""
     overlap = sorted(set(column_names) & set(values))
     if overlap:
+        from hypergraph.graph.validation import GraphConfigError
+
         overlap_str = ", ".join(repr(name) for name in overlap)
-        raise ValueError(
-            f"Input keys provided by both the Daft DataFrame and broadcast values: {overlap_str}. Rename one side or drop the duplicate."
+        raise GraphConfigError(
+            f"Input keys provided by both the Daft DataFrame and broadcast "
+            f"values: {overlap_str}.\n\n"
+            f"How to fix: Rename one side or drop the duplicate."
         )
