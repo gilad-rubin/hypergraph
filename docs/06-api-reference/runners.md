@@ -3,16 +3,18 @@
 Runners execute graphs. They handle the execution loop, node scheduling, and concurrency.
 
 - **SyncRunner** - Sequential execution for synchronous nodes
+- **DaftRunner** - Columnar execution via Daft for DAG-only graphs (batch, distributed)
 - **AsyncRunner** - Concurrent execution with async support and `max_concurrency`
 - **RunResult** - Output values, status, and error information
 - **map()** - Batch processing with zip or cartesian product modes
 
 ## Overview
 
-| Runner | Async Nodes | Concurrent | Returns |
-|--------|-------------|------------|---------|
-| `SyncRunner` | No | No | `RunResult` |
-| `AsyncRunner` | Yes | Yes | `Coroutine[RunResult]` |
+| Runner | Async Nodes | Cycles | Distributed | Returns |
+|--------|-------------|--------|-------------|---------|
+| `SyncRunner` | No | Yes | No | `RunResult` |
+| `DaftRunner` | Yes (Daft-native) | No | Yes | `RunResult` / `MapResult` |
+| `AsyncRunner` | Yes | Yes | No | `Coroutine[RunResult]` |
 
 ## SyncRunner
 
@@ -249,6 +251,296 @@ caps.supports_async_nodes  # False
 caps.supports_streaming    # False
 caps.returns_coroutine     # False
 caps.supports_interrupts   # False
+```
+
+---
+
+## DaftRunner
+
+Translation runner: converts DAGs into chained Daft `df.with_column()` UDF calls.
+
+```python
+from hypergraph import DaftRunner
+```
+
+`DaftRunner` translates each node into a Daft UDF and chains them via
+`df.with_column()`. The entire graph becomes a single Daft query plan executed
+columnar-style. This is a good fit when:
+
+- you want columnar batch execution over a dataset
+- you need distributed fan-out via Daft
+- your graph is a DAG (no cycles, no gates, no interrupts)
+
+It supports `FunctionNode` and `GraphNode` (including nested `map_over`).
+Async nodes are handled natively by Daft's async UDF support.
+
+### Constructor
+
+```python
+class DaftRunner:
+    def __init__(
+        self,
+        *,
+        cache: CacheBackend | None = None,
+    ) -> None: ...
+```
+
+**Args:**
+- `cache` - Optional cache backend for node-level caching.
+
+**Raises:**
+- `ImportError` - If the `daft` dependency is not installed. Install with `pip install 'hypergraph[daft]'`.
+
+### run()
+
+```python
+def run(
+    self,
+    graph: Graph,
+    values: dict[str, Any] | None = None,
+    *,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    entrypoint: str | None = None,
+    max_iterations: int | None = None,
+    error_handling: Literal["raise", "continue"] = "raise",
+    event_processors: list[EventProcessor] | None = None,
+    **input_values: Any,
+) -> RunResult: ...
+```
+
+Execute a graph once via a 1-row Daft plan.
+
+**Args:**
+- `graph` - The graph to execute (must be a DAG)
+- `values` - Optional input values as `{param_name: value}`
+- `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)`.
+- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `entrypoint` - Runtime entrypoint overrides are not supported
+- `max_iterations` - Accepted for API compatibility but not used (DaftRunner does not support cycles)
+- `error_handling` - `"raise"` re-raises the original exception; `"continue"` returns a failed `RunResult`
+- `event_processors` - Accepted but ignored with a warning (DaftRunner does not support events)
+- `**input_values` - Input shorthand (merged with `values`)
+
+**Example:**
+
+```python
+from hypergraph import DaftRunner, Graph, node
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+graph = Graph([double])
+runner = DaftRunner()
+result = runner.run(graph, x=5)
+
+print(result["doubled"])  # 10
+```
+
+### map()
+
+```python
+def map(
+    self,
+    graph: Graph,
+    values: dict[str, Any] | None = None,
+    *,
+    map_over: str | list[str],
+    map_mode: Literal["zip", "product"] = "zip",
+    clone: bool | list[str] = False,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    error_handling: Literal["raise", "continue"] = "raise",
+    event_processors: list[EventProcessor] | None = None,
+    **input_values: Any,
+) -> MapResult: ...
+```
+
+Execute a graph for each item via Daft columnar execution.
+
+All items are packed into a single Daft DataFrame, and the entire graph
+executes as chained `df.with_column()` UDF calls. This is the primary batch
+entrypoint when your data is a Python collection.
+
+**Args:**
+- `graph` - The graph to execute (must be a DAG)
+- `values` - Optional input values. Parameters in `map_over` should be lists
+- `map_over` - Parameter name(s) to iterate over
+- `map_mode` - `"zip"` for parallel iteration or `"product"` for cartesian product
+- `clone` - Deep-copy mutable broadcast values for each row. `True` clones all non-`map_over` values; pass a list of names to clone selectively
+- `select` - Runtime select overrides are not supported
+- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `error_handling` - `"raise"` re-raises the first failed item's original exception; `"continue"` falls back to per-item execution and preserves failures inside `MapResult`
+- `event_processors` - Accepted but ignored with a warning
+- `**input_values` - Input shorthand (merged with `values`)
+
+**Example:**
+
+```python
+from hypergraph import DaftRunner, Graph, node
+
+@node(output_name="sentences")
+def split_sentences(document: str) -> list[str]:
+    return [part.strip() for part in document.split(".") if part.strip()]
+
+@node(output_name="cleaned")
+def clean_sentence(text: str) -> str:
+    return " ".join(text.lower().split())
+
+sentence_graph = Graph([clean_sentence], name="sentence_graph")
+workflow = Graph(
+    [
+        split_sentences,
+        sentence_graph.as_node(name="analyze").with_inputs(text="sentences").map_over("sentences"),
+    ]
+)
+
+runner = DaftRunner()
+results = runner.map(
+    workflow,
+    {"document": ["Refund requested. Checkout blocked.", "Weekly roadmap update."]},
+    map_over="document",
+)
+
+print(results["cleaned"])  # [['refund requested', 'checkout blocked'], ['weekly roadmap update']]
+```
+
+### map_dataframe()
+
+```python
+def map_dataframe(
+    self,
+    graph: Graph,
+    dataframe: DataFrame,
+    *,
+    columns: str | Iterable[str] | None = None,
+    values: dict[str, Any] | None = None,
+    select: str | list[str] = "**",
+    on_missing: Literal["ignore", "warn", "error"] = "ignore",
+    error_handling: Literal["raise", "continue"] = "raise",
+    clone: bool | list[str] = False,
+    **input_values: Any,
+) -> MapResult: ...
+```
+
+Execute one graph run per Daft DataFrame row.
+
+Use this when your dataset already lives in a Daft DataFrame. Each row
+becomes one graph execution.
+
+**Args:**
+- `graph` - The graph to execute (must be a DAG)
+- `dataframe` - Daft DataFrame supplying row-wise inputs
+- `columns` - Optional subset of DataFrame columns to use as graph inputs. Defaults to all columns.
+- `values` / `**input_values` - Additional broadcast inputs merged into every row. Must not overlap with DataFrame column names.
+- `select` - Runtime select overrides are not supported
+- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
+- `error_handling` - Same contract as `map()`: `"raise"` re-raises the first failed row, `"continue"` falls back to per-item execution
+- `clone` - Deep-copy mutable broadcast values for each row
+
+**Example:**
+
+```python
+import daft
+from hypergraph import DaftRunner, Graph, node
+
+@node(output_name="cleaned_text")
+def clean(text: str) -> str:
+    return " ".join(text.lower().strip().split())
+
+@node(output_name="word_count")
+def count(cleaned_text: str) -> int:
+    return len(cleaned_text.split())
+
+graph = Graph([clean, count], name="text_pipeline")
+
+frame = daft.from_pylist([
+    {"text": "  Alpha beta alpha  "},
+    {"text": "Gamma delta epsilon zeta eta"},
+])
+
+runner = DaftRunner()
+results = runner.map_dataframe(graph, frame)
+
+print(results["word_count"])  # [3, 5]
+```
+
+### capabilities
+
+```python
+runner = DaftRunner()
+caps = runner.capabilities
+
+caps.supports_cycles          # False
+caps.supports_gates           # False
+caps.supports_async_nodes     # True  (Daft handles async UDFs natively)
+caps.supports_interrupts      # False
+caps.supports_events          # False
+caps.supports_distributed     # True
+caps.supports_checkpointing   # False
+```
+
+### DaftStateful Protocol
+
+Mark a class for once-per-worker initialization. DaftRunner wraps stateful
+objects with `@daft.cls` instead of `@daft.func`, so heavy resources (ML
+models, DB connections) are created once per worker process rather than once
+per row.
+
+```python
+from hypergraph import DaftRunner, Graph, node
+
+class Embedder:
+    __daft_stateful__ = True
+
+    def __init__(self):
+        self.model = load_heavy_model()
+
+    def embed(self, text: str) -> list[float]:
+        return self.model.encode(text)
+
+@node(output_name="embedding")
+def embed(text: str, embedder: Embedder) -> list[float]:
+    return embedder.embed(text)
+
+graph = Graph([embed]).bind(embedder=Embedder())
+runner = DaftRunner()
+results = runner.map(graph, {"text": texts}, map_over="text")
+```
+
+The `DaftStateful` protocol requires a single class variable:
+
+```python
+class DaftStateful(Protocol):
+    __daft_stateful__: ClassVar[bool]
+```
+
+### mark_batch()
+
+Mark a function for vectorized `@daft.func.batch` execution. Batch UDFs
+receive `daft.Series` instead of scalar values, useful for NumPy/Arrow
+operations.
+
+```python
+import daft
+from hypergraph import DaftRunner, Graph, node
+from hypergraph.runners.daft import mark_batch
+
+@node(output_name="normalized")
+def normalize(values: daft.Series) -> daft.Series:
+    arr = values.to_pylist()
+    mean = sum(arr) / len(arr)
+    std = (sum((x - mean) ** 2 for x in arr) / len(arr)) ** 0.5
+    if std == 0:
+        return daft.Series.from_pylist([0.0] * len(arr))
+    return daft.Series.from_pylist([round((x - mean) / std, 4) for x in arr])
+
+mark_batch(normalize.func)
+
+graph = Graph([normalize], name="batch_norm")
+runner = DaftRunner()
+results = runner.map(graph, {"values": [10.0, 20.0, 30.0]}, map_over="values")
 ```
 
 ---
