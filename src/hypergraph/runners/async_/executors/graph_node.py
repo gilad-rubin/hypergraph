@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -131,7 +132,7 @@ class AsyncGraphNodeExecutor:
             _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
-            results = await runner.map(
+            map_call = runner.map(
                 node.graph,
                 inner_inputs,
                 map_over=original_params,
@@ -143,10 +144,12 @@ class AsyncGraphNodeExecutor:
                 _parent_span_id=parent_span_id,
                 _parent_run_id=workflow_id,
             )
+            # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
+            results = await map_call if inspect.isawaitable(map_call) else map_call
             self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
             return collect_as_lists(results, node, error_handling)
 
-        result = await runner.run(
+        run_call = runner.run(
             node.graph,
             inner_inputs,
             event_processors=event_processors,
@@ -156,6 +159,8 @@ class AsyncGraphNodeExecutor:
             _parent_span_id=parent_span_id,
             _parent_run_id=workflow_id,
         )
+        # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
+        result = await run_call if inspect.isawaitable(run_call) else run_call
         self._last_inner_logs.set((result.log,) if result.log is not None else ())
         return self._handle_nested_result(node, result)
 
