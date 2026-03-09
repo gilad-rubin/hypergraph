@@ -103,7 +103,12 @@ def run_superstep_sync(
                 ctx = replace(ctx_base, parent_span_id=node_span_id, on_inner_log=inner_logs.append)
 
                 # Dispatch to the appropriate executor
-                executor = executors[type(node)]
+                node_type = type(node)
+                executor = executors.get(node_type)
+                if executor is None:
+                    raise TypeError(
+                        f"No executor registered for node type '{node_type.__name__}'. Registered types: {[t.__name__ for t in executors]}"
+                    )
                 outputs = executor(node, new_state, inputs, ctx)
 
                 duration_ms = (time.time() - node_start) * 1000
