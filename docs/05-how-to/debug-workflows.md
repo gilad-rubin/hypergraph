@@ -274,8 +274,8 @@ result = await runner.run(graph, {"x": 5}, workflow_id="my-run-1")
 
 Paused interrupt-driven workflows are now persisted as **`PAUSED`** runs rather than overloading `ACTIVE`. In the CLI and notebook explorer, that means:
 
-- `active` means currently running / non-terminal work
-- `paused` means resumable and waiting for an interrupt response
+- `active` means currently executing and non-terminal
+- `paused` means waiting for interrupt input, resumable, and also non-terminal
 - `completed` and `failed` remain terminal
 
 `runner.map()` still requires an explicit `workflow_id` to persist parent/child batch runs.

@@ -157,7 +157,7 @@ def runs_dashboard(
 
 def _print_run_table(run_list, inspector) -> None:
     """Print a table of runs with step count info."""
-    step_counts = {r.id: len(inspector.steps(r.id)) for r in run_list}
+    step_counts = {r.id: (r.node_count or len(inspector.steps(r.id))) for r in run_list}
 
     headers = ["ID", "Graph", "Status", "Steps", "Duration", "Created"]
     rows = [

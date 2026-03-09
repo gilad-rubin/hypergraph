@@ -527,7 +527,7 @@ def render_run_table_html(table: Any) -> str:
             id=group_id,
             status=status,
             graph_name=members[0].graph_name if members else None,
-            duration_ms=max((r.duration_ms or 0.0 for r in members), default=None),
+            duration_ms=max((r.duration_ms or 0.0 for r in members), default=0.0) if members else None,
             node_count=sum(r.node_count for r in members),
             error_count=sum(r.error_count for r in members),
             created_at=created,

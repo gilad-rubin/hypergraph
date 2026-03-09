@@ -700,7 +700,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
                 paused_count = sum(1 for r in results if r.status == RunStatus.PAUSED)
-                persisted_status = WorkflowStatus.PAUSED if paused_count and error_count == 0 else WorkflowStatus.COMPLETED
+                persisted_status = (
+                    WorkflowStatus.FAILED if error_count > 0 else WorkflowStatus.PAUSED if paused_count > 0 else WorkflowStatus.COMPLETED
+                )
                 await checkpointer.update_run_status(
                     workflow_id,
                     persisted_status,

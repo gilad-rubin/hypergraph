@@ -108,8 +108,10 @@ class AsyncGraphNodeExecutor:
                     if current_parent_run is not None:
                         source_parent_run_id = current_parent_run.retry_of or current_parent_run.forked_from
                     if source_parent_run_id is not None:
-                        source_child_run_id = f"{source_parent_run_id}/{node.name}"
-                        source_child_run = await self.runner._checkpointer.get_run_async(source_child_run_id)
+                        source_child_run_id = graphnode_child_workflow_id(source_parent_run_id, node.name, state)
+                        source_child_run = (
+                            await self.runner._checkpointer.get_run_async(source_child_run_id) if source_child_run_id is not None else None
+                        )
                         if source_child_run is not None:
                             inner_inputs = {}
                             if current_parent_run is not None and current_parent_run.retry_of is not None:

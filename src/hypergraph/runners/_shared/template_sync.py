@@ -375,6 +375,32 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             partial_state = getattr(pause, "_partial_state", None)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
+            if dispatcher.active:
+                from hypergraph.events.types import InterruptEvent, RunEndEvent
+                from hypergraph.events.types import RunStatus as EventRunStatus
+
+                dispatcher.emit(
+                    InterruptEvent(
+                        run_id=run_id,
+                        span_id=pause.span_id or run_span_id,
+                        parent_span_id=run_span_id,
+                        node_name=pause.pause_info.node_name,
+                        graph_name=graph.name,
+                        workflow_id=workflow_id,
+                        value=pause.pause_info.value,
+                        response_param=pause.pause_info.output_param,
+                    )
+                )
+                dispatcher.emit(
+                    RunEndEvent(
+                        run_id=run_id,
+                        span_id=run_span_id,
+                        parent_span_id=_parent_span_id,
+                        graph_name=graph.name,
+                        status=EventRunStatus.PAUSED,
+                        duration_ms=total_duration_ms,
+                    )
+                )
             if sync_cp is not None:
                 from hypergraph.checkpointers.types import WorkflowStatus
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
@@ -575,7 +601,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
                 paused_count = sum(1 for r in results if r.status == RunStatus.PAUSED)
-                persisted_status = WorkflowStatus.PAUSED if paused_count and error_count == 0 else WorkflowStatus.COMPLETED
+                persisted_status = (
+                    WorkflowStatus.FAILED if error_count > 0 else WorkflowStatus.PAUSED if paused_count > 0 else WorkflowStatus.COMPLETED
+                )
                 sync_cp.update_run_status_sync(
                     workflow_id,
                     persisted_status,
