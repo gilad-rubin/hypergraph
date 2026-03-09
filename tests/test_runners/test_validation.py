@@ -307,6 +307,77 @@ class TestValidateMapCompatible:
             Graph([inner.as_node().map_over("draft")])
 
 
+class TestValidateDelegatedRunners:
+    """Tests for validate_delegated_runners function."""
+
+    def test_no_delegation_passes(self):
+        """Graph without runner_override passes validation."""
+        from hypergraph.runners._shared.validation import validate_delegated_runners
+
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node()])
+        parent_caps = RunnerCapabilities(supports_async_nodes=False)
+        # Should not raise
+        validate_delegated_runners(outer, parent_caps)
+
+    def test_compatible_delegation_passes(self):
+        """Delegating to a runner that supports the subgraph features passes."""
+        from hypergraph.runners._shared.validation import validate_delegated_runners
+
+        inner = Graph([double], name="inner")
+
+        # Fake runner with compatible capabilities
+        class FakeRunner:
+            @property
+            def capabilities(self):
+                return RunnerCapabilities(supports_async_nodes=False, returns_coroutine=False)
+
+        gn = inner.as_node(runner=FakeRunner())
+        outer = Graph([gn])
+        parent_caps = RunnerCapabilities(supports_async_nodes=False, returns_coroutine=False)
+        # Should not raise
+        validate_delegated_runners(outer, parent_caps)
+
+    def test_sync_parent_rejects_async_child(self):
+        """Sync parent cannot delegate to an async-returning runner."""
+        from hypergraph.runners._shared.validation import validate_delegated_runners
+
+        inner = Graph([double], name="inner")
+
+        class AsyncReturningRunner:
+            @property
+            def capabilities(self):
+                return RunnerCapabilities(returns_coroutine=True)
+
+        gn = inner.as_node(runner=AsyncReturningRunner())
+        outer = Graph([gn])
+        parent_caps = RunnerCapabilities(returns_coroutine=False)
+
+        with pytest.raises(IncompatibleRunnerError) as exc_info:
+            validate_delegated_runners(outer, parent_caps)
+        assert "inner" in str(exc_info.value)
+        assert exc_info.value.capability == "returns_coroutine"
+
+    def test_child_runner_rejects_incompatible_subgraph(self):
+        """Delegated runner must support the subgraph's features."""
+        from hypergraph.runners._shared.validation import validate_delegated_runners
+
+        inner = Graph([async_double], name="inner")
+
+        class SyncOnlyRunner:
+            @property
+            def capabilities(self):
+                return RunnerCapabilities(supports_async_nodes=False)
+
+        gn = inner.as_node(runner=SyncOnlyRunner())
+        outer = Graph([gn])
+        parent_caps = RunnerCapabilities(supports_async_nodes=True, returns_coroutine=True)
+
+        with pytest.raises(IncompatibleRunnerError) as exc_info:
+            validate_delegated_runners(outer, parent_caps)
+        assert exc_info.value.capability == "supports_async_nodes"
+
+
 class TestRuntimeOverrideRejection:
     """Runtime entrypoint/select overrides are rejected with clear messages."""
 

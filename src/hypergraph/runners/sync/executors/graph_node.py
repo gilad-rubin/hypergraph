@@ -78,11 +78,14 @@ class SyncGraphNodeExecutor:
                     inner_key = node.resolve_original_output_name(key[len(prefix) :])
                     inner_inputs[inner_key] = state.values[key]
 
+        # Use delegated runner if configured, otherwise inherit parent
+        runner = node.runner_override or self.runner
+
         if map_config:
             _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
-            results = self.runner.map(
+            results = runner.map(
                 node.graph,
                 inner_inputs,
                 map_over=original_params,
@@ -97,7 +100,7 @@ class SyncGraphNodeExecutor:
             self.last_inner_logs = tuple(r.log for r in results if r.log is not None)
             return collect_as_lists(results, node, error_handling)
 
-        result = self.runner.run(
+        result = runner.run(
             node.graph,
             inner_inputs,
             event_processors=event_processors,

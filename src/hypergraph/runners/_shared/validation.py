@@ -514,6 +514,50 @@ def _resolve_effective_input_spec(
     return graph.inputs
 
 
+def validate_delegated_runners(
+    graph: Graph,
+    parent_capabilities: RunnerCapabilities,
+) -> None:
+    """Validate runner_override on GraphNodes within the graph.
+
+    Checks two things for each GraphNode with a runner_override:
+    1. The delegated runner can handle the subgraph's features
+       (async nodes, cycles, interrupts).
+    2. The parent→child direction is compatible — a sync parent
+       cannot delegate to a runner whose run() returns a coroutine.
+
+    Args:
+        graph: The graph to scan for delegated GraphNodes
+        parent_capabilities: The parent runner's capabilities
+
+    Raises:
+        IncompatibleRunnerError: If delegation is invalid
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    for node in graph._nodes.values():
+        if not isinstance(node, GraphNode):
+            continue
+        override = node.runner_override
+        if override is None:
+            continue
+
+        child_caps = override.capabilities
+
+        # Check subgraph compatibility with the delegated runner
+        validate_runner_compatibility(node.graph, child_caps)
+
+        # Sync parent cannot delegate to an async-returning runner
+        if not parent_capabilities.returns_coroutine and child_caps.returns_coroutine:
+            raise IncompatibleRunnerError(
+                f"GraphNode '{node.name}' has runner_override that returns a coroutine, "
+                f"but the parent runner is synchronous. "
+                f"Use AsyncRunner as the parent, or choose a sync-compatible runner for '{node.name}'.",
+                node_name=node.name,
+                capability="returns_coroutine",
+            )
+
+
 def validate_node_types(
     graph: Graph,
     supported_types: set[type[HyperNode]],

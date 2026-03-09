@@ -124,11 +124,14 @@ class AsyncGraphNodeExecutor:
             child_fork_from = None
             child_retry_from = None
 
+        # Use delegated runner if configured, otherwise inherit parent
+        runner = node.runner_override or self.runner
+
         if map_config:
             _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
-            results = await self.runner.map(
+            results = await runner.map(
                 node.graph,
                 inner_inputs,
                 map_over=original_params,
@@ -143,7 +146,7 @@ class AsyncGraphNodeExecutor:
             self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
             return collect_as_lists(results, node, error_handling)
 
-        result = await self.runner.run(
+        result = await runner.run(
             node.graph,
             inner_inputs,
             event_processors=event_processors,
