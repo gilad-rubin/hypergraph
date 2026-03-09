@@ -1,0 +1,425 @@
+"""Node → Daft UDF translation operations."""
+
+from __future__ import annotations
+
+import copy
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    import daft
+
+    from hypergraph.cache import CacheBackend
+    from hypergraph.graph import Graph
+    from hypergraph.nodes.base import HyperNode
+
+
+@runtime_checkable
+class DaftStateful(Protocol):
+    """Protocol for objects loaded once per Daft worker.
+
+    Mark a class as stateful so DaftRunner wraps it with ``@daft.cls``
+    instead of ``@daft.func``.  This is useful for heavy resources
+    (ML models, DB connections) that should be initialized once per
+    worker process rather than once per row.
+
+    Example::
+
+        class MyModel:
+            __daft_stateful__ = True
+
+            def __init__(self):
+                self.model = load_heavy_model()
+
+        model = MyModel()
+        graph = Graph([embed]).bind(model=model)
+        runner = DaftRunner()
+        runner.map(graph, {"text": texts}, map_over="text")
+    """
+
+    __daft_stateful__: ClassVar[bool]
+
+
+def mark_batch(func: Any) -> Any:
+    """Mark a function for batch (vectorized) Daft UDF execution.
+
+    When DaftRunner encounters a node whose underlying function has
+    this marker, it uses ``@daft.func.batch`` instead of ``@daft.func``.
+    Batch UDFs receive ``daft.Series`` instead of scalars.
+
+    Example::
+
+        @node(output_name="normalized")
+        def normalize(values: daft.Series) -> daft.Series:
+            arr = values.to_arrow().to_numpy()
+            return (arr - arr.mean()) / arr.std()
+
+        mark_batch(normalize.func)
+    """
+    func.__daft_batch__ = True
+    return func
+
+
+def is_batch_marked(node: HyperNode) -> bool:
+    """Check if a node's underlying function is batch-marked."""
+    func = getattr(node, "func", None)
+    return getattr(func, "__daft_batch__", False) is True
+
+
+def has_stateful_values(bound_values: dict[str, Any]) -> bool:
+    """Check if any bound values implement DaftStateful protocol."""
+    return any(isinstance(v, DaftStateful) for v in bound_values.values())
+
+
+# ---------------------------------------------------------------------------
+# Base operation
+# ---------------------------------------------------------------------------
+
+
+class DaftOperation(ABC):
+    """A single step in a Daft execution plan.
+
+    Translates a hypergraph node into a Daft ``df.with_column()`` call.
+    """
+
+    def __init__(
+        self,
+        node: HyperNode,
+        input_columns: list[str],
+        output_columns: list[str],
+        bound_values: dict[str, Any],
+        clone: bool | list[str] = False,
+    ):
+        self.node = node
+        self.input_columns = input_columns
+        self.output_columns = output_columns
+        self.bound_values = bound_values
+        self.clone = clone
+
+    @abstractmethod
+    def apply(self, df: daft.DataFrame) -> daft.DataFrame:
+        """Apply this operation to a DataFrame, returning one with new column(s)."""
+        ...
+
+    def _clone_bound(self) -> dict[str, Any]:
+        """Deep-copy bound values when clone is requested."""
+        if not self.bound_values:
+            return {}
+        if self.clone is True:
+            return copy.deepcopy(self.bound_values)
+        if isinstance(self.clone, list):
+            return {k: copy.deepcopy(v) if k in self.clone else v for k, v in self.bound_values.items()}
+        return dict(self.bound_values)
+
+
+# ---------------------------------------------------------------------------
+# Concrete operations
+# ---------------------------------------------------------------------------
+
+
+class FunctionNodeOperation(DaftOperation):
+    """Wraps a sync or async FunctionNode as a ``@daft.func`` UDF.
+
+    Daft auto-detects async functions and handles the event loop.
+    """
+
+    def apply(self, df: daft.DataFrame) -> daft.DataFrame:
+        import daft as daft_mod
+
+        node = self.node
+        bound = self.bound_values
+        clone = self.clone
+        input_cols = self.input_columns
+        # For multi-output nodes we pack all outputs into a single Python column
+        output_col = self.output_columns[0] if len(self.output_columns) == 1 else f"_pack_{node.name}"
+        multi_output = len(self.output_columns) > 1
+
+        func = node.func
+        col_names = input_cols  # capture for closure
+
+        def wrapper(*args: Any) -> Any:
+            local_bound = _clone_values(bound, clone) if clone else bound
+            kwargs = {**local_bound, **dict(zip(col_names, args, strict=True))}
+            result = func(**kwargs)
+            if multi_output:
+                return result  # tuple or dict — unpacked later
+            return result
+
+        # Check if async — Daft handles async UDFs natively
+        import asyncio
+
+        if asyncio.iscoroutinefunction(func):
+
+            async def async_wrapper(*args: Any) -> Any:
+                local_bound = _clone_values(bound, clone) if clone else bound
+                kwargs = {**local_bound, **dict(zip(col_names, args, strict=True))}
+                return await func(**kwargs)
+
+            udf = daft_mod.func(return_dtype=daft_mod.DataType.python())(async_wrapper)
+        else:
+            udf = daft_mod.func(return_dtype=daft_mod.DataType.python())(wrapper)
+
+        col_refs = [df[c] for c in input_cols]
+        df = df.with_column(output_col, udf(*col_refs))
+
+        if multi_output:
+            df = _unpack_multi_output(df, output_col, self.output_columns)
+
+        return df
+
+
+class StatefulNodeOperation(DaftOperation):
+    """Wraps a node with DaftStateful bound values as a ``@daft.cls`` UDF.
+
+    Stateful objects are initialized once per worker process.
+    """
+
+    def apply(self, df: daft.DataFrame) -> daft.DataFrame:
+        import daft as daft_mod
+
+        node = self.node
+        bound = self.bound_values
+        input_cols = self.input_columns
+        output_col = self.output_columns[0] if len(self.output_columns) == 1 else f"_pack_{node.name}"
+        multi_output = len(self.output_columns) > 1
+
+        func = node.func
+        col_names = input_cols  # capture for closure
+
+        # Separate stateful from plain bound values
+        stateful_vals = {k: v for k, v in bound.items() if isinstance(v, DaftStateful)}
+        plain_vals = {k: v for k, v in bound.items() if not isinstance(v, DaftStateful)}
+
+        @daft_mod.cls(return_dtype=daft_mod.DataType.python())
+        class StatefulWrapper:
+            def __init__(self):
+                # Each stateful object is re-created once per worker
+                self._stateful = {k: type(v)() for k, v in stateful_vals.items()}
+                self._plain = plain_vals
+
+            def __call__(self, *args: Any) -> Any:
+                kwargs = {
+                    **self._stateful,
+                    **self._plain,
+                    **dict(zip(col_names, args, strict=True)),
+                }
+                return func(**kwargs)
+
+        col_refs = [df[c] for c in input_cols]
+        df = df.with_column(output_col, StatefulWrapper()(*col_refs))
+
+        if multi_output:
+            df = _unpack_multi_output(df, output_col, self.output_columns)
+
+        return df
+
+
+class BatchNodeOperation(DaftOperation):
+    """Wraps a batch-marked node as a ``@daft.func.batch`` UDF.
+
+    Batch UDFs receive ``daft.Series`` instead of scalar values.
+    """
+
+    def apply(self, df: daft.DataFrame) -> daft.DataFrame:
+        import daft as daft_mod
+
+        node = self.node
+        bound = self.bound_values
+        input_cols = self.input_columns
+        output_col = self.output_columns[0]
+
+        func = node.func
+        col_names = input_cols  # capture for closure
+
+        def batch_wrapper(*series_args: Any) -> Any:
+            kwargs = {**bound, **dict(zip(col_names, series_args, strict=True))}
+            return func(**kwargs)
+
+        udf = daft_mod.func.batch(return_dtype=daft_mod.DataType.python())(batch_wrapper)
+
+        col_refs = [df[c] for c in input_cols]
+        return df.with_column(output_col, udf(*col_refs))
+
+
+class GraphNodeOperation(DaftOperation):
+    """Wraps a nested GraphNode in a single ``@daft.func`` UDF.
+
+    For non-mapped graphs: runs the inner graph via SyncRunner.
+    For mapped graphs: runs the inner graph's map() via SyncRunner.
+    """
+
+    def __init__(
+        self,
+        node: HyperNode,
+        input_columns: list[str],
+        output_columns: list[str],
+        bound_values: dict[str, Any],
+        clone: bool | list[str] = False,
+        cache: CacheBackend | None = None,
+    ):
+        super().__init__(node, input_columns, output_columns, bound_values, clone)
+        self.cache = cache
+
+    def apply(self, df: daft.DataFrame) -> daft.DataFrame:
+        import daft as daft_mod
+
+        node = self.node
+        input_cols = self.input_columns
+        output_col = self.output_columns[0] if len(self.output_columns) == 1 else f"_pack_{node.name}"
+        multi_output = len(self.output_columns) > 1
+        cache = self.cache
+        bound = self.bound_values
+        clone = self.clone
+
+        inner_graph = node.graph
+        # map_config is (params, mode, error_handling) or None
+        map_config = node.map_config
+        col_names = input_cols  # capture for closure
+
+        @daft_mod.func(return_dtype=daft_mod.DataType.python())
+        def execute_graph(*args: Any) -> Any:
+            from hypergraph.runners._shared.helpers import (
+                collect_as_lists,
+                map_inputs_to_func_params,
+            )
+            from hypergraph.runners.sync.runner import SyncRunner
+
+            local_bound = _clone_values(bound, clone) if clone else bound
+            raw_inputs = {**local_bound, **dict(zip(col_names, args, strict=True))}
+            # Translate renamed input keys back to original inner graph names
+            inner_inputs = map_inputs_to_func_params(node, raw_inputs)
+            runner = SyncRunner(cache=cache)
+
+            if map_config:
+                _map_over_params, mode, error_handling = map_config
+                # Use original (pre-rename) param names for inner graph
+                original_params = node._original_map_params()
+                map_result = runner.map(
+                    inner_graph,
+                    inner_inputs,
+                    map_over=original_params,
+                    map_mode=mode,
+                    clone=node._original_clone(),
+                    error_handling=error_handling,
+                )
+                # Collect into {output_name: [values...]} dict
+                collected = collect_as_lists(
+                    map_result.results,
+                    node,
+                    error_handling,
+                )
+                if multi_output:
+                    return collected
+                # Single output mapped: return the list directly
+                return next(iter(collected.values()))
+            else:
+                result = runner.run(inner_graph, inner_inputs)
+                if multi_output:
+                    return result.values
+                return next(iter(result.values.values()))
+
+        col_refs = [df[c] for c in input_cols]
+        df = df.with_column(output_col, execute_graph(*col_refs))
+
+        if multi_output and not map_config:
+            df = _unpack_multi_output(df, output_col, self.output_columns)
+
+        return df
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
+def create_operation(
+    node: HyperNode,
+    graph: Graph,
+    bound_values: dict[str, Any],
+    cache: CacheBackend | None = None,
+    clone: bool | list[str] = False,
+) -> DaftOperation:
+    """Route a node to the appropriate DaftOperation class."""
+    from hypergraph.nodes.function import FunctionNode
+    from hypergraph.nodes.graph_node import GraphNode
+
+    # Determine which bound values apply to this node
+    node_bound = {k: v for k, v in bound_values.items() if k in node.inputs}
+
+    # Determine input columns (those not provided by bound values)
+    input_cols = [p for p in node.inputs if p not in node_bound]
+    output_cols = list(node.data_outputs)
+
+    if isinstance(node, GraphNode):
+        return GraphNodeOperation(
+            node=node,
+            input_columns=input_cols,
+            output_columns=output_cols,
+            bound_values=node_bound,
+            clone=clone,
+            cache=cache,
+        )
+
+    if isinstance(node, FunctionNode):
+        if has_stateful_values(node_bound):
+            return StatefulNodeOperation(
+                node=node,
+                input_columns=input_cols,
+                output_columns=output_cols,
+                bound_values=node_bound,
+                clone=clone,
+            )
+        if is_batch_marked(node):
+            return BatchNodeOperation(
+                node=node,
+                input_columns=input_cols,
+                output_columns=output_cols,
+                bound_values=node_bound,
+                clone=clone,
+            )
+        return FunctionNodeOperation(
+            node=node,
+            input_columns=input_cols,
+            output_columns=output_cols,
+            bound_values=node_bound,
+            clone=clone,
+        )
+
+    raise TypeError(f"DaftRunner does not support {type(node).__name__}")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _clone_values(values: dict[str, Any], clone: bool | list[str]) -> dict[str, Any]:
+    """Deep-copy values when clone is requested."""
+    if clone is True:
+        return copy.deepcopy(values)
+    if isinstance(clone, list):
+        return {k: copy.deepcopy(v) if k in clone else v for k, v in values.items()}
+    return dict(values)
+
+
+def _unpack_multi_output(
+    df: daft.DataFrame,
+    pack_col: str,
+    output_names: list[str],
+) -> daft.DataFrame:
+    """Unpack a packed Python column into individual output columns."""
+    import daft as daft_mod
+
+    for i, name in enumerate(output_names):
+
+        @daft_mod.func(return_dtype=daft_mod.DataType.python())
+        def extract(packed: Any, idx: int = i) -> Any:
+            if isinstance(packed, dict):
+                return packed.get(output_names[idx])
+            if isinstance(packed, (tuple, list)):
+                return packed[idx]
+            return packed
+
+        df = df.with_column(name, extract(df[pack_col]))
+
+    return df.exclude(pack_col)
