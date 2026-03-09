@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
 from hypergraph.runners._shared.types import RunnerCapabilities
@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from hypergraph.graph import Graph
     from hypergraph.graph.input_spec import InputSpec
     from hypergraph.nodes.base import HyperNode
-
-_VALID_ON_INTERNAL_OVERRIDE = ("ignore", "warn", "error")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +72,7 @@ def validate_item_inputs(
     ctx: _InputValidationContext,
     values: dict[str, Any],
     *,
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
+    skip_missing_required: bool = False,
 ) -> None:
     """Per-item value validation using pre-computed context.
 
@@ -82,7 +80,6 @@ def validate_item_inputs(
     graph context.  Handles bound/provided merge, internal override
     detection, bypass detection, cycle entry, and completeness checks.
     """
-    _validate_on_internal_override(on_internal_override)
     inputs_spec = ctx.input_spec
 
     # Step 1: Merge bound + provided
@@ -117,9 +114,7 @@ def validate_item_inputs(
         )
 
     if unknown:
-        _handle_internal_override_policy(
-            on_internal_override=on_internal_override,
-            internal_edge=set(),
+        _warn_on_unrecognized_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
             active_nodes=ctx.active_nodes,
@@ -129,7 +124,7 @@ def validate_item_inputs(
     required = set(inputs_spec.required)
     missing_required = required - provided
 
-    if not missing_required:
+    if skip_missing_required or not missing_required:
         return
 
     all_inputs = set(inputs_spec.all)
@@ -154,7 +149,7 @@ def validate_inputs(
     *,
     entrypoint: str | None = None,
     selected: tuple[str, ...] | None = None,
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
+    skip_missing_required: bool = False,
 ) -> None:
     """Validate that all required inputs are provided.
 
@@ -163,7 +158,11 @@ def validate_inputs(
     ``precompute_input_validation`` + ``validate_item_inputs`` directly.
     """
     ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=selected)
-    validate_item_inputs(ctx, values, on_internal_override=on_internal_override)
+    validate_item_inputs(
+        ctx,
+        values,
+        skip_missing_required=skip_missing_required,
+    )
 
 
 def _get_suggestions(
@@ -282,13 +281,6 @@ def validate_map_compatible(graph: Graph) -> None:
         )
 
 
-def _validate_on_internal_override(policy: str) -> None:
-    """Validate on_internal_override parameter."""
-    if policy not in _VALID_ON_INTERNAL_OVERRIDE:
-        valid = ", ".join(_VALID_ON_INTERNAL_OVERRIDE)
-        raise ValueError(f"Invalid on_internal_override={policy!r}. Expected one of: {valid}")
-
-
 def _resolve_active_scope(
     graph: Graph,
     selected: tuple[str, ...] | None,
@@ -304,9 +296,23 @@ def _resolve_active_scope(
     )
 
 
-def _get_interrupt_outputs(nodes: dict[str, HyperNode]) -> set[str]:
-    """Get output names produced by interrupt nodes in the active scope."""
-    return {output for n in nodes.values() if n.is_interrupt for output in n.outputs}
+def _get_interrupt_outputs(
+    nodes: dict[str, HyperNode],
+    *,
+    prefix: str = "",
+) -> set[str]:
+    """Get interrupt resume keys in the active scope, including nested GraphNodes."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    outputs: set[str] = set()
+    for node in nodes.values():
+        if node.is_interrupt:
+            outputs.update(f"{prefix}{output}" for output in node.data_outputs)
+            continue
+        if isinstance(node, GraphNode):
+            nested_outputs = _get_interrupt_outputs({inner.name: inner for inner in node.iter_active_inner_nodes()})
+            outputs.update(f"{prefix}{node.name}.{node.map_resume_key_from_original(output)}" for output in nested_outputs)
+    return outputs
 
 
 def _find_internal_override_conflicts(
@@ -371,33 +377,28 @@ def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> b
     return all(param in provided or node.has_default_for(param) for param in node.inputs)
 
 
-def _handle_internal_override_policy(
+def _warn_on_unrecognized_inputs(
     *,
-    on_internal_override: Literal["ignore", "warn", "error"],
-    internal_edge: set[str],
     unknown: set[str],
     expected_inputs: set[str],
     active_nodes: dict[str, HyperNode],
 ) -> None:
-    """Apply policy for non-conflicting internal/unknown parameters."""
-    if not internal_edge and not unknown:
-        return
-    if on_internal_override == "ignore":
+    """Warn when extra provided keys are outside the active graph scope."""
+    if not unknown:
         return
 
-    message = _build_internal_override_message(
-        internal_edge=internal_edge,
-        unknown=unknown,
-        expected_inputs=expected_inputs,
-        active_nodes=active_nodes,
+    import warnings
+
+    warnings.warn(
+        _build_internal_override_message(
+            internal_edge=set(),
+            unknown=unknown,
+            expected_inputs=expected_inputs,
+            active_nodes=active_nodes,
+        ),
+        UserWarning,
+        stacklevel=4,
     )
-
-    if on_internal_override == "warn":
-        import warnings
-
-        warnings.warn(message, UserWarning, stacklevel=4)
-        return
-    raise ValueError(message)
 
 
 def _build_internal_override_message(
@@ -429,19 +430,12 @@ def _build_internal_override_message(
 
 
 def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSpec) -> set[str]:
-    """Find inputs that belong to nodes fully bypassed by intermediate injection.
+    """Legacy helper for classifying impossible compute-vs-inject mixes.
 
-    A node is bypassed ONLY if ALL of its outputs that are consumed downstream
-    are provided by the user. If any consumed output is missing, the node must
-    still run to produce it.
-
-    When a node is bypassed, its exclusive inputs (not needed by other nodes)
-    can be removed from the required set.
-
-    Note: This iterates ``graph._nodes`` (the full graph), not just the active
-    subgraph. This is safe because bypassed inputs are subtracted from
-    ``inputs_spec.required``, which is already scoped to active nodes.
-    Extra bypassed inputs from inactive nodes are no-ops.
+    The runtime no longer supports supplying active internal edge-produced
+    values to skip execution. This helper remains as topology analysis for
+    conflict reporting, describing which inputs would become irrelevant if a
+    user tries to provide all outputs of some active producer nodes.
     """
     # Build output -> producer nodes mapping (handle mutex branches)
     output_to_nodes: dict[str, list[str]] = {}
@@ -454,26 +448,27 @@ def _find_bypassed_inputs(graph: Graph, provided: set[str], inputs_spec: InputSp
     for node in graph._nodes.values():
         consumed_outputs.update(node.inputs)
 
-    # Cycle entry point params: providing these means bootstrapping a cycle,
-    # NOT bypassing the producer node. Exclude from bypass check.
+    # Cycle entry point params bootstrap a cycle and do not imply that an
+    # active producer has been replaced.
     cycle_ep_params = {p for params in inputs_spec.entrypoints.values() for p in params}
 
-    # A node is bypassed only if ALL its non-cycle consumed outputs are provided
+    # A node is considered fully replaced only if ALL its non-cycle consumed
+    # outputs are provided by the user.
     bypassed_nodes: set[str] = set()
     for node in graph._nodes.values():
         node_consumed_outputs = (set(node.outputs) & consumed_outputs) - cycle_ep_params
         if node_consumed_outputs and node_consumed_outputs <= provided:
-            # All consumed outputs are provided — node is bypassed
+            # All consumed outputs are provided — treat the node as replaced for
+            # conflict analysis.
             bypassed_nodes.add(node.name)
 
     if not bypassed_nodes:
         return set()
 
-    # Also mark nodes as bypassed if ALL their non-cycle outputs are provided.
+    # Also mark nodes as replaced if ALL their non-cycle outputs are provided.
     # Unlike the first pass (consumed only), this catches nodes whose outputs
-    # aren't consumed downstream but are still fully overridden by user values.
-    # Cycle entry point params are excluded: providing them means bootstrapping
-    # the cycle, NOT bypassing the producer.
+    # are not consumed downstream but are still being fully supplied by the
+    # user in a contradictory request.
     for node in graph._nodes.values():
         non_cycle_outputs = set(node.outputs) - cycle_ep_params
         if non_cycle_outputs and non_cycle_outputs <= provided:

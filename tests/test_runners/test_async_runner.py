@@ -336,8 +336,8 @@ class TestAsyncRunnerRun:
         assert "sum" in result
         assert "doubled" not in result
 
-    async def test_on_internal_override_policy_is_enforced(self):
-        """Internal edge-produced overrides are rejected for all policies."""
+    async def test_internal_edge_produced_overrides_are_rejected(self):
+        """Internal edge-produced overrides are rejected."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -354,13 +354,16 @@ class TestAsyncRunnerRun:
         graph = Graph([split, use_left, use_right])
         runner = AsyncRunner()
 
-        for policy in ("error", "ignore", "warn"):
-            with pytest.raises(ValueError, match="internal parameters"):
-                await runner.run(
-                    graph,
-                    {"left": 100, "right": 200},
-                    on_internal_override=policy,
-                )
+        with pytest.raises(ValueError, match="internal parameters"):
+            await runner.run(graph, {"left": 100, "right": 200})
+
+    async def test_removed_internal_override_argument_is_rejected(self):
+        """run() treats on_internal_override as a reserved runner option."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="reserved runner options"):
+            await runner.run(graph, {"x": 1}, on_internal_override="warn")  # type: ignore[call-arg]
 
     # Cycles
 
@@ -508,8 +511,8 @@ class TestAsyncRunnerMap:
 
         assert [r["sum"] for r in results] == [11, 12]
 
-    async def test_map_forwards_on_internal_override_policy(self):
-        """Internal edge-produced overrides are rejected for all policies."""
+    async def test_map_rejects_internal_edge_produced_overrides(self):
+        """Internal edge-produced overrides are rejected in map()."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -526,14 +529,20 @@ class TestAsyncRunnerMap:
         graph = Graph([split, use_left, use_right])
         runner = AsyncRunner()
 
-        for policy in ("error", "ignore", "warn"):
-            with pytest.raises(ValueError, match="internal parameters"):
-                await runner.map(
-                    graph,
-                    {"left": [100], "right": 200},
-                    map_over="left",
-                    on_internal_override=policy,
-                )
+        with pytest.raises(ValueError, match="internal parameters"):
+            await runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+            )
+
+    async def test_map_removed_internal_override_argument_is_rejected(self):
+        """map() treats on_internal_override as a reserved runner option."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="reserved runner options"):
+            await runner.map(graph, {"x": [1]}, map_over="x", on_internal_override="warn")  # type: ignore[call-arg]
 
     async def test_map_runs_concurrently(self):
         """Map executions run concurrently."""

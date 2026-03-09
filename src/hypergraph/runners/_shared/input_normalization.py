@@ -9,6 +9,7 @@ RUN_RESERVED_OPTION_NAMES = frozenset(
         "select",
         "max_iterations",
         "event_processors",
+        "on_internal_override",
         "_parent_span_id",
     }
 )
@@ -29,6 +30,7 @@ MAP_RESERVED_OPTION_NAMES = frozenset(
         "select",
         "error_handling",
         "event_processors",
+        "on_internal_override",
         "_parent_span_id",
     }
 )

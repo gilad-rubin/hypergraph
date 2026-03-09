@@ -154,9 +154,11 @@ class Checkpointer(ABC):
         superstep: int | None = None,
     ) -> tuple[str, Checkpoint]:
         """Prepare a retry fork with retry lineage metadata."""
+        source = await self.get_run_async(source_run_id)
+        if source is None:
+            raise ValueError(f"Unknown source workflow_id: {source_run_id!r}")
         checkpoint = await self.get_checkpoint(source_run_id, superstep=superstep)
-        siblings = await self.list_runs(limit=10_000)
-        retry_count = sum(1 for run in siblings if run.retry_of == source_run_id)
+        retry_count = await self.count_runs(retry_of=source_run_id)
         retry_index = retry_count + 1
         new_workflow_id = workflow_id or f"{source_run_id}-retry-{retry_index}"
         checkpoint.retry_of = source_run_id
@@ -174,16 +176,33 @@ class Checkpointer(ABC):
         *,
         status: WorkflowStatus | None = None,
         parent_run_id: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[Run]:
         """List runs, optionally filtered by status and/or parent.
 
         Args:
             status: Filter to runs with this status (None = all).
             parent_run_id: Filter to children of this run (None = no filter).
-            limit: Max results to return.
+            limit: Max results to return. ``None`` returns all matches.
         """
         ...
+
+    async def count_runs(
+        self,
+        *,
+        status: WorkflowStatus | None = None,
+        parent_run_id: str | None = None,
+        retry_of: str | None = None,
+    ) -> int:
+        """Count runs matching a small set of backend-neutral filters.
+
+        Backends with efficient query support should override this to avoid
+        materializing full run objects for simple counting operations.
+        """
+        runs = await self.list_runs(status=status, parent_run_id=parent_run_id, limit=None)
+        if retry_of is not None:
+            runs = [run for run in runs if run.retry_of == retry_of]
+        return len(runs)
 
     async def search_async(self, query: str, *, field: str | None = None, limit: int = 20) -> list[StepRecord]:
         """Search steps using FTS. Returns empty list if not supported."""

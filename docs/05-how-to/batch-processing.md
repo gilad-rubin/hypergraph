@@ -17,6 +17,20 @@ graph = Graph([extract])
 results = runner.map(graph, {"document": documents}, map_over="document")
 ```
 
+This pattern is one of hypergraph's biggest advantages in practice:
+
+- write the logic for one item
+- compose it into a graph
+- scale it with `runner.map()` or a mapped `GraphNode`
+
+That same shape works for:
+
+- ETL and document ingestion
+- feature extraction
+- model comparison
+- evaluation datasets
+- nested workflows where each item may branch internally
+
 ## Basic Usage
 
 ```python
@@ -151,6 +165,15 @@ batch_pipeline = Graph([
 ])
 ```
 
+For many real systems, this is the most natural Hypergraph pattern:
+
+1. Build and test the single-item workflow first
+2. Name it with `Graph(..., name="...")`
+3. Reuse it as a node with `.as_node()`
+4. Add `.map_over(...)` when you need batch scale
+
+This keeps the core logic small and reusable instead of mixing per-item logic with batch orchestration.
+
 ## Working with MapResult
 
 `runner.map()` returns a `MapResult` — a read-only sequence with batch-level metadata and aggregate accessors. It's fully backward compatible: `len()`, iteration, and indexing all work as before.
@@ -233,6 +256,11 @@ result = runner.run(batch, {"path": "data.txt"})
 # None entries correspond to failed items
 ```
 
+`map_over()` does not support nested graphs that contain interrupts. If the
+wrapped graph has an `@interrupt`, graph construction raises a
+`GraphConfigError`. For human-in-the-loop batch workflows, use
+`AsyncRunner.map()` with one item per run instead.
+
 ## runner.map() vs map_over
 
 Two batch patterns, different tradeoffs. Both start from the same idea — **write logic for one item, scale to many** — but they give different guarantees:
@@ -258,6 +286,7 @@ results = runner.map(graph, {"url": urls}, map_over="url", error_handling="conti
 
 - Processing independent items (scraping, embedding, classification)
 - When you need per-item RunLogs for debugging
+- When batch items should behave like separate workflow runs
 - Quick fan-out over a single parameter
 - With `workflow_id`: persisted batch with per-item child runs
 
@@ -356,7 +385,7 @@ await runner.run(Graph([double, triple]), {"x": 5}, workflow_id="job-1")
 # await runner.run(Graph([double, triple]), workflow_id="job-1")
 ```
 
-Resume is intended for ACTIVE/FAILED workflows (e.g., retry after failure), not for appending new work to completed lineages.
+Resume is intended for ACTIVE/PAUSED/FAILED workflows (for example: still-running work, interrupt-paused workflows, or retry after failure), not for appending new work to completed lineages.
 
 #### Fork (new workflow_id, optional overrides)
 
@@ -377,7 +406,6 @@ Retry is symmetrical:
 retried = await runner.run(
     Graph([double, triple]),
     retry_from="job-1",
-    on_internal_override="ignore",   # common for flaky-node recovery
 )
 ```
 

@@ -18,6 +18,10 @@ Runners execute graphs. They handle the execution loop, node scheduling, and con
 
 Sequential execution for synchronous graphs.
 
+`SyncRunner` is not built for interrupts or HITL flows. If a graph contains
+`InterruptNode`s, `SyncRunner` raises `IncompatibleRunnerError`; use
+`AsyncRunner` instead.
+
 ```python
 from hypergraph import Graph, node, SyncRunner
 
@@ -57,7 +61,6 @@ def run(
     *,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -89,7 +92,7 @@ Execute a graph once.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted: auto-generated for `run()`
-  - existing: strict resume only (no runtime values; same graph structure)
+  - existing: strict resume only (no runtime values; same graph structure). Existing persisted workflows may be `active`, `paused`, or `failed`; completed workflows are terminal.
   - new + `checkpoint`: explicit fork
 - `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
 - `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
@@ -170,7 +173,6 @@ def map(
     clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
     workflow_id: str | None = None,
@@ -188,7 +190,6 @@ Execute a graph multiple times with different inputs.
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively. Prevents cross-iteration mutation.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `error_handling` - How to handle failures:
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
@@ -296,7 +297,6 @@ async def run(
     *,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
     max_concurrency: int | None = None,
@@ -318,7 +318,6 @@ Execute a graph asynchronously.
 - `values` - Optional input values
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `entrypoint` - Runtime entrypoint overrides are not supported. Configure entrypoints on the graph via `Graph(..., entrypoint=...)` or `graph.with_entrypoint(...)`.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `max_concurrency` - Max parallel node executions (default: unlimited)
@@ -329,7 +328,7 @@ Execute a graph asynchronously.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted: auto-generated for `run()`
-  - existing: strict resume only (no runtime values; same graph structure)
+  - existing: strict resume only (no runtime values; same graph structure). Existing persisted workflows may be `active`, `paused`, or `failed`; completed workflows are terminal.
   - new + `checkpoint`: explicit fork
 - `override_workflow` - Convenience shortcut for existing `workflow_id`s. When `True` and the `workflow_id` already exists, `run()` auto-forks from that workflow (generates a new workflow ID and uses its checkpoint) instead of raising strict resume errors.
 - `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
@@ -390,7 +389,6 @@ async def map(
     clone: bool | list[str] = False,
     select: str | list[str] = "**",
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    on_internal_override: Literal["ignore", "warn", "error"] = "warn",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
@@ -410,7 +408,6 @@ Execute graph multiple times concurrently.
 - `clone` - Deep-copy mutable values for each iteration. `True` clones all non-`map_over` values; pass a list of names to clone selectively.
 - `select` - Runtime select overrides are not supported. Configure output scope on the graph with `graph.select(...)` before execution.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `entrypoint` - Runtime entrypoint overrides are not supported.
 - `max_concurrency` - Shared limit across all executions
 - `error_handling` - How to handle failures:

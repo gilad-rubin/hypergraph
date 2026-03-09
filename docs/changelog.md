@@ -14,6 +14,7 @@
 - **`override_workflow` on `run()`** — convenience auto-fork mode: when a `workflow_id` already exists, pass `override_workflow=True` to branch to a fresh lineage instead of raising strict resume errors.
 - **Workflow-id based forking/retrying on `run()`** — `fork_from=` and `retry_from=` remove manual checkpoint plumbing for common branch/retry flows.
 - **Checkpointer naming convention updated** — sync helpers are now `fork_workflow()` / `retry_workflow()`, async helpers are `fork_workflow_async()` / `retry_workflow_async()`.
+- **Persisted paused workflows** — checkpointers now store interrupt-paused runs as `PAUSED` instead of overloading `ACTIVE`, and CLI/dashboard views expose paused runs distinctly.
 
 ### Changed
 
@@ -65,9 +66,8 @@
 
 - **`with_entrypoint(*node_names)`** — Graph method that narrows execution to start at specific nodes, skipping upstream. Works for DAGs and cycles. Returns a new Graph (immutable, chainable). Upstream nodes are excluded from the active set and never execute at runtime.
 - **Select-aware InputSpec** — `graph.select("a").inputs.required` now shows only what's needed to produce output "a", not the full graph. Previously `select()` only filtered returned outputs.
-- **Runtime select narrowing** — `runner.run(graph, values, select="a")` validates only the inputs needed for output "a". Passing `select` at runtime recomputes InputSpec scoped to the selected outputs.
+- **Runtime select overrides removed** — `runner.run(..., select=...)` is no longer supported. Configure output scope on the graph with `graph.select(...)` instead.
 - **`entrypoints_config` property** — `graph.entrypoints_config` returns the configured entry point node names, or `None` if all nodes are active.
-- **`on_internal_override` parameter** — `run()` and `map()` accept `on_internal_override="ignore"|"warn"|"error"` (default: `"warn"`) to control how non-conflicting internal parameter overrides are handled. Contradictory compute+inject inputs always raise `ValueError` regardless of policy.
 
 ### Changed
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, interrupt, node
 from hypergraph.exceptions import IncompatibleRunnerError, MissingInputError
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners import RunnerCapabilities
@@ -139,47 +139,25 @@ class TestInternalOverrideValidation:
         """Providing producer inputs + produced outputs is a hard conflict."""
         graph = self._make_split_graph()
         with pytest.raises(ValueError, match="conflict.*you provided"):
-            validate_inputs(
-                graph,
-                {"left": 100, "x": 5},
-                on_internal_override="ignore",
-            )
+            validate_inputs(graph, {"left": 100, "x": 5})
 
-    def test_full_internal_injection_rejected_with_ignore(self):
-        """Internal output injection is always rejected (deterministic error)."""
+    def test_full_internal_injection_is_rejected(self):
+        """Internal output injection is always rejected."""
         graph = self._make_split_graph()
         with pytest.raises(ValueError, match="internal parameters"):
-            validate_inputs(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="ignore",
-            )
-
-    def test_full_internal_injection_rejected_with_error_policy(self):
-        """Non-conflicting internal injection can be rejected via policy."""
-        graph = self._make_split_graph()
-        with pytest.raises(ValueError, match="internal parameters"):
-            validate_inputs(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="error",
-            )
+            validate_inputs(graph, {"left": 100, "right": 200})
 
     def test_internal_override_warning_includes_producer_mapping(self):
         """Error text should identify which node produces each internal key."""
         graph = self._make_split_graph()
         with pytest.raises(ValueError, match="left <- split"):
-            validate_inputs(
-                graph,
-                {"left": 100, "right": 200},
-                on_internal_override="warn",
-            )
+            validate_inputs(graph, {"left": 100, "right": 200})
 
-    def test_invalid_internal_override_policy_raises(self):
-        """Reject unknown policy values."""
+    def test_removed_internal_override_argument_is_rejected(self):
+        """validate_inputs no longer accepts on_internal_override."""
         graph = Graph([double])
-        with pytest.raises(ValueError, match="Invalid on_internal_override"):
-            validate_inputs(graph, {"x": 1}, on_internal_override="raise")  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="on_internal_override"):
+            validate_inputs(graph, {"x": 1}, on_internal_override="warn")  # type: ignore[call-arg]
 
     def test_cycle_entrypoint_param_not_flagged_as_internal_override(self):
         """Cycle entry point params are excluded from compute+inject conflict checks.
@@ -190,7 +168,7 @@ class TestInternalOverrideValidation:
         """
         graph = Graph([counter], entrypoint="counter")
         # 'count' is a cycle entrypoint param — should pass cleanly
-        validate_inputs(graph, {"count": 0}, on_internal_override="error")
+        validate_inputs(graph, {"count": 0})
 
     def test_entrypoint_scope_treats_excluded_branch_output_as_root_input(self):
         """Active-scope required roots are not treated as internal overrides."""
@@ -212,11 +190,7 @@ class TestInternalOverrideValidation:
             return b_out + c_out
 
         graph = Graph([a, b, c, e]).with_entrypoint("b").select("e")
-        validate_inputs(
-            graph,
-            {"x": 10, "c_out": 99},
-            on_internal_override="error",
-        )
+        validate_inputs(graph, {"x": 10, "c_out": 99})
 
 
 class TestNormalizeInputs:
@@ -321,8 +295,16 @@ class TestValidateMapCompatible:
     def test_cyclic_graph_passes(self):
         """Cyclic graphs are currently map-compatible."""
         graph = Graph([counter], entrypoint="counter")
-        # Should not raise (Phase 2 will add interrupt checks)
         validate_map_compatible(graph)
+
+    def test_graphnode_map_over_rejects_interrupts(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+
+        with pytest.raises(GraphConfigError, match="InterruptNode\\(s\\).*incompatible with map execution"):
+            Graph([inner.as_node().map_over("draft")])
 
 
 class TestRuntimeOverrideRejection:

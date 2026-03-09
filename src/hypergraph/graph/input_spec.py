@@ -87,11 +87,12 @@ def compute_input_spec(
 
     data_subgraph = _data_only_subgraph(active_subgraph)
     edge_produced = get_edge_produced_values(active_subgraph)
+    all_bound = _collect_bound_values(active_nodes, bound)
     cycle_seed_params = _compute_cycle_seed_params(
         active_nodes,
         data_subgraph,
         edge_produced,
-        bound,
+        all_bound,
         configured_entrypoints=entrypoints or (),
     )
 
@@ -104,13 +105,11 @@ def compute_input_spec(
             else:
                 required.append(param)
             continue
-        category = _categorize_param(param, edge_produced, bound, active_nodes)
+        category = _categorize_param(param, edge_produced, all_bound, active_nodes)
         if category == "required":
             required.append(param)
         elif category == "optional":
             optional.append(param)
-
-    all_bound = _collect_bound_values(active_nodes, bound)
 
     return InputSpec(
         required=tuple(required),
@@ -175,7 +174,7 @@ def _categorize_param(
     if param in edge_produced:
         return None  # Produced by an edge, not a user input
 
-    if param in bound or _any_node_has_default(param, nodes):
+    if param in bound or _all_consumers_have_default(param, nodes):
         return "optional"
 
     return "required"
@@ -186,9 +185,12 @@ def _is_interrupt_produced(param: str, nodes: dict[str, HyperNode]) -> bool:
     return any(n.is_interrupt and param in n.outputs for n in nodes.values())
 
 
-def _any_node_has_default(param: str, nodes: dict[str, HyperNode]) -> bool:
-    """Check if any node consuming this param has a default value."""
-    return any(param in node.inputs and node.has_default_for(param) for node in nodes.values())
+def _all_consumers_have_default(param: str, nodes: dict[str, HyperNode]) -> bool:
+    """Check if every node consuming this param has a fallback value."""
+    consumers = [node for node in nodes.values() if param in node.inputs]
+    if not consumers:
+        return False
+    return all(node.has_default_for(param) for node in consumers)
 
 
 def _get_all_cycle_params(
@@ -351,15 +353,44 @@ def _collect_bound_values(
 
     # Start with current graph's bound values
     all_bound = dict(bound)
+    nested_candidates: dict[str, list[Any]] = {}
 
     # Merge bound values from nested GraphNodes
     for node in nodes.values():
         if isinstance(node, GraphNode):
             # Get bound values from the inner graph
             inner_bound = node.graph.inputs.bound
-            # Merge into all_bound (current graph's values take precedence)
+            # Merge unique nested bindings only. If sibling nested graphs bind
+            # the same key to different values, that key is ambiguous at the
+            # outer graph level and should stay out of graph.inputs.bound.
             for key, value in inner_bound.items():
-                if key not in all_bound:
-                    all_bound[key] = value
+                public_key = node.map_input_name_from_original(key)
+                if public_key in all_bound:
+                    continue
+                nested_candidates.setdefault(public_key, []).append(value)
+
+    for key, candidates in nested_candidates.items():
+        if len(candidates) == 1 or _all_values_equal(candidates):
+            all_bound[key] = candidates[0]
 
     return all_bound
+
+
+def _all_values_equal(values: list[Any]) -> bool:
+    """Best-effort equality check for merged nested bound values."""
+    if len(values) <= 1:
+        return True
+    first = values[0]
+    for value in values[1:]:
+        if first is value:
+            continue
+        try:
+            equal = first == value
+            if hasattr(equal, "__iter__"):
+                if not all(equal):
+                    return False
+            elif not bool(equal):
+                return False
+        except Exception:
+            return False
+    return True

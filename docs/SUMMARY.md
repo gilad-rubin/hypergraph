@@ -31,6 +31,7 @@
 * [Evaluation Harness](04-real-world/evaluation-harness.md)
 * [Data Pipeline](04-real-world/data-pipeline.md)
 * [Prompt Optimization](04-real-world/prompt-optimization.md)
+* [Framework Ports](04-real-world/framework-ports.md)
 
 ## How-To Guides
 

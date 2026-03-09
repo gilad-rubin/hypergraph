@@ -921,22 +921,30 @@ class Graph:
     def bind(self, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).
 
-        Accepts any graph input or output name. Bound values act as
-        pre-filled run() values — overridable at run time.
+        Accepts graph input names in the current configured scope.
+        Bound values act as pre-filled run() values — overridable at run time.
+        If you want to bind a value that would normally be produced upstream,
+        first slice the graph with ``with_entrypoint()`` / ``select()`` so that
+        value becomes a true graph input.
 
         Raises:
-            ValueError: If key is not a valid graph input or output
-            ValueError: If key is an emit-only output (ordering signal)
+            ValueError: If key is not a valid graph input in the current scope
         """
-        valid_names = set(self.inputs.all) | set(self.outputs)
-        emit_only = self._get_emit_only_outputs()
-        valid_names -= emit_only
+        valid_names = set(self.inputs.all)
+        output_names = set(self.outputs)
 
         for key in values:
-            if key in emit_only:
-                raise ValueError(f"Cannot bind '{key}': emit-only output (ordering signal, not data)")
             if key not in valid_names:
-                raise ValueError(f"Cannot bind '{key}': not a graph input or output. Valid names: {sorted(valid_names)}")
+                if key in output_names:
+                    raise ValueError(
+                        f"Cannot bind '{key}': bind() only accepts graph inputs in the current scope.\n\n"
+                        f"  -> '{key}' is an output of the active graph, not an input\n\n"
+                        f"How to fix:\n"
+                        f"  Slice the graph first so '{key}' becomes an input, then bind it:\n"
+                        f"    graph = graph.with_entrypoint('<downstream_node>').bind({key}=...)\n"
+                        f"  You can also use Graph(..., entrypoint='<downstream_node>') when constructing the graph."
+                    )
+                raise ValueError(f"Cannot bind '{key}': not a graph input in the current scope. Valid inputs: {sorted(valid_names)}")
 
         new_graph = self._shallow_copy()
         new_graph._bound = {**self._bound, **values}
@@ -1015,8 +1023,7 @@ class Graph:
         )
 
         if self._bound:
-            valid_names = set(new_graph.inputs.all) | set(new_graph.outputs)
-            valid_names -= new_graph._get_emit_only_outputs()
+            valid_names = set(new_graph.inputs.all)
             invalid = [k for k in self._bound if k not in valid_names]
             if invalid:
                 raise ValueError(

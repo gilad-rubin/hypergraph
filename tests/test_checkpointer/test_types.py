@@ -126,6 +126,11 @@ class TestRun:
         assert d["status"] == "active"
         assert d["graph_name"] == "my_graph"
 
+    def test_paused_to_dict(self):
+        r = Run(id="wf-paused", status=WorkflowStatus.PAUSED)
+        d = r.to_dict()
+        assert d["status"] == "paused"
+
     def test_new_fields(self):
         r = Run(
             id="wf-1",

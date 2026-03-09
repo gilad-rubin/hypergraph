@@ -14,6 +14,7 @@ from hypergraph.exceptions import (
     ExecutionError,
     GraphChangedError,
     InputOverrideRequiresForkError,
+    MissingInputError,
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
 )
@@ -22,9 +23,13 @@ from hypergraph.runners._shared.helpers import (
     _validate_error_handling,
     _validate_on_missing,
     _validate_workflow_id,
+    compute_execution_scope,
     filter_outputs,
+    find_missing_resume_seed_inputs,
     generate_map_inputs,
     generate_workflow_id,
+    get_ready_nodes,
+    initialize_state,
     is_interrupt_resume_payload,
 )
 from hypergraph.runners._shared.input_normalization import (
@@ -170,7 +175,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         *,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_iterations: int | None = None,
         max_concurrency: int | None = None,
@@ -206,6 +210,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         if _validation_ctx is None and (fork_from is not None or retry_from is not None) and checkpointer is None:
             raise ValueError("fork_from/retry_from require a checkpointer and workflow persistence to be enabled.")
         resume_checkpoint = None
+        skip_missing_input_validation = False
         if checkpointer is not None and _validation_ctx is None:
             if workflow_id is None:
                 workflow_id = generate_workflow_id()
@@ -240,6 +245,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     if existing_run.status.value == "completed":
                         raise WorkflowAlreadyCompletedError(workflow_id)
                     resume_checkpoint = await checkpointer.get_checkpoint(workflow_id)
+            if resume_checkpoint is not None:
+                # Runs that start from checkpoint state (resume, fork, retry)
+                # should not re-require original graph inputs that were already
+                # consumed by upstream completed steps.
+                skip_missing_input_validation = True
 
         has_checkpointer = checkpointer is not None and workflow_id is not None
         forked_from: str | None = None
@@ -277,10 +287,39 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 validation_values,
                 entrypoint=entrypoint,
                 selected=effective_selected,
-                on_internal_override=on_internal_override,
+                skip_missing_required=skip_missing_input_validation,
             )
         else:
-            validate_item_inputs(_validation_ctx, validation_values, on_internal_override=on_internal_override)
+            validate_item_inputs(_validation_ctx, validation_values)
+
+        if resume_checkpoint is not None and skip_missing_input_validation:
+            resume_state = initialize_state(graph, normalized_values, checkpoint=resume_checkpoint)
+            scope = compute_execution_scope(graph)
+            ready_nodes = get_ready_nodes(
+                graph,
+                resume_state,
+                active_nodes=scope.active_nodes,
+                startup_predecessors=scope.startup_predecessors,
+            )
+            if not ready_nodes:
+                missing_seed_inputs = sorted(
+                    find_missing_resume_seed_inputs(
+                        graph,
+                        resume_state,
+                        active_nodes=scope.active_nodes,
+                        startup_predecessors=scope.startup_predecessors,
+                    )
+                )
+                if missing_seed_inputs:
+                    raise MissingInputError(
+                        missing=missing_seed_inputs,
+                        provided=sorted(normalized_values),
+                        message=(
+                            "Checkpoint resume is missing required seed inputs: "
+                            + ", ".join(repr(name) for name in missing_seed_inputs)
+                            + ". The restored checkpoint state does not make any pending nodes runnable."
+                        ),
+                    )
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()
@@ -368,10 +407,48 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_state = getattr(pause, "_partial_state", None)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
+            if dispatcher.active:
+                from hypergraph.events.types import InterruptEvent, RunEndEvent
+                from hypergraph.events.types import RunStatus as EventRunStatus
+
+                await dispatcher.emit_async(
+                    InterruptEvent(
+                        run_id=run_id,
+                        span_id=pause.span_id or run_span_id,
+                        parent_span_id=run_span_id,
+                        node_name=pause.pause_info.node_name,
+                        graph_name=graph.name,
+                        workflow_id=workflow_id,
+                        value=pause.pause_info.value,
+                        response_param=pause.pause_info.output_param,
+                    )
+                )
+                await dispatcher.emit_async(
+                    RunEndEvent(
+                        run_id=run_id,
+                        span_id=run_span_id,
+                        parent_span_id=_parent_span_id,
+                        graph_name=graph.name,
+                        status=EventRunStatus.PAUSED,
+                        duration_ms=total_duration_ms,
+                    )
+                )
             if has_checkpointer:
                 for record in step_buffer:
                     await checkpointer.save_step(record)
-            # Workflow stays ACTIVE when paused (can be resumed)
+                from hypergraph.checkpointers.types import WorkflowStatus
+                from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
+
+                _, step_offset = checkpoint_offsets(resume_checkpoint)
+                step_count = step_offset + len(collector._records)
+                error_count = sum(1 for r in collector._records if r.status == "failed")
+                await checkpointer.update_run_status(
+                    workflow_id,
+                    WorkflowStatus.PAUSED,
+                    duration_ms=total_duration_ms,
+                    node_count=step_count,
+                    error_count=error_count,
+                )
             return RunResult(
                 values=partial_values,
                 status=RunStatus.PAUSED,
@@ -444,7 +521,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         clone: bool | list[str] = False,
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        on_internal_override: Literal["ignore", "warn", "error"] = "warn",
         entrypoint: str | None = None,
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
@@ -548,7 +624,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     variation_inputs,
                     select=select,
                     on_missing=on_missing,
-                    on_internal_override=on_internal_override,
                     entrypoint=entrypoint,
                     max_concurrency=max_concurrency,
                     error_handling="continue",
@@ -627,14 +702,18 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             )
             total_duration_ms = (time.time() - start_time) * 1000
 
-            # Complete parent batch run
+            # Persist parent batch run status
             if has_checkpointer:
                 from hypergraph.checkpointers.types import WorkflowStatus
 
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
+                paused_count = sum(1 for r in results if r.status == RunStatus.PAUSED)
+                persisted_status = (
+                    WorkflowStatus.FAILED if error_count > 0 else WorkflowStatus.PAUSED if paused_count > 0 else WorkflowStatus.COMPLETED
+                )
                 await checkpointer.update_run_status(
                     workflow_id,
-                    WorkflowStatus.COMPLETED,
+                    persisted_status,
                     duration_ms=total_duration_ms,
                     node_count=len(results),
                     error_count=error_count,

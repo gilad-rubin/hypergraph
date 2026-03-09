@@ -261,8 +261,8 @@ class TestSyncRunnerRun:
 
         assert result["result"] == 15  # 5 + 10 (default)
 
-    def test_on_internal_override_policy_is_enforced(self):
-        """Internal edge-produced overrides are rejected for all policies."""
+    def test_internal_edge_produced_overrides_are_rejected(self):
+        """Internal edge-produced overrides are rejected."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -279,13 +279,16 @@ class TestSyncRunnerRun:
         graph = Graph([split, use_left, use_right])
         runner = SyncRunner()
 
-        for policy in ("error", "ignore", "warn"):
-            with pytest.raises(ValueError, match="internal parameters"):
-                runner.run(
-                    graph,
-                    {"left": 100, "right": 200},
-                    on_internal_override=policy,
-                )
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.run(graph, {"left": 100, "right": 200})
+
+    def test_removed_internal_override_argument_is_rejected(self):
+        """run() treats on_internal_override as a reserved runner option."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="reserved runner options"):
+            runner.run(graph, {"x": 1}, on_internal_override="warn")  # type: ignore[call-arg]
 
     def test_input_overrides_bound(self):
         """Explicit input overrides bound value."""
@@ -565,8 +568,8 @@ class TestSyncRunnerMap:
         with pytest.raises(ValueError, match="reserved runner options"):
             runner.map(graph, map_over="x", x=[1, 2], max_concurrency=1)
 
-    def test_map_forwards_on_internal_override_policy(self):
-        """Internal edge-produced overrides are rejected for all policies."""
+    def test_map_rejects_internal_edge_produced_overrides(self):
+        """Internal edge-produced overrides are rejected in map()."""
 
         @node(output_name=("left", "right"))
         def split(x: int) -> tuple[int, int]:
@@ -583,14 +586,20 @@ class TestSyncRunnerMap:
         graph = Graph([split, use_left, use_right])
         runner = SyncRunner()
 
-        for policy in ("error", "ignore", "warn"):
-            with pytest.raises(ValueError, match="internal parameters"):
-                runner.map(
-                    graph,
-                    {"left": [100], "right": 200},
-                    map_over="left",
-                    on_internal_override=policy,
-                )
+        with pytest.raises(ValueError, match="internal parameters"):
+            runner.map(
+                graph,
+                {"left": [100], "right": 200},
+                map_over="left",
+            )
+
+    def test_map_removed_internal_override_argument_is_rejected(self):
+        """map() treats on_internal_override as a reserved runner option."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="reserved runner options"):
+            runner.map(graph, {"x": [1]}, map_over="x", on_internal_override="warn")  # type: ignore[call-arg]
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""

@@ -25,6 +25,13 @@ Evaluation Loop
 
 If your workflows have this kind of nesting — DAGs inside cycles, cycles inside DAGs — hypergraph's hierarchical composition is a natural fit.
 
+This is where hypergraph tends to stand out most clearly:
+
+- A retrieval pipeline inside a multi-turn chat loop
+- A per-document processing graph fanned out over a batch
+- A support workflow that routes into a nested technical-review subgraph
+- An evaluation DAG that contains the workflow under test as a nested node
+
 **Concrete examples:**
 
 | Outer Layer | Inner Layer | Pattern |
@@ -60,6 +67,33 @@ def should_continue(quality: float, attempts: int) -> str:
 
 Hypergraph handles cycles naturally with `@route` and `END`.
 
+### You Want To Write One Workflow, Then Scale It
+
+Hypergraph works especially well when the logic for **one** item is clear, and scale comes later:
+
+```python
+# One item
+@node(output_name="embedding")
+def embed(text: str) -> list[float]:
+    return model.embed(text)
+
+single_item = Graph([embed], name="single_item")
+
+# Many items
+batch = Graph([
+    load_texts,
+    single_item.as_node().with_inputs(text="texts").map_over("texts"),
+    summarize_embeddings,
+])
+```
+
+This "think singular, scale later" pattern is one of the cleanest ways to use hypergraph for:
+
+- document pipelines
+- feature extraction
+- evaluation harnesses
+- ML preprocessing and model comparison
+
 ### You Want Minimal Boilerplate
 
 Define functions, name outputs, and let hypergraph infer the edges:
@@ -93,6 +127,24 @@ Hypergraph is in **alpha**. The core features work, but:
 
 - Breaking API changes are possible
 - Ecosystem integrations are limited
+- Durable workflow runtime patterns are possible, but still more manual than in platforms like Inngest, DBOS, or Restate
+
+### You Want A Turnkey Durable Workflow Platform
+
+Hypergraph already has:
+
+- interrupts for pause/resume
+- checkpointing and lineage
+- nested graphs and batch execution
+
+But if your main need is a runtime that natively owns:
+
+- external event delivery
+- approval inboxes
+- waiting webhook resumes
+- lifecycle operations for long-lived workflows
+
+then you should evaluate whether a more orchestration-heavy platform is a better fit today.
 
 See the [Comparison](comparison.md) page for how hypergraph relates to other frameworks.
 
@@ -102,8 +154,10 @@ See the [Comparison](comparison.md) page for how hypergraph relates to other fra
 |----------------|-----------------|
 | One framework for DAGs and agents | Yes |
 | Hierarchical workflow composition | Yes |
+| Write one workflow, scale with mapped subgraphs | Yes |
 | Pure, testable functions | Yes |
 | Multi-turn AI workflows | Yes |
 | Minimal boilerplate | Yes |
 | Simple scripts | No — just use functions |
 | Production maturity today | Maybe — evaluate alpha status |
+| A turnkey durable workflow runtime | Not yet the primary strength |

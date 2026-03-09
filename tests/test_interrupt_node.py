@@ -848,7 +848,6 @@ class TestInterruptNodeInCycle:
         r2 = await runner.run(
             graph,
             {"messages": r1.pause.value, r1.pause.response_key: "What is RAG?"},
-            on_internal_override="ignore",
         )
         assert r2.paused
         assert r2.pause.node_name == "ask/ask_user"
@@ -859,7 +858,6 @@ class TestInterruptNodeInCycle:
         r3 = await runner.run(
             graph,
             {"messages": r2.pause.value, r2.pause.response_key: "What is LLM?"},
-            on_internal_override="ignore",
         )
         assert r3.status == RunStatus.COMPLETED
         assert r3["messages"] == [
@@ -1251,6 +1249,57 @@ class TestInterruptDecoratorExecution:
         assert result.paused
         assert result.pause.node_name == "inner/approval"
         assert result.pause.response_key == "inner.decision"
+
+    @pytest.mark.asyncio
+    async def test_nested_graph_interrupt_respects_graphnode_output_rename(self):
+        """Nested interrupt response keys should use renamed GraphNode outputs."""
+
+        @interrupt(output_name="decision")
+        def approval(x: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+
+        @node(output_name="x")
+        def produce(query: str) -> str:
+            return query
+
+        @node(output_name="result")
+        def consume(verdict: str) -> str:
+            return f"got: {verdict}"
+
+        outer = Graph([produce, inner.as_node().with_outputs(decision="verdict"), consume])
+        runner = AsyncRunner()
+
+        paused = await runner.run(outer, {"query": "hello"})
+        assert paused.paused
+        assert paused.pause.node_name == "inner/approval"
+        assert paused.pause.response_key == "inner.verdict"
+
+        resumed = await runner.run(outer, {"query": "hello", paused.pause.response_key: "approved"})
+        assert resumed.status == RunStatus.COMPLETED
+        assert resumed["result"] == "got: approved"
+
+    @pytest.mark.asyncio
+    async def test_paused_nested_interrupt_is_visible_in_run_log(self):
+        """Paused nested runs should include the interrupt node in the RunLog."""
+
+        @interrupt(output_name="decision")
+        def approval(x: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+
+        @node(output_name="x")
+        def produce(query: str) -> str:
+            return query
+
+        outer = Graph([produce, inner.as_node()], name="outer")
+        runner = AsyncRunner()
+
+        paused = await runner.run(outer, {"query": "hello"})
+        assert paused.paused
+        assert paused.log is not None
+        assert [step.node_name for step in paused.log.steps] == ["produce", "inner/approval"]
+        assert paused.log.steps[-1].status == "paused"
 
 
 # ── FunctionNode-like constructor + emit/wait_for ──

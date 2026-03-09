@@ -212,7 +212,15 @@ class AsyncRunner(AsyncRunnerTemplate):
                         state,
                         ready_nodes,
                         values,
-                        self._make_execute_node(event_processors, workflow_id=workflow_id),
+                        self._make_execute_node(
+                            event_processors,
+                            workflow_id=workflow_id,
+                            is_resuming=(
+                                checkpoint is not None
+                                if self._checkpointer_instance is not None
+                                else True  # stateless mode: preserve old auto-resolve
+                            ),
+                        ),
                         max_concurrency,
                         cache=self._cache,
                         dispatcher=dispatcher,
@@ -342,6 +350,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         self,
         event_processors: list[EventProcessor] | None,
         workflow_id: str | None = None,
+        is_resuming: bool = False,
     ) -> AsyncNodeExecutor:
         """Create an async node executor closure that carries event context.
 
@@ -354,6 +363,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         """
         current_span_id: list[str | None] = [None]
         provided_values_holder: list[dict[str, Any]] = [{}]
+        is_resuming_holder: list[bool] = [is_resuming]
 
         async def execute_node(
             node: HyperNode,
@@ -379,14 +389,15 @@ class AsyncRunner(AsyncRunnerTemplate):
                 )
                 return result
 
-            # For InterruptNodeExecutor, pass provided_values so it can
-            # distinguish fresh resume values from stale cycle values.
+            # For InterruptNodeExecutor, pass provided_values and resuming
+            # context so it only auto-resolves on actual resume, not fresh runs.
             if isinstance(executor, AsyncInterruptNodeExecutor):
                 return await executor(
                     node,
                     state,
                     inputs,
                     provided_values=provided_values_holder[0],
+                    is_resuming=is_resuming_holder[0],
                 )
 
             return await executor(node, state, inputs)
@@ -399,9 +410,10 @@ class AsyncRunner(AsyncRunnerTemplate):
             return ()
 
         # Expose holders so superstep can set parent span, provided_values,
-        # and read nested logs
+        # resuming context, and read nested logs
         execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
         execute_node.provided_values = provided_values_holder  # type: ignore[attr-defined]
+        execute_node.is_resuming = is_resuming_holder  # type: ignore[attr-defined]
         execute_node.consume_last_inner_logs = consume_last_inner_logs  # type: ignore[attr-defined]
         return execute_node
 

@@ -23,7 +23,7 @@ from hypergraph.runners._shared.event_helpers import (
     build_route_decision_event,
 )
 from hypergraph.runners._shared.helpers import collect_inputs_for_node
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.types import GraphState, NodeExecution, PauseExecution
 
 
 def _decision_activates(node_name: str, decision: Any) -> bool:
@@ -169,6 +169,9 @@ async def run_superstep_async(
                 await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=inner_logs))
 
             return node, outputs, input_versions, wait_for_versions, duration_ms, False
+        except PauseExecution as exc:
+            exc.span_id = node_span_id
+            raise
         except Exception:
             if active:
                 await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))

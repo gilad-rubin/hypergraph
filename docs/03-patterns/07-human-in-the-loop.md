@@ -10,6 +10,21 @@ Pause execution for human input. Resume when ready.
 
 Many workflows need human judgment at key points: approving a draft, confirming a destructive action, providing feedback on generated content. You need a way to pause the graph, surface a value to the user, and resume with their response.
 
+This page focuses on the **graph-level** pause/resume pattern:
+
+- a run pauses at an interrupt
+- the caller inspects the pause payload
+- the caller later resumes the workflow with a response
+
+That makes interrupts a strong fit for:
+
+- interactive apps
+- review UIs
+- multi-step assistants
+- application-managed human approval flows
+
+For longer-lived event-driven orchestration, checkpointing gives you the persistence foundation, but more of the surrounding runtime shell still lives in your app today.
+
 ## Basic Pause and Resume
 
 The `@interrupt` decorator creates a pause point. Inputs come from the function signature, outputs from `output_name`. When the handler returns `None`, execution pauses.
@@ -53,6 +68,8 @@ The key flow:
 1. **Run** the graph. Execution pauses at the interrupt.
 2. **Inspect** `result.pause.value` to see what the user needs to review.
 3. **Resume** by passing the response via `result.pause.response_key`.
+
+This is intentionally different from event-driven workflow systems like Inngest, DBOS, or Restate, where the runtime often owns external event delivery directly. In hypergraph, the pause/resume primitive is already there; the application typically decides how the later response gets routed back into the run.
 
 ### RunResult Properties
 
@@ -170,6 +187,117 @@ assert result.paused  # pauses again for next turn
 ```
 
 No ordering signals needed — the edge list makes execution order unambiguous. Both `add_query` and `add_response` produce `messages`, but the edges declare which runs first.
+
+## Persistent Multi-Turn with Checkpointer
+
+The examples above are stateless — each resume replays from scratch, passing all previous responses. For production multi-turn workflows, use a **checkpointer** to persist state between calls. Each `.run()` only needs the new user input.
+
+```python
+from hypergraph import Graph, AsyncRunner, END, node, route, interrupt
+from hypergraph.checkpointers import SqliteCheckpointer
+
+@interrupt(output_name="user_input")
+def wait_for_user() -> None:
+    return None
+
+@node(output_name="messages")
+def add_user_message(messages: list, user_input: str) -> list:
+    return [*messages, {"role": "user", "content": user_input}]
+
+@node(output_name="response")
+async def llm_reply(messages: list, llm_client) -> str:
+    return await llm_client.chat(messages)
+
+@node(output_name="messages")
+def add_response(messages: list, response: str) -> list:
+    return [*messages, {"role": "assistant", "content": response}]
+
+@route(targets=["wait_for_user", END])
+def should_continue(messages: list, max_turns: int) -> str:
+    turns = sum(1 for m in messages if m["role"] == "assistant")
+    return END if turns >= max_turns else "wait_for_user"
+
+chat = Graph(
+    [wait_for_user, add_user_message, llm_reply, add_response, should_continue],
+    edges=[
+        (add_user_message, llm_reply),
+        (llm_reply, add_response),
+        (add_response, should_continue),
+    ],
+    name="chat",
+    shared=["messages"],
+    entrypoint="add_user_message",
+).bind(messages=[], llm_client=my_llm, max_turns=5)
+
+# Checkpointer persists state between calls
+checkpointer = SqliteCheckpointer("chat.db")
+runner = AsyncRunner(checkpointer=checkpointer)
+
+# Turn 1
+r1 = await runner.run(chat, workflow_id="conv-1", user_input="hello")
+assert r1.paused
+print(r1["messages"][-1])  # {"role": "assistant", "content": "..."}
+
+# Turn 2 — only pass the new input, state is restored from checkpoint
+r2 = await runner.run(chat, workflow_id="conv-1", user_input="tell me more")
+assert r2.paused
+```
+
+Key differences from the stateless pattern:
+
+- **`workflow_id`** identifies the conversation — same ID resumes, different ID starts fresh
+- **`shared=["messages"]`** accumulates the message list across the cycle
+- **`entrypoint="add_user_message"`** skips `wait_for_user` on the first call (no need to pause before the user has spoken)
+- Each `.run()` only needs the new `user_input`, not all previous messages
+
+### When the Conversation Ends
+
+When `should_continue` routes to `END`, the workflow completes. Further `.run()` calls with the same `workflow_id` raise `WorkflowAlreadyCompletedError`:
+
+```python
+from hypergraph.exceptions import WorkflowAlreadyCompletedError
+
+try:
+    await runner.run(chat, workflow_id="conv-1", user_input="one more?")
+except WorkflowAlreadyCompletedError:
+    print("Conversation ended — use a new workflow_id")
+```
+
+### Inspecting Checkpoint History
+
+The checkpointer records every node execution. You can inspect the full step log:
+
+```python
+checkpointer = SqliteCheckpointer("chat.db")
+
+# Sync reads — no await needed
+run = checkpointer.get_run("conv-1")
+print(run.status)  # "paused" or "completed"
+
+steps = checkpointer.steps("conv-1")
+for s in steps:
+    print(f"  ss={s.superstep}  {s.node_name:25s}  {s.status}")
+```
+
+A two-turn conversation produces steps like:
+
+```
+  ss=0   add_user_message           completed
+  ss=1   llm_reply                  completed
+  ss=2   add_response               completed
+  ss=3   should_continue            completed    → wait_for_user
+  ss=4   wait_for_user              paused
+  ss=5   wait_for_user              completed    (user_input resolved)
+  ss=6   add_user_message           completed
+  ss=7   llm_reply                  completed
+  ss=8   add_response               completed
+  ss=9   should_continue            completed    → wait_for_user
+  ss=10  wait_for_user              paused
+```
+
+Notice the interrupt appears twice per turn: first as `paused` (waiting), then as `completed` (resolved with the user's input on the next `.run()` call).
+
+> **Full example**: See [`examples/chat_app.py`](../../examples/chat_app.py) for a complete FastAPI integration with durable multi-turn chat, error handling, and checkpoint inspection endpoint.
 
 ## Auto-Resolve with Handlers
 
@@ -289,6 +417,45 @@ assert result.pause.response_key == "inner.y"
 
 The `response_key` uses dot-separated paths for nested interrupts: `"inner.y"` means the output `y` inside the graph node `inner`.
 
+Think of `response_key` as a **resume slot identifier**. It is precise and stable, but it is primarily a runtime-facing detail. In user-facing applications, you will often wrap it behind your own inbox, form, or webhook layer.
+
+## Checkpointed Pauses
+
+For durable pause/resume across process restarts, pair interrupts with a checkpointer and a `workflow_id`:
+
+```python
+from hypergraph import AsyncRunner, Graph, interrupt, node
+from hypergraph.checkpointers import SqliteCheckpointer
+
+@interrupt(output_name="decision")
+def approval(draft: str) -> str | None:
+    return None
+
+@node(output_name="result")
+def finalize(decision: str) -> str:
+    return f"Final: {decision}"
+
+graph = Graph([approval, finalize])
+runner = AsyncRunner(checkpointer=SqliteCheckpointer("./runs.db"))
+
+paused = await runner.run(graph, {"draft": "hello"}, workflow_id="review-1")
+
+# ... later, possibly in another process ...
+resumed = await runner.run(
+    graph,
+    {paused.pause.response_key: "approved"},
+    workflow_id="review-1",
+)
+```
+
+This is the current durable HITL story:
+
+- checkpoint state stores the paused execution
+- `workflow_id` identifies the workflow instance
+- `response_key` identifies the waiting output slot
+
+If your application needs approval inboxes, event matching, or webhook-driven resume, build those on top of this pause primitive today.
+
 ## Runner Compatibility
 
 Only `AsyncRunner` supports interrupts. `SyncRunner` raises `IncompatibleRunnerError` at runtime if the graph contains interrupt nodes.
@@ -304,6 +471,11 @@ runner.run(graph_with_interrupt, {"query": "hello"})
 ```
 
 Similarly, `AsyncRunner.map()` does not support interrupts — a graph with interrupts cannot be used with `map()`.
+
+The same restriction applies to `GraphNode.map_over(...)`: a nested graph that
+contains interrupts cannot be wrapped in `map_over()`. If you need batched
+human-in-the-loop processing today, orchestrate the batch at the application
+layer rather than nesting an interrupting graph inside `map_over()`.
 
 ## With emit/wait_for
 

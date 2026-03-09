@@ -13,7 +13,7 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 from typer.testing import CliRunner  # noqa: E402
 
-from hypergraph import AsyncRunner, Graph, node  # noqa: E402
+from hypergraph import AsyncRunner, Graph, interrupt, node  # noqa: E402
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer, WorkflowStatus  # noqa: E402
 from hypergraph.cli import create_app  # noqa: E402
 
@@ -41,12 +41,10 @@ async def populated_db(db_path):
     """Create a DB with a completed run."""
     cp = SqliteCheckpointer(db_path)
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
 
     r = AsyncRunner(checkpointer=cp)
     graph = Graph([double, triple])
     await r.run(graph, {"x": 5}, workflow_id="run-test")
-    await cp.close()
 
     return db_path
 
@@ -56,14 +54,12 @@ async def lineage_db(db_path):
     """Create a DB with root + fork lineage."""
     cp = SqliteCheckpointer(db_path)
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
 
     r = AsyncRunner(checkpointer=cp)
     graph = Graph([double, triple])
     await r.run(graph, {"x": 5}, workflow_id="run-test")
     checkpoint = cp.checkpoint("run-test")
     await r.run(graph, {"x": 7}, checkpoint=checkpoint, workflow_id="run-test-fork")
-    await cp.close()
 
     return db_path
 
@@ -73,7 +69,6 @@ async def hierarchy_db(db_path):
     """Create DB with one parent run and two child runs."""
     cp = SqliteCheckpointer(db_path)
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
-    await cp.initialize()
 
     await cp.create_run("batch-1", graph_name="g")
     await cp.update_run_status("batch-1", WorkflowStatus.COMPLETED, duration_ms=5300.0, node_count=10, error_count=0)
@@ -81,8 +76,26 @@ async def hierarchy_db(db_path):
     await cp.update_run_status("batch-1/0", WorkflowStatus.COMPLETED, duration_ms=5200.0, node_count=2, error_count=0)
     await cp.create_run("batch-1/1", graph_name="g", parent_run_id="batch-1")
     await cp.update_run_status("batch-1/1", WorkflowStatus.FAILED, duration_ms=5400.0, node_count=2, error_count=1)
-    await cp.close()
 
+    return db_path
+
+
+@pytest.fixture
+async def paused_db(db_path):
+    """Create a DB with a paused workflow."""
+    cp = SqliteCheckpointer(db_path)
+    cp.policy = CheckpointPolicy(durability="sync", retention="full")
+
+    @interrupt(output_name="decision")
+    def approval() -> str: ...
+
+    @node(output_name="result")
+    def finalize(decision: str) -> str:
+        return decision
+
+    graph = Graph([approval, finalize])
+    runner = AsyncRunner(checkpointer=cp)
+    await runner.run(graph, workflow_id="run-paused")
     return db_path
 
 
@@ -242,6 +255,22 @@ class TestRunsLs:
         assert "Run Traces" in result.output
         assert "batch-1" in result.output
         assert "Child" in result.output
+
+    def test_ls_filter_paused(self, paused_db):
+        """CLI: --status paused filters paused workflows."""
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "ls", "--status", "paused", "--db", paused_db])
+        assert result.exit_code == 0
+        assert "run-paused" in result.output
+
+
+class TestRunsDashboard:
+    def test_dashboard_shows_paused_section(self, paused_db):
+        app = create_app()
+        result = runner_cli.invoke(app, ["runs", "--db", paused_db])
+        assert result.exit_code == 0
+        assert "Paused (1 resumable)" in result.output
+        assert "run-paused" in result.output
 
 
 class TestRunsSteps:

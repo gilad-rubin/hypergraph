@@ -19,12 +19,10 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 
 @pytest.fixture
-async def checkpointer(tmp_path):
+def checkpointer(tmp_path):
     """Create a fresh SqliteCheckpointer for each test."""
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
-    await cp.initialize()
     yield cp
-    await cp.close()
 
 
 def _make_step(run_id="wf-1", superstep=0, node_name="embed", index=0, **kwargs):
@@ -52,20 +50,28 @@ class TestRunLifecycle:
         assert r.status == WorkflowStatus.ACTIVE
         assert r.graph_name == "test_graph"
 
-        fetched = await checkpointer.get_run_async("wf-1")
+        fetched = checkpointer.get_run("wf-1")
         assert fetched is not None
         assert fetched.id == "wf-1"
         assert fetched.status == WorkflowStatus.ACTIVE
 
     async def test_get_nonexistent(self, checkpointer):
-        assert await checkpointer.get_run_async("nope") is None
+        assert checkpointer.get_run("nope") is None
 
     async def test_update_status(self, checkpointer):
         await checkpointer.create_run("wf-1")
         await checkpointer.update_run_status("wf-1", WorkflowStatus.COMPLETED)
-        r = await checkpointer.get_run_async("wf-1")
+        r = checkpointer.get_run("wf-1")
         assert r.status == WorkflowStatus.COMPLETED
         assert r.completed_at is not None
+
+    async def test_update_status_paused_keeps_run_resumable(self, checkpointer):
+        await checkpointer.create_run("wf-1")
+        await checkpointer.update_run_status("wf-1", WorkflowStatus.PAUSED, duration_ms=10.0, node_count=1)
+        r = checkpointer.get_run("wf-1")
+        assert r.status == WorkflowStatus.PAUSED
+        assert r.completed_at is None
+        assert r.node_count == 1
 
     async def test_update_status_with_stats(self, checkpointer):
         await checkpointer.create_run("wf-1")
@@ -76,7 +82,7 @@ class TestRunLifecycle:
             node_count=3,
             error_count=1,
         )
-        r = await checkpointer.get_run_async("wf-1")
+        r = checkpointer.get_run("wf-1")
         assert r.duration_ms == 150.5
         assert r.node_count == 3
         assert r.error_count == 1
@@ -86,16 +92,25 @@ class TestRunLifecycle:
         await checkpointer.create_run("wf-2")
         await checkpointer.update_run_status("wf-1", WorkflowStatus.COMPLETED)
 
-        all_runs = await checkpointer.list_runs()
+        all_runs = checkpointer.runs()
         assert len(all_runs) == 2
 
-        completed = await checkpointer.list_runs(status=WorkflowStatus.COMPLETED)
+        completed = checkpointer.runs(status=WorkflowStatus.COMPLETED)
         assert len(completed) == 1
         assert completed[0].id == "wf-1"
 
-        active = await checkpointer.list_runs(status=WorkflowStatus.ACTIVE)
+        active = checkpointer.runs(status=WorkflowStatus.ACTIVE)
         assert len(active) == 1
         assert active[0].id == "wf-2"
+
+    async def test_list_runs_paused(self, checkpointer):
+        await checkpointer.create_run("wf-active")
+        await checkpointer.create_run("wf-paused")
+        await checkpointer.update_run_status("wf-paused", WorkflowStatus.PAUSED)
+
+        paused = checkpointer.runs(status=WorkflowStatus.PAUSED)
+        assert len(paused) == 1
+        assert paused[0].id == "wf-paused"
 
     async def test_create_run_with_lineage_fields(self, checkpointer):
         run = await checkpointer.create_run(
@@ -110,7 +125,7 @@ class TestRunLifecycle:
         assert run.retry_of == "wf-root"
         assert run.retry_index == 2
 
-        fetched = await checkpointer.get_run_async("wf-child")
+        fetched = checkpointer.get_run("wf-child")
         assert fetched is not None
         assert fetched.forked_from == "wf-parent"
         assert fetched.fork_superstep == 3
@@ -121,16 +136,38 @@ class TestRunLifecycle:
         await checkpointer.create_run("wf-root")
         await checkpointer.save_step(_make_step(run_id="wf-root", values={"x_seed": 7}))
 
-        fork_id, fork_cp = await checkpointer.fork_workflow_async("wf-root")
+        fork_id, fork_cp = checkpointer.fork_workflow("wf-root")
         assert fork_id.startswith("wf-root-fork-")
         assert fork_cp.source_run_id == "wf-root"
         assert fork_cp.retry_of is None
 
-        retry_id, retry_cp = await checkpointer.retry_workflow_async("wf-root")
+        retry_id, retry_cp = checkpointer.retry_workflow("wf-root")
         assert retry_id == "wf-root-retry-1"
         assert retry_cp.source_run_id == "wf-root"
         assert retry_cp.retry_of == "wf-root"
         assert retry_cp.retry_index == 1
+
+    async def test_create_run_resets_stale_completion_metadata(self, checkpointer):
+        await checkpointer.create_run("wf-reused", graph_name="before")
+        await checkpointer.update_run_status(
+            "wf-reused",
+            WorkflowStatus.FAILED,
+            duration_ms=123.0,
+            node_count=4,
+            error_count=2,
+        )
+
+        reset = await checkpointer.create_run("wf-reused", graph_name="after")
+        fetched = checkpointer.get_run("wf-reused")
+
+        assert reset.status == WorkflowStatus.ACTIVE
+        assert fetched is not None
+        assert fetched.status == WorkflowStatus.ACTIVE
+        assert fetched.graph_name == "after"
+        assert fetched.duration_ms is None
+        assert fetched.node_count == 0
+        assert fetched.error_count == 0
+        assert fetched.completed_at is None
 
 
 class TestStepPersistence:
@@ -139,7 +176,7 @@ class TestStepPersistence:
         await checkpointer.save_step(_make_step(index=0, node_name="embed"))
         await checkpointer.save_step(_make_step(index=1, node_name="retrieve", superstep=1, values={"docs": ["a", "b"]}))
 
-        steps = await checkpointer.get_steps("wf-1")
+        steps = checkpointer.steps("wf-1")
         assert len(steps) == 2
         assert steps[0].node_name == "embed"
         assert steps[1].node_name == "retrieve"
@@ -151,7 +188,7 @@ class TestStepPersistence:
         original_values = {"embedding": [0.1, 0.2, 0.3], "count": 42, "flag": True}
         await checkpointer.save_step(_make_step(values=original_values))
 
-        steps = await checkpointer.get_steps("wf-1")
+        steps = checkpointer.steps("wf-1")
         assert steps[0].values == original_values
 
     async def test_step_metadata_roundtrip(self, checkpointer):
@@ -166,7 +203,7 @@ class TestStepPersistence:
             )
         )
 
-        steps = await checkpointer.get_steps("wf-1")
+        steps = checkpointer.steps("wf-1")
         s = steps[0]
         assert s.duration_ms == 150.5
         assert s.cached is True
@@ -179,7 +216,7 @@ class TestStepPersistence:
         await checkpointer.create_run("wf-1")
         await checkpointer.save_step(_make_step(decision=["route_a", "route_b"]))
 
-        steps = await checkpointer.get_steps("wf-1")
+        steps = checkpointer.steps("wf-1")
         assert steps[0].decision == ["route_a", "route_b"]
 
     async def test_upsert_semantics(self, checkpointer):
@@ -188,7 +225,7 @@ class TestStepPersistence:
         await checkpointer.save_step(_make_step(values={"v": 1}))
         await checkpointer.save_step(_make_step(values={"v": 2}))
 
-        steps = await checkpointer.get_steps("wf-1")
+        steps = checkpointer.steps("wf-1")
         assert len(steps) == 1
         assert steps[0].values == {"v": 2}
 
@@ -198,7 +235,7 @@ class TestStepPersistence:
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1))
         await checkpointer.save_step(_make_step(superstep=2, node_name="c", index=2))
 
-        steps = await checkpointer.get_steps("wf-1", superstep=1)
+        steps = checkpointer.steps("wf-1", superstep=1)
         assert len(steps) == 2
         assert {s.node_name for s in steps} == {"a", "b"}
 
@@ -213,7 +250,7 @@ class TestStepPersistence:
         await checkpointer.save_step(_make_step(node_name="later", index=0, created_at=later, completed_at=later))
         await checkpointer.save_step(_make_step(node_name="earlier", index=0, created_at=earlier, completed_at=earlier))
 
-        async_steps = await checkpointer.get_steps("wf-1")
+        async_steps = checkpointer.steps("wf-1")
         sync_steps = checkpointer.steps("wf-1")
         assert [s.node_name for s in async_steps] == ["earlier", "later"]
         assert [s.node_name for s in sync_steps] == ["earlier", "later"]
@@ -227,7 +264,7 @@ class TestStateComputation:
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"y": 2}))
         await checkpointer.save_step(_make_step(superstep=2, node_name="c", index=2, values={"z": 3}))
 
-        state = await checkpointer.get_state("wf-1")
+        state = checkpointer.state("wf-1")
         assert state == {"x": 1, "y": 2, "z": 3}
 
     async def test_get_state_through_superstep(self, checkpointer):
@@ -237,7 +274,7 @@ class TestStateComputation:
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"y": 2}))
         await checkpointer.save_step(_make_step(superstep=2, node_name="c", index=2, values={"z": 3}))
 
-        state = await checkpointer.get_state("wf-1", superstep=1)
+        state = checkpointer.state("wf-1", superstep=1)
         assert state == {"x": 1, "y": 2}
         assert "z" not in state
 
@@ -247,12 +284,12 @@ class TestStateComputation:
         await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0, values={"x": "old"}))
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"x": "new"}))
 
-        state = await checkpointer.get_state("wf-1")
+        state = checkpointer.state("wf-1")
         assert state["x"] == "new"
 
     async def test_state_empty_run(self, checkpointer):
         await checkpointer.create_run("wf-1")
-        state = await checkpointer.get_state("wf-1")
+        state = checkpointer.state("wf-1")
         assert state == {}
 
     async def test_state_skips_none_values(self, checkpointer):
@@ -261,7 +298,7 @@ class TestStateComputation:
         await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0, values={"x": 1}))
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values=None))
 
-        state = await checkpointer.get_state("wf-1")
+        state = checkpointer.state("wf-1")
         assert state == {"x": 1}
 
     async def test_state_folds_in_timestamp_order_when_indices_tie(self, checkpointer):
@@ -275,7 +312,7 @@ class TestStateComputation:
         await checkpointer.save_step(_make_step(node_name="newer", index=0, values={"x": "new"}, created_at=later, completed_at=later))
         await checkpointer.save_step(_make_step(node_name="older", index=0, values={"x": "old"}, created_at=earlier, completed_at=earlier))
 
-        assert await checkpointer.get_state("wf-1") == {"x": "new"}
+        assert checkpointer.state("wf-1") == {"x": "new"}
         assert checkpointer.state("wf-1") == {"x": "new"}
 
 
@@ -285,7 +322,7 @@ class TestCheckpoint:
         await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0, values={"x": 1}))
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"y": 2}))
 
-        cp = await checkpointer.get_checkpoint("wf-1")
+        cp = checkpointer.checkpoint("wf-1")
         assert cp.values == {"x": 1, "y": 2}
         assert len(cp.steps) == 2
 
@@ -294,7 +331,7 @@ class TestCheckpoint:
         await checkpointer.save_step(_make_step(superstep=0, node_name="a", index=0, values={"x": 1}))
         await checkpointer.save_step(_make_step(superstep=1, node_name="b", index=1, values={"y": 2}))
 
-        cp = await checkpointer.get_checkpoint("wf-1", superstep=0)
+        cp = checkpointer.checkpoint("wf-1", superstep=0)
         assert cp.values == {"x": 1}
         assert len(cp.steps) == 1
 
@@ -305,9 +342,8 @@ class TestLazyInit:
         cp = SqliteCheckpointer(str(tmp_path / "lazy.db"))
         # No explicit initialize() call
         await cp.create_run("wf-1")
-        r = await cp.get_run_async("wf-1")
+        r = cp.get_run("wf-1")
         assert r is not None
-        await cp.close()
 
     async def test_concurrent_lazy_initialize_runs_once(self, tmp_path):
         """Concurrent first-use calls should serialize initialization."""
@@ -330,16 +366,13 @@ class TestLazyInit:
         )
 
         assert init_calls == 1
-        await cp.close()
 
     async def test_memory_db_schema_available_after_initialize(self):
         """In-memory DB initialization creates schema for async operations."""
         cp = SqliteCheckpointer(":memory:")
-        await cp.initialize()
         await cp.create_run("wf-mem")
-        run = await cp.get_run_async("wf-mem")
+        run = cp.get_run("wf-mem")
         assert run is not None
-        await cp.close()
 
 
 class TestPolicyIntegration:
@@ -381,18 +414,16 @@ class TestPolicyIntegration:
         db_path = tmp_path / "path-instance.db"
         cp = SqliteCheckpointer(db_path)
         await cp.create_run("wf-1")
-        run = await cp.get_run_async("wf-1")
+        run = cp.get_run("wf-1")
         assert run is not None
-        await cp.close()
 
     async def test_accepts_relative_path_instance(self, tmp_path, monkeypatch):
         """Constructor accepts relative pathlib.Path values."""
         monkeypatch.chdir(tmp_path)
         cp = SqliteCheckpointer(Path("relative-path.db"))
         await cp.create_run("wf-1")
-        run = await cp.get_run_async("wf-1")
+        run = cp.get_run("wf-1")
         assert run is not None
-        await cp.close()
 
 
 class TestSyncReads:
@@ -532,7 +563,7 @@ class TestSyncReads:
         await checkpointer.create_run("wf-root")
         await checkpointer.save_step(_make_step(run_id="wf-root", node_name="seed", index=0, cached=True))
 
-        retry_id, retry_cp = await checkpointer.retry_workflow_async("wf-root")
+        retry_id, retry_cp = checkpointer.retry_workflow("wf-root")
         await checkpointer.create_run(
             retry_id,
             forked_from=retry_cp.source_run_id,
@@ -551,6 +582,26 @@ class TestSyncReads:
         assert "retry" in html
         assert "Cached" in html
 
+    async def test_lineage_uses_retry_parent_when_fork_parent_missing(self, checkpointer):
+        """Retry-only lineage metadata still resolves the root ancestor."""
+        await checkpointer.create_run("wf-root")
+        await checkpointer.create_run("wf-root-retry-1", retry_of="wf-root", retry_index=1)
+
+        lineage = checkpointer.lineage("wf-root-retry-1", include_steps=False)
+
+        assert lineage.root_run_id == "wf-root"
+        assert [row.run.id for row in lineage] == ["wf-root", "wf-root-retry-1"]
+
+    async def test_count_runs_can_filter_retry_of(self, checkpointer):
+        await checkpointer.create_run("wf-root")
+        await checkpointer.create_run("wf-root-retry-1", retry_of="wf-root", retry_index=1)
+        await checkpointer.create_run("wf-root-retry-2", retry_of="wf-root", retry_index=2)
+        await checkpointer.create_run("wf-other")
+
+        count = await checkpointer.count_runs(retry_of="wf-root")
+
+        assert count == 2
+
 
 class TestRetentionPolicyBehavior:
     async def test_latest_retention_keeps_latest_per_node(self, checkpointer):
@@ -561,10 +612,10 @@ class TestRetentionPolicyBehavior:
         await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=0, node_name="b", index=1, values={"y": 2}))
         await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=1, node_name="a", index=2, values={"x": 3}))
 
-        steps = await checkpointer.get_steps("wf-latest")
+        steps = checkpointer.steps("wf-latest")
         assert len(steps) == 2
         assert {(s.node_name, s.superstep) for s in steps} == {("a", 1), ("b", 0)}
-        assert await checkpointer.get_state("wf-latest") == {"x": 3, "y": 2}
+        assert checkpointer.state("wf-latest") == {"x": 3, "y": 2}
 
     async def test_windowed_retention_keeps_recent_supersteps(self, checkpointer):
         """windowed retention should keep only the latest N supersteps."""
@@ -574,9 +625,9 @@ class TestRetentionPolicyBehavior:
         await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=1, node_name="b", index=1, values={"y": 2}))
         await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=2, node_name="c", index=2, values={"z": 3}))
 
-        steps = await checkpointer.get_steps("wf-windowed")
+        steps = checkpointer.steps("wf-windowed")
         assert {s.superstep for s in steps} == {1, 2}
-        assert await checkpointer.get_state("wf-windowed") == {"y": 2, "z": 3}
+        assert checkpointer.state("wf-windowed") == {"y": 2, "z": 3}
 
     def test_sync_save_step_applies_retention(self, tmp_path):
         """Sync write path should apply windowed retention as well."""
@@ -621,7 +672,7 @@ class TestSearch:
         await checkpointer.create_run("wf-1")
         await checkpointer.save_step(_make_step(node_name="embed", index=0))
 
-        results = await checkpointer.search_async("embed")
+        results = checkpointer.search("embed")
         assert len(results) == 1
 
     async def test_fts_consistent_after_multiple_saves(self, checkpointer):
@@ -651,7 +702,7 @@ class TestSearch:
         await checkpointer.save_step(_make_step(node_name="embed", index=1, superstep=1, created_at=newer, completed_at=newer))
 
         sync_results = checkpointer.search("embed")
-        async_results = await checkpointer.search_async("embed")
+        async_results = checkpointer.search("embed")
         assert [r.superstep for r in sync_results][:2] == [1, 0]
         assert [r.superstep for r in async_results][:2] == [1, 0]
 

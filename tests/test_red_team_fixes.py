@@ -112,8 +112,8 @@ class TestCycleTermination:
 
 
 class TestIntermediateInjection:
-    def test_skip_upstream_with_intermediate_value(self):
-        """Providing an intermediate output should skip upstream nodes."""
+    def test_intermediate_value_injection_is_rejected(self):
+        """Providing an active intermediate output is rejected."""
 
         @node(output_name="mid")
         def step1(start: str) -> str:
@@ -130,7 +130,7 @@ class TestIntermediateInjection:
             runner.run(graph, {"mid": "SKIP"})
 
     def test_normal_execution_still_works(self):
-        """Normal execution (no intermediate injection) still works."""
+        """Normal execution without internal overrides still works."""
 
         @node(output_name="mid")
         def step1(start: str) -> str:

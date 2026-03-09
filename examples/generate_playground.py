@@ -479,7 +479,6 @@ result = await runner.run(outer, {{"x": [5, 10, 15]}}, workflow_id="uc4-multi")
 
     nested_cli = run_cli(["runs", "values", "uc4-multi", "--values", "--db", db_path])
 
-    await cp.close()
     return UseCase(
         id="uc4",
         label="UC4",
@@ -549,7 +548,6 @@ results = runner_sync.map(graph, {{"x": [5, 10, 15]}}, map_over="x")
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in wfs)}"""
 
     nested_cli = run_cli(["runs", "show", "uc4-multi", "--db", db_path])
-    await cp.close()
 
     return UseCase(
         id="uc5",
@@ -575,7 +573,6 @@ async def run_uc6(db_path: str) -> UseCase:
     runner = AsyncRunner(checkpointer=cp)
     graph = Graph([succeed_a, fail_b])
     await runner.run(graph, {"x": 1}, workflow_id="uc6-failed", error_handling="continue")
-    await cp.close()
 
     cp2 = SqliteCheckpointer(db_path)
     all_wfs = cp2.runs()
@@ -639,7 +636,6 @@ results = runner_sync.map(
   {chr(10).join(f"  {w.id}: {w.status.value}" for w in cp2.runs(status=WorkflowStatus.COMPLETED))}"""
 
     nested_cli = run_cli(["runs", "ls", "--status", "completed", "--db", db_path])
-    await cp2.close()
 
     return UseCase(
         id="uc6",
@@ -741,7 +737,6 @@ async def run_uc8(db_path: str) -> UseCase:
     await runner.run(graph, {"x": 5}, workflow_id="uc8-live")
 
     state = cp.values("uc8-live")
-    await cp.close()
 
     single = f"""\
 # durability="sync" — data visible immediately for live queries
@@ -784,7 +779,6 @@ results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
     outer = Graph([inner.as_node().map_over("x")])
     await runner3.run(outer, {"x": [5, 10]}, workflow_id="uc8-multi")
     state_m = cp3.values("uc8-multi")
-    await cp3.close()
 
     nested = f"""\
 # map_over with durability="sync" — each step visible immediately
@@ -822,7 +816,6 @@ async def run_uc9(db_path: str) -> UseCase:
     await runner.run(graph, {"x": 5}, workflow_id="uc9-fork")
 
     checkpoint = cp.checkpoint("uc9-fork")
-    await cp.close()
 
     single = f"""\
 # checkpoint() returns state + steps — a snapshot for forking
@@ -862,7 +855,6 @@ results = runner_sync.map(graph, {{"x": [5, 10]}}, map_over="x")
     outer = Graph([inner.as_node().map_over("x")])
     await runner2.run(outer, {"x": [5, 10]}, workflow_id="uc9-multi")
     checkpoint_m = cp2.checkpoint("uc9-multi")
-    await cp2.close()
 
     nested = f"""\
 # checkpoint() works for mapped runs too

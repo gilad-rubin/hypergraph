@@ -131,8 +131,6 @@ async def demo_2_checkpointer(db_path: str) -> None:
     print(f"  values: {checkpoint.values}")
     print(f"  steps: {len(checkpoint.steps)}")
 
-    await cp.close()
-
 
 async def demo_3_error_tracing(db_path: str) -> None:
     """Use case 3: Error tracing — failed nodes get tracked."""
@@ -167,8 +165,6 @@ async def demo_3_error_tracing(db_path: str) -> None:
             status_line += f" → {s.values}"
         print(status_line)
 
-    await cp.close()
-
 
 async def demo_4_cyclic_workflow(db_path: str) -> None:
     """Use case 4: Cyclic workflow — re-executions tracked per superstep."""
@@ -196,8 +192,6 @@ async def demo_4_cyclic_workflow(db_path: str) -> None:
     for s in steps:
         decision = f", decision={s.decision}" if s.decision else ""
         print(f"  [superstep {s.superstep}] {s.node_name}: {s.values}{decision}")
-
-    await cp.close()
 
 
 async def demo_5_cli(db_path: str) -> None:

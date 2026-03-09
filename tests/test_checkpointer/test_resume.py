@@ -7,6 +7,7 @@ from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
 from hypergraph.exceptions import (
     GraphChangedError,
     InputOverrideRequiresForkError,
+    MissingInputError,
     WorkflowAlreadyCompletedError,
 )
 from hypergraph.runners._shared.types import RunStatus
@@ -31,12 +32,10 @@ def triple(doubled: int) -> int:
 
 
 @pytest.fixture
-async def checkpointer(tmp_path):
-    """Async checkpointer for each test."""
+def checkpointer(tmp_path):
+    """Checkpointer for each test."""
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
-    await cp.initialize()
     yield cp
-    await cp.close()
 
 
 @pytest.fixture
@@ -66,7 +65,7 @@ class TestAsyncRunResume:
         with pytest.raises(GraphChangedError):
             await runner.run(graph_step2, workflow_id="resume-1")
 
-        checkpoint = await checkpointer.get_checkpoint("resume-1")
+        checkpoint = checkpointer.checkpoint("resume-1")
         result = await runner.run(graph_step2, checkpoint=checkpoint, workflow_id="resume-1-fork")
         assert result["tripled"] == 30
 
@@ -80,7 +79,7 @@ class TestAsyncRunResume:
         with pytest.raises(InputOverrideRequiresForkError):
             await runner.run(graph, {"x": 100}, workflow_id="override-1")
 
-        checkpoint = await checkpointer.get_checkpoint("override-1")
+        checkpoint = checkpointer.checkpoint("override-1")
         result = await runner.run(graph, {"x": 100}, checkpoint=checkpoint, workflow_id="override-1-fork")
         assert result["doubled"] == 200
         assert result["tripled"] == 600
@@ -92,9 +91,27 @@ class TestAsyncRunResume:
         graph_step2 = Graph([triple])
 
         await runner.run(graph_step1, {"x": 5}, workflow_id="valid-1")
-        checkpoint = await checkpointer.get_checkpoint("valid-1")
+        checkpoint = checkpointer.checkpoint("valid-1")
         result = await runner.run(graph_step2, checkpoint=checkpoint, workflow_id="valid-1-fork")
         assert result["tripled"] == 30
+
+    async def test_checkpoint_resume_missing_seed_inputs_raises(self, checkpointer):
+        """Checkpoint-started runs should fail clearly instead of no-op completing."""
+        runner = AsyncRunner(checkpointer=checkpointer)
+
+        @node(output_name="consumed")
+        def consume_x(x: int) -> int:
+            return x + 1
+
+        await runner.run(Graph([double]), {"x": 5}, workflow_id="missing-seed-src")
+        checkpoint = checkpointer.checkpoint("missing-seed-src")
+
+        with pytest.raises(MissingInputError, match="missing required seed inputs"):
+            await runner.run(
+                Graph([consume_x]),
+                checkpoint=checkpoint,
+                workflow_id="missing-seed-fork",
+            )
 
     async def test_override_workflow_auto_forks_existing_id(self, checkpointer):
         """override_workflow=True auto-forks instead of raising strict resume errors."""
@@ -115,7 +132,7 @@ class TestAsyncRunResume:
         assert result.workflow_id.startswith("override-auto-fork-")
         assert result.workflow_id != "override-auto"
 
-        run = await checkpointer.get_run_async(result.workflow_id)
+        run = checkpointer.get_run(result.workflow_id)
         assert run is not None
         assert run.forked_from == "override-auto"
 
@@ -129,7 +146,7 @@ class TestAsyncRunResume:
         assert result["tripled"] == 600
         assert result.workflow_id is not None
 
-        run = await checkpointer.get_run_async(result.workflow_id)
+        run = checkpointer.get_run(result.workflow_id)
         assert run is not None
         assert run.forked_from == "fork-src"
 
@@ -153,9 +170,10 @@ class TestAsyncRunResume:
         await runner.run(graph, {"x": 5}, workflow_id="retry-src", error_handling="continue")
         should_fail = False
 
-        retried = await runner.run(graph, retry_from="retry-src", on_internal_override="ignore")
+        retry_graph = graph.with_entrypoint("flaky")
+        retried = await runner.run(retry_graph, retry_from="retry-src")
         assert retried.status == RunStatus.COMPLETED
-        run = await checkpointer.get_run_async(retried.workflow_id)
+        run = checkpointer.get_run(retried.workflow_id)
         assert run is not None
         assert run.retry_of == "retry-src"
 
@@ -216,7 +234,7 @@ class TestAsyncRunResume:
         result = await runner.run(graph, {"x": 5})
         assert result["tripled"] == 30
         assert result.workflow_id is not None
-        run = await checkpointer.get_run_async(result.workflow_id)
+        run = checkpointer.get_run(result.workflow_id)
         assert run is not None
 
     async def test_first_run_with_no_prior_state(self, checkpointer):
@@ -358,7 +376,7 @@ class TestAsyncMapResume:
     async def test_map_resume_reapplies_select_filter_when_restoring(self, checkpointer):
         """Restored map items should respect select filtering just like fresh runs."""
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([double, triple])
+        graph = Graph([double, triple]).select("tripled")
 
         await runner.map(
             graph.select("tripled"),
@@ -410,6 +428,24 @@ class TestSyncRunResume:
         result = runner.run(graph, {"x": 100}, checkpoint=checkpoint, workflow_id="sync-override-fork")
         assert result["doubled"] == 200
         assert result["tripled"] == 600
+
+    def test_checkpoint_resume_missing_seed_inputs_raises(self, sync_checkpointer):
+        """Sync mirror: checkpoint-started no-op resumes should fail clearly."""
+        runner = SyncRunner(checkpointer=sync_checkpointer)
+
+        @node(output_name="consumed")
+        def consume_x(x: int) -> int:
+            return x + 1
+
+        runner.run(Graph([double]), {"x": 5}, workflow_id="sync-missing-seed-src")
+        checkpoint = sync_checkpointer.checkpoint("sync-missing-seed-src")
+
+        with pytest.raises(MissingInputError, match="missing required seed inputs"):
+            runner.run(
+                Graph([consume_x]),
+                checkpoint=checkpoint,
+                workflow_id="sync-missing-seed-fork",
+            )
 
     def test_override_workflow_auto_forks_existing_id(self, sync_checkpointer):
         """Sync mirror: override_workflow=True auto-forks existing workflow_id."""
@@ -538,7 +574,7 @@ class TestSyncMapResume:
     def test_map_resume_reapplies_select_filter_when_restoring(self, sync_checkpointer):
         """Sync mirror: restored map items should preserve select filtering."""
         runner = SyncRunner(checkpointer=sync_checkpointer)
-        graph = Graph([double, triple])
+        graph = Graph([double, triple]).select("tripled")
 
         runner.map(
             graph.select("tripled"),
@@ -575,7 +611,7 @@ class TestListRunsParentFilter:
         await runner.run(graph, {"x": 99}, workflow_id="unrelated")
 
         # Filter by parent
-        children = await checkpointer.list_runs(parent_run_id="parent-1")
+        children = checkpointer.runs(parent_run_id="parent-1")
         child_ids = {r.id for r in children}
         assert child_ids == {"parent-1/0", "parent-1/1", "parent-1/2"}
         assert "unrelated" not in child_ids
@@ -597,6 +633,6 @@ class TestCreateRunUpsert:
         await checkpointer.create_run("upsert-1", graph_name="test-v2")
 
         # Fetch from DB to verify
-        stored = await checkpointer.get_run_async("upsert-1")
+        stored = checkpointer.get_run("upsert-1")
         assert stored.created_at == original_created
         assert stored.status == WorkflowStatus.ACTIVE

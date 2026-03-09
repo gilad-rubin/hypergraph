@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.runners._shared.helpers import collect_as_lists, map_inputs_to_func_params
+from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
 from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
@@ -77,23 +77,52 @@ class AsyncGraphNodeExecutor:
         """
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
+        child_workflow_id = graphnode_child_workflow_id(workflow_id, node.name, state)
+        map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
         # On pause, _handle_nested_result prefixes the node_name ("ask_user/ask_slack")
         # and PauseInfo.response_key becomes "ask_user.user_input".  On resume the
         # caller puts that dotted key into the outer state — we strip the prefix here
         # so the inner graph sees the unprefixed key ("user_input").
+        # When resuming a persisted child workflow, do not re-send normal child
+        # inputs like "draft" — those are already captured by the child
+        # checkpoint and would be treated as illegal overrides.
         # Only inject on first execution: on cycle loop-back the node has already
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
+            child_fork_from: str | None = None
+            child_retry_from: str | None = None
             prefix = f"{node.name}."
-            for key in state.values:
-                if key.startswith(prefix):
-                    inner_inputs[key[len(prefix) :]] = state.values[key]
+            resume_values = {
+                node.resolve_original_output_name(key[len(prefix) :]): value for key, value in state.values.items() if key.startswith(prefix)
+            }
 
-        child_workflow_id = f"{workflow_id}/{node.name}" if workflow_id else None
+            if map_config is None and child_workflow_id is not None and self.runner._checkpointer is not None:
+                existing_child_run = await self.runner._checkpointer.get_run_async(child_workflow_id)
+                if existing_child_run is not None:
+                    inner_inputs = {}
+                elif resume_values:
+                    current_parent_run = await self.runner._checkpointer.get_run_async(workflow_id) if workflow_id else None
+                    source_parent_run_id = None
+                    if current_parent_run is not None:
+                        source_parent_run_id = current_parent_run.retry_of or current_parent_run.forked_from
+                    if source_parent_run_id is not None:
+                        source_child_run_id = graphnode_child_workflow_id(source_parent_run_id, node.name, state)
+                        source_child_run = (
+                            await self.runner._checkpointer.get_run_async(source_child_run_id) if source_child_run_id is not None else None
+                        )
+                        if source_child_run is not None:
+                            inner_inputs = {}
+                            if current_parent_run is not None and current_parent_run.retry_of is not None:
+                                child_retry_from = source_child_run_id
+                            else:
+                                child_fork_from = source_child_run_id
 
-        map_config = node.map_config
+            inner_inputs.update(resume_values)
+        else:
+            child_fork_from = None
+            child_retry_from = None
 
         if map_config:
             _, mode, error_handling = map_config
@@ -119,6 +148,8 @@ class AsyncGraphNodeExecutor:
             inner_inputs,
             event_processors=event_processors,
             workflow_id=child_workflow_id,
+            fork_from=child_fork_from,
+            retry_from=child_retry_from,
             _parent_span_id=parent_span_id,
             _parent_run_id=workflow_id,
         )
@@ -131,10 +162,14 @@ class AsyncGraphNodeExecutor:
             assert result.pause is not None, "PAUSED status requires pause info"
             nested_pause = PauseInfo(
                 node_name=f"{node.name}/{result.pause.node_name}",
-                output_param=result.pause.output_param,
+                output_param=node.map_output_name_from_original(result.pause.output_param),
                 value=result.pause.value,
                 # Propagate multi-output fields (new in PR #40)
-                output_params=result.pause.output_params,
+                output_params=(
+                    tuple(node.map_output_name_from_original(name) for name in result.pause.output_params)
+                    if result.pause.output_params is not None
+                    else None
+                ),
                 values=result.pause.values,
             )
             raise PauseExecution(nested_pause)

@@ -15,12 +15,10 @@ aiosqlite = pytest.importorskip("aiosqlite")
 
 
 @pytest.fixture
-async def checkpointer(tmp_path):
+def checkpointer(tmp_path):
     """Create a fresh SqliteCheckpointer for each test."""
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
-    await cp.initialize()
     yield cp
-    await cp.close()
 
 
 # --- Simple pipeline nodes ---
@@ -51,12 +49,12 @@ class TestRunnerCheckpointIntegration:
         assert result["tripled"] == 30
 
         # Verify run was created and completed
-        r = await checkpointer.get_run_async("wf-1")
+        r = checkpointer.get_run("wf-1")
         assert r is not None
         assert r.status == WorkflowStatus.COMPLETED
 
         # Verify steps were persisted
-        steps = await checkpointer.get_steps("wf-1")
+        steps = checkpointer.steps("wf-1")
         assert len(steps) == 2
         assert steps[0].node_name == "double"
         assert steps[0].status == StepStatus.COMPLETED
@@ -74,7 +72,7 @@ class TestRunnerCheckpointIntegration:
         assert result["tripled"] == 18
 
         # Steps should be persisted (background tasks gathered in finally block)
-        steps = await checkpointer.get_steps("wf-async")
+        steps = checkpointer.steps("wf-async")
         assert len(steps) == 2
 
     async def test_state_reconstruction(self, checkpointer):
@@ -85,7 +83,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"x": 4}, workflow_id="wf-state")
 
-        state = await checkpointer.get_state("wf-state")
+        state = checkpointer.state("wf-state")
         assert state == {"doubled": 8, "tripled": 24}
 
     async def test_no_workflow_id_auto_generates_and_checkpoints(self, checkpointer):
@@ -97,7 +95,7 @@ class TestRunnerCheckpointIntegration:
         assert result["tripled"] == 6
         assert result.workflow_id is not None
 
-        run_list = await checkpointer.list_runs()
+        run_list = checkpointer.runs()
         assert len(run_list) == 1
         assert run_list[0].id == result.workflow_id
 
@@ -117,7 +115,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"x": 1}, workflow_id="wf-dur")
 
-        steps = await checkpointer.get_steps("wf-dur")
+        steps = checkpointer.steps("wf-dur")
         for step in steps:
             assert step.duration_ms >= 0
 
@@ -129,7 +127,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"x": 7}, workflow_id="wf-cp")
 
-        cp = await checkpointer.get_checkpoint("wf-cp")
+        cp = checkpointer.checkpoint("wf-cp")
         assert cp.values == {"doubled": 14, "tripled": 42}
         assert len(cp.steps) == 2
 
@@ -142,7 +140,7 @@ class TestRunnerCheckpointIntegration:
         await runner.run(graph, {"x": 2}, workflow_id="wf-exit")
 
         # Steps should be flushed after the run completes
-        steps = await checkpointer.get_steps("wf-exit")
+        steps = checkpointer.steps("wf-exit")
         assert len(steps) == 2
 
     async def test_failed_node_persists_step_record(self, checkpointer):
@@ -160,12 +158,12 @@ class TestRunnerCheckpointIntegration:
         assert result.status.value == "failed"
 
         # Run should be marked FAILED
-        r = await checkpointer.get_run_async("wf-fail")
+        r = checkpointer.get_run("wf-fail")
         assert r is not None
         assert r.status == WorkflowStatus.FAILED
 
         # The failed node should have a FAILED step record
-        steps = await checkpointer.get_steps("wf-fail")
+        steps = checkpointer.steps("wf-fail")
         assert len(steps) == 1
         assert steps[0].node_name == "explode"
         assert steps[0].status == StepStatus.FAILED
@@ -189,7 +187,7 @@ class TestRunnerCheckpointIntegration:
         result = await runner.run(graph, {"x": 1}, workflow_id="wf-partial", error_handling="continue")
         assert result.status.value == "failed"
 
-        steps = await checkpointer.get_steps("wf-partial")
+        steps = checkpointer.steps("wf-partial")
         statuses = {s.node_name: s.status for s in steps}
         # succeed_a should be COMPLETED, fail_b should be FAILED
         assert statuses["succeed_a"] == StepStatus.COMPLETED
@@ -214,7 +212,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"count": 0}, workflow_id="wf-cycle")
 
-        steps = await checkpointer.get_steps("wf-cycle")
+        steps = checkpointer.steps("wf-cycle")
         # increment runs multiple times (count: 0→1, 1→2, 2→3)
         increment_steps = [s for s in steps if s.node_name == "increment"]
         assert len(increment_steps) >= 2, f"Expected ≥2 increment steps, got {len(increment_steps)}: {steps}"
@@ -230,7 +228,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"x": 5}, workflow_id="wf-types")
 
-        steps = await checkpointer.get_steps("wf-types")
+        steps = checkpointer.steps("wf-types")
         for step in steps:
             assert step.node_type == "FunctionNode"
 
@@ -242,7 +240,7 @@ class TestRunnerCheckpointIntegration:
 
         await runner.run(graph, {"x": 5}, workflow_id="wf-stats")
 
-        run = await checkpointer.get_run_async("wf-stats")
+        run = checkpointer.get_run("wf-stats")
         assert run.node_count == 2
         assert run.error_count == 0
         assert run.duration_ms > 0
@@ -259,7 +257,7 @@ class TestRunnerCheckpointIntegration:
         graph = Graph([always_fails])
         await runner.run(graph, {"x": 5}, workflow_id="wf-fail", error_handling="continue")
 
-        steps = await checkpointer.get_steps("wf-fail")
+        steps = checkpointer.steps("wf-fail")
         assert len(steps) == 1
         assert steps[0].node_name == "always_fails"
         assert steps[0].status == StepStatus.FAILED
