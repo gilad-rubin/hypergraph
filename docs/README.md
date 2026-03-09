@@ -136,7 +136,7 @@ Test pieces independently. Reuse across workflows.
 1. **Pure functions** - Nodes are testable without the framework
 2. **Automatic wiring** - Edges inferred from matching output/input names
 3. **Composition over configuration** - Nest graphs, don't configure flags
-4. **Unified execution** - Same algorithm for DAGs, branches, and loops
+4. **Unified execution** - Topo over SCCs, local iteration for feedback
 5. **Fail fast** - Validate at build time, not runtime
 6. **Explicit dependencies** - All inputs visible in function signatures
 

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+import networkx as nx
+
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.runners._shared.types import (
@@ -26,11 +28,116 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class ExecutionComponent:
+    """A strongly connected component in execution order."""
+
+    node_names: tuple[str, ...]
+    is_cyclic: bool
+
+
+@dataclass(frozen=True)
 class ExecutionScope:
     """Resolved execution scope shared by scheduler and validation."""
 
     active_nodes: frozenset[str] | None
     startup_predecessors: dict[str, frozenset[str]]
+    execution_plan: tuple[ExecutionComponent, ...]
+    execution_predecessors: dict[ExecutionComponent, frozenset[ExecutionComponent]]
+    execution_successors: dict[ExecutionComponent, frozenset[ExecutionComponent]]
+
+
+@dataclass
+class ExecutionFrontier:
+    """Runtime scheduler state for SCC-level execution."""
+
+    ordered_components: tuple[ExecutionComponent, ...]
+    execution_successors: dict[ExecutionComponent, frozenset[ExecutionComponent]]
+    remaining_predecessors: dict[ExecutionComponent, int]
+    local_iterations: dict[ExecutionComponent, int]
+    runnable_components: set[ExecutionComponent]
+    completed_components: set[ExecutionComponent]
+    max_iterations: int
+
+    @classmethod
+    def from_scope(cls, scope: ExecutionScope, max_iterations: int) -> ExecutionFrontier:
+        """Create a frontier scheduler for the given execution scope."""
+        return cls(
+            ordered_components=scope.execution_plan,
+            execution_successors=scope.execution_successors,
+            remaining_predecessors={component: len(scope.execution_predecessors[component]) for component in scope.execution_plan},
+            local_iterations={component: 0 for component in scope.execution_plan if component.is_cyclic},
+            runnable_components={component for component in scope.execution_plan if not scope.execution_predecessors[component]},
+            completed_components=set(),
+            max_iterations=max_iterations,
+        )
+
+    def has_pending_components(self) -> bool:
+        """Whether there is still work left to schedule."""
+        return bool(self.runnable_components)
+
+    def next_ready_batch(
+        self,
+        graph: Graph,
+        state: GraphState,
+        *,
+        active_nodes: set[str] | frozenset[str] | None,
+        startup_predecessors: dict[str, frozenset[str]],
+    ) -> list[HyperNode]:
+        """Return the next executable batch across runnable SCCs.
+
+        Components that have no more ready nodes are marked complete and their
+        successors become runnable immediately.
+        """
+        ordered_components = tuple(component for component in self.ordered_components if component in self.runnable_components)
+
+        ready_by_component: dict[ExecutionComponent, list[HyperNode]] = {}
+        for component in ordered_components:
+            ready = get_ready_nodes_in_component(
+                graph,
+                state,
+                component=component,
+                active_nodes=active_nodes,
+                startup_predecessors=startup_predecessors,
+            )
+            if ready:
+                ready_by_component[component] = ready
+
+        quiescent_components = tuple(component for component in ordered_components if component not in ready_by_component)
+        if quiescent_components:
+            self._complete_components(quiescent_components)
+
+        if not ready_by_component:
+            return []
+
+        for component in ready_by_component:
+            self._record_iteration(component)
+
+        return [node for component in ordered_components if component in ready_by_component for node in ready_by_component[component]]
+
+    def _record_iteration(self, component: ExecutionComponent) -> None:
+        """Consume one local iteration budget for a cyclic component."""
+        if not component.is_cyclic:
+            return
+        if self.local_iterations[component] >= self.max_iterations:
+            from hypergraph.exceptions import InfiniteLoopError
+
+            raise InfiniteLoopError(self.max_iterations)
+        self.local_iterations[component] += 1
+
+    def _complete_components(
+        self,
+        components: tuple[ExecutionComponent, ...],
+    ) -> None:
+        """Mark components quiescent and release any newly unblocked successors."""
+        for component in components:
+            if component in self.completed_components:
+                continue
+            self.completed_components.add(component)
+            self.runnable_components.discard(component)
+            for successor in self.execution_successors[component]:
+                self.remaining_predecessors[successor] -= 1
+                if self.remaining_predecessors[successor] == 0:
+                    self.runnable_components.add(successor)
 
 
 def compute_execution_scope(graph: Graph) -> ExecutionScope:
@@ -39,6 +146,8 @@ def compute_execution_scope(graph: Graph) -> ExecutionScope:
     Scope is computed from graph-level entrypoint/select settings (no runtime
     overrides). Startup predecessors include DATA + ORDERING edges and exclude
     CONTROL edges (gate activation is handled separately by routing logic).
+    Execution planning uses CONTROL edges to preserve gate-first ordering and
+    to treat gate-driven feedback loops as cyclic execution regions.
     """
     from hypergraph.graph.input_spec import _compute_active_scope
 
@@ -54,18 +163,106 @@ def compute_execution_scope(graph: Graph) -> ExecutionScope:
         )
         active_nodes = frozenset(active_nodes_dict)
 
-    predecessors: dict[str, set[str]] = {}
-    for src, dst, data in active_subgraph.edges(data=True):
-        if src == dst:
-            continue
-        if data.get("edge_type") == "control":
-            continue
-        predecessors.setdefault(dst, set()).add(src)
+    startup_predecessors = _compute_startup_predecessors_from_graph(active_subgraph)
+    execution_plan, execution_predecessors, execution_successors = _build_execution_plan(
+        graph,
+        active_nodes=active_nodes,
+        planning_graph=active_subgraph,
+    )
 
     return ExecutionScope(
         active_nodes=active_nodes,
-        startup_predecessors={name: frozenset(preds) for name, preds in predecessors.items()},
+        startup_predecessors=startup_predecessors,
+        execution_plan=execution_plan,
+        execution_predecessors=execution_predecessors,
+        execution_successors=execution_successors,
     )
+
+
+def build_execution_plan(
+    graph: Graph,
+    *,
+    active_nodes: set[str] | frozenset[str] | None = None,
+    planning_graph: nx.DiGraph | None = None,
+) -> tuple[ExecutionComponent, ...]:
+    """Build a stable SCC execution plan for the active scope."""
+    plan, _, _ = _build_execution_plan(
+        graph,
+        active_nodes=active_nodes,
+        planning_graph=planning_graph,
+    )
+    return plan
+
+
+def _build_execution_plan(
+    graph: Graph,
+    *,
+    active_nodes: set[str] | frozenset[str] | None = None,
+    planning_graph: nx.DiGraph | None = None,
+) -> tuple[
+    tuple[ExecutionComponent, ...],
+    dict[ExecutionComponent, frozenset[ExecutionComponent]],
+    dict[ExecutionComponent, frozenset[ExecutionComponent]],
+]:
+    """Build a stable SCC execution plan for the active scope.
+
+    SCC planning includes CONTROL edges so gate-driven cycles stay local to one
+    execution component and so gates are scheduled before their targets.
+    """
+    if planning_graph is None:
+        planning_graph = graph._nx_graph
+
+    scoped_graph = _build_planning_graph(planning_graph, active_nodes=active_nodes)
+    if scoped_graph.number_of_nodes() == 0:
+        return (), {}, {}
+
+    node_order = {name: idx for idx, name in enumerate(graph._nodes)}
+    sccs = list(nx.strongly_connected_components(scoped_graph))
+    condensation = nx.condensation(scoped_graph, scc=sccs)
+    component_by_scc = _build_execution_components(condensation, scoped_graph, node_order)
+
+    def _scc_sort_key(scc_idx: int) -> int:
+        return min(node_order[name] for name in condensation.nodes[scc_idx]["members"])
+
+    ordered_sccs = tuple(
+        nx.lexicographical_topological_sort(
+            condensation,
+            key=_scc_sort_key,
+        )
+    )
+    components = tuple(component_by_scc[scc_idx] for scc_idx in ordered_sccs)
+    predecessors, successors = _build_component_relations(condensation, component_by_scc)
+    return components, predecessors, successors
+
+
+def _build_execution_components(
+    condensation: nx.DiGraph,
+    scoped_graph: nx.DiGraph,
+    node_order: dict[str, int],
+) -> dict[int, ExecutionComponent]:
+    """Build stable component objects for each SCC in the condensation graph."""
+    component_by_scc: dict[int, ExecutionComponent] = {}
+    for scc_idx in condensation.nodes:
+        members = tuple(sorted(condensation.nodes[scc_idx]["members"], key=node_order.get))
+        is_cyclic = len(members) > 1 or scoped_graph.has_edge(members[0], members[0])
+        component_by_scc[scc_idx] = ExecutionComponent(node_names=members, is_cyclic=is_cyclic)
+    return component_by_scc
+
+
+def _build_component_relations(
+    condensation: nx.DiGraph,
+    component_by_scc: dict[int, ExecutionComponent],
+) -> tuple[
+    dict[ExecutionComponent, frozenset[ExecutionComponent]],
+    dict[ExecutionComponent, frozenset[ExecutionComponent]],
+]:
+    """Map each execution component to its predecessor and successor SCCs."""
+    predecessors: dict[ExecutionComponent, frozenset[ExecutionComponent]] = {}
+    successors: dict[ExecutionComponent, frozenset[ExecutionComponent]] = {}
+    for scc_idx, component in component_by_scc.items():
+        predecessors[component] = frozenset(component_by_scc[pred] for pred in condensation.predecessors(scc_idx))
+        successors[component] = frozenset(component_by_scc[succ] for succ in condensation.successors(scc_idx))
+    return predecessors, successors
 
 
 class ValueSource(Enum):
@@ -167,6 +364,8 @@ def get_ready_nodes(
     *,
     active_nodes: set[str] | None = None,
     startup_predecessors: dict[str, frozenset[str]] | None = None,
+    candidate_nodes: Sequence[str] | None = None,
+    execution_order: Sequence[str] | None = None,
 ) -> list[HyperNode]:
     """Find nodes whose inputs are all satisfied and not stale.
 
@@ -185,6 +384,9 @@ def get_ready_nodes(
             scheduled even if their inputs are available.
         startup_predecessors: Optional map of node -> startup predecessors in
             the active scope. If omitted, computed from the graph.
+        candidate_nodes: Optional node names to restrict scheduling to.
+            Used by the SCC executor to localize readiness to one component.
+        execution_order: Optional stable ordering for node evaluation.
 
     Returns:
         List of nodes ready to execute
@@ -194,9 +396,15 @@ def get_ready_nodes(
     if startup_predecessors is None:
         startup_predecessors = _compute_startup_predecessors(graph, active_nodes=active_nodes)
 
+    candidate_set = set(candidate_nodes) if candidate_nodes is not None else None
+    ordered_names = tuple(execution_order) if execution_order is not None else tuple(graph._nodes)
+
     ready = []
-    for node in graph._nodes.values():
+    for node_name in ordered_names:
+        node = graph._nodes[node_name]
         if active_nodes is not None and node.name not in active_nodes:
+            continue
+        if candidate_set is not None and node.name not in candidate_set:
             continue
         if _is_node_ready(node, graph, state, activated_nodes, startup_predecessors=startup_predecessors):
             ready.append(node)
@@ -228,6 +436,25 @@ def get_ready_nodes(
     return ready
 
 
+def get_ready_nodes_in_component(
+    graph: Graph,
+    state: GraphState,
+    *,
+    component: ExecutionComponent,
+    active_nodes: set[str] | frozenset[str] | None,
+    startup_predecessors: dict[str, frozenset[str]],
+) -> list[HyperNode]:
+    """Find ready nodes inside a single execution component."""
+    return get_ready_nodes(
+        graph,
+        state,
+        active_nodes=active_nodes,
+        startup_predecessors=startup_predecessors,
+        candidate_nodes=component.node_names,
+        execution_order=component.node_names,
+    )
+
+
 def _compute_startup_predecessors(
     graph: Graph,
     *,
@@ -237,8 +464,20 @@ def _compute_startup_predecessors(
 
     Uses DATA + ORDERING edges and excludes CONTROL edges.
     """
+    return _compute_startup_predecessors_from_graph(
+        graph._nx_graph,
+        active_nodes=active_nodes,
+    )
+
+
+def _compute_startup_predecessors_from_graph(
+    nx_graph: nx.DiGraph,
+    *,
+    active_nodes: set[str] | frozenset[str] | None = None,
+) -> dict[str, frozenset[str]]:
+    """Compute startup predecessors from a graph view."""
     predecessors: dict[str, set[str]] = {}
-    for src, dst, data in graph._nx_graph.edges(data=True):
+    for src, dst, data in nx_graph.edges(data=True):
         if src == dst:
             continue
         if active_nodes is not None and (src not in active_nodes or dst not in active_nodes):
@@ -247,6 +486,21 @@ def _compute_startup_predecessors(
             continue
         predecessors.setdefault(dst, set()).add(src)
     return {name: frozenset(preds) for name, preds in predecessors.items()}
+
+
+def _build_planning_graph(
+    nx_graph: nx.DiGraph,
+    *,
+    active_nodes: set[str] | frozenset[str] | None = None,
+) -> nx.DiGraph:
+    """Build the graph used for SCC planning and execution order.
+
+    CONTROL edges participate here so route-driven cycles become a single
+    execution region and gates are scheduled before their targets.
+    """
+    if active_nodes is None:
+        return nx_graph.copy()
+    return nx_graph.subgraph(active_nodes).copy()
 
 
 def _get_activated_nodes(graph: Graph, state: GraphState) -> set[str]:

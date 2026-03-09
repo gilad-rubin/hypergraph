@@ -260,6 +260,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             for input_name in graph.inputs.all:
                 if input_name not in validation_values and input_name in resume_checkpoint.values:
                     validation_values[input_name] = resume_checkpoint.values[input_name]
+                elif input_name not in validation_values and any(
+                    input_name in (step.input_versions or {}) for step in getattr(resume_checkpoint, "steps", ())
+                ):
+                    # Resume checkpoints may omit original graph inputs from
+                    # checkpoint.values once downstream state is sufficient to
+                    # continue. Presence in prior step inputs is enough to
+                    # satisfy canonical input validation for resume/retry.
+                    validation_values[input_name] = None
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:
@@ -272,7 +280,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 on_internal_override=on_internal_override,
             )
         else:
-            validate_item_inputs(_validation_ctx, normalized_values, on_internal_override=on_internal_override)
+            validate_item_inputs(_validation_ctx, validation_values, on_internal_override=on_internal_override)
 
         max_iter = max_iterations or self.default_max_iterations
         collector = RunLogCollector()

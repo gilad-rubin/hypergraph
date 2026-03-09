@@ -123,7 +123,7 @@ class TestLineageSemantics:
             return next_count >= 2
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([increment, done])
+        graph = Graph([increment, done], entrypoint="increment")
         await runner.run(graph, {"count": 2}, workflow_id="wf-gate")
 
         state = await checkpointer.get_state("wf-gate")

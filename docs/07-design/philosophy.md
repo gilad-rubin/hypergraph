@@ -4,7 +4,7 @@ Hypergraph is a graph-native execution system that supports DAGs, cycles, branch
 
 - **Pure functions** - Nodes are testable without the framework
 - **Automatic wiring** - Edges inferred from matching names, no manual configuration
-- **Unified execution** - Same model for DAGs, agents, and everything in between
+- **Unified execution** - One execution model: topo over SCCs, local iteration for feedback
 - **Build-time validation** - Catch errors at construction, not runtime
 
 ---
@@ -21,7 +21,7 @@ This enabled:
 - Visual hierarchy (expand/collapse nested pipelines)
 - "Think singular, scale with map" - write for one item, map over collections
 
-**DAGs remain a first-class citizen in hypergraph.** For ETL, batch processing, and single-pass ML inference, DAGs are the right model. Hypergraph executes them efficiently.
+**DAGs remain a first-class citizen in hypergraph.** For ETL, batch processing, and single-pass ML inference, DAGs are the right model. Hypergraph executes them as ordinary topological regions.
 
 ### Where DAGs Hit the Wall
 
@@ -63,7 +63,22 @@ This means:
 - **Edges are inferred** — matching names create connections automatically
 - **Functions are portable** — they work standalone, testable without the framework
 
-This extends naturally to cycles. A function that accumulates conversation history just takes `history` as a parameter and returns a new `history`. The graph handles iteration.
+This extends naturally to cycles. A function that accumulates conversation history just takes `history` as a parameter and returns a new `history`. The graph handles iteration by treating the feedback loop as one local execution region.
+
+### The Execution Mental Model
+
+Hypergraph uses one execution model across DAGs, routing, and loops:
+
+- Collapse the active graph into **strongly connected components** (SCCs)
+- Topologically order the SCC DAG
+- Execute one topo layer at a time
+- Iterate cyclic SCCs locally until quiescence
+- Let gates act as runtime activation inside those regions
+
+So:
+- **DAGs** are just SCCs of size 1, executed in topological order
+- **Cycles** are SCCs with feedback, executed until they settle
+- **Gates** do not create a second execution model; they only decide which paths are active at runtime
 
 ---
 

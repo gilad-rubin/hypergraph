@@ -176,7 +176,7 @@ class TestAsyncRunResume:
             return count >= 3
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([increment, check_done])
+        graph = Graph([increment, check_done], entrypoint="increment")
 
         # First run: count goes 0 → 1 → 2 → 3
         await runner.run(graph, {"count": 0}, workflow_id="cycle-1")
@@ -361,18 +361,16 @@ class TestAsyncMapResume:
         graph = Graph([double, triple])
 
         await runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [2, 3]},
             map_over="x",
             workflow_id="select-batch",
-            select=["tripled"],
         )
         resumed = await runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [3, 2]},
             map_over="x",
             workflow_id="select-batch",
-            select=["tripled"],
         )
 
         assert [set(r.values.keys()) for r in resumed.results] == [{"tripled"}, {"tripled"}]
@@ -543,18 +541,16 @@ class TestSyncMapResume:
         graph = Graph([double, triple])
 
         runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [2, 3]},
             map_over="x",
             workflow_id="sync-select-batch",
-            select=["tripled"],
         )
         resumed = runner.map(
-            graph,
+            graph.select("tripled"),
             {"x": [3, 2]},
             map_over="x",
             workflow_id="sync-select-batch",
-            select=["tripled"],
         )
 
         assert [set(r.values.keys()) for r in resumed.results] == [{"tripled"}, {"tripled"}]

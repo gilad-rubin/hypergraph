@@ -210,7 +210,7 @@ class TestRunnerCheckpointIntegration:
             return count >= 3
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([increment, check_done])
+        graph = Graph([increment, check_done], entrypoint="increment")
 
         await runner.run(graph, {"count": 0}, workflow_id="wf-cycle")
 

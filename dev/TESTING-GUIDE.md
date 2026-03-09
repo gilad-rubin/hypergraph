@@ -178,6 +178,20 @@ def node_c(b: int) -> int: return b - 1
 
 `with_entrypoint("B")` in a pure cycle (A→B→C→A) does **not** exclude any cycle member — all are forward-reachable from each other. It only excludes DAG nodes upstream of the cycle. Test narrowing with a DAG-feeding-cycle topology instead.
 
+### Cycle Tests Should Match the SCC Mental Model
+
+The runner now plans execution as a DAG of strongly connected components (SCCs):
+
+- DAG regions advance in topological order
+- Cycles execute as a local fixed-point region until quiescence
+- Gates are dynamic activation inside that region
+
+When writing tests, prefer assertions that match those observable semantics:
+
+- Downstream DAG nodes should not run before an upstream cyclic SCC settles
+- Gate-driven loops should behave like one local execution region, even if the feedback edge is a control edge
+- `wait_for` is still a freshness signal, not just a build-time ordering hint
+
 ### bind() Rejects Inactive Inputs
 
 `with_entrypoint("downstream")` narrows the valid input set. `bind(x=5)` for an upstream input will raise `ValueError` because `x` is no longer in the graph's valid inputs. Use `runner.run(graph, {"x": 5})` for override-style injection (will trigger an "internal parameters" warning).

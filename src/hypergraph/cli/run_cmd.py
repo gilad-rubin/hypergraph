@@ -198,6 +198,10 @@ def register_commands(app: typer.Typer) -> None:
     ):
         """Run a graph with the given inputs."""
         graph = load_graph(target)
+        if select:
+            graph = graph.select(*[name.strip() for name in select.split(",") if name.strip()])
+        if entrypoint:
+            graph = graph.with_entrypoint(entrypoint)
         input_values = _resolve_values(values, ctx.args)
 
         # Resolve --db from config if not explicit
@@ -210,10 +214,6 @@ def register_commands(app: typer.Typer) -> None:
         run_kwargs: dict[str, Any] = {
             "error_handling": error_handling,
         }
-        if select:
-            run_kwargs["select"] = select.split(",")
-        if entrypoint:
-            run_kwargs["entrypoint"] = entrypoint
         if max_iterations is not None:
             run_kwargs["max_iterations"] = max_iterations
         if workflow_id:
@@ -248,6 +248,8 @@ def register_commands(app: typer.Typer) -> None:
     ):
         """Map a graph over multiple input values."""
         graph = load_graph(target)
+        if select:
+            graph = graph.select(*[name.strip() for name in select.split(",") if name.strip()])
         input_values = _resolve_values(values, ctx.args)
 
         if db is None:
@@ -261,8 +263,6 @@ def register_commands(app: typer.Typer) -> None:
             "map_mode": map_mode,
             "error_handling": error_handling,
         }
-        if select:
-            map_kwargs["select"] = select.split(",")
         if workflow_id:
             map_kwargs["workflow_id"] = workflow_id
 
