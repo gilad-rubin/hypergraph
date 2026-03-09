@@ -190,13 +190,14 @@ class StatefulNodeOperation(DaftOperation):
         stateful_vals = {k: v for k, v in bound.items() if isinstance(v, DaftStateful)}
         plain_vals = {k: v for k, v in bound.items() if not isinstance(v, DaftStateful)}
 
-        @daft_mod.cls(return_dtype=daft_mod.DataType.python())
+        @daft_mod.cls
         class StatefulWrapper:
             def __init__(self):
                 # Each stateful object is re-created once per worker
                 self._stateful = {k: type(v)() for k, v in stateful_vals.items()}
                 self._plain = plain_vals
 
+            @daft_mod.method(return_dtype=daft_mod.DataType.python())
             def __call__(self, *args: Any) -> Any:
                 kwargs = {
                     **self._stateful,
@@ -321,7 +322,7 @@ class GraphNodeOperation(DaftOperation):
         col_refs = [df[c] for c in input_cols]
         df = df.with_column(output_col, execute_graph(*col_refs))
 
-        if multi_output and not map_config:
+        if multi_output:
             df = _unpack_multi_output(df, output_col, self.output_columns)
 
         return df
