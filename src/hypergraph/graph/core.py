@@ -1234,11 +1234,14 @@ class Graph:
                 "  # or Graph(..., entrypoint='<node_name>')"
             )
 
-    def as_node(self, *, name: str | None = None) -> GraphNode:
+    def as_node(self, *, name: str | None = None, runner: Any = None) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.
 
         Args:
             name: Optional node name. If not provided, uses graph.name.
+            runner: Optional runner to delegate execution to. When set,
+                the parent runner's GraphNode executor uses this runner
+                instead of itself for this subgraph.
 
         Returns:
             GraphNode wrapping this graph
@@ -1248,7 +1251,10 @@ class Graph:
         """
         from hypergraph.nodes.graph_node import GraphNode
 
-        return GraphNode(self, name=name)
+        node = GraphNode(self, name=name)
+        if runner is not None:
+            return node.with_runner(runner)
+        return node
 
     def __repr__(self) -> str:
         from hypergraph._utils import plural

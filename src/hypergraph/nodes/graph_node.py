@@ -88,6 +88,9 @@ class GraphNode(HyperNode):
         self._error_handling: ErrorHandling = "raise"
         self._clone: bool | list[str] = False
 
+        # Runner delegation (None = inherit from parent runner)
+        self._runner_override: Any = None
+
         # Core HyperNode attributes
         self.name = resolved_name
         self.inputs = graph.inputs.all
@@ -117,9 +120,33 @@ class GraphNode(HyperNode):
         return "GRAPH"
 
     @property
+    def runner_override(self) -> Any:
+        """Runner to delegate execution to, or None to inherit from parent."""
+        return self._runner_override
+
+    @property
     def nested_graph(self) -> "Graph":
         """Returns the nested Graph."""
         return self._graph
+
+    def with_runner(self: _GN, runner: Any) -> _GN:
+        """Return a new GraphNode that delegates execution to the given runner.
+
+        The runner override does not affect graph structure or definition_hash.
+        It is resolved at execution time by the parent runner's GraphNode executor.
+
+        Args:
+            runner: A runner instance (e.g., DaftRunner(), SyncRunner()).
+
+        Returns:
+            New GraphNode with runner_override set.
+
+        Example:
+            >>> sub = inner_graph.as_node(name="sub").with_runner(DaftRunner())
+        """
+        new = self._copy()
+        new._runner_override = runner
+        return new
 
     @property
     def map_config(self) -> tuple[list[str], Literal["zip", "product"], ErrorHandling] | None:
@@ -580,7 +607,7 @@ class GraphNode(HyperNode):
         return new
 
     def _copy(self: _GN) -> _GN:
-        """Create a shallow copy preserving map_over configuration."""
+        """Create a shallow copy preserving map_over and runner_override."""
         import copy
 
         new = copy.copy(self)
@@ -591,6 +618,7 @@ class GraphNode(HyperNode):
         # Preserve clone as a new list if it's a list
         if isinstance(self._clone, list):
             new._clone = list(self._clone)
+        # runner_override is preserved as-is (runner instances are shared)
         return new
 
     def with_inputs(

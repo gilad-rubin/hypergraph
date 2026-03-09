@@ -51,6 +51,7 @@ from hypergraph.runners._shared.types import (
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
+    validate_delegated_runners,
     validate_inputs,
     validate_item_inputs,
     validate_map_compatible,
@@ -203,6 +204,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         if _validation_ctx is None:
             validate_runner_compatibility(graph, self.capabilities)
             validate_node_types(graph, self.supported_node_types)
+            validate_delegated_runners(graph, self.capabilities)
             _validate_on_missing(on_missing)
             _validate_error_handling(error_handling)
             _validate_workflow_id(workflow_id, _parent_run_id)
@@ -526,6 +528,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         # One-time graph-structural validation
         validate_runner_compatibility(graph, self.capabilities)
         validate_node_types(graph, self.supported_node_types)
+        validate_delegated_runners(graph, self.capabilities)
         validate_map_compatible(graph)
         _validate_error_handling(error_handling)
         _validate_workflow_id(workflow_id, _parent_run_id)

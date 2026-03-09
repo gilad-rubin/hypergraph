@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
@@ -124,11 +125,14 @@ class AsyncGraphNodeExecutor:
             child_fork_from = None
             child_retry_from = None
 
+        # Use delegated runner if configured, otherwise inherit parent
+        runner = node.runner_override or self.runner
+
         if map_config:
             _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
-            results = await self.runner.map(
+            map_call = runner.map(
                 node.graph,
                 inner_inputs,
                 map_over=original_params,
@@ -140,19 +144,25 @@ class AsyncGraphNodeExecutor:
                 _parent_span_id=parent_span_id,
                 _parent_run_id=workflow_id,
             )
+            # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
+            results = await map_call if inspect.isawaitable(map_call) else map_call
             self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
             return collect_as_lists(results, node, error_handling)
 
-        result = await self.runner.run(
-            node.graph,
-            inner_inputs,
-            event_processors=event_processors,
-            workflow_id=child_workflow_id,
-            fork_from=child_fork_from,
-            retry_from=child_retry_from,
-            _parent_span_id=parent_span_id,
-            _parent_run_id=workflow_id,
-        )
+        # Only pass checkpoint kwargs if the delegated runner supports checkpointing
+        run_kwargs: dict[str, Any] = {
+            "event_processors": event_processors,
+            "workflow_id": child_workflow_id,
+            "_parent_span_id": parent_span_id,
+            "_parent_run_id": workflow_id,
+        }
+        if runner.capabilities.supports_checkpointing:
+            run_kwargs["fork_from"] = child_fork_from
+            run_kwargs["retry_from"] = child_retry_from
+
+        run_call = runner.run(node.graph, inner_inputs, **run_kwargs)
+        # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
+        result = await run_call if inspect.isawaitable(run_call) else run_call
         self._last_inner_logs.set((result.log,) if result.log is not None else ())
         return self._handle_nested_result(node, result)
 
