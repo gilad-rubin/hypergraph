@@ -149,16 +149,18 @@ class AsyncGraphNodeExecutor:
             self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
             return collect_as_lists(results, node, error_handling)
 
-        run_call = runner.run(
-            node.graph,
-            inner_inputs,
-            event_processors=event_processors,
-            workflow_id=child_workflow_id,
-            fork_from=child_fork_from,
-            retry_from=child_retry_from,
-            _parent_span_id=parent_span_id,
-            _parent_run_id=workflow_id,
-        )
+        # Only pass checkpoint kwargs if the delegated runner supports checkpointing
+        run_kwargs: dict[str, Any] = {
+            "event_processors": event_processors,
+            "workflow_id": child_workflow_id,
+            "_parent_span_id": parent_span_id,
+            "_parent_run_id": workflow_id,
+        }
+        if runner.capabilities.supports_checkpointing:
+            run_kwargs["fork_from"] = child_fork_from
+            run_kwargs["retry_from"] = child_retry_from
+
+        run_call = runner.run(node.graph, inner_inputs, **run_kwargs)
         # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
         result = await run_call if inspect.isawaitable(run_call) else run_call
         self._last_inner_logs.set((result.log,) if result.log is not None else ())

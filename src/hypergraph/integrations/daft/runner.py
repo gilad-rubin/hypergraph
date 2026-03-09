@@ -9,13 +9,16 @@ map()  → N-row DataFrame (map_over params are lists, broadcast are scalars)
 
 Limitations (by design):
 - DAG only — no cycles (Daft has no iteration primitive)
-- FunctionNode only — no gates, no interrupts
+- FunctionNode only — no gates, no interrupts, no async nodes
 - No nested GraphNode support yet (future: flatten or delegate)
+- entrypoint= and clone= parameters accepted for API compatibility but not applied;
+  Daft always executes the full DAG and isolates rows natively
 """
 
 from __future__ import annotations
 
 import itertools
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 import networkx as nx
@@ -30,6 +33,7 @@ from hypergraph.runners._shared.types import (
     RunStatus,
     _generate_run_id,
 )
+from hypergraph.runners._shared.validation import validate_runner_compatibility
 from hypergraph.runners.base import BaseRunner
 
 if TYPE_CHECKING:
@@ -46,30 +50,27 @@ def _check_daft_available() -> None:
 
 
 def _validate_daft_compatible(graph: Graph) -> None:
-    """Check that the graph can be translated to a Daft pipeline."""
+    """Check Daft-specific constraints after validate_runner_compatibility has run.
+
+    Checks:
+    - Only FunctionNode allowed (no GraphNode, GateNode, etc.)
+    - Each FunctionNode must have exactly one output (Daft maps 1 func → 1 column)
+    """
     from hypergraph.nodes.function import FunctionNode
-    from hypergraph.nodes.graph_node import GraphNode
-
-    if graph.has_cycles:
-        raise IncompatibleRunnerError(
-            "DaftRunner does not support cyclic graphs. Daft pipelines are DAG-only.",
-            capability="supports_cycles",
-        )
-
-    if graph.has_interrupts:
-        raise IncompatibleRunnerError(
-            "DaftRunner does not support InterruptNodes.",
-            capability="supports_interrupts",
-        )
 
     for node in graph.iter_nodes():
-        if isinstance(node, (FunctionNode, GraphNode)):
-            continue
-        raise IncompatibleRunnerError(
-            f"DaftRunner only supports FunctionNode and GraphNode. Found: {type(node).__name__} ('{node.name}')",
-            node_name=node.name,
-            capability="node_type",
-        )
+        if not isinstance(node, FunctionNode):
+            raise IncompatibleRunnerError(
+                f"DaftRunner only supports FunctionNode. Found: {type(node).__name__} ('{node.name}'). Nested GraphNode support is not yet implemented.",
+                node_name=node.name,
+                capability="node_type",
+            )
+        if len(node.outputs) != 1:
+            raise IncompatibleRunnerError(
+                f"DaftRunner requires each node to have exactly one output. Node '{node.name}' has {len(node.outputs)} outputs: {node.outputs}.",
+                node_name=node.name,
+                capability="node_type",
+            )
 
 
 def _build_udf_chain(graph: Graph) -> list[HyperNode]:
@@ -184,8 +185,11 @@ class DaftRunner(BaseRunner):
         """Execute graph as a 1-row Daft DataFrame pipeline."""
         import daft
 
-        merged = {**(values or {}), **input_values}
+        validate_runner_compatibility(graph, self.capabilities)
         _validate_daft_compatible(graph)
+
+        # Merge: bound values (lowest priority) < provided values < kwargs
+        merged = {**graph._bound, **(values or {}), **input_values}
 
         # Determine outputs
         selected = graph.selected if graph.selected is not None else graph.outputs
@@ -237,11 +241,17 @@ class DaftRunner(BaseRunner):
         """Execute graph over multiple inputs as an N-row Daft DataFrame.
 
         Each row is an independent execution. Daft handles parallelism.
+
+        Note: clone= is accepted for API compatibility but not applied.
+        Daft isolates rows natively — broadcast values are never mutated across rows.
         """
         import daft
 
-        merged = {**(values or {}), **input_values}
+        validate_runner_compatibility(graph, self.capabilities)
         _validate_daft_compatible(graph)
+
+        # Merge: bound values (lowest priority) < provided values < kwargs
+        merged = {**graph._bound, **(values or {}), **input_values}
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         selected = graph.selected if graph.selected is not None else graph.outputs
@@ -251,7 +261,8 @@ class DaftRunner(BaseRunner):
         n_rows = len(next(iter(df_dict.values())))
         df = daft.from_pydict(df_dict)
 
-        run_id = _generate_run_id()
+        run_id = None if n_rows == 0 else _generate_run_id()
+        start_time = time.monotonic()
         try:
             collected = _execute_pipeline(graph, df, selected)
             rows = _extract_all_rows(collected, selected)
@@ -276,10 +287,11 @@ class DaftRunner(BaseRunner):
                 for _ in range(n_rows)
             )
 
+        total_duration_ms = (time.monotonic() - start_time) * 1000
         return MapResult(
             results=results,
             run_id=run_id,
-            total_duration_ms=0.0,
+            total_duration_ms=total_duration_ms,
             map_over=tuple(map_over_list),
             map_mode=map_mode,
             graph_name=graph.name or "unnamed",

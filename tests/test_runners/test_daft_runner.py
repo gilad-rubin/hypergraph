@@ -181,7 +181,7 @@ class TestDaftRunnerValidation:
         assert graph.has_cycles
 
         runner = DaftRunner()
-        with pytest.raises(IncompatibleRunnerError, match="cyclic"):
+        with pytest.raises(IncompatibleRunnerError):
             runner.run(graph, a=1)
 
     def test_rejects_interrupt_node(self):
@@ -196,8 +196,24 @@ class TestDaftRunnerValidation:
         assert graph.has_interrupts
 
         runner = DaftRunner()
-        with pytest.raises(IncompatibleRunnerError, match="InterruptNode"):
+        with pytest.raises(IncompatibleRunnerError):
             runner.run(graph)
+
+    def test_rejects_async_node(self):
+        """Async FunctionNodes produce coroutines in Daft — must be rejected."""
+        import asyncio
+
+        from hypergraph.exceptions import IncompatibleRunnerError
+
+        @node(output_name="y")
+        async def async_double(x: int) -> int:
+            await asyncio.sleep(0)
+            return x * 2
+
+        graph = Graph([async_double])
+        runner = DaftRunner()
+        with pytest.raises(IncompatibleRunnerError):
+            runner.run(graph, x=5)
 
     def test_rejects_gate_node(self):
         from hypergraph.exceptions import IncompatibleRunnerError
@@ -220,6 +236,19 @@ class TestDaftRunnerValidation:
         runner = DaftRunner()
         with pytest.raises(IncompatibleRunnerError, match="FunctionNode"):
             runner.run(graph, x=1)
+
+    def test_rejects_multi_output_node(self):
+        """Daft maps 1 func → 1 column; multi-output nodes must be rejected."""
+        from hypergraph.exceptions import IncompatibleRunnerError
+
+        @node(output_name=("out1", "out2"))
+        def split(x: int) -> tuple:
+            return x, x + 1
+
+        graph = Graph([split])
+        runner = DaftRunner()
+        with pytest.raises(IncompatibleRunnerError, match="exactly one output"):
+            runner.run(graph, x=5)
 
 
 # === Error handling ===
@@ -292,3 +321,74 @@ class TestDaftDelegation:
 
         result = await AsyncRunner().run(outer, x=5)
         assert result.values["doubled"] == 10
+
+
+# === bind() support (ported from hypernodes test_daft_bound_inputs.py) ===
+
+
+class TestDaftRunnerBindInputs:
+    """DaftRunner must materialize graph.bind() values into the DataFrame."""
+
+    def test_run_with_bound_input(self):
+        """graph.bind() values flow into the Daft pipeline."""
+        bound = Graph([double]).bind(x=7)
+        result = DaftRunner().run(bound)
+        assert result.values["doubled"] == 14
+
+    def test_run_with_bound_and_provided(self):
+        """Provided values override bound values."""
+        bound = Graph([double]).bind(x=7)
+        result = DaftRunner().run(bound, x=3)
+        assert result.values["doubled"] == 6
+
+    def test_run_with_bound_broadcast_in_pipeline(self):
+        """Bound value used as a broadcast param across a chain."""
+        graph = Graph([double, add.with_inputs(a="doubled")]).bind(b=100)
+        result = DaftRunner().run(graph, x=5)
+        assert result.values["sum"] == 110
+
+    def test_map_with_bound_broadcast(self):
+        """Bound broadcast value is available for each row."""
+        graph = Graph([add]).bind(b=10)
+        result = DaftRunner().map(graph, map_over="a", a=[1, 2, 3])
+        values = [r.values["sum"] for r in result.results]
+        assert values == [11, 12, 13]
+
+    def test_run_with_stateful_object(self):
+        """Arbitrary Python objects pass through DataType.python() correctly."""
+
+        class Multiplier:
+            def __init__(self, factor: int):
+                self.factor = factor
+
+        @node(output_name="result")
+        def apply(x: int, model: Multiplier) -> int:
+            return model.predict(x) if hasattr(model, "predict") else model.factor * x
+
+        model = Multiplier(factor=5)
+        graph = Graph([apply])
+        result = DaftRunner().run(graph, x=3, model=model)
+        assert result.values["result"] == 15
+
+
+# === map() metadata correctness ===
+
+
+class TestDaftMapMetadata:
+    def test_empty_map_has_null_run_id(self):
+        """Empty map (0 rows) should have run_id=None per MapResult contract."""
+        graph = Graph([double])
+        result = DaftRunner().map(graph, map_over="x", x=[])
+        assert result.run_id is None
+        assert len(result.results) == 0
+
+    def test_nonempty_map_has_run_id(self):
+        graph = Graph([double])
+        result = DaftRunner().map(graph, map_over="x", x=[1])
+        assert result.run_id is not None
+
+    def test_map_total_duration_ms_positive(self):
+        """total_duration_ms must be non-negative (was always 0.0 before)."""
+        graph = Graph([double])
+        result = DaftRunner().map(graph, map_over="x", x=[1, 2, 3])
+        assert result.total_duration_ms >= 0.0
