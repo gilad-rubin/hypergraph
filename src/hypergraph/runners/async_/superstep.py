@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import time
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
-from hypergraph.nodes.gate import END as _END
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -22,18 +22,8 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
-from hypergraph.runners._shared.helpers import collect_inputs_for_node
-from hypergraph.runners._shared.types import GraphState, NodeExecution, PauseExecution
-
-
-def _decision_activates(node_name: str, decision: Any) -> bool:
-    """Check if a routing decision activates a specific node."""
-    if decision is _END or decision is None:
-        return False
-    if isinstance(decision, list):
-        return node_name in decision
-    return decision == node_name
-
+from hypergraph.runners._shared.helpers import apply_node_result, collect_inputs_for_node
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
@@ -65,7 +55,8 @@ async def run_superstep_async(
     state: GraphState,
     ready_nodes: list[HyperNode],
     provided_values: dict[str, Any],
-    execute_node: AsyncNodeExecutor,
+    executors: dict[type[HyperNode], AsyncNodeExecutor[Any]],
+    ctx_base: ExecutionContext,
     max_concurrency: int | None = None,
     *,
     cache: CacheBackend | None = None,
@@ -84,7 +75,8 @@ async def run_superstep_async(
         state: Current state (will be copied, not mutated)
         ready_nodes: Nodes to execute in this superstep
         provided_values: Values provided to runner.run()
-        execute_node: Async function to execute a single node
+        executors: Runner executor registry
+        ctx_base: Per-run execution context
         max_concurrency: Unused (kept for API compatibility)
         dispatcher: Optional event dispatcher for emitting node events
         run_id: Run ID for event correlation
@@ -109,12 +101,6 @@ async def run_superstep_async(
     ) -> tuple[HyperNode, dict[str, Any], dict[str, int], dict[str, int], float, bool]:
         """Execute a single node with event emission."""
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
-
-        # Stash provided_values so the execute_node closure can forward
-        # them to the interrupt executor (distinguishes fresh resume
-        # values from stale cycle values in checkpointed state).
-        if hasattr(execute_node, "provided_values"):
-            execute_node.provided_values[0] = provided_values  # type: ignore[attr-defined]
         input_versions = {param: state.get_version(param) for param in node.inputs}
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
@@ -142,21 +128,24 @@ async def run_superstep_async(
         if active:
             await dispatcher.emit_async(start_evt)
 
-        # Set node span_id on executor for nested graph propagation
-        if hasattr(execute_node, "current_span_id"):
-            execute_node.current_span_id[0] = node_span_id  # type: ignore[attr-defined]
-
         node_start = time.time()
         try:
+            executor = executors.get(type(node))
+            if executor is None:
+                raise TypeError(f"No executor registered for node type '{type(node).__name__}'")
+
+            inner_logs: list = []
+            ctx = replace(
+                ctx_base,
+                parent_span_id=node_span_id,
+                provided_values=provided_values,
+                on_inner_log=inner_logs.append,
+            )
+
             # Pass new_state so routing decisions are stored in the updated state
-            outputs = await execute_node(node, new_state, inputs)
+            outputs = await executor(node, new_state, inputs, ctx)
 
             duration_ms = (time.time() - node_start) * 1000
-
-            # Capture inner logs from nested graph execution (if any)
-            inner_logs: tuple = ()
-            if hasattr(execute_node, "consume_last_inner_logs"):
-                inner_logs = execute_node.consume_last_inner_logs()  # type: ignore[attr-defined]
 
             # Store result in cache
             if cache is not None and cache_key:
@@ -166,7 +155,17 @@ async def run_superstep_async(
                 route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
-                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=inner_logs))
+                await dispatcher.emit_async(
+                    build_node_end_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        duration_ms,
+                        inner_logs=tuple(inner_logs),
+                    )
+                )
 
             return node, outputs, input_versions, wait_for_versions, duration_ms, False
         except PauseExecution as exc:
@@ -190,25 +189,16 @@ async def run_superstep_async(
                 first_error = result
             continue
         node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
-        for name, value in outputs.items():
-            new_state.update_value(name, value)
-        output_versions = {name: new_state.get_version(name) for name in outputs}
-        new_state.node_executions[node.name] = NodeExecution(
-            node_name=node.name,
-            input_versions=input_versions,
-            outputs=outputs,
-            output_versions=output_versions,
-            wait_for_versions=wait_for_versions,
+        apply_node_result(
+            graph,
+            new_state,
+            node,
+            outputs,
+            input_versions,
+            wait_for_versions,
             duration_ms=duration_ms,
             cached=cached,
         )
-        # Consume routing decisions that activated this node.
-        # Once a gated node executes, the decision is spent — the gate
-        # must re-execute and re-route before this node fires again.
-        for gate_name in graph.controlled_by.get(node.name, []):
-            decision = new_state.routing_decisions.get(gate_name)
-            if decision is not None and _decision_activates(node.name, decision):
-                del new_state.routing_decisions[gate_name]
 
     if first_error is not None:
         # PauseExecution (BaseException) must propagate unwrapped for the
