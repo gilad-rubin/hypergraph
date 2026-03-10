@@ -173,7 +173,11 @@ class RunResult:
     error: BaseException | None = None
     pause: PauseInfo | None = None
     log: RunLog | None = None
-    stopped: bool = False
+
+    @property
+    def stopped(self) -> bool:
+        """Whether execution was stopped via runner.stop()."""
+        return self.status == RunStatus.STOPPED
 
     @property
     def paused(self) -> bool:

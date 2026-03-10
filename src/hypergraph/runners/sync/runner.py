@@ -152,10 +152,10 @@ class SyncRunner(SyncRunnerTemplate):
         superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
-        # Set up StopSignal for this run (threading.Event for sync runner).
+        # Set up StopSignal for this run.
         # Inherit parent signal so nested graphs see the outer stop.
         parent_signal = get_stop_signal()
-        signal = StopSignal(use_threading=True, parent=parent_signal)
+        signal = StopSignal(parent=parent_signal)
         if workflow_id is not None:
             if workflow_id in self._active_signals:
                 raise WorkflowAlreadyRunningError(workflow_id)

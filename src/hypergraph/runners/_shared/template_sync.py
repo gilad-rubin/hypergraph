@@ -372,7 +372,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                stopped=was_stopped,
             )
             self._emit_run_end_sync(
                 dispatcher,

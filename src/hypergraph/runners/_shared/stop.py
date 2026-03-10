@@ -1,13 +1,17 @@
 """Stop signal internals — not part of the public API.
 
-StopSignal wraps an event primitive (asyncio.Event or threading.Event)
-with optional metadata.  The runner creates one per active run and stores
-it in a contextvar so nested graphs can read it without explicit threading.
+StopSignal wraps a threading.Event with optional metadata.  The runner
+creates one per active run and stores it in a contextvar so nested graphs
+can read it without explicit wiring.
+
+threading.Event is used (not asyncio.Event) because runner.stop() is
+documented as callable from any thread, and asyncio.Event is not
+thread-safe per Python docs.  Since is_set is polled — never awaited —
+threading.Event works correctly for both sync and async runners.
 """
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from contextvars import ContextVar
 from typing import Any
@@ -20,16 +24,15 @@ from typing import Any
 class StopSignal:
     """Cooperative stop primitive.  Created by the runner, never by user code.
 
-    Wraps ``asyncio.Event`` for async runners and ``threading.Event`` for sync
-    runners so that ``runner.stop(workflow_id)`` from any coroutine/thread can
-    set the flag and in-flight nodes see it immediately.
+    Wraps ``threading.Event`` so that ``runner.stop(workflow_id)`` from any
+    thread or coroutine can set the flag and in-flight nodes see it immediately.
 
     When ``parent`` is set, ``is_set`` also checks the parent signal.
     This enables nested graphs to see the outer stop without explicit wiring.
     """
 
-    def __init__(self, *, use_threading: bool = False, parent: StopSignal | None = None) -> None:
-        self._event: asyncio.Event | threading.Event = threading.Event() if use_threading else asyncio.Event()
+    def __init__(self, *, parent: StopSignal | None = None) -> None:
+        self._event: threading.Event = threading.Event()
         self._info: Any = None
         self._parent: StopSignal | None = parent
 

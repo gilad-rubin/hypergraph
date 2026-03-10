@@ -385,7 +385,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                stopped=was_stopped,
             )
             await self._emit_run_end_async(
                 dispatcher,
@@ -467,7 +466,6 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
-                stopped=was_stopped,
             )
         except Exception as e:
             error = e
