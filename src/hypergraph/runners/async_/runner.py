@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError, InfiniteLoopError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
@@ -14,6 +14,7 @@ from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
+from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
     ExecutionContext,
@@ -90,6 +91,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
+        self._active_signals: dict[str, StopSignal] = {}
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
             GraphNode: AsyncGraphNodeExecutor(self),
@@ -97,6 +99,21 @@ class AsyncRunner(AsyncRunnerTemplate):
             RouteNode: AsyncRouteNodeExecutor(),
             InterruptNode: AsyncInterruptNodeExecutor(),
         }
+
+    def stop(self, workflow_id: str, *, info: Any = None) -> None:
+        """Request cooperative stop for an active run.
+
+        No-op if the workflow_id is not currently running.
+        Thread-safe: can be called from any thread or coroutine.
+
+        Args:
+            workflow_id: The workflow to stop.
+            info: Optional metadata attached to the stop signal.
+                  Accessible via ``StopRequestedEvent.info``.
+        """
+        signal = self._active_signals.get(workflow_id)
+        if signal is not None:
+            signal.set(info=info)
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
@@ -139,6 +156,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -166,17 +184,34 @@ class AsyncRunner(AsyncRunnerTemplate):
         node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
         save_tasks: list[asyncio.Task[None]] = []
 
+        # Set up StopSignal for this run.
+        # Inherit parent signal so nested graphs see the outer stop.
+        parent_signal = get_stop_signal()
+        signal = StopSignal(parent=parent_signal)
+        if workflow_id is not None:
+            if workflow_id in self._active_signals:
+                raise WorkflowAlreadyRunningError(workflow_id)
+            self._active_signals[workflow_id] = signal
+        signal_token = set_stop_signal(signal)
+
         try:
             superstep_idx = 0
             frontier = ExecutionFrontier.from_scope(scope, max_iterations)
             ctx_base = ExecutionContext(
                 event_processors=event_processors,
                 workflow_id=workflow_id,
+                run_id=run_id,
                 provided_values=values,
                 is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
+                emit_fn=dispatcher.emit if dispatcher.active else None,
             )
 
             while frontier.has_pending_components():
+                # Check stop signal at superstep boundary.
+                # When complete_on_stop is True, nodes still see stop_requested
+                # but the runner continues until all ready nodes are done.
+                if signal.is_set and not _complete_on_stop:
+                    break
                 try:
                     ready_nodes = frontier.next_ready_batch(
                         graph,
@@ -245,6 +280,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                             graph,
                             superstep_error=None,
                             is_pause=True,
+                            stopped=signal.is_set,
                         )
                     raise
                 except ExecutionError as e:
@@ -268,6 +304,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                         save_tasks,
                         graph,
                         superstep_error,
+                        stopped=signal.is_set,
                     )
 
                 if superstep_error is not None:
@@ -277,8 +314,13 @@ class AsyncRunner(AsyncRunnerTemplate):
 
         except PauseExecution as pause:
             pause._partial_state = state  # type: ignore[attr-defined]
+            pause._stopped = signal.is_set  # type: ignore[attr-defined]
             raise
         finally:
+            # Clean up signal registry
+            reset_stop_signal(signal_token)
+            if workflow_id is not None:
+                self._active_signals.pop(workflow_id, None)
             # Await any background save tasks before returning
             if save_tasks:
                 results = await asyncio.gather(*save_tasks, return_exceptions=True)
@@ -301,6 +343,9 @@ class AsyncRunner(AsyncRunnerTemplate):
             if token is not None:
                 reset_concurrency_limiter(token)
 
+        # Propagate stopped flag to the template layer
+        state._stopped = signal.is_set  # type: ignore[attr-defined]
+        state._stop_info = signal.info  # type: ignore[attr-defined]
         return state
 
     async def _save_superstep_records(
@@ -318,6 +363,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         graph: Graph,
         superstep_error: BaseException | None = None,
         is_pause: bool = False,
+        stopped: bool = False,
     ) -> int:
         """Build StepRecords and dispatch to the appropriate durability mode."""
         from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
@@ -333,6 +379,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             graph=graph,
             superstep_error=superstep_error,
             is_pause=is_pause,
+            stopped=stopped,
         )
 
         durability = checkpointer.policy.durability

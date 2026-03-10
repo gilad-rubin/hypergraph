@@ -31,7 +31,7 @@ _RUNS_COLS = (
     "id, graph_name, status, duration_ms, node_count, error_count, "
     "created_at, completed_at, parent_run_id, forked_from, fork_superstep, retry_of, retry_index, config"
 )
-_STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at"
+_STEPS_COLS = "id, run_id, step_index, superstep, node_name, node_type, status, duration_ms, cached, error, decision, input_versions, values_data, child_run_id, created_at, completed_at, partial"
 _STEP_TIME_ORDER = "COALESCE(completed_at, created_at), created_at, id"
 _STEP_TIME_ORDER_DESC = "COALESCE(completed_at, created_at) DESC, created_at DESC, id DESC"
 _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC, s.created_at DESC, s.id DESC"
@@ -278,8 +278,8 @@ class SqliteCheckpointer(Checkpointer):
             INSERT INTO steps (
                 run_id, superstep, node_name, step_index, status,
                 input_versions, values_data, duration_ms, cached,
-                decision, error, node_type, created_at, completed_at, child_run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                decision, error, node_type, created_at, completed_at, child_run_id, partial
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
                 status = excluded.status,
                 values_data = excluded.values_data,
@@ -288,7 +288,8 @@ class SqliteCheckpointer(Checkpointer):
                 decision = excluded.decision,
                 error = excluded.error,
                 node_type = excluded.node_type,
-                completed_at = excluded.completed_at
+                completed_at = excluded.completed_at,
+                partial = excluded.partial
             """,
             (
                 record.run_id,
@@ -306,6 +307,7 @@ class SqliteCheckpointer(Checkpointer):
                 record.created_at.isoformat(),
                 record.completed_at.isoformat() if record.completed_at else None,
                 record.child_run_id,
+                int(record.partial),
             ),
         )
         await self._apply_retention_policy_async(record.run_id)
@@ -607,6 +609,7 @@ class SqliteCheckpointer(Checkpointer):
             created_at=_parse_dt(row[14]),
             completed_at=_parse_dt(row[15]),
             child_run_id=row[13],
+            partial=bool(row[16]) if len(row) > 16 and row[16] is not None else False,
         )
 
     def _row_to_run(self, row: tuple[Any, ...]) -> Run:
@@ -997,8 +1000,8 @@ class SqliteCheckpointer(Checkpointer):
             INSERT INTO steps (
                 run_id, superstep, node_name, step_index, status,
                 input_versions, values_data, duration_ms, cached,
-                decision, error, node_type, created_at, completed_at, child_run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                decision, error, node_type, created_at, completed_at, child_run_id, partial
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, superstep, node_name) DO UPDATE SET
                 status = excluded.status,
                 values_data = excluded.values_data,
@@ -1007,7 +1010,8 @@ class SqliteCheckpointer(Checkpointer):
                 decision = excluded.decision,
                 error = excluded.error,
                 node_type = excluded.node_type,
-                completed_at = excluded.completed_at
+                completed_at = excluded.completed_at,
+                partial = excluded.partial
             """,
             (
                 record.run_id,
@@ -1025,6 +1029,7 @@ class SqliteCheckpointer(Checkpointer):
                 record.created_at.isoformat(),
                 record.completed_at.isoformat() if record.completed_at else None,
                 record.child_run_id,
+                int(record.partial),
             ),
         )
         self._apply_retention_policy_sync(record.run_id)

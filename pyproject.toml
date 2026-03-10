@@ -173,7 +173,7 @@ markers = [
     "full_matrix: marks tests that run the full capability matrix (CI only)",
 ]
 # Run tests in parallel with minimal output; show only failures/errors by default
-addopts = "-q -r fE -n auto --dist worksteal -m 'not full_matrix'"
+addopts = "-q -r fE -n auto --dist loadfile -m 'not full_matrix'"
 # Persist pytest cache between runs for faster reruns
 cache_dir = ".pytest_cache"
 # Ignore old tests that may be broken or deprecated

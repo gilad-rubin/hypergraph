@@ -84,6 +84,30 @@ Same primitives (`@node`, `@route`, `Graph`, runners) for DAGs, branches, loops,
 
 ---
 
+## 11. Framework Owns Its Own State
+
+If the framework creates a resource (signal, handle, registry), the framework manages its lifecycle. Never leak internal bookkeeping to the app.
+
+**What breaks**: The app ends up managing `active_signals[chat_id] = signal` or `try/finally` cleanup for framework internals. That's framework state disguised as app code. If the runner needs a stop signal per workflow, the runner creates, stores, and cleans it up — the app calls `runner.stop(workflow_id)`.
+
+---
+
+## 12. Booleans for Control Flow, Detail at Lower Levels
+
+Top-level API returns should be simple enough for `if result.stopped:`. Detailed metadata (why it stopped, which node was affected, user-provided info) belongs on events and step records, not on the primary result object.
+
+**What breaks**: Returning `InterruptionInfo(kind="user_stop", node_name="llm_reply", partial=True)` at the top level forces every consumer to destructure a dataclass just to answer "should I show the input box?" Simple booleans for control flow, rich data for introspection.
+
+---
+
+## 13. Build On Existing Patterns Before Inventing New Ones
+
+Before designing new machinery, check if an existing pattern already handles the case. Stop/resume reuses the checkpointer pattern from pause/resume. New features should layer onto proven infrastructure.
+
+**What breaks**: Parallel systems that do almost the same thing but differently. If pause/resume already checkpoints and resumes via `workflow_id`, stop/resume should use the same path — not invent a separate "stopped workflow registry."
+
+---
+
 ## The Quick Test
 
 A design likely fits hypergraph when:

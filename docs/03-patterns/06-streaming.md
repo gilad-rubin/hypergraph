@@ -1,28 +1,27 @@
 # Streaming
 
-Stream LLM responses token-by-token using async generators. Users see output as it's generated, not after the full response completes.
+Stream LLM responses token-by-token so users see output as it's generated, not after the full response completes.
 
 ## When to Use
 
 - **Chat interfaces** — Show responses as they're generated
 - **Long-form content** — Don't make users wait for full generation
-- **Real-time feedback** — Stream progress indicators
+- **Stoppable nodes** — Let users cancel long-running generation
 
-## Basic Pattern
+## Basic Pattern: NodeContext
 
-Use async generators to yield tokens as they arrive:
+Use `NodeContext` to stream tokens and support cooperative stop:
 
 ```python
-from hypergraph import Graph, node, AsyncRunner
+from hypergraph import Graph, node, AsyncRunner, NodeContext
 from anthropic import Anthropic
 
 client = Anthropic()
 
 @node(output_name="response")
-async def stream_response(messages: list, system: str = "") -> str:
-    """Stream tokens from Claude, yielding as they arrive."""
-
-    chunks = []
+async def stream_response(messages: list, ctx: NodeContext, system: str = "") -> str:
+    """Stream tokens from Claude with stop support."""
+    response = ""
 
     with client.messages.stream(
         model="claude-sonnet-4-5-20250929",
@@ -31,11 +30,12 @@ async def stream_response(messages: list, system: str = "") -> str:
         messages=messages,
     ) as stream:
         for text in stream.text_stream:
-            print(text, end="", flush=True)  # Stream to user
-            chunks.append(text)
+            if ctx.stop_requested:
+                break
+            response += text
+            ctx.stream(text)  # emit StreamingChunkEvent for live UI
 
-    print()  # Newline after streaming
-    return "".join(chunks)
+    return response
 
 
 graph = Graph([stream_response])
@@ -47,6 +47,12 @@ result = await runner.run(graph, {
 })
 ```
 
+`ctx.stream(chunk)` emits a `StreamingChunkEvent` — a side-channel for live UI preview. It does not affect the return value. The node controls its own output type.
+
+`ctx.stop_requested` is a cooperative stop signal. The node checks it and decides when to break. See [NodeContext API](../06-api-reference/nodes.md#nodecontext) for details.
+
+Adding `ctx: NodeContext` is optional. Nodes without it work exactly as before — the framework detects the type hint and injects it automatically (same pattern as FastAPI's `Request`).
+
 ## Streaming with OpenAI
 
 ```python
@@ -55,8 +61,9 @@ from openai import OpenAI
 client = OpenAI()
 
 @node(output_name="response")
-async def stream_openai(prompt: str, instructions: str = "") -> str:
-    """Stream tokens from GPT-5.2 using the Responses API."""
+async def stream_openai(prompt: str, ctx: NodeContext, instructions: str = "") -> str:
+    """Stream tokens from GPT-5.2 with stop support."""
+    response = ""
 
     stream = client.responses.create(
         model="gpt-5.2",
@@ -65,39 +72,14 @@ async def stream_openai(prompt: str, instructions: str = "") -> str:
         stream=True,
     )
 
-    chunks = []
     for part in stream:
+        if ctx.stop_requested:
+            break
         if part.output_text:
-            print(part.output_text, end="", flush=True)
-            chunks.append(part.output_text)
+            response += part.output_text
+            ctx.stream(part.output_text)
 
-    print()
-    return "".join(chunks)
-```
-
-## Async Generator Nodes
-
-For true async iteration, use async generators:
-
-```python
-from typing import AsyncIterator
-
-@node(output_name="tokens")
-async def generate_tokens(prompt: str) -> AsyncIterator[str]:
-    """Yield tokens one at a time."""
-
-    with client.messages.stream(
-        model="claude-sonnet-4-5-20250929",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for text in stream.text_stream:
-            yield text
-
-
-# Check node properties
-print(generate_tokens.is_async)      # True
-print(generate_tokens.is_generator)  # True
+    return response
 ```
 
 ## Streaming in RAG Pipelines
@@ -112,10 +94,10 @@ async def retrieve(query: str) -> list[str]:
     return await vector_db.search(embedding, k=5)
 
 @node(output_name="response")
-async def generate(docs: list[str], query: str) -> str:
-    """Stream the generation step."""
-
+async def generate(docs: list[str], query: str, ctx: NodeContext) -> str:
+    """Stream the generation step with stop support."""
     context = "\n\n---\n\n".join(docs)
+    response = ""
 
     with client.messages.stream(
         model="claude-sonnet-4-5-20250929",
@@ -123,13 +105,13 @@ async def generate(docs: list[str], query: str) -> str:
         system=f"Answer based on this context:\n{context}",
         messages=[{"role": "user", "content": query}],
     ) as stream:
-        chunks = []
         for text in stream.text_stream:
-            print(text, end="", flush=True)
-            chunks.append(text)
+            if ctx.stop_requested:
+                break
+            response += text
+            ctx.stream(text)
 
-    print()
-    return "".join(chunks)
+    return response
 
 
 rag_pipeline = Graph([retrieve, generate])
@@ -138,61 +120,40 @@ runner = AsyncRunner()
 result = await runner.run(rag_pipeline, {"query": "How do I use hypergraph?"})
 ```
 
-## Streaming with Callbacks
+## Consuming Streaming Events
 
-Pass a callback for custom handling:
+`ctx.stream()` emits `StreamingChunkEvent`s through the event system. Consume them with an event processor or via `.iter()`:
 
 ```python
-from typing import Callable
+from hypergraph import TypedEventProcessor, StreamingChunkEvent
 
-@node(output_name="response")
-async def generate_with_callback(
-    prompt: str,
-    on_token: Callable[[str], None] | None = None,
-) -> str:
-    """Stream tokens with optional callback."""
+# Option 1: Event processor (works with run())
+class StreamToWebSocket(TypedEventProcessor):
+    def on_streaming_chunk(self, event: StreamingChunkEvent):
+        websocket.send(event.chunk)
 
-    chunks = []
+result = await runner.run(graph, values, event_processors=[StreamToWebSocket()])
 
-    with client.messages.stream(
-        model="claude-sonnet-4-5-20250929",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for text in stream.text_stream:
-            if on_token:
-                on_token(text)
-            chunks.append(text)
-
-    return "".join(chunks)
-
-
-# Usage with callback
-def handle_token(token: str):
-    # Send to websocket, update UI, etc.
-    websocket.send(token)
-
-result = await runner.run(graph, {
-    "prompt": "Write a story",
-    "on_token": handle_token,
-})
+# Option 2: .iter() for interactive sessions (Phase 2)
+async with runner.iter(graph, workflow_id="chat-1", **values) as handle:
+    async for event in handle:
+        match event:
+            case StreamingChunkEvent(chunk=chunk):
+                send_to_client(chunk)
 ```
 
-## Multi-Turn Streaming
+## Multi-Turn Streaming with Stop
 
-Stream responses in a conversation loop:
+Stream responses in a conversation loop with stop support:
 
 ```python
-from hypergraph import route, END
+from hypergraph import route, END, NodeContext
 
 @node(output_name="response")
-async def stream_turn(messages: list, user_input: str) -> str:
-    """Stream one conversation turn."""
-
+async def stream_turn(messages: list, user_input: str, ctx: NodeContext) -> str:
+    """Stream one conversation turn, stoppable."""
     full_messages = messages + [{"role": "user", "content": user_input}]
-
-    chunks = []
-    print("Assistant: ", end="")
+    response = ""
 
     with client.messages.stream(
         model="claude-sonnet-4-5-20250929",
@@ -200,11 +161,12 @@ async def stream_turn(messages: list, user_input: str) -> str:
         messages=full_messages,
     ) as stream:
         for text in stream.text_stream:
-            print(text, end="", flush=True)
-            chunks.append(text)
+            if ctx.stop_requested:
+                break
+            response += text
+            ctx.stream(text)
 
-    print("\n")
-    return "".join(chunks)
+    return response
 
 @node(output_name="messages")
 def update_history(messages: list, user_input: str, response: str) -> list:
@@ -222,16 +184,21 @@ def should_continue(messages: list) -> str:
 streaming_chat = Graph([stream_turn, update_history, should_continue])
 ```
 
+To stop mid-stream from another coroutine or endpoint:
+
+```python
+runner.stop(workflow_id, info={"kind": "user_stop"})
+```
+
 ## Error Handling in Streams
 
 Handle streaming errors gracefully:
 
 ```python
 @node(output_name="response")
-async def safe_stream(prompt: str) -> str:
+async def safe_stream(prompt: str, ctx: NodeContext) -> str:
     """Stream with error handling."""
-
-    chunks = []
+    response = ""
 
     try:
         with client.messages.stream(
@@ -240,38 +207,54 @@ async def safe_stream(prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             for text in stream.text_stream:
-                print(text, end="", flush=True)
-                chunks.append(text)
+                if ctx.stop_requested:
+                    break
+                response += text
+                ctx.stream(text)
 
-        print()
-        return "".join(chunks)
+        return response
 
     except Exception as e:
-        # Return partial response if available
-        if chunks:
-            return "".join(chunks) + f"\n\n[Error: {e}]"
+        if response:
+            return response + f"\n\n[Error: {e}]"
         raise
 ```
 
 ## Testing Streaming Nodes
 
-Test the accumulated output:
+Nodes with `NodeContext` are testable as plain Python — pass a mock:
 
 ```python
+from unittest.mock import MagicMock
+
 @pytest.mark.asyncio
-async def test_streaming():
-    graph = Graph([stream_response])
-    runner = AsyncRunner()
+async def test_stream_response():
+    ctx = MagicMock(spec=NodeContext)
+    ctx.stop_requested = False
 
-    result = await runner.run(graph, {
-        "messages": [{"role": "user", "content": "Say hello"}],
-    })
+    result = await stream_response(
+        messages=[{"role": "user", "content": "Say hello"}],
+        ctx=ctx,
+    )
+    assert len(result) > 0
+    assert ctx.stream.called  # chunks were emitted
 
-    assert "response" in result
-    assert len(result["response"]) > 0
+@pytest.mark.asyncio
+async def test_stream_stops():
+    ctx = MagicMock(spec=NodeContext)
+    ctx.stop_requested = True
+
+    result = await stream_response(
+        messages=[{"role": "user", "content": "Write a novel"}],
+        ctx=ctx,
+    )
+    assert result == ""  # stopped immediately
 ```
+
+No framework setup needed — the function is a plain async function.
 
 ## What's Next?
 
+- [NodeContext API](../06-api-reference/nodes.md#nodecontext) — Full API reference
 - [Multi-Turn RAG](../04-real-world/multi-turn-rag.md) — Streaming in conversations
 - [Integrate with LLMs](../05-how-to/integrate-with-llms.md) — OpenAI and Anthropic patterns

@@ -18,6 +18,7 @@ from typing import Any, TypeVar
 
 from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin
+from hypergraph.nodes._input_extraction import extract_inputs
 from hypergraph.nodes._rename import _apply_renames
 from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
 
@@ -280,7 +281,7 @@ class RouteNode(GateNode):
         # Core HyperNode attributes
         self.outputs = (f"_{self.name}", *self._emit)
 
-        inputs = tuple(inspect.signature(func).parameters.keys())
+        inputs, self._context_param = extract_inputs(func)
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
         _validate_emit_wait_for(
@@ -485,7 +486,7 @@ class IfElseNode(GateNode):
         # Core HyperNode attributes
         self.outputs = (f"_{self.name}", *self._emit)
 
-        inputs = tuple(inspect.signature(func).parameters.keys())
+        inputs, self._context_param = extract_inputs(func)
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
         _validate_emit_wait_for(

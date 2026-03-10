@@ -30,12 +30,15 @@ class RunStatus(Enum):
         COMPLETED: Run finished successfully
         FAILED: Run encountered an error
         PAUSED: Execution paused at an InterruptNode, waiting for user response
+        PARTIAL: Some map items completed, others failed (batch operations)
+        STOPPED: Run was cooperatively stopped via runner.stop()
     """
 
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
     PARTIAL = "partial"
+    STOPPED = "stopped"
 
 
 def _generate_run_id() -> str:
@@ -172,6 +175,11 @@ class RunResult:
     error: BaseException | None = None
     pause: PauseInfo | None = None
     log: RunLog | None = None
+
+    @property
+    def stopped(self) -> bool:
+        """Whether execution was stopped via runner.stop()."""
+        return self.status == RunStatus.STOPPED
 
     @property
     def paused(self) -> bool:
@@ -685,9 +693,11 @@ class ExecutionContext:
     event_processors: list[EventProcessor] | None = None
     parent_span_id: str | None = None
     workflow_id: str | None = None
+    run_id: str = ""
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False
     on_inner_log: Callable[[RunLog], None] | None = None
+    emit_fn: Callable[[Any], None] | None = None
 
 
 @dataclass

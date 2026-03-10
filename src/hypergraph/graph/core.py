@@ -1192,6 +1192,8 @@ class Graph:
                     parts.append(f"when_false={wf if isinstance(wf, str) else 'END'}")
             if isinstance(node, GraphNode):
                 parts.append(f"nested_struct={node.graph.structural_hash}")
+                if getattr(node, "_complete_on_stop", False):
+                    parts.append("complete_on_stop=True")
                 map_config = node.map_config
                 if map_config is not None:
                     map_params, map_mode, error_handling = map_config
@@ -1239,7 +1241,7 @@ class Graph:
                 "  # or Graph(..., entrypoint='<node_name>')"
             )
 
-    def as_node(self, *, name: str | None = None, runner: Any = None) -> GraphNode:
+    def as_node(self, *, name: str | None = None, runner: Any = None, complete_on_stop: bool = False) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.
 
         Args:
@@ -1247,6 +1249,10 @@ class Graph:
             runner: Optional runner to delegate execution to. When set,
                 the parent runner's GraphNode executor uses this runner
                 instead of itself for this subgraph.
+            complete_on_stop: When True, the inner graph finishes all
+                remaining supersteps after a stop signal instead of
+                breaking immediately. This allows partial results to
+                flow through downstream nodes before stopping.
 
         Returns:
             GraphNode wrapping this graph
@@ -1257,6 +1263,7 @@ class Graph:
         from hypergraph.nodes.graph_node import GraphNode
 
         node = GraphNode(self, name=name)
+        node._complete_on_stop = complete_on_stop
         if runner is not None:
             return node.with_runner(runner)
         return node

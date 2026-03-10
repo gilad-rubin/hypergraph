@@ -91,6 +91,10 @@ class GraphNode(HyperNode):
         # Runner delegation (None = inherit from parent runner)
         self._runner_override: Any = None
 
+        # When True, the inner graph finishes all remaining supersteps
+        # after a stop signal instead of breaking immediately.
+        self._complete_on_stop: bool = False
+
         # Core HyperNode attributes
         self.name = resolved_name
         self.inputs = graph.inputs.all

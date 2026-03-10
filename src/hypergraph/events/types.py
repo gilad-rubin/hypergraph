@@ -20,6 +20,7 @@ class RunStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
+    STOPPED = "stopped"
 
 
 def _generate_span_id() -> str:
@@ -203,9 +204,27 @@ class StopRequestedEvent(BaseEvent):
 
     Attributes:
         workflow_id: Optional workflow identifier.
+        info: Optional metadata from ``runner.stop(workflow_id, info=...)``.
     """
 
     workflow_id: str | None = None
+    info: object = None
+
+
+@dataclass(frozen=True)
+class StreamingChunkEvent(BaseEvent):
+    """Emitted by ``ctx.stream(chunk)`` inside a node.
+
+    Side-channel for live UI preview.  Does not affect the node's
+    return value or output type.
+
+    Attributes:
+        chunk: The streamed payload (token, JSON fragment, etc.).
+        node_name: Name of the node that emitted the chunk.
+    """
+
+    chunk: object = None
+    node_name: str = ""
 
 
 Event = (
@@ -219,4 +238,5 @@ Event = (
     | SuperstepStartEvent
     | InterruptEvent
     | StopRequestedEvent
+    | StreamingChunkEvent
 )

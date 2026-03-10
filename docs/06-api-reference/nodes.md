@@ -1029,6 +1029,95 @@ unnamed.as_node()
 
 ---
 
+## NodeContext
+
+**NodeContext** provides framework capabilities to nodes that need them: cooperative stop signals and live streaming. Injected automatically when detected in the function signature via type hint.
+
+### Usage
+
+Add `ctx: NodeContext` to any node function:
+
+```python
+from hypergraph import node, NodeContext
+
+@node(output_name="response")
+async def llm_reply(messages: list, ctx: NodeContext) -> str:
+    response = ""
+    async for chunk in llm.stream(messages):
+        if ctx.stop_requested:
+            break
+        response += chunk
+        ctx.stream(chunk)
+    return response
+```
+
+The framework detects `NodeContext` in the signature and injects it at execution time. The parameter is excluded from the node's inputs — it never appears in `node.inputs` and cannot be provided via `bind()` or `values`.
+
+```python
+llm_reply.inputs   # ("messages",) — ctx is not a graph input
+llm_reply.outputs  # ("response",)
+```
+
+### Properties
+
+#### `stop_requested: bool`
+
+Read-only. `True` when `runner.stop(workflow_id)` has been called. The node checks this cooperatively and decides when to break.
+
+```python
+@node(output_name="results")
+async def process_batch(items: list, ctx: NodeContext) -> list:
+    results = []
+    for item in items:
+        if ctx.stop_requested:
+            break
+        results.append(await process(item))
+    return results
+```
+
+### Methods
+
+#### `stream(chunk: Any) -> None`
+
+Emit a `StreamingChunkEvent` for live UI preview. Does not affect the node's return value — the node controls its own output type.
+
+```python
+@node(output_name="response")
+async def generate(prompt: str, ctx: NodeContext) -> str:
+    response = ""
+    async for chunk in llm.stream(prompt):
+        response += chunk
+        ctx.stream(chunk)  # UI sees tokens live
+    return response         # output: final string
+```
+
+Streaming is a side-channel. The framework doesn't accumulate chunks, manage reducers, or touch output types. `ctx.stream()` is silently skipped if `stop_requested` is `True`.
+
+### Injection Mechanism
+
+NodeContext uses the same type-hint inspection that powers automatic edge inference. This is the same pattern FastAPI uses for `Request` and `BackgroundTasks`:
+
+- The **type annotation** determines injection, not the parameter name. `ctx`, `context`, `nc` — all work.
+- Functions **without** `NodeContext` work exactly as before. Backward compatible.
+- Testing is plain Python: `llm_reply(messages=["hi"], ctx=mock_context)`.
+
+### Testing
+
+```python
+from unittest.mock import MagicMock
+
+def test_llm_reply_stops():
+    ctx = MagicMock(spec=NodeContext)
+    ctx.stop_requested = True
+
+    result = llm_reply(messages=["hello"], ctx=ctx)
+    assert result == ""  # stopped immediately
+```
+
+No framework setup needed — pass a mock or stub directly.
+
+---
+
 ## InterruptNode
 
 **InterruptNode** is a thin FunctionNode subclass that acts as a declarative pause point for human-in-the-loop workflows. When the handler returns `None`, execution pauses. When it returns a value, the interrupt auto-resolves.

@@ -14,6 +14,7 @@ from hypergraph.events.types import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    StreamingChunkEvent,
     SuperstepStartEvent,
 )
 
@@ -33,6 +34,7 @@ _EVENT_METHOD_MAP: dict[type, str] = {
     SuperstepStartEvent: "on_superstep_start",
     InterruptEvent: "on_interrupt",
     StopRequestedEvent: "on_stop_requested",
+    StreamingChunkEvent: "on_streaming_chunk",
 }
 
 
@@ -88,3 +90,4 @@ class TypedEventProcessor(EventProcessor):
     def on_superstep_start(self, event: SuperstepStartEvent) -> None: ...
     def on_interrupt(self, event: InterruptEvent) -> None: ...
     def on_stop_requested(self, event: StopRequestedEvent) -> None: ...
+    def on_streaming_chunk(self, event: StreamingChunkEvent) -> None: ...

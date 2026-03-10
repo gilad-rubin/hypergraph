@@ -107,6 +107,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -191,6 +192,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_run_id: str | None = None,
         _validation_ctx: _InputValidationContext | None = None,
         _run_config: dict[str, Any] | None = None,
+        _complete_on_stop: bool = False,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -355,12 +357,31 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
+                _complete_on_stop=_complete_on_stop,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
+            was_stopped = getattr(state, "_stopped", False)
+            status = RunStatus.STOPPED if was_stopped else RunStatus.COMPLETED
+
+            # Emit StopRequestedEvent if stopped
+            if was_stopped and dispatcher.active:
+                from hypergraph.events.types import StopRequestedEvent
+
+                stop_info = getattr(state, "_stop_info", None)
+                await dispatcher.emit_async(
+                    StopRequestedEvent(
+                        run_id=run_id,
+                        span_id=run_span_id,
+                        parent_span_id=_parent_span_id,
+                        workflow_id=workflow_id,
+                        info=stop_info,
+                    )
+                )
+
             result = RunResult(
                 values=output_values,
-                status=RunStatus.COMPLETED,
+                status=status,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
@@ -393,6 +414,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             return result
         except PauseExecution as pause:
             partial_state = getattr(pause, "_partial_state", None)
+            was_stopped = getattr(pause, "_stopped", False)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             if dispatcher.active:

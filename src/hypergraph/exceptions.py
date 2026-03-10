@@ -135,3 +135,20 @@ class InputOverrideRequiresForkError(Exception):
     def __init__(self, workflow_id: str) -> None:
         self.workflow_id = workflow_id
         super().__init__(f"Cannot pass input values when resuming workflow '{workflow_id}'. Use checkpoint + new workflow_id to fork.")
+
+
+class WorkflowAlreadyRunningError(Exception):
+    """Raised when a second run() starts for a workflow_id that already has an active run.
+
+    At most one active ``run()`` per ``workflow_id``.  If you need concurrent
+    runs, use different workflow IDs.
+    """
+
+    def __init__(self, workflow_id: str) -> None:
+        self.workflow_id = workflow_id
+        super().__init__(
+            f"Workflow '{workflow_id}' already has an active run. "
+            f"Only one run() per workflow_id at a time.\n\n"
+            f"How to fix:\n"
+            f"  Wait for the current run to complete, or use a different workflow_id."
+        )

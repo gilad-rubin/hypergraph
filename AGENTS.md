@@ -54,6 +54,20 @@ Change validation expectations:
 - If public API changes, update tests and relevant docs in the same task.
 - Use conventional commits with scopes, e.g. `feat(graph): ...`, `fix(runners): ...`.
 
+## Design Conversation Preferences
+
+When doing design work (exploring options, writing specs, proposing APIs):
+
+- **Code examples over prose.** Show user-facing code first, explain rationale after. A concrete `runner.run(...)` call communicates more than a paragraph about execution semantics.
+- **Start from the real use case.** Don't design in the abstract. Start with "user presses stop in a chat app" and work backward to the API, not the other way around.
+- **Build on existing patterns.** Before proposing new machinery, check if an existing feature (checkpointer, interrupt resume, event dispatch) already handles the case. Layer, don't duplicate.
+- **Simple top-level API, detail at lower levels.** `result.stopped` (boolean) for app control flow. Detailed metadata (which node, why, user-provided info) on events and step records. Don't force every consumer to destructure a dataclass for a yes/no question.
+- **Framework owns its own state.** If the framework needs a registry (active signals, handles), the framework manages it. Never leak internal bookkeeping to the app as dicts the user must maintain and clean up.
+- **Watch for naming collisions.** New concepts shouldn't shadow existing ones. If `InterruptNode` already exists, naming something `InterruptionInfo` creates confusion. Flag conflicts early.
+- **Enforce constraints explicitly.** If "one active run per workflow_id" is an invariant, validate it with an error — don't hope users follow the convention.
+- **Separate "what happened" from "what's next."** Status answers "what should the app do now?" Stop/failure info answers "what happened during this run?" Don't overload one field with both meanings.
+- **Question the framing before diving in.** If a feature is being designed around `.iter()` but the real pattern is checkpointer-based resume, say so. The right framing avoids wasted design work.
+
 ## Progressive Disclosure
 
 Load deeper docs only when relevant:

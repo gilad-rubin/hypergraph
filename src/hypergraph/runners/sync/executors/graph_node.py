@@ -75,32 +75,35 @@ class SyncGraphNodeExecutor:
             _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
-            results = runner.map(
-                node.graph,
-                inner_inputs,
-                map_over=original_params,
-                map_mode=mode,
-                clone=node._original_clone(),
-                error_handling=error_handling,
-                event_processors=ctx.event_processors,
-                workflow_id=child_workflow_id,
-                _parent_span_id=ctx.parent_span_id,
-                _parent_run_id=ctx.workflow_id,
-            )
+            map_kwargs: dict[str, Any] = {
+                "map_over": original_params,
+                "map_mode": mode,
+                "clone": node._original_clone(),
+                "error_handling": error_handling,
+                "event_processors": ctx.event_processors,
+                "workflow_id": child_workflow_id,
+                "_parent_span_id": ctx.parent_span_id,
+                "_parent_run_id": ctx.workflow_id,
+            }
+            if getattr(node, "_complete_on_stop", False):
+                map_kwargs["_complete_on_stop"] = True
+            results = runner.map(node.graph, inner_inputs, **map_kwargs)
             if ctx.on_inner_log:
                 for result in results:
                     if result.log is not None:
                         ctx.on_inner_log(result.log)
             return collect_as_lists(results, node, error_handling)
 
-        result = runner.run(
-            node.graph,
-            inner_inputs,
-            event_processors=ctx.event_processors,
-            workflow_id=child_workflow_id,
-            _parent_span_id=ctx.parent_span_id,
-            _parent_run_id=ctx.workflow_id,
-        )
+        run_kwargs: dict[str, Any] = {
+            "event_processors": ctx.event_processors,
+            "workflow_id": child_workflow_id,
+            "_parent_span_id": ctx.parent_span_id,
+            "_parent_run_id": ctx.workflow_id,
+        }
+        if getattr(node, "_complete_on_stop", False):
+            run_kwargs["_complete_on_stop"] = True
+
+        result = runner.run(node.graph, inner_inputs, **run_kwargs)
         if ctx.on_inner_log and result.log is not None:
             ctx.on_inner_log(result.log)
         return node.map_outputs_from_original(result.values)

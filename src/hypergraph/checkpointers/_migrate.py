@@ -88,6 +88,7 @@ CREATE TABLE IF NOT EXISTS steps (
     input_versions TEXT,
     values_data BLOB,
     child_run_id TEXT REFERENCES runs(id),
+    partial INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     completed_at TEXT,
     UNIQUE(run_id, superstep, node_name)
@@ -112,15 +113,20 @@ def _create_indexes(conn: Any) -> None:
 
 def _ensure_v3_columns(conn: Any) -> None:
     """Ensure v3 lineage columns exist (safe idempotent guard)."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
-    if "forked_from" not in existing:
+    existing_runs = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    if "forked_from" not in existing_runs:
         conn.execute("ALTER TABLE runs ADD COLUMN forked_from TEXT REFERENCES runs(id)")
-    if "fork_superstep" not in existing:
+    if "fork_superstep" not in existing_runs:
         conn.execute("ALTER TABLE runs ADD COLUMN fork_superstep INTEGER")
-    if "retry_of" not in existing:
+    if "retry_of" not in existing_runs:
         conn.execute("ALTER TABLE runs ADD COLUMN retry_of TEXT REFERENCES runs(id)")
-    if "retry_index" not in existing:
+    if "retry_index" not in existing_runs:
         conn.execute("ALTER TABLE runs ADD COLUMN retry_index INTEGER")
+
+    existing_steps = {row[1] for row in conn.execute("PRAGMA table_info(steps)").fetchall()}
+    if "partial" not in existing_steps:
+        conn.execute("ALTER TABLE steps ADD COLUMN partial INTEGER NOT NULL DEFAULT 0")
+
     _create_indexes(conn)
     conn.commit()
 

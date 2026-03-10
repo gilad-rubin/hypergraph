@@ -55,3 +55,11 @@ When reviewing code changes:
 - [ ] Changes to `sync/` mirrored in `async_/`?
 - [ ] Changes to `_shared/template_sync.py` mirrored in `_shared/template_async.py`?
 - [ ] New executor in `sync/executors/` has counterpart in `async_/executors/`?
+
+### API Design
+- [ ] Top-level result properties simple enough for `if result.x:`? (Booleans/enums for control flow, not dataclasses)
+- [ ] Detailed metadata pushed to events or step records, not surfaced on the primary result?
+- [ ] Framework manages its own internal state? (No dicts the app must maintain/clean up)
+- [ ] New naming doesn't shadow existing concepts? (e.g., "interrupt" already means InterruptNode)
+- [ ] Invariants enforced with errors, not just documented? (e.g., one active run per workflow)
+- [ ] Builds on existing patterns (checkpointer, events, contextvars) rather than inventing parallel systems?

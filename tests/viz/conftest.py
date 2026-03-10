@@ -11,6 +11,8 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 
 import pytest
@@ -21,15 +23,29 @@ from hypergraph.viz.renderer import render_graph
 
 
 def _check_playwright_available() -> bool:
-    """Check if playwright is installed AND browser binaries are available."""
+    """Check if playwright is installed AND browser binaries are available.
+
+    Runs the check in a subprocess to avoid contaminating the current process
+    event loop, which would interfere with pytest-asyncio under xdist.
+    """
     if importlib.util.find_spec("playwright") is None:
         return False
     try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as p:
-            executable = p.chromium.executable_path
-            return os.path.exists(executable)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from playwright.sync_api import sync_playwright; "
+                "p = sync_playwright().start(); "
+                "import os; "
+                "print(os.path.exists(p.chromium.executable_path)); "
+                "p.stop()",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "True"
     except Exception:
         return False
 
@@ -207,9 +223,14 @@ def _cached_html_path(
 # =============================================================================
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def _playwright_instance():
-    """Shared Playwright instance for the test session."""
+    """Shared Playwright instance for a test module.
+
+    Module scope (not session) ensures playwright is torn down after each viz
+    test file, so async tests stolen to this worker by xdist don't see a
+    running event loop.
+    """
     if not HAS_PLAYWRIGHT:
         pytest.skip("playwright not installed")
 
@@ -219,9 +240,9 @@ def _playwright_instance():
         yield p
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def _browser(_playwright_instance):
-    """Shared browser instance for the test session."""
+    """Shared browser instance for a test module."""
     browser = _playwright_instance.chromium.launch(headless=True)
     yield browser
     browser.close()

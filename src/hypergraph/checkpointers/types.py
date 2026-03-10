@@ -56,6 +56,7 @@ class StepRecord:
     created_at: datetime = field(default_factory=_utcnow)
     completed_at: datetime | None = None
     child_run_id: str | None = None
+    partial: bool = False
 
     def __repr__(self) -> str:
         status = "cached" if self.cached else self.status.value
@@ -90,6 +91,7 @@ class StepRecord:
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "child_run_id": self.child_run_id,
+            "partial": self.partial,
         }
 
 

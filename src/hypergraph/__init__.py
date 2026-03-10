@@ -21,6 +21,7 @@ from hypergraph.events import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    StreamingChunkEvent,
     SuperstepStartEvent,
     TypedEventProcessor,
 )
@@ -32,6 +33,7 @@ from hypergraph.exceptions import (
     InputOverrideRequiresForkError,
     MissingInputError,
     WorkflowAlreadyCompletedError,
+    WorkflowAlreadyRunningError,
     WorkflowForkError,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
@@ -65,6 +67,7 @@ from hypergraph.runners import (
     RunStatus,
     SyncRunner,
 )
+from hypergraph.runners._shared.node_context import NodeContext
 
 __all__ = [
     # Decorators and node types
@@ -103,6 +106,7 @@ __all__ = [
     "GraphChangedError",
     "WorkflowForkError",
     "InputOverrideRequiresForkError",
+    "WorkflowAlreadyRunningError",
     # RunLog
     "RunLog",
     "MapLog",
@@ -125,7 +129,10 @@ __all__ = [
     "RunStartEvent",
     "StopRequestedEvent",
     "CacheHitEvent",
+    "StreamingChunkEvent",
     "RichProgressProcessor",
+    # Context
+    "NodeContext",
     # Cache
     "CacheBackend",
     "InMemoryCache",

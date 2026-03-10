@@ -46,6 +46,7 @@ class AsyncFunctionNodeExecutor:
             node: The FunctionNode to execute
             state: Current graph execution state (unused for FunctionNode)
             inputs: Input values for the node
+            ctx: ExecutionContext with emit_fn for NodeContext injection
 
         Returns:
             Dict mapping output names to their values
@@ -54,17 +55,24 @@ class AsyncFunctionNodeExecutor:
 
         if semaphore:
             async with semaphore:
-                return await self._execute(node, inputs)
-        return await self._execute(node, inputs)
+                return await self._execute(node, inputs, ctx)
+        return await self._execute(node, inputs, ctx)
 
     async def _execute(
         self,
         node: FunctionNode,
         inputs: dict[str, Any],
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         """Execute the function and handle result types."""
         # Map renamed inputs back to original function parameter names
         func_inputs = map_inputs_to_func_params(node, inputs)
+
+        # Inject NodeContext if the node declares one
+        if getattr(node, "_context_param", None) is not None:
+            from hypergraph.runners._shared.node_context import build_node_context
+
+            func_inputs[node._context_param] = build_node_context(node.name, ctx.emit_fn, run_id=ctx.run_id)
 
         # Call the function
         result = node.func(**func_inputs)
