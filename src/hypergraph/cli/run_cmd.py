@@ -128,6 +128,14 @@ def _warn_sync_workflow_id_ignored(workflow_id: str | None, *, db: str | None) -
         print("Warning: --workflow-id has no persistence effect in sync mode without --db.")
 
 
+def _close_async_runner_resources(runner: Any) -> None:
+    """Best-effort cleanup for async runner resources created by the CLI."""
+    checkpointer = getattr(runner, "_checkpointer", None)
+    if checkpointer is None:
+        return
+    asyncio.run(checkpointer.close())
+
+
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
@@ -234,7 +242,10 @@ def register_commands(app: typer.Typer) -> None:
             run_kwargs["workflow_id"] = workflow_id
 
         if is_async:
-            result = asyncio.run(runner.run(graph, input_values or None, **run_kwargs))
+            try:
+                result = asyncio.run(runner.run(graph, input_values or None, **run_kwargs))
+            finally:
+                _close_async_runner_resources(runner)
         else:
             _warn_sync_workflow_id_ignored(workflow_id, db=db)
             result = runner.run(graph, input_values or None, **run_kwargs)
@@ -279,9 +290,12 @@ def register_commands(app: typer.Typer) -> None:
             map_kwargs["workflow_id"] = workflow_id
 
         if is_async:
-            if db is not None and workflow_id is None:
-                print("Warning: map checkpointing requires --workflow-id; running without persistence.")
-            result = asyncio.run(runner.map(graph, input_values or None, **map_kwargs))
+            try:
+                if db is not None and workflow_id is None:
+                    print("Warning: map checkpointing requires --workflow-id; running without persistence.")
+                result = asyncio.run(runner.map(graph, input_values or None, **map_kwargs))
+            finally:
+                _close_async_runner_resources(runner)
         else:
             _warn_sync_workflow_id_ignored(workflow_id, db=db)
             result = runner.map(graph, input_values or None, **map_kwargs)

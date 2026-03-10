@@ -219,32 +219,38 @@ class TestChatAppE2E:
         from hypergraph.checkpointers import SqliteCheckpointer
 
         cp = SqliteCheckpointer(str(tmp_path / "chat.db"))
-        runner = AsyncRunner(checkpointer=cp)
-        graph = CHAT_GRAPH.bind(messages=[], max_turns=3)
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            graph = CHAT_GRAPH.bind(messages=[], max_turns=3)
 
-        r1 = await runner.run(graph, workflow_id="t", user_input="hello")
-        assert r1.paused
-        msgs = r1["messages"]
-        assert len(msgs) == 2  # user + assistant
-        assert msgs[0]["role"] == "user"
-        assert msgs[1]["role"] == "assistant"
+            r1 = await runner.run(graph, workflow_id="t", user_input="hello")
+            assert r1.paused
+            msgs = r1["messages"]
+            assert len(msgs) == 2  # user + assistant
+            assert msgs[0]["role"] == "user"
+            assert msgs[1]["role"] == "assistant"
 
-        r2 = await runner.run(graph, workflow_id="t", user_input="more")
-        assert r2.paused
-        assert len(r2["messages"]) == 4
+            r2 = await runner.run(graph, workflow_id="t", user_input="more")
+            assert r2.paused
+            assert len(r2["messages"]) == 4
 
-        r3 = await runner.run(graph, workflow_id="t", user_input="last")
-        assert not r3.paused  # max_turns=3 reached
-        assert len(r3["messages"]) == 6
+            r3 = await runner.run(graph, workflow_id="t", user_input="last")
+            assert not r3.paused  # max_turns=3 reached
+            assert len(r3["messages"]) == 6
+        finally:
+            await cp.close()
 
     @pytest.mark.asyncio
     async def test_single_turn_terminates(self, tmp_path):
         from hypergraph.checkpointers import SqliteCheckpointer
 
         cp = SqliteCheckpointer(str(tmp_path / "chat.db"))
-        runner = AsyncRunner(checkpointer=cp)
-        graph = CHAT_GRAPH.bind(messages=[], max_turns=1)
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+            graph = CHAT_GRAPH.bind(messages=[], max_turns=1)
 
-        r = await runner.run(graph, workflow_id="t", user_input="one shot")
-        assert not r.paused
-        assert len(r["messages"]) == 2
+            r = await runner.run(graph, workflow_id="t", user_input="one shot")
+            assert not r.paused
+            assert len(r["messages"]) == 2
+        finally:
+            await cp.close()

@@ -34,5 +34,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --group dev
-      - run: uv run pytest
+      - run: uv sync --group dev --extra daft
+      - run: uv run pytest -W error --junitxml=pytest.xml
+      - run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("pytest.xml").getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          if suite is None:
+              raise SystemExit("Could not find testsuite in pytest.xml")
+          skipped = int(suite.attrib.get("skipped", "0"))
+          warnings = int(suite.attrib.get("warnings", "0"))
+          if skipped:
+              raise SystemExit(f"CI requires zero skipped tests, found {skipped}")
+          if warnings:
+              raise SystemExit(f"CI requires zero warnings, found {warnings}")
+          print("Pytest reported zero skips and zero warnings.")
+          PY
