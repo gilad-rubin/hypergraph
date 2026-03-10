@@ -5,6 +5,7 @@ from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from hypergraph.checkpointers import (
     CheckpointPolicy,
@@ -18,11 +19,12 @@ from hypergraph.checkpointers import (
 aiosqlite = pytest.importorskip("aiosqlite")
 
 
-@pytest.fixture
-def checkpointer(tmp_path):
+@pytest_asyncio.fixture
+async def checkpointer(tmp_path):
     """Create a fresh SqliteCheckpointer for each test."""
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
     yield cp
+    await cp.close()
 
 
 def _make_step(run_id="wf-1", superstep=0, node_name="embed", index=0, **kwargs):

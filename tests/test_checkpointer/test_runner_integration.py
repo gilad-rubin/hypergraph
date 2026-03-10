@@ -1,6 +1,7 @@
 """Integration tests: AsyncRunner + SqliteCheckpointer end-to-end."""
 
 import pytest
+import pytest_asyncio
 
 from hypergraph import AsyncRunner, Graph, node
 from hypergraph.checkpointers import (
@@ -14,11 +15,12 @@ from hypergraph.checkpointers import (
 aiosqlite = pytest.importorskip("aiosqlite")
 
 
-@pytest.fixture
-def checkpointer(tmp_path):
+@pytest_asyncio.fixture
+async def checkpointer(tmp_path):
     """Create a fresh SqliteCheckpointer for each test."""
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
     yield cp
+    await cp.close()
 
 
 # --- Simple pipeline nodes ---
