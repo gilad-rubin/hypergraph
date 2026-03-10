@@ -317,8 +317,14 @@ class TestStopConvergesToPaused:
         """
         from hypergraph.checkpointers import SqliteCheckpointer
 
+        # Sync event: set when generate actually starts iterating.
+        # Avoids timing-based stop that can fire before the signal is
+        # registered (checkpointer.create_run runs before signal setup).
+        generation_started = asyncio.Event()
+
         @node(output_name="response")
         async def generate(ctx: NodeContext) -> str:
+            generation_started.set()
             result = ""
             for i in range(100):
                 if ctx.stop_requested:
@@ -344,7 +350,8 @@ class TestStopConvergesToPaused:
             runner = AsyncRunner(checkpointer=cp)
 
             async def stop_soon():
-                await asyncio.sleep(0.02)
+                await generation_started.wait()
+                await asyncio.sleep(0.02)  # let a few tokens generate
                 runner.stop("chat-1")
 
             task = asyncio.create_task(stop_soon())
