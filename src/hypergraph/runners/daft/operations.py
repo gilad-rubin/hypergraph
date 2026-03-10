@@ -18,52 +18,48 @@ if TYPE_CHECKING:
 class DaftStateful(Protocol):
     """Protocol for objects loaded once per Daft worker.
 
-    Mark a class as stateful so DaftRunner wraps it with ``@daft.cls``
+    Mark a class with ``@stateful`` so DaftRunner wraps it with ``@daft.cls``
     instead of ``@daft.func``.  This is useful for heavy resources
     (ML models, DB connections) that should be initialized once per
     worker process rather than once per row.
 
     Example::
 
+        @stateful
         class MyModel:
-            __daft_stateful__ = True
-
             def __init__(self):
                 self.model = load_heavy_model()
 
-        model = MyModel()
-        graph = Graph([embed]).bind(model=model)
-        runner = DaftRunner()
-        runner.map(graph, {"text": texts}, map_over="text")
+        graph = Graph([embed]).bind(model=MyModel())
+        DaftRunner().map(graph, {"text": texts}, map_over="text")
     """
 
     __daft_stateful__: ClassVar[bool]
 
 
-def mark_batch(func: Any) -> Any:
-    """Mark a function for batch (vectorized) Daft UDF execution.
+def stateful(cls: type) -> type:
+    """Mark a class for per-worker initialization in DaftRunner.
 
-    When DaftRunner encounters a node whose underlying function has
-    this marker, it uses ``@daft.func.batch`` instead of ``@daft.func``.
-    Batch UDFs receive ``daft.Series`` instead of scalars.
+    Stateful objects are re-created once per Daft worker process via
+    ``@daft.cls``, so heavy resources (models, DB connections) aren't
+    serialized per row.
 
     Example::
 
-        @node(output_name="normalized")
-        def normalize(values: daft.Series) -> daft.Series:
-            arr = values.to_arrow().to_numpy()
-            return (arr - arr.mean()) / arr.std()
+        @stateful
+        class MyModel:
+            def __init__(self):
+                self.model = load_heavy_model()
 
-        mark_batch(normalize.func)
+        graph = Graph([embed]).bind(model=MyModel())
     """
-    func.__daft_batch__ = True
-    return func
+    cls.__daft_stateful__ = True
+    return cls
 
 
-def is_batch_marked(node: HyperNode) -> bool:
-    """Check if a node's underlying function is batch-marked."""
-    func = getattr(node, "func", None)
-    return getattr(func, "__daft_batch__", False) is True
+def is_batch(node: HyperNode) -> bool:
+    """Check if a node is marked for batch (vectorized) execution."""
+    return getattr(node, "batch", False) is True
 
 
 def _is_stateful(v: Any) -> bool:
@@ -370,7 +366,7 @@ def create_operation(
                 bound_values=node_bound,
                 clone=clone,
             )
-        if is_batch_marked(node):
+        if is_batch(node):
             if len(output_cols) > 1:
                 from hypergraph.runners._shared.validation import IncompatibleRunnerError
 

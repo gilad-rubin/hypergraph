@@ -455,15 +455,29 @@ def count(cleaned_text: str) -> int:
 
 graph = Graph([clean, count], name="text_pipeline")
 
-frame = daft.from_pylist([
-    {"text": "  Alpha beta alpha  "},
-    {"text": "Gamma delta epsilon zeta eta"},
-])
+frame = daft.from_pydict({
+    "text": ["  Alpha beta alpha  ", "Gamma delta epsilon zeta eta"],
+})
 
 runner = DaftRunner()
-results = runner.map_dataframe(graph, frame)
+result_df = runner.map_dataframe(graph, frame)
+# result_df is a Daft DataFrame with columns: text, cleaned_text, word_count
+result_df.show()
+```
 
-print(results["word_count"])  # [3, 5]
+Broadcast values (shared across all rows) are passed as keyword arguments
+and captured in UDF closures:
+
+```python
+@node(output_name="greeting")
+def greet(name: str, prefix: str) -> str:
+    return f"{prefix}, {name}!"
+
+graph = Graph([greet])
+df = daft.from_pydict({"name": ["Alice", "Bob"]})
+
+result_df = DaftRunner().map_dataframe(graph, df, prefix="Hi")
+# Each row gets prefix="Hi" via the UDF closure
 ```
 
 ### capabilities
@@ -481,19 +495,19 @@ caps.supports_distributed     # True
 caps.supports_checkpointing   # False
 ```
 
-### DaftStateful Protocol
+### @stateful
 
-Mark a class for once-per-worker initialization. DaftRunner wraps stateful
-objects with `@daft.cls` instead of `@daft.func`, so heavy resources (ML
-models, DB connections) are created once per worker process rather than once
-per row.
+Decorator to mark a class for once-per-worker initialization. DaftRunner wraps
+stateful objects with `@daft.cls` instead of `@daft.func`, so heavy resources
+(ML models, DB connections) are created once per worker process rather than
+once per row.
 
 ```python
 from hypergraph import DaftRunner, Graph, node
+from hypergraph.runners.daft import stateful
 
+@stateful
 class Embedder:
-    __daft_stateful__ = True
-
     def __init__(self):
         self.model = load_heavy_model()
 
@@ -509,25 +523,20 @@ runner = DaftRunner()
 results = runner.map(graph, {"text": texts}, map_over="text")
 ```
 
-The `DaftStateful` protocol requires a single class variable:
+The class must support zero-argument construction (`__init__()` with no
+required args) so Daft can re-create it on each worker.
 
-```python
-class DaftStateful(Protocol):
-    __daft_stateful__: ClassVar[bool]
-```
+### batch=True
 
-### mark_batch()
-
-Mark a function for vectorized `@daft.func.batch` execution. Batch UDFs
-receive `daft.Series` instead of scalar values, useful for NumPy/Arrow
-operations.
+Use `batch=True` on the `@node` decorator for vectorized `@daft.func.batch`
+execution. Batch UDFs receive `daft.Series` instead of scalar values, useful
+for NumPy/Arrow operations.
 
 ```python
 import daft
 from hypergraph import DaftRunner, Graph, node
-from hypergraph.runners.daft import mark_batch
 
-@node(output_name="normalized")
+@node(output_name="normalized", batch=True)
 def normalize(values: daft.Series) -> daft.Series:
     arr = values.to_pylist()
     mean = sum(arr) / len(arr)
@@ -535,8 +544,6 @@ def normalize(values: daft.Series) -> daft.Series:
     if std == 0:
         return daft.Series.from_pylist([0.0] * len(arr))
     return daft.Series.from_pylist([round((x - mean) / std, 4) for x in arr])
-
-mark_batch(normalize.func)
 
 graph = Graph([normalize], name="batch_norm")
 runner = DaftRunner()

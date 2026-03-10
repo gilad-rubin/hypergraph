@@ -1,7 +1,7 @@
-"""Batch normalization — vectorized UDFs with @daft.func.batch.
+"""Batch normalization — vectorized UDFs with batch=True.
 
 Demonstrates:
-- mark_batch() for vectorized processing
+- batch=True on @node() for vectorized processing
 - Batch UDFs receive daft.Series instead of scalars
 - Useful for NumPy/Arrow-based operations
 
@@ -11,10 +11,9 @@ Inspired by Daft's batch UDF documentation.
 import daft
 
 from hypergraph import DaftRunner, Graph, node
-from hypergraph.runners.daft import mark_batch
 
 
-@node(output_name="normalized")
+@node(output_name="normalized", batch=True)
 def normalize(values: daft.Series) -> daft.Series:
     """Z-score normalize a column of values.
 
@@ -27,10 +26,6 @@ def normalize(values: daft.Series) -> daft.Series:
     if std == 0:
         return daft.Series.from_pylist([0.0] * len(arr))
     return daft.Series.from_pylist([round((x - mean) / std, 4) for x in arr])
-
-
-# Mark the function for batch execution
-mark_batch(normalize.func)
 
 
 graph = Graph([normalize], name="batch_norm")

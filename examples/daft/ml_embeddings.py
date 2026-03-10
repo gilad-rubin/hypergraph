@@ -1,7 +1,7 @@
-"""ML embeddings — DaftStateful protocol for model loading.
+"""ML embeddings — @stateful decorator for model loading.
 
 Demonstrates:
-- DaftStateful protocol: model loaded once per Daft worker
+- @stateful decorator: model loaded once per Daft worker
 - @daft.cls wrapping for stateful UDFs
 - graph.bind() for injecting the model
 
@@ -9,15 +9,17 @@ Inspired by Daft's stateful UDF tutorial.
 """
 
 from hypergraph import DaftRunner, Graph, node
+from hypergraph.runners.daft import stateful
 
 
+@stateful
 class MockEmbedder:
     """Simulates a heavy ML model loaded once per worker.
 
-    Implements DaftStateful protocol so DaftRunner uses @daft.cls.
+    The @stateful decorator tells DaftRunner to use @daft.cls,
+    re-creating the object once per worker process.
     """
 
-    __daft_stateful__ = True
     init_count = 0
 
     def __init__(self):

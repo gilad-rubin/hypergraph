@@ -13,8 +13,8 @@ from hypergraph.runners.daft.operations import (
     DaftStateful,
     create_operation,
     has_stateful_values,
-    is_batch_marked,
-    mark_batch,
+    is_batch,
+    stateful,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,8 +37,8 @@ async def async_double(x: int) -> int:
     return x * 2
 
 
+@stateful
 class MockModel:
-    __daft_stateful__ = True
     init_count = 0
 
     def __init__(self):
@@ -60,6 +60,14 @@ class TestDaftStatefulProtocol:
     def test_protocol_detection(self):
         assert isinstance(MockModel(), DaftStateful)
 
+    def test_stateful_decorator_sets_attribute(self):
+        @stateful
+        class Foo:
+            pass
+
+        assert Foo.__daft_stateful__ is True
+        assert isinstance(Foo(), DaftStateful)
+
     def test_non_stateful_not_detected(self):
 
         class PlainObj:
@@ -73,32 +81,30 @@ class TestDaftStatefulProtocol:
     def test_has_stateful_values_false(self):
         assert not has_stateful_values({"x": 42, "y": "hello"})
 
+    def test_false_attribute_not_detected(self):
+        """Classes with __daft_stateful__ = False are NOT stateful."""
+
+        class NotStateful:
+            __daft_stateful__ = False
+
+        assert not has_stateful_values({"obj": NotStateful()})
+
 
 # ---------------------------------------------------------------------------
-# Batch marker
+# Batch detection
 # ---------------------------------------------------------------------------
 
 
-class TestBatchMarker:
-    def test_mark_batch_sets_attribute(self):
-
-        def my_func():
-            pass
-
-        mark_batch(my_func)
-        assert my_func.__daft_batch__ is True
-
-    def test_is_batch_marked_detects(self):
-
-        @node(output_name="out")
+class TestBatchDetection:
+    def test_batch_true_detected(self):
+        @node(output_name="out", batch=True)
         def batch_node(x: int) -> int:
             return x
 
-        mark_batch(batch_node.func)
-        assert is_batch_marked(batch_node)
+        assert is_batch(batch_node)
 
-    def test_is_batch_marked_false_by_default(self):
-        assert not is_batch_marked(add_one)
+    def test_batch_false_by_default(self):
+        assert not is_batch(add_one)
 
 
 # ---------------------------------------------------------------------------
@@ -128,11 +134,10 @@ class TestCreateOperation:
     def test_routes_batch_node(self):
         from hypergraph.runners.daft.operations import BatchNodeOperation
 
-        @node(output_name="out")
+        @node(output_name="out", batch=True)
         def batch_fn(x: int) -> int:
             return x
 
-        mark_batch(batch_fn.func)
         graph = Graph([batch_fn], name="test")
         op = create_operation(batch_fn, graph, bound_values={})
         assert isinstance(op, BatchNodeOperation)

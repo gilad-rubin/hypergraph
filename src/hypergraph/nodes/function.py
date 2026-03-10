@@ -112,6 +112,7 @@ class FunctionNode(CallableMixin, HyperNode):
         hide: bool = False,
         emit: str | tuple[str, ...] | None = None,
         wait_for: str | tuple[str, ...] | None = None,
+        batch: bool = False,
     ) -> None:
         """Wrap a function as a node.
 
@@ -128,6 +129,8 @@ class FunctionNode(CallableMixin, HyperNode):
             wait_for: Ordering-only input name(s). Node won't run until these
                       values exist and are fresh. Participates in edge inference
                       like function parameters.
+            batch: If True, DaftRunner uses vectorized batch UDF execution
+                   (receives ``daft.Series`` instead of scalars).
 
         Warning:
             If the function has a return type annotation but no output_name
@@ -146,6 +149,7 @@ class FunctionNode(CallableMixin, HyperNode):
         self.func = func
         self._cache = cache
         self._hide = hide
+        self._batch = batch
         self._definition_hash = hash_definition(func)
         self._emit = ensure_tuple(emit) if emit else ()
         self._wait_for = ensure_tuple(wait_for) if wait_for else ()
@@ -189,6 +193,11 @@ class FunctionNode(CallableMixin, HyperNode):
     def hide(self) -> bool:
         """Whether this node is hidden from visualization."""
         return self._hide
+
+    @property
+    def batch(self) -> bool:
+        """Whether this node uses vectorized batch execution in DaftRunner."""
+        return self._batch
 
     @property
     def wait_for(self) -> tuple[str, ...]:
@@ -298,6 +307,7 @@ def node(
     hide: bool = False,
     emit: str | tuple[str, ...] | None = None,
     wait_for: str | tuple[str, ...] | None = None,
+    batch: bool = False,
 ) -> FunctionNode | Callable[[Callable], FunctionNode]:
     """Decorator to wrap a function as a FunctionNode.
 
@@ -320,6 +330,8 @@ def node(
               when node runs. Participates in edge inference like output_name.
         wait_for: Ordering-only input name(s). Node won't run until these
                   values exist and are fresh.
+        batch: If True, DaftRunner uses vectorized batch UDF execution
+               (receives ``daft.Series`` instead of scalars).
 
     Returns:
         FunctionNode if source provided, else decorator function.
@@ -344,6 +356,7 @@ def node(
             hide=hide,
             emit=emit,
             wait_for=wait_for,
+            batch=batch,
         )
         fn_node.__wrapped__ = func
         return fn_node

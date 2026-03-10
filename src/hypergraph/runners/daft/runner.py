@@ -52,10 +52,11 @@ class DaftRunner(BaseRunner):
 
     Each node becomes a Daft UDF chained via ``df.with_column()``.
     Supports sync nodes, async nodes (Daft handles natively),
-    stateful UDFs (``DaftStateful`` protocol), batch UDFs
-    (``__daft_batch__`` marker), and nested GraphNodes.
+    stateful UDFs (``@stateful``), batch UDFs (``batch=True``),
+    and nested GraphNodes.
 
-    Does NOT support cycles, gates, or interrupts.
+    Does NOT support cycles, gates, interrupts, or runner delegation
+    (``with_runner()`` on nested GraphNodes).
     """
 
     def __init__(self, *, cache: CacheBackend | None = None):
@@ -118,6 +119,7 @@ class DaftRunner(BaseRunner):
         self._warn_ignored(event_processors=event_processors)
 
         validate_runner_compatibility(graph, self.capabilities)
+        _validate_no_runner_overrides(graph)
         _validate_error_handling(error_handling)
         effective_selected = resolve_runtime_selected(select, graph)
         _validate_on_missing(on_missing)
@@ -178,6 +180,7 @@ class DaftRunner(BaseRunner):
         self._warn_ignored(event_processors=event_processors)
 
         validate_runner_compatibility(graph, self.capabilities)
+        _validate_no_runner_overrides(graph)
         _validate_error_handling(error_handling)
         effective_selected = resolve_runtime_selected(select, graph)
         _validate_on_missing(on_missing)
@@ -248,20 +251,32 @@ class DaftRunner(BaseRunner):
         *,
         columns: str | Iterable[str] | None = None,
         values: dict[str, Any] | None = None,
-        select: str | list[str] = _UNSET_SELECT,
-        on_missing: Literal["ignore", "warn", "error"] = "ignore",
-        error_handling: Literal["raise", "continue"] = "raise",
         clone: bool | list[str] = False,
         **input_values: Any,
-    ) -> MapResult:
-        """Execute one graph run per Daft DataFrame row.
+    ) -> DataFrame:
+        """Execute graph per DataFrame row, returning a new DataFrame.
 
-        Note:
-            This method currently materializes the selected columns to the driver
-            before execution (``df.collect()``). Avoid using it with DataFrames
-            too large to fit in driver memory. For large-scale distributed workloads,
-            prefer ``map()`` with Python lists instead.
+        The execution plan is applied directly to the input DataFrame —
+        no materialization to Python. Broadcast values (``values`` / kwargs)
+        are captured in UDF closures alongside ``graph.bind()`` values.
+
+        Args:
+            graph: A validated DAG graph.
+            dataframe: Input Daft DataFrame. Each row is one graph execution.
+            columns: Which DataFrame columns to use as graph inputs.
+                     Defaults to all columns.
+            values: Broadcast values shared across all rows (captured in
+                    UDF closures, not added as DataFrame columns).
+            clone: Deep-copy strategy (generally not needed — Daft provides
+                   row isolation).
+            **input_values: Additional broadcast values (merged with ``values``).
+
+        Returns:
+            Daft DataFrame with original input columns plus output columns
+            from graph execution.
         """
+        from hypergraph.runners.daft.engine import build_execution_plan, execute_plan
+
         normalized = normalize_inputs(
             values,
             input_values,
@@ -269,67 +284,17 @@ class DaftRunner(BaseRunner):
         )
 
         validate_runner_compatibility(graph, self.capabilities)
-        _validate_error_handling(error_handling)
-        effective_selected = resolve_runtime_selected(select, graph)
-        _validate_on_missing(on_missing)
-        precompute_input_validation(
-            graph,
-            entrypoint=None,
-            selected=effective_selected,
-        )
+        _validate_no_runner_overrides(graph)
 
         column_names = _resolve_columns(dataframe, columns)
         _check_column_overlap(column_names, normalized)
 
-        # Convert DataFrame rows to input dicts
-        work_df = dataframe.select(*column_names).collect()
-        rows = work_df.to_pydict()
-        n_rows = len(next(iter(rows.values()))) if rows else 0
-        input_variations = [{**normalized, **{col: rows[col][i] for col in column_names}} for i in range(n_rows)]
+        # Merge graph.bind() + broadcast values — both captured in UDF closures
+        bound = dict(graph.inputs.bound) if graph.inputs.bound else {}
+        all_bound = {**bound, **normalized}
 
-        if not input_variations:
-            return MapResult(
-                results=(),
-                run_id=None,
-                total_duration_ms=0,
-                map_over=tuple(column_names),
-                map_mode="rows",
-                graph_name=graph.name or "",
-            )
-
-        start = time.time()
-        try:
-            all_values = self._execute_columnar(graph, input_variations, clone=clone)
-        except Exception:
-            if error_handling == "raise":
-                raise
-            all_values = None
-
-        results = self._collect_results(
-            graph,
-            input_variations,
-            all_values,
-            select,
-            on_missing,
-            error_handling,
-            start,
-            clone,
-        )
-        total_duration = (time.time() - start) * 1000
-
-        if error_handling == "raise":
-            for r in results:
-                if r.status == RunStatus.FAILED:
-                    raise r.error  # type: ignore[misc]
-
-        return MapResult(
-            results=tuple(results),
-            run_id=_generate_run_id(),
-            total_duration_ms=total_duration,
-            map_over=tuple(column_names),
-            map_mode="rows",
-            graph_name=graph.name or "",
-        )
+        plan = build_execution_plan(graph, all_bound, self._cache, clone)
+        return execute_plan(dataframe.select(*column_names), plan)
 
     # ------------------------------------------------------------------
     # Internal: columnar execution
@@ -448,6 +413,22 @@ class DaftRunner(BaseRunner):
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
+
+def _validate_no_runner_overrides(graph: Graph) -> None:
+    """Reject with_runner() overrides — DaftRunner controls all subgraphs."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    for node in graph._nodes.values():
+        if isinstance(node, GraphNode) and node.runner_override is not None:
+            from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+            raise IncompatibleRunnerError(
+                f"DaftRunner does not support runner overrides on nested GraphNodes "
+                f"(GraphNode {node.name!r} has with_runner() set). "
+                f"DaftRunner translates the entire graph to Daft UDFs.",
+                capability="runner_delegation",
+            )
 
 
 def _resolve_columns(

@@ -31,8 +31,8 @@ nested `GraphNode.map_over(...)`.
 
 Pick the entrypoint that matches your data:
 
-- Use `runner.map(...)` when your outer dataset is already a Python collection.
-- Use `runner.map_dataframe(...)` when your dataset already lives in a Daft DataFrame.
+- Use `runner.map(...)` when your outer dataset is a Python collection — returns `MapResult`.
+- Use `runner.map_dataframe(...)` when your dataset is a Daft DataFrame — returns a Daft DataFrame (no Python conversion).
 
 ## Standalone Examples
 
@@ -40,8 +40,8 @@ These checked-in scripts are the clearest place to start:
 
 - `examples/daft/text_processing.py` - linear DAG with sync nodes, single run + batch
 - `examples/daft/async_api_calls.py` - async nodes in a diamond DAG (Daft handles the event loop)
-- `examples/daft/ml_embeddings.py` - `DaftStateful` protocol for once-per-worker model loading
-- `examples/daft/batch_normalization.py` - vectorized batch UDFs with `mark_batch()`
+- `examples/daft/ml_embeddings.py` - `@stateful` decorator for once-per-worker model loading
+- `examples/daft/batch_normalization.py` - vectorized batch UDFs with `batch=True`
 - `examples/daft/nested_document_scoring.py` - `GraphNode` with `map_over` inside DaftRunner
 - `examples/daft/quickstart_customer_enrichment.py` - quickstart-style tabular enrichment
 - `examples/daft/hierarchical_document_batches.py` - nested `GraphNode.map_over(...)` inside a batch
@@ -132,28 +132,41 @@ Standalone example:
 
 - `examples/daft/hierarchical_document_batches.py`
 
-## DataFrame-First Row Execution
+## DataFrame-First Execution
 
-If the dataset already lives in Daft, keep the DataFrame at the outer boundary
-and hand each row to a Hypergraph workflow.
+If the dataset already lives in a Daft DataFrame, use `map_dataframe` to keep
+everything in Daft's columnar format — no roundtrip through Python dicts.
 
 ```python
 import daft
+from hypergraph import DaftRunner, Graph, node
 
-from hypergraph import DaftRunner
-from examples.framework_ports.daft_workflows import build_daft_llm_dataset_graph
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
 
-frame = daft.from_pylist(
-    [
-        {"query": "alpha", "chunks": ["alpha alpha beta", "alpha beta gamma"]},
-        {"query": "refund", "chunks": ["refund api timeout fixed in patch 2026.03"]},
-    ]
-)
-
+graph = Graph([double], name="doubler")
 runner = DaftRunner()
-results = runner.map_dataframe(build_daft_llm_dataset_graph(), frame)
 
-print(results[0]["chunk_score"])  # [2, 1]
+df = daft.from_pydict({"x": [1, 2, 3]})
+result_df = runner.map_dataframe(graph, df)
+# result_df is a Daft DataFrame with columns: x, doubled
+result_df.show()
+```
+
+Broadcast values (shared across all rows) are passed as keyword arguments
+and captured in UDF closures — they don't become DataFrame columns:
+
+```python
+@node(output_name="greeting")
+def greet(name: str, prefix: str) -> str:
+    return f"{prefix}, {name}!"
+
+graph = Graph([greet], name="greeter")
+df = daft.from_pydict({"name": ["Alice", "Bob"]})
+
+result_df = DaftRunner().map_dataframe(graph, df, prefix="Hi")
+# Each row gets prefix="Hi" via the UDF closure
 ```
 
 ## Async Nodes
@@ -202,8 +215,8 @@ Use it when:
 - your graph is a DAG (no cycles, gates, or interrupts)
 - you want columnar batch execution or distributed fan-out via Daft
 - the item workflow benefits from nested graphs, graph reuse, or internal `map_over(...)`
-- you have stateful resources (ML models) that should load once per worker (`DaftStateful`)
-- you need vectorized batch operations (`mark_batch`)
+- you have stateful resources (ML models) that should load once per worker (`@stateful`)
+- you need vectorized batch operations (`batch=True`)
 
 Prefer `SyncRunner` or `AsyncRunner` when:
 
@@ -215,15 +228,15 @@ Prefer `SyncRunner` or `AsyncRunner` when:
 ## Stateful UDFs
 
 Heavy resources (ML models, DB connections) can be initialized once per Daft
-worker instead of once per row. Mark the class with `__daft_stateful__ = True`
-and bind it to the graph:
+worker instead of once per row. Use the `@stateful` decorator and bind the
+instance to the graph:
 
 ```python
 from hypergraph import DaftRunner, Graph, node
+from hypergraph.runners.daft import stateful
 
+@stateful
 class Embedder:
-    __daft_stateful__ = True
-
     def __init__(self):
         self.model = load_heavy_model()
 
@@ -240,19 +253,20 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 ```
 
 DaftRunner wraps stateful objects with `@daft.cls` so `__init__` runs once per
-worker process. See `examples/daft/ml_embeddings.py` for a complete example.
+worker process. The class must support zero-argument construction.
+See `examples/daft/ml_embeddings.py` for a complete example.
 
 ## Vectorized Batch UDFs
 
 For operations that benefit from processing all rows at once (NumPy, Arrow),
-use `mark_batch()` to get `daft.Series` inputs instead of scalars:
+use `batch=True` on the `@node` decorator to get `daft.Series` inputs instead
+of scalars:
 
 ```python
 import daft
 from hypergraph import DaftRunner, Graph, node
-from hypergraph.runners.daft import mark_batch
 
-@node(output_name="normalized")
+@node(output_name="normalized", batch=True)
 def normalize(values: daft.Series) -> daft.Series:
     arr = values.to_pylist()
     mean = sum(arr) / len(arr)
@@ -260,8 +274,6 @@ def normalize(values: daft.Series) -> daft.Series:
     if std == 0:
         return daft.Series.from_pylist([0.0] * len(arr))
     return daft.Series.from_pylist([round((x - mean) / std, 4) for x in arr])
-
-mark_batch(normalize.func)
 
 graph = Graph([normalize], name="batch_norm")
 runner = DaftRunner()
@@ -275,4 +287,5 @@ See `examples/daft/batch_normalization.py` for a complete example.
 - **DAGs only** - Cycles, gates, and interrupts are not supported. Use `SyncRunner` or `AsyncRunner` for those.
 - **No checkpointing** - `DaftRunner` does not support `workflow_id`, resume, or fork semantics.
 - **No event processors** - Event processors are accepted but ignored with a warning.
-- **Nested GraphNodes use SyncRunner** - The inner graph runs via `SyncRunner` inside a Daft UDF, not as a native Daft subplan.
+- **No runner delegation** - `with_runner()` on nested GraphNodes is rejected. DaftRunner translates the entire graph to Daft UDFs.
+- **Nested GraphNodes use SyncRunner internally** - The inner graph runs via `SyncRunner` inside a Daft UDF. Nested graphs with async nodes are rejected at plan time.

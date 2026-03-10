@@ -112,3 +112,46 @@ def test_daft_runner_rejects_nested_graph_with_async_nodes():
 
     with pytest.raises(IncompatibleRunnerError, match="async nodes"):
         DaftRunner().run(outer, {"val": 1})
+
+
+def test_daft_runner_rejects_with_runner_override():
+    """DaftRunner must reject GraphNodes with with_runner() set."""
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    inner = Graph([double], name="inner")
+    gn = inner.as_node(name="sub").with_runner(SyncRunner())
+    outer = Graph([gn], name="outer")
+
+    with pytest.raises(IncompatibleRunnerError, match="runner overrides"):
+        DaftRunner().run(outer, {"x": 1})
+
+
+def test_daft_runner_map_dataframe_returns_dataframe():
+    """map_dataframe should return a Daft DataFrame, not MapResult."""
+    import daft
+
+    graph = Graph([double], name="df_test")
+    df = daft.from_pydict({"x": [1, 2, 3]})
+
+    result_df = DaftRunner().map_dataframe(graph, df)
+
+    assert isinstance(result_df, daft.DataFrame)
+    collected = result_df.collect().to_pydict()
+    assert collected["doubled"] == [2, 4, 6]
+    assert collected["x"] == [1, 2, 3]
+
+
+def test_daft_runner_map_dataframe_with_broadcast_values():
+    """Broadcast values should be captured in UDF closures."""
+    import daft
+
+    @node(output_name="greeting")
+    def greet(name: str, prefix: str) -> str:
+        return f"{prefix}, {name}!"
+
+    graph = Graph([greet], name="broadcast_test")
+    df = daft.from_pydict({"name": ["Alice", "Bob"]})
+
+    result_df = DaftRunner().map_dataframe(graph, df, prefix="Hi")
+    collected = result_df.collect().to_pydict()
+    assert collected["greeting"] == ["Hi, Alice!", "Hi, Bob!"]
