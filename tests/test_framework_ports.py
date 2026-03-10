@@ -123,7 +123,8 @@ def test_daft_quickstart_port_processes_dataframe_rows():
         ]
     )
 
-    results = runner.map_dataframe(graph, frame)
+    result_df = runner.map_dataframe(graph, frame)
+    results = result_df.collect().to_pydict()
 
     assert results["cleaned_text"] == ["alpha beta alpha", "gamma delta epsilon zeta eta"]
     assert results["review_bucket"] == ["short", "long"]
@@ -145,11 +146,12 @@ def test_daft_llm_dataset_port_uses_nested_chunk_graphs():
         ]
     )
 
-    results = runner.map_dataframe(graph, frame)
+    result_df = runner.map_dataframe(graph, frame)
+    results = result_df.collect().to_pydict()
 
-    assert results[0]["chunk_score"] == [2, 1, 0]
-    assert results[0]["dataset_summary"]["matching_chunks"] == 2
-    assert "refund api timeout" in results[1]["top_chunk"]
+    assert results["chunk_score"][0] == [2, 1, 0]
+    assert results["dataset_summary"][0]["matching_chunks"] == 2
+    assert "refund api timeout" in results["top_chunk"][1]
 
 
 def test_daft_image_query_port_maps_patch_classifier_inside_each_asset():
@@ -162,8 +164,9 @@ def test_daft_image_query_port_maps_patch_classifier_inside_each_asset():
         ]
     )
 
-    results = runner.map_dataframe(graph, frame, threshold=180)
+    result_df = runner.map_dataframe(graph, frame, threshold=180)
+    results = result_df.collect().to_pydict()
 
-    assert results[0]["patch_label"] == ["bright", "dark"]
-    assert results[0]["asset_summary"]["dominant_label"] == "bright"
-    assert results[1]["asset_summary"]["dominant_label"] == "dark"
+    assert results["patch_label"][0] == ["bright", "dark"]
+    assert results["asset_summary"][0]["dominant_label"] == "bright"
+    assert results["asset_summary"][1]["dominant_label"] == "dark"

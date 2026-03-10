@@ -220,3 +220,119 @@ class TestGraphNodeOperation:
         assert result["lo"] == [4, 9]
         assert result["hi"] == [6, 11]
         assert "_pack_split" not in result
+
+
+# ---------------------------------------------------------------------------
+# FunctionNodeOperation async execution
+# ---------------------------------------------------------------------------
+
+
+class TestFunctionNodeAsyncExecution:
+    def test_async_function_node(self):
+        graph = Graph([async_double], name="test")
+        op = create_operation(async_double, graph, bound_values={})
+        df = daft.from_pydict({"x": [3, 7]})
+        result = op.apply(df).collect().to_pydict()
+        assert result["result"] == [6, 14]
+
+
+# ---------------------------------------------------------------------------
+# StatefulNodeOperation direct execution
+# ---------------------------------------------------------------------------
+
+
+class TestStatefulNodeOperation:
+    def test_apply_produces_correct_output(self):
+        graph = Graph([score_with_model], name="test")
+        op = create_operation(
+            score_with_model,
+            graph,
+            bound_values={"model": MockModel()},
+        )
+        df = daft.from_pydict({"text": ["hi", "hello"]})
+        result = op.apply(df).collect().to_pydict()
+        assert result["score"] == [2 * 42, 5 * 42]
+
+
+# ---------------------------------------------------------------------------
+# BatchNodeOperation direct execution
+# ---------------------------------------------------------------------------
+
+
+class TestBatchNodeOperation:
+    def test_apply_receives_series(self):
+        @node(output_name="doubled", batch=True)
+        def batch_double(x: daft.Series) -> daft.Series:
+            values = x.to_pylist()
+            return daft.Series.from_pylist([v * 2 for v in values])
+
+        graph = Graph([batch_double], name="test")
+        op = create_operation(batch_double, graph, bound_values={})
+        df = daft.from_pydict({"x": [10, 20, 30]})
+        result = op.apply(df).collect().to_pydict()
+        assert result["doubled"] == [20, 40, 60]
+
+
+# ---------------------------------------------------------------------------
+# Validation: stateful + async rejection
+# ---------------------------------------------------------------------------
+
+
+class TestStatefulAsyncRejection:
+    def test_stateful_async_node_rejected(self):
+        from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+        @node(output_name="out")
+        async def async_stateful(x: int, model: MockModel) -> int:
+            return x + model.value
+
+        graph = Graph([async_stateful], name="test")
+        with pytest.raises(IncompatibleRunnerError, match="async"):
+            create_operation(
+                async_stateful,
+                graph,
+                bound_values={"model": MockModel()},
+            )
+
+
+# ---------------------------------------------------------------------------
+# Validation: batch + multi-output rejection
+# ---------------------------------------------------------------------------
+
+
+class TestBatchMultiOutputRejection:
+    def test_batch_multi_output_rejected(self):
+        from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+        @node(output_name=("a", "b"), batch=True)
+        def bad_batch(x: int) -> tuple[int, int]:
+            return (x, x)
+
+        graph = Graph([bad_batch], name="test")
+        with pytest.raises(IncompatibleRunnerError, match="multiple outputs"):
+            create_operation(bad_batch, graph, bound_values={})
+
+
+# ---------------------------------------------------------------------------
+# Validation: _validate_stateful_constructable
+# ---------------------------------------------------------------------------
+
+
+class TestStatefulConstructable:
+    def test_non_constructable_stateful_rejected(self):
+        @stateful
+        class NeedsArgs:
+            def __init__(self, required_arg: str):
+                self.value = required_arg
+
+        @node(output_name="out")
+        def use_it(x: int, model: NeedsArgs) -> int:
+            return x
+
+        graph = Graph([use_it], name="test")
+        with pytest.raises(TypeError, match="zero-arg construction"):
+            create_operation(
+                use_it,
+                graph,
+                bound_values={"model": NeedsArgs("hello")},
+            )

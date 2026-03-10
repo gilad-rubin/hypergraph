@@ -155,3 +155,67 @@ def test_daft_runner_map_dataframe_with_broadcast_values():
     result_df = DaftRunner().map_dataframe(graph, df, prefix="Hi")
     collected = result_df.collect().to_pydict()
     assert collected["greeting"] == ["Hi, Alice!", "Hi, Bob!"]
+
+
+def test_daft_runner_map_dataframe_columns_filter():
+    """columns= parameter should select a subset of DataFrame columns."""
+    import daft
+
+    graph = Graph([double], name="col_filter")
+    df = daft.from_pydict({"x": [1, 2], "extra": ["a", "b"]})
+
+    result_df = DaftRunner().map_dataframe(graph, df, columns=["x"])
+    collected = result_df.collect().to_pydict()
+    assert collected["doubled"] == [2, 4]
+    assert collected["x"] == [1, 2]
+    # extra column should NOT appear — it was filtered out
+    assert "extra" not in collected
+
+
+def test_daft_runner_map_dataframe_missing_column_raises():
+    """columns= with a name not in the DataFrame should raise."""
+    import daft
+
+    from hypergraph.graph.validation import GraphConfigError
+
+    graph = Graph([double], name="bad_col")
+    df = daft.from_pydict({"x": [1]})
+
+    with pytest.raises(GraphConfigError, match="missing requested column"):
+        DaftRunner().map_dataframe(graph, df, columns=["x", "missing"])
+
+
+def test_daft_runner_map_dataframe_overlap_raises():
+    """Broadcast values overlapping with DataFrame columns should raise."""
+    import daft
+
+    from hypergraph.graph.validation import GraphConfigError
+
+    @node(output_name="out")
+    def add(x: int, y: int) -> int:
+        return x + y
+
+    graph = Graph([add], name="overlap")
+    df = daft.from_pydict({"x": [1], "y": [2]})
+
+    with pytest.raises(GraphConfigError, match="both the Daft DataFrame and broadcast"):
+        DaftRunner().map_dataframe(graph, df, y=10)
+
+
+def test_daft_runner_rejects_cycle_graph():
+    """DaftRunner should reject graphs with cycles/gates."""
+    from hypergraph import END, route
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    @node(output_name="x")
+    def step(x: int) -> int:
+        return x + 1
+
+    @route(targets=["step", END])
+    def gate(x: int) -> str:
+        return "step" if x < 3 else END
+
+    graph = Graph([step, gate], name="cycle_graph", entrypoint="step")
+
+    with pytest.raises(IncompatibleRunnerError):
+        DaftRunner().run(graph, {"x": 0})
