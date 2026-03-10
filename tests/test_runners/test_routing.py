@@ -239,6 +239,32 @@ class TestMultiTargetRouting:
         assert "result_a" not in result.values
         assert "result_b" not in result.values
 
+    def test_multi_target_keeps_late_sibling_activation(self):
+        """A multi-target decision should survive until all routed siblings run."""
+
+        @node(output_name="seeded")
+        def seed(x):
+            return x
+
+        @route(targets=["a", "c", END], multi_target=True)
+        def decide(seeded):
+            return ["a", "c"]
+
+        @node(output_name="a_out")
+        def a(seeded):
+            return seeded + 1
+
+        @node(output_name="c_out")
+        def c(a_out):
+            return a_out * 2
+
+        graph = Graph([seed, decide, a, c], entrypoint="seed")
+        result = SyncRunner().run(graph, {"x": 3})
+
+        assert result.status == RunStatus.COMPLETED
+        assert result["a_out"] == 4
+        assert result["c_out"] == 8
+
 
 # =============================================================================
 # Graph Validation Tests

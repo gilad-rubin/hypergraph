@@ -202,7 +202,7 @@ Core responsibilities:
 - stale gate-decision clearing
 - readiness detection
 - staleness checks
-- explicit-edge aware producer tracking
+- explicit-edge-aware producer tracking
 - SCC execution planning
 - checkpoint state restoration
 - input resolution precedence
@@ -401,9 +401,9 @@ Current mental model:
 
 ```text
 Graph
-  -> flat graph projection
-  -> renderer instructions and precompute passes
-  -> HTML/ReactFlow document generation
+  -> to_flat_graph()
+  -> renderer/ (nodes, edges, precompute, scope, instructions)
+  -> html/generator.py
   -> notebook iframe widget or saved HTML file
 ```
 

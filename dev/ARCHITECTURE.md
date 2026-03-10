@@ -152,7 +152,9 @@ Graph visualization. Generates interactive HTML with ReactFlow.
 
 ## Public API
 
-Everything exported from `src/hypergraph/__init__.py` with `__all__` is public API. Internal modules use `_` prefix (`_callable.py`, `_rename.py`, `_conflict.py`, `_shared/`).
+Root-level exports from `src/hypergraph/__init__.py` are public API. Package modules with their own `__init__.py` exports, such as `hypergraph.checkpointers`, are also supported package surfaces.
+
+Internal modules remain internal even if they sit under a public package. In particular, `_shared/` is runtime architecture, not public API.
 
 ## Naming Rules
 

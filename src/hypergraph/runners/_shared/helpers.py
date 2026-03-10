@@ -673,7 +673,16 @@ def apply_node_result(
 
     for gate_name in graph.controlled_by.get(node.name, []):
         decision = state.routing_decisions.get(gate_name)
-        if decision is not None and _is_node_activated_by_decision(node.name, decision):
+        if decision is None:
+            continue
+        if isinstance(decision, list):
+            remaining = [target for target in decision if target != node.name]
+            if remaining:
+                state.routing_decisions[gate_name] = remaining
+            else:
+                del state.routing_decisions[gate_name]
+            continue
+        if _is_node_activated_by_decision(node.name, decision):
             del state.routing_decisions[gate_name]
 
 

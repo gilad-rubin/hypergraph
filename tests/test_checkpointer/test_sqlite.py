@@ -343,9 +343,12 @@ class TestLazyInit:
         """Checkpointer auto-initializes on first use."""
         cp = SqliteCheckpointer(str(tmp_path / "lazy.db"))
         # No explicit initialize() call
-        await cp.create_run("wf-1")
-        r = cp.get_run("wf-1")
-        assert r is not None
+        try:
+            await cp.create_run("wf-1")
+            r = cp.get_run("wf-1")
+            assert r is not None
+        finally:
+            await cp.close()
 
     async def test_concurrent_lazy_initialize_runs_once(self, tmp_path):
         """Concurrent first-use calls should serialize initialization."""
@@ -361,20 +364,25 @@ class TestLazyInit:
 
         cp.initialize = counted_initialize  # type: ignore[method-assign]
 
-        await asyncio.gather(
-            cp.create_run("wf-a"),
-            cp.create_run("wf-b"),
-            cp.create_run("wf-c"),
-        )
-
-        assert init_calls == 1
+        try:
+            await asyncio.gather(
+                cp.create_run("wf-a"),
+                cp.create_run("wf-b"),
+                cp.create_run("wf-c"),
+            )
+            assert init_calls == 1
+        finally:
+            await cp.close()
 
     async def test_memory_db_schema_available_after_initialize(self):
         """In-memory DB initialization creates schema for async operations."""
         cp = SqliteCheckpointer(":memory:")
-        await cp.create_run("wf-mem")
-        run = cp.get_run("wf-mem")
-        assert run is not None
+        try:
+            await cp.create_run("wf-mem")
+            run = cp.get_run("wf-mem")
+            assert run is not None
+        finally:
+            await cp.close()
 
 
 class TestPolicyIntegration:
@@ -415,17 +423,23 @@ class TestPolicyIntegration:
         """Constructor accepts pathlib.Path for filesystem databases."""
         db_path = tmp_path / "path-instance.db"
         cp = SqliteCheckpointer(db_path)
-        await cp.create_run("wf-1")
-        run = cp.get_run("wf-1")
-        assert run is not None
+        try:
+            await cp.create_run("wf-1")
+            run = cp.get_run("wf-1")
+            assert run is not None
+        finally:
+            await cp.close()
 
     async def test_accepts_relative_path_instance(self, tmp_path, monkeypatch):
         """Constructor accepts relative pathlib.Path values."""
         monkeypatch.chdir(tmp_path)
         cp = SqliteCheckpointer(Path("relative-path.db"))
-        await cp.create_run("wf-1")
-        run = cp.get_run("wf-1")
-        assert run is not None
+        try:
+            await cp.create_run("wf-1")
+            run = cp.get_run("wf-1")
+            assert run is not None
+        finally:
+            await cp.close()
 
 
 class TestSyncReads:
