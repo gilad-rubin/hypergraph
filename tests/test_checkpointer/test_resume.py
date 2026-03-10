@@ -1,6 +1,7 @@
 """Tests for checkpoint resume semantics: run() merges state, map() skips completed."""
 
 import pytest
+import pytest_asyncio
 
 from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
@@ -31,11 +32,12 @@ def triple(doubled: int) -> int:
 # --- Fixtures ---
 
 
-@pytest.fixture
-def checkpointer(tmp_path):
+@pytest_asyncio.fixture
+async def checkpointer(tmp_path):
     """Checkpointer for each test."""
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
     yield cp
+    await cp.close()
 
 
 @pytest.fixture

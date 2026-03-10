@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError
 from hypergraph.nodes.base import HyperNode
-from hypergraph.nodes.gate import END as _END
 from hypergraph.runners._shared.caching import (
     check_cache,
     restore_routing_decision,
@@ -21,13 +20,14 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
-from hypergraph.runners._shared.helpers import collect_inputs_for_node
-from hypergraph.runners._shared.types import GraphState, NodeExecution, PauseExecution
+from hypergraph.runners._shared.helpers import apply_node_result, collect_inputs_for_node
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
     from hypergraph.cache import CacheBackend
     from hypergraph.events.dispatcher import EventDispatcher
     from hypergraph.graph import Graph
+    from hypergraph.runners._shared.protocols import NodeExecutor
 
 
 def run_superstep_sync(
@@ -35,7 +35,8 @@ def run_superstep_sync(
     state: GraphState,
     ready_nodes: list[HyperNode],
     provided_values: dict[str, Any],
-    execute_node: Callable,
+    executors: dict[type[HyperNode], NodeExecutor[Any]],
+    ctx_base: ExecutionContext,
     *,
     cache: CacheBackend | None = None,
     dispatcher: EventDispatcher | None = None,
@@ -51,7 +52,8 @@ def run_superstep_sync(
         state: Current state (will be copied, not mutated)
         ready_nodes: Nodes to execute in this superstep
         provided_values: Values provided to runner.run()
-        execute_node: Function to execute a single node
+        executors: Runner executor registry
+        ctx_base: Per-run execution context
         dispatcher: Optional event dispatcher for emitting node events
         run_id: Run ID for event correlation
         run_span_id: Span ID of the parent run
@@ -95,20 +97,22 @@ def run_superstep_sync(
 
             node_start = time.time()
             try:
-                # Set node span_id on executor for nested graph propagation
-                if hasattr(execute_node, "current_span_id"):
-                    execute_node.current_span_id[0] = node_span_id  # type: ignore[attr-defined]
+                executor = executors.get(type(node))
+                if executor is None:
+                    raise TypeError(f"No executor registered for node type '{type(node).__name__}'")
+
+                inner_logs: list = []
+                ctx = replace(
+                    ctx_base,
+                    parent_span_id=node_span_id,
+                    provided_values=provided_values,
+                    on_inner_log=inner_logs.append,
+                )
 
                 # Execute node
-                outputs = execute_node(node, new_state, inputs)
+                outputs = executor(node, new_state, inputs, ctx)
 
                 duration_ms = (time.time() - node_start) * 1000
-
-                # Capture inner logs from nested graph execution (if any)
-                inner_logs: tuple = ()
-                if hasattr(execute_node, "last_inner_logs"):
-                    inner_logs = execute_node.last_inner_logs[0]  # type: ignore[attr-defined]
-                    execute_node.last_inner_logs[0] = ()  # type: ignore[attr-defined]
 
                 # Store result in cache
                 if cache is not None and cache_key:
@@ -118,7 +122,17 @@ def run_superstep_sync(
                     route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
                     if route_evt is not None:
                         dispatcher.emit(route_evt)
-                    dispatcher.emit(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms, inner_logs=inner_logs))
+                    dispatcher.emit(
+                        build_node_end_event(
+                            run_id,
+                            node_span_id,
+                            run_span_id,
+                            node,
+                            graph,
+                            duration_ms,
+                            inner_logs=tuple(inner_logs),
+                        )
+                    )
 
             except BaseException as e:
                 duration_ms = (time.time() - node_start) * 1000
@@ -133,44 +147,17 @@ def run_superstep_sync(
                 # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
                 raise
 
-        # Update state with outputs
-        for name, value in outputs.items():
-            new_state.update_value(name, value)
-
-        output_versions = {name: new_state.get_version(name) for name in outputs}
-
         # Record wait_for versions
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
-
-        # Determine duration and cache status for this node
-        node_duration = 0.0 if cached_outputs is not None else duration_ms
-        node_cached = cached_outputs is not None
-
-        # Record execution
-        new_state.node_executions[node.name] = NodeExecution(
-            node_name=node.name,
-            input_versions=input_versions,
-            outputs=outputs,
-            output_versions=output_versions,
-            wait_for_versions=wait_for_versions,
-            duration_ms=node_duration,
-            cached=node_cached,
+        apply_node_result(
+            graph,
+            new_state,
+            node,
+            outputs,
+            input_versions,
+            wait_for_versions,
+            duration_ms=0.0 if cached_outputs is not None else duration_ms,
+            cached=cached_outputs is not None,
         )
-        # Consume routing decisions that activated this node.
-        # Once a gated node executes, the decision is spent — the gate
-        # must re-execute and re-route before this node fires again.
-        for gate_name in graph.controlled_by.get(node.name, []):
-            decision = new_state.routing_decisions.get(gate_name)
-            if decision is not None and _decision_activates_node(node.name, decision):
-                del new_state.routing_decisions[gate_name]
 
     return new_state
-
-
-def _decision_activates_node(node_name: str, decision: Any) -> bool:
-    """Check if a routing decision activates a specific node."""
-    if decision is _END or decision is None:
-        return False
-    if isinstance(decision, list):
-        return node_name in decision
-    return decision == node_name

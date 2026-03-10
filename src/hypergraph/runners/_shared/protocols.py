@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
 
 N = TypeVar("N", bound="HyperNode", contravariant=True)
 
@@ -31,6 +31,7 @@ class NodeExecutor(Protocol[N]):
         node: N,
         state: GraphState,
         inputs: dict[str, Any],
+        ctx: ExecutionContext,
     ) -> dict[str, Any]: ...
 
 
@@ -53,4 +54,5 @@ class AsyncNodeExecutor(Protocol[N]):
         node: N,
         state: GraphState,
         inputs: dict[str, Any],
+        ctx: ExecutionContext,
     ) -> dict[str, Any]: ...

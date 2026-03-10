@@ -6,6 +6,7 @@ Uses CliRunner to test command output without subprocess overhead.
 import json
 
 import pytest
+import pytest_asyncio
 
 # Skip all if optional dependencies are not installed
 typer = pytest.importorskip("typer")
@@ -36,51 +37,57 @@ def db_path(tmp_path):
     return str(tmp_path / "test.db")
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def populated_db(db_path):
     """Create a DB with a completed run."""
     cp = SqliteCheckpointer(db_path)
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
 
-    r = AsyncRunner(checkpointer=cp)
-    graph = Graph([double, triple])
-    await r.run(graph, {"x": 5}, workflow_id="run-test")
+    try:
+        r = AsyncRunner(checkpointer=cp)
+        graph = Graph([double, triple])
+        await r.run(graph, {"x": 5}, workflow_id="run-test")
+        yield db_path
+    finally:
+        await cp.close()
 
-    return db_path
 
-
-@pytest.fixture
+@pytest_asyncio.fixture
 async def lineage_db(db_path):
     """Create a DB with root + fork lineage."""
     cp = SqliteCheckpointer(db_path)
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
 
-    r = AsyncRunner(checkpointer=cp)
-    graph = Graph([double, triple])
-    await r.run(graph, {"x": 5}, workflow_id="run-test")
-    checkpoint = cp.checkpoint("run-test")
-    await r.run(graph, {"x": 7}, checkpoint=checkpoint, workflow_id="run-test-fork")
+    try:
+        r = AsyncRunner(checkpointer=cp)
+        graph = Graph([double, triple])
+        await r.run(graph, {"x": 5}, workflow_id="run-test")
+        checkpoint = cp.checkpoint("run-test")
+        await r.run(graph, {"x": 7}, checkpoint=checkpoint, workflow_id="run-test-fork")
+        yield db_path
+    finally:
+        await cp.close()
 
-    return db_path
 
-
-@pytest.fixture
+@pytest_asyncio.fixture
 async def hierarchy_db(db_path):
     """Create DB with one parent run and two child runs."""
     cp = SqliteCheckpointer(db_path)
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
 
-    await cp.create_run("batch-1", graph_name="g")
-    await cp.update_run_status("batch-1", WorkflowStatus.COMPLETED, duration_ms=5300.0, node_count=10, error_count=0)
-    await cp.create_run("batch-1/0", graph_name="g", parent_run_id="batch-1")
-    await cp.update_run_status("batch-1/0", WorkflowStatus.COMPLETED, duration_ms=5200.0, node_count=2, error_count=0)
-    await cp.create_run("batch-1/1", graph_name="g", parent_run_id="batch-1")
-    await cp.update_run_status("batch-1/1", WorkflowStatus.FAILED, duration_ms=5400.0, node_count=2, error_count=1)
+    try:
+        await cp.create_run("batch-1", graph_name="g")
+        await cp.update_run_status("batch-1", WorkflowStatus.COMPLETED, duration_ms=5300.0, node_count=10, error_count=0)
+        await cp.create_run("batch-1/0", graph_name="g", parent_run_id="batch-1")
+        await cp.update_run_status("batch-1/0", WorkflowStatus.COMPLETED, duration_ms=5200.0, node_count=2, error_count=0)
+        await cp.create_run("batch-1/1", graph_name="g", parent_run_id="batch-1")
+        await cp.update_run_status("batch-1/1", WorkflowStatus.FAILED, duration_ms=5400.0, node_count=2, error_count=1)
+        yield db_path
+    finally:
+        await cp.close()
 
-    return db_path
 
-
-@pytest.fixture
+@pytest_asyncio.fixture
 async def paused_db(db_path):
     """Create a DB with a paused workflow."""
     cp = SqliteCheckpointer(db_path)
@@ -93,10 +100,13 @@ async def paused_db(db_path):
     def finalize(decision: str) -> str:
         return decision
 
-    graph = Graph([approval, finalize])
-    runner = AsyncRunner(checkpointer=cp)
-    await runner.run(graph, workflow_id="run-paused")
-    return db_path
+    try:
+        graph = Graph([approval, finalize])
+        runner = AsyncRunner(checkpointer=cp)
+        await runner.run(graph, workflow_id="run-paused")
+        yield db_path
+    finally:
+        await cp.close()
 
 
 class TestRunsShow:

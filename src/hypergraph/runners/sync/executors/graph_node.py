@@ -7,9 +7,8 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
 
 if TYPE_CHECKING:
-    from hypergraph.events.processor import EventProcessor
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
     from hypergraph.runners.sync.runner import SyncRunner
 
 
@@ -22,23 +21,15 @@ class SyncGraphNodeExecutor:
     """
 
     def __init__(self, runner: SyncRunner):
-        """Initialize with reference to parent runner.
-
-        Args:
-            runner: The SyncRunner that owns this executor
-        """
+        """Initialize with reference to parent runner."""
         self.runner = runner
-        self.last_inner_logs: tuple = ()
 
     def __call__(
         self,
         node: GraphNode,
         state: GraphState,
         inputs: dict[str, Any],
-        *,
-        event_processors: list[EventProcessor] | None = None,
-        parent_span_id: str | None = None,
-        workflow_id: str | None = None,
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
 
@@ -46,16 +37,15 @@ class SyncGraphNodeExecutor:
             node: The GraphNode to execute
             state: Current graph execution state (unused directly)
             inputs: Input values for the nested graph
-            event_processors: Processors to propagate to nested runs
-            parent_span_id: Span ID of the parent node for event linking
-            workflow_id: Parent workflow ID for hierarchical checkpointing
+            ctx: Execution context with event processors, workflow ID, and
+                nested log sink
 
         Returns:
             Dict mapping output names to their values
         """
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
-        child_workflow_id = graphnode_child_workflow_id(workflow_id, node.name, state)
+        child_workflow_id = graphnode_child_workflow_id(ctx.workflow_id, node.name, state)
         map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
@@ -92,21 +82,25 @@ class SyncGraphNodeExecutor:
                 map_mode=mode,
                 clone=node._original_clone(),
                 error_handling=error_handling,
-                event_processors=event_processors,
+                event_processors=ctx.event_processors,
                 workflow_id=child_workflow_id,
-                _parent_span_id=parent_span_id,
-                _parent_run_id=workflow_id,
+                _parent_span_id=ctx.parent_span_id,
+                _parent_run_id=ctx.workflow_id,
             )
-            self.last_inner_logs = tuple(r.log for r in results if r.log is not None)
+            if ctx.on_inner_log:
+                for result in results:
+                    if result.log is not None:
+                        ctx.on_inner_log(result.log)
             return collect_as_lists(results, node, error_handling)
 
         result = runner.run(
             node.graph,
             inner_inputs,
-            event_processors=event_processors,
+            event_processors=ctx.event_processors,
             workflow_id=child_workflow_id,
-            _parent_span_id=parent_span_id,
-            _parent_run_id=workflow_id,
+            _parent_span_id=ctx.parent_span_id,
+            _parent_run_id=ctx.workflow_id,
         )
-        self.last_inner_logs = (result.log,) if result.log is not None else ()
+        if ctx.on_inner_log and result.log is not None:
+            ctx.on_inner_log(result.log)
         return node.map_outputs_from_original(result.values)

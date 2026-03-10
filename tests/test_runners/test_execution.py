@@ -14,7 +14,7 @@ from hypergraph.runners._shared.helpers import (
     get_ready_nodes,
     initialize_state,
 )
-from hypergraph.runners._shared.types import GraphState, NodeExecution
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, NodeExecution
 from hypergraph.runners.async_.executors import AsyncFunctionNodeExecutor
 from hypergraph.runners.async_.superstep import (
     reset_concurrency_limiter,
@@ -426,35 +426,36 @@ class TestSyncFunctionNodeExecutor:
     def setup_method(self):
         self.executor = SyncFunctionNodeExecutor()
         self.state = GraphState()
+        self.ctx = ExecutionContext()
 
     def test_executes_function_with_inputs(self):
         """Function is called with provided inputs."""
-        outputs = self.executor(double, self.state, {"x": 5})
+        outputs = self.executor(double, self.state, {"x": 5}, self.ctx)
         assert outputs == {"doubled": 10}
 
     def test_returns_dict_with_outputs(self):
         """Returns dict mapping output names to values."""
-        outputs = self.executor(add, self.state, {"a": 3, "b": 4})
+        outputs = self.executor(add, self.state, {"a": 3, "b": 4}, self.ctx)
         assert outputs == {"sum": 7}
 
     def test_single_output_wrapped_in_dict(self):
         """Single return value is wrapped in dict."""
-        outputs = self.executor(double, self.state, {"x": 10})
+        outputs = self.executor(double, self.state, {"x": 10}, self.ctx)
         assert outputs == {"doubled": 20}
 
     def test_multiple_outputs_unpacked(self):
         """Tuple return is unpacked to multiple outputs."""
-        outputs = self.executor(split, self.state, {"x": 5})
+        outputs = self.executor(split, self.state, {"x": 5}, self.ctx)
         assert outputs == {"first": 5, "second": 6}
 
     def test_generator_accumulated_to_list(self):
         """Generator output is accumulated to list."""
-        outputs = self.executor(gen_items, self.state, {"n": 3})
+        outputs = self.executor(gen_items, self.state, {"n": 3}, self.ctx)
         assert outputs == {"items": [0, 1, 2]}
 
     def test_side_effect_node_returns_empty_dict(self):
         """Side-effect only nodes return empty dict."""
-        outputs = self.executor(side_effect, self.state, {"x": 5})
+        outputs = self.executor(side_effect, self.state, {"x": 5}, self.ctx)
         assert outputs == {}
 
     def test_exception_propagates(self):
@@ -465,7 +466,7 @@ class TestSyncFunctionNodeExecutor:
             raise ValueError("intentional error")
 
         with pytest.raises(ValueError, match="intentional error"):
-            self.executor(failing, self.state, {"x": 1})
+            self.executor(failing, self.state, {"x": 1}, self.ctx)
 
 
 # === Tests for AsyncFunctionNodeExecutor ===
@@ -477,25 +478,26 @@ class TestAsyncFunctionNodeExecutor:
     def setup_method(self):
         self.executor = AsyncFunctionNodeExecutor()
         self.state = GraphState()
+        self.ctx = ExecutionContext()
 
     async def test_executes_sync_function(self):
         """Sync functions work in async context."""
-        outputs = await self.executor(double, self.state, {"x": 5})
+        outputs = await self.executor(double, self.state, {"x": 5}, self.ctx)
         assert outputs == {"doubled": 10}
 
     async def test_executes_async_function(self):
         """Async functions are awaited."""
-        outputs = await self.executor(async_double, self.state, {"x": 5})
+        outputs = await self.executor(async_double, self.state, {"x": 5}, self.ctx)
         assert outputs == {"doubled": 10}
 
     async def test_async_generator_accumulated(self):
         """Async generators are accumulated to list."""
-        outputs = await self.executor(async_gen_items, self.state, {"n": 3})
+        outputs = await self.executor(async_gen_items, self.state, {"n": 3}, self.ctx)
         assert outputs == {"items": [0, 1, 2]}
 
     async def test_sync_generator_in_async(self):
         """Sync generators work in async context."""
-        outputs = await self.executor(gen_items, self.state, {"n": 3})
+        outputs = await self.executor(gen_items, self.state, {"n": 3}, self.ctx)
         assert outputs == {"items": [0, 1, 2]}
 
 
@@ -508,10 +510,6 @@ class TestRunSuperstepSync:
     def setup_method(self):
         self.executor = SyncFunctionNodeExecutor()
 
-    def _execute_node(self, node, state, inputs):
-        """Simple executor that only handles FunctionNode."""
-        return self.executor(node, state, inputs)
-
     def test_executes_all_ready_nodes(self):
         """All ready nodes are executed."""
 
@@ -523,7 +521,14 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
+        new_state = run_superstep_sync(
+            graph,
+            state,
+            ready,
+            {"x": 5},
+            {type(double): self.executor, type(triple): self.executor},
+            ExecutionContext(),
+        )
 
         assert new_state.values["doubled"] == 10
         assert new_state.values["tripled"] == 15
@@ -534,7 +539,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, {type(double): self.executor}, ExecutionContext())
 
         assert "doubled" in new_state.values
         assert new_state.values["doubled"] == 10
@@ -545,7 +550,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, {type(double): self.executor}, ExecutionContext())
 
         assert new_state.versions["doubled"] == 1
 
@@ -555,7 +560,7 @@ class TestRunSuperstepSync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, self._execute_node)
+        new_state = run_superstep_sync(graph, state, ready, {"x": 5}, {type(double): self.executor}, ExecutionContext())
 
         assert new_state is not state
         assert "doubled" not in state.values
@@ -570,10 +575,6 @@ class TestRunSuperstepAsync:
 
     def setup_method(self):
         self.executor = AsyncFunctionNodeExecutor()
-
-    async def _execute_node(self, node, state, inputs):
-        """Simple executor that only handles FunctionNode."""
-        return await self.executor(node, state, inputs)
 
     async def test_executes_nodes_concurrently(self):
         """Multiple nodes execute concurrently."""
@@ -597,7 +598,14 @@ class TestRunSuperstepAsync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node)
+        new_state = await run_superstep_async(
+            graph,
+            state,
+            ready,
+            {"x": 5},
+            {type(slow_a): self.executor, type(slow_b): self.executor},
+            ExecutionContext(),
+        )
 
         # Verify concurrency: each task must have started before the other finished.
         # If sequential, one task's start would be after the other's end.
@@ -641,7 +649,15 @@ class TestRunSuperstepAsync:
 
         try:
             start = time.time()
-            await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node, max_concurrency=1)
+            await run_superstep_async(
+                graph,
+                state,
+                ready,
+                {"x": 5},
+                {type(track_a): self.executor, type(track_b): self.executor},
+                ExecutionContext(),
+                max_concurrency=1,
+            )
             elapsed = time.time() - start
 
             # With max_concurrency=1, should be sequential (~0.1s)
@@ -655,7 +671,14 @@ class TestRunSuperstepAsync:
         state = initialize_state(graph, {"x": 5})
         ready = get_ready_nodes(graph, state)
 
-        new_state = await run_superstep_async(graph, state, ready, {"x": 5}, self._execute_node)
+        new_state = await run_superstep_async(
+            graph,
+            state,
+            ready,
+            {"x": 5},
+            {type(async_double): self.executor},
+            ExecutionContext(),
+        )
 
         assert new_state.values["doubled"] == 10
 
