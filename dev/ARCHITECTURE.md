@@ -156,6 +156,47 @@ Root-level exports from `src/hypergraph/__init__.py` are public API. Package mod
 
 Internal modules remain internal even if they sit under a public package. In particular, `_shared/` is runtime architecture, not public API.
 
+## Framework Context Injection
+
+When the framework needs to provide a runtime object to user functions (e.g., `NodeContext` for stop signals and streaming), we use **type-hint-based injection** — the same pattern FastAPI uses for `Request`, `BackgroundTasks`, etc.
+
+### How It Works
+
+The user adds a typed parameter to their function signature. The framework's existing signature inspection (which already extracts input names for edge inference) recognizes the type and injects the object at execution time instead of treating it as a graph input.
+
+```python
+@node(output_name="response")
+async def llm_reply(messages: list, ctx: NodeContext) -> str:
+    if ctx.stop_requested:
+        break
+    ctx.stream(chunk)
+    return response
+```
+
+- `messages` → graph input (wired via edge inference)
+- `ctx` → framework-injected (excluded from `node.inputs`, never appears in graph)
+
+### Why This Pattern
+
+| Pattern | Used By | Visible in Signature? | Testable? |
+|---|---|---|---|
+| **Type-hint injection** | FastAPI, DI libraries, hypergraph | Yes | Yes — pass mock directly |
+| ContextVar accessor | Prefect, Temporal, LangGraph | No — hidden in body | No — needs contextvar setup |
+| Explicit positional | Django, Celery | Yes — always there | Yes |
+
+Type-hint injection was chosen because:
+
+1. **Dependency is visible** — you see `ctx: NodeContext` in the signature. ContextVar accessors (`get_node_context()`) hide the dependency inside the function body.
+2. **Testing is plain Python** — `llm_reply(messages=["hi"], ctx=mock_context)`. No framework setup needed.
+3. **Consistent with existing mechanism** — signature inspection for edge inference already exists. Recognizing `NodeContext` as "framework-provided" is one additional case in the same codepath.
+4. **No opt-in boilerplate** — no decorator flag (`context=True`), no import + function call inside the body.
+
+### Constraints
+
+- Only **one** framework-injectable type (`NodeContext`). If we ever need more, revisit the pattern — a growing list of magic types is a smell.
+- The parameter name doesn't matter (`ctx`, `context`, `nc` — all work). Only the **type annotation** matters.
+- Functions without `NodeContext` work exactly as before. Backward compatible.
+
 ## Naming Rules
 
 - Reserved characters: `.` and `/` cannot appear in node or output names
