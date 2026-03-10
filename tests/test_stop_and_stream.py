@@ -415,17 +415,19 @@ class TestResumeAfterStop:
         from hypergraph.checkpointers import SqliteCheckpointer
 
         call_count = 0
+        node_started = asyncio.Event()
 
         @node(output_name="response")
         async def generate(ctx: NodeContext) -> str:
             nonlocal call_count
             call_count += 1
+            node_started.set()
             result = ""
             for i in range(100):
                 if ctx.stop_requested:
                     break
                 result += f"t{i} "
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0.005)
             return result
 
         graph = Graph([generate], name="gen")
@@ -434,11 +436,12 @@ class TestResumeAfterStop:
             runner = AsyncRunner(checkpointer=cp)
 
             # Turn 1: stop mid-stream
-            async def stop_soon():
+            async def stop_after_start():
+                await node_started.wait()
                 await asyncio.sleep(0.02)
                 runner.stop("wf-1")
 
-            task = asyncio.create_task(stop_soon())
+            task = asyncio.create_task(stop_after_start())
             r1 = await runner.run(graph, workflow_id="wf-1")
             await task
 
@@ -608,23 +611,27 @@ class TestStepRecordPartial:
     async def test_partial_flag_set_on_stopped_node(self, tmp_path):
         from hypergraph.checkpointers import SqliteCheckpointer
 
+        node_started = asyncio.Event()
+
         @node(output_name="result")
         async def my_node(ctx: NodeContext) -> str:
+            node_started.set()
             for _ in range(1000):
                 if ctx.stop_requested:
                     return "partial"
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0.005)
             return "full"
 
         cp = SqliteCheckpointer(str(tmp_path / "test.db"))
         try:
             runner = AsyncRunner(checkpointer=cp)
 
-            async def stop_soon():
-                await asyncio.sleep(0.1)
+            async def stop_after_start():
+                await node_started.wait()
+                await asyncio.sleep(0.02)
                 runner.stop("wf")
 
-            task = asyncio.create_task(stop_soon())
+            task = asyncio.create_task(stop_after_start())
             await runner.run(Graph([my_node]), workflow_id="wf")
             await task
 
@@ -905,11 +912,12 @@ class TestRouteWithContext:
         """Route nodes should also filter NodeContext from inputs."""
 
         @route(targets=["a", END])
-        def decide(x: int) -> str:
+        def decide(x: int, ctx: NodeContext) -> str:
             return END
 
         # Route node should work without NodeContext issues
         assert "x" in decide.inputs
+        assert "ctx" not in decide.inputs
 
 
 # ---------------------------------------------------------------------------

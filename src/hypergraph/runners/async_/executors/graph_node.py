@@ -106,18 +106,19 @@ class AsyncGraphNodeExecutor:
             _, mode, error_handling = map_config
             # Use original param names for map_over (inner graph expects these)
             original_params = node._original_map_params()
-            map_call = runner.map(
-                node.graph,
-                inner_inputs,
-                map_over=original_params,
-                map_mode=mode,
-                clone=node._original_clone(),
-                error_handling=error_handling,
-                event_processors=ctx.event_processors,
-                workflow_id=child_workflow_id,
-                _parent_span_id=ctx.parent_span_id,
-                _parent_run_id=ctx.workflow_id,
-            )
+            map_kwargs: dict[str, Any] = {
+                "map_over": original_params,
+                "map_mode": mode,
+                "clone": node._original_clone(),
+                "error_handling": error_handling,
+                "event_processors": ctx.event_processors,
+                "workflow_id": child_workflow_id,
+                "_parent_span_id": ctx.parent_span_id,
+                "_parent_run_id": ctx.workflow_id,
+            }
+            if getattr(node, "_complete_on_stop", False):
+                map_kwargs["_complete_on_stop"] = True
+            map_call = runner.map(node.graph, inner_inputs, **map_kwargs)
             # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
             results = await map_call if inspect.isawaitable(map_call) else map_call
             if ctx.on_inner_log:

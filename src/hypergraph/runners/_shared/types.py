@@ -30,6 +30,8 @@ class RunStatus(Enum):
         COMPLETED: Run finished successfully
         FAILED: Run encountered an error
         PAUSED: Execution paused at an InterruptNode, waiting for user response
+        PARTIAL: Some map items completed, others failed (batch operations)
+        STOPPED: Run was cooperatively stopped via runner.stop()
     """
 
     COMPLETED = "completed"

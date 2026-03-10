@@ -1192,6 +1192,8 @@ class Graph:
                     parts.append(f"when_false={wf if isinstance(wf, str) else 'END'}")
             if isinstance(node, GraphNode):
                 parts.append(f"nested_struct={node.graph.structural_hash}")
+                if getattr(node, "_complete_on_stop", False):
+                    parts.append("complete_on_stop=True")
                 map_config = node.map_config
                 if map_config is not None:
                     map_params, map_mode, error_handling = map_config
