@@ -188,9 +188,6 @@ norecursedirs = [
 filterwarnings = [
     # Ignore numpy.linalg deprecation warning from daft's cloudpickle
     "ignore:The numpy.linalg.linalg has been made private:DeprecationWarning:daft.pickle.cloudpickle",
-    # Python 3.13+ raises unraisable exceptions from asyncio event loop __del__
-    # during GC (e.g. networkx cleanup in playwright tests). Not a real bug.
-    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.ruff]

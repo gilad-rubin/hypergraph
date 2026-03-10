@@ -36,7 +36,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra daft --python ${{ matrix.python-version }}
       - run: uv run --python ${{ matrix.python-version }} playwright install chromium
-      - run: uv run --python ${{ matrix.python-version }} pytest -W error --junitxml=pytest.xml
+      - run: >-
+          uv run --python ${{ matrix.python-version }} pytest
+          -W error
+          -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+          --junitxml=pytest.xml
       - run: |
           python - <<'PY'
           import sys
