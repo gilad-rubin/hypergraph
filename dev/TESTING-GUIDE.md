@@ -180,6 +180,47 @@ async def test_pause_resume(self, tmp_path):
 
 Without a checkpointer, the runner has no state between calls — each run starts fresh.
 
+### Async Fixtures: Always Close Long-Lived Resources
+
+When a test creates async resources with background helpers or worker threads, teardown must be explicit.
+
+This matters especially for:
+
+- `SqliteCheckpointer`
+- raw `aiosqlite` connections
+- browser/process fixtures outside the shared Playwright setup
+
+`aiosqlite` uses a worker thread behind the async connection. If a test fixture yields a live connection and never awaits `close()`, pytest may tear down the event loop first. The worker thread then tries to report back into a closed loop and you get flaky warnings like:
+
+```text
+PytestUnhandledThreadExceptionWarning
+RuntimeError: Event loop is closed
+```
+
+Prefer async fixtures for async resources:
+
+```python
+import pytest_asyncio
+
+@pytest_asyncio.fixture
+async def checkpointer(tmp_path):
+    cp = SqliteCheckpointer(str(tmp_path / "test.db"))
+    yield cp
+    await cp.close()
+```
+
+Avoid this pattern for async-backed resources:
+
+```python
+@pytest.fixture
+def checkpointer(tmp_path):
+    cp = SqliteCheckpointer(str(tmp_path / "test.db"))
+    yield cp
+    # no await close() -> worker thread may outlive the test loop
+```
+
+For sync-only tests using the sync connection path, close the sync handle explicitly in teardown.
+
 ## Common Gotchas
 
 ### Never Use `asyncio.run()` in Tests
@@ -197,6 +238,26 @@ def test_async_behavior(self):
 async def test_async_behavior(self):
     result = await runner.run(graph, {"x": 5})
 ```
+
+### Treat Thread-Shutdown Warnings As Real Failures
+
+If you see flaky warnings like `PytestUnhandledThreadExceptionWarning`, do not assume they are harmless just because the test body passed.
+
+First isolate the test and promote the warning to an error:
+
+```bash
+uv run pytest tests/test_checkpointer/test_resume.py -k override_workflow_auto_forks_existing_id \
+  -W error::pytest.PytestUnhandledThreadExceptionWarning
+```
+
+This usually turns intermittent teardown noise into a deterministic failure you can debug.
+
+For async checkpointer/resource issues, check:
+
+1. Is the fixture async?
+2. Does teardown explicitly `await close()`?
+3. Are background tasks/threads being awaited before loop shutdown?
+4. Is the warning coming from test cleanup rather than the feature under test?
 
 ### Cycle Tests Need Unique Output Names
 

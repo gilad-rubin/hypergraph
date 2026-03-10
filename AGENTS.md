@@ -44,6 +44,7 @@ Change validation expectations:
 - Run focused tests for touched modules first, then broader suites as needed.
 - Before PR, ensure `uv run pytest` passes.
 - Auto-format/lint hook runs after Python edits (`ruff check --fix` + `ruff format`), so avoid redundant manual formatting loops.
+- For async tests that allocate long-lived resources (for example `SqliteCheckpointer` / `aiosqlite`), make teardown explicit. Prefer async fixtures that `await ...close()` rather than relying on event-loop shutdown to clean up worker threads.
 
 ## Working Rules For Agents
 
