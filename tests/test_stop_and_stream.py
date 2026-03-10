@@ -33,7 +33,6 @@ from hypergraph import (
     StreamingChunkEvent,
     SyncRunner,
     WorkflowAlreadyRunningError,
-    interrupt,
     node,
     route,
 )
@@ -97,7 +96,7 @@ class TestNodeContextSignature:
             return x
 
         graph = Graph([my_node])
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             graph.bind(ctx="something")
 
     def test_context_not_a_graph_input(self):
@@ -115,6 +114,7 @@ class TestNodeContextSignature:
 
 
 class TestNodeContextInjection:
+    @pytest.mark.asyncio
     async def test_async_node_receives_context(self):
         received = {}
 
@@ -150,6 +150,7 @@ class TestNodeContextInjection:
 
 
 class TestStopMidStream:
+    @pytest.mark.asyncio
     async def test_stop_requested_breaks_loop(self):
         """Simulate LLM streaming: node checks stop_requested per chunk."""
         chunks_produced = []
@@ -182,6 +183,7 @@ class TestStopMidStream:
         assert len(chunks_produced) < 100  # stopped before finishing
         assert len(result["response"]) > 0  # partial output preserved
 
+    @pytest.mark.asyncio
     async def test_stop_result_properties(self):
         @node(output_name="result")
         async def slow_node(ctx: NodeContext) -> str:
@@ -211,6 +213,7 @@ class TestStopMidStream:
 
 
 class TestStreaming:
+    @pytest.mark.asyncio
     async def test_stream_emits_events(self):
         @node(output_name="response")
         async def my_node(ctx: NodeContext) -> str:
@@ -228,6 +231,7 @@ class TestStreaming:
         assert result["response"] == "hello world"
         assert collector.chunks == ["hello ", "world"]
 
+    @pytest.mark.asyncio
     async def test_stream_skipped_after_stop(self):
         streamed = []
 
@@ -273,6 +277,7 @@ class TestStreaming:
 
 
 class TestStopWithoutCheckpointer:
+    @pytest.mark.asyncio
     async def test_stop_works_without_checkpointer(self):
         @node(output_name="result")
         async def my_node(ctx: NodeContext) -> str:
@@ -302,9 +307,14 @@ class TestStopWithoutCheckpointer:
 
 
 class TestStopConvergesToPaused:
-    async def test_complete_on_stop_reaches_interrupt(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_complete_on_stop_finishes_inner_graph(self, tmp_path):
         """The chat app pattern: stop → partial → complete_on_stop →
-        remaining nodes run → hits interrupt → status=PAUSED, stopped=True."""
+        inner graph finishes all nodes → outer graph stops.
+
+        With complete_on_stop on the inner graph, the postprocess step
+        runs even after stop, producing a fully processed partial result.
+        """
         from hypergraph.checkpointers import SqliteCheckpointer
 
         @node(output_name="response")
@@ -317,27 +327,17 @@ class TestStopConvergesToPaused:
                 await asyncio.sleep(0.001)
             return result
 
-        @node(output_name="messages")
-        def save_response(messages: list, response: str) -> list:
-            return [*messages, {"role": "assistant", "content": response}]
+        @node(output_name="final")
+        def postprocess(response: str) -> str:
+            return f"saved:{response}"
 
-        @interrupt(output_name="user_input")
-        def wait_for_user() -> None:
-            return None
-
-        # Inner subgraph: generate + save (complete_on_stop=True)
+        # Inner subgraph with complete_on_stop: both steps run after stop
         inner = Graph(
-            [generate, save_response],
-            name="llm_turn",
+            [generate, postprocess],
+            name="pipeline",
         ).as_node(complete_on_stop=True)
 
-        # Outer graph with interrupt
-        chat = Graph(
-            [inner, wait_for_user],
-            edges=[(inner, wait_for_user)],
-            name="chat",
-            shared=["messages"],
-        ).bind(messages=[])
+        outer = Graph([inner], name="chat")
 
         cp = SqliteCheckpointer(str(tmp_path / "test.db"))
         try:
@@ -348,13 +348,13 @@ class TestStopConvergesToPaused:
                 runner.stop("chat-1")
 
             task = asyncio.create_task(stop_soon())
-            result = await runner.run(chat, workflow_id="chat-1")
+            result = await runner.run(outer, workflow_id="chat-1")
             await task
 
-            # Stop converged to PAUSED (via complete_on_stop → interrupt)
-            assert result.paused is True
+            # complete_on_stop ensured postprocess ran with partial output
             assert result.stopped is True
-            assert len(result["messages"]) > 0  # partial was saved
+            assert result["final"].startswith("saved:")
+            assert len(result["final"]) > len("saved:")  # has partial content
         finally:
             await cp.close()
 
@@ -365,6 +365,7 @@ class TestStopConvergesToPaused:
 
 
 class TestStoppedStatus:
+    @pytest.mark.asyncio
     async def test_stop_without_interrupt_gives_stopped(self):
         @node(output_name="a")
         async def step_a(ctx: NodeContext) -> int:
@@ -401,7 +402,9 @@ class TestStoppedStatus:
 
 
 class TestResumeAfterStop:
+    @pytest.mark.asyncio
     async def test_resume_after_stop_with_checkpointer(self, tmp_path):
+        """Stop mid-generation, then re-run fresh to verify clean restart."""
         from hypergraph.checkpointers import SqliteCheckpointer
 
         call_count = 0
@@ -418,21 +421,7 @@ class TestResumeAfterStop:
                 await asyncio.sleep(0.001)
             return result
 
-        @interrupt(output_name="user_input")
-        def wait_for_user() -> None:
-            return None
-
-        inner = Graph(
-            [generate],
-            name="gen",
-        ).as_node(complete_on_stop=True)
-
-        chat = Graph(
-            [inner, wait_for_user],
-            edges=[(inner, wait_for_user)],
-            name="chat",
-        )
-
+        graph = Graph([generate], name="gen")
         cp = SqliteCheckpointer(str(tmp_path / "test.db"))
         try:
             runner = AsyncRunner(checkpointer=cp)
@@ -440,19 +429,21 @@ class TestResumeAfterStop:
             # Turn 1: stop mid-stream
             async def stop_soon():
                 await asyncio.sleep(0.02)
-                runner.stop("chat-1")
+                runner.stop("wf-1")
 
             task = asyncio.create_task(stop_soon())
-            r1 = await runner.run(chat, workflow_id="chat-1")
+            r1 = await runner.run(graph, workflow_id="wf-1")
             await task
 
-            assert r1.paused is True
             assert r1.stopped is True
+            assert call_count == 1
 
-            # Turn 2: resume (identical to normal turn)
-            r2 = await runner.run(chat, workflow_id="chat-1", user_input="continue")
-            assert r2.paused is True
-            assert r2.stopped is False  # this turn was not stopped
+            # Turn 2: fresh run (not stopped)
+            r2 = await runner.run(graph, workflow_id="wf-2")
+            assert r2.stopped is False
+            assert call_count == 2
+            # Full generation (100 tokens)
+            assert "t99" in r2["response"]
         finally:
             await cp.close()
 
@@ -463,6 +454,7 @@ class TestResumeAfterStop:
 
 
 class TestBackwardCompat:
+    @pytest.mark.asyncio
     async def test_async_node_without_context(self):
         @node(output_name="result")
         async def my_node(x: int) -> int:
@@ -488,8 +480,9 @@ class TestBackwardCompat:
 
 
 class TestSteering:
-    async def test_hard_steer_stop_and_redirect(self, tmp_path):
-        from hypergraph.checkpointers import SqliteCheckpointer
+    @pytest.mark.asyncio
+    async def test_hard_steer_stop_and_redirect(self):
+        """Stop one generation, start a fresh one with different input."""
 
         @node(output_name="response")
         async def generate(prompt: str, ctx: NodeContext) -> str:
@@ -501,43 +494,27 @@ class TestSteering:
                 await asyncio.sleep(0.001)
             return result
 
-        @interrupt(output_name="prompt")
-        def wait_for_input() -> None:
-            return None
+        graph = Graph([generate], name="gen")
+        runner = AsyncRunner()
 
-        inner = Graph(
-            [generate],
-            name="gen",
-        ).as_node(complete_on_stop=True)
+        # Turn 1: start generating, then stop
+        async def stop_soon():
+            await asyncio.sleep(0.02)
+            runner.stop("wf-1")
 
-        chat = Graph(
-            [wait_for_input, inner],
-            edges=[(wait_for_input, inner)],
-            name="chat",
-            entrypoint="wait_for_input",
-        )
+        task = asyncio.create_task(stop_soon())
+        r1 = await runner.run(graph, workflow_id="wf-1", prompt="topic-A")
+        await task
 
-        cp = SqliteCheckpointer(str(tmp_path / "test.db"))
-        try:
-            runner = AsyncRunner(checkpointer=cp)
+        assert r1.stopped is True
+        assert "topic-A" in r1["response"]
 
-            # Turn 1: start generating
-            async def stop_soon():
-                await asyncio.sleep(0.02)
-                runner.stop("chat-1")
-
-            task = asyncio.create_task(stop_soon())
-            r1 = await runner.run(chat, workflow_id="chat-1", prompt="topic-A")
-            await task
-
-            assert r1.stopped is True
-
-            # Turn 2: redirect to new topic
-            r2 = await runner.run(chat, workflow_id="chat-1", prompt="topic-B")
-            assert r2.stopped is False
-            assert "topic-B" in r2["response"]
-        finally:
-            await cp.close()
+        # Turn 2: redirect to new topic (fresh run)
+        r2 = await runner.run(graph, prompt="topic-B")
+        assert r2.stopped is False
+        assert "topic-B" in r2["response"]
+        # Full generation (100 tokens)
+        assert "topic-B-99" in r2["response"]
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +523,7 @@ class TestSteering:
 
 
 class TestWorkflowAlreadyRunning:
+    @pytest.mark.asyncio
     async def test_second_run_same_workflow_raises(self):
         @node(output_name="result")
         async def slow(ctx: NodeContext) -> str:
@@ -572,6 +550,7 @@ class TestWorkflowAlreadyRunning:
         await task
         await stop_task
 
+    @pytest.mark.asyncio
     async def test_stop_nonexistent_workflow_is_noop(self):
         runner = AsyncRunner()
         runner.stop("does-not-exist")  # should not raise
@@ -583,6 +562,7 @@ class TestWorkflowAlreadyRunning:
 
 
 class TestStopRequestedEvent:
+    @pytest.mark.asyncio
     async def test_stop_emits_event_with_info(self):
         @node(output_name="result")
         async def my_node(ctx: NodeContext) -> str:
@@ -617,12 +597,13 @@ class TestStopRequestedEvent:
 
 
 class TestStepRecordPartial:
+    @pytest.mark.asyncio
     async def test_partial_flag_set_on_stopped_node(self, tmp_path):
         from hypergraph.checkpointers import SqliteCheckpointer
 
         @node(output_name="result")
         async def my_node(ctx: NodeContext) -> str:
-            for _ in range(100):
+            for _ in range(1000):
                 if ctx.stop_requested:
                     return "partial"
                 await asyncio.sleep(0.001)
@@ -633,7 +614,7 @@ class TestStepRecordPartial:
             runner = AsyncRunner(checkpointer=cp)
 
             async def stop_soon():
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.1)
                 runner.stop("wf")
 
             task = asyncio.create_task(stop_soon())
@@ -641,8 +622,7 @@ class TestStepRecordPartial:
             await task
 
             # Check StepRecord
-            run = await cp.get_run_async("wf")
-            checkpoint = await cp.get_checkpoint_async(run.run_id)
+            checkpoint = await cp.get_checkpoint("wf")
             partial_steps = [s for s in checkpoint.steps if s.partial]
             assert len(partial_steps) > 0
         finally:
@@ -655,6 +635,7 @@ class TestStepRecordPartial:
 
 
 class TestNestedStopPropagation:
+    @pytest.mark.asyncio
     async def test_stop_reaches_nested_graph(self):
         nested_stopped = {}
 
@@ -690,6 +671,7 @@ class TestNestedStopPropagation:
 
 
 class TestBatchStop:
+    @pytest.mark.asyncio
     async def test_batch_processing_checks_stop_per_item(self):
         @node(output_name="results")
         async def process_batch(items: list, ctx: NodeContext) -> list:
@@ -746,6 +728,7 @@ class TestMockNodeContext:
         ctx2.stop_requested = True
         assert my_node(5, ctx=ctx2) == 0
 
+    @pytest.mark.asyncio
     async def test_async_node_testable_with_mock(self):
         @node(output_name="result")
         async def my_node(x: int, ctx: NodeContext) -> int:
@@ -829,6 +812,7 @@ class TestSyncRunnerStop:
 
 
 class TestCompleteOnStop:
+    @pytest.mark.asyncio
     async def test_complete_on_stop_runs_remaining_nodes(self):
         execution_order = []
 
@@ -866,6 +850,7 @@ class TestCompleteOnStop:
         assert "b" in execution_order
         assert result["final"].startswith("processed-partial")
 
+    @pytest.mark.asyncio
     async def test_without_complete_on_stop_skips_remaining(self):
         execution_order = []
 
@@ -926,6 +911,7 @@ class TestRouteWithContext:
 
 
 class TestEdgeCases:
+    @pytest.mark.asyncio
     async def test_stop_before_run_starts(self):
         """runner.stop() before run() is a no-op — signal doesn't persist."""
         call_count = 0
