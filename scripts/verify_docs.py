@@ -101,17 +101,34 @@ def indent(text: str, prefix: str = "    ") -> str:
     return "\n".join(prefix + line for line in text.split("\n"))
 
 
-def main():
-    docs_path = Path(__file__).parent.parent / "docs" / "getting-started.md"
+def _resolve_docs_path() -> Path:
+    """Return the primary getting-started style docs page to verify."""
+    docs_root = Path(__file__).parent.parent / "docs"
+    candidates = [
+        docs_root / "02-core-concepts" / "getting-started.md",
+        docs_root / "01-introduction" / "quick-start.md",
+        docs_root / "getting-started.md",
+    ]
 
-    if not docs_path.exists():
-        print(f"ERROR: {docs_path} not found")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    tried = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"None of the expected docs files exist. Tried: {tried}")
+
+
+def main():
+    try:
+        docs_path = _resolve_docs_path()
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}")
         sys.exit(1)
 
     content = docs_path.read_text()
     blocks = extract_code_blocks(content)
 
-    print(f"Found {len(blocks)} code blocks in getting-started.md\n")
+    print(f"Found {len(blocks)} code blocks in {docs_path.relative_to(Path(__file__).parent.parent)}\n")
 
     passed = 0
     failed = 0

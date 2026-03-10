@@ -1093,6 +1093,11 @@ class Graph:
         return any(node.is_async for node in self._nodes.values())
 
     @property
+    def has_gates(self) -> bool:
+        """True if any node is a gate (RouteNode or IfElseNode)."""
+        return any(node.is_gate for node in self._nodes.values())
+
+    @property
     def has_interrupts(self) -> bool:
         """True if any node is an interrupt node."""
         return any(node.is_interrupt for node in self._nodes.values())

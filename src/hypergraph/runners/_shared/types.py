@@ -651,14 +651,20 @@ class RunnerCapabilities:
 
     Attributes:
         supports_cycles: Can execute graphs with cycles (default: True)
+        supports_gates: Can execute graphs with gate nodes (default: True)
         supports_async_nodes: Can execute async nodes (default: False)
         supports_streaming: Supports .iter() streaming (default: False)
+        supports_events: Supports event processors (default: True)
+        supports_distributed: Can distribute across workers (default: False)
         returns_coroutine: run() returns a coroutine (default: False)
     """
 
     supports_cycles: bool = True
+    supports_gates: bool = True
     supports_async_nodes: bool = False
     supports_streaming: bool = False
+    supports_events: bool = True
+    supports_distributed: bool = False
     returns_coroutine: bool = False
     supports_interrupts: bool = False
     supports_checkpointing: bool = False

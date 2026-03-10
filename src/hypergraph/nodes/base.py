@@ -131,6 +131,14 @@ class HyperNode(ABC):
         return False
 
     @property
+    def is_gate(self) -> bool:
+        """Does this node route execution flow (gate)?
+
+        Default: False. Override in GateNode.
+        """
+        return False
+
+    @property
     def is_interrupt(self) -> bool:
         """Is this a pause point for human-in-the-loop?
 

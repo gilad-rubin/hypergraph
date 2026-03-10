@@ -53,6 +53,7 @@ from hypergraph.nodes import (
 from hypergraph.runners import (
     AsyncRunner,
     BaseRunner,
+    DaftRunner,
     ErrorHandling,
     MapLog,
     MapResult,
@@ -85,6 +86,7 @@ __all__ = [
     # Runners
     "SyncRunner",
     "AsyncRunner",
+    "DaftRunner",
     "BaseRunner",
     "ErrorHandling",
     "PauseInfo",

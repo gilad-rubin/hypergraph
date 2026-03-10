@@ -123,6 +123,11 @@ class GateNode(CallableMixin, HyperNode):
         return (f"_{self.name}",)
 
     @property
+    def is_gate(self) -> bool:
+        """Gate nodes route execution flow."""
+        return True
+
+    @property
     def is_async(self) -> bool:
         """Route functions must be sync, so always False."""
         return False

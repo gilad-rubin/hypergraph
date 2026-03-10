@@ -253,6 +253,14 @@ def validate_runner_compatibility(
             capability="supports_cycles",
         )
 
+    # Check gates
+    if graph.has_gates and not capabilities.supports_gates:
+        gate_names = [node.name for node in graph._nodes.values() if node.is_gate]
+        raise IncompatibleRunnerError(
+            f"Graph has gates (@route/@branch) but runner doesn't support gates: {', '.join(gate_names)}.",
+            capability="supports_gates",
+        )
+
     # Check interrupts
     if graph.has_interrupts and not capabilities.supports_interrupts:
         interrupt_names = [node.name for node in graph._nodes.values() if node.is_interrupt]
@@ -261,6 +269,13 @@ def validate_runner_compatibility(
             node_name=interrupt_names[0] if interrupt_names else None,
             capability="supports_interrupts",
         )
+
+    # Recurse into nested GraphNodes
+    from hypergraph.nodes.graph_node import GraphNode
+
+    for node in graph._nodes.values():
+        if isinstance(node, GraphNode):
+            validate_runner_compatibility(node.graph, capabilities)
 
 
 def validate_map_compatible(graph: Graph) -> None:
