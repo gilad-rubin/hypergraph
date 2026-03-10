@@ -61,7 +61,7 @@ All three are cleared in `_shallow_copy` → `inputs` cache invalidation.
 
 ### runners/
 
-Execution engines. Template Method pattern with pluggable `NodeExecutor` per node type.
+Execution engines. Template Method pattern with pluggable executors per node type.
 
 | File | Purpose |
 |------|---------|
@@ -89,17 +89,36 @@ Practical mental model:
 
 **`_shared/` contents**:
 - `caching.py` — Cache key computation and lookup
+- `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
 - `event_helpers.py` — Emit lifecycle events
 - `gate_execution.py` — Route/ifelse decision execution
 - `helpers.py` — Input resolution, output storage, active-scope computation, SCC planning, and localized readiness scheduling
 - `input_normalization.py` — Normalize user inputs for execution
-- `routing_validation.py` — Validate routing decisions at runtime
-- `template_sync.py` / `template_async.py` — Template Method base for runner lifecycle. Threads runtime select and entrypoint config into validation.
-- `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`
-- `protocols.py` — `NodeExecutor` protocol
+- `protocols.py` — executor protocols for sync and async runners
+- `run_log.py` — always-on `RunLog` collection helpers
+- `template_sync.py` / `template_async.py` — Template Method base for runner lifecycle. Threads runtime select, entrypoint config, and checkpoint semantics into validation and execution.
+- `types.py` — `GraphState`, `RunResult`, `RunStatus`, `PauseInfo`, `RunLog`, `MapLog`, `ExecutionContext`
 - `validation.py` — Runner-level validation, runtime select resolution, InputSpec scoping
 
 **Rule**: Sync and async runners have parallel implementations. Adding a feature to one means adding it to both.
+
+### checkpointers/
+
+Durability, lineage, and inspection for persisted runs.
+
+| File | Purpose |
+|------|---------|
+| `base.py` | `Checkpointer` ABC and `CheckpointPolicy` |
+| `sqlite.py` | Durable SQLite-backed checkpointer |
+| `memory.py` | In-memory checkpointer for tests and lightweight experiments |
+| `types.py` | `Run`, `StepRecord`, `Checkpoint`, lineage and table display types |
+| `inspection.py` | Sync inspection adapters used by CLI and notebooks |
+| `presenters.py` | HTML renderers for explorer/table-style checkpoint widgets |
+| `protocols.py` | Sync write protocol for `SyncRunner` |
+| `serializers.py` | Payload serializers |
+| `_migrate.py` | SQLite schema migrations |
+
+**Rule**: Checkpointing is not just persistence. It participates in resume, fork, retry, lineage, CLI inspection, and notebook UX.
 
 ### events/
 
@@ -111,8 +130,19 @@ Observability system, decoupled from execution logic.
 | `dispatcher.py` | `EventDispatcher` — routes events to processors |
 | `processor.py` | `EventProcessor`, `AsyncEventProcessor`, `TypedEventProcessor` |
 | `rich_progress.py` | `RichProgressProcessor` — Rich console progress bars |
+| `otel.py` | OpenTelemetry processor integration |
 
 **Rule**: Events are best-effort. Observability must never alter execution logic or raise exceptions that break a run.
+
+### integrations/
+
+Optional alternate runtimes that project the core graph model into another execution backend.
+
+| File | Purpose |
+|------|---------|
+| `daft/runner.py` | `DaftRunner` for DataFrame-style DAG execution |
+
+**Rule**: Integrations may intentionally support only a subset of Hypergraph semantics, but those constraints must be explicit and validated.
 
 ### viz/
 
