@@ -6,7 +6,7 @@ Two checklists: one for coding agents (pre-submit), one for review agents.
 
 Before pushing or creating a PR:
 
-- [ ] **Tests pass**: `uv run pytest`
+- [ ] **Tests pass (CI-equivalent)**: `uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'`
 - [ ] **Lint passes**: `uv run ruff check src/ tests/`
 - [ ] **Format correct**: `uv run ruff format --check src/ tests/`
 - [ ] **New public API** added to `__init__.py` `__all__`?

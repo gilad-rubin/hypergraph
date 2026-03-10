@@ -56,9 +56,12 @@ The notebook setup does two separate jobs:
 # Tests
 uv run pytest                              # default (parallel, fast)
 uv run pytest tests/test_specific.py       # single file
-uv run pytest -k "test_name"               # single test
+uv run pytest -k "test_name"              # single test
 uv run pytest -m slow                      # slow tests
 uv run pytest -m full_matrix               # full capability matrix
+
+# CI-equivalent (run before PR)
+uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
 
 # Lint & format
 uv run ruff check src/ tests/              # lint
@@ -81,7 +84,7 @@ uv run pytest tests/viz/                   # requires Playwright
 ## PR Expectations
 
 - Conventional commit title (e.g., `feat(graph): add strict type validation`)
-- Tests pass (`uv run pytest`)
+- CI-equivalent tests pass: `uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'`
 - Lint clean (`uv run ruff check src/ tests/`)
 - Review checklist satisfied (see [dev/REVIEW-CHECKLIST.md](REVIEW-CHECKLIST.md))
 

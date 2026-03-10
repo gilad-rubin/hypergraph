@@ -34,15 +34,21 @@ Worktree bootstrap:
 
 Core commands:
 ```bash
-uv run pytest
+uv run pytest                        # fast local (parallel, xdist)
 uv run pytest -m slow
 uv run pytest -m full_matrix
 uv run pre-commit run --all-files
 ```
 
+CI-equivalent local check (run before PR):
+```bash
+uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+```
+This matches what CI runs: all warnings as errors, except GC-triggered unraisable exceptions from `__del__` cleanup (sockets, event loops) which are non-deterministic.
+
 Change validation expectations:
 - Run focused tests for touched modules first, then broader suites as needed.
-- Before PR, ensure `uv run pytest` passes.
+- Before PR, run the CI-equivalent command above — `uv run pytest` alone does NOT catch warning-as-error failures that CI enforces.
 - Auto-format/lint hook runs after Python edits (`ruff check --fix` + `ruff format`), so avoid redundant manual formatting loops.
 - For async tests that allocate long-lived resources (for example `SqliteCheckpointer` / `aiosqlite`), make teardown explicit. Prefer async fixtures that `await ...close()` rather than relying on event-loop shutdown to clean up worker threads.
 

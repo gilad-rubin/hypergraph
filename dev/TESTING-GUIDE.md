@@ -8,6 +8,9 @@ How to write and run tests in hypergraph.
 # Default: parallel, excludes full_matrix and slow
 uv run pytest
 
+# CI-equivalent (run before PR — catches warning-as-error failures)
+uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+
 # Single file
 uv run pytest tests/test_specific.py
 
@@ -24,7 +27,13 @@ uv run pytest -m full_matrix
 uv run pytest -v tests/test_specific.py
 ```
 
-**Note**: Tests run in parallel via `pytest-xdist` by default (`-n auto --dist worksteal`). This is configured in `pyproject.toml`.
+**Note**: Tests run in parallel via `pytest-xdist` by default (`-n auto --dist loadfile`). This is configured in `pyproject.toml`.
+
+### CI vs Local
+
+CI runs `pytest -W error` (all warnings become errors). Plain `uv run pytest` does **not** — so tests can pass locally but fail in CI. Always run the CI-equivalent command before pushing a PR.
+
+The `-W 'ignore::pytest.PytestUnraisableExceptionWarning'` suppresses GC-triggered cleanup warnings from `__del__` methods (sockets, event loops). These are non-deterministic and not real bugs. **Important**: `filterwarnings` in `pyproject.toml` does NOT suppress these — pytest's `collect_unraisable` hook fires after the `catch_warnings` context manager exits, so only global `-W` flags from the CLI take effect.
 
 ## Test Patterns
 
@@ -225,6 +234,33 @@ def checkpointer(tmp_path):
 For sync-only tests using the sync connection path, close the sync handle explicitly in teardown.
 
 ## Common Gotchas
+
+### Stop/Timing Tests: Use Events, Not Sleeps
+
+Tests that coordinate `runner.stop()` with a running node must use `asyncio.Event` for synchronization, not fixed `asyncio.sleep()` delays. Under xdist, sleep-based coordination is unreliable because worker load affects scheduling:
+
+```python
+# WRONG — flaky under xdist, stop may fire before or after node completes
+async def stop_soon():
+    await asyncio.sleep(0.1)  # hope the node started by now
+    runner.stop("wf")
+
+# RIGHT — deterministic: stop only fires after node confirms it's running
+node_started = asyncio.Event()
+
+@node(output_name="result")
+async def my_node(ctx: NodeContext) -> str:
+    node_started.set()  # signal we're running
+    for chunk in generate():
+        if ctx.stop_requested:
+            break
+    return result
+
+async def stop_after_start():
+    await node_started.wait()  # guaranteed the node is executing
+    await asyncio.sleep(0.02)  # small buffer for node to enter loop
+    runner.stop("wf")
+```
 
 ### Never Use `asyncio.run()` in Tests
 
