@@ -34,8 +34,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --group dev --extra daft
-      - run: uv run pytest -W error --junitxml=pytest.xml
+      - run: uv sync --group dev --extra daft --python ${{ matrix.python-version }}
+      - run: uv run --python ${{ matrix.python-version }} playwright install chromium
+      - run: uv run --python ${{ matrix.python-version }} pytest -W error --junitxml=pytest.xml
       - run: |
           python - <<'PY'
           import sys
