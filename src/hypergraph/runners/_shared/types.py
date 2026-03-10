@@ -36,6 +36,7 @@ class RunStatus(Enum):
     FAILED = "failed"
     PAUSED = "paused"
     PARTIAL = "partial"
+    STOPPED = "stopped"
 
 
 def _generate_run_id() -> str:
@@ -172,6 +173,7 @@ class RunResult:
     error: BaseException | None = None
     pause: PauseInfo | None = None
     log: RunLog | None = None
+    stopped: bool = False
 
     @property
     def paused(self) -> bool:
@@ -685,9 +687,11 @@ class ExecutionContext:
     event_processors: list[EventProcessor] | None = None
     parent_span_id: str | None = None
     workflow_id: str | None = None
+    run_id: str = ""
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False
     on_inner_log: Callable[[RunLog], None] | None = None
+    emit_fn: Callable[[Any], None] | None = None
 
 
 @dataclass

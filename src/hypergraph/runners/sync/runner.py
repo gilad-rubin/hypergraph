@@ -5,13 +5,14 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from hypergraph.exceptions import ExecutionError, InfiniteLoopError
+from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
 from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
 from hypergraph.runners._shared.protocols import NodeExecutor
+from hypergraph.runners._shared.stop import StopSignal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
 from hypergraph.runners._shared.types import ExecutionContext, GraphState, RunnerCapabilities, _generate_run_id
 from hypergraph.runners.sync.executors import (
@@ -72,12 +73,27 @@ class SyncRunner(SyncRunnerTemplate):
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
+        self._active_signals: dict[str, StopSignal] = {}
         self._executors: dict[type[HyperNode], NodeExecutor] = {
             FunctionNode: SyncFunctionNodeExecutor(),
             GraphNode: SyncGraphNodeExecutor(self),
             IfElseNode: SyncIfElseNodeExecutor(),
             RouteNode: SyncRouteNodeExecutor(),
         }
+
+    def stop(self, workflow_id: str, *, info: Any = None) -> None:
+        """Request cooperative stop for an active run.
+
+        No-op if the workflow_id is not currently running.
+        Thread-safe: uses threading.Event internally for sync runner.
+
+        Args:
+            workflow_id: The workflow to stop.
+            info: Optional metadata attached to the stop signal.
+        """
+        signal = self._active_signals.get(workflow_id)
+        if signal is not None:
+            signal.set(info=info)
 
     @property
     def _checkpointer(self) -> Checkpointer | None:
@@ -135,89 +151,112 @@ class SyncRunner(SyncRunnerTemplate):
         superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
+        # Set up StopSignal for this run (threading.Event for sync runner)
+        signal = StopSignal(use_threading=True)
+        if workflow_id is not None:
+            if workflow_id in self._active_signals:
+                raise WorkflowAlreadyRunningError(workflow_id)
+            self._active_signals[workflow_id] = signal
+        signal_token = set_stop_signal(signal)
+
         superstep_idx = 0
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
         ctx_base = ExecutionContext(
             event_processors=event_processors,
             workflow_id=workflow_id,
+            run_id=run_id,
             provided_values=values,
+            emit_fn=dispatcher.emit if dispatcher.active else None,
         )
 
-        while frontier.has_pending_components():
-            try:
-                ready_nodes = frontier.next_ready_batch(
-                    graph,
-                    state,
-                    active_nodes=scope.active_nodes,
-                    startup_predecessors=scope.startup_predecessors,
-                )
-            except InfiniteLoopError as e:
-                raise ExecutionError(e, state) from e
+        try:
+            while frontier.has_pending_components():
+                # Check stop signal at superstep boundary
+                if signal.is_set:
+                    break
 
-            if not ready_nodes:
-                continue
-
-            if dispatcher.active:
-                from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
-
-                dispatcher.emit(
-                    SuperstepStartEvent(
-                        run_id=run_id,
-                        span_id=_generate_span_id(),
-                        parent_span_id=run_span_id,
-                        graph_name=graph.name,
-                        superstep=superstep_idx,
+                try:
+                    ready_nodes = frontier.next_ready_batch(
+                        graph,
+                        state,
+                        active_nodes=scope.active_nodes,
+                        startup_predecessors=scope.startup_predecessors,
                     )
-                )
+                except InfiniteLoopError as e:
+                    raise ExecutionError(e, state) from e
 
-            # Track ready nodes and prior input_versions for checkpoint helpers
-            ready_node_names = [n.name for n in ready_nodes]
-            prev_input_versions = {
-                name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
-            }
+                if not ready_nodes:
+                    continue
 
-            superstep_error: BaseException | None = None
-            try:
-                # Execute all ready nodes
-                state = run_superstep_sync(
-                    graph,
-                    state,
-                    ready_nodes,
-                    values,
-                    self._executors,
-                    ctx_base,
-                    cache=self._cache,
-                    dispatcher=dispatcher,
-                    run_id=run_id,
-                    run_span_id=run_span_id,
-                )
-            except ExecutionError as e:
-                superstep_error = e
-                state = e.partial_state  # type: ignore[assignment]
-            except Exception as e:
-                superstep_error = ExecutionError(e, state)
+                if dispatcher.active:
+                    from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
 
-            # Save step records for executed nodes (even on failure)
-            if sync_cp:
-                step_counter = _save_superstep_sync(
-                    sync_cp,
-                    workflow_id,
-                    superstep_idx + superstep_offset,
-                    state,
-                    ready_node_names,
-                    prev_input_versions,
-                    node_order,
-                    step_counter,
-                    step_buffer,
-                    graph,
-                    superstep_error,
-                )
+                    dispatcher.emit(
+                        SuperstepStartEvent(
+                            run_id=run_id,
+                            span_id=_generate_span_id(),
+                            parent_span_id=run_span_id,
+                            graph_name=graph.name,
+                            superstep=superstep_idx,
+                        )
+                    )
 
-            if superstep_error is not None:
-                raise superstep_error
+                # Track ready nodes and prior input_versions for checkpoint helpers
+                ready_node_names = [n.name for n in ready_nodes]
+                prev_input_versions = {
+                    name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
+                }
 
-            superstep_idx += 1
+                superstep_error: BaseException | None = None
+                try:
+                    # Execute all ready nodes
+                    state = run_superstep_sync(
+                        graph,
+                        state,
+                        ready_nodes,
+                        values,
+                        self._executors,
+                        ctx_base,
+                        cache=self._cache,
+                        dispatcher=dispatcher,
+                        run_id=run_id,
+                        run_span_id=run_span_id,
+                    )
+                except ExecutionError as e:
+                    superstep_error = e
+                    state = e.partial_state  # type: ignore[assignment]
+                except Exception as e:
+                    superstep_error = ExecutionError(e, state)
 
+                # Save step records for executed nodes (even on failure)
+                if sync_cp:
+                    step_counter = _save_superstep_sync(
+                        sync_cp,
+                        workflow_id,
+                        superstep_idx + superstep_offset,
+                        state,
+                        ready_node_names,
+                        prev_input_versions,
+                        node_order,
+                        step_counter,
+                        step_buffer,
+                        graph,
+                        superstep_error,
+                    )
+
+                if superstep_error is not None:
+                    raise superstep_error
+
+                superstep_idx += 1
+        finally:
+            # Clean up signal registry
+            reset_stop_signal(signal_token)
+            if workflow_id is not None:
+                self._active_signals.pop(workflow_id, None)
+
+        # Propagate stopped flag to the template layer
+        state._stopped = signal.is_set  # type: ignore[attr-defined]
+        state._stop_info = signal.info  # type: ignore[attr-defined]
         return state
 
     # Template hook implementations

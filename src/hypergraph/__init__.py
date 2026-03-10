@@ -21,6 +21,7 @@ from hypergraph.events import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    StreamingChunkEvent,
     SuperstepStartEvent,
     TypedEventProcessor,
 )
@@ -32,6 +33,7 @@ from hypergraph.exceptions import (
     InputOverrideRequiresForkError,
     MissingInputError,
     WorkflowAlreadyCompletedError,
+    WorkflowAlreadyRunningError,
     WorkflowForkError,
 )
 from hypergraph.graph import Graph, GraphConfigError, InputSpec
@@ -103,6 +105,7 @@ __all__ = [
     "GraphChangedError",
     "WorkflowForkError",
     "InputOverrideRequiresForkError",
+    "WorkflowAlreadyRunningError",
     # RunLog
     "RunLog",
     "MapLog",
@@ -125,6 +128,7 @@ __all__ = [
     "RunStartEvent",
     "StopRequestedEvent",
     "CacheHitEvent",
+    "StreamingChunkEvent",
     "RichProgressProcessor",
     # Cache
     "CacheBackend",

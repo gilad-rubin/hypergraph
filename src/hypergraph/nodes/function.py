@@ -9,6 +9,7 @@ from typing import Any, get_type_hints
 
 from hypergraph._utils import ensure_tuple, hash_definition
 from hypergraph.nodes._callable import CallableMixin
+from hypergraph.nodes._input_extraction import extract_inputs
 from hypergraph.nodes._rename import _apply_renames
 from hypergraph.nodes.base import HyperNode, _validate_emit_wait_for
 
@@ -159,7 +160,7 @@ class FunctionNode(CallableMixin, HyperNode):
         data_outputs = _resolve_outputs(func, output_name)
         self.outputs = data_outputs + self._emit
 
-        inputs = tuple(inspect.signature(func).parameters.keys())
+        inputs, self._context_param = extract_inputs(func)
         self.inputs, self._rename_history = _apply_renames(inputs, rename_inputs, "inputs")
 
         _validate_emit_wait_for(

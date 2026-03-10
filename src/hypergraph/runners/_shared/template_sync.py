@@ -345,12 +345,31 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
+            was_stopped = getattr(state, "_stopped", False)
+            status = RunStatus.STOPPED if was_stopped else RunStatus.COMPLETED
+
+            # Emit StopRequestedEvent if stopped
+            if was_stopped and dispatcher.active:
+                from hypergraph.events.types import StopRequestedEvent
+
+                stop_info = getattr(state, "_stop_info", None)
+                dispatcher.emit(
+                    StopRequestedEvent(
+                        run_id=run_id,
+                        span_id=run_span_id,
+                        parent_span_id=_parent_span_id,
+                        workflow_id=workflow_id,
+                        info=stop_info,
+                    )
+                )
+
             result = RunResult(
                 values=output_values,
-                status=RunStatus.COMPLETED,
+                status=status,
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                stopped=was_stopped,
             )
             self._emit_run_end_sync(
                 dispatcher,
