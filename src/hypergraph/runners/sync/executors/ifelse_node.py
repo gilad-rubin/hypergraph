@@ -8,7 +8,7 @@ from hypergraph.runners._shared.gate_execution import execute_ifelse
 
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import IfElseNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
 
 
 class SyncIfElseNodeExecutor:
@@ -19,5 +19,6 @@ class SyncIfElseNodeExecutor:
         node: IfElseNode,
         state: GraphState,
         inputs: dict[str, Any],
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         return execute_ifelse(node, state, inputs)

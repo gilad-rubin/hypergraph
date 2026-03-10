@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import inspect
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners._shared.helpers import collect_as_lists, graphnode_child_workflow_id, map_inputs_to_func_params
 from hypergraph.runners._shared.types import PauseExecution, PauseInfo, RunResult, RunStatus
 
 if TYPE_CHECKING:
-    from hypergraph.events.processor import EventProcessor
     from hypergraph.nodes.graph_node import GraphNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
     from hypergraph.runners.async_.runner import AsyncRunner
 
 
@@ -23,62 +21,38 @@ class AsyncGraphNodeExecutor:
     - Simple nested graph execution
     - Map-over execution (delegates to runner.map())
 
-    Nested graphs inherit the parent's concurrency limiter via ContextVar,
-    so max_concurrency is shared across all levels of execution.
+    Nested graphs inherit the parent's concurrency limiter, so
+    max_concurrency is shared across all levels of execution.
     """
 
     def __init__(self, runner: AsyncRunner):
-        """Initialize with reference to parent runner.
-
-        Args:
-            runner: The AsyncRunner that owns this executor
-        """
+        """Initialize with reference to parent runner."""
         self.runner = runner
-        self._last_inner_logs: ContextVar[tuple] = ContextVar(
-            "async_graph_node_executor_last_inner_logs",
-            default=(),
-        )
-
-    @property
-    def last_inner_logs(self) -> tuple:
-        """Latest nested logs for the current task context."""
-        return self._last_inner_logs.get()
-
-    def consume_last_inner_logs(self) -> tuple:
-        """Read and clear nested logs for the current task context."""
-        logs = self._last_inner_logs.get()
-        self._last_inner_logs.set(())
-        return logs
 
     async def __call__(
         self,
         node: GraphNode,
         state: GraphState,
         inputs: dict[str, Any],
-        *,
-        event_processors: list[EventProcessor] | None = None,
-        parent_span_id: str | None = None,
-        workflow_id: str | None = None,
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         """Execute a GraphNode by running its inner graph.
 
-        Inherits the parent's concurrency limiter via ContextVar.
         All nested operations share the same global concurrency budget.
 
         Args:
             node: The GraphNode to execute
             state: Current graph execution state (unused directly)
             inputs: Input values for the nested graph
-            event_processors: Processors to propagate to nested runs
-            parent_span_id: Span ID of the parent node for event linking
-            workflow_id: Parent workflow ID for hierarchical checkpointing
+            ctx: Execution context with event processors, workflow ID, and
+                nested log sink
 
         Returns:
             Dict mapping output names to their values
         """
         # Translate renamed input keys back to original inner graph names
         inner_inputs = map_inputs_to_func_params(node, inputs)
-        child_workflow_id = graphnode_child_workflow_id(workflow_id, node.name, state)
+        child_workflow_id = graphnode_child_workflow_id(ctx.workflow_id, node.name, state)
         map_config = node.map_config
 
         # Route interrupt resume values into the inner graph.
@@ -104,7 +78,7 @@ class AsyncGraphNodeExecutor:
                 if existing_child_run is not None:
                     inner_inputs = {}
                 elif resume_values:
-                    current_parent_run = await self.runner._checkpointer.get_run_async(workflow_id) if workflow_id else None
+                    current_parent_run = await self.runner._checkpointer.get_run_async(ctx.workflow_id) if ctx.workflow_id else None
                     source_parent_run_id = None
                     if current_parent_run is not None:
                         source_parent_run_id = current_parent_run.retry_of or current_parent_run.forked_from
@@ -139,22 +113,25 @@ class AsyncGraphNodeExecutor:
                 map_mode=mode,
                 clone=node._original_clone(),
                 error_handling=error_handling,
-                event_processors=event_processors,
+                event_processors=ctx.event_processors,
                 workflow_id=child_workflow_id,
-                _parent_span_id=parent_span_id,
-                _parent_run_id=workflow_id,
+                _parent_span_id=ctx.parent_span_id,
+                _parent_run_id=ctx.workflow_id,
             )
             # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
             results = await map_call if inspect.isawaitable(map_call) else map_call
-            self._last_inner_logs.set(tuple(r.log for r in results if r.log is not None))
+            if ctx.on_inner_log:
+                for result in results:
+                    if result.log is not None:
+                        ctx.on_inner_log(result.log)
             return collect_as_lists(results, node, error_handling)
 
         # Only pass checkpoint kwargs if the delegated runner supports checkpointing
         run_kwargs: dict[str, Any] = {
-            "event_processors": event_processors,
+            "event_processors": ctx.event_processors,
             "workflow_id": child_workflow_id,
-            "_parent_span_id": parent_span_id,
-            "_parent_run_id": workflow_id,
+            "_parent_span_id": ctx.parent_span_id,
+            "_parent_run_id": ctx.workflow_id,
         }
         if runner.capabilities.supports_checkpointing:
             run_kwargs["fork_from"] = child_fork_from
@@ -163,7 +140,8 @@ class AsyncGraphNodeExecutor:
         run_call = runner.run(node.graph, inner_inputs, **run_kwargs)
         # Delegated runner may be sync (e.g. DaftRunner) — await only if needed
         result = await run_call if inspect.isawaitable(run_call) else run_call
-        self._last_inner_logs.set((result.log,) if result.log is not None else ())
+        if ctx.on_inner_log and result.log is not None:
+            ctx.on_inner_log(result.log)
         return self._handle_nested_result(node, result)
 
     def _handle_nested_result(self, node: GraphNode, result: RunResult) -> dict[str, Any]:

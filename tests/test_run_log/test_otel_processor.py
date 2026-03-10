@@ -12,7 +12,11 @@ from hypergraph import Graph, SyncRunner, node
 try:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+
+    try:
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    except ImportError:  # pragma: no cover - compatibility with older sdk layout
+        from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
 
     HAS_OTEL_SDK = True
 except ImportError:
@@ -59,11 +63,21 @@ class TestOTelProcessor:
         from opentelemetry import trace
 
         self.exporter = InMemorySpanExporter()
-        provider = TracerProvider()
-        provider.add_span_processor(SimpleSpanProcessor(self.exporter))
-        trace.set_tracer_provider(provider)
+        provider = trace.get_tracer_provider()
+        if not isinstance(provider, TracerProvider):
+            provider = TracerProvider()
+            trace._set_tracer_provider(provider, log=False)  # type: ignore[attr-defined]
+
+        self.span_processor = SimpleSpanProcessor(self.exporter)
+        provider.add_span_processor(self.span_processor)
         yield
         self.exporter.clear()
+        provider._active_span_processor._span_processors = tuple(  # type: ignore[attr-defined]
+            processor
+            for processor in provider._active_span_processor._span_processors
+            if processor is not self.span_processor  # type: ignore[attr-defined]
+        )
+        self.span_processor.shutdown()
 
     def test_sync_run_produces_spans(self):
         """SyncRunner with OTelProcessor exports spans."""

@@ -701,7 +701,7 @@ class TestDisconnectedSubgraphs:
         runner = AsyncRunner()
 
         # Select only from one subgraph
-        result = await runner.run(graph, {"x": 5, "y": 10})
+        result = await runner.run(graph, {"x": 5})
 
         assert result.status == RunStatus.COMPLETED
         assert "a" in result

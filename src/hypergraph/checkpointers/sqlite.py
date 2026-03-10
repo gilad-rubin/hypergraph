@@ -123,6 +123,32 @@ class SqliteCheckpointer(Checkpointer):
         self._init_lock: asyncio.Lock | None = None
         self._aiosqlite = _require_aiosqlite()
 
+    def __del__(self) -> None:
+        """Best-effort cleanup for forgotten checkpointers.
+
+        Tests and callers should still prefer explicit ``await close()``.
+        This fallback only exists to avoid unraisable GC-time warnings when an
+        async sqlite connection is accidentally dropped without teardown.
+        """
+        sync_conn = getattr(self, "_sync_conn", None)
+        with contextlib.suppress(Exception):
+            if sync_conn is not None:
+                sync_conn.close()
+                self._sync_conn = None
+
+        db = getattr(self, "_db", None)
+        if db is None:
+            return
+
+        with contextlib.suppress(Exception):
+            raw_conn = getattr(db, "_connection", None)
+            if raw_conn is not None:
+                raw_conn.close()
+                db._connection = None
+
+        with contextlib.suppress(Exception):
+            db._running = False
+
     def _db_stats(self) -> dict[str, Any]:
         """Gather quick DB stats for display (uses sync connection)."""
         import os

@@ -10,7 +10,7 @@ import time
 from hypergraph import node, route
 
 
-@node
+@node(output_name="embedding")
 def mock_embed(text: str) -> list[float]:
     """Simulates an embedding call (fast, ~1ms)."""
     time.sleep(0.001)

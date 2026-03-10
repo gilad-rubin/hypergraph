@@ -12,6 +12,7 @@ These tests codify the v3 decisions from the checkpoint design sessions:
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 
 from hypergraph import END, AsyncRunner, Graph, RunStatus, ifelse, interrupt, node
 from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
@@ -25,10 +26,11 @@ from hypergraph.exceptions import (
 aiosqlite = pytest.importorskip("aiosqlite")
 
 
-@pytest.fixture
-def checkpointer(tmp_path):
+@pytest_asyncio.fixture
+async def checkpointer(tmp_path):
     cp = SqliteCheckpointer(str(tmp_path / "lineage.db"))
     yield cp
+    await cp.close()
 
 
 @node(output_name="doubled")

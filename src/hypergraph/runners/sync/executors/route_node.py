@@ -8,7 +8,7 @@ from hypergraph.runners._shared.gate_execution import execute_route
 
 if TYPE_CHECKING:
     from hypergraph.nodes.gate import RouteNode
-    from hypergraph.runners._shared.types import GraphState
+    from hypergraph.runners._shared.types import ExecutionContext, GraphState
 
 
 class SyncRouteNodeExecutor:
@@ -19,5 +19,6 @@ class SyncRouteNodeExecutor:
         node: RouteNode,
         state: GraphState,
         inputs: dict[str, Any],
+        ctx: ExecutionContext,
     ) -> dict[str, Any]:
         return execute_route(node, state, inputs)

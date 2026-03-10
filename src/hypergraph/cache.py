@@ -14,6 +14,7 @@ import os
 import pickle
 import secrets
 from collections import OrderedDict
+from contextlib import suppress
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -166,6 +167,17 @@ class DiskCache:
         expanded = os.path.expanduser(cache_dir)
         self._cache = diskcache.Cache(expanded, **kwargs)
         self._hmac_key = _load_or_create_hmac_key(expanded)
+
+    def close(self) -> None:
+        """Close the underlying diskcache connection."""
+        cache = getattr(self, "_cache", None)
+        if cache is not None:
+            cache.close()
+
+    def __del__(self) -> None:
+        """Best-effort cleanup for forgotten disk caches."""
+        with suppress(Exception):
+            self.close()
 
     def get(self, key: str) -> tuple[bool, Any]:
         """Return (hit, value) from disk cache.

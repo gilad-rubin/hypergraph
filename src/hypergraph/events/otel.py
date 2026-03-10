@@ -70,14 +70,16 @@ class OpenTelemetryProcessor(TypedEventProcessor):
 
     def on_run_start(self, event: RunStartEvent) -> None:
         parent_ctx = self._contexts.get(event.parent_span_id) if event.parent_span_id else None
+        attributes = {
+            "hypergraph.run_id": event.run_id,
+            "hypergraph.is_map": event.is_map,
+        }
+        if event.graph_name is not None:
+            attributes["hypergraph.graph_name"] = event.graph_name
         span = self._tracer.start_span(
             name=f"run:{event.graph_name}",
             context=parent_ctx,
-            attributes={
-                "hypergraph.graph_name": event.graph_name,
-                "hypergraph.run_id": event.run_id,
-                "hypergraph.is_map": event.is_map,
-            },
+            attributes=attributes,
         )
         self._spans[event.span_id] = span
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)
@@ -95,13 +97,15 @@ class OpenTelemetryProcessor(TypedEventProcessor):
 
     def on_node_start(self, event: NodeStartEvent) -> None:
         parent_ctx = self._contexts.get(event.parent_span_id) if event.parent_span_id else None
+        attributes = {
+            "hypergraph.node_name": event.node_name,
+        }
+        if event.graph_name is not None:
+            attributes["hypergraph.graph_name"] = event.graph_name
         span = self._tracer.start_span(
             name=f"node:{event.node_name}",
             context=parent_ctx,
-            attributes={
-                "hypergraph.node_name": event.node_name,
-                "hypergraph.graph_name": event.graph_name,
-            },
+            attributes=attributes,
         )
         self._spans[event.span_id] = span
         self._contexts[event.span_id] = self._trace.set_span_in_context(span)

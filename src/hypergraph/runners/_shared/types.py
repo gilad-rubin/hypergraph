@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph._utils import plural
+
+if TYPE_CHECKING:
+    from hypergraph.events.processor import EventProcessor
 
 ErrorHandling = Literal["raise", "continue"]
 
@@ -665,6 +668,26 @@ class RunnerCapabilities:
     returns_coroutine: bool = False
     supports_interrupts: bool = False
     supports_checkpointing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContext:
+    """Per-node execution environment passed to executors.
+
+    Created once per run as a base, then specialized per node via
+    ``dataclasses.replace()`` with the active parent span and nested-log sink.
+
+    Note:
+        ``provided_values`` intentionally remains a shared mutable dict so
+        interrupt resume payloads can be consumed across supersteps.
+    """
+
+    event_processors: list[EventProcessor] | None = None
+    parent_span_id: str | None = None
+    workflow_id: str | None = None
+    provided_values: dict[str, Any] = field(default_factory=dict)
+    is_resuming: bool = False
+    on_inner_log: Callable[[RunLog], None] | None = None
 
 
 @dataclass

@@ -1,6 +1,7 @@
 """Integration tests for hierarchical checkpointing: map(), nested graphs, and cycles."""
 
 import pytest
+import pytest_asyncio
 
 from hypergraph import END, AsyncRunner, Graph, SyncRunner, node, route
 from hypergraph.checkpointers import CheckpointPolicy, SqliteCheckpointer
@@ -24,11 +25,12 @@ def triple(doubled: int) -> int:
 # --- Fixtures ---
 
 
-@pytest.fixture
-def async_cp(tmp_path):
+@pytest_asyncio.fixture
+async def async_cp(tmp_path):
     cp = SqliteCheckpointer(str(tmp_path / "test.db"))
     cp.policy = CheckpointPolicy(durability="sync", retention="full")
     yield cp
+    await cp.close()
 
 
 @pytest.fixture

@@ -16,6 +16,7 @@ from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execut
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
+    ExecutionContext,
     GraphState,
     PauseExecution,
     RunnerCapabilities,
@@ -168,6 +169,12 @@ class AsyncRunner(AsyncRunnerTemplate):
         try:
             superstep_idx = 0
             frontier = ExecutionFrontier.from_scope(scope, max_iterations)
+            ctx_base = ExecutionContext(
+                event_processors=event_processors,
+                workflow_id=workflow_id,
+                provided_values=values,
+                is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
+            )
 
             while frontier.has_pending_components():
                 try:
@@ -212,15 +219,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                         state,
                         ready_nodes,
                         values,
-                        self._make_execute_node(
-                            event_processors,
-                            workflow_id=workflow_id,
-                            is_resuming=(
-                                checkpoint is not None
-                                if self._checkpointer_instance is not None
-                                else True  # stateless mode: preserve old auto-resolve
-                            ),
-                        ),
+                        self._executors,
+                        ctx_base,
                         max_concurrency,
                         cache=self._cache,
                         dispatcher=dispatcher,
@@ -345,77 +345,6 @@ class AsyncRunner(AsyncRunnerTemplate):
                 step_buffer.append(record)
 
         return step_counter
-
-    def _make_execute_node(
-        self,
-        event_processors: list[EventProcessor] | None,
-        workflow_id: str | None = None,
-        is_resuming: bool = False,
-    ) -> AsyncNodeExecutor:
-        """Create an async node executor closure that carries event context.
-
-        The superstep calls execute_node(node, state, inputs). For GraphNode
-        executors, we need to pass event_processors, parent_span_id, and
-        workflow_id so nested graphs propagate events and checkpointing.
-
-        The superstep sets ``execute_node.current_span_id`` before each
-        call so that nested graph runs know their parent span.
-        """
-        current_span_id: list[str | None] = [None]
-        provided_values_holder: list[dict[str, Any]] = [{}]
-        is_resuming_holder: list[bool] = [is_resuming]
-
-        async def execute_node(
-            node: HyperNode,
-            state: GraphState,
-            inputs: dict[str, Any],
-        ) -> dict[str, Any]:
-            """Execute one node with optional nested-graph context."""
-            node_type = type(node)
-            executor = self._executors.get(node_type)
-
-            if executor is None:
-                raise TypeError(f"No executor registered for node type '{node_type.__name__}'")
-
-            # For GraphNodeExecutor, pass context as params (not mutable state)
-            if isinstance(executor, AsyncGraphNodeExecutor):
-                result = await executor(
-                    node,
-                    state,
-                    inputs,
-                    event_processors=event_processors,
-                    parent_span_id=current_span_id[0],
-                    workflow_id=workflow_id,
-                )
-                return result
-
-            # For InterruptNodeExecutor, pass provided_values and resuming
-            # context so it only auto-resolves on actual resume, not fresh runs.
-            if isinstance(executor, AsyncInterruptNodeExecutor):
-                return await executor(
-                    node,
-                    state,
-                    inputs,
-                    provided_values=provided_values_holder[0],
-                    is_resuming=is_resuming_holder[0],
-                )
-
-            return await executor(node, state, inputs)
-
-        def consume_last_inner_logs() -> tuple:
-            """Read and clear nested logs for the current async task context."""
-            graph_executor = self._executors.get(GraphNode)
-            if isinstance(graph_executor, AsyncGraphNodeExecutor):
-                return graph_executor.consume_last_inner_logs()
-            return ()
-
-        # Expose holders so superstep can set parent span, provided_values,
-        # resuming context, and read nested logs
-        execute_node.current_span_id = current_span_id  # type: ignore[attr-defined]
-        execute_node.provided_values = provided_values_holder  # type: ignore[attr-defined]
-        execute_node.is_resuming = is_resuming_holder  # type: ignore[attr-defined]
-        execute_node.consume_last_inner_logs = consume_last_inner_logs  # type: ignore[attr-defined]
-        return execute_node
 
     # Template hook implementations
 
