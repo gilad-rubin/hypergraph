@@ -14,7 +14,7 @@ from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.nodes.interrupt import InterruptNode
 from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
-from hypergraph.runners._shared.stop import StopSignal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
 from hypergraph.runners._shared.types import (
     ExecutionContext,
@@ -156,6 +156,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -183,8 +184,10 @@ class AsyncRunner(AsyncRunnerTemplate):
         node_order = {name: i for i, name in enumerate(graph._nodes)} if has_checkpointer else {}
         save_tasks: list[asyncio.Task[None]] = []
 
-        # Set up StopSignal for this run
-        signal = StopSignal()
+        # Set up StopSignal for this run.
+        # Inherit parent signal so nested graphs see the outer stop.
+        parent_signal = get_stop_signal()
+        signal = StopSignal(parent=parent_signal)
         if workflow_id is not None:
             if workflow_id in self._active_signals:
                 raise WorkflowAlreadyRunningError(workflow_id)
@@ -204,8 +207,10 @@ class AsyncRunner(AsyncRunnerTemplate):
             )
 
             while frontier.has_pending_components():
-                # Check stop signal at superstep boundary
-                if signal.is_set:
+                # Check stop signal at superstep boundary.
+                # When complete_on_stop is True, nodes still see stop_requested
+                # but the runner continues until all ready nodes are done.
+                if signal.is_set and not _complete_on_stop:
                     break
                 try:
                     ready_nodes = frontier.next_ready_batch(
@@ -275,6 +280,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                             graph,
                             superstep_error=None,
                             is_pause=True,
+                            stopped=signal.is_set,
                         )
                     raise
                 except ExecutionError as e:
@@ -298,6 +304,7 @@ class AsyncRunner(AsyncRunnerTemplate):
                         save_tasks,
                         graph,
                         superstep_error,
+                        stopped=signal.is_set,
                     )
 
                 if superstep_error is not None:
@@ -356,6 +363,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         graph: Graph,
         superstep_error: BaseException | None = None,
         is_pause: bool = False,
+        stopped: bool = False,
     ) -> int:
         """Build StepRecords and dispatch to the appropriate durability mode."""
         from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
@@ -371,6 +379,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             graph=graph,
             superstep_error=superstep_error,
             is_pause=is_pause,
+            stopped=stopped,
         )
 
         durability = checkpointer.policy.durability

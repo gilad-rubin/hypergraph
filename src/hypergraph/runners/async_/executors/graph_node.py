@@ -136,6 +136,8 @@ class AsyncGraphNodeExecutor:
         if runner.capabilities.supports_checkpointing:
             run_kwargs["fork_from"] = child_fork_from
             run_kwargs["retry_from"] = child_retry_from
+        if getattr(node, "_complete_on_stop", False):
+            run_kwargs["_complete_on_stop"] = True
 
         run_call = runner.run(node.graph, inner_inputs, **run_kwargs)
         # Delegated runner may be sync (e.g. DaftRunner) — await only if needed

@@ -28,6 +28,7 @@ def build_superstep_records(
     graph: Graph,
     superstep_error: BaseException | None = None,
     is_pause: bool = False,
+    stopped: bool = False,
 ) -> tuple[list[StepRecord], int]:
     """Build StepRecords for nodes scheduled in a completed superstep.
 
@@ -84,6 +85,7 @@ def build_superstep_records(
                     created_at=now,
                     completed_at=now,
                     child_run_id=child_run_id,
+                    partial=stopped,
                 )
             elif superstep_error is not None:
                 record = StepRecord(

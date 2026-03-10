@@ -107,6 +107,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -191,6 +192,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _parent_run_id: str | None = None,
         _validation_ctx: _InputValidationContext | None = None,
         _run_config: dict[str, Any] | None = None,
+        _complete_on_stop: bool = False,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -355,6 +357,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
+                _complete_on_stop=_complete_on_stop,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000

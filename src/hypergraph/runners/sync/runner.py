@@ -12,7 +12,7 @@ from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
 from hypergraph.runners._shared.protocols import NodeExecutor
-from hypergraph.runners._shared.stop import StopSignal, reset_stop_signal, set_stop_signal
+from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
 from hypergraph.runners._shared.types import ExecutionContext, GraphState, RunnerCapabilities, _generate_run_id
 from hypergraph.runners.sync.executors import (
@@ -134,6 +134,7 @@ class SyncRunner(SyncRunnerTemplate):
         workflow_id: str | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -151,8 +152,10 @@ class SyncRunner(SyncRunnerTemplate):
         superstep_offset, step_counter = checkpoint_offsets(checkpoint)
         node_order = {name: i for i, name in enumerate(graph._nodes)} if sync_cp else {}
 
-        # Set up StopSignal for this run (threading.Event for sync runner)
-        signal = StopSignal(use_threading=True)
+        # Set up StopSignal for this run (threading.Event for sync runner).
+        # Inherit parent signal so nested graphs see the outer stop.
+        parent_signal = get_stop_signal()
+        signal = StopSignal(use_threading=True, parent=parent_signal)
         if workflow_id is not None:
             if workflow_id in self._active_signals:
                 raise WorkflowAlreadyRunningError(workflow_id)
@@ -171,8 +174,10 @@ class SyncRunner(SyncRunnerTemplate):
 
         try:
             while frontier.has_pending_components():
-                # Check stop signal at superstep boundary
-                if signal.is_set:
+                # Check stop signal at superstep boundary.
+                # When complete_on_stop is True, nodes still see stop_requested
+                # but the runner continues until all ready nodes are done.
+                if signal.is_set and not _complete_on_stop:
                     break
 
                 try:
@@ -242,6 +247,7 @@ class SyncRunner(SyncRunnerTemplate):
                         step_buffer,
                         graph,
                         superstep_error,
+                        stopped=signal.is_set,
                     )
 
                 if superstep_error is not None:
@@ -330,6 +336,7 @@ def _save_superstep_sync(
     step_buffer: list[Any] | None,
     graph: Any,
     superstep_error: BaseException | None,
+    stopped: bool = False,
 ) -> int:
     """Build StepRecords and dispatch to sync durability mode."""
     from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
@@ -344,6 +351,7 @@ def _save_superstep_sync(
         step_counter=step_counter,
         graph=graph,
         superstep_error=superstep_error,
+        stopped=stopped,
     )
 
     # SyncRunner durability: "sync" and "async" both write immediately (no event loop).

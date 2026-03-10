@@ -23,11 +23,15 @@ class StopSignal:
     Wraps ``asyncio.Event`` for async runners and ``threading.Event`` for sync
     runners so that ``runner.stop(workflow_id)`` from any coroutine/thread can
     set the flag and in-flight nodes see it immediately.
+
+    When ``parent`` is set, ``is_set`` also checks the parent signal.
+    This enables nested graphs to see the outer stop without explicit wiring.
     """
 
-    def __init__(self, *, use_threading: bool = False) -> None:
+    def __init__(self, *, use_threading: bool = False, parent: StopSignal | None = None) -> None:
         self._event: asyncio.Event | threading.Event = threading.Event() if use_threading else asyncio.Event()
         self._info: Any = None
+        self._parent: StopSignal | None = parent
 
     def set(self, info: Any = None) -> None:
         """Set the stop signal with optional metadata."""
@@ -36,11 +40,22 @@ class StopSignal:
 
     @property
     def is_set(self) -> bool:
-        return self._event.is_set()
+        if self._event.is_set():
+            return True
+        if self._parent is not None and self._parent.is_set:
+            # Inherit parent's info on first detection
+            if self._info is None:
+                self._info = self._parent.info
+            return True
+        return False
 
     @property
     def info(self) -> Any:
-        return self._info
+        if self._info is not None:
+            return self._info
+        if self._parent is not None:
+            return self._parent.info
+        return None
 
 
 # ---------------------------------------------------------------------------

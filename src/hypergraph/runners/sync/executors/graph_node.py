@@ -93,14 +93,16 @@ class SyncGraphNodeExecutor:
                         ctx.on_inner_log(result.log)
             return collect_as_lists(results, node, error_handling)
 
-        result = runner.run(
-            node.graph,
-            inner_inputs,
-            event_processors=ctx.event_processors,
-            workflow_id=child_workflow_id,
-            _parent_span_id=ctx.parent_span_id,
-            _parent_run_id=ctx.workflow_id,
-        )
+        run_kwargs: dict[str, Any] = {
+            "event_processors": ctx.event_processors,
+            "workflow_id": child_workflow_id,
+            "_parent_span_id": ctx.parent_span_id,
+            "_parent_run_id": ctx.workflow_id,
+        }
+        if getattr(node, "_complete_on_stop", False):
+            run_kwargs["_complete_on_stop"] = True
+
+        result = runner.run(node.graph, inner_inputs, **run_kwargs)
         if ctx.on_inner_log and result.log is not None:
             ctx.on_inner_log(result.log)
         return node.map_outputs_from_original(result.values)
