@@ -753,7 +753,13 @@ def to_mermaid(
         node_class_map[start_id] = "start"
 
     # --- Input nodes ---
-    input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
+    input_groups = build_input_groups(
+        input_spec,
+        param_to_consumers,
+        bound_params,
+        set(shared_params),
+        False,
+    )
     if input_groups:
         lines.append("    %% Inputs")
     for group in input_groups:
