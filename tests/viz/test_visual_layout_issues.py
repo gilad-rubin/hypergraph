@@ -423,7 +423,7 @@ class TestEdgeGaps:
     def test_cross_boundary_edges_do_not_cross_visible_nodes(self, page, temp_html_file):
         """Cross-boundary rerouted edges must avoid crossing unrelated visible nodes."""
         graph = build_triple_nested_graph()
-        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_external_inputs=True)
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -837,7 +837,7 @@ class TestInputNodeHorizontalSpread:
             return f"{system_prompt} {max_tokens}"
 
         graph = Graph(nodes=[generate])
-        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_external_inputs=True)
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -889,7 +889,7 @@ class TestInputNodeHorizontalSpread:
             return f"{input_b} {step1_out}"
 
         graph = Graph(nodes=[step1, step2])
-        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_external_inputs=True)
+        render_to_page(page, graph, depth=1, temp_path=temp_html_file, show_inputs=True)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;
@@ -968,7 +968,7 @@ class TestInputNodeHorizontalSpread:
         graph = Graph(nodes=[generate])
         # Bind 2 of the 4 inputs
         bound_graph = graph.bind(temperature=0.7, model="gpt-4")
-        render_to_page(page, bound_graph, depth=1, temp_path=temp_html_file, show_external_inputs=True)
+        render_to_page(page, bound_graph, depth=1, temp_path=temp_html_file, show_inputs=True, show_bounded_inputs=True)
 
         result = page.evaluate("""() => {
             const debug = window.__hypergraphVizDebug;

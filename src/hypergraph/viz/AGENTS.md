@@ -58,9 +58,9 @@ Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `false`):
 Nodes and edges are **precomputed** for all valid expansion states (and both `separate_outputs` modes).
 
 Key format:
-- `"nodeId:0|sep:0"` (collapsed, merged outputs)
-- `"nodeId:1|sep:1"` (expanded, separate outputs)
-- `"sep:0"` / `"sep:1"` (no expandable nodes)
+- `"nodeId:0|sep:0|ext:1"` (collapsed, merged outputs, inputs shown)
+- `"nodeId:1|sep:1|ext:0"` (expanded, separate outputs, inputs hidden)
+- `"sep:0|ext:1"` / `"sep:1|ext:0"` (no expandable nodes)
 
 Selection happens in App via `expansionStateToKey()` and lookups in `meta.nodesByState` / `meta.edgesByState`.
 

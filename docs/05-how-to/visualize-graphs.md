@@ -25,12 +25,13 @@ This renders an interactive graph diagram inline. Nodes are connected automatica
 
 ```python
 graph.visualize(
-    depth=0,                # How many nested graph levels to expand
-    theme="auto",           # "dark", "light", or "auto"
-    show_types=False,       # Show type annotations on nodes
-    separate_outputs=False, # Render outputs as separate DATA nodes
-    show_external_inputs=False, # Show external INPUT/INPUT_GROUP nodes
-    filepath=None,          # Save to HTML file instead of displaying
+    depth=0,                   # How many nested graph levels to expand
+    theme="auto",              # "dark", "light", or "auto"
+    show_types=False,          # Show type annotations on nodes
+    separate_outputs=False,    # Render outputs as separate DATA nodes
+    show_inputs=True,          # Show INPUT/INPUT_GROUP nodes
+    show_bounded_inputs=False, # Include bound inputs when INPUT nodes are shown
+    filepath=None,             # Save to HTML file instead of displaying
 )
 ```
 
@@ -71,14 +72,21 @@ graph.visualize(separate_outputs=True)
 
 By default, edges connect functions directly. With `separate_outputs=True`, each output becomes a visible DATA node, making the data flow explicit.
 
-### `show_external_inputs` — Root input visibility
+### `show_inputs` — Root input visibility
 
 ```python
-graph.visualize(show_external_inputs=True)
+graph.visualize(show_inputs=True)
 ```
 
-External INPUT/INPUT_GROUP nodes are hidden by default to reduce clutter in cyclic graphs.  
-Use this option (or the side-panel toggle in the widget) to show or hide them interactively.
+INPUT/INPUT_GROUP nodes are shown by default. Use this option, or the side-panel toggle in the widget, to hide or show them interactively.
+
+### `show_bounded_inputs` — Include bound inputs
+
+```python
+graph.bind(model="gpt-4o").visualize(show_bounded_inputs=True)
+```
+
+Bound inputs are hidden by default so the visualization focuses on the values a caller still needs to provide. Turn this on when you want bound values to appear in the root input lane as INPUT/INPUT_GROUP nodes. If `show_inputs=False`, the widget hides the whole input lane, so `show_bounded_inputs` has no visible effect.
 
 ### `filepath` — Save to HTML
 
@@ -112,7 +120,7 @@ When nested graphs are expanded, cross-boundary edges remap to the visible inter
 
 - Containers are visual groups, not executable endpoints.
 - Dashed/control edges should never originate from a container START marker.
-- Shared values (for example `messages`) anchor to the correct internal endpoint and do not create phantom external links.
+- Shared values (for example `messages`) anchor to the correct internal endpoint and do not create phantom external links or separate INPUT nodes.
 
 ## Works Offline
 

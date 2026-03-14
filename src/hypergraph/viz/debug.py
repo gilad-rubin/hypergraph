@@ -30,6 +30,7 @@ Usage:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -582,7 +583,8 @@ async def _extract_debug_data_async(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -603,7 +605,8 @@ async def _extract_debug_data_async(
         depth=depth,
         theme=theme,
         separate_outputs=separate_outputs,
-        show_external_inputs=show_external_inputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         filepath=temp_path,
         _debug_overlays=True,
     )
@@ -635,7 +638,8 @@ def _extract_debug_data_sync(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -656,7 +660,8 @@ def _extract_debug_data_sync(
         depth=depth,
         theme=theme,
         separate_outputs=separate_outputs,
-        show_external_inputs=show_external_inputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         filepath=temp_path,
         _debug_overlays=True,
     )
@@ -726,7 +731,8 @@ def _run_async_extract_in_thread(
     depth: int,
     theme: str,
     separate_outputs: bool,
-    show_external_inputs: bool,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     headless: bool,
     timeout: int,
 ) -> RenderedDebugData:
@@ -751,7 +757,8 @@ def _run_async_extract_in_thread(
                     depth=depth,
                     theme=theme,
                     separate_outputs=separate_outputs,
-                    show_external_inputs=show_external_inputs,
+                    show_inputs=show_inputs,
+                    show_bounded_inputs=show_bounded_inputs,
                     headless=headless,
                     timeout=timeout,
                 )
@@ -783,7 +790,9 @@ def extract_debug_data(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool | None = None,
+    show_bounded_inputs: bool = False,
+    show_external_inputs: bool | None = None,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -799,7 +808,10 @@ def extract_debug_data(
         depth: How many levels of nested graphs to expand (default: 0)
         theme: "dark", "light", or "auto" (default: "auto")
         separate_outputs: Show outputs as separate DATA nodes (default: False)
-        show_external_inputs: Show external INPUT/INPUT_GROUP nodes (default: True)
+        show_inputs: Show INPUT/INPUT_GROUP nodes (default: True)
+        show_bounded_inputs: Show bound INPUT/INPUT_GROUP nodes when show_inputs=True
+            (default: False)
+        show_external_inputs: Deprecated alias for show_inputs
         headless: Run browser in headless mode (default: True)
         timeout: Max time to wait for layout in ms (default: 5000)
 
@@ -826,13 +838,26 @@ def extract_debug_data(
             "playwright is required for extract_debug_data. Install with: pip install playwright && playwright install chromium"
         ) from None
 
+    if show_external_inputs is not None:
+        if show_inputs is not None and show_inputs != show_external_inputs:
+            raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
+        warnings.warn(
+            "show_external_inputs is deprecated; use show_inputs instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        show_inputs = show_external_inputs
+    elif show_inputs is None:
+        show_inputs = True
+
     if _is_in_async_context():
         return _run_async_extract_in_thread(
             graph,
             depth=depth,
             theme=theme,
             separate_outputs=separate_outputs,
-            show_external_inputs=show_external_inputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
             headless=headless,
             timeout=timeout,
         )
@@ -842,7 +867,8 @@ def extract_debug_data(
             depth=depth,
             theme=theme,
             separate_outputs=separate_outputs,
-            show_external_inputs=show_external_inputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
             headless=headless,
             timeout=timeout,
         )

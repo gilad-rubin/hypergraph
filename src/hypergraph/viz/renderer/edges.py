@@ -588,7 +588,8 @@ def compute_edges_for_state(
     show_types: bool,
     theme: str,
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     input_groups: list[dict[str, Any]] | None = None,
     graph_output_visibility: dict[str, set[str]] | None = None,
     input_consumer_mode: str = "all",
@@ -596,7 +597,7 @@ def compute_edges_for_state(
     """Compute edges for a specific expansion state."""
     edges: list[dict[str, Any]] = []
 
-    if show_external_inputs:
+    if show_inputs:
         param_to_consumers = build_param_to_consumer_map(
             flat_graph,
             expansion_state,
@@ -604,8 +605,15 @@ def compute_edges_for_state(
         )
 
         bound_params = set(input_spec.get("bound", {}).keys())
+        shared_params = set(flat_graph.graph.get("shared", ()))
         if input_groups is None:
-            input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
+            input_groups = build_input_groups(
+                input_spec,
+                param_to_consumers,
+                bound_params,
+                shared_params,
+                show_bounded_inputs,
+            )
 
         # 1. Add edges from INPUT/INPUT_GROUP nodes to their consumers
         for group in input_groups:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html as html_module
+import warnings
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -69,7 +70,9 @@ def visualize(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    show_external_inputs: bool = False,
+    show_inputs: bool | None = None,
+    show_bounded_inputs: bool = False,
+    show_external_inputs: bool | None = None,
     filepath: str | None = None,
     _debug_overlays: bool = False,
 ) -> ScrollablePipelineWidget | None:
@@ -81,7 +84,10 @@ def visualize(
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
-        show_external_inputs: Whether to show external INPUT/INPUT_GROUP nodes (default: False)
+        show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
+        show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes when
+            show_inputs=True (default: False)
+        show_external_inputs: Deprecated alias for show_inputs
         filepath: Path to save HTML file (default: None, display in notebook)
         _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 
@@ -97,6 +103,18 @@ def visualize(
         >>> widget = visualize(graph)  # Display in notebook
         >>> visualize(graph, filepath="graph.html")  # Save to HTML file
     """
+    if show_external_inputs is not None:
+        if show_inputs is not None and show_inputs != show_external_inputs:
+            raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
+        warnings.warn(
+            "show_external_inputs is deprecated; use show_inputs instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        show_inputs = show_external_inputs
+    elif show_inputs is None:
+        show_inputs = True
+
     # Estimate dimensions if not provided
     est_width, est_height = estimate_layout(
         graph,
@@ -117,7 +135,8 @@ def visualize(
         theme=theme,
         show_types=show_types,
         separate_outputs=separate_outputs,
-        show_external_inputs=show_external_inputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         debug_overlays=_debug_overlays,
     )
 

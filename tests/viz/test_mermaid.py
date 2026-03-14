@@ -149,6 +149,31 @@ class TestBasicMermaid:
         assert "input_text" in mermaid
         assert "input_query" in mermaid
 
+    def test_shared_and_bound_inputs_not_rendered(self):
+        """Shared params and bound inputs stay out of Mermaid input nodes."""
+
+        @node(output_name="messages")
+        def add_message(messages: list[str], user_input: str) -> list[str]:
+            return [*messages, user_input]
+
+        @node(output_name="result")
+        def summarize(messages: list[str], temperature: float) -> str:
+            return "\n".join(messages)
+
+        graph = Graph(
+            nodes=[add_message, summarize],
+            edges=[(add_message, summarize)],
+            shared="messages",
+            entrypoint="add_message",
+        ).bind(temperature=0.7)
+
+        mermaid = graph.to_mermaid()
+
+        assert "input_user_input" in mermaid
+        assert "input_messages" not in mermaid
+        assert "input_temperature" not in mermaid
+        assert "%% shared state: messages" in mermaid
+
     def test_no_emojis_in_output(self):
         """Output contains no emoji characters."""
         graph = Graph(nodes=[embed, retrieve, generate])

@@ -225,10 +225,11 @@ See your graph structure instantly — in notebooks or as standalone HTML.
 ```python
 graph.visualize()                          # Display in notebook
 graph.visualize(depth=1, show_types=True)  # Expand nested graphs, show types
+graph.visualize(show_bounded_inputs=True)  # Also show bound inputs in the input lane
 graph.visualize(filepath="graph.html")     # Save standalone HTML
 ```
 
-Supports dark/light themes, expand/collapse for nested graphs, and type annotation display. All assets bundled — works offline.
+Supports dark/light themes, expand/collapse for nested graphs, input toggles (`show_inputs`, `show_bounded_inputs` when inputs are shown), and type annotation display. All assets bundled — works offline.
 
 ### Pure Functions Stay Pure
 

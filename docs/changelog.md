@@ -28,7 +28,7 @@
 - **Runtime scope overrides removed** — passing runtime `select=` or `entrypoint=` to runners now raises `ValueError`. Configure scope on the graph instance instead.
 - **Cycles require constructor entrypoint** — constructing a cyclic graph without `Graph(..., entrypoint=...)` now raises `GraphConfigError`.
 - **Internal output injection tightened** — user-provided values for edge-produced internal parameters are rejected deterministically.
-- **Visualization defaults simplified** — external inputs are hidden by default in `.visualize()` and can be toggled with `show_external_inputs` (API) or the side-panel control.
+- **Visualization defaults simplified** — `.visualize()` now shows unbound external inputs by default via `show_inputs=True`, keeps bound inputs hidden unless `show_bounded_inputs=True`, and never renders shared params as external inputs.
 - **Visualization edge contract tightened** — rendered views now follow the Python-precomputed edge set (no JS-only transitive pruning), so what you see matches the canonical NetworkX topology.
 - **Implicit producer shadow-elimination** — for contested input `p`, edge `u -> v (p)` is removed iff every valid path from `u` to `v` for `p` crosses another producer of `p` first; unresolved cases raise `GraphConfigError` at build time.
 

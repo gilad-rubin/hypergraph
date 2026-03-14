@@ -46,11 +46,15 @@ def build_input_groups(
     input_spec: dict[str, Any],
     param_to_consumers: dict[str, list[str]],
     bound_params: set[str],
+    shared_params: set[str],
+    show_bounded_inputs: bool,
 ) -> list[dict[str, Any]]:
     """Build stable input groups for rendering and edge routing."""
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
-    external_inputs = set(required) | set(optional)
+    external_inputs = (set(required) | set(optional)) - shared_params
+    if not show_bounded_inputs:
+        external_inputs -= bound_params
 
     groups = group_inputs_by_consumers_and_bound(external_inputs, param_to_consumers, bound_params)
 
@@ -70,11 +74,15 @@ def build_input_groups(
 def build_classic_input_groups(
     input_spec: dict[str, Any],
     bound_params: set[str],
+    shared_params: set[str],
+    show_bounded_inputs: bool,
 ) -> list[dict[str, Any]]:
     """Build single-parameter input groups (classic layout behavior)."""
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
-    params = sorted(set(required) | set(optional))
+    params = sorted((set(required) | set(optional)) - shared_params)
+    if not show_bounded_inputs:
+        params = [param for param in params if param not in bound_params]
     return [{"params": [param], "is_bound": param in bound_params} for param in params]
 
 
@@ -201,10 +209,18 @@ def create_input_nodes(
     param_to_consumers: dict[str, list[str]],
     expansion_state: dict[str, bool],
     input_groups: list[dict[str, Any]] | None = None,
+    show_bounded_inputs: bool = False,
 ) -> None:
     """Create INPUT nodes for external input parameters, grouping where possible."""
     if input_groups is None:
-        input_groups = build_input_groups(input_spec, param_to_consumers, bound_params)
+        shared_params = set(flat_graph.graph.get("shared", ()))
+        input_groups = build_input_groups(
+            input_spec,
+            param_to_consumers,
+            bound_params,
+            shared_params,
+            show_bounded_inputs,
+        )
 
     for group in input_groups:
         params = group["params"]

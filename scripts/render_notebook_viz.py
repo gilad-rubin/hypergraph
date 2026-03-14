@@ -218,6 +218,8 @@ def build_index(output_dir: Path, records: list[VizRecord], *, iframe_height: in
                 "theme",
                 "show_types",
                 "separate_outputs",
+                "show_inputs",
+                "show_bounded_inputs",
                 "width",
                 "height",
             ):

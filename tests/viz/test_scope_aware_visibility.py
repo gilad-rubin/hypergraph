@@ -231,7 +231,7 @@ class TestInputPositioningInsideContainers:
         from hypergraph.viz import extract_debug_data
 
         graph = make_generation_graph()
-        data = extract_debug_data(graph, depth=1, show_external_inputs=True)
+        data = extract_debug_data(graph, depth=1, show_inputs=True)
 
         # Find prompt_building container bounds
         container = None
@@ -283,7 +283,7 @@ class TestInputPositioningInsideContainers:
         from hypergraph.viz import extract_debug_data
 
         graph = make_generation_graph()
-        data = extract_debug_data(graph, depth=1, show_external_inputs=True)
+        data = extract_debug_data(graph, depth=1, show_inputs=True)
 
         # Find prompt_building container bounds
         container = None
@@ -334,7 +334,7 @@ class TestInputPositioningInsideContainers:
         from hypergraph.viz import extract_debug_data
 
         graph = make_generation_graph()
-        data = extract_debug_data(graph, depth=1, show_external_inputs=True)
+        data = extract_debug_data(graph, depth=1, show_inputs=True)
 
         # Find prompt_building container bounds
         container = None
@@ -747,7 +747,7 @@ class TestInputVisibilityWhenCollapsed:
         from hypergraph.viz import extract_debug_data
 
         graph = make_generation_graph()
-        data = extract_debug_data(graph, depth=0, show_external_inputs=True)
+        data = extract_debug_data(graph, depth=0, show_inputs=True)
 
         node_ids = {n["id"] for n in data.nodes}
 
