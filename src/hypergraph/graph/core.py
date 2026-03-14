@@ -1343,7 +1343,7 @@ class Graph:
         theme: str = "auto",
         show_types: bool = False,
         separate_outputs: bool = False,
-        show_inputs: bool = True,
+        show_inputs: bool | None = None,
         show_bounded_inputs: bool = False,
         show_external_inputs: bool | None = None,
         filepath: str | None = None,
@@ -1358,7 +1358,7 @@ class Graph:
             theme: "dark", "light", or "auto" to detect from environment
             show_types: Whether to show type annotations on nodes
             separate_outputs: Whether to render outputs as separate DATA nodes
-            show_inputs: Whether to show INPUT/INPUT_GROUP nodes
+            show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
             show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes
                 when show_inputs=True
             show_external_inputs: Deprecated alias for show_inputs
@@ -1376,12 +1376,16 @@ class Graph:
         from hypergraph.viz import visualize as viz_func
 
         if show_external_inputs is not None:
+            if show_inputs is not None and show_inputs != show_external_inputs:
+                raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
             warnings.warn(
                 "show_external_inputs is deprecated; use show_inputs instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
             show_inputs = show_external_inputs
+        elif show_inputs is None:
+            show_inputs = True
 
         return viz_func(
             self,

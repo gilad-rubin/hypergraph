@@ -1,5 +1,7 @@
 """Tests for the visualization renderer."""
 
+import re
+
 import pytest
 
 from hypergraph import END, Graph, interrupt, node, route
@@ -228,6 +230,8 @@ class TestRenderGraph:
             graph.visualize(show_external_inputs=False, filepath=str(output))
 
         assert output.exists()
+        html = output.read_text()
+        assert re.search(r'"show_inputs"\s*:\s*false', html)
 
     def test_visualize_accepts_show_external_inputs_alias(self, tmp_path):
         """Top-level visualize keeps the old flag as a deprecated alias."""
@@ -238,6 +242,15 @@ class TestRenderGraph:
             visualize(graph, show_external_inputs=False, filepath=str(output))
 
         assert output.exists()
+        html = output.read_text()
+        assert re.search(r'"show_inputs"\s*:\s*false', html)
+
+    def test_visualize_rejects_conflicting_input_flags(self):
+        """Conflicting new/old input flags should fail loudly."""
+        graph = Graph(nodes=[double])
+
+        with pytest.raises(TypeError, match="Pass either show_inputs or show_external_inputs"):
+            visualize(graph, show_inputs=True, show_external_inputs=False)
 
     def test_render_hides_bound_input_nodes_by_default(self):
         """Bound inputs stay hidden unless show_bounded_inputs=True."""

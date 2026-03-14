@@ -790,7 +790,7 @@ def extract_debug_data(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_inputs: bool = True,
+    show_inputs: bool | None = None,
     show_bounded_inputs: bool = False,
     show_external_inputs: bool | None = None,
     headless: bool = True,
@@ -839,12 +839,16 @@ def extract_debug_data(
         ) from None
 
     if show_external_inputs is not None:
+        if show_inputs is not None and show_inputs != show_external_inputs:
+            raise TypeError("Pass either show_inputs or show_external_inputs, not both.")
         warnings.warn(
             "show_external_inputs is deprecated; use show_inputs instead.",
             DeprecationWarning,
             stacklevel=2,
         )
         show_inputs = show_external_inputs
+    elif show_inputs is None:
+        show_inputs = True
 
     if _is_in_async_context():
         return _run_async_extract_in_thread(
