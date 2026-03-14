@@ -776,7 +776,7 @@ How to fix:
 
 ### In the visualization
 
-Shared params are omitted from the interactive input lane, shown as a purple `↕` badge in the interactive visualization, and rendered as a `%% shared state: messages` comment in Mermaid output.
+Shared params are omitted from the interactive input lane and from INPUT/INPUT_GROUP rendering, and are rendered as a `%% shared state: messages` comment in Mermaid output.
 
 ### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_inputs=True, show_bounded_inputs=False, filepath=None)`
 
@@ -794,7 +794,7 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `show_types` (bool): Display type annotations on nodes. Default: False.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
 - `show_inputs` (bool): Show INPUT/INPUT_GROUP nodes. Default: True.
-- `show_bounded_inputs` (bool): Include bound INPUT/INPUT_GROUP nodes when `show_inputs=True`. Default: False.
+- `show_bounded_inputs` (bool): Include bound INPUT/INPUT_GROUP nodes when `show_inputs=True`. If `show_inputs=False`, the input lane stays hidden. Default: False.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 
 **Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).

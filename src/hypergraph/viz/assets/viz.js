@@ -1804,7 +1804,7 @@
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
-          initialShowInputs=${Boolean(initialData.meta && initialData.meta.show_inputs)} />
+          initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)} />
       <//>
     `);
     if (fallback) fallback.remove();

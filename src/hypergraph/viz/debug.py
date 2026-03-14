@@ -30,6 +30,7 @@ Usage:
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -791,6 +792,7 @@ def extract_debug_data(
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
+    show_external_inputs: bool | None = None,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -807,7 +809,9 @@ def extract_debug_data(
         theme: "dark", "light", or "auto" (default: "auto")
         separate_outputs: Show outputs as separate DATA nodes (default: False)
         show_inputs: Show INPUT/INPUT_GROUP nodes (default: True)
-        show_bounded_inputs: Show bound INPUT/INPUT_GROUP nodes (default: False)
+        show_bounded_inputs: Show bound INPUT/INPUT_GROUP nodes when show_inputs=True
+            (default: False)
+        show_external_inputs: Deprecated alias for show_inputs
         headless: Run browser in headless mode (default: True)
         timeout: Max time to wait for layout in ms (default: 5000)
 
@@ -833,6 +837,14 @@ def extract_debug_data(
         raise ImportError(
             "playwright is required for extract_debug_data. Install with: pip install playwright && playwright install chromium"
         ) from None
+
+    if show_external_inputs is not None:
+        warnings.warn(
+            "show_external_inputs is deprecated; use show_inputs instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        show_inputs = show_external_inputs
 
     if _is_in_async_context():
         return _run_async_extract_in_thread(

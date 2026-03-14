@@ -1,6 +1,9 @@
 """Tests for the visualization renderer."""
 
+import pytest
+
 from hypergraph import END, Graph, interrupt, node, route
+from hypergraph.viz import visualize
 from hypergraph.viz.renderer import render_graph
 
 
@@ -215,6 +218,26 @@ class TestRenderGraph:
         result = render_graph(graph.to_flat_graph())
         assert result["meta"]["show_inputs"] is True
         assert result["meta"]["show_bounded_inputs"] is False
+
+    def test_graph_visualize_accepts_show_external_inputs_alias(self, tmp_path):
+        """Graph.visualize keeps the old flag as a deprecated alias."""
+        graph = Graph(nodes=[double])
+        output = tmp_path / "graph.html"
+
+        with pytest.warns(DeprecationWarning, match="show_external_inputs is deprecated"):
+            graph.visualize(show_external_inputs=False, filepath=str(output))
+
+        assert output.exists()
+
+    def test_visualize_accepts_show_external_inputs_alias(self, tmp_path):
+        """Top-level visualize keeps the old flag as a deprecated alias."""
+        graph = Graph(nodes=[double])
+        output = tmp_path / "widget.html"
+
+        with pytest.warns(DeprecationWarning, match="show_external_inputs is deprecated"):
+            visualize(graph, show_external_inputs=False, filepath=str(output))
+
+        assert output.exists()
 
     def test_render_hides_bound_input_nodes_by_default(self):
         """Bound inputs stay hidden unless show_bounded_inputs=True."""

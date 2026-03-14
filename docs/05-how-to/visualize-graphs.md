@@ -30,7 +30,7 @@ graph.visualize(
     show_types=False,          # Show type annotations on nodes
     separate_outputs=False,    # Render outputs as separate DATA nodes
     show_inputs=True,          # Show INPUT/INPUT_GROUP nodes
-    show_bounded_inputs=False, # Include bound inputs in those INPUT nodes
+    show_bounded_inputs=False, # Include bound inputs when INPUT nodes are shown
     filepath=None,             # Save to HTML file instead of displaying
 )
 ```
@@ -86,7 +86,7 @@ INPUT/INPUT_GROUP nodes are shown by default. Use this option, or the side-panel
 graph.bind(model="gpt-4o").visualize(show_bounded_inputs=True)
 ```
 
-Bound inputs are hidden by default so the visualization focuses on the values a caller still needs to provide. Turn this on when you want bound values to appear in the root input lane as INPUT/INPUT_GROUP nodes.
+Bound inputs are hidden by default so the visualization focuses on the values a caller still needs to provide. Turn this on when you want bound values to appear in the root input lane as INPUT/INPUT_GROUP nodes. If `show_inputs=False`, the widget hides the whole input lane, so `show_bounded_inputs` has no visible effect.
 
 ### `filepath` — Save to HTML
 

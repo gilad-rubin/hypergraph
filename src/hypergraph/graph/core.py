@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import networkx as nx
@@ -1344,6 +1345,7 @@ class Graph:
         separate_outputs: bool = False,
         show_inputs: bool = True,
         show_bounded_inputs: bool = False,
+        show_external_inputs: bool | None = None,
         filepath: str | None = None,
     ) -> Any:
         """Create an interactive visualization of this graph.
@@ -1358,6 +1360,8 @@ class Graph:
             separate_outputs: Whether to render outputs as separate DATA nodes
             show_inputs: Whether to show INPUT/INPUT_GROUP nodes
             show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes
+                when show_inputs=True
+            show_external_inputs: Deprecated alias for show_inputs
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
@@ -1370,6 +1374,14 @@ class Graph:
             >>> graph.visualize(filepath="graph.html")  # Save to HTML file
         """
         from hypergraph.viz import visualize as viz_func
+
+        if show_external_inputs is not None:
+            warnings.warn(
+                "show_external_inputs is deprecated; use show_inputs instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            show_inputs = show_external_inputs
 
         return viz_func(
             self,
