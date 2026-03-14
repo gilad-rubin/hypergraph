@@ -582,7 +582,8 @@ async def _extract_debug_data_async(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -603,7 +604,8 @@ async def _extract_debug_data_async(
         depth=depth,
         theme=theme,
         separate_outputs=separate_outputs,
-        show_external_inputs=show_external_inputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         filepath=temp_path,
         _debug_overlays=True,
     )
@@ -635,7 +637,8 @@ def _extract_debug_data_sync(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -656,7 +659,8 @@ def _extract_debug_data_sync(
         depth=depth,
         theme=theme,
         separate_outputs=separate_outputs,
-        show_external_inputs=show_external_inputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         filepath=temp_path,
         _debug_overlays=True,
     )
@@ -726,7 +730,8 @@ def _run_async_extract_in_thread(
     depth: int,
     theme: str,
     separate_outputs: bool,
-    show_external_inputs: bool,
+    show_inputs: bool,
+    show_bounded_inputs: bool,
     headless: bool,
     timeout: int,
 ) -> RenderedDebugData:
@@ -751,7 +756,8 @@ def _run_async_extract_in_thread(
                     depth=depth,
                     theme=theme,
                     separate_outputs=separate_outputs,
-                    show_external_inputs=show_external_inputs,
+                    show_inputs=show_inputs,
+                    show_bounded_inputs=show_bounded_inputs,
                     headless=headless,
                     timeout=timeout,
                 )
@@ -783,7 +789,8 @@ def extract_debug_data(
     depth: int = 0,
     theme: str = "auto",
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     headless: bool = True,
     timeout: int = 5000,
 ) -> RenderedDebugData:
@@ -799,7 +806,8 @@ def extract_debug_data(
         depth: How many levels of nested graphs to expand (default: 0)
         theme: "dark", "light", or "auto" (default: "auto")
         separate_outputs: Show outputs as separate DATA nodes (default: False)
-        show_external_inputs: Show external INPUT/INPUT_GROUP nodes (default: True)
+        show_inputs: Show INPUT/INPUT_GROUP nodes (default: True)
+        show_bounded_inputs: Show bound INPUT/INPUT_GROUP nodes (default: False)
         headless: Run browser in headless mode (default: True)
         timeout: Max time to wait for layout in ms (default: 5000)
 
@@ -832,7 +840,8 @@ def extract_debug_data(
             depth=depth,
             theme=theme,
             separate_outputs=separate_outputs,
-            show_external_inputs=show_external_inputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
             headless=headless,
             timeout=timeout,
         )
@@ -842,7 +851,8 @@ def extract_debug_data(
             depth=depth,
             theme=theme,
             separate_outputs=separate_outputs,
-            show_external_inputs=show_external_inputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
             headless=headless,
             timeout=timeout,
         )

@@ -33,7 +33,8 @@ def render_graph(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     debug_overlays: bool = False,
 ) -> dict[str, Any]:
     """Convert a flattened NetworkX graph to React Flow JSON format.
@@ -44,7 +45,8 @@ def render_graph(
         theme: "dark", "light", or "auto" (detect from environment)
         show_types: Whether to show type annotations
         separate_outputs: Whether to render outputs as separate DATA nodes
-        show_external_inputs: Whether to show external INPUT/INPUT_GROUP nodes by default
+        show_inputs: Whether to show INPUT/INPUT_GROUP nodes by default
+        show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes by default
         debug_overlays: Whether to enable debug overlays (internal use)
 
     Returns:
@@ -69,6 +71,7 @@ def render_graph(
         input_spec,
         show_types,
         theme,
+        show_bounded_inputs=show_bounded_inputs,
         input_groups=None,
         graph_output_visibility=graph_output_visibility,
         input_consumer_mode=input_consumer_mode,
@@ -80,6 +83,7 @@ def render_graph(
         input_spec,
         show_types,
         theme,
+        show_bounded_inputs=show_bounded_inputs,
         graph_output_visibility=graph_output_visibility,
         input_groups=None,
         input_consumer_mode=input_consumer_mode,
@@ -88,7 +92,7 @@ def render_graph(
     # Use pre-computed edges for the initial state
     initial_state_key = expansion_state_to_key(expansion_state)
     sep_key = "sep:1" if separate_outputs else "sep:0"
-    ext_key = "ext:1" if show_external_inputs else "ext:0"
+    ext_key = "ext:1" if show_inputs else "ext:0"
     base_key = f"{initial_state_key}|{sep_key}" if initial_state_key else sep_key
     full_initial_key = f"{base_key}|{ext_key}"
     initial_edges = edges_by_state.get(full_initial_key, [])
@@ -106,7 +110,8 @@ def render_graph(
             "initial_depth": depth,
             "separate_outputs": separate_outputs,
             "show_types": show_types,
-            "show_external_inputs": show_external_inputs,
+            "show_inputs": show_inputs,
+            "show_bounded_inputs": show_bounded_inputs,
             "debug_overlays": debug_overlays,
             "output_to_producer": output_to_producer_deepest,
             "param_to_consumer": param_to_consumer_deepest,

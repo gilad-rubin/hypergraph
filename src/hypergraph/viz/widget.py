@@ -69,7 +69,8 @@ def visualize(
     theme: str = "auto",
     show_types: bool = False,
     separate_outputs: bool = False,
-    show_external_inputs: bool = False,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     filepath: str | None = None,
     _debug_overlays: bool = False,
 ) -> ScrollablePipelineWidget | None:
@@ -81,7 +82,8 @@ def visualize(
         theme: "dark", "light", or "auto" (default: "auto")
         show_types: Whether to show type annotations (default: False)
         separate_outputs: Whether to render outputs as separate nodes (default: False)
-        show_external_inputs: Whether to show external INPUT/INPUT_GROUP nodes (default: False)
+        show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
+        show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes (default: False)
         filepath: Path to save HTML file (default: None, display in notebook)
         _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 
@@ -117,7 +119,8 @@ def visualize(
         theme=theme,
         show_types=show_types,
         separate_outputs=separate_outputs,
-        show_external_inputs=show_external_inputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         debug_overlays=_debug_overlays,
     )
 

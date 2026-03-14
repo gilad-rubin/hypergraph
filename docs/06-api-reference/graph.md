@@ -776,9 +776,9 @@ How to fix:
 
 ### In the visualization
 
-Shared params appear as a purple `↕` badge at the bottom-left of the interactive visualization, and as a `%% shared state: messages` comment in Mermaid output.
+Shared params are omitted from the interactive input lane, shown as a purple `↕` badge in the interactive visualization, and rendered as a `%% shared state: messages` comment in Mermaid output.
 
-### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_external_inputs=False, filepath=None)`
+### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_inputs=True, show_bounded_inputs=False, filepath=None)`
 
 Render an interactive visualization of the graph.
 
@@ -793,7 +793,8 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 - `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
 - `show_types` (bool): Display type annotations on nodes. Default: False.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
-- `show_external_inputs` (bool): Show external INPUT/INPUT_GROUP nodes. Default: False.
+- `show_inputs` (bool): Show INPUT/INPUT_GROUP nodes. Default: True.
+- `show_bounded_inputs` (bool): Include bound INPUT/INPUT_GROUP nodes when `show_inputs=True`. Default: False.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 
 **Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).

@@ -199,19 +199,60 @@ class TestRenderGraph:
             theme="dark",
             show_types=True,
             depth=2,
-            show_external_inputs=True,
+            show_inputs=True,
+            show_bounded_inputs=True,
         )
 
         assert result["meta"]["theme_preference"] == "dark"
         assert result["meta"]["show_types"] is True
         assert result["meta"]["initial_depth"] == 2
-        assert result["meta"]["show_external_inputs"] is True
+        assert result["meta"]["show_inputs"] is True
+        assert result["meta"]["show_bounded_inputs"] is True
 
-    def test_render_options_external_inputs_visible_by_default(self):
-        """Renderer defaults to including external INPUT/INPUT_GROUP nodes."""
+    def test_render_options_inputs_visible_by_default(self):
+        """Renderer defaults to including INPUT/INPUT_GROUP nodes."""
         graph = Graph(nodes=[double])
         result = render_graph(graph.to_flat_graph())
-        assert result["meta"]["show_external_inputs"] is True
+        assert result["meta"]["show_inputs"] is True
+        assert result["meta"]["show_bounded_inputs"] is False
+
+    def test_render_hides_bound_input_nodes_by_default(self):
+        """Bound inputs stay hidden unless show_bounded_inputs=True."""
+        graph = Graph(nodes=[add]).bind(a=5)
+
+        default_result = render_graph(graph.to_flat_graph())
+        default_input_ids = {n["id"] for n in default_result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
+        assert default_input_ids == {"input_b"}
+
+        expanded_result = render_graph(graph.to_flat_graph(), show_bounded_inputs=True)
+        expanded_input_ids = {n["id"] for n in expanded_result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
+        assert expanded_input_ids == {"input_a", "input_b"}
+
+    def test_render_never_shows_shared_inputs(self):
+        """Shared params should not create INPUT nodes or input edges."""
+
+        @node(output_name="messages")
+        def add_message(messages: list[str], user_input: str) -> list[str]:
+            return [*messages, user_input]
+
+        @node(output_name="result")
+        def summarize(messages: list[str]) -> str:
+            return "\n".join(messages)
+
+        graph = Graph(
+            nodes=[add_message, summarize],
+            edges=[(add_message, summarize)],
+            shared="messages",
+            entrypoint="add_message",
+        )
+
+        result = render_graph(graph.to_flat_graph(), show_bounded_inputs=True)
+        input_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] in {"INPUT", "INPUT_GROUP"}}
+        input_edges = {(e["source"], e["target"]) for e in result["edges"] if e.get("data", {}).get("edgeType") == "input"}
+
+        assert "input_messages" not in input_ids
+        assert input_ids == {"input_user_input"}
+        assert all(source != "input_messages" for source, _ in input_edges)
 
     def test_keeps_dag_dependencies_without_transitive_pruning(self):
         """DAG visualization should keep all declared/inferred dependencies."""
@@ -322,11 +363,11 @@ class TestRenderGraph:
         double_node = next(n for n in result["nodes"] if n["id"] == "inner/double")
         assert double_node.get("parentNode") == "inner"
 
-    def test_interrupt_cycle_hides_all_inputs_when_external_inputs_disabled(self):
+    def test_interrupt_cycle_hides_all_inputs_when_inputs_disabled(self):
         """Notebook regression: no INPUT nodes/edges should appear in any ext:0 state."""
         graph = _build_interrupt_cycle_graph()
 
-        result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
 
         # Initial state should hide input nodes and input edges.
         assert all(n["data"]["nodeType"] not in {"INPUT", "INPUT_GROUP"} for n in result["nodes"])
@@ -348,7 +389,7 @@ class TestRenderGraph:
         """Notebook regression: should_continue -> ask_user control edge must not disappear."""
         graph = _build_interrupt_cycle_graph()
 
-        result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
         edges_by_state = result["meta"]["edgesByState"]
         ext0_keys = [k for k in edges_by_state if k.endswith("|ext:0")]
         assert ext0_keys, "Expected ext:0 precomputed states"
@@ -370,7 +411,7 @@ class TestRenderGraph:
     def test_interrupt_cycle_expected_edges_for_0_1_2_expanded_graph_nodes(self):
         """Notebook demo: edge routing should be correct for collapsed/1-expanded/2-expanded states."""
         graph = _build_interrupt_cycle_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
         edges_by_state = result["meta"]["edgesByState"]
 
         expected_by_state = {
@@ -426,7 +467,7 @@ class TestRenderGraph:
     def test_interrupt_cycle_messages_feedback_edge_present_in_separate_outputs_mode(self):
         """Notebook regression: llm messages edge to ask_user should not disappear in sep mode."""
         graph = _build_interrupt_cycle_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, show_external_inputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
         edges_by_state = result["meta"]["edgesByState"]
 
         state_collapsed_target = "ask_user:0,llm:1|sep:1|ext:0"

@@ -1225,7 +1225,7 @@
         <${TooltipButton} onClick=${props.onToggleSeparate} tooltip=${props.separateOutputs ? "Merge Outputs" : "Separate Outputs"} isActive=${props.separateOutputs} theme=${props.theme}>
           ${props.separateOutputs ? html`<${Icons.MergeOutputs} />` : html`<${Icons.SplitOutputs} />`}
         <//>
-        <${TooltipButton} onClick=${props.onToggleExternalInputs} tooltip=${props.showExternalInputs ? "Hide External Inputs" : "Show External Inputs"} isActive=${props.showExternalInputs} theme=${props.theme}><${Icons.ExternalInputs} /><//>
+        <${TooltipButton} onClick=${props.onToggleInputs} tooltip=${props.showInputs ? "Hide Inputs" : "Show Inputs"} isActive=${props.showInputs} theme=${props.theme}><${Icons.ExternalInputs} /><//>
         <${TooltipButton} onClick=${props.onToggleTypes} tooltip=${props.showTypes ? "Hide Types" : "Show Types"} isActive=${props.showTypes} theme=${props.theme}><${Icons.Type} /><//>
         <div className=${'h-px my-1 ' + (props.theme === 'light' ? 'bg-slate-200' : 'bg-slate-700')}></div>
         <${TooltipButton} onClick=${props.onToggleTheme} tooltip=${props.theme === 'dark' ? "Switch to Light Theme" : "Switch to Dark Theme"} theme=${props.theme}>
@@ -1305,8 +1305,8 @@
     var separateOutputs = sepState[0], setSeparateOutputs = sepState[1];
     var typState = useState(props.initialShowTypes);
     var showTypes = typState[0], setShowTypes = typState[1];
-    var extInputsState = useState(props.initialShowExternalInputs);
-    var showExternalInputs = extInputsState[0], setShowExternalInputs = extInputsState[1];
+    var inputsState = useState(props.initialShowInputs);
+    var showInputs = inputsState[0], setShowInputs = inputsState[1];
 
     // Edge convergence state (dev-only controls)
     var convState = useState(EDGE_CONVERGE_TO_CENTER);
@@ -1326,9 +1326,9 @@
       root.__hypergraphVizReady = false;
       setShowTypes(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
-    var onToggleExternalInputs = useCallback(function(v) {
+    var onToggleInputs = useCallback(function(v) {
       root.__hypergraphVizReady = false;
-      setShowExternalInputs(function(p) { return typeof v === 'boolean' ? v : !p; });
+      setShowInputs(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
 
     // Render options hook for tests and dev gallery
@@ -1337,7 +1337,7 @@
         if (!opts) return;
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
-        if (Object.prototype.hasOwnProperty.call(opts, 'showExternalInputs')) onToggleExternalInputs(!!opts.showExternalInputs);
+        if (Object.prototype.hasOwnProperty.call(opts, 'showInputs')) onToggleInputs(!!opts.showInputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'convergeToCenter')) {
           root.__hypergraphVizReady = false;
           setConvergeToCenter(!!opts.convergeToCenter);
@@ -1369,7 +1369,7 @@
         delete root.__hypergraphVizSetRenderOptions;
         root.removeEventListener('message', onMessage);
       };
-    }, [onToggleSep, onToggleTyp, onToggleExternalInputs, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
+    }, [onToggleSep, onToggleTyp, onToggleInputs, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
@@ -1388,9 +1388,9 @@
     var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
 
-    var expansionStateToKey = function(es, sep, showExternalInputs) {
+    var expansionStateToKey = function(es, sep, showInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');
-      var extKey = 'ext:' + (showExternalInputs ? '1' : '0');
+      var extKey = 'ext:' + (showInputs ? '1' : '0');
       if (!expandableNodes.length) return sepKey + '|' + extKey;
       var parts = [];
       expandableNodes.forEach(function(id) { parts.push(id + ':' + (es.get(id) ? '1' : '0')); });
@@ -1447,14 +1447,14 @@
 
     // Select precomputed nodes
     var selectedNodes = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs, showExternalInputs);
+      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
       var base = Object.prototype.hasOwnProperty.call(nodesByState, key)
         ? nodesByState[key]
         : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
           ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
           : initialData.nodes);
       return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, showExternalInputs, activeTheme, nodesByState, initialData.nodes]);
+    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1502,11 +1502,11 @@
 
     // Select edges
     var selectedEdges = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs, showExternalInputs);
+      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
       if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
       var fallback = expansionStateToKey(expansionState, separateOutputs, true);
       return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, showExternalInputs, edgesByState, initialData.edges]);
+    }, [expansionState, separateOutputs, showInputs, edgesByState, initialData.edges]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1527,8 +1527,6 @@
     var layoutError = layoutResult.layoutError;
     var layoutVersion = layoutResult.layoutVersion;
     var isLayouting = layoutResult.isLayouting;
-
-    var sharedParams = (initialData.meta && initialData.meta.shared) || [];
 
     var rf = useReactFlow();
     var updateNI = useUpdateNodeInternals();
@@ -1597,8 +1595,8 @@
       return Array.from(expansionState.entries()).filter(function(e) { return !e[1]; }).map(function(e) { return e[0]; }).sort().join(',');
     }, [expansionState]);
     var renderModeKey = useMemo(function() {
-      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0') + '|ext_inputs:' + (showExternalInputs ? '1' : '0');
-    }, [separateOutputs, showTypes, showExternalInputs]);
+      return 'sep:' + (separateOutputs ? '1' : '0') + '|types:' + (showTypes ? '1' : '0') + '|inputs:' + (showInputs ? '1' : '0');
+    }, [separateOutputs, showTypes, showInputs]);
     var refreshKey = useMemo(function() { return expansionKey + '|' + renderModeKey; }, [expansionKey, renderModeKey]);
     var prevRefresh = useRef(null);
     useEffect(function() {
@@ -1772,8 +1770,8 @@
           <${Background} color=${theme === 'light' ? '#94a3b8' : '#334155'} gap=${24} size=${1} variant="dots" />
           <${CustomControls} theme=${theme} onToggleTheme=${toggleTheme} separateOutputs=${separateOutputs}
             onToggleSeparate=${function() { onToggleSep(); }} showTypes=${showTypes}
-            onToggleTypes=${function() { onToggleTyp(); }} showExternalInputs=${showExternalInputs}
-            onToggleExternalInputs=${function() { onToggleExternalInputs(); }} onFitView=${fitWithFixedPadding} />
+            onToggleTypes=${function() { onToggleTyp(); }} showInputs=${showInputs}
+            onToggleInputs=${function() { onToggleInputs(); }} onFitView=${fitWithFixedPadding} />
           ${root.__hypergraph_debug_viz ? html`
             <${DevEdgeControls} theme=${theme} convergeToCenter=${convergeToCenter}
               convergenceOffset=${convergenceOffset} endpointPadding=${endpointPadding} ranksep=${ranksep}
@@ -1783,19 +1781,6 @@
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
         <//>
-        ${sharedParams.length ? html`
-          <div style=${{ position: 'absolute', top: '12px', left: '12px', display: 'flex', gap: '6px', alignItems: 'center', pointerEvents: 'none', zIndex: 5 }}>
-            ${sharedParams.map(function(p) {
-              return html`<span key=${p} style=${{
-                display: 'inline-flex', alignItems: 'center', gap: '4px',
-                padding: '3px 10px', borderRadius: '12px', fontSize: '11px', fontFamily: 'monospace',
-                background: theme === 'light' ? 'rgba(139,92,246,0.1)' : 'rgba(139,92,246,0.15)',
-                border: '1px solid ' + (theme === 'light' ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.3)'),
-                color: theme === 'light' ? '#6d28d9' : '#a78bfa',
-              }}>↕ ${p}</span>`;
-            })}
-          </div>
-        ` : null}
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="px-4 py-2 rounded-lg border text-xs font-mono bg-slate-900/80 text-amber-200 border-amber-500/40 shadow-lg pointer-events-auto">
@@ -1819,7 +1804,7 @@
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
-          initialShowExternalInputs=${Boolean(initialData.meta && initialData.meta.show_external_inputs)} />
+          initialShowInputs=${Boolean(initialData.meta && initialData.meta.show_inputs)} />
       <//>
     `);
     if (fallback) fallback.remove();

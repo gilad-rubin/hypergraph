@@ -36,7 +36,8 @@ def compute_nodes_for_state(
     show_types: bool,
     theme: str,
     separate_outputs: bool = False,
-    show_external_inputs: bool = True,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     input_groups: list[dict[str, Any]] | None = None,
     input_consumer_mode: str = "all",
     graph_output_visibility: dict[str, set[str]] | None = None,
@@ -47,14 +48,21 @@ def compute_nodes_for_state(
     self_loop_nodes = {source for source, target in flat_graph.edges() if source == target and is_node_visible(source, flat_graph, expansion_state)}
 
     bound_params = set(input_spec.get("bound", {}).keys())
-    if show_external_inputs:
+    shared_params = set(flat_graph.graph.get("shared", ()))
+    if show_inputs:
         param_to_consumer = build_param_to_consumer_map(
             flat_graph,
             expansion_state,
             mode=input_consumer_mode,
         )
         if input_groups is None:
-            input_groups = build_input_groups(input_spec, param_to_consumer, bound_params)
+            input_groups = build_input_groups(
+                input_spec,
+                param_to_consumer,
+                bound_params,
+                shared_params,
+                show_bounded_inputs,
+            )
 
         create_input_nodes(
             nodes,
@@ -66,6 +74,7 @@ def compute_nodes_for_state(
             param_to_consumer,
             expansion_state,
             input_groups,
+            show_bounded_inputs=show_bounded_inputs,
         )
 
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -118,6 +127,7 @@ def precompute_all_edges(
     input_spec: dict[str, Any],
     show_types: bool,
     theme: str,
+    show_bounded_inputs: bool = False,
     input_groups: list[dict[str, Any]] | None = None,
     graph_output_visibility: dict[str, set[str]] | None = None,
     input_consumer_mode: str = "all",
@@ -128,7 +138,7 @@ def precompute_all_edges(
     if not expandable_nodes:
         edges_by_state: dict[str, list[dict[str, Any]]] = {}
         for separate_outputs in (False, True):
-            for show_external_inputs in (False, True):
+            for show_inputs in (False, True):
                 edges = compute_edges_for_state(
                     flat_graph,
                     {},
@@ -136,14 +146,15 @@ def precompute_all_edges(
                     show_types,
                     theme,
                     separate_outputs=separate_outputs,
-                    show_external_inputs=show_external_inputs,
+                    show_inputs=show_inputs,
+                    show_bounded_inputs=show_bounded_inputs,
                     input_groups=input_groups,
                     graph_output_visibility=graph_output_visibility,
                     input_consumer_mode=input_consumer_mode,
                 )
-                key = _compose_state_key("", separate_outputs, show_external_inputs)
+                key = _compose_state_key("", separate_outputs, show_inputs)
                 edges_by_state[key] = edges
-                if show_external_inputs:
+                if show_inputs:
                     edges_by_state[_compose_legacy_state_key("", separate_outputs)] = edges
         return edges_by_state, []
 
@@ -153,7 +164,7 @@ def precompute_all_edges(
     for state in valid_states:
         exp_key = expansion_state_to_key(state)
         for separate_outputs in (False, True):
-            for show_external_inputs in (False, True):
+            for show_inputs in (False, True):
                 edges = compute_edges_for_state(
                     flat_graph,
                     state,
@@ -161,14 +172,15 @@ def precompute_all_edges(
                     show_types,
                     theme,
                     separate_outputs=separate_outputs,
-                    show_external_inputs=show_external_inputs,
+                    show_inputs=show_inputs,
+                    show_bounded_inputs=show_bounded_inputs,
                     input_groups=input_groups,
                     graph_output_visibility=graph_output_visibility,
                     input_consumer_mode=input_consumer_mode,
                 )
-                key = _compose_state_key(exp_key, separate_outputs, show_external_inputs)
+                key = _compose_state_key(exp_key, separate_outputs, show_inputs)
                 edges_by_state[key] = edges
-                if show_external_inputs:
+                if show_inputs:
                     edges_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = edges
 
     return edges_by_state, expandable_nodes
@@ -179,6 +191,7 @@ def precompute_all_nodes(
     input_spec: dict[str, Any],
     show_types: bool,
     theme: str,
+    show_bounded_inputs: bool = False,
     graph_output_visibility: dict[str, set[str]] | None = None,
     input_groups: list[dict[str, Any]] | None = None,
     input_consumer_mode: str = "all",
@@ -189,7 +202,7 @@ def precompute_all_nodes(
     if not expandable_nodes:
         nodes_by_state: dict[str, list[dict[str, Any]]] = {}
         for separate_outputs in (False, True):
-            for show_external_inputs in (False, True):
+            for show_inputs in (False, True):
                 nodes = compute_nodes_for_state(
                     flat_graph,
                     {},
@@ -197,14 +210,15 @@ def precompute_all_nodes(
                     show_types,
                     theme,
                     separate_outputs=separate_outputs,
-                    show_external_inputs=show_external_inputs,
+                    show_inputs=show_inputs,
+                    show_bounded_inputs=show_bounded_inputs,
                     graph_output_visibility=graph_output_visibility,
                     input_groups=input_groups,
                     input_consumer_mode=input_consumer_mode,
                 )
-                key = _compose_state_key("", separate_outputs, show_external_inputs)
+                key = _compose_state_key("", separate_outputs, show_inputs)
                 nodes_by_state[key] = nodes
-                if show_external_inputs:
+                if show_inputs:
                     nodes_by_state[_compose_legacy_state_key("", separate_outputs)] = nodes
         return nodes_by_state, []
 
@@ -214,7 +228,7 @@ def precompute_all_nodes(
     for state in valid_states:
         exp_key = expansion_state_to_key(state)
         for separate_outputs in (False, True):
-            for show_external_inputs in (False, True):
+            for show_inputs in (False, True):
                 nodes = compute_nodes_for_state(
                     flat_graph,
                     state,
@@ -222,14 +236,15 @@ def precompute_all_nodes(
                     show_types,
                     theme,
                     separate_outputs=separate_outputs,
-                    show_external_inputs=show_external_inputs,
+                    show_inputs=show_inputs,
+                    show_bounded_inputs=show_bounded_inputs,
                     graph_output_visibility=graph_output_visibility,
                     input_groups=input_groups,
                     input_consumer_mode=input_consumer_mode,
                 )
-                key = _compose_state_key(exp_key, separate_outputs, show_external_inputs)
+                key = _compose_state_key(exp_key, separate_outputs, show_inputs)
                 nodes_by_state[key] = nodes
-                if show_external_inputs:
+                if show_inputs:
                     nodes_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = nodes
 
     return nodes_by_state, expandable_nodes
@@ -244,9 +259,9 @@ def _compose_legacy_state_key(expansion_key: str, separate_outputs: bool) -> str
 def _compose_state_key(
     expansion_key: str,
     separate_outputs: bool,
-    show_external_inputs: bool,
+    show_inputs: bool,
 ) -> str:
     """State key including separate-outputs and external-input visibility flags."""
     base = _compose_legacy_state_key(expansion_key, separate_outputs)
-    ext_key = "ext:1" if show_external_inputs else "ext:0"
+    ext_key = "ext:1" if show_inputs else "ext:0"
     return f"{base}|{ext_key}"
