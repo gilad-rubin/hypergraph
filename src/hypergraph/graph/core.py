@@ -1302,7 +1302,9 @@ class Graph:
             selected=self._selected,
         )
         lines = [f"# {self.name or 'unnamed'}", "  Inputs:"]
-        bound_names = set(self.inputs.bound)
+        active_input_names = set(self.inputs.all)
+        bound_in_scope = tuple(name for name in self.inputs.bound if name in active_input_names)
+        bound_names = set(bound_in_scope)
 
         if self.inputs.required:
             formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in self.inputs.required)
@@ -1311,8 +1313,8 @@ class Graph:
         if optional_inputs:
             formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in optional_inputs)
             lines.append(f"    optional: {formatted}")
-        if self.inputs.bound:
-            lines.append(f"    bound: {', '.join(self.inputs.bound)}")
+        if bound_in_scope:
+            lines.append(f"    bound: {', '.join(bound_in_scope)}")
         for node_name, params in self.inputs.entrypoints.items():
             formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in params)
             lines.append(f"    entrypoint[{node_name}]: {formatted}")

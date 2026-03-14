@@ -149,6 +149,36 @@ class TestGraphDescribe:
 
         assert graph.describe() == ("# scoped\n  Inputs:\n    required: a (int)\n  Outputs: b (int)\n  Nodes: consume")
 
+    def test_describe_entrypoint_scope_omits_out_of_scope_bound_values(self):
+        @node(output_name="a")
+        def produce(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def consume(a: int, cfg: int = 5) -> int:
+            return a + cfg
+
+        graph = Graph([produce, consume], name="scoped").bind(x=1, cfg=9).with_entrypoint("consume")
+
+        assert graph.describe() == ("# scoped\n  Inputs:\n    required: a (int)\n    bound: cfg\n  Outputs: b (int)\n  Nodes: consume")
+
+    def test_describe_select_scope_excludes_inactive_nodes_and_outputs(self):
+        @node(output_name="a")
+        def produce(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def consume(a: int) -> int:
+            return a * 2
+
+        @node(output_name="extra")
+        def extra_branch(y: int) -> int:
+            return y - 1
+
+        graph = Graph([produce, consume, extra_branch], name="selected").select("b")
+
+        assert graph.describe() == ("# selected\n  Inputs:\n    required: x (int)\n  Outputs: a (int) → b (int)\n  Nodes: produce → consume")
+
     def test_describe_does_not_use_arrows_for_ordering_only_edges(self):
         @node(output_name="x")
         def step_a(raw: int) -> int:
