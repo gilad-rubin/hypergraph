@@ -192,7 +192,7 @@ print(graph.inputs)
 
 # Get a compact human-readable summary of the active graph scope
 print(graph.describe())
-# rag
+# unnamed
 #   Inputs:
 #     required: text (str), query (str)
 #     optional: top_k (int)
@@ -209,7 +209,7 @@ focused = graph.select("answer", "confidence")
 partial = graph.with_entrypoint("retrieve")
 
 print(partial.describe())
-# rag
+# unnamed
 #   Inputs:
 #     required: embedding (list[float]), query (str)
 #     optional: top_k (int)
