@@ -74,6 +74,106 @@ class TestInputSpec:
         assert spec.all == ("r1", "r2", "o1", "o2", "s1", "s2")
 
 
+class TestGraphDescribe:
+    """Tests for Graph.describe()."""
+
+    def test_describe_linear_graph_with_typed_inputs_and_bound_values(self):
+        class FilterCriteria:
+            pass
+
+        store = object()
+        metadata_filter = object()
+        keyword_filter = object()
+
+        @node(output_name="loaded")
+        def load_items(criteria: FilterCriteria | None, terms: list[str], store) -> list:
+            return []
+
+        @node(output_name="metadata_filtered")
+        def filter_by_metadata(loaded: list, metadata_filter) -> list:
+            return loaded
+
+        @node(output_name="keyword_filtered")
+        def filter_by_keywords(metadata_filtered: list, keyword_filter) -> list:
+            return metadata_filtered
+
+        graph = Graph(
+            [load_items, filter_by_metadata, filter_by_keywords],
+            name="get_candidates",
+        ).bind(
+            store=store,
+            metadata_filter=metadata_filter,
+            keyword_filter=keyword_filter,
+        )
+
+        assert graph.describe() == (
+            "# get_candidates\n"
+            "  Inputs:\n"
+            "    required: criteria (FilterCriteria | None), terms (list[str])\n"
+            "    bound: store, metadata_filter, keyword_filter\n"
+            "  Outputs: loaded (list) → metadata_filtered (list) → keyword_filtered (list)\n"
+            "  Nodes: load_items → filter_by_metadata → filter_by_keywords"
+        )
+
+    def test_describe_branching_graph_uses_lists_instead_of_linear_arrows(self):
+        @node(output_name="a_out")
+        def node_a(x: int) -> int:
+            return x
+
+        @node(output_name="b_out")
+        def node_b(a_out: int) -> int:
+            return a_out * 2
+
+        @node(output_name="c_out")
+        def node_c(a_out: int) -> int:
+            return a_out * 3
+
+        graph = Graph([node_a, node_b, node_c], name="fan_out")
+        lines = graph.describe().splitlines()
+
+        assert lines[0] == "# fan_out"
+        assert "    required: x (int)" in lines
+        assert "  Outputs: a_out (int), b_out (int), c_out (int)" in lines
+        assert "  Nodes: node_a, node_b, node_c" in lines
+
+    def test_describe_entrypoint_scope_excludes_inactive_upstream_nodes_and_outputs(self):
+        @node(output_name="a")
+        def produce(x: int) -> int:
+            return x + 1
+
+        @node(output_name="b")
+        def consume(a: int) -> int:
+            return a * 2
+
+        graph = Graph([produce, consume], name="scoped").with_entrypoint("consume")
+
+        assert graph.describe() == ("# scoped\n  Inputs:\n    required: a (int)\n  Outputs: b (int)\n  Nodes: consume")
+
+    def test_describe_does_not_use_arrows_for_ordering_only_edges(self):
+        @node(output_name="x")
+        def step_a(raw: int) -> int:
+            return raw + 1
+
+        @node(output_name="y")
+        def step_b(other: int) -> int:
+            return other * 2
+
+        graph = Graph([step_a, step_b], name="ordering_only", edges=[(step_a, step_b)])
+        lines = graph.describe().splitlines()
+
+        assert "  Outputs: x (int), y (int)" in lines
+        assert "  Nodes: step_a, step_b" in lines
+
+    def test_describe_can_hide_types(self):
+        @node(output_name="result")
+        def single(x: int) -> int:
+            return x * 2
+
+        graph = Graph([single], name="simple")
+
+        assert graph.describe(show_types=False) == ("# simple\n  Inputs:\n    required: x\n  Outputs: result\n  Nodes: single")
+
+
 class TestGraphConstruction:
     """Test Graph class construction and basic properties."""
 

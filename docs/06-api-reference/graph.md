@@ -229,6 +229,68 @@ The hash excludes:
 
 ## Methods
 
+### `describe(*, show_types=True) -> str`
+
+Return a multiline summary of the active graph scope.
+
+Use `describe()` when you want one scan-friendly answer to:
+- what inputs the graph expects
+- which values are already bound
+- which outputs the configured graph can produce
+- which nodes are active in the current scope
+
+Unlike `graph.outputs`, the summary respects scope-defining configuration such as `with_entrypoint()` and `select()`.
+
+By default, type hints are included for both inputs and outputs when available.
+
+```python
+@node(output_name="embedding")
+def embed(text: str) -> list[float]:
+    return [0.1, 0.2, 0.3]
+
+@node(output_name="docs")
+def retrieve(embedding: list[float], query: str, top_k: int = 5) -> list[str]:
+    return ["doc1", "doc2"]
+
+@node(output_name="answer")
+def generate(docs: list[str]) -> str:
+    return "done"
+
+g = Graph([embed, retrieve, generate], name="rag")
+print(g.describe())
+```
+
+```text
+# rag
+#   Inputs:
+#     required: text (str), query (str)
+#     optional: top_k (int)
+#   Outputs: embedding (list[float]) → docs (list[str]) → answer (str)
+#   Nodes: embed → retrieve → generate
+```
+
+When you slice the graph, the summary follows the active subgraph:
+
+```python
+partial = g.with_entrypoint("retrieve")
+print(partial.describe())
+```
+
+```text
+# rag
+#   Inputs:
+#     required: embedding (list[float]), query (str)
+#     optional: top_k (int)
+#   Outputs: docs (list[str]) → answer (str)
+#   Nodes: retrieve → generate
+```
+
+Hide type hints when you only want names:
+
+```python
+print(g.describe(show_types=False))
+```
+
 ### `bind(**values) -> Graph`
 
 Pre-fill input parameters with values. Returns a new Graph (immutable pattern).

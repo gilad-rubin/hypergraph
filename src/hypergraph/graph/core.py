@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import types
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 import networkx as nx
 
 from hypergraph.graph._conflict import validate_output_conflicts
 from hypergraph.graph._helpers import get_edge_produced_values, sources_of
-from hypergraph.graph.input_spec import InputSpec, compute_input_spec
+from hypergraph.graph.input_spec import InputSpec, _compute_active_scope, _data_only_subgraph, compute_input_spec
 from hypergraph.graph.validation import GraphConfigError, validate_graph
 from hypergraph.nodes.base import HyperNode
 
@@ -70,6 +71,29 @@ def _unique_outputs(nodes: Iterable[HyperNode]) -> tuple[str, ...]:
     """
     all_outputs = [o for n in nodes for o in n.outputs]
     return tuple(dict.fromkeys(all_outputs))
+
+
+def _format_type_hint(type_hint: Any) -> str:
+    """Format a type annotation for human-readable summaries."""
+    if type_hint is type(None):
+        return "None"
+
+    origin = get_origin(type_hint)
+    if origin in (types.UnionType, Union):
+        return " | ".join(_format_type_hint(arg) for arg in get_args(type_hint))
+
+    if origin is not None:
+        origin_name = getattr(origin, "__name__", str(origin).replace("typing.", ""))
+        args = get_args(type_hint)
+        if not args:
+            return origin_name
+        formatted_args = ", ".join(_format_type_hint(arg) for arg in args)
+        return f"{origin_name}[{formatted_args}]"
+
+    if hasattr(type_hint, "__name__"):
+        return type_hint.__name__
+
+    return str(type_hint).replace("typing.", "")
 
 
 class Graph:
@@ -1268,6 +1292,112 @@ class Graph:
         if runner is not None:
             return node.with_runner(runner)
         return node
+
+    def describe(self, *, show_types: bool = True) -> str:
+        """Return a compact human-readable summary of the configured graph."""
+        active_nodes, active_subgraph = _compute_active_scope(
+            self._nodes,
+            self._nx_graph,
+            entrypoints=self._entrypoints,
+            selected=self._selected,
+        )
+        lines = [f"# {self.name or 'unnamed'}", "  Inputs:"]
+        bound_names = set(self.inputs.bound)
+
+        if self.inputs.required:
+            formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in self.inputs.required)
+            lines.append(f"    required: {formatted}")
+        optional_inputs = tuple(param for param in self.inputs.optional if param not in bound_names)
+        if optional_inputs:
+            formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in optional_inputs)
+            lines.append(f"    optional: {formatted}")
+        if self.inputs.bound:
+            lines.append(f"    bound: {', '.join(self.inputs.bound)}")
+        for node_name, params in self.inputs.entrypoints.items():
+            formatted = ", ".join(self._describe_input(param, active_nodes, show_types=show_types) for param in params)
+            lines.append(f"    entrypoint[{node_name}]: {formatted}")
+        if len(lines) == 2:
+            lines.append("    none")
+
+        node_order = self._linear_node_order(active_nodes, active_subgraph)
+        active_outputs = _unique_outputs(active_nodes.values())
+        if node_order and all(len(active_nodes[name].outputs) == 1 for name in node_order):
+            outputs = " → ".join(self._describe_output(active_nodes[name].outputs[0], active_nodes, show_types=show_types) for name in node_order)
+            nodes = " → ".join(node_order)
+        else:
+            outputs = ", ".join(self._describe_output(output, active_nodes, show_types=show_types) for output in active_outputs) or "none"
+            nodes = ", ".join(active_nodes) or "none"
+
+        lines.append(f"  Outputs: {outputs}")
+        lines.append(f"  Nodes: {nodes}")
+        return "\n".join(lines)
+
+    def _describe_input(self, param: str, nodes: dict[str, HyperNode], *, show_types: bool) -> str:
+        """Format one graph input, including merged type hints when available."""
+        if not show_types:
+            return param
+
+        formatted_types: list[str] = []
+        for node in nodes.values():
+            if param not in node.inputs:
+                continue
+            input_type = node.get_input_type(param)
+            if input_type is None:
+                continue
+            formatted = _format_type_hint(input_type)
+            if formatted not in formatted_types:
+                formatted_types.append(formatted)
+
+        if not formatted_types:
+            return param
+        return f"{param} ({' | '.join(formatted_types)})"
+
+    def _describe_output(self, output: str, nodes: dict[str, HyperNode], *, show_types: bool) -> str:
+        """Format one graph output, including merged producer type hints."""
+        if not show_types:
+            return output
+
+        formatted_types: list[str] = []
+        for node in nodes.values():
+            if output not in node.outputs:
+                continue
+            output_type = node.get_output_type(output)
+            if output_type is None:
+                continue
+            formatted = _format_type_hint(output_type)
+            if formatted not in formatted_types:
+                formatted_types.append(formatted)
+
+        if not formatted_types:
+            return output
+        return f"{output} ({' | '.join(formatted_types)})"
+
+    def _linear_node_order(
+        self,
+        nodes: dict[str, HyperNode],
+        nx_graph: nx.DiGraph,
+    ) -> tuple[str, ...] | None:
+        """Return node order for a simple linear data-flow chain, else None."""
+        if not nodes:
+            return ()
+        if len(nodes) == 1:
+            return tuple(nodes)
+
+        data_graph = _data_only_subgraph(nx_graph)
+        if not nx.is_directed_acyclic_graph(data_graph):
+            return None
+        if not nx.is_weakly_connected(data_graph):
+            return None
+        if data_graph.number_of_edges() != len(nodes) - 1:
+            return None
+
+        sources = [name for name in data_graph if data_graph.in_degree(name) == 0]
+        sinks = [name for name in data_graph if data_graph.out_degree(name) == 0]
+        if len(sources) != 1 or len(sinks) != 1:
+            return None
+        if any(data_graph.in_degree(name) > 1 or data_graph.out_degree(name) > 1 for name in data_graph):
+            return None
+        return tuple(nx.topological_sort(data_graph))
 
     def __repr__(self) -> str:
         from hypergraph._utils import plural

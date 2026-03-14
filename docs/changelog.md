@@ -8,6 +8,7 @@
 - **`checkpoint=` on `runner.run()`** — explicit fork entrypoint from a saved checkpoint snapshot (`values + steps`).
 - **First-class fork/retry helpers** — low-level `SqliteCheckpointer.fork_workflow()` / `retry_workflow()` (sync) and `fork_workflow_async()` / `retry_workflow_async()` (async) prepare lineage-aware checkpoints when you need manual control.
 - **Graph `structural_hash`** — structure-level compatibility hash used to guard same-`workflow_id` resumes.
+- **`graph.describe()`** — compact human-readable graph summary covering scoped inputs, bound values, outputs, and active nodes. Type hints are shown by default, with `show_types=False` for name-only output.
 - **Run lineage metadata** — persisted `forked_from`, `fork_superstep`, `retry_of`, `retry_index` fields on runs.
 - **Gate decision value persistence** — gates now emit internal `_gate_name` values so routing intent is checkpoint-visible and reconstructible.
 - **Auto-generated workflow IDs for `run()`** — when a checkpointer is configured and `workflow_id` is omitted.
