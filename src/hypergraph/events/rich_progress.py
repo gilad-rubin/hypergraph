@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import html as _html
 import re
 import sys
@@ -11,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph._repr import ALIGNUI_WIDGET_THEME, FONT_MONO_STYLE, FONT_SANS_STYLE, MUTED_COLOR, STATUS_COLORS, theme_wrap
-from hypergraph.events.processor import TypedEventProcessor
+from hypergraph.events.processor import AsyncEventProcessor, TypedEventProcessor
 from hypergraph.events.types import RunStatus
 
 if TYPE_CHECKING:
@@ -62,6 +63,7 @@ class _SpanInfo:
     map_parent: str | None = None  # Map span that owns this run
     failures: int = 0  # Failed item count (for map spans)
     succeeded: int = 0  # Succeeded item count (for map spans)
+    node_bar_key: _NodeKey | None = None  # Set by on_node_start, consumed by on_run_start
 
 
 @dataclass
@@ -133,6 +135,12 @@ class _NotebookProgress:
         self._tasks[task_id] = _NotebookTask(description=description, total=max(0, int(total or 0)), stats=stats)
         self._task_order.append(task_id)
         return task_id
+
+    def remove_task(self, task_id: int) -> None:
+        """Remove a task from the display."""
+        self._tasks.pop(task_id, None)
+        with contextlib.suppress(ValueError):
+            self._task_order.remove(task_id)
 
     def update(
         self,
@@ -314,7 +322,7 @@ class _NonTTYMapState:
     logged_milestones: set[int] = field(default_factory=set)
 
 
-class RichProgressProcessor(TypedEventProcessor):
+class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
     """Displays hierarchical progress bars using Rich.
 
     Tracks graph execution events and renders live progress bars with
@@ -351,6 +359,7 @@ class RichProgressProcessor(TypedEventProcessor):
         self._started = False
         self._last_refresh: float = 0.0  # monotonic timestamp of last notebook refresh
         self._refresh_dirty = False  # pending refresh not yet flushed
+        self._needs_async_flush = False  # set by _refresh_structural, cleared by on_event_async
         self._manual_notebook_refresh = False
         self._uses_rich_progress = False
 
@@ -424,6 +433,20 @@ class RichProgressProcessor(TypedEventProcessor):
             self._progress.refresh()
             self._last_refresh = time.monotonic()
             self._refresh_dirty = False
+
+    def _refresh_structural(self) -> None:
+        """Force refresh for structural changes (new bars, removed bars).
+
+        Bypasses the 100ms throttle since structural updates are infrequent
+        and must be visible immediately. Also signals the async path to yield
+        so Jupyter can flush IOPub.
+        """
+        if not self._notebook or self._progress is None:
+            return
+        self._progress.refresh()
+        self._last_refresh = time.monotonic()
+        self._refresh_dirty = False
+        self._needs_async_flush = True
 
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
@@ -549,12 +572,48 @@ class RichProgressProcessor(TypedEventProcessor):
 
         if event.is_map and event.map_size is not None:
             info.map_size = event.map_size
+
+            # Detect and remove duplicate node bar from a GraphNode parent.
+            # When a GraphNode triggers runner.map(), we get both a NodeStartEvent
+            # (creating a 0/1 node bar) and this RunStartEvent(is_map=True).
+            # The map bar replaces the node bar at the same depth.
+            replaced_name: str | None = None
+            if parent is not None:
+                parent_info = self._spans.get(parent)
+                if parent_info is not None and parent_info.node_bar_key is not None:
+                    old_key = parent_info.node_bar_key
+                    old_bar = self._node_bars.pop(old_key, None)
+                    if old_bar is not None:
+                        replaced_name = old_bar.name
+                        # Use same depth as the removed bar
+                        info.depth = old_bar.depth
+                        # Hide in Rich TTY / remove from notebook
+                        if self._tty_mode:
+                            if self._notebook and hasattr(self._progress, "remove_task"):
+                                self._progress.remove_task(old_bar.rich_task_id)
+                            else:
+                                self._progress.update(old_bar.rich_task_id, visible=False)
+                        # Clean up _map_children references and fix tree markers
+                        for children in self._map_children.values():
+                            if old_key in children:
+                                children.remove(old_key)
+                                # Update new last child's marker from ├─ to └─
+                                if children:
+                                    last_key = children[-1]
+                                    last_bar = self._node_bars.get(last_key)
+                                    if last_bar is not None:
+                                        last_desc = self._make_child_description(last_bar.name, last_bar.depth, is_last=True)
+                                        self._progress.update(last_bar.rich_task_id, description=last_desc)
+                    parent_info.node_bar_key = None
+
             if self._tty_mode:
-                desc = self._make_map_description(event.graph_name or "Map", info.depth)
+                # Use the parent node's public name if we replaced a bar, else graph name
+                bar_name = replaced_name or event.graph_name or "Map"
+                desc = self._make_map_description(bar_name, info.depth)
                 info.rich_task_id = self._progress.add_task(desc, total=event.map_size, stats="")
-                self._refresh()
+                self._refresh_structural()
             else:
-                name = event.graph_name or "Map"
+                name = replaced_name or event.graph_name or "Map"
                 self._nontty_map_states[span] = _NonTTYMapState(total=event.map_size, name=name)
 
         # If this run is a child of a map, track the relationship
@@ -582,6 +641,10 @@ class RichProgressProcessor(TypedEventProcessor):
         total = self._get_node_total(span)
         map_span = self._find_map_ancestor(span)
 
+        # Record node bar key on span so on_run_start can find it
+        # (used to detect and remove duplicate bars for GraphNode maps)
+        info.node_bar_key = key
+
         if self._tty_mode:
             bar = self._node_bars.get(key)
             if bar is None:
@@ -597,7 +660,7 @@ class RichProgressProcessor(TypedEventProcessor):
 
                 bar.rich_task_id = self._progress.add_task(desc, total=total, stats="")
                 self._node_bars[key] = bar
-                self._refresh()
+                self._refresh_structural()
             elif bar.total < total:
                 bar.total = total
                 self._progress.update(bar.rich_task_id, total=total)
@@ -759,3 +822,20 @@ class RichProgressProcessor(TypedEventProcessor):
             if self._tty_mode:
                 self._progress.stop()
             self._started = False
+
+    async def on_event_async(self, event: object) -> None:
+        """Async event handler — dispatches synchronously, yields on structural changes.
+
+        Only yields to the event loop after structural updates (bar creation/removal)
+        to flush Jupyter IOPub. High-frequency events (advance/stats) skip the yield.
+        """
+        self.on_event(event)
+        if self._needs_async_flush:
+            import asyncio
+
+            self._needs_async_flush = False
+            await asyncio.sleep(0)
+
+    async def shutdown_async(self) -> None:
+        """Async shutdown — delegates to sync cleanup."""
+        self.shutdown()

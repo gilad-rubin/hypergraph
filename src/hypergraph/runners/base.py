@@ -47,6 +47,7 @@ class BaseRunner(ABC):
         max_iterations: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph.
@@ -62,6 +63,8 @@ class BaseRunner(ABC):
                 "raise" (default) re-raises the original exception.
                 "continue" returns RunResult with status=FAILED and partial values.
             event_processors: Optional list of event processors to receive execution events
+            show_progress: Override runner-level show_progress for this call.
+                None = use runner default, True/False = explicit override.
             **input_values: Input values shorthand (merged with values)
 
         Returns:
@@ -81,6 +84,7 @@ class BaseRunner(ABC):
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs.
@@ -97,6 +101,8 @@ class BaseRunner(ABC):
             select: Which outputs to return. "**" (default) = all outputs.
             on_missing: How to handle missing selected outputs.
             event_processors: Optional list of event processors to receive execution events
+            show_progress: Override runner-level show_progress for this call.
+                None = use runner default, True/False = explicit override.
             **input_values: Input values shorthand (merged with values)
 
         Returns:

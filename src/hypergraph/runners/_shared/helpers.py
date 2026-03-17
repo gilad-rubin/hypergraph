@@ -1525,6 +1525,22 @@ def _generate_product_inputs(
         }
 
 
+def ensure_progress_processor(
+    event_processors: list[Any] | None,
+) -> list[Any]:
+    """Ensure at least one RichProgressProcessor is in the list.
+
+    Returns a new list. If a RichProgressProcessor is already present,
+    the list is returned as-is (copied). Otherwise a default one is prepended.
+    """
+    from hypergraph.events.rich_progress import RichProgressProcessor
+
+    processors = list(event_processors) if event_processors else []
+    if not any(isinstance(p, RichProgressProcessor) for p in processors):
+        processors.insert(0, RichProgressProcessor())
+    return processors
+
+
 def collect_as_lists(
     results: Sequence[RunResult],
     node: GraphNode,

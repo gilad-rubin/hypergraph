@@ -81,6 +81,7 @@ class SyncGraphNodeExecutor:
                 "clone": node._original_clone(),
                 "error_handling": error_handling,
                 "event_processors": ctx.event_processors,
+                "show_progress": ctx.show_progress,
                 "workflow_id": child_workflow_id,
                 "_parent_span_id": ctx.parent_span_id,
                 "_parent_run_id": ctx.workflow_id,
@@ -96,6 +97,7 @@ class SyncGraphNodeExecutor:
 
         run_kwargs: dict[str, Any] = {
             "event_processors": ctx.event_processors,
+            "show_progress": ctx.show_progress,
             "workflow_id": child_workflow_id,
             "_parent_span_id": ctx.parent_span_id,
             "_parent_run_id": ctx.workflow_id,

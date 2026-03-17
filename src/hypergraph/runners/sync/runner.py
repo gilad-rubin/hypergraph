@@ -61,6 +61,7 @@ class SyncRunner(SyncRunnerTemplate):
         self,
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
+        show_progress: bool = False,
     ):
         """Initialize SyncRunner with its node executors.
 
@@ -70,9 +71,12 @@ class SyncRunner(SyncRunnerTemplate):
             checkpointer: Optional checkpointer for workflow persistence.
                 Must implement SyncCheckpointerProtocol (e.g. SqliteCheckpointer).
                 Pass a workflow_id to run() to activate persistence.
+            show_progress: If True, automatically add a RichProgressProcessor
+                to every run() and map() call. Can be overridden per-call.
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
+        self._show_progress = show_progress
         self._active_signals: dict[str, StopSignal] = {}
         self._executors: dict[type[HyperNode], NodeExecutor] = {
             FunctionNode: SyncFunctionNodeExecutor(),
@@ -166,6 +170,9 @@ class SyncRunner(SyncRunnerTemplate):
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
         ctx_base = ExecutionContext(
             event_processors=event_processors,
+            # Always False: processors already merged above; prevents GraphNode
+            # sub-runners from double-adding RichProgressProcessor.
+            show_progress=False,
             workflow_id=workflow_id,
             run_id=run_id,
             provided_values=values,
