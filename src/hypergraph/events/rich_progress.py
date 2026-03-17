@@ -359,6 +359,7 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
         self._started = False
         self._last_refresh: float = 0.0  # monotonic timestamp of last notebook refresh
         self._refresh_dirty = False  # pending refresh not yet flushed
+        self._needs_async_flush = False  # set by _refresh_structural, cleared by on_event_async
         self._manual_notebook_refresh = False
         self._uses_rich_progress = False
 
@@ -437,13 +438,15 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
         """Force refresh for structural changes (new bars, removed bars).
 
         Bypasses the 100ms throttle since structural updates are infrequent
-        and must be visible immediately.
+        and must be visible immediately. Also signals the async path to yield
+        so Jupyter can flush IOPub.
         """
         if not self._notebook or self._progress is None:
             return
         self._progress.refresh()
         self._last_refresh = time.monotonic()
         self._refresh_dirty = False
+        self._needs_async_flush = True
 
     def _ensure_started(self) -> None:
         """Start the Rich progress display if not already started."""
@@ -590,10 +593,17 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
                                 self._progress.remove_task(old_bar.rich_task_id)
                             else:
                                 self._progress.update(old_bar.rich_task_id, visible=False)
-                        # Clean up _map_children references
+                        # Clean up _map_children references and fix tree markers
                         for children in self._map_children.values():
                             if old_key in children:
                                 children.remove(old_key)
+                                # Update new last child's marker from ├─ to └─
+                                if children:
+                                    last_key = children[-1]
+                                    last_bar = self._node_bars.get(last_key)
+                                    if last_bar is not None:
+                                        last_desc = self._make_child_description(last_bar.name, last_bar.depth, is_last=True)
+                                        self._progress.update(last_bar.rich_task_id, description=last_desc)
                     parent_info.node_bar_key = None
 
             if self._tty_mode:
@@ -814,11 +824,16 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
             self._started = False
 
     async def on_event_async(self, event: object) -> None:
-        """Async event handler — dispatches synchronously then yields for notebook flush."""
+        """Async event handler — dispatches synchronously, yields on structural changes.
+
+        Only yields to the event loop after structural updates (bar creation/removal)
+        to flush Jupyter IOPub. High-frequency events (advance/stats) skip the yield.
+        """
         self.on_event(event)
-        if self._notebook:
+        if self._needs_async_flush:
             import asyncio
 
+            self._needs_async_flush = False
             await asyncio.sleep(0)
 
     async def shutdown_async(self) -> None:

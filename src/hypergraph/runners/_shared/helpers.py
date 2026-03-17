@@ -1528,7 +1528,7 @@ def _generate_product_inputs(
 def ensure_progress_processor(
     event_processors: list[Any] | None,
 ) -> list[Any]:
-    """Ensure exactly one RichProgressProcessor is in the list.
+    """Ensure at least one RichProgressProcessor is in the list.
 
     Returns a new list. If a RichProgressProcessor is already present,
     the list is returned as-is (copied). Otherwise a default one is prepended.
