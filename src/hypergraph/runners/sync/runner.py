@@ -170,6 +170,8 @@ class SyncRunner(SyncRunnerTemplate):
         frontier = ExecutionFrontier.from_scope(scope, max_iterations)
         ctx_base = ExecutionContext(
             event_processors=event_processors,
+            # Always False: processors already merged above; prevents GraphNode
+            # sub-runners from double-adding RichProgressProcessor.
             show_progress=False,
             workflow_id=workflow_id,
             run_id=run_id,
