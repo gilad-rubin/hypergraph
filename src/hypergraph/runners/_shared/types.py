@@ -691,6 +691,7 @@ class ExecutionContext:
     """
 
     event_processors: list[EventProcessor] | None = None
+    show_progress: bool | None = None
     parent_span_id: str | None = None
     workflow_id: str | None = None
     run_id: str = ""

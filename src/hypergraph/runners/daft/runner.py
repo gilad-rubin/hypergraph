@@ -108,6 +108,7 @@ class DaftRunner(BaseRunner):
         max_iterations: int | None = None,
         error_handling: Literal["raise", "continue"] = "raise",
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute graph once via a 1-row Daft plan."""
@@ -116,7 +117,7 @@ class DaftRunner(BaseRunner):
             input_values,
             reserved_option_names=RUN_RESERVED_OPTION_NAMES,
         )
-        self._warn_ignored(event_processors=event_processors)
+        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
 
         validate_runner_compatibility(graph, self.capabilities)
         _validate_no_runner_overrides(graph)
@@ -168,6 +169,7 @@ class DaftRunner(BaseRunner):
         select: str | list[str] = _UNSET_SELECT,
         on_missing: Literal["ignore", "warn", "error"] = "ignore",
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
         error_handling: Literal["raise", "continue"] = "raise",
         **input_values: Any,
     ) -> MapResult:
@@ -177,7 +179,7 @@ class DaftRunner(BaseRunner):
             input_values,
             reserved_option_names=MAP_RESERVED_OPTION_NAMES,
         )
-        self._warn_ignored(event_processors=event_processors)
+        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
 
         validate_runner_compatibility(graph, self.capabilities)
         _validate_no_runner_overrides(graph)
@@ -400,11 +402,18 @@ class DaftRunner(BaseRunner):
     def _warn_ignored(
         *,
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
     ) -> None:
-        """Warn if event_processors is non-empty (DaftRunner ignores events)."""
+        """Warn if event_processors or show_progress is set (DaftRunner ignores events)."""
         if event_processors:
             warnings.warn(
                 "DaftRunner does not support event_processors. The provided processors will be ignored.",
+                UserWarning,
+                stacklevel=3,
+            )
+        if show_progress:
+            warnings.warn(
+                "DaftRunner does not support show_progress. The flag will be ignored.",
                 UserWarning,
                 stacklevel=3,
             )

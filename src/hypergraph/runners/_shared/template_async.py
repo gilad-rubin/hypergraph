@@ -183,6 +183,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
         checkpoint: Any | None = None,
         workflow_id: str | None = None,
         override_workflow: bool = False,
@@ -312,6 +313,11 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     )
 
         max_iter = max_iterations or self.default_max_iterations
+        effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
+        if effective_show_progress:
+            from hypergraph.runners._shared.helpers import ensure_progress_processor
+
+            event_processors = ensure_progress_processor(event_processors)
         collector = RunLogCollector()
         all_processors = [collector] + (event_processors or [])
         dispatcher = self._create_dispatcher(all_processors)
@@ -535,6 +541,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         max_concurrency: int | None = None,
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
+        show_progress: bool | None = None,
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
@@ -546,6 +553,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             input_values,
             reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
         )
+
+        # Resolve show_progress and merge processors
+        effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)
+        if effective_show_progress:
+            from hypergraph.runners._shared.helpers import ensure_progress_processor
+
+            event_processors = ensure_progress_processor(event_processors)
 
         # One-time graph-structural validation
         validate_runner_compatibility(graph, self.capabilities)
@@ -639,6 +653,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     max_concurrency=max_concurrency,
                     error_handling="continue",
                     event_processors=event_processors,
+                    show_progress=False,
                     workflow_id=child_workflow_id,
                     _parent_span_id=map_span_id,
                     _parent_run_id=workflow_id,

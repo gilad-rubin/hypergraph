@@ -79,6 +79,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         self,
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
+        show_progress: bool = False,
     ):
         """Initialize AsyncRunner with its node executors.
 
@@ -88,9 +89,12 @@ class AsyncRunner(AsyncRunnerTemplate):
             checkpointer: Optional checkpointer for workflow persistence.
                 Enables save/resume, crash recovery, and cross-process queries.
                 Pass a workflow_id to run() to activate persistence.
+            show_progress: If True, automatically add a RichProgressProcessor
+                to every run() and map() call. Can be overridden per-call.
         """
         self._cache = cache
         self._checkpointer_instance = checkpointer
+        self._show_progress = show_progress
         self._active_signals: dict[str, StopSignal] = {}
         self._executors: dict[type[HyperNode], AsyncNodeExecutor] = {
             FunctionNode: AsyncFunctionNodeExecutor(),
@@ -199,6 +203,7 @@ class AsyncRunner(AsyncRunnerTemplate):
             frontier = ExecutionFrontier.from_scope(scope, max_iterations)
             ctx_base = ExecutionContext(
                 event_processors=event_processors,
+                show_progress=False,
                 workflow_id=workflow_id,
                 run_id=run_id,
                 provided_values=values,
