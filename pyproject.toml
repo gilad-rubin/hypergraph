@@ -32,7 +32,7 @@ batch = [
 ]
 
 daft = [
-    "daft>=0.6.11",
+    "daft>=0.7.5",
 ]
 
 viz = [
