@@ -414,7 +414,7 @@ class VizDebugger:
         Args:
             depth: How many levels of nested graphs to expand (default: 0)
             theme: "dark", "light", or "auto" (default: "auto")
-            show_types: Whether to show type annotations (default: False)
+            show_types: Whether to show type annotations (default: True)
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:

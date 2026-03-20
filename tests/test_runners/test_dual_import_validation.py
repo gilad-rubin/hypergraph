@@ -1,4 +1,4 @@
-"""Test that validate_node_types handles dual-import scenarios gracefully.
+"""Regression test: validate_node_types currently fails in dual-import scenarios.
 
 Reproduces a real-world bug where the same class loaded from two different
 sys.path entries creates distinct type objects. The identity check in
@@ -6,7 +6,8 @@ validate_node_types fails because type(node) is not the same object as
 the type in supported_types, even though they have the same __name__.
 
 This happens in Jupyter notebooks when the kernel uses system Python but
-packages are injected via sys.path from a venv.
+packages are injected via sys.path from a venv. The test pins the broken
+behaviour so any future fix is visible and intentional.
 """
 
 import pytest
