@@ -699,7 +699,7 @@ def to_mermaid(
     flat_graph: nx.DiGraph,
     *,
     depth: int = 0,
-    show_types: bool = False,
+    show_types: bool = True,
     separate_outputs: bool = False,
     direction: str = "TD",
     colors: dict[str, dict[str, str]] | None = None,

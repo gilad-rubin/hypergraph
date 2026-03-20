@@ -68,7 +68,7 @@ def visualize(
     *,
     depth: int = 0,
     theme: str = "auto",
-    show_types: bool = False,
+    show_types: bool = True,
     separate_outputs: bool = False,
     show_inputs: bool | None = None,
     show_bounded_inputs: bool = False,

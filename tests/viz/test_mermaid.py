@@ -124,8 +124,8 @@ class TestBasicMermaid:
         graph = Graph(nodes=[double])
         mermaid = graph.to_mermaid()
 
-        # Input node for 'x'
-        assert 'input_x(["x"])' in mermaid
+        # Input node for 'x' with type (show_types=True by default)
+        assert 'input_x(["x: int"])' in mermaid
 
     def test_input_to_function_edge(self):
         """Edges from input nodes to consuming functions."""
@@ -210,10 +210,18 @@ class TestShowTypes:
 
         assert "x: int" in mermaid
 
-    def test_no_types_by_default(self):
-        """Types are not shown when show_types=False (default)."""
+    def test_types_shown_by_default(self):
+        """Types are shown by default (show_types=True)."""
         graph = Graph(nodes=[double])
         mermaid = graph.to_mermaid()
+
+        # Should have label with type annotation
+        assert 'input_x(["x: int"])' in mermaid
+
+    def test_no_types_when_disabled(self):
+        """Types are not shown when show_types=False."""
+        graph = Graph(nodes=[double])
+        mermaid = graph.to_mermaid(show_types=False)
 
         # Should have plain label without type
         assert 'input_x(["x"])' in mermaid
@@ -256,7 +264,7 @@ class TestNodeShapes:
         graph = Graph(nodes=[double, add_one])
         mermaid = graph.to_mermaid(separate_outputs=True)
 
-        assert '[/"doubled"/]' in mermaid
+        assert '[/"doubled: int"/]' in mermaid
 
 
 # =============================================================================

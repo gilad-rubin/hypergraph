@@ -33,7 +33,7 @@ class LayoutEstimator:
     # Node sizing constants from html/generator.py
     MAX_NODE_WIDTH = 280
     CHAR_WIDTH_PX = 7
-    NODE_BASE_PADDING = 52
+    NODE_BASE_PADDING = 72
     FUNCTION_NODE_BASE_PADDING = 48
     NODE_LABEL_MAX_CHARS = 25
     TYPE_HINT_MAX_CHARS = 25

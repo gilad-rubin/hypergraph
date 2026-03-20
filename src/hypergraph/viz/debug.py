@@ -403,7 +403,7 @@ class VizDebugger:
         *,
         depth: int = 0,
         theme: str = "auto",
-        show_types: bool = False,
+        show_types: bool = True,
         filepath: str | None = None,
     ) -> Any:
         """Visualize the graph with debug overlays enabled.

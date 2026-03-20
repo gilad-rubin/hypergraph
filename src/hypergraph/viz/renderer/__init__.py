@@ -31,7 +31,7 @@ def render_graph(
     *,
     depth: int = 0,
     theme: str = "auto",
-    show_types: bool = False,
+    show_types: bool = True,
     separate_outputs: bool = False,
     show_inputs: bool = True,
     show_bounded_inputs: bool = False,
