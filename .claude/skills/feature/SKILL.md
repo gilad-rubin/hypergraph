@@ -116,6 +116,14 @@ Claim the implementation task (`TaskUpdate` → `in_progress`).
 2. Implement code to pass tests
 3. Run tests: `uv run pytest <relevant tests>`
 4. Commit after each logical step (`git commit` with conventional commit format)
+5. **Structural self-check** before sending to reviewer:
+   - Read `dev/REVIEW-CHECKLIST.md` structural sweeps section
+   - Run applicable sweeps based on what you changed:
+     - Changed a signature/default? → mirror sweep (`rg -F -- '<old_value>' docs/ README.md examples/ notebooks/ src/hypergraph/`)
+     - Touched sync or async template? → parity check (`diff template_sync.py template_async.py`)
+     - Added/modified enum variant or shared contract? → consumer grep (`rg -F -- '<existing_variant>' src/ tests/`)
+     - Changed validation logic? → verify a test covers the new validation-runtime path
+   - Fix any issues found before proceeding
 
 Mark implementation task as `completed`.
 
@@ -217,7 +225,15 @@ Task tool:
 
 ## Phase 4: PR
 
-Create a pull request following the template in `.github/PULL_REQUEST_TEMPLATE.md`. Fill in each section:
+Before creating the PR, run the full quality gate:
+
+1. `uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'`
+2. `uv run ruff check src/ tests/`
+3. `uv run ruff format --check src/ tests/`
+4. Run all four structural sweeps from `dev/REVIEW-CHECKLIST.md` against the full diff
+5. Fix any issues found before proceeding
+
+Then create a pull request following the template in `.github/PULL_REQUEST_TEMPLATE.md`. Fill in each section:
 
 - **Problem / Bug / Challenge** — from the plan's requirements/scope
 - **Before / After** — code snippets, API examples, or screenshots (especially for viz changes)

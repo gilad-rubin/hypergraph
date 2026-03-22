@@ -99,3 +99,17 @@ Prefer in this order:
 - More than 1 line of conditions → helper function
 
 **Readability threshold:** If it spans multiple lines with complex conditions, extract to a helper.
+
+---
+
+## 4. Structural Sweeps
+
+Project-specific coordination checks that prevent the most common review findings.
+See `dev/REVIEW-CHECKLIST.md` "Structural Sweeps" section for the canonical definitions
+and commands.
+
+Quick reference:
+- **Mirror sweep**: changed a public API surface? Check all mirrors (docs, docstrings, README, examples, notebooks, `__init__.py` exports).
+- **Parity check**: changed one parallel surface? Check the other (sync/async, flat/nested, core/Daft).
+- **Consumer grep**: added a shared contract value? Find all consumers (enum variants, Literal members, dataclass fields, event names, config keys, `__all__`).
+- **Validation-runtime**: changed validation? Test that runtime matches.

@@ -1,6 +1,74 @@
 # Review Checklist
 
-Two checklists: one for coding agents (pre-submit), one for review agents.
+Three sections: structural sweeps (data-driven), pre-submit checklist, and review checklist.
+
+## Structural Sweeps
+
+Coordination checks derived from analysis of 82 PRs and 493 review bot comments.
+Three meta-patterns explained 81.5% of all findings: mirror drift, parity gaps, and
+consumer cascades. Run the applicable sweeps before sending code for review.
+
+### Mirror Sweep
+
+**When:** You changed a public signature, default value, enum value, parameter name, or behavior.
+
+**What:** Search for the old value across all mirrors — it's likely still referenced somewhere.
+
+```bash
+# Search all code, docs, and examples for the old value
+rg -F -- '<old_value>' docs/ README.md examples/ notebooks/ src/hypergraph/
+```
+
+**Scope:** docstrings, doc pages, README, examples, notebooks, `__init__.py` exports,
+viz/CLI output strings, error messages.
+
+### Parity Check
+
+**When:** You changed a file that has a parallel counterpart.
+
+**What:** Diff or review the counterpart to verify both sides stay in sync.
+
+```bash
+# Sync/async runner templates
+diff src/hypergraph/runners/_shared/template_sync.py src/hypergraph/runners/_shared/template_async.py
+
+# Check executor counterparts exist
+ls src/hypergraph/runners/sync/executors/
+ls src/hypergraph/runners/async_/executors/
+```
+
+**Parallel surfaces:**
+- `template_sync.py` ↔ `template_async.py`
+- `sync/executors/` ↔ `async_/executors/`
+- Flat graph logic ↔ nested graph logic (test with nested graphs)
+- Core runner ↔ DaftRunner (test parity for renames, select, multi-output)
+
+### Consumer Grep
+
+**When:** You added or modified a shared contract: enum variant, Literal member,
+dataclass field on a public type, event name, config key, `__all__` export,
+CLI subcommand, or viz state key.
+
+**What:** Find all sites that consume existing values, then verify the new value
+is handled at each site.
+
+```bash
+# Find all consumers of an existing variant (e.g., before adding STOPPED, grep for COMPLETED)
+rg -F -- 'COMPLETED' src/ tests/
+# Then verify each site also handles the new STOPPED variant
+```
+
+### Validation-Runtime Alignment
+
+**When:** You changed validation logic (build-time checks, input validation, type checks).
+
+**What:** Verify that runtime behavior matches the validation contract.
+
+- Add at least one test that exercises the validated path at runtime
+- The test should fail if the validation is removed (not vacuously true)
+- Check: `rg -n 'def test_.*<validation_name>' tests/` to verify coverage exists
+
+---
 
 ## Pre-Submit Checklist (Coding Agents)
 
