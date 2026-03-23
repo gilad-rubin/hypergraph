@@ -399,6 +399,57 @@ class TestRenderGraph:
         double_node = next(n for n in result["nodes"] if n["id"] == "inner/double")
         assert double_node.get("parentNode") == "inner"
 
+    def test_render_collapsed_nested_graph_shows_leaf_outputs(self):
+        """Collapsed containers should advertise terminal inner outputs."""
+
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+        outer = Graph(nodes=[middle.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0)
+
+        middle_node = next(n for n in result["nodes"] if n["id"] == "middle")
+        output_names = {output["name"] for output in middle_node["data"].get("outputs", [])}
+
+        assert "validated" in output_names
+
+    def test_render_collapsed_nested_graph_shows_leaf_data_nodes_in_separate_mode(self):
+        """Separate output mode should create DATA nodes for collapsed leaf outputs."""
+
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+        outer = Graph(nodes=[middle.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0, separate_outputs=True)
+
+        data_node_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] == "DATA"}
+
+        assert "data_middle_validated" in data_node_ids
+
     def test_interrupt_cycle_hides_all_inputs_when_inputs_disabled(self):
         """Notebook regression: no INPUT nodes/edges should appear in any ext:0 state."""
         graph = _build_interrupt_cycle_graph()

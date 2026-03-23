@@ -133,6 +133,13 @@ class GraphNode(HyperNode):
         """Returns the nested Graph."""
         return self._graph
 
+    @property
+    def nx_attrs(self) -> dict[str, Any]:
+        """Flattened attributes enriched with collapsed-view output metadata."""
+        attrs = super().nx_attrs
+        attrs["collapsed_outputs"] = self._derive_collapsed_outputs()
+        return attrs
+
     def with_runner(self: _GN, runner: Any) -> _GN:
         """Return a new GraphNode that delegates execution to the given runner.
 
@@ -670,6 +677,31 @@ class GraphNode(HyperNode):
             selected=None,
         )
         return tuple(dict.fromkeys(output for node in active_nodes.values() for output in node.outputs))
+
+    def _derive_collapsed_outputs(self) -> tuple[str, ...]:
+        """Resolve outputs a collapsed GraphNode should advertise.
+
+        By default this is the set of leaf outputs visible through the graph
+        boundary. For select-scoped graphs, preserve the explicitly selected
+        outputs even when they are not leaves.
+        """
+        if self._graph.selected is not None:
+            return tuple(self.map_output_name_from_original(output) for output in self._graph.selected)
+
+        active_nodes = self.iter_active_inner_nodes()
+        active_names = {node.name for node in active_nodes}
+
+        leaf_outputs: list[str] = []
+        for node in active_nodes:
+            has_active_downstream = any(target in active_names for _, target in self._graph._nx_graph.out_edges(node.name))
+            if has_active_downstream:
+                continue
+            for output in node.outputs:
+                mapped_output = self.map_output_name_from_original(output)
+                if mapped_output not in leaf_outputs:
+                    leaf_outputs.append(mapped_output)
+
+        return tuple(leaf_outputs)
 
 
 def _validate_clone(

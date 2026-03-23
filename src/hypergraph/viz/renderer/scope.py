@@ -154,12 +154,17 @@ def is_output_externally_consumed(
 
 
 def build_graph_output_visibility(flat_graph: nx.DiGraph) -> dict[str, set[str]]:
-    """Build mapping of GRAPH node -> externally consumed outputs."""
+    """Build mapping of GRAPH node -> outputs visible on collapsed containers."""
     visibility: dict[str, set[str]] = {}
     for node_id, attrs in flat_graph.nodes(data=True):
         if attrs.get("node_type") != "GRAPH":
             continue
-        visible_outputs = {output_name for output_name in attrs.get("outputs", ()) if is_output_externally_consumed(output_name, node_id, flat_graph)}
+        collapsed_outputs = set(attrs.get("collapsed_outputs", ()))
+        visible_outputs = {
+            output_name
+            for output_name in attrs.get("outputs", ())
+            if output_name in collapsed_outputs or is_output_externally_consumed(output_name, node_id, flat_graph)
+        }
         visibility[node_id] = visible_outputs
     return visibility
 
