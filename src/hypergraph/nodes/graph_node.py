@@ -703,6 +703,8 @@ class GraphNode(HyperNode):
         leaf_outputs: list[str] = []
         for node in active_nodes:
             for output in node.outputs:
+                if node.node_type == "BRANCH" and output in node.data_outputs:
+                    continue
                 if output in internally_consumed_outputs:
                     continue
                 mapped_output = self.map_output_name_from_original(output)
