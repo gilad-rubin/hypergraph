@@ -399,6 +399,101 @@ class TestRenderGraph:
         double_node = next(n for n in result["nodes"] if n["id"] == "inner/double")
         assert double_node.get("parentNode") == "inner"
 
+    def test_render_collapsed_nested_graph_shows_leaf_outputs(self):
+        """Collapsed containers should advertise terminal inner outputs."""
+
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+        outer = Graph(nodes=[middle.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0)
+
+        middle_node = next(n for n in result["nodes"] if n["id"] == "middle")
+        output_names = {output["name"] for output in middle_node["data"].get("outputs", [])}
+
+        assert output_names == {"validated"}
+
+    def test_render_collapsed_nested_graph_keeps_terminal_output_from_mixed_output_node(self):
+        """Collapsed containers should keep terminal sibling outputs."""
+
+        @node(output_name=("out1", "out2"))
+        def split(x: int) -> tuple[int, int]:
+            return x + 1, x + 2
+
+        @node(output_name="used")
+        def consume(out1: int) -> int:
+            return out1 * 2
+
+        inner = Graph(nodes=[split, consume], name="inner")
+        outer = Graph(nodes=[inner.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0)
+
+        inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
+        output_names = {output["name"] for output in inner_node["data"].get("outputs", [])}
+
+        assert output_names == {"out2", "used"}
+
+    def test_render_collapsed_nested_graph_ignores_ordering_edges_for_leaf_outputs(self):
+        """Collapsed containers should not let ordering edges hide outputs."""
+
+        @node(output_name="produced")
+        def produce(x: int) -> int:
+            return x + 1
+
+        @node(output_name="done")
+        def wait_only(flag: int) -> int:
+            return flag
+
+        inner = Graph(nodes=[produce, wait_only], name="inner", edges=[(produce, wait_only)])
+        outer = Graph(nodes=[inner.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0)
+
+        inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
+        output_names = {output["name"] for output in inner_node["data"].get("outputs", [])}
+
+        assert output_names == {"done", "produced"}
+
+    def test_render_collapsed_nested_graph_shows_leaf_data_nodes_in_separate_mode(self):
+        """Separate output mode should create DATA nodes for collapsed leaf outputs."""
+
+        @node(output_name="step1_out")
+        def step1(x: int) -> int:
+            return x + 1
+
+        @node(output_name="step2_out")
+        def step2(step1_out: int) -> int:
+            return step1_out * 2
+
+        @node(output_name="validated")
+        def validate(step2_out: int) -> int:
+            return step2_out
+
+        inner = Graph(nodes=[step1, step2], name="inner")
+        middle = Graph(nodes=[inner.as_node(), validate], name="middle")
+        outer = Graph(nodes=[middle.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0, separate_outputs=True)
+
+        data_node_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] == "DATA"}
+
+        assert "data_middle_validated" in data_node_ids
+        assert "data_middle_step1_out" not in data_node_ids
+        assert "data_middle_step2_out" not in data_node_ids
+
     def test_interrupt_cycle_hides_all_inputs_when_inputs_disabled(self):
         """Notebook regression: no INPUT nodes/edges should appear in any ext:0 state."""
         graph = _build_interrupt_cycle_graph()

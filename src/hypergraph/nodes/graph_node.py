@@ -133,6 +133,13 @@ class GraphNode(HyperNode):
         """Returns the nested Graph."""
         return self._graph
 
+    @property
+    def nx_attrs(self) -> dict[str, Any]:
+        """Flattened attributes enriched with collapsed-view output metadata."""
+        attrs = super().nx_attrs
+        attrs["collapsed_outputs"] = self._derive_collapsed_outputs()
+        return attrs
+
     def with_runner(self: _GN, runner: Any) -> _GN:
         """Return a new GraphNode that delegates execution to the given runner.
 
@@ -670,6 +677,45 @@ class GraphNode(HyperNode):
             selected=None,
         )
         return tuple(dict.fromkeys(output for node in active_nodes.values() for output in node.outputs))
+
+    def _derive_collapsed_outputs(self) -> tuple[str, ...]:
+        """Resolve outputs a collapsed GraphNode should advertise.
+
+        By default this is the set of leaf outputs visible through the graph
+        boundary. For select-scoped graphs, preserve the explicitly selected
+        outputs even when they are not leaves.
+        """
+        if self._graph.selected is not None:
+            return tuple(self.map_output_name_from_original(output) for output in self._graph.selected)
+
+        active_nodes = self.iter_active_inner_nodes()
+        active_names = {node.name for node in active_nodes}
+        nx_graph = self._graph.nx_graph
+        internally_consumed_outputs: set[str] = set()
+
+        for source, target, edge_data in nx_graph.edges(data=True):
+            if source not in active_names or target not in active_names:
+                continue
+            if edge_data.get("edge_type", "data") != "data":
+                continue
+            internally_consumed_outputs.update(edge_data.get("value_names", ()))
+
+        leaf_outputs: list[str] = []
+        for node in active_nodes:
+            node_outputs = node.outputs
+            if isinstance(node, GraphNode):
+                node_outputs = node._derive_collapsed_outputs()
+
+            for output in node_outputs:
+                if node.node_type == "BRANCH" and output in node.data_outputs:
+                    continue
+                if output in internally_consumed_outputs:
+                    continue
+                mapped_output = self.map_output_name_from_original(output)
+                if mapped_output not in leaf_outputs:
+                    leaf_outputs.append(mapped_output)
+
+        return tuple(leaf_outputs)
 
 
 def _validate_clone(

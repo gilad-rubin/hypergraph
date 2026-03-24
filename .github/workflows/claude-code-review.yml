@@ -12,6 +12,9 @@ on:
 
 jobs:
   claude-review:
+    # This review job depends on external Anthropic org access. Keep it opt-in
+    # so a misconfigured token does not block unrelated PRs.
+    if: vars.CLAUDE_REVIEW_ENABLED == 'true'
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
@@ -41,4 +44,3 @@ jobs:
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-
