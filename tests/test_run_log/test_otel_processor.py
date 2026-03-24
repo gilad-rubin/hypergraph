@@ -4,6 +4,8 @@ The import guard test always runs. SDK-dependent tests are skipped
 if opentelemetry-sdk is not installed.
 """
 
+import asyncio
+
 import pytest
 
 from hypergraph import Graph, SyncRunner, node
@@ -24,6 +26,16 @@ except ImportError:
     HAS_OTEL_SDK = False
 
 requires_otel = pytest.mark.skipif(not HAS_OTEL_SDK, reason="opentelemetry-sdk not installed")
+
+
+@pytest.fixture
+def sqlite_checkpointer(tmp_path):
+    """Provide an explicitly closed SQLite checkpointer for OTel tests."""
+    from hypergraph.checkpointers import SqliteCheckpointer
+
+    cp = SqliteCheckpointer(str(tmp_path / "otel-lineage.db"))
+    yield cp
+    asyncio.run(cp.close())
 
 
 class TestImportGuard:
@@ -144,28 +156,21 @@ class TestOTelProcessor:
         child_item_spans = [span for span in spans if span.name.startswith("graph ") and span.attributes.get("hypergraph.item_index") is not None]
         assert sorted(span.attributes["hypergraph.item_index"] for span in child_item_spans) == [0, 1, 2]
 
-    def test_forked_run_adds_lineage_link_when_source_span_is_known(self, tmp_path):
+    def test_forked_run_adds_lineage_link_when_source_span_is_known(self, sqlite_checkpointer):
         """Forked runs link back to the source run span when both are in-process."""
-        from hypergraph.checkpointers import SqliteCheckpointer
         from hypergraph.events.otel import OpenTelemetryProcessor
 
-        cp = SqliteCheckpointer(str(tmp_path / "otel-lineage.db"))
         processor = OpenTelemetryProcessor()
-        runner = SyncRunner(checkpointer=cp)
+        runner = SyncRunner(checkpointer=sqlite_checkpointer)
 
-        try:
-            root = runner.run(Graph([double]), {"x": 5}, workflow_id="wf-root", event_processors=[processor])
-            fork = runner.run(
-                Graph([double]),
-                {"x": 9},
-                workflow_id="wf-root-fork",
-                fork_from="wf-root",
-                event_processors=[processor],
-            )
-        finally:
-            import asyncio
-
-            asyncio.run(cp.close())
+        root = runner.run(Graph([double]), {"x": 5}, workflow_id="wf-root", event_processors=[processor])
+        fork = runner.run(
+            Graph([double]),
+            {"x": 9},
+            workflow_id="wf-root-fork",
+            fork_from="wf-root",
+            event_processors=[processor],
+        )
 
         assert root.completed
         assert fork.completed
@@ -178,31 +183,24 @@ class TestOTelProcessor:
         event_names = [event.name for event in fork_span.events]
         assert "hypergraph.fork" in event_names
 
-    def test_evicted_lineage_context_does_not_create_stale_link(self, tmp_path, monkeypatch):
+    def test_evicted_lineage_context_does_not_create_stale_link(self, sqlite_checkpointer, monkeypatch):
         """Eviction should degrade to no lineage link instead of reusing stale context."""
         import hypergraph.events.otel as otel_module
-        from hypergraph.checkpointers import SqliteCheckpointer
 
         monkeypatch.setattr(otel_module, "_MAX_LINEAGE_CONTEXTS", 1)
 
-        cp = SqliteCheckpointer(str(tmp_path / "otel-eviction.db"))
         processor = otel_module.OpenTelemetryProcessor()
-        runner = SyncRunner(checkpointer=cp)
+        runner = SyncRunner(checkpointer=sqlite_checkpointer)
 
-        try:
-            runner.run(Graph([double]), {"x": 1}, workflow_id="wf-root-1", event_processors=[processor])
-            runner.run(Graph([double]), {"x": 2}, workflow_id="wf-root-2", event_processors=[processor])
-            fork = runner.run(
-                Graph([double]),
-                {"x": 3},
-                workflow_id="wf-root-1-fork",
-                fork_from="wf-root-1",
-                event_processors=[processor],
-            )
-        finally:
-            import asyncio
-
-            asyncio.run(cp.close())
+        runner.run(Graph([double]), {"x": 1}, workflow_id="wf-root-1", event_processors=[processor])
+        runner.run(Graph([double]), {"x": 2}, workflow_id="wf-root-2", event_processors=[processor])
+        fork = runner.run(
+            Graph([double]),
+            {"x": 3},
+            workflow_id="wf-root-1-fork",
+            fork_from="wf-root-1",
+            event_processors=[processor],
+        )
 
         assert fork.completed
         spans = self.exporter.get_finished_spans()
@@ -254,4 +252,5 @@ class TestOTelProcessor:
         attrs = dict(run_span.attributes)
         assert attrs["hypergraph.run.outcome"] == "paused"
         assert attrs["hypergraph.duration_ms"] == 12.5
+        # Keep this internal check: paused runs must retain span context for resume links.
         assert "wf-sync-pause" in processor._workflow_span_contexts
