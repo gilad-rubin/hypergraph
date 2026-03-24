@@ -332,8 +332,9 @@ class OpenTelemetryProcessor(TypedEventProcessor):
                 }
             ),
         )
-        # InterruptEvent reuses the paused node span id. End that span cleanly.
-        if event.span_id in self._spans:
+        # InterruptEvent should normally reuse the paused node span id.
+        # If a fallback run span id slips through, don't end the parent span early.
+        if event.span_id in self._spans and event.span_id != event.parent_span_id:
             paused_span = self._spans.pop(event.span_id)
             self._contexts.pop(event.span_id, None)
             paused_span.end()

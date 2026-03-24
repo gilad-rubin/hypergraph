@@ -212,3 +212,46 @@ class TestOTelProcessor:
         assert len(fork_span.links) == 0
         event_names = [event.name for event in fork_span.events]
         assert "hypergraph.fork" in event_names
+
+    def test_interrupt_fallback_does_not_end_run_span_early(self):
+        """Fallback interrupt span ids must not prevent paused run metadata from exporting."""
+        from hypergraph.events.otel import OpenTelemetryProcessor
+        from hypergraph.events.types import InterruptEvent, RunEndEvent, RunStartEvent, RunStatus
+
+        processor = OpenTelemetryProcessor()
+        processor.on_run_start(
+            RunStartEvent(
+                run_id="run-sync-pause",
+                span_id="run-span",
+                workflow_id="wf-sync-pause",
+                graph_name="approval_flow",
+            )
+        )
+        processor.on_interrupt(
+            InterruptEvent(
+                run_id="run-sync-pause",
+                span_id="run-span",
+                parent_span_id="run-span",
+                workflow_id="wf-sync-pause",
+                node_name="approval",
+                graph_name="approval_flow",
+                response_param="decision",
+            )
+        )
+        processor.on_run_end(
+            RunEndEvent(
+                run_id="run-sync-pause",
+                span_id="run-span",
+                workflow_id="wf-sync-pause",
+                graph_name="approval_flow",
+                status=RunStatus.PAUSED,
+                duration_ms=12.5,
+            )
+        )
+
+        spans = self.exporter.get_finished_spans()
+        run_span = next(span for span in spans if span.name == "graph approval_flow")
+        attrs = dict(run_span.attributes)
+        assert attrs["hypergraph.run.outcome"] == "paused"
+        assert attrs["hypergraph.duration_ms"] == 12.5
+        assert "wf-sync-pause" in processor._workflow_span_contexts

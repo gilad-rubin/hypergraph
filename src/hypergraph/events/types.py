@@ -210,7 +210,7 @@ class InterruptEvent(BaseEvent):
     Attributes:
         node_name: Name of the node that triggered the interrupt.
         graph_name: Name of the graph containing the node.
-        workflow_id: Optional workflow identifier.
+        workflow_id: Inherited from BaseEvent — workflow identifier, if any.
         value: The interrupt payload.
         response_param: Parameter name expected for the response.
         superstep: Zero-indexed superstep number, if known.
@@ -241,7 +241,7 @@ class StopRequestedEvent(BaseEvent):
     """Emitted when a stop is requested on a workflow.
 
     Attributes:
-        workflow_id: Optional workflow identifier.
+        workflow_id: Inherited from BaseEvent — workflow identifier, if any.
         graph_name: Name of the graph being stopped.
         info: Optional metadata from ``runner.stop(workflow_id, info=...)``.
     """

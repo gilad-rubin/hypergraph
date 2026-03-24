@@ -216,6 +216,7 @@ def run_superstep_sync(
                     )
                 # Re-raise PauseExecution unwrapped (needed for InterruptNode)
                 if isinstance(e, PauseExecution):
+                    e.span_id = node_span_id
                     raise
                 # Wrap only Exception subclasses
                 if isinstance(e, Exception):
