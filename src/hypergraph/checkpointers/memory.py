@@ -82,7 +82,11 @@ class MemoryCheckpointer(Checkpointer):
             duration_ms=duration_ms if duration_ms is not None else existing.duration_ms,
             node_count=node_count if node_count is not None else existing.node_count,
             error_count=error_count if error_count is not None else existing.error_count,
-            completed_at=datetime.now(timezone.utc) if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED} else None,
+            completed_at=(
+                datetime.now(timezone.utc)
+                if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
+                else None
+            ),
         )
 
     async def get_state(self, run_id: str, *, superstep: int | None = None) -> dict[str, Any]:

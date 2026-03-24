@@ -90,6 +90,14 @@ class TestNonTTYNodeProgress:
         output = capsys.readouterr().out
         assert re.search(rf"{_TS} ✗ g failed: timeout", output)
 
+    def test_run_partial_logged(self, capsys):
+        proc = _make_processor()
+        proc.on_run_start(_run_start("r1"))
+        proc.on_run_end(_run_end("r1", graph="g", status=RunStatus.PARTIAL))
+
+        output = capsys.readouterr().out
+        assert re.search(rf"{_TS} ◐ g completed with failures", output)
+
 
 class TestNonTTYMapMilestones:
     """Test milestone-based logging for map operations."""
@@ -147,6 +155,20 @@ class TestNonTTYMapMilestones:
         output = capsys.readouterr().out
         assert output.count("100%") == 1
         assert output.count("25%") == 1
+
+    def test_tty_map_treats_partial_child_as_failure(self):
+        proc = RichProgressProcessor(force_mode="tty")
+        try:
+            proc.on_run_start(_run_start("r1"))
+            proc.on_run_start(_run_start("map1", parent="r1", graph="process", is_map=True, map_size=1))
+            proc.on_run_start(_run_start("item1", parent="map1", graph="process"))
+            proc.on_run_end(_run_end("item1", parent="map1", graph="process", status=RunStatus.PARTIAL))
+
+            map_info = proc._spans["map1"]
+            assert map_info.failures == 1
+            assert map_info.succeeded == 0
+        finally:
+            proc.shutdown()
 
 
 class TestNonTTYAutoDetect:

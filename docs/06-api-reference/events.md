@@ -39,6 +39,8 @@ class BaseEvent:
     run_id: str                    # Unique identifier for the run
     span_id: str                   # Unique identifier for this event's scope
     parent_span_id: str | None     # Parent scope, or None for root runs
+    workflow_id: str | None        # Persisted workflow identifier, if any
+    item_index: int | None         # Mapped child index, if any
     timestamp: float               # Unix timestamp
 ```
 
@@ -52,9 +54,14 @@ Emitted when a graph run begins.
 @dataclass(frozen=True)
 class RunStartEvent(BaseEvent):
     graph_name: str              # Name of the graph
-    workflow_id: str | None      # Optional workflow tracking ID
     is_map: bool                 # True if this is a map() operation
     map_size: int | None         # Number of items in map, if applicable
+    parent_workflow_id: str | None
+    forked_from: str | None
+    fork_superstep: int | None
+    retry_of: str | None
+    retry_index: int | None
+    is_resume: bool
 ```
 
 ### RunEndEvent
@@ -65,9 +72,15 @@ Emitted when a graph run completes (successfully or not).
 @dataclass(frozen=True)
 class RunEndEvent(BaseEvent):
     graph_name: str              # Name of the graph
-    status: str                  # "completed" or "failed"
+    status: str                  # "completed", "failed", "paused", "partial", or "stopped"
     error: str | None            # Error message if failed
     duration_ms: float           # Wall-clock duration in milliseconds
+    batch_total_items: int | None
+    batch_completed_items: int | None
+    batch_failed_items: int | None
+    batch_paused_items: int | None
+    batch_stopped_items: int | None
+    batch_outcome: str | None
 ```
 
 ### NodeStartEvent
@@ -79,6 +92,7 @@ Emitted when a node begins execution.
 class NodeStartEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
+    superstep: int | None        # Zero-indexed superstep, if known
 ```
 
 ### NodeEndEvent
@@ -90,6 +104,7 @@ Emitted when a node completes successfully.
 class NodeEndEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
+    superstep: int | None        # Zero-indexed superstep, if known
     duration_ms: float           # Wall-clock duration in milliseconds
     cached: bool                 # True if result was served from cache
 ```
@@ -105,6 +120,7 @@ class NodeErrorEvent(BaseEvent):
     graph_name: str              # Graph containing the node
     error: str                   # Error message
     error_type: str              # Fully qualified exception type
+    superstep: int | None        # Zero-indexed superstep, if known
 ```
 
 ### RouteDecisionEvent
@@ -117,6 +133,8 @@ class RouteDecisionEvent(BaseEvent):
     node_name: str               # Name of the routing node
     graph_name: str              # Graph containing the node
     decision: str | list[str]    # Chosen target(s)
+    node_span_id: str | None     # Routing node span, when available
+    superstep: int | None        # Zero-indexed superstep, if known
 ```
 
 ### InterruptEvent
@@ -128,9 +146,9 @@ Emitted when execution pauses for human-in-the-loop input.
 class InterruptEvent(BaseEvent):
     node_name: str               # Node that triggered the interrupt
     graph_name: str              # Graph containing the node
-    workflow_id: str | None      # Workflow identifier
     value: object                # Interrupt payload
     response_param: str          # Parameter name for the response
+    superstep: int | None        # Zero-indexed superstep, if known
 ```
 
 ### StopRequestedEvent
@@ -140,7 +158,8 @@ Emitted when a stop is requested on a workflow.
 ```python
 @dataclass(frozen=True)
 class StopRequestedEvent(BaseEvent):
-    workflow_id: str | None      # Workflow identifier
+    graph_name: str              # Graph being stopped
+    info: object                 # Optional stop metadata
 ```
 
 ### CacheHitEvent
@@ -153,6 +172,7 @@ class CacheHitEvent(BaseEvent):
     node_name: str               # Name of the cached node
     graph_name: str              # Graph containing the node
     cache_key: str               # The cache key that was hit
+    superstep: int | None        # Zero-indexed superstep, if known
 ```
 
 ### Event (Union Type)

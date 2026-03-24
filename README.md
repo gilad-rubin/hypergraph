@@ -179,6 +179,26 @@ result = await runner.run(graph, {
 # Completed!
 ```
 
+### Native Debugging and OTel Export
+
+- **Native-first** - Hypergraph's inspect UI, `RunView`, failure display, and checkpoint history stay the primary debugging tools.
+- **OTel opt-in** - Add `OpenTelemetryProcessor()` only when you want to export execution data to Jaeger, Honeycomb, Datadog, or another tracing backend.
+- **Structured spans** - Hypergraph exports graph/map run spans, child node spans, and explicit attributes such as `workflow_id`, `run_id`, `item_index`, `graph_name`, and `node_name`.
+
+```python
+from hypergraph import SyncRunner
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+runner = SyncRunner()
+result = runner.run(
+    graph,
+    {"query": "What changed in our RAG index?"},
+    event_processors=[OpenTelemetryProcessor()],
+)
+```
+
+Nested graphs and `map()` runs show up as a span tree rather than a flat log, while rich inspect-only payloads stay inside Hypergraph. See [execution observability](docs/05-how-to/observe-execution.md) for the full setup and emitted span structure.
+
 See the docs for more patterns: [multi-agent orchestration](https://gilad-rubin.gitbook.io/hypergraph/patterns/05-multi-agent), [rename & adapt](docs/05-how-to/rename-and-adapt.md), [batch processing with map](https://gilad-rubin.gitbook.io/hypergraph/how-to-guides/batch-processing), [streaming](docs/03-patterns/06-streaming.md), and [caching](docs/03-patterns/08-caching.md).
 
 ## Key Features

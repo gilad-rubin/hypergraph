@@ -18,6 +18,13 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
 )
+from hypergraph.runners._shared.event_metadata import (
+    DEFAULT_RUN_CONTEXT,
+    DEFAULT_RUN_LINEAGE,
+    BatchSummary,
+    RunContext,
+    RunLineage,
+)
 from hypergraph.runners._shared.helpers import (
     _UNSET_SELECT,
     _validate_error_handling,
@@ -108,6 +115,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
         _complete_on_stop: bool = False,
+        item_index: int | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -127,8 +135,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         graph: Graph,
         parent_span_id: str | None,
         *,
+        context: RunContext = DEFAULT_RUN_CONTEXT,
         is_map: bool = False,
         map_size: int | None = None,
+        lineage: RunLineage = DEFAULT_RUN_LINEAGE,
     ) -> tuple[str, str]:
         """Emit run-start event."""
         ...
@@ -143,7 +153,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         start_time: float,
         parent_span_id: str | None,
         *,
+        context: RunContext = DEFAULT_RUN_CONTEXT,
+        status: str | None = None,
         error: BaseException | None = None,
+        batch_summary: BatchSummary | None = None,
     ) -> None:
         """Emit run-end event."""
         ...
@@ -194,6 +207,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         _validation_ctx: _InputValidationContext | None = None,
         _run_config: dict[str, Any] | None = None,
         _complete_on_stop: bool = False,
+        _item_index: int | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -267,6 +281,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             fork_superstep = getattr(resume_checkpoint, "source_superstep", None)
             retry_of = getattr(resume_checkpoint, "retry_of", None)
             retry_index = getattr(resume_checkpoint, "retry_index", None)
+        is_resume = resume_checkpoint is not None and forked_from is None and retry_of is None
+        run_context = RunContext(workflow_id=workflow_id, item_index=_item_index)
+        run_lineage = RunLineage(
+            parent_workflow_id=_parent_run_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
+        )
 
         validation_values = build_resume_validation_values(graph, normalized_values, resume_checkpoint)
 
@@ -325,6 +349,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             dispatcher,
             graph,
             _parent_span_id,
+            context=run_context,
+            lineage=run_lineage,
         )
         start_time = time.time()
 
@@ -364,6 +390,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
                 _complete_on_stop=_complete_on_stop,
+                item_index=_item_index,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
@@ -381,6 +408,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         span_id=run_span_id,
                         parent_span_id=_parent_span_id,
                         workflow_id=workflow_id,
+                        item_index=_item_index,
+                        graph_name=graph.name,
                         info=stop_info,
                     )
                 )
@@ -399,12 +428,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                context=run_context,
+                status=status.value,
             )
             # Flush buffered steps ("exit" mode) and mark run completed
             if has_checkpointer:
+                from hypergraph.checkpointers.types import WorkflowStatus
+
                 for record in step_buffer:
                     await checkpointer.save_step(record)
-                from hypergraph.checkpointers.types import WorkflowStatus
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
                 _, step_offset = checkpoint_offsets(resume_checkpoint)
@@ -412,7 +444,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 error_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,
-                    WorkflowStatus.COMPLETED,
+                    WorkflowStatus.STOPPED if status == RunStatus.STOPPED else WorkflowStatus.COMPLETED,
                     duration_ms=total_duration_ms,
                     node_count=step_count,
                     error_count=error_count,
@@ -424,30 +456,30 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             if dispatcher.active:
-                from hypergraph.events.types import InterruptEvent, RunEndEvent
-                from hypergraph.events.types import RunStatus as EventRunStatus
+                from hypergraph.events.types import InterruptEvent
 
                 await dispatcher.emit_async(
                     InterruptEvent(
                         run_id=run_id,
                         span_id=pause.span_id or run_span_id,
                         parent_span_id=run_span_id,
+                        workflow_id=workflow_id,
+                        item_index=_item_index,
                         node_name=pause.pause_info.node_name,
                         graph_name=graph.name,
-                        workflow_id=workflow_id,
                         value=pause.pause_info.value,
                         response_param=pause.pause_info.output_param,
                     )
                 )
-                await dispatcher.emit_async(
-                    RunEndEvent(
-                        run_id=run_id,
-                        span_id=run_span_id,
-                        parent_span_id=_parent_span_id,
-                        graph_name=graph.name,
-                        status=EventRunStatus.PAUSED,
-                        duration_ms=total_duration_ms,
-                    )
+                await self._emit_run_end_async(
+                    dispatcher,
+                    run_id,
+                    run_span_id,
+                    graph,
+                    start_time,
+                    _parent_span_id,
+                    context=run_context,
+                    status=RunStatus.PAUSED.value,
                 )
             if has_checkpointer:
                 for record in step_buffer:
@@ -487,6 +519,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                context=run_context,
                 error=error,
             )
 
@@ -545,6 +578,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
+        _item_index: int | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -594,8 +628,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             dispatcher,
             graph,
             _parent_span_id,
+            context=RunContext(workflow_id=workflow_id, item_index=_item_index),
             is_map=True,
             map_size=len(input_variations),
+            lineage=RunLineage(parent_workflow_id=_parent_run_id),
         )
         start_time = time.time()
 
@@ -659,6 +695,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     _parent_run_id=workflow_id,
                     _validation_ctx=ctx,
                     _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
+                    _item_index=idx,
                 )
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
@@ -718,6 +755,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         if result.status == RunStatus.FAILED:
                             raise result.error  # type: ignore[misc]
 
+            batch_summary = BatchSummary.from_results(results)
+
             await self._emit_run_end_async(
                 dispatcher,
                 map_run_id,
@@ -725,6 +764,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                context=RunContext(workflow_id=workflow_id, item_index=_item_index),
+                status=batch_summary.event_status_value,
+                batch_summary=batch_summary,
             )
             total_duration_ms = (time.time() - start_time) * 1000
 
@@ -733,10 +775,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 from hypergraph.checkpointers.types import WorkflowStatus
 
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
-                paused_count = sum(1 for r in results if r.status == RunStatus.PAUSED)
-                persisted_status = (
-                    WorkflowStatus.FAILED if error_count > 0 else WorkflowStatus.PAUSED if paused_count > 0 else WorkflowStatus.COMPLETED
-                )
+                persisted_status = WorkflowStatus(batch_summary.workflow_status_value)
                 await checkpointer.update_run_status(
                     workflow_id,
                     persisted_status,

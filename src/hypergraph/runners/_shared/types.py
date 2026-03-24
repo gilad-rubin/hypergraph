@@ -694,6 +694,7 @@ class ExecutionContext:
     show_progress: bool | None = None
     parent_span_id: str | None = None
     workflow_id: str | None = None
+    item_index: int | None = None
     run_id: str = ""
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False

@@ -749,7 +749,7 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
                 if self._tty_mode and map_info.rich_task_id is not None:
                     self._progress.advance(map_info.rich_task_id, 1)
 
-                    if event.status == RunStatus.FAILED:
+                    if event.status in (RunStatus.FAILED, RunStatus.PARTIAL):
                         map_info.failures += 1
                     elif event.status in (RunStatus.PAUSED, RunStatus.STOPPED):
                         pass
@@ -772,6 +772,8 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
             elif self._tty_mode:
                 if event.status == RunStatus.COMPLETED:
                     self._progress.console.print(f"[bold green]✓ {event.graph_name or 'Run'} completed![/bold green]")
+                elif event.status == RunStatus.PARTIAL:
+                    self._progress.console.print(f"[bold yellow]◐ {event.graph_name or 'Run'} completed with failures[/bold yellow]")
                 elif event.status == RunStatus.PAUSED:
                     self._progress.console.print(f"[bold yellow]‖ {event.graph_name or 'Run'} paused[/bold yellow]")
                 elif event.status == RunStatus.STOPPED:
@@ -782,6 +784,8 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
                 name = event.graph_name or "Run"
                 if event.status == RunStatus.COMPLETED:
                     self._print(f"✓ {name} completed!")
+                elif event.status == RunStatus.PARTIAL:
+                    self._print(f"◐ {name} completed with failures")
                 elif event.status == RunStatus.PAUSED:
                     self._print(f"‖ {name} paused")
                 elif event.status == RunStatus.STOPPED:
@@ -802,6 +806,9 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
         if event.status == RunStatus.COMPLETED:
             color = STATUS_COLORS["completed"]
             msg = f"✓ {name} completed!"
+        elif event.status == RunStatus.PARTIAL:
+            color = STATUS_COLORS["partial"]
+            msg = f"◐ {name} completed with failures"
         elif event.status == RunStatus.PAUSED:
             color = STATUS_COLORS["paused"]
             msg = f"‖ {name} paused"

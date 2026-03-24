@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
@@ -10,11 +9,18 @@ from hypergraph.nodes.base import HyperNode
 from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
+from hypergraph.runners._shared.event_metadata import (
+    DEFAULT_RUN_CONTEXT,
+    DEFAULT_RUN_LINEAGE,
+    BatchSummary,
+    RunContext,
+    RunLineage,
+)
 from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
-from hypergraph.runners._shared.types import ExecutionContext, GraphState, RunnerCapabilities, _generate_run_id
+from hypergraph.runners._shared.types import ExecutionContext, GraphState, RunnerCapabilities
 from hypergraph.runners.sync.executors import (
     SyncFunctionNodeExecutor,
     SyncGraphNodeExecutor,
@@ -139,6 +145,7 @@ class SyncRunner(SyncRunnerTemplate):
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
         _complete_on_stop: bool = False,
+        item_index: int | None = None,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
 
@@ -174,6 +181,7 @@ class SyncRunner(SyncRunnerTemplate):
             # sub-runners from double-adding RichProgressProcessor.
             show_progress=False,
             workflow_id=workflow_id,
+            item_index=item_index,
             run_id=run_id,
             provided_values=values,
             emit_fn=dispatcher.emit if dispatcher.active else None,
@@ -208,6 +216,8 @@ class SyncRunner(SyncRunnerTemplate):
                             run_id=run_id,
                             span_id=_generate_span_id(),
                             parent_span_id=run_span_id,
+                            workflow_id=workflow_id,
+                            item_index=ctx_base.item_index,
                             graph_name=graph.name,
                             superstep=superstep_idx,
                         )
@@ -233,6 +243,7 @@ class SyncRunner(SyncRunnerTemplate):
                         dispatcher=dispatcher,
                         run_id=run_id,
                         run_span_id=run_span_id,
+                        superstep_idx=superstep_idx,
                     )
                 except ExecutionError as e:
                     superstep_error = e
@@ -287,16 +298,20 @@ class SyncRunner(SyncRunnerTemplate):
         graph: Graph,
         parent_span_id: str | None,
         *,
+        context: RunContext = DEFAULT_RUN_CONTEXT,
         is_map: bool = False,
         map_size: int | None = None,
+        lineage: RunLineage = DEFAULT_RUN_LINEAGE,
     ) -> tuple[str, str]:
         """Emit run-start event via sync helper."""
         return _emit_run_start(
             dispatcher,
             graph,
             parent_span_id,
+            context=context,
             is_map=is_map,
             map_size=map_size,
+            lineage=lineage,
         )
 
     def _emit_run_end_sync(
@@ -308,7 +323,10 @@ class SyncRunner(SyncRunnerTemplate):
         start_time: float,
         parent_span_id: str | None,
         *,
+        context: RunContext = DEFAULT_RUN_CONTEXT,
+        status: str | None = None,
         error: BaseException | None = None,
+        batch_summary: BatchSummary | None = None,
     ) -> None:
         """Emit run-end event via sync helper."""
         _emit_run_end(
@@ -318,7 +336,10 @@ class SyncRunner(SyncRunnerTemplate):
             graph,
             start_time,
             parent_span_id,
+            context=context,
+            status=status,
             error=error,
+            batch_summary=batch_summary,
         )
 
     def _shutdown_dispatcher_sync(self, dispatcher: EventDispatcher) -> None:
@@ -392,30 +413,27 @@ def _emit_run_start(
     graph: Graph,
     parent_span_id: str | None,
     *,
+    context: RunContext = DEFAULT_RUN_CONTEXT,
     is_map: bool = False,
     map_size: int | None = None,
+    lineage: RunLineage = DEFAULT_RUN_LINEAGE,
 ) -> tuple[str, str]:
     """Emit RunStartEvent and return (run_id, span_id)."""
-    from hypergraph.events.types import _generate_span_id
+    from hypergraph.runners._shared.event_helpers import build_run_start_event
 
-    run_id = _generate_run_id()
-    span_id = _generate_span_id()
+    run_id, span_id, event = build_run_start_event(
+        graph,
+        parent_span_id,
+        context=context,
+        is_map=is_map,
+        map_size=map_size,
+        lineage=lineage,
+    )
 
     if not dispatcher.active:
         return run_id, span_id
 
-    from hypergraph.events.types import RunStartEvent
-
-    dispatcher.emit(
-        RunStartEvent(
-            run_id=run_id,
-            span_id=span_id,
-            parent_span_id=parent_span_id,
-            graph_name=graph.name,
-            is_map=is_map,
-            map_size=map_size,
-        )
-    )
+    dispatcher.emit(event)
     return run_id, span_id
 
 
@@ -427,23 +445,27 @@ def _emit_run_end(
     start_time: float,
     parent_span_id: str | None,
     *,
+    context: RunContext = DEFAULT_RUN_CONTEXT,
+    status: str | None = None,
     error: BaseException | None = None,
+    batch_summary: BatchSummary | None = None,
 ) -> None:
     """Emit RunEndEvent."""
     if not dispatcher.active:
         return
 
-    from hypergraph.events.types import RunEndEvent
+    from hypergraph.runners._shared.event_helpers import build_run_end_event
 
-    duration_ms = (time.time() - start_time) * 1000
     dispatcher.emit(
-        RunEndEvent(
-            run_id=run_id,
-            span_id=span_id,
-            parent_span_id=parent_span_id,
-            graph_name=graph.name,
-            status="failed" if error else "completed",
-            error=str(error) if error else None,
-            duration_ms=duration_ms,
+        build_run_end_event(
+            run_id,
+            span_id,
+            graph,
+            start_time,
+            parent_span_id,
+            context=context,
+            status=status,
+            error=error,
+            batch_summary=batch_summary,
         )
     )
