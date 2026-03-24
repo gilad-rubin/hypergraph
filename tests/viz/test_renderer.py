@@ -423,7 +423,7 @@ class TestRenderGraph:
         middle_node = next(n for n in result["nodes"] if n["id"] == "middle")
         output_names = {output["name"] for output in middle_node["data"].get("outputs", [])}
 
-        assert "validated" in output_names
+        assert output_names == {"validated"}
 
     def test_render_collapsed_nested_graph_keeps_terminal_output_from_mixed_output_node(self):
         """Collapsed containers should keep terminal sibling outputs."""
@@ -491,6 +491,8 @@ class TestRenderGraph:
         data_node_ids = {n["id"] for n in result["nodes"] if n["data"]["nodeType"] == "DATA"}
 
         assert "data_middle_validated" in data_node_ids
+        assert "data_middle_step1_out" not in data_node_ids
+        assert "data_middle_step2_out" not in data_node_ids
 
     def test_interrupt_cycle_hides_all_inputs_when_inputs_disabled(self):
         """Notebook regression: no INPUT nodes/edges should appear in any ext:0 state."""

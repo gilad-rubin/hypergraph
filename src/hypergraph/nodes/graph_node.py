@@ -702,7 +702,11 @@ class GraphNode(HyperNode):
 
         leaf_outputs: list[str] = []
         for node in active_nodes:
-            for output in node.outputs:
+            node_outputs = node.outputs
+            if isinstance(node, GraphNode):
+                node_outputs = node._derive_collapsed_outputs()
+
+            for output in node_outputs:
                 if node.node_type == "BRANCH" and output in node.data_outputs:
                     continue
                 if output in internally_consumed_outputs:
