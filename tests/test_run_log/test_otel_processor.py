@@ -12,6 +12,7 @@ from hypergraph import Graph, SyncRunner, node
 try:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.trace import StatusCode
 
     try:
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -55,6 +56,13 @@ def triple(doubled: int) -> int:
     return doubled + doubled // 2
 
 
+@node(output_name="value")
+def unstable(x: int) -> int:
+    if x == 2:
+        raise ValueError("boom")
+    return x
+
+
 @requires_otel
 class TestOTelProcessor:
     @pytest.fixture(autouse=True)
@@ -79,8 +87,8 @@ class TestOTelProcessor:
         )
         self.span_processor.shutdown()
 
-    def test_sync_run_produces_spans(self):
-        """SyncRunner with OTelProcessor exports spans."""
+    def test_sync_run_produces_graph_and_node_spans(self):
+        """SyncRunner with OTelProcessor exports graph + node spans."""
         from hypergraph.events.otel import OpenTelemetryProcessor
 
         graph = Graph([double, triple])
@@ -90,12 +98,12 @@ class TestOTelProcessor:
         assert result.completed
         spans = self.exporter.get_finished_spans()
         span_names = [s.name for s in spans]
-        assert any("node:double" in n for n in span_names)
-        assert any("node:triple" in n for n in span_names)
-        assert any("run:" in n for n in span_names)
+        assert any(name == "node double" for name in span_names)
+        assert any(name == "node triple" for name in span_names)
+        assert any(name.startswith("graph ") for name in span_names)
 
     def test_span_attributes_include_node_info(self):
-        """Node spans carry hypergraph-specific attributes."""
+        """Node spans carry Hypergraph execution attributes."""
         from hypergraph.events.otel import OpenTelemetryProcessor
 
         graph = Graph([double])
@@ -103,7 +111,104 @@ class TestOTelProcessor:
         SyncRunner().run(graph, {"x": 5}, event_processors=[processor])
 
         spans = self.exporter.get_finished_spans()
-        node_spans = [s for s in spans if s.name.startswith("node:")]
+        node_spans = [s for s in spans if s.name == "node double"]
         assert len(node_spans) >= 1
         attrs = dict(node_spans[0].attributes)
         assert attrs["hypergraph.node_name"] == "double"
+        assert attrs["hypergraph.superstep"] == 0
+
+    def test_map_parent_span_uses_batch_summary_attributes(self):
+        """Parent map spans export bounded aggregate outcome metadata."""
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        graph = Graph([unstable])
+        processor = OpenTelemetryProcessor()
+        results = SyncRunner().map(
+            graph,
+            {"x": [1, 2, 3]},
+            map_over="x",
+            error_handling="continue",
+            event_processors=[processor],
+        )
+
+        assert results.partial
+        spans = self.exporter.get_finished_spans()
+        map_span = next(span for span in spans if span.attributes.get("hypergraph.is_map") is True)
+        attrs = dict(map_span.attributes)
+        assert attrs["hypergraph.batch.total_items"] == 3
+        assert attrs["hypergraph.batch.completed_items"] == 2
+        assert attrs["hypergraph.batch.failed_items"] == 1
+        assert attrs["hypergraph.batch.outcome"] == "partial"
+        assert map_span.status.status_code == StatusCode.UNSET
+
+        child_item_spans = [span for span in spans if span.name.startswith("graph ") and span.attributes.get("hypergraph.item_index") is not None]
+        assert sorted(span.attributes["hypergraph.item_index"] for span in child_item_spans) == [0, 1, 2]
+
+    def test_forked_run_adds_lineage_link_when_source_span_is_known(self, tmp_path):
+        """Forked runs link back to the source run span when both are in-process."""
+        from hypergraph.checkpointers import SqliteCheckpointer
+        from hypergraph.events.otel import OpenTelemetryProcessor
+
+        cp = SqliteCheckpointer(str(tmp_path / "otel-lineage.db"))
+        processor = OpenTelemetryProcessor()
+        runner = SyncRunner(checkpointer=cp)
+
+        try:
+            root = runner.run(Graph([double]), {"x": 5}, workflow_id="wf-root", event_processors=[processor])
+            fork = runner.run(
+                Graph([double]),
+                {"x": 9},
+                workflow_id="wf-root-fork",
+                fork_from="wf-root",
+                event_processors=[processor],
+            )
+        finally:
+            import asyncio
+
+            asyncio.run(cp.close())
+
+        assert root.completed
+        assert fork.completed
+        spans = self.exporter.get_finished_spans()
+        fork_span = next(span for span in spans if span.name.startswith("graph ") and span.attributes.get("hypergraph.workflow_id") == "wf-root-fork")
+        assert len(fork_span.links) == 1
+        link_attrs = dict(fork_span.links[0].attributes or {})
+        assert link_attrs["hypergraph.lineage.relationship"] == "fork"
+
+        event_names = [event.name for event in fork_span.events]
+        assert "hypergraph.fork" in event_names
+
+    def test_evicted_lineage_context_does_not_create_stale_link(self, tmp_path, monkeypatch):
+        """Eviction should degrade to no lineage link instead of reusing stale context."""
+        import hypergraph.events.otel as otel_module
+        from hypergraph.checkpointers import SqliteCheckpointer
+
+        monkeypatch.setattr(otel_module, "_MAX_LINEAGE_CONTEXTS", 1)
+
+        cp = SqliteCheckpointer(str(tmp_path / "otel-eviction.db"))
+        processor = otel_module.OpenTelemetryProcessor()
+        runner = SyncRunner(checkpointer=cp)
+
+        try:
+            runner.run(Graph([double]), {"x": 1}, workflow_id="wf-root-1", event_processors=[processor])
+            runner.run(Graph([double]), {"x": 2}, workflow_id="wf-root-2", event_processors=[processor])
+            fork = runner.run(
+                Graph([double]),
+                {"x": 3},
+                workflow_id="wf-root-1-fork",
+                fork_from="wf-root-1",
+                event_processors=[processor],
+            )
+        finally:
+            import asyncio
+
+            asyncio.run(cp.close())
+
+        assert fork.completed
+        spans = self.exporter.get_finished_spans()
+        fork_span = next(
+            span for span in spans if span.name.startswith("graph ") and span.attributes.get("hypergraph.workflow_id") == "wf-root-1-fork"
+        )
+        assert len(fork_span.links) == 0
+        event_names = [event.name for event in fork_span.events]
+        assert "hypergraph.fork" in event_names

@@ -116,6 +116,7 @@ class AsyncGraphNodeExecutor:
                 "workflow_id": child_workflow_id,
                 "_parent_span_id": ctx.parent_span_id,
                 "_parent_run_id": ctx.workflow_id,
+                "_item_index": ctx.item_index,
             }
             if getattr(node, "_complete_on_stop", False):
                 map_kwargs["_complete_on_stop"] = True
@@ -135,6 +136,7 @@ class AsyncGraphNodeExecutor:
             "workflow_id": child_workflow_id,
             "_parent_span_id": ctx.parent_span_id,
             "_parent_run_id": ctx.workflow_id,
+            "_item_index": ctx.item_index,
         }
         if runner.capabilities.supports_checkpointing:
             run_kwargs["fork_from"] = child_fork_from

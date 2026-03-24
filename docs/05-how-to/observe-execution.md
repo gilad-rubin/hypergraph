@@ -63,6 +63,70 @@ processor = RichProgressProcessor(force_mode="non-tty")
 processor = RichProgressProcessor(force_mode="tty")
 ```
 
+## OpenTelemetry Export
+
+Use OpenTelemetry when you want Hypergraph runs to show up in external
+observability backends such as Jaeger, Honeycomb, Datadog, or Logfire.
+Hypergraph's native inspect UI, `RunView`, failure display, and checkpoint
+tools remain the primary debugging experience; OTel is the export layer.
+
+```bash
+pip install 'hypergraph[otel]'
+```
+
+```python
+from hypergraph import SyncRunner
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+runner = SyncRunner()
+result = runner.run(
+    graph,
+    inputs,
+    event_processors=[OpenTelemetryProcessor()],
+)
+```
+
+Hypergraph emits:
+
+- Run spans for graph and `map()` scopes
+- Child node spans for node execution
+- Span events for supersteps, routing, cache hits, pauses, stops, forks, resumes, and retries
+- Explicit attributes such as `workflow_id`, `run_id`, `item_index`, `graph_name`, `node_name`, and batch summary counts
+
+Typical hierarchy:
+
+```text
+graph outer
+└── node inner
+    └── graph inner
+        └── node double
+```
+
+Mapped work uses a parent `map` span plus child graph spans per item:
+
+```text
+map evaluate_batch
+├── graph evaluate_batch   item_index=0
+├── graph evaluate_batch   item_index=1
+└── graph evaluate_batch   item_index=2
+```
+
+Parent `map` spans export aggregate outcome attributes instead of vague blobs:
+
+- `hypergraph.batch.total_items`
+- `hypergraph.batch.completed_items`
+- `hypergraph.batch.failed_items`
+- `hypergraph.batch.paused_items`
+- `hypergraph.batch.stopped_items`
+- `hypergraph.batch.outcome`
+
+Rich native debugging data stays inside Hypergraph on purpose:
+
+- Raw inputs and outputs
+- Checkpoint snapshots
+- Streamed chunks
+- Inspect-only UI payloads
+
 ## Custom Event Processors
 
 ### Collect All Events

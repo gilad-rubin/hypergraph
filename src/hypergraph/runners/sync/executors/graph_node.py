@@ -59,14 +59,37 @@ class SyncGraphNodeExecutor:
         # Only inject on first execution: on cycle loop-back the node has already
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
-            sync_cp = self.runner._get_sync_checkpointer(child_workflow_id)
-            if map_config is None and sync_cp is not None and sync_cp.get_run(child_workflow_id) is not None:
-                inner_inputs = {}
             prefix = f"{node.name}."
-            for key in state.values:
-                if key.startswith(prefix):
-                    inner_key = node.resolve_original_output_name(key[len(prefix) :])
-                    inner_inputs[inner_key] = state.values[key]
+            resume_values = {
+                node.resolve_original_output_name(key[len(prefix) :]): value for key, value in state.values.items() if key.startswith(prefix)
+            }
+            child_fork_from: str | None = None
+            child_retry_from: str | None = None
+
+            sync_cp = self.runner._get_sync_checkpointer(child_workflow_id)
+            if map_config is None and sync_cp is not None:
+                existing_child_run = sync_cp.get_run(child_workflow_id)
+                if existing_child_run is not None:
+                    inner_inputs = {}
+                elif resume_values:
+                    current_parent_run = sync_cp.get_run(ctx.workflow_id) if ctx.workflow_id else None
+                    source_parent_run_id = None
+                    if current_parent_run is not None:
+                        source_parent_run_id = current_parent_run.retry_of or current_parent_run.forked_from
+                    if source_parent_run_id is not None:
+                        source_child_run_id = graphnode_child_workflow_id(source_parent_run_id, node.name, state)
+                        source_child_run = sync_cp.get_run(source_child_run_id) if source_child_run_id is not None else None
+                        if source_child_run is not None:
+                            inner_inputs = {}
+                            if current_parent_run is not None and current_parent_run.retry_of is not None:
+                                child_retry_from = source_child_run_id
+                            else:
+                                child_fork_from = source_child_run_id
+
+            inner_inputs.update(resume_values)
+        else:
+            child_fork_from = None
+            child_retry_from = None
 
         # Use delegated runner if configured, otherwise inherit parent
         runner = node.runner_override or self.runner
@@ -85,6 +108,7 @@ class SyncGraphNodeExecutor:
                 "workflow_id": child_workflow_id,
                 "_parent_span_id": ctx.parent_span_id,
                 "_parent_run_id": ctx.workflow_id,
+                "_item_index": ctx.item_index,
             }
             if getattr(node, "_complete_on_stop", False):
                 map_kwargs["_complete_on_stop"] = True
@@ -101,7 +125,11 @@ class SyncGraphNodeExecutor:
             "workflow_id": child_workflow_id,
             "_parent_span_id": ctx.parent_span_id,
             "_parent_run_id": ctx.workflow_id,
+            "_item_index": ctx.item_index,
         }
+        if runner.capabilities.supports_checkpointing:
+            run_kwargs["fork_from"] = child_fork_from
+            run_kwargs["retry_from"] = child_retry_from
         if getattr(node, "_complete_on_stop", False):
             run_kwargs["_complete_on_stop"] = True
 

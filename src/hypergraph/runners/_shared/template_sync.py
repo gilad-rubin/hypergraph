@@ -17,6 +17,13 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
 )
+from hypergraph.runners._shared.event_metadata import (
+    DEFAULT_RUN_CONTEXT,
+    DEFAULT_RUN_LINEAGE,
+    BatchSummary,
+    RunContext,
+    RunLineage,
+)
 from hypergraph.runners._shared.helpers import (
     _UNSET_SELECT,
     _validate_error_handling,
@@ -97,6 +104,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
         _complete_on_stop: bool = False,
+        item_index: int | None = None,
     ) -> GraphState:
         """Execute graph and return final state."""
         ...
@@ -116,8 +124,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         graph: Graph,
         parent_span_id: str | None,
         *,
+        context: RunContext = DEFAULT_RUN_CONTEXT,
         is_map: bool = False,
         map_size: int | None = None,
+        lineage: RunLineage = DEFAULT_RUN_LINEAGE,
     ) -> tuple[str, str]:
         """Emit run-start event."""
         ...
@@ -132,7 +142,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         start_time: float,
         parent_span_id: str | None,
         *,
+        context: RunContext = DEFAULT_RUN_CONTEXT,
+        status: str | None = None,
         error: BaseException | None = None,
+        batch_summary: BatchSummary | None = None,
     ) -> None:
         """Emit run-end event."""
         ...
@@ -188,6 +201,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         _validation_ctx: _InputValidationContext | None = None,
         _run_config: dict[str, Any] | None = None,
         _complete_on_stop: bool = False,
+        _item_index: int | None = None,
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
@@ -260,6 +274,16 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             fork_superstep = getattr(resume_checkpoint, "source_superstep", None)
             retry_of = getattr(resume_checkpoint, "retry_of", None)
             retry_index = getattr(resume_checkpoint, "retry_index", None)
+        is_resume = resume_checkpoint is not None and forked_from is None and retry_of is None
+        run_context = RunContext(workflow_id=workflow_id, item_index=_item_index)
+        run_lineage = RunLineage(
+            parent_workflow_id=_parent_run_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
+        )
 
         validation_values = build_resume_validation_values(graph, normalized_values, resume_checkpoint)
 
@@ -314,7 +338,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         collector = RunLogCollector()
         all_processors = [collector] + (event_processors or [])
         dispatcher = self._create_dispatcher(all_processors)
-        run_id, run_span_id = self._emit_run_start_sync(dispatcher, graph, _parent_span_id)
+        run_id, run_span_id = self._emit_run_start_sync(
+            dispatcher,
+            graph,
+            _parent_span_id,
+            context=run_context,
+            lineage=run_lineage,
+        )
         start_time = time.time()
 
         # Checkpointer lifecycle — upsert run record
@@ -351,6 +381,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
                 _complete_on_stop=_complete_on_stop,
+                item_index=_item_index,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
@@ -368,6 +399,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                         span_id=run_span_id,
                         parent_span_id=_parent_span_id,
                         workflow_id=workflow_id,
+                        item_index=_item_index,
+                        graph_name=graph.name,
                         info=stop_info,
                     )
                 )
@@ -386,6 +419,8 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                context=run_context,
+                status=status.value,
             )
             # Flush buffered steps and mark run completed
             if sync_cp is not None:
@@ -399,30 +434,30 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
             if dispatcher.active:
-                from hypergraph.events.types import InterruptEvent, RunEndEvent
-                from hypergraph.events.types import RunStatus as EventRunStatus
+                from hypergraph.events.types import InterruptEvent
 
                 dispatcher.emit(
                     InterruptEvent(
                         run_id=run_id,
                         span_id=pause.span_id or run_span_id,
                         parent_span_id=run_span_id,
+                        workflow_id=workflow_id,
+                        item_index=_item_index,
                         node_name=pause.pause_info.node_name,
                         graph_name=graph.name,
-                        workflow_id=workflow_id,
                         value=pause.pause_info.value,
                         response_param=pause.pause_info.output_param,
                     )
                 )
-                dispatcher.emit(
-                    RunEndEvent(
-                        run_id=run_id,
-                        span_id=run_span_id,
-                        parent_span_id=_parent_span_id,
-                        graph_name=graph.name,
-                        status=EventRunStatus.PAUSED,
-                        duration_ms=total_duration_ms,
-                    )
+                self._emit_run_end_sync(
+                    dispatcher,
+                    run_id,
+                    run_span_id,
+                    graph,
+                    start_time,
+                    _parent_span_id,
+                    context=run_context,
+                    status=RunStatus.PAUSED.value,
                 )
             if sync_cp is not None:
                 from hypergraph.checkpointers.types import WorkflowStatus
@@ -462,6 +497,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                context=run_context,
                 error=error,
             )
 
@@ -506,6 +542,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
+        _item_index: int | None = None,
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
@@ -550,8 +587,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             dispatcher,
             graph,
             _parent_span_id,
+            context=RunContext(workflow_id=workflow_id, item_index=_item_index),
             is_map=True,
             map_size=len(input_variations),
+            lineage=RunLineage(parent_workflow_id=_parent_run_id),
         )
         start_time = time.time()
 
@@ -613,10 +652,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     _parent_run_id=workflow_id,
                     _validation_ctx=ctx,
                     _run_config={_MAP_SIGNATURE_CONFIG_KEY: item_signature},
+                    _item_index=idx,
                 )
                 results.append(result)
                 if error_handling == "raise" and result.status == RunStatus.FAILED:
                     raise result.error  # type: ignore[misc]
+
+            batch_summary = BatchSummary.from_results(results)
 
             self._emit_run_end_sync(
                 dispatcher,
@@ -625,6 +667,9 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                context=RunContext(workflow_id=workflow_id, item_index=_item_index),
+                status=batch_summary.event_status_value,
+                batch_summary=batch_summary,
             )
             total_duration_ms = (time.time() - start_time) * 1000
 

@@ -63,6 +63,7 @@ async def run_superstep_async(
     dispatcher: EventDispatcher | None = None,
     run_id: str = "",
     run_span_id: str = "",
+    superstep_idx: int | None = None,
 ) -> GraphState:
     """Execute one superstep with concurrent node execution.
 
@@ -113,18 +114,69 @@ async def run_superstep_async(
             outputs = cached_outputs
             restore_routing_decision(node, outputs, new_state)
             # Emit NodeStartEvent -> CacheHitEvent -> RouteDecision? -> NodeEndEvent(cached=True)
-            node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+            node_span_id, start_evt = build_node_start_event(
+                run_id,
+                run_span_id,
+                node,
+                graph,
+                workflow_id=ctx_base.workflow_id,
+                item_index=ctx_base.item_index,
+                superstep=superstep_idx,
+            )
             if active:
                 await dispatcher.emit_async(start_evt)
-                await dispatcher.emit_async(build_cache_hit_event(run_id, node_span_id, run_span_id, node, graph, cache_key))
-                route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                await dispatcher.emit_async(
+                    build_cache_hit_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        cache_key,
+                        workflow_id=ctx_base.workflow_id,
+                        item_index=ctx_base.item_index,
+                        superstep=superstep_idx,
+                    )
+                )
+                route_evt = build_route_decision_event(
+                    run_id,
+                    run_span_id,
+                    node_span_id,
+                    node,
+                    graph,
+                    new_state,
+                    workflow_id=ctx_base.workflow_id,
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx,
+                )
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
-                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
+                await dispatcher.emit_async(
+                    build_node_end_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        duration_ms=0.0,
+                        cached=True,
+                        workflow_id=ctx_base.workflow_id,
+                        item_index=ctx_base.item_index,
+                        superstep=superstep_idx,
+                    )
+                )
             return node, outputs, input_versions, wait_for_versions, 0.0, True
 
         # Emit NodeStartEvent
-        node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+        node_span_id, start_evt = build_node_start_event(
+            run_id,
+            run_span_id,
+            node,
+            graph,
+            workflow_id=ctx_base.workflow_id,
+            item_index=ctx_base.item_index,
+            superstep=superstep_idx,
+        )
         if active:
             await dispatcher.emit_async(start_evt)
 
@@ -152,7 +204,17 @@ async def run_superstep_async(
                 store_in_cache(node, outputs, new_state, cache, cache_key)
 
             if active:
-                route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                route_evt = build_route_decision_event(
+                    run_id,
+                    run_span_id,
+                    node_span_id,
+                    node,
+                    graph,
+                    new_state,
+                    workflow_id=ctx_base.workflow_id,
+                    item_index=ctx_base.item_index,
+                    superstep=superstep_idx,
+                )
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
                 await dispatcher.emit_async(
@@ -164,6 +226,9 @@ async def run_superstep_async(
                         graph,
                         duration_ms,
                         inner_logs=tuple(inner_logs),
+                        workflow_id=ctx_base.workflow_id,
+                        item_index=ctx_base.item_index,
+                        superstep=superstep_idx,
                     )
                 )
 
@@ -173,7 +238,18 @@ async def run_superstep_async(
             raise
         except Exception:
             if active:
-                await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
+                await dispatcher.emit_async(
+                    build_node_error_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        workflow_id=ctx_base.workflow_id,
+                        item_index=ctx_base.item_index,
+                        superstep=superstep_idx,
+                    )
+                )
             raise
 
     # Execute all ready nodes concurrently
