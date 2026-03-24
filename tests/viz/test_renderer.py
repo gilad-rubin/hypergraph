@@ -425,6 +425,48 @@ class TestRenderGraph:
 
         assert "validated" in output_names
 
+    def test_render_collapsed_nested_graph_keeps_terminal_output_from_mixed_output_node(self):
+        """Collapsed containers should keep terminal sibling outputs."""
+
+        @node(output_name=("out1", "out2"))
+        def split(x: int) -> tuple[int, int]:
+            return x + 1, x + 2
+
+        @node(output_name="used")
+        def consume(out1: int) -> int:
+            return out1 * 2
+
+        inner = Graph(nodes=[split, consume], name="inner")
+        outer = Graph(nodes=[inner.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0)
+
+        inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
+        output_names = {output["name"] for output in inner_node["data"].get("outputs", [])}
+
+        assert output_names == {"out2", "used"}
+
+    def test_render_collapsed_nested_graph_ignores_ordering_edges_for_leaf_outputs(self):
+        """Collapsed containers should not let ordering edges hide outputs."""
+
+        @node(output_name="produced")
+        def produce(x: int) -> int:
+            return x + 1
+
+        @node(output_name="done")
+        def wait_only(flag: int) -> int:
+            return flag
+
+        inner = Graph(nodes=[produce, wait_only], name="inner", edges=[(produce, wait_only)])
+        outer = Graph(nodes=[inner.as_node()])
+
+        result = render_graph(outer.to_flat_graph(), depth=0)
+
+        inner_node = next(n for n in result["nodes"] if n["id"] == "inner")
+        output_names = {output["name"] for output in inner_node["data"].get("outputs", [])}
+
+        assert output_names == {"done", "produced"}
+
     def test_render_collapsed_nested_graph_shows_leaf_data_nodes_in_separate_mode(self):
         """Separate output mode should create DATA nodes for collapsed leaf outputs."""
 

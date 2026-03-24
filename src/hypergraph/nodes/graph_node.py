@@ -690,13 +690,21 @@ class GraphNode(HyperNode):
 
         active_nodes = self.iter_active_inner_nodes()
         active_names = {node.name for node in active_nodes}
+        nx_graph = self._graph.nx_graph
+        internally_consumed_outputs: set[str] = set()
+
+        for source, target, edge_data in nx_graph.edges(data=True):
+            if source not in active_names or target not in active_names:
+                continue
+            if edge_data.get("edge_type", "data") != "data":
+                continue
+            internally_consumed_outputs.update(edge_data.get("value_names", ()))
 
         leaf_outputs: list[str] = []
         for node in active_nodes:
-            has_active_downstream = any(target in active_names for _, target in self._graph._nx_graph.out_edges(node.name))
-            if has_active_downstream:
-                continue
             for output in node.outputs:
+                if output in internally_consumed_outputs:
+                    continue
                 mapped_output = self.map_output_name_from_original(output)
                 if mapped_output not in leaf_outputs:
                     leaf_outputs.append(mapped_output)
