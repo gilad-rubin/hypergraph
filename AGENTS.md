@@ -59,6 +59,9 @@ Change validation expectations:
 - Keep nested-graph behavior consistent with flat-graph behavior.
 - If public API changes, update tests and relevant docs in the same task.
 - Use conventional commits with scopes, e.g. `feat(graph): ...`, `fix(runners): ...`.
+- Run structural sweeps from `dev/REVIEW-CHECKLIST.md` before sending code for review.
+  Key sweeps: mirror (grep old values in docs/docstrings/README), parity (diff sync vs async),
+  consumer (grep existing variants when adding new ones), validation-runtime alignment.
 
 ## Design Conversation Preferences
 
