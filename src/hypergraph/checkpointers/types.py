@@ -28,6 +28,8 @@ class WorkflowStatus(Enum):
 
     ACTIVE = "active"
     PAUSED = "paused"
+    STOPPED = "stopped"
+    PARTIAL = "partial"
     COMPLETED = "completed"
     FAILED = "failed"
 

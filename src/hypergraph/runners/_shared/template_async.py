@@ -433,9 +433,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             )
             # Flush buffered steps ("exit" mode) and mark run completed
             if has_checkpointer:
+                from hypergraph.checkpointers.types import WorkflowStatus
+
                 for record in step_buffer:
                     await checkpointer.save_step(record)
-                from hypergraph.checkpointers.types import WorkflowStatus
                 from hypergraph.runners._shared.checkpoint_helpers import checkpoint_offsets
 
                 _, step_offset = checkpoint_offsets(resume_checkpoint)
@@ -443,7 +444,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 error_count = sum(1 for r in collector._records if r.status == "failed")
                 await checkpointer.update_run_status(
                     workflow_id,
-                    WorkflowStatus.COMPLETED,
+                    WorkflowStatus.STOPPED if status == RunStatus.STOPPED else WorkflowStatus.COMPLETED,
                     duration_ms=total_duration_ms,
                     node_count=step_count,
                     error_count=error_count,
@@ -774,10 +775,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 from hypergraph.checkpointers.types import WorkflowStatus
 
                 error_count = sum(1 for r in results if r.status == RunStatus.FAILED)
-                paused_count = sum(1 for r in results if r.status == RunStatus.PAUSED)
-                persisted_status = (
-                    WorkflowStatus.FAILED if error_count > 0 else WorkflowStatus.PAUSED if paused_count > 0 else WorkflowStatus.COMPLETED
-                )
+                persisted_status = WorkflowStatus(batch_summary.workflow_status_value)
                 await checkpointer.update_run_status(
                     workflow_id,
                     persisted_status,

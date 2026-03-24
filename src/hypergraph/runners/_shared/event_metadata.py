@@ -73,6 +73,11 @@ class BatchSummary:
     @property
     def event_status_value(self) -> str:
         """Status value to export on the parent RunEndEvent."""
+        return self.workflow_status_value
+
+    @property
+    def workflow_status_value(self) -> str:
+        """Status value to persist for parent map runs."""
         if self.outcome == "failed":
             return "failed"
         if self.outcome == "partial":

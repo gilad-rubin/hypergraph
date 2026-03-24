@@ -402,6 +402,41 @@ class TestStoppedStatus:
         assert result.stopped is True
         assert result.status == RunStatus.STOPPED
 
+    @pytest.mark.asyncio
+    async def test_async_stopped_run_persists_stopped_status(self, tmp_path):
+        from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+
+        node_started = asyncio.Event()
+
+        @node(output_name="a")
+        async def step_a(ctx: NodeContext) -> int:
+            node_started.set()
+            for _ in range(100):
+                if ctx.stop_requested:
+                    return 0
+                await asyncio.sleep(0.001)
+            return 42
+
+        cp = SqliteCheckpointer(str(tmp_path / "async-stopped.db"))
+        try:
+            runner = AsyncRunner(checkpointer=cp)
+
+            async def stop_soon():
+                await node_started.wait()
+                await asyncio.sleep(0.01)
+                runner.stop("wf-async-stopped")
+
+            task = asyncio.create_task(stop_soon())
+            result = await runner.run(Graph([step_a]), workflow_id="wf-async-stopped")
+            await task
+
+            assert result.status == RunStatus.STOPPED
+            stored = await cp.get_run_async("wf-async-stopped")
+            assert stored is not None
+            assert stored.status == WorkflowStatus.STOPPED
+        finally:
+            await cp.close()
+
 
 # ---------------------------------------------------------------------------
 # 8. Resume after stop
@@ -818,6 +853,48 @@ class TestSyncRunnerStop:
 
         assert result.stopped is True
         assert result.status == RunStatus.STOPPED
+
+    def test_sync_stopped_run_persists_stopped_status(self, tmp_path):
+        import time as _time
+
+        from hypergraph.checkpointers import SqliteCheckpointer, WorkflowStatus
+
+        node_started = threading.Event()
+
+        @node(output_name="result")
+        def slow_node(ctx: NodeContext) -> str:
+            node_started.set()
+            for _ in range(1000):
+                if ctx.stop_requested:
+                    return "stopped"
+                _time.sleep(0.0001)
+            return "done"
+
+        cp = SqliteCheckpointer(str(tmp_path / "sync-stopped.db"))
+        try:
+            runner = SyncRunner(checkpointer=cp)
+
+            def stop_from_thread():
+                import time
+
+                node_started.wait(timeout=1.0)
+                time.sleep(0.01)
+                runner.stop("wf-sync-stopped")
+
+            t = threading.Thread(target=stop_from_thread)
+            t.start()
+
+            result = runner.run(Graph([slow_node]), workflow_id="wf-sync-stopped")
+            t.join()
+
+            assert result.status == RunStatus.STOPPED
+            stored = cp.get_run("wf-sync-stopped")
+            assert stored is not None
+            assert stored.status == WorkflowStatus.STOPPED
+        finally:
+            import asyncio
+
+            asyncio.run(cp.close())
 
 
 # ---------------------------------------------------------------------------

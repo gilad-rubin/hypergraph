@@ -381,7 +381,11 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats."""
         await self._ensure_db()
-        completed_at = datetime.now(timezone.utc).isoformat() if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED} else None
+        completed_at = (
+            datetime.now(timezone.utc).isoformat()
+            if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
+            else None
+        )
 
         # Build SET clause dynamically based on what's provided
         sets = ["status = ?", "completed_at = ?"]
@@ -1130,7 +1134,11 @@ class SqliteCheckpointer(Checkpointer):
     ) -> None:
         """Update run status with optional stats synchronously."""
         db = self._sync_db()
-        completed_at = datetime.now(timezone.utc).isoformat() if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED} else None
+        completed_at = (
+            datetime.now(timezone.utc).isoformat()
+            if status in {WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.PARTIAL, WorkflowStatus.STOPPED}
+            else None
+        )
 
         sets = ["status = ?", "completed_at = ?"]
         params: list[Any] = [status.value, completed_at]

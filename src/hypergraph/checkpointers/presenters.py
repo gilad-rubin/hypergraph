@@ -120,6 +120,7 @@ def _explorer_script(
         "failed": ("#dc2626", "#fef2f2"),
         "active": ("#d97706", "#fffbeb"),
         "paused": ("#7c3aed", "#f5f3ff"),
+        "stopped": ("#92400e", "#fff7ed"),
         "partial": ("#d97706", "#fffbeb"),
         "cached": ("#2563eb", "#eff6ff"),
     }
@@ -515,13 +516,18 @@ def render_run_table_html(table: Any) -> str:
     def _synth_parent(group_id: str, members: list[Any]) -> Any:
         from hypergraph.checkpointers.types import Run, WorkflowStatus
 
+        statuses = {r.status for r in members}
         status = WorkflowStatus.COMPLETED
-        if any(r.status == WorkflowStatus.ACTIVE for r in members):
+        if WorkflowStatus.ACTIVE in statuses:
             status = WorkflowStatus.ACTIVE
-        elif any(r.status == WorkflowStatus.PAUSED for r in members):
+        elif WorkflowStatus.PAUSED in statuses:
             status = WorkflowStatus.PAUSED
-        elif any(r.status == WorkflowStatus.FAILED for r in members):
+        elif WorkflowStatus.PARTIAL in statuses or (WorkflowStatus.FAILED in statuses and len(statuses) > 1):
+            status = WorkflowStatus.PARTIAL
+        elif WorkflowStatus.FAILED in statuses:
             status = WorkflowStatus.FAILED
+        elif WorkflowStatus.STOPPED in statuses:
+            status = WorkflowStatus.STOPPED
         created = max((r.created_at for r in members), default=_utcnow())
         return Run(
             id=group_id,

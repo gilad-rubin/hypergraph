@@ -144,7 +144,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         span = self._tracer.start_span(
             name=name,
             context=parent_ctx,
-            attributes={k: v for k, v in attributes.items() if v is not None},
+            attributes=_clean_attrs(attributes),
             links=links,
         )
         self._spans[event.span_id] = span
@@ -284,7 +284,7 @@ class OpenTelemetryProcessor(TypedEventProcessor):
         )
 
     def on_route_decision(self, event: RouteDecisionEvent) -> None:
-        target_span = self._spans.get(event.node_span_id or "") or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)
+        target_span = self._spans.get(event.node_span_id) or (self._spans.get(event.parent_span_id) if event.parent_span_id else None)
         if target_span is None:
             return
         decision = event.decision if isinstance(event.decision, str) else ",".join(event.decision)

@@ -3,7 +3,7 @@
 import pytest
 import pytest_asyncio
 
-from hypergraph import AsyncRunner, Graph, node
+from hypergraph import AsyncRunner, Graph, SyncRunner, node
 from hypergraph.checkpointers import (
     CheckpointPolicy,
     SqliteCheckpointer,
@@ -194,6 +194,54 @@ class TestRunnerCheckpointIntegration:
         # succeed_a should be COMPLETED, fail_b should be FAILED
         assert statuses["succeed_a"] == StepStatus.COMPLETED
         assert statuses["fail_b"] == StepStatus.FAILED
+
+    async def test_async_map_partial_persists_parent_status(self, checkpointer):
+        """Parent map runs persist PARTIAL when child items have mixed outcomes."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="value")
+        def maybe_fail(x: int) -> int:
+            if x == 2:
+                raise RuntimeError("boom")
+            return x
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        result = await runner.map(
+            Graph([maybe_fail]),
+            {"x": [1, 2, 3]},
+            map_over="x",
+            error_handling="continue",
+            workflow_id="wf-map-partial-async",
+        )
+
+        assert result.partial is True
+        stored = checkpointer.get_run("wf-map-partial-async")
+        assert stored is not None
+        assert stored.status == WorkflowStatus.PARTIAL
+
+    def test_sync_map_partial_persists_parent_status(self, checkpointer):
+        """Sync parent map runs also persist PARTIAL for mixed child outcomes."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="value")
+        def maybe_fail(x: int) -> int:
+            if x == 2:
+                raise RuntimeError("boom")
+            return x
+
+        runner = SyncRunner(checkpointer=checkpointer)
+        result = runner.map(
+            Graph([maybe_fail]),
+            {"x": [1, 2, 3]},
+            map_over="x",
+            error_handling="continue",
+            workflow_id="wf-map-partial-sync",
+        )
+
+        assert result.partial is True
+        stored = checkpointer.get_run("wf-map-partial-sync")
+        assert stored is not None
+        assert stored.status == WorkflowStatus.PARTIAL
 
     async def test_cyclic_re_execution_persists(self, checkpointer):
         """Cyclic nodes that re-execute get new step records per superstep."""
