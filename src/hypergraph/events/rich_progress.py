@@ -17,6 +17,7 @@ from hypergraph.events.types import RunStatus
 
 if TYPE_CHECKING:
     from hypergraph.events.types import (
+        InnerCacheEvent,
         NodeEndEvent,
         NodeErrorEvent,
         NodeStartEvent,
@@ -79,6 +80,8 @@ class _NodeBarInfo:
     name: str = ""
     depth: int = 0
     map_span_id: str | None = None  # Parent map span (for tree chars)
+    inner_cache_hits: int = 0  # Inner (hypercache) cache hits inside this node
+    inner_cache_refreshing: int = 0  # Inner cache stale refreshes triggered inside this node
 
 
 # Notebook task model for HTML progress rendering.
@@ -284,8 +287,10 @@ def _format_stats(
     failures: int = 0,
     cached: int = 0,
     avg_ms: float | None = None,
+    inner_cache_hits: int = 0,
+    inner_cache_refreshing: int = 0,
 ) -> str:
-    """Build a compact stats string like '95✓ 5✗ 10◉ ~45ms'. Only non-zero counts shown."""
+    """Build a compact stats string like '95✓ 5✗ 10◉ ~45ms 3↩ 1↻'."""
     parts: list[str] = []
     if succeeded:
         parts.append(f"{succeeded}✓")
@@ -295,6 +300,10 @@ def _format_stats(
         parts.append(f"{cached}◉")
     if avg_ms is not None:
         parts.append(f"~{_format_duration(avg_ms)}")
+    if inner_cache_hits:
+        parts.append(f"{inner_cache_hits}↩")
+    if inner_cache_refreshing:
+        parts.append(f"{inner_cache_refreshing}↻")
     return " ".join(parts)
 
 
@@ -523,7 +532,14 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
         # Show average duration only for multi-item bars (maps), excluding cached
         non_cached = bar.succeeded + bar.failures
         avg_ms = bar.total_duration_ms / non_cached if non_cached > 1 else None
-        stats = _format_stats(succeeded=bar.succeeded, failures=bar.failures, cached=bar.cached, avg_ms=avg_ms)
+        stats = _format_stats(
+            succeeded=bar.succeeded,
+            failures=bar.failures,
+            cached=bar.cached,
+            avg_ms=avg_ms,
+            inner_cache_hits=bar.inner_cache_hits,
+            inner_cache_refreshing=bar.inner_cache_refreshing,
+        )
         self._progress.update(bar.rich_task_id, stats=stats)
 
     def _update_map_stats(self, map_info: _SpanInfo) -> None:
@@ -716,6 +732,21 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
         else:
             if not self._find_map_ancestor(event.span_id):
                 self._print(f"✗ {event.node_name} FAILED")
+
+    def on_inner_cache(self, event: InnerCacheEvent) -> None:
+        """Handle inner cache events: update live stats for the active node."""
+        if not self._tty_mode:
+            return
+        for key, bar in self._node_bars.items():
+            graph_name, node_name, _ = key
+            if node_name == event.node_name and (not event.graph_name or graph_name == event.graph_name):
+                if event.hit:
+                    bar.inner_cache_hits += 1
+                if event.refreshing:
+                    bar.inner_cache_refreshing += 1
+                self._update_node_stats(bar)
+                self._refresh()
+                return
 
     def _nontty_check_map_milestone(self, map_span_id: str) -> None:
         """Log map progress at milestone percentages."""

@@ -1,0 +1,26 @@
+{
+  "branches": [],
+  "documents": [],
+  "runs": [],
+  "runtimes": [],
+  "saved_at": 1774421349.540131,
+  "sessions": [
+    {
+      "actor": "human",
+      "capabilities": [
+        "projection",
+        "editor",
+        "presence"
+      ],
+      "client": "vscode",
+      "created_at": 1774421259.9821901,
+      "label": "Visual Studio Code window",
+      "last_seen_at": 1774421349.5399191,
+      "resume_count": 0,
+      "session_id": "cdd1a9ef-9d33-4294-8854-8f57ce216fe4",
+      "status": "detached"
+    }
+  ],
+  "version": "0.1.0",
+  "workspace_root": "/Users/giladrubin/python_workspace/hypergraph"
+}

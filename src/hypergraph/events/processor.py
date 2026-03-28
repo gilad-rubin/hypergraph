@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from hypergraph.events.types import (
     CacheHitEvent,
+    InnerCacheEvent,
     InterruptEvent,
     NodeEndEvent,
     NodeErrorEvent,
@@ -35,6 +36,7 @@ _EVENT_METHOD_MAP: dict[type, str] = {
     InterruptEvent: "on_interrupt",
     StopRequestedEvent: "on_stop_requested",
     StreamingChunkEvent: "on_streaming_chunk",
+    InnerCacheEvent: "on_inner_cache",
 }
 
 
@@ -91,3 +93,4 @@ class TypedEventProcessor(EventProcessor):
     def on_interrupt(self, event: InterruptEvent) -> None: ...
     def on_stop_requested(self, event: StopRequestedEvent) -> None: ...
     def on_streaming_chunk(self, event: StreamingChunkEvent) -> None: ...
+    def on_inner_cache(self, event: InnerCacheEvent) -> None: ...

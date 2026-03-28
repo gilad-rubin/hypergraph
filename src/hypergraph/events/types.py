@@ -266,6 +266,37 @@ class StreamingChunkEvent(BaseEvent):
     node_name: str = ""
 
 
+@dataclass(frozen=True)
+class InnerCacheEvent(BaseEvent):
+    """Emitted when a hypercache-decorated call happens inside a running node.
+
+    One event per cached call, reflecting the cache decision made by
+    CacheService. Zero user boilerplate: emitted automatically when
+    hypercache is installed and the node_cache_observer is active.
+
+    Attributes:
+        node_name: Name of the graph node that triggered the call.
+        graph_name: Name of the graph containing the node.
+        instance: Qualified instance name (matches cache key identity).
+        operation: Method name of the cached call.
+        hit: True if the value was served from cache; False if computed.
+        stale: True if the cached value was past its stale window.
+        refreshing: True if a background refresh was triggered.
+        wrote: True if a new value was written to the cache store.
+        mode: Cache mode in effect: "normal" | "bypass" | "refresh_forced".
+    """
+
+    node_name: str = ""
+    graph_name: str = ""
+    instance: str = ""
+    operation: str = ""
+    hit: bool = False
+    stale: bool = False
+    refreshing: bool = False
+    wrote: bool = False
+    mode: str = ""
+
+
 Event = (
     RunStartEvent
     | RunEndEvent
@@ -278,4 +309,5 @@ Event = (
     | InterruptEvent
     | StopRequestedEvent
     | StreamingChunkEvent
+    | InnerCacheEvent
 )
