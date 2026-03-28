@@ -61,8 +61,9 @@ class SyncFunctionNodeExecutor:
         ):
             result = node.func(**func_inputs)
 
-        # Handle generators - accumulate to list
-        if node.is_generator:
-            result = list(result)
+            # Sync generator bodies execute lazily during iteration, so consume
+            # them inside the observer scope to preserve inner-cache telemetry.
+            if node.is_generator:
+                result = list(result)
 
         return wrap_outputs(node, result)

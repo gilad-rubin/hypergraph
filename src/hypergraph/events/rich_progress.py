@@ -64,7 +64,7 @@ class _SpanInfo:
     map_parent: str | None = None  # Map span that owns this run
     failures: int = 0  # Failed item count (for map spans)
     succeeded: int = 0  # Succeeded item count (for map spans)
-    node_bar_key: _NodeKey | None = None  # Set by on_node_start, consumed by on_run_start
+    node_bar_key: _NodeKey | None = None  # Set by on_node_start, consumed by on_run_start/on_inner_cache
 
 
 @dataclass
@@ -737,16 +737,30 @@ class RichProgressProcessor(TypedEventProcessor, AsyncEventProcessor):
         """Handle inner cache events: update live stats for the active node."""
         if not self._tty_mode:
             return
-        for key, bar in self._node_bars.items():
-            graph_name, node_name, _ = key
-            if node_name == event.node_name and (not event.graph_name or graph_name == event.graph_name):
-                if event.hit:
-                    bar.inner_cache_hits += 1
-                if event.refreshing:
-                    bar.inner_cache_refreshing += 1
-                self._update_node_stats(bar)
-                self._refresh()
-                return
+        bar = None
+
+        if event.parent_span_id:
+            span_info = self._spans.get(event.parent_span_id)
+            if span_info is not None and span_info.node_bar_key is not None:
+                bar = self._node_bars.get(span_info.node_bar_key)
+
+        # Fallback for manually constructed events that omit span linkage.
+        if bar is None:
+            for key, candidate in self._node_bars.items():
+                graph_name, node_name, _ = key
+                if node_name == event.node_name and (not event.graph_name or graph_name == event.graph_name):
+                    bar = candidate
+                    break
+
+        if bar is None:
+            return
+
+        if event.hit:
+            bar.inner_cache_hits += 1
+        if event.refreshing:
+            bar.inner_cache_refreshing += 1
+        self._update_node_stats(bar)
+        self._refresh()
 
     def _nontty_check_map_milestone(self, map_span_id: str) -> None:
         """Log map progress at milestone percentages."""

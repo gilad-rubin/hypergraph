@@ -8,6 +8,7 @@ import pytest
 
 from hypergraph.events.rich_progress import RichProgressProcessor
 from hypergraph.events.types import (
+    InnerCacheEvent,
     NodeEndEvent,
     NodeErrorEvent,
     NodeStartEvent,
@@ -111,6 +112,24 @@ def _node_end(
     )
 
 
+def _inner_cache(
+    run_id: str = "r1",
+    parent_span_id: str = "ns1",
+    node_name: str = "nodeA",
+    graph_name: str = "g",
+    hit: bool = False,
+    refreshing: bool = False,
+) -> InnerCacheEvent:
+    return InnerCacheEvent(
+        run_id=run_id,
+        parent_span_id=parent_span_id,
+        node_name=node_name,
+        graph_name=graph_name,
+        hit=hit,
+        refreshing=refreshing,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1: Single run
 # ---------------------------------------------------------------------------
@@ -181,6 +200,21 @@ class TestSingleRun:
 
         stats_calls = [c for c in mock.update.call_args_list if "stats" in c.kwargs]
         assert "1◉" in stats_calls[-1].kwargs["stats"]
+
+    def test_inner_cache_updates_bar_for_matching_node_span(self):
+        proc, _ = _make_processor()
+        proc.on_run_start(_run_start(span_id="run1"))
+        proc.on_node_start(_node_start(span_id="outer_node", parent_span_id="run1", node_name="shared"))
+        proc.on_run_start(_run_start(run_id="r2", span_id="run2", parent_span_id="outer_node"))
+        proc.on_node_start(_node_start(run_id="r2", span_id="inner_node", parent_span_id="run2", node_name="shared"))
+
+        proc.on_inner_cache(_inner_cache(parent_span_id="inner_node", node_name="shared", hit=True))
+
+        outer_bar = proc._node_bars[proc._spans["outer_node"].node_bar_key]
+        inner_bar = proc._node_bars[proc._spans["inner_node"].node_bar_key]
+
+        assert outer_bar.inner_cache_hits == 0
+        assert inner_bar.inner_cache_hits == 1
 
 
 # ---------------------------------------------------------------------------

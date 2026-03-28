@@ -148,6 +148,17 @@ CacheHitEvent(node_name="embed", cache_key="abc123...")
 NodeEndEvent(node_name="embed", cached=True, duration_ms=0.0)
 ```
 
+If your node body uses `hypercache` internally, Hypergraph also emits `InnerCacheEvent` entries for those nested cache decisions:
+
+```python
+from hypergraph import InnerCacheEvent, TypedEventProcessor
+
+class InnerCacheMonitor(TypedEventProcessor):
+    def on_inner_cache(self, event: InnerCacheEvent) -> None:
+        status = "hit" if event.hit else "miss"
+        print(f"{event.node_name}: {status} via {event.instance}.{event.operation}")
+```
+
 ## Caching Route and IfElse Nodes
 
 Gate nodes (`@route`, `@ifelse`) are cacheable. The routing function's return value is cached, and the runner restores the routing decision on cache hit:

@@ -13,6 +13,7 @@ from hypergraph.events import (
     Event,
     EventDispatcher,
     EventProcessor,
+    InnerCacheEvent,
     InterruptEvent,
     NodeEndEvent,
     NodeErrorEvent,
@@ -129,6 +130,7 @@ __all__ = [
     "RunStartEvent",
     "StopRequestedEvent",
     "CacheHitEvent",
+    "InnerCacheEvent",
     "StreamingChunkEvent",
     "RichProgressProcessor",
     # Context

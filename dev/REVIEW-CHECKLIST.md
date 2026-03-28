@@ -22,6 +22,12 @@ rg -F -- '<old_value>' docs/ README.md examples/ notebooks/ src/hypergraph/
 **Scope:** docstrings, doc pages, README, examples, notebooks, `__init__.py` exports,
 viz/CLI output strings, error messages.
 
+For public event changes, mirrors specifically include:
+- `src/hypergraph/events/__init__.py`
+- `src/hypergraph/__init__.py`
+- `docs/06-api-reference/events.md`
+- examples/notebooks that show `TypedEventProcessor` callbacks
+
 ### Parity Check
 
 **When:** You changed a file that has a parallel counterpart.
@@ -56,6 +62,9 @@ is handled at each site.
 # Find all consumers of an existing variant (e.g., before adding STOPPED, grep for COMPLETED)
 rg -F -- 'COMPLETED' src/ tests/
 # Then verify each site also handles the new STOPPED variant
+
+# For new TypedEventProcessor callbacks, grep for an existing handler and mirror the new one
+rg -F -- 'on_cache_hit' src/ tests/ docs/
 ```
 
 ### Validation-Runtime Alignment
@@ -78,6 +87,7 @@ Before pushing or creating a PR:
 - [ ] **Lint passes**: `uv run ruff check src/ tests/`
 - [ ] **Format correct**: `uv run ruff format --check src/ tests/`
 - [ ] **New public API** added to `__init__.py` `__all__`?
+- [ ] **New public event/callback** mirrored in package-root exports, API docs, and example code?
 - [ ] **Error messages** include "How to fix:" guidance?
 - [ ] **Immutability preserved** — `with_*` returns new instance, no in-place mutation?
 - [ ] **Internal modules** prefixed with `_`?
@@ -117,6 +127,7 @@ When reviewing code changes:
 - [ ] Validation tests assert specific error messages?
 - [ ] Async tests if async code was changed?
 - [ ] No new dependencies unless justified?
+- [ ] Event contract changes covered in `tests/events/test_types.py` and in any processor-specific consumers (progress/OTel/docs examples)?
 - [ ] Nested regressions covered when touching GraphNode/interrupt/checkpointing code? Include renamed outputs, pause/resume, and checkpointed re-execution where relevant.
 
 ### Sync/Async Parity

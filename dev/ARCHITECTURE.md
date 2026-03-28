@@ -88,6 +88,7 @@ Practical mental model:
 - **Gates**: decide which nodes inside the current region are activated
 
 **`_shared/` contents**:
+- `cache_observer.py` — Bridge nested hypercache telemetry into Hypergraph events during node execution
 - `caching.py` — Cache key computation and lookup
 - `checkpoint_helpers.py` — Build persisted `StepRecord`s from runtime state
 - `event_helpers.py` — Emit lifecycle events
@@ -133,6 +134,11 @@ Observability system, decoupled from execution logic.
 | `otel.py` | OpenTelemetry processor integration |
 
 **Rule**: Events are best-effort. Observability must never alter execution logic or raise exceptions that break a run.
+
+Public event contracts have mirror obligations:
+- update `hypergraph.events` and package-root exports when the event is part of the public API
+- update processor handler docs/examples when a new `TypedEventProcessor` callback is added
+- add constructor + typed-dispatch coverage in `tests/events/test_types.py`
 
 ### integrations/
 

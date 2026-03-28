@@ -144,6 +144,17 @@ tests/
 - Fixtures: prefer `conftest.py` for shared fixtures, local for one-file fixtures
 - Marks: `@pytest.mark.slow` for slow tests, `@pytest.mark.full_matrix` for exhaustive
 
+### Event Contract Changes: Test the Shared Surface
+
+When adding a new public event type or `TypedEventProcessor` callback, cover the shared contract as well as the feature-specific behavior:
+
+- add constructor + typed-dispatch coverage in `tests/events/test_types.py`
+- add a package-root export check if the event is public (`from hypergraph import ...`)
+- add at least one consumer test for any processor that uses span linkage or event fields (for example Rich progress or OTel)
+- update docs/examples in the same change so notebooks and snippets do not drift from the handler name
+
+This catches the common failure mode where implementation lands but exports, docs, or typed dispatch are left behind.
+
 ### Scheduling: Test Node Readiness Directly
 
 For subtle scheduling bugs, test `get_ready_nodes` directly against `GraphState`:

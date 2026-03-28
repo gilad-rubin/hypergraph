@@ -527,6 +527,7 @@ src/hypergraph/
 │   │   ├── input_normalization.py
 │   │   ├── checkpoint_helpers.py
 │   │   ├── caching.py
+│   │   ├── cache_observer.py
 │   │   ├── event_helpers.py
 │   │   └── run_log.py
 │   ├── sync/
