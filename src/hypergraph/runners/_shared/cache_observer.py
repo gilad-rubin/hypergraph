@@ -4,7 +4,7 @@ When hypercache is installed, this bridges CacheTelemetry events from
 hypercache.CacheService into hypergraph's InnerCacheEvent stream.
 
 Zero coupling: hypercache has no knowledge of hypergraph. This module
-performs a one-way import of hypercache._observer at runtime.
+performs a one-way import of hypercache's public observer API at runtime.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def node_cache_observer(
 ):
     """Install a hypercache observer scoped to the current node execution.
 
-    Observer exceptions are caught by hypercache (_emit wraps in try/except)
+    Observer exceptions are caught by hypercache
     and never propagate to node execution. If hypercache is not installed,
     this is a pure no-op.
 
@@ -38,7 +38,7 @@ def node_cache_observer(
             used as parent_span_id on InnerCacheEvent for OTEL correlation.
     """
     try:
-        from hypercache._observer import _reset_observer, _set_observer
+        from hypercache import observe_cache
     except ImportError:
         yield
         return
@@ -62,8 +62,5 @@ def node_cache_observer(
             )
         )
 
-    token = _set_observer(on_cache)
-    try:
+    with observe_cache(on_cache):
         yield
-    finally:
-        _reset_observer(token)

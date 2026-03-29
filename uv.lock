@@ -1339,6 +1339,18 @@ wheels = [
 ]
 
 [[package]]
+name = "hypercache"
+version = "0.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "diskcache" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5b/45/3f05f427c62006362ff691449c71abbc27740d6b22394322826a2303531d/hypercache-0.2.2.tar.gz", hash = "sha256:583e47f865585d4cc6be7b96c0530fa468bb6d755e15e8c337f911551bd85369", size = 10202, upload-time = "2026-03-29T17:38:56.035Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/e8/d9d81d62b487e367c90c1c2c3ba4ce9f69c6e4862c760c1d9a9df2ff5306/hypercache-0.2.2-py3-none-any.whl", hash = "sha256:c3044ae79a3bb7021d46f0ce2302a86476a241f78a0e57225283727922f2bc8a", size = 12910, upload-time = "2026-03-29T17:38:55.212Z" },
+]
+
+[[package]]
 name = "hyperframe"
 version = "6.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1359,6 +1371,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "daft" },
+    { name = "hypercache" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "logfire" },
@@ -1372,6 +1385,7 @@ batch = [
 ]
 cache = [
     { name = "diskcache" },
+    { name = "hypercache" },
 ]
 checkpoint = [
     { name = "aiosqlite" },
@@ -1388,6 +1402,7 @@ examples = [
     { name = "colbert-ai" },
     { name = "daft" },
     { name = "diskcache" },
+    { name = "hypercache" },
     { name = "ipykernel" },
     { name = "model2vec" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1429,6 +1444,7 @@ dev = [
     { name = "aiosqlite" },
     { name = "allpairspy" },
     { name = "diskcache" },
+    { name = "hypercache" },
     { name = "ipykernel" },
     { name = "nbdime" },
     { name = "nbstripout" },
@@ -1456,6 +1472,9 @@ requires-dist = [
     { name = "daft", marker = "extra == 'examples'", specifier = ">=0.7.5" },
     { name = "diskcache", marker = "extra == 'cache'", specifier = ">=5.6.3" },
     { name = "diskcache", marker = "extra == 'examples'", specifier = ">=5.6.3" },
+    { name = "hypercache", marker = "extra == 'all'", specifier = ">=0.2.2" },
+    { name = "hypercache", marker = "extra == 'cache'", specifier = ">=0.2.2" },
+    { name = "hypercache", marker = "extra == 'examples'", specifier = ">=0.2.2" },
     { name = "ipykernel", marker = "extra == 'all'", specifier = "<7" },
     { name = "ipykernel", marker = "extra == 'examples'", specifier = ">=6.31.0" },
     { name = "ipykernel", marker = "extra == 'notebook'", specifier = "<7" },
@@ -1495,6 +1514,7 @@ dev = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "allpairspy", specifier = ">=2.5.1" },
     { name = "diskcache", specifier = ">=5.6.3" },
+    { name = "hypercache", specifier = ">=0.2.2" },
     { name = "ipykernel", specifier = ">=6.31.0" },
     { name = "nbdime", specifier = ">=4.0.0" },
     { name = "nbstripout", specifier = ">=0.9.0" },

@@ -177,7 +177,10 @@ class CacheHitEvent(BaseEvent):
 
 ### InnerCacheEvent
 
-Emitted when a hypercache-decorated call happens inside a running node.
+Emitted when a hypercache-decorated call happens inside a running node. This
+bridge activates when `hypercache` is installed, including via
+`pip install 'hypergraph[cache]'`. The event is emitted when the installed
+Hypercache version exposes its public observer API.
 
 ```python
 @dataclass(frozen=True)

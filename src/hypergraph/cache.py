@@ -137,7 +137,10 @@ def _compute_hmac_bytes(hmac_key: bytes, cache_key: str, raw_bytes: bytes) -> st
 class DiskCache:
     """Persistent disk-based cache using diskcache.
 
-    Requires ``pip install hypergraph[cache]`` (installs diskcache).
+    Requires ``pip install hypergraph[cache]``.
+
+    The ``cache`` extra installs both ``diskcache`` for Hypergraph's node-result
+    cache backend and ``hypercache`` for optional nested cache observability.
 
     Values are serialized to bytes with pickle at write time. The raw bytes
     and an HMAC-SHA256 signature are stored together. On read, the HMAC is

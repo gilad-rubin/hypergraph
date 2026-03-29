@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import sys
+from contextlib import contextmanager
+from types import ModuleType, SimpleNamespace
+
 from hypergraph import Graph, InMemoryCache, SyncRunner, node
 from hypergraph.events import EventProcessor
-from hypergraph.events.types import CacheHitEvent, NodeEndEvent, NodeStartEvent
+from hypergraph.events.types import (
+    CacheHitEvent,
+    InnerCacheEvent,
+    NodeEndEvent,
+    NodeStartEvent,
+)
+from hypergraph.runners._shared.cache_observer import node_cache_observer
 
 
 class ListProcessor(EventProcessor):
@@ -142,3 +152,50 @@ class TestNodeEndEventCachedField:
         assert isinstance(node_events[0], NodeStartEvent)
         assert isinstance(node_events[1], CacheHitEvent)
         assert isinstance(node_events[2], NodeEndEvent)
+
+
+class TestInnerCacheObserverBridge:
+    """Tests for Hypergraph's bridge into Hypercache telemetry."""
+
+    def test_uses_public_hypercache_observer_api(self, monkeypatch):
+        fake_hypercache = ModuleType("hypercache")
+        observed_callbacks = []
+
+        @contextmanager
+        def observe_cache(callback):
+            observed_callbacks.append(callback)
+            callback(
+                SimpleNamespace(
+                    instance="Service",
+                    operation="embed",
+                    hit=True,
+                    stale=False,
+                    refreshing=False,
+                    wrote=False,
+                    mode="normal",
+                )
+            )
+            yield
+
+        fake_hypercache.observe_cache = observe_cache
+        monkeypatch.setitem(sys.modules, "hypercache", fake_hypercache)
+
+        emitted_events: list[InnerCacheEvent] = []
+        with node_cache_observer(
+            emitted_events.append,
+            run_id="run-1",
+            node_name="embed_node",
+            graph_name="demo_graph",
+            node_span_id="span-1",
+        ):
+            pass
+
+        assert len(observed_callbacks) == 1
+        assert len(emitted_events) == 1
+        event = emitted_events[0]
+        assert event.node_name == "embed_node"
+        assert event.graph_name == "demo_graph"
+        assert event.parent_span_id == "span-1"
+        assert event.instance == "Service"
+        assert event.operation == "embed"
+        assert event.hit is True
