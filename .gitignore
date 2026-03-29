@@ -50,6 +50,7 @@ logs/security/
 .env
 
 .codex/
+.agent-repl/
 
 # OpenClaw secrets (never commit)
 .openclaw/.env

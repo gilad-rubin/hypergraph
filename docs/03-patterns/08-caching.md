@@ -57,11 +57,16 @@ cache = InMemoryCache(max_size=1000)
 
 ### DiskCache
 
-Persistent across runs. Requires the optional `diskcache` dependency:
+Persistent across runs. Requires the optional cache dependencies:
 
 ```bash
 pip install 'hypergraph[cache]'
 ```
+
+This installs:
+
+- `diskcache` for Hypergraph's `DiskCache` backend
+- `hypercache` for optional `InnerCacheEvent` telemetry when your node body uses Hypercache internally
 
 ```python
 from hypergraph import DiskCache
@@ -146,6 +151,17 @@ The event sequence for a cache hit is:
 NodeStartEvent(node_name="embed")
 CacheHitEvent(node_name="embed", cache_key="abc123...")
 NodeEndEvent(node_name="embed", cached=True, duration_ms=0.0)
+```
+
+If your node body uses `hypercache` internally, Hypergraph also emits `InnerCacheEvent` entries for those nested cache decisions. Installing `hypergraph[cache]` gives you both Hypergraph's disk backend and the Hypercache observer bridge:
+
+```python
+from hypergraph import InnerCacheEvent, TypedEventProcessor
+
+class InnerCacheMonitor(TypedEventProcessor):
+    def on_inner_cache(self, event: InnerCacheEvent) -> None:
+        status = "hit" if event.hit else "miss"
+        print(f"{event.node_name}: {status} via {event.instance}.{event.operation}")
 ```
 
 ## Caching Route and IfElse Nodes

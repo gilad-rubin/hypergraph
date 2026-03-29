@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.runners._shared.cache_observer import node_cache_observer
 from hypergraph.runners._shared.helpers import (
     map_inputs_to_func_params,
     wrap_outputs,
@@ -74,18 +75,26 @@ class AsyncFunctionNodeExecutor:
 
             func_inputs[node._context_param] = build_node_context(node.name, ctx.emit_fn, run_id=ctx.run_id)
 
-        # Call the function
-        result = node.func(**func_inputs)
+        # Call the function (with cache observer installed for hypercache telemetry)
+        emit_fn = ctx.emit_fn if ctx.emit_fn is not None else lambda _: None
+        with node_cache_observer(
+            emit_fn,
+            run_id=ctx.run_id,
+            node_name=node.name,
+            graph_name=ctx.graph_name,
+            node_span_id=ctx.parent_span_id or "",
+        ):
+            result = node.func(**func_inputs)
 
-        # Await if coroutine
-        if inspect.iscoroutine(result):
-            result = await result
+            # Await if coroutine
+            if inspect.iscoroutine(result):
+                result = await result
 
-        # Handle async generators
-        if inspect.isasyncgen(result):
-            result = [item async for item in result]
-        # Handle sync generators
-        elif inspect.isgenerator(result):
-            result = list(result)
+            # Handle async generators
+            if inspect.isasyncgen(result):
+                result = [item async for item in result]
+            # Handle sync generators
+            elif inspect.isgenerator(result):
+                result = list(result)
 
         return wrap_outputs(node, result)

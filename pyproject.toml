@@ -48,6 +48,7 @@ notebook = [
 
 cache = [
     "diskcache>=5.6.3",
+    "hypercache>=0.2.2",
 ]
 
 checkpoint = [
@@ -78,6 +79,7 @@ telemetry = [
 all = [
     "pyarrow>=14.0.0",
     "daft>=0.7.5",
+    "hypercache>=0.2.2",
     "ipykernel<7",
     "ipywidgets>=8.1.7",
     "nbformat>=5.10.4",
@@ -95,6 +97,7 @@ examples = [
     "colbert-ai>=0.2.22",
     "daft>=0.7.5",
     "diskcache>=5.6.3",
+    "hypercache>=0.2.2",
     "ipykernel>=6.31.0",
     "model2vec>=0.7.0",
     "numpy>=1.21.0",
@@ -119,6 +122,7 @@ dev = [
     "aiosqlite>=0.20.0",
     "allpairspy>=2.5.1",
     "diskcache>=5.6.3",
+    "hypercache>=0.2.2",
     "ipykernel>=6.31.0",
     "nbdime>=4.0.0",
     "nbstripout>=0.9.0",

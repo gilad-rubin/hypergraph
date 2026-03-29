@@ -190,6 +190,7 @@ async def run_superstep_async(
             ctx = replace(
                 ctx_base,
                 parent_span_id=node_span_id,
+                graph_name=graph.name,
                 provided_values=provided_values,
                 on_inner_log=inner_logs.append,
             )

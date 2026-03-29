@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -467,6 +468,34 @@ class TestSyncFunctionNodeExecutor:
 
         with pytest.raises(ValueError, match="intentional error"):
             self.executor(failing, self.state, {"x": 1}, self.ctx)
+
+    def test_generator_consumed_inside_cache_observer_scope(self, monkeypatch):
+        """Sync generator bodies should run while the observer is active."""
+        from hypergraph.runners.sync.executors import function_node as function_node_module
+
+        active = {"value": False}
+        observed_during_iteration: list[bool] = []
+
+        @contextmanager
+        def fake_node_cache_observer(*_args, **_kwargs):
+            active["value"] = True
+            try:
+                yield
+            finally:
+                active["value"] = False
+
+        monkeypatch.setattr(function_node_module, "node_cache_observer", fake_node_cache_observer)
+
+        @node(output_name="items")
+        def observed_generator(n: int):
+            for i in range(n):
+                observed_during_iteration.append(active["value"])
+                yield i
+
+        outputs = self.executor(observed_generator, self.state, {"n": 3}, self.ctx)
+
+        assert outputs == {"items": [0, 1, 2]}
+        assert observed_during_iteration == [True, True, True]
 
 
 # === Tests for AsyncFunctionNodeExecutor ===

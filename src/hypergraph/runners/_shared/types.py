@@ -696,6 +696,7 @@ class ExecutionContext:
     workflow_id: str | None = None
     item_index: int | None = None
     run_id: str = ""
+    graph_name: str = ""
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False
     on_inner_log: Callable[[RunLog], None] | None = None

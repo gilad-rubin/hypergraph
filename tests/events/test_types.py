@@ -11,6 +11,7 @@ from hypergraph.events import (
     TypedEventProcessor,
 )
 from hypergraph.events.types import (
+    InnerCacheEvent,
     InterruptEvent,
     NodeEndEvent,
     NodeErrorEvent,
@@ -50,6 +51,7 @@ class TestEventImmutability:
             RouteDecisionEvent,
             InterruptEvent,
             StopRequestedEvent,
+            InnerCacheEvent,
         ):
             e = cls(run_id="r1")
             assert e.run_id == "r1"
@@ -90,6 +92,9 @@ class _Recorder(TypedEventProcessor):
     def on_stop_requested(self, event):
         self.calls.append(("on_stop_requested", event))
 
+    def on_inner_cache(self, event):
+        self.calls.append(("on_inner_cache", event))
+
 
 class TestTypedEventProcessor:
     def test_dispatches_to_correct_handler(self):
@@ -110,13 +115,20 @@ class TestTypedEventProcessor:
             RouteDecisionEvent(run_id="r1"),
             InterruptEvent(run_id="r1"),
             StopRequestedEvent(run_id="r1"),
+            InnerCacheEvent(run_id="r1"),
         ]
         for ev in events:
             rec.on_event(ev)
-        assert len(rec.calls) == 8
+        assert len(rec.calls) == 9
         method_names = [c[0] for c in rec.calls]
         assert "on_run_start" in method_names
         assert "on_stop_requested" in method_names
+        assert "on_inner_cache" in method_names
+
+    def test_inner_cache_event_exported_from_top_level_package(self):
+        from hypergraph import InnerCacheEvent as top_level_event
+
+        assert top_level_event is InnerCacheEvent
 
     def test_partial_override_ignores_unhandled(self):
         """A processor that only overrides on_run_start silently ignores other events."""

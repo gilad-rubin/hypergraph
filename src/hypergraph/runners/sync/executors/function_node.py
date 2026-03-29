@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from hypergraph.runners._shared.cache_observer import node_cache_observer
 from hypergraph.runners._shared.helpers import (
     map_inputs_to_func_params,
     wrap_outputs,
@@ -49,11 +50,20 @@ class SyncFunctionNodeExecutor:
 
             func_inputs[node._context_param] = build_node_context(node.name, ctx.emit_fn, run_id=ctx.run_id)
 
-        # Call the function
-        result = node.func(**func_inputs)
+        # Call the function (with cache observer installed for hypercache telemetry)
+        emit_fn = ctx.emit_fn if ctx.emit_fn is not None else lambda _: None
+        with node_cache_observer(
+            emit_fn,
+            run_id=ctx.run_id,
+            node_name=node.name,
+            graph_name=ctx.graph_name,
+            node_span_id=ctx.parent_span_id or "",
+        ):
+            result = node.func(**func_inputs)
 
-        # Handle generators - accumulate to list
-        if node.is_generator:
-            result = list(result)
+            # Sync generator bodies execute lazily during iteration, so consume
+            # them inside the observer scope to preserve inner-cache telemetry.
+            if node.is_generator:
+                result = list(result)
 
         return wrap_outputs(node, result)

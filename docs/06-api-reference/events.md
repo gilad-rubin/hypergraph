@@ -175,13 +175,34 @@ class CacheHitEvent(BaseEvent):
     superstep: int | None        # Zero-indexed superstep, if known
 ```
 
+### InnerCacheEvent
+
+Emitted when a hypercache-decorated call happens inside a running node. This
+bridge activates when `hypercache` is installed, including via
+`pip install 'hypergraph[cache]'`. The event is emitted when the installed
+Hypercache version exposes its public observer API.
+
+```python
+@dataclass(frozen=True)
+class InnerCacheEvent(BaseEvent):
+    node_name: str               # Name of the graph node that triggered the call
+    graph_name: str              # Graph containing the node
+    instance: str                # Qualified cache instance name
+    operation: str               # Cached method name
+    hit: bool                    # True if served from cache
+    stale: bool                  # True if the cached value was stale
+    refreshing: bool             # True if background refresh was triggered
+    wrote: bool                  # True if a new value was written
+    mode: str                    # Cache mode in effect
+```
+
 ### Event (Union Type)
 
 ```python
 Event = (
     RunStartEvent | RunEndEvent | NodeStartEvent | NodeEndEvent
     | NodeErrorEvent | RouteDecisionEvent | InterruptEvent | StopRequestedEvent
-    | CacheHitEvent
+    | CacheHitEvent | StreamingChunkEvent | InnerCacheEvent
 )
 ```
 
@@ -240,6 +261,8 @@ class TypedEventProcessor(EventProcessor):
     def on_interrupt(self, event: InterruptEvent) -> None: ...
     def on_stop_requested(self, event: StopRequestedEvent) -> None: ...
     def on_cache_hit(self, event: CacheHitEvent) -> None: ...
+    def on_streaming_chunk(self, event: StreamingChunkEvent) -> None: ...
+    def on_inner_cache(self, event: InnerCacheEvent) -> None: ...
 ```
 
 **Example — timing processor:**
