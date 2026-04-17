@@ -5,6 +5,7 @@ node/edge format expected by the visualization.
 
 Public API:
     from hypergraph.viz.renderer import render_graph
+    from hypergraph.viz.renderer import render_graph_single_state
 """
 
 from __future__ import annotations
@@ -22,7 +23,12 @@ from hypergraph.viz._common import (
 from hypergraph.viz._common import (
     get_expandable_nodes as get_expandable_nodes,
 )
-from hypergraph.viz.renderer.precompute import precompute_all_edges, precompute_all_nodes
+from hypergraph.viz.renderer.edges import compute_edges_for_state
+from hypergraph.viz.renderer.precompute import (
+    compute_nodes_for_state,
+    precompute_all_edges,
+    precompute_all_nodes,
+)
 from hypergraph.viz.renderer.scope import build_graph_output_visibility
 
 
@@ -125,6 +131,94 @@ def render_graph(
             "edgesByState": edges_by_state,
             "nodesByState": nodes_by_state,
             "expandableNodes": expandable_nodes,
+        },
+    }
+
+
+def render_graph_single_state(
+    flat_graph: nx.DiGraph,
+    *,
+    expansion_state: dict[str, bool] | None = None,
+    depth: int = 0,
+    theme: str = "auto",
+    show_types: bool = True,
+    separate_outputs: bool = False,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
+    debug_overlays: bool = False,
+    live_mode: bool = True,
+) -> dict[str, Any]:
+    """Render a single expansion state — no nodesByState / edgesByState.
+
+    Used by the live-widget path where expansion, separate_outputs and
+    show_inputs toggles round-trip to the Python kernel and the kernel
+    pushes back the new state. Payload size is proportional to the
+    current graph rather than 2^N × 4.
+
+    If expansion_state is None, derives it from depth (same as render_graph).
+    """
+    input_spec = flat_graph.graph.get("input_spec", {})
+    input_consumer_mode = "all"
+
+    if expansion_state is None:
+        expansion_state = build_expansion_state(flat_graph, depth)
+
+    graph_output_visibility = build_graph_output_visibility(flat_graph)
+
+    param_to_consumer_deepest = build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
+    output_to_producer_deepest = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+    node_to_parent = _build_node_to_parent_map(flat_graph)
+    expandable_nodes = get_expandable_nodes(flat_graph)
+
+    nodes = compute_nodes_for_state(
+        flat_graph,
+        expansion_state,
+        input_spec,
+        show_types,
+        theme,
+        separate_outputs=separate_outputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
+        graph_output_visibility=graph_output_visibility,
+        input_groups=None,
+        input_consumer_mode=input_consumer_mode,
+    )
+    edges = compute_edges_for_state(
+        flat_graph,
+        expansion_state,
+        input_spec,
+        show_types,
+        theme,
+        separate_outputs=separate_outputs,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
+        input_groups=None,
+        graph_output_visibility=graph_output_visibility,
+        input_consumer_mode=input_consumer_mode,
+    )
+
+    nodes = sorted(nodes, key=lambda n: n["id"])
+    edges = sorted(edges, key=lambda e: e["id"])
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "meta": {
+            "theme_preference": theme,
+            "initial_depth": depth,
+            "separate_outputs": separate_outputs,
+            "show_types": show_types,
+            "show_inputs": show_inputs,
+            "show_bounded_inputs": show_bounded_inputs,
+            "debug_overlays": debug_overlays,
+            "output_to_producer": output_to_producer_deepest,
+            "param_to_consumer": param_to_consumer_deepest,
+            "node_to_parent": node_to_parent,
+            "shared": flat_graph.graph.get("shared", []),
+            # No edgesByState / nodesByState — live mode round-trips to Python.
+            "expandableNodes": expandable_nodes,
+            "liveMode": live_mode,
+            "expansionState": {node_id: bool(expansion_state.get(node_id, False)) for node_id in expandable_nodes},
         },
     }
 
