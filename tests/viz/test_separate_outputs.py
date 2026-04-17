@@ -382,37 +382,36 @@ class TestDeeplyNestedSeparateOutputs:
 class TestSeparateOutputsEdgeKeys:
     """Test that edge state keys properly encode separateOutputs flag."""
 
-    def test_edge_state_keys_include_sep_flag(self):
-        """Edge state keys should include sep:0 and sep:1 variants."""
+    def test_edge_state_keys_encode_requested_sep_flag(self):
+        """Each render emits keys for the requested sep flag only; the other
+        variant requires a Python re-render."""
         preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
         workflow = Graph(nodes=[preprocess.as_node(), analyze])
 
-        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True)
-        edges_by_state = result["meta"].get("edgesByState", {})
+        sep1_result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True)
+        sep1_keys = list(sep1_result["meta"].get("edgesByState", {}).keys())
+        assert sep1_keys, "Expected at least one key in sep=True render"
+        assert all("sep:1" in k for k in sep1_keys), f"Unexpected non-sep:1 keys: {sep1_keys}"
 
-        keys = list(edges_by_state.keys())
+        sep0_result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=False)
+        sep0_keys = list(sep0_result["meta"].get("edgesByState", {}).keys())
+        assert sep0_keys, "Expected at least one key in sep=False render"
+        assert all("sep:1" not in k for k in sep0_keys), f"Unexpected sep:1 keys: {sep0_keys}"
 
-        # Should have both sep:0 and sep:1 variants for each expansion state
-        sep0_keys = [k for k in keys if "sep:0" in k]
-        sep1_keys = [k for k in keys if "sep:1" in k]
-
-        assert len(sep0_keys) > 0, f"No sep:0 keys found. Keys: {keys}"
-        assert len(sep1_keys) > 0, f"No sep:1 keys found. Keys: {keys}"
-        assert len(sep0_keys) == len(sep1_keys), f"Mismatch in sep:0 vs sep:1 keys.\nsep:0: {sep0_keys}\nsep:1: {sep1_keys}"
+        assert len(sep0_keys) == len(sep1_keys)
 
     def test_empty_graph_edge_key_format(self):
-        """For graphs with no containers, keys should be just 'sep:0' or 'sep:1'."""
-        # Simple graph with no containers
+        """For graphs with no containers, the requested variant's key is the
+        only one emitted (plus the ext:1 legacy alias when show_inputs=True)."""
         simple = Graph(nodes=[clean_text, normalize, analyze])
 
-        result = render_graph(simple.to_flat_graph(), depth=0, separate_outputs=True)
-        edges_by_state = result["meta"].get("edgesByState", {})
+        sep1 = render_graph(simple.to_flat_graph(), depth=0, separate_outputs=True)
+        sep0 = render_graph(simple.to_flat_graph(), depth=0, separate_outputs=False)
 
-        keys = list(edges_by_state.keys())
-
-        # Should have "sep:0" and "sep:1" as the only keys (no expansion part)
-        assert "sep:0" in keys, f"'sep:0' not found. Keys: {keys}"
-        assert "sep:1" in keys, f"'sep:1' not found. Keys: {keys}"
+        assert "sep:1" in sep1["meta"]["edgesByState"]
+        assert "sep:0" in sep0["meta"]["edgesByState"]
+        assert "sep:0" not in sep1["meta"]["edgesByState"]
+        assert "sep:1" not in sep0["meta"]["edgesByState"]
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")

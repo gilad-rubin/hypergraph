@@ -64,25 +64,30 @@ def render_graph(
     # For JS meta data: node-to-parent map for routing
     node_to_parent = _build_node_to_parent_map(flat_graph)
 
-    # Pre-compute edges for ALL valid expansion state combinations
+    # Pre-compute edges for every valid expansion state in the requested
+    # (separate_outputs, show_inputs) variant. Other variants require a
+    # Python re-render and are not emitted here.
     # CRITICAL: Pass input_groups=None so each state computes its own groups
     edges_by_state, expandable_nodes = precompute_all_edges(
         flat_graph,
         input_spec,
         show_types,
         theme,
+        separate_outputs=separate_outputs,
+        show_inputs=show_inputs,
         show_bounded_inputs=show_bounded_inputs,
         input_groups=None,
         graph_output_visibility=graph_output_visibility,
         input_consumer_mode=input_consumer_mode,
     )
 
-    # Pre-compute nodes for ALL valid expansion state combinations
     nodes_by_state, _ = precompute_all_nodes(
         flat_graph,
         input_spec,
         show_types,
         theme,
+        separate_outputs=separate_outputs,
+        show_inputs=show_inputs,
         show_bounded_inputs=show_bounded_inputs,
         graph_output_visibility=graph_output_visibility,
         input_groups=None,
