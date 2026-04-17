@@ -598,7 +598,7 @@ class TestRenderGraph:
     def test_interrupt_cycle_messages_feedback_edge_present_in_separate_outputs_mode(self):
         """Notebook regression: llm messages edge to ask_user should not disappear in sep mode."""
         graph = _build_interrupt_cycle_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
+        result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True, show_inputs=False)
         edges_by_state = result["meta"]["edgesByState"]
 
         state_collapsed_target = "ask_user:0,llm:1|sep:1|ext:0"

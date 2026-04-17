@@ -1318,18 +1318,52 @@
     var rsState = useState(LAYOUT_RANKSEP);
     var ranksep = rsState[0], setRanksep = rsState[1];
 
+    var liveModeRef = useRef(false);
+    useEffect(function() { liveModeRef.current = liveMode; }, [liveMode]);
+
+    var expansionStateRef = useRef(new Map());
+
+    var maybeRequestLiveState = useCallback(function(partial) {
+      if (!liveModeRef.current) return false;
+      var current = {
+        expansion: {},
+        separate_outputs: separateOutputs,
+        show_inputs: showInputs,
+      };
+      (expansionStateRef.current || new Map()).forEach(function(v, k) { current.expansion[k] = !!v; });
+      var next = {
+        expansion: partial && partial.expansion ? partial.expansion : current.expansion,
+        separate_outputs: partial && typeof partial.separate_outputs === 'boolean' ? partial.separate_outputs : current.separate_outputs,
+        show_inputs: partial && typeof partial.show_inputs === 'boolean' ? partial.show_inputs : current.show_inputs,
+      };
+      postRequestState(next);
+      return true;
+    }, [separateOutputs, showInputs, postRequestState]);
+
     var onToggleSep = useCallback(function(v) {
       root.__hypergraphVizReady = false;
-      setSeparateOutputs(function(p) { return typeof v === 'boolean' ? v : !p; });
-    }, []);
+      var resolved = function(p) { return typeof v === 'boolean' ? v : !p; };
+      if (liveModeRef.current) {
+        var next = resolved(separateOutputs);
+        maybeRequestLiveState({ separate_outputs: next });
+        return;
+      }
+      setSeparateOutputs(resolved);
+    }, [separateOutputs, maybeRequestLiveState]);
     var onToggleTyp = useCallback(function(v) {
       root.__hypergraphVizReady = false;
       setShowTypes(function(p) { return typeof v === 'boolean' ? v : !p; });
     }, []);
     var onToggleInputs = useCallback(function(v) {
       root.__hypergraphVizReady = false;
-      setShowInputs(function(p) { return typeof v === 'boolean' ? v : !p; });
-    }, []);
+      var resolved = function(p) { return typeof v === 'boolean' ? v : !p; };
+      if (liveModeRef.current) {
+        var next = resolved(showInputs);
+        maybeRequestLiveState({ show_inputs: next });
+        return;
+      }
+      setShowInputs(resolved);
+    }, [showInputs, maybeRequestLiveState]);
 
     // Render options hook for tests and dev gallery
     useEffect(function() {
@@ -1387,6 +1421,71 @@
     var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
     var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
     var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
+    var liveMode = !!(initialData.meta && initialData.meta.liveMode);
+
+    // Live-mode state: the last payload pushed by the Python kernel.
+    // In static mode this stays on initialData; in live mode it is
+    // replaced whenever a `hypergraph-apply-state` message arrives.
+    var liveState = useState({ nodes: initialData.nodes, edges: initialData.edges });
+    var liveData = liveState[0], setLiveData = liveState[1];
+
+    // Hint banner shown if a request to the kernel does not come back
+    // within the timeout (e.g. notebook opened without a running kernel).
+    var hintState = useState(false);
+    var needsKernelHint = hintState[0], setNeedsKernelHint = hintState[1];
+
+    var requestCounter = useRef(0);
+    var pendingRequests = useRef(new Map());
+
+    var postRequestState = useCallback(function(displayState) {
+      if (!liveMode) return;
+      var id = ++requestCounter.current;
+      try {
+        root.parent.postMessage({
+          type: 'hypergraph-request-state',
+          requestId: id,
+          displayState: displayState,
+        }, '*');
+      } catch (e) {
+        setNeedsKernelHint(true);
+        return;
+      }
+      var timer = setTimeout(function() {
+        if (pendingRequests.current.has(id)) {
+          pendingRequests.current.delete(id);
+          setNeedsKernelHint(true);
+        }
+      }, 2500);
+      pendingRequests.current.set(id, timer);
+    }, [liveMode]);
+
+    useEffect(function() {
+      if (!liveMode) return;
+      var handler = function(ev) {
+        if (!ev.data || ev.data.type !== 'hypergraph-apply-state') return;
+        var rid = ev.data.requestId;
+        if (rid && pendingRequests.current.has(rid)) {
+          clearTimeout(pendingRequests.current.get(rid));
+          pendingRequests.current.delete(rid);
+        }
+        setNeedsKernelHint(false);
+        var d = ev.data.graphData;
+        if (!d || !d.nodes || !d.edges) return;
+        setLiveData({ nodes: d.nodes, edges: d.edges });
+        if (d.meta) {
+          if (d.meta.expansionState) {
+            var m = new Map();
+            Object.keys(d.meta.expansionState).forEach(function(k) { m.set(k, !!d.meta.expansionState[k]); });
+            setExpansionState(m);
+            root.__hypergraphVizExpansionState = m;
+          }
+          if (typeof d.meta.separate_outputs === 'boolean') setSeparateOutputs(d.meta.separate_outputs);
+          if (typeof d.meta.show_inputs === 'boolean') setShowInputs(d.meta.show_inputs);
+        }
+      };
+      root.addEventListener('message', handler);
+      return function() { root.removeEventListener('message', handler); };
+    }, [liveMode]);
 
     var expansionStateToKey = function(es, sep, showInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');
@@ -1429,7 +1528,7 @@
     // Expansion toggle
     var onToggleExpand = useCallback(function(nodeId) {
       root.__hypergraphVizReady = false;
-      setExpansionState(function(prev) {
+      var computeNext = function(prev) {
         var m = new Map(prev);
         var will = !(m.get(nodeId) || false);
         m.set(nodeId, will);
@@ -1440,21 +1539,41 @@
           var getDesc = function(id) { var ch = childMap.get(id) || []; var r = ch.slice(); ch.forEach(function(c) { r = r.concat(getDesc(c)); }); return r; };
           getDesc(nodeId).forEach(function(d) { if (m.has(d)) m.set(d, false); });
         }
+        return m;
+      };
+      if (liveModeRef.current) {
+        var nextMap = computeNext(expansionStateRef.current || new Map());
+        var payload = {};
+        nextMap.forEach(function(v, k) { payload[k] = !!v; });
+        maybeRequestLiveState({ expansion: payload });
+        return;
+      }
+      setExpansionState(function(prev) {
+        var m = computeNext(prev);
         root.__hypergraphVizExpansionState = m;
         return m;
       });
-    }, []);
+    }, [maybeRequestLiveState]);
 
-    // Select precomputed nodes
+    useEffect(function() {
+      expansionStateRef.current = expansionState;
+    }, [expansionState]);
+
+    // Select precomputed nodes (or the live-mode payload pushed from Python)
     var selectedNodes = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
-      var base = Object.prototype.hasOwnProperty.call(nodesByState, key)
-        ? nodesByState[key]
-        : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
-          ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
-          : initialData.nodes);
+      var base;
+      if (liveMode) {
+        base = liveData.nodes || initialData.nodes;
+      } else {
+        var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
+        base = Object.prototype.hasOwnProperty.call(nodesByState, key)
+          ? nodesByState[key]
+          : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
+            ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
+            : initialData.nodes);
+      }
       return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes]);
+    }, [liveMode, liveData, expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1500,13 +1619,14 @@
       else setManualTheme(null);
     }, [manualTheme, activeTheme]);
 
-    // Select edges
+    // Select edges (or the live-mode payload pushed from Python)
     var selectedEdges = useMemo(function() {
+      if (liveMode) return liveData.edges || initialData.edges || [];
       var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
       if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
       var fallback = expansionStateToKey(expansionState, separateOutputs, true);
       return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, showInputs, edgesByState, initialData.edges]);
+    }, [liveMode, liveData, expansionState, separateOutputs, showInputs, edgesByState, initialData.edges]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1786,6 +1906,14 @@
             <div className="px-4 py-2 rounded-lg border text-xs font-mono bg-slate-900/80 text-amber-200 border-amber-500/40 shadow-lg pointer-events-auto">
               ${layoutError ? 'Layout error: ' + layoutError : 'No graph data'}
               <button className="ml-4 underline text-amber-400 hover:text-amber-100" onClick=${function() { root.location.reload(); }}>Reload</button>
+            </div>
+          </div>
+        ` : null}
+        ${needsKernelHint ? html`
+          <div className="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none">
+            <div className="px-3 py-1.5 rounded-md border text-[11px] font-mono bg-slate-900/85 text-sky-200 border-sky-500/40 shadow-lg pointer-events-auto">
+              Start a Python kernel to interact with this visualization
+              <button className="ml-3 underline text-sky-300 hover:text-sky-100" onClick=${function() { setNeedsKernelHint(false); }}>Dismiss</button>
             </div>
           </div>
         ` : null}

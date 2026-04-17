@@ -457,6 +457,7 @@ class VizDebugger:
             theme=theme,
             show_types=show_types,
             filepath=filepath,
+            live=False,
             _debug_overlays=True,
         )
 

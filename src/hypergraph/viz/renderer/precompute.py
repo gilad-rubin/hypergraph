@@ -127,61 +127,43 @@ def precompute_all_edges(
     input_spec: dict[str, Any],
     show_types: bool,
     theme: str,
+    separate_outputs: bool,
+    show_inputs: bool,
     show_bounded_inputs: bool = False,
     input_groups: list[dict[str, Any]] | None = None,
     graph_output_visibility: dict[str, set[str]] | None = None,
     input_consumer_mode: str = "all",
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
-    """Pre-compute edges for all valid expansion state combinations."""
+    """Pre-compute edges for every valid expansion state in the requested
+    (separate_outputs, show_inputs) variant.
+
+    Only the requested flag variant is emitted. Other variants require a
+    Python re-render, which shrinks notebook cell output by ~4x versus
+    emitting all four (sep:0/1 x ext:0/1) combinations.
+    """
     expandable_nodes = get_expandable_nodes(flat_graph)
-
-    if not expandable_nodes:
-        edges_by_state: dict[str, list[dict[str, Any]]] = {}
-        for separate_outputs in (False, True):
-            for show_inputs in (False, True):
-                edges = compute_edges_for_state(
-                    flat_graph,
-                    {},
-                    input_spec,
-                    show_types,
-                    theme,
-                    separate_outputs=separate_outputs,
-                    show_inputs=show_inputs,
-                    show_bounded_inputs=show_bounded_inputs,
-                    input_groups=input_groups,
-                    graph_output_visibility=graph_output_visibility,
-                    input_consumer_mode=input_consumer_mode,
-                )
-                key = _compose_state_key("", separate_outputs, show_inputs)
-                edges_by_state[key] = edges
-                if show_inputs:
-                    edges_by_state[_compose_legacy_state_key("", separate_outputs)] = edges
-        return edges_by_state, []
-
     edges_by_state: dict[str, list[dict[str, Any]]] = {}
-    valid_states = enumerate_valid_expansion_states(flat_graph, expandable_nodes)
+    valid_states = enumerate_valid_expansion_states(flat_graph, expandable_nodes) if expandable_nodes else [{}]
 
     for state in valid_states:
-        exp_key = expansion_state_to_key(state)
-        for separate_outputs in (False, True):
-            for show_inputs in (False, True):
-                edges = compute_edges_for_state(
-                    flat_graph,
-                    state,
-                    input_spec,
-                    show_types,
-                    theme,
-                    separate_outputs=separate_outputs,
-                    show_inputs=show_inputs,
-                    show_bounded_inputs=show_bounded_inputs,
-                    input_groups=input_groups,
-                    graph_output_visibility=graph_output_visibility,
-                    input_consumer_mode=input_consumer_mode,
-                )
-                key = _compose_state_key(exp_key, separate_outputs, show_inputs)
-                edges_by_state[key] = edges
-                if show_inputs:
-                    edges_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = edges
+        exp_key = expansion_state_to_key(state) if expandable_nodes else ""
+        edges = compute_edges_for_state(
+            flat_graph,
+            state,
+            input_spec,
+            show_types,
+            theme,
+            separate_outputs=separate_outputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
+            input_groups=input_groups,
+            graph_output_visibility=graph_output_visibility,
+            input_consumer_mode=input_consumer_mode,
+        )
+        key = _compose_state_key(exp_key, separate_outputs, show_inputs)
+        edges_by_state[key] = edges
+        if show_inputs:
+            edges_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = edges
 
     return edges_by_state, expandable_nodes
 
@@ -191,61 +173,40 @@ def precompute_all_nodes(
     input_spec: dict[str, Any],
     show_types: bool,
     theme: str,
+    separate_outputs: bool,
+    show_inputs: bool,
     show_bounded_inputs: bool = False,
     graph_output_visibility: dict[str, set[str]] | None = None,
     input_groups: list[dict[str, Any]] | None = None,
     input_consumer_mode: str = "all",
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
-    """Pre-compute nodes for all valid expansion state combinations."""
+    """Pre-compute nodes for every valid expansion state in the requested
+    (separate_outputs, show_inputs) variant. See precompute_all_edges for
+    the rationale behind emitting a single variant.
+    """
     expandable_nodes = get_expandable_nodes(flat_graph)
-
-    if not expandable_nodes:
-        nodes_by_state: dict[str, list[dict[str, Any]]] = {}
-        for separate_outputs in (False, True):
-            for show_inputs in (False, True):
-                nodes = compute_nodes_for_state(
-                    flat_graph,
-                    {},
-                    input_spec,
-                    show_types,
-                    theme,
-                    separate_outputs=separate_outputs,
-                    show_inputs=show_inputs,
-                    show_bounded_inputs=show_bounded_inputs,
-                    graph_output_visibility=graph_output_visibility,
-                    input_groups=input_groups,
-                    input_consumer_mode=input_consumer_mode,
-                )
-                key = _compose_state_key("", separate_outputs, show_inputs)
-                nodes_by_state[key] = nodes
-                if show_inputs:
-                    nodes_by_state[_compose_legacy_state_key("", separate_outputs)] = nodes
-        return nodes_by_state, []
-
     nodes_by_state: dict[str, list[dict[str, Any]]] = {}
-    valid_states = enumerate_valid_expansion_states(flat_graph, expandable_nodes)
+    valid_states = enumerate_valid_expansion_states(flat_graph, expandable_nodes) if expandable_nodes else [{}]
 
     for state in valid_states:
-        exp_key = expansion_state_to_key(state)
-        for separate_outputs in (False, True):
-            for show_inputs in (False, True):
-                nodes = compute_nodes_for_state(
-                    flat_graph,
-                    state,
-                    input_spec,
-                    show_types,
-                    theme,
-                    separate_outputs=separate_outputs,
-                    show_inputs=show_inputs,
-                    show_bounded_inputs=show_bounded_inputs,
-                    graph_output_visibility=graph_output_visibility,
-                    input_groups=input_groups,
-                    input_consumer_mode=input_consumer_mode,
-                )
-                key = _compose_state_key(exp_key, separate_outputs, show_inputs)
-                nodes_by_state[key] = nodes
-                if show_inputs:
-                    nodes_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = nodes
+        exp_key = expansion_state_to_key(state) if expandable_nodes else ""
+        nodes = compute_nodes_for_state(
+            flat_graph,
+            state,
+            input_spec,
+            show_types,
+            theme,
+            separate_outputs=separate_outputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
+            graph_output_visibility=graph_output_visibility,
+            input_groups=input_groups,
+            input_consumer_mode=input_consumer_mode,
+        )
+        key = _compose_state_key(exp_key, separate_outputs, show_inputs)
+        nodes_by_state[key] = nodes
+        if show_inputs:
+            nodes_by_state[_compose_legacy_state_key(exp_key, separate_outputs)] = nodes
 
     return nodes_by_state, expandable_nodes
 

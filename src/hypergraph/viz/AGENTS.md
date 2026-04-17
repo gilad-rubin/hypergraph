@@ -6,10 +6,24 @@ Cross-widget UX defaults live in: `dev/WIDGET-PREFERENCES.md`.
 
 ## System Overview
 
-**Python pipeline**
+**Python pipeline (live widget, default)**
 1. `Graph` → `to_flat_graph()`
-2. `renderer/` → React Flow nodes/edges + `meta` (includes `nodesByState`, `edgesByState`)
+2. `renderer/render_graph_single_state` → React Flow nodes/edges for the
+   current expansion state only (no `nodesByState` / `edgesByState`)
+3. `live_widget.HypergraphWidget` (anywidget) holds a `graph_data` trait
+   synced to the frontend; expansion and sep/ext toggles round-trip to
+   Python via `display_state_request` → `display_state_response`
+4. `html/generator.py` → initial HTML + JS assets (unchanged)
+
+**Python pipeline (standalone HTML, `filepath=`)**
+1. `Graph` → `to_flat_graph()`
+2. `renderer/render_graph` → React Flow nodes/edges + `meta` (includes
+   `nodesByState`, `edgesByState` for the requested sep/ext variant)
 3. `html/generator.py` → HTML + JS assets
+
+The live path keeps the saved `.ipynb` small — the cell only carries
+the current state rather than a 2^N precomputed state table — at the
+cost of requiring a Python kernel for interaction.
 
 **JavaScript pipeline** (single file: `assets/viz.js`)
 1. Section 7 (App) builds expansion state + selects `nodesByState`/`edgesByState`

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import html as html_module
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
 from hypergraph.viz.html import estimate_layout, generate_widget_html
+from hypergraph.viz.live_widget import HypergraphWidget
 from hypergraph.viz.renderer import render_graph
 
 
@@ -74,8 +75,9 @@ def visualize(
     show_bounded_inputs: bool = False,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
+    live: bool = True,
     _debug_overlays: bool = False,
-) -> ScrollablePipelineWidget | None:
+) -> Union["HypergraphWidget", ScrollablePipelineWidget, None]:
     """Create a visualization widget for a graph.
 
     Args:
@@ -89,10 +91,19 @@ def visualize(
             show_inputs=True (default: False)
         show_external_inputs: Deprecated alias for show_inputs
         filepath: Path to save HTML file (default: None, display in notebook)
+        live: When True (default) in a notebook, return a kernel-backed
+            HypergraphWidget whose expansion and toggle state is
+            recomputed in Python on demand. The saved notebook only
+            carries the current state, not a 2^N precomputed state
+            table. Pass ``live=False`` to get the legacy static iframe
+            widget (interactivity without a kernel but much larger
+            notebook cell output). Ignored when ``filepath`` is set.
         _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
 
     Returns:
-        ScrollablePipelineWidget if output is None, otherwise None (saves to file)
+        HypergraphWidget (live) or ScrollablePipelineWidget (static)
+        when displaying in a notebook. None when ``filepath`` is set
+        (standalone HTML written to disk).
 
     Example:
         >>> from hypergraph import Graph, node
@@ -100,7 +111,7 @@ def visualize(
         ... def double(x: int) -> int:
         ...     return x * 2
         >>> graph = Graph(nodes=[double])
-        >>> widget = visualize(graph)  # Display in notebook
+        >>> widget = visualize(graph)  # Display in notebook (live widget)
         >>> visualize(graph, filepath="graph.html")  # Save to HTML file
     """
     if show_external_inputs is not None:
@@ -127,8 +138,42 @@ def visualize(
     final_width = max(400, est_width)
     final_height = max(200, est_height)
 
-    # Create flattened graph and render to React Flow format
     flat_graph = graph.to_flat_graph()
+
+    # Standalone HTML path keeps the legacy precomputed-state renderer so
+    # clicking expand/collapse works without a Python kernel.
+    if filepath is not None:
+        graph_data = render_graph(
+            flat_graph,
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
+            debug_overlays=_debug_overlays,
+        )
+        html_content = generate_widget_html(graph_data)
+        if not filepath.endswith(".html"):
+            filepath = filepath + ".html"
+        with open(filepath, "w") as f:
+            f.write(html_content)
+        return None
+
+    if live:
+        return HypergraphWidget(
+            flat_graph,
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
+            debug_overlays=_debug_overlays,
+            width=final_width,
+            height=final_height,
+        )
+
     graph_data = render_graph(
         flat_graph,
         depth=depth,
@@ -139,17 +184,5 @@ def visualize(
         show_bounded_inputs=show_bounded_inputs,
         debug_overlays=_debug_overlays,
     )
-
-    # Generate HTML
     html_content = generate_widget_html(graph_data)
-
-    # If output path specified, save to HTML file
-    if filepath is not None:
-        # Ensure .html extension
-        if not filepath.endswith(".html"):
-            filepath = filepath + ".html"
-        with open(filepath, "w") as f:
-            f.write(html_content)
-        return None
-
     return ScrollablePipelineWidget(html_content, final_width, final_height)
