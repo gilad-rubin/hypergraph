@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
+    from hypergraph.viz.live_widget import HypergraphWidget
 
 from hypergraph.viz.html import estimate_layout, generate_widget_html
-from hypergraph.viz.live_widget import HypergraphWidget
 from hypergraph.viz.renderer import render_graph
 
 
@@ -156,11 +156,16 @@ def visualize(
         html_content = generate_widget_html(graph_data)
         if not filepath.endswith(".html"):
             filepath = filepath + ".html"
-        with open(filepath, "w") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(html_content)
         return None
 
     if live:
+        # Lazy import: anywidget is only required when the live widget
+        # is actually instantiated, not for `filepath=` or `live=False`
+        # callers that don't need the `viz` extra installed.
+        from hypergraph.viz.live_widget import HypergraphWidget
+
         return HypergraphWidget(
             flat_graph,
             depth=depth,

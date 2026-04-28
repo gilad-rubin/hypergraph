@@ -208,15 +208,19 @@ async def main() -> None:
     await capture(mid_html, out / "mid.png", out / "video_mid")
     await capture(after_html, out / "after.png", out / "video_after")
 
-    # Rename the auto-generated .webm files to stable names.
+    # Rename the auto-generated .webm files to stable names, but tolerate
+    # the case where capture() bailed out early (no Playwright installed).
     for subdir, new_name in (
         (out / "video_before", "before.webm"),
         (out / "video_mid", "mid.webm"),
         (out / "video_after", "after.webm"),
     ):
+        if not subdir.exists():
+            continue
         for webm in subdir.glob("*.webm"):
             webm.rename(out / new_name)
-        subdir.rmdir()
+        with contextlib.suppress(OSError):
+            subdir.rmdir()
 
     print(f"\nArtifacts written to {out.resolve()}/")
     for f in sorted(out.iterdir()):
