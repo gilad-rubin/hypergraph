@@ -10,7 +10,6 @@ window can listen for the request and post back
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +18,6 @@ from hypergraph import Graph, node
 from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph_single_state
 from tests.viz.conftest import HAS_PLAYWRIGHT
-
 
 pytestmark = pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
 

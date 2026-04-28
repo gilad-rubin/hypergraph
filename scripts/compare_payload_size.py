@@ -11,6 +11,7 @@ Output:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -157,10 +158,8 @@ async def capture(html: str, png_path: Path, video_dir: Path) -> None:
         for node_id in ("sub_0", "sub_1", "sub_2"):
             locator = page.locator(f'[data-id="{node_id}"]').first
             if await locator.count() > 0:
-                try:
+                with contextlib.suppress(Exception):
                     await locator.click(timeout=2000)
-                except Exception:
-                    pass
                 await page.wait_for_timeout(500)
 
         await page.wait_for_timeout(500)
@@ -200,11 +199,7 @@ async def main() -> None:
     print(f"{'':<28} {'keys':>12} {'bytes':>16}")
     print("-" * 72)
     for s in summaries:
-        print(
-            f"{s['label']:<28} "
-            f"nodes={s['nodesByState_keys']:>4} edges={s['edgesByState_keys']:>4}  "
-            f"{s['total_payload_bytes']:>12,} bytes"
-        )
+        print(f"{s['label']:<28} nodes={s['nodesByState_keys']:>4} edges={s['edgesByState_keys']:>4}  {s['total_payload_bytes']:>12,} bytes")
     print("-" * 72)
     print(f"Shrinkage (before -> after): {ratio:.2f}x ({before_total - after_total:,} bytes saved per cell output)")
     print("=" * 72)

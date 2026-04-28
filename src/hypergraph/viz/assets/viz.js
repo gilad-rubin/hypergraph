@@ -1318,10 +1318,98 @@
     var rsState = useState(LAYOUT_RANKSEP);
     var ranksep = rsState[0], setRanksep = rsState[1];
 
-    var liveModeRef = useRef(false);
-    useEffect(function() { liveModeRef.current = liveMode; }, [liveMode]);
+    // Theme detection state (was below; hoisted so the live-mode plumbing
+    // can reference setExpansionState without `var` hoisting hazards).
+    var detState = useState(function() { return detectHostTheme(); });
+    var detectedTheme = detState[0], setDetectedTheme = detState[1];
+    var manState = useState(null);
+    var manualTheme = manState[0], setManualTheme = manState[1];
+    var expState = useState(function() {
+      var map = new Map();
+      initialData.nodes.forEach(function(n) {
+        if (n.data && n.data.nodeType === 'PIPELINE') map.set(n.id, n.data.isExpanded || false);
+      });
+      return map;
+    });
+    var expansionState = expState[0], setExpansionState = expState[1];
 
-    var expansionStateRef = useRef(new Map());
+    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
+    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
+    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
+    var liveMode = !!(initialData.meta && initialData.meta.liveMode);
+
+    // Live-mode state: the last payload pushed by the Python kernel.
+    // In static mode this stays on initialData; in live mode it is
+    // replaced whenever a `hypergraph-apply-state` message arrives.
+    var liveState = useState({ nodes: initialData.nodes, edges: initialData.edges });
+    var liveData = liveState[0], setLiveData = liveState[1];
+
+    // Hint banner shown if a request to the kernel does not come back
+    // within the timeout (e.g. notebook opened without a running kernel).
+    var hintState = useState(false);
+    var needsKernelHint = hintState[0], setNeedsKernelHint = hintState[1];
+
+    var requestCounter = useRef(0);
+    var pendingRequests = useRef(new Map());
+
+    var postRequestState = useCallback(function(displayState) {
+      if (!liveMode) return;
+      var id = ++requestCounter.current;
+      try {
+        root.parent.postMessage({
+          type: 'hypergraph-request-state',
+          requestId: id,
+          displayState: displayState,
+        }, '*');
+      } catch (e) {
+        setNeedsKernelHint(true);
+        return;
+      }
+      var timer = setTimeout(function() {
+        if (pendingRequests.current.has(id)) {
+          pendingRequests.current.delete(id);
+          setNeedsKernelHint(true);
+        }
+      }, 2500);
+      pendingRequests.current.set(id, timer);
+    }, [liveMode]);
+
+    useEffect(function() {
+      if (!liveMode) return;
+      var handler = function(ev) {
+        if (!ev.data || ev.data.type !== 'hypergraph-apply-state') return;
+        var rid = ev.data.requestId;
+        if (rid && pendingRequests.current.has(rid)) {
+          clearTimeout(pendingRequests.current.get(rid));
+          pendingRequests.current.delete(rid);
+        }
+        setNeedsKernelHint(false);
+        var d = ev.data.graphData;
+        if (!d || !d.nodes || !d.edges) return;
+        setLiveData({ nodes: d.nodes, edges: d.edges });
+        if (d.meta) {
+          if (d.meta.expansionState) {
+            var m = new Map();
+            Object.keys(d.meta.expansionState).forEach(function(k) { m.set(k, !!d.meta.expansionState[k]); });
+            setExpansionState(m);
+            root.__hypergraphVizExpansionState = m;
+          }
+          if (typeof d.meta.separate_outputs === 'boolean') setSeparateOutputs(d.meta.separate_outputs);
+          if (typeof d.meta.show_inputs === 'boolean') setShowInputs(d.meta.show_inputs);
+        }
+      };
+      root.addEventListener('message', handler);
+      return function() { root.removeEventListener('message', handler); };
+    }, [liveMode]);
+
+    // expansionStateRef is the source of truth for the *next* live-mode
+    // request. Updated optimistically inside `onToggleExpand` so rapid
+    // successive clicks compose correctly even before the kernel
+    // responds (otherwise click-A then click-B would build B's payload
+    // from the pre-A state and silently drop A).
+    var expansionStateRef = useRef(expansionState);
+    var liveModeRef = useRef(liveMode);
+    useEffect(function() { liveModeRef.current = liveMode; }, [liveMode]);
 
     var maybeRequestLiveState = useCallback(function(partial) {
       if (!liveModeRef.current) return false;
@@ -1405,88 +1493,6 @@
       };
     }, [onToggleSep, onToggleTyp, onToggleInputs, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
 
-    var detState = useState(function() { return detectHostTheme(); });
-    var detectedTheme = detState[0], setDetectedTheme = detState[1];
-    var manState = useState(null);
-    var manualTheme = manState[0], setManualTheme = manState[1];
-    var expState = useState(function() {
-      var map = new Map();
-      initialData.nodes.forEach(function(n) {
-        if (n.data && n.data.nodeType === 'PIPELINE') map.set(n.id, n.data.isExpanded || false);
-      });
-      return map;
-    });
-    var expansionState = expState[0], setExpansionState = expState[1];
-
-    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
-    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
-    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
-    var liveMode = !!(initialData.meta && initialData.meta.liveMode);
-
-    // Live-mode state: the last payload pushed by the Python kernel.
-    // In static mode this stays on initialData; in live mode it is
-    // replaced whenever a `hypergraph-apply-state` message arrives.
-    var liveState = useState({ nodes: initialData.nodes, edges: initialData.edges });
-    var liveData = liveState[0], setLiveData = liveState[1];
-
-    // Hint banner shown if a request to the kernel does not come back
-    // within the timeout (e.g. notebook opened without a running kernel).
-    var hintState = useState(false);
-    var needsKernelHint = hintState[0], setNeedsKernelHint = hintState[1];
-
-    var requestCounter = useRef(0);
-    var pendingRequests = useRef(new Map());
-
-    var postRequestState = useCallback(function(displayState) {
-      if (!liveMode) return;
-      var id = ++requestCounter.current;
-      try {
-        root.parent.postMessage({
-          type: 'hypergraph-request-state',
-          requestId: id,
-          displayState: displayState,
-        }, '*');
-      } catch (e) {
-        setNeedsKernelHint(true);
-        return;
-      }
-      var timer = setTimeout(function() {
-        if (pendingRequests.current.has(id)) {
-          pendingRequests.current.delete(id);
-          setNeedsKernelHint(true);
-        }
-      }, 2500);
-      pendingRequests.current.set(id, timer);
-    }, [liveMode]);
-
-    useEffect(function() {
-      if (!liveMode) return;
-      var handler = function(ev) {
-        if (!ev.data || ev.data.type !== 'hypergraph-apply-state') return;
-        var rid = ev.data.requestId;
-        if (rid && pendingRequests.current.has(rid)) {
-          clearTimeout(pendingRequests.current.get(rid));
-          pendingRequests.current.delete(rid);
-        }
-        setNeedsKernelHint(false);
-        var d = ev.data.graphData;
-        if (!d || !d.nodes || !d.edges) return;
-        setLiveData({ nodes: d.nodes, edges: d.edges });
-        if (d.meta) {
-          if (d.meta.expansionState) {
-            var m = new Map();
-            Object.keys(d.meta.expansionState).forEach(function(k) { m.set(k, !!d.meta.expansionState[k]); });
-            setExpansionState(m);
-            root.__hypergraphVizExpansionState = m;
-          }
-          if (typeof d.meta.separate_outputs === 'boolean') setSeparateOutputs(d.meta.separate_outputs);
-          if (typeof d.meta.show_inputs === 'boolean') setShowInputs(d.meta.show_inputs);
-        }
-      };
-      root.addEventListener('message', handler);
-      return function() { root.removeEventListener('message', handler); };
-    }, [liveMode]);
-
     var expansionStateToKey = function(es, sep, showInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');
       var extKey = 'ext:' + (showInputs ? '1' : '0');
@@ -1543,6 +1549,10 @@
       };
       if (liveModeRef.current) {
         var nextMap = computeNext(expansionStateRef.current || new Map());
+        // Optimistic ref update so a follow-up click (before the kernel
+        // responds) builds its payload from this new state, not the
+        // stale pre-click state.
+        expansionStateRef.current = nextMap;
         var payload = {};
         nextMap.forEach(function(v, k) { payload[k] = !!v; });
         maybeRequestLiveState({ expansion: payload });
@@ -1555,6 +1565,8 @@
       });
     }, [maybeRequestLiveState]);
 
+    // Keep the ref in sync with React state for the static path and to
+    // pick up the kernel's authoritative response in the live path.
     useEffect(function() {
       expansionStateRef.current = expansionState;
     }, [expansionState]);

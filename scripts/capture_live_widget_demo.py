@@ -17,7 +17,6 @@ Writes:
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 from PIL import Image
@@ -242,11 +241,7 @@ async def drive_kernel_hint(page, frames_dir: Path) -> list[Path]:
             frames.append(p)
             await sleep(interval_ms)
 
-    # Target the same expandable container as the live scene.
-    collapsed = render_graph_single_state(
-        Graph(nodes=[retrieve, rerank], name="retrieve_and_rerank").as_node().graph.to_flat_graph(), depth=0
-    )
-    # Simpler: just read the expandable node id off viz.js state.
+    # Read the expandable container id off viz.js state.
     expandable = await page.evaluate("window.__hypergraphVizDebug.nodes.filter(n => n.nodeType === 'PIPELINE').map(n => n.id)")
     inner_container_id = expandable[0]
     container = page.locator(f'[data-id="{inner_container_id}"]').first
@@ -289,8 +284,7 @@ async def main() -> None:
         await page.goto(f"file://{html_path}")
         frames = await drive_demo(page, flat, tmp_root / "frames_live")
         frames_to_gif(frames, out_dir / "live_widget_demo.gif", duration_ms=90, scale=0.75)
-        print(f"Wrote {out_dir / 'live_widget_demo.gif'} "
-              f"({(out_dir / 'live_widget_demo.gif').stat().st_size:,} bytes, {len(frames)} frames)")
+        print(f"Wrote {out_dir / 'live_widget_demo.gif'} ({(out_dir / 'live_widget_demo.gif').stat().st_size:,} bytes, {len(frames)} frames)")
         await ctx.close()
 
         # --- Scene 2: kernel-hint fallback ---
@@ -302,8 +296,10 @@ async def main() -> None:
         await page.goto(f"file://{html_path}")
         frames = await drive_kernel_hint(page, tmp_root / "frames_hint")
         frames_to_gif(frames, out_dir / "live_widget_kernel_hint.gif", duration_ms=140, scale=0.75)
-        print(f"Wrote {out_dir / 'live_widget_kernel_hint.gif'} "
-              f"({(out_dir / 'live_widget_kernel_hint.gif').stat().st_size:,} bytes, {len(frames)} frames)")
+        print(
+            f"Wrote {out_dir / 'live_widget_kernel_hint.gif'} "
+            f"({(out_dir / 'live_widget_kernel_hint.gif').stat().st_size:,} bytes, {len(frames)} frames)"
+        )
         await ctx.close()
 
         await browser.close()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html as html_module
 import warnings
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
@@ -77,7 +77,7 @@ def visualize(
     filepath: str | None = None,
     live: bool = True,
     _debug_overlays: bool = False,
-) -> Union["HypergraphWidget", ScrollablePipelineWidget, None]:
+) -> HypergraphWidget | ScrollablePipelineWidget | None:
     """Create a visualization widget for a graph.
 
     Args:
