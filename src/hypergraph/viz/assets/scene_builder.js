@@ -239,12 +239,25 @@
     }
 
     if (separateOutputs) {
+      // Mirror the DATA-node-creation loop above: BRANCH gates with
+      // emitted outputs need producer→DATA edges too, and gate-internal
+      // outputs are filtered so we don't connect to a non-existent
+      // DATA node.
       for (var oe = 0; oe < ir.nodes.length; oe++) {
         var oeNode = ir.nodes[oe];
-        if (oeNode.node_type !== 'FUNCTION' && oeNode.node_type !== 'GRAPH') continue;
+        if (oeNode.node_type !== 'FUNCTION' && oeNode.node_type !== 'GRAPH' && oeNode.node_type !== 'BRANCH') continue;
+        var oeVisibleSet = null;
+        if (oeNode.node_type === 'GRAPH' && outputVisibility[oeNode.id]) {
+          oeVisibleSet = {};
+          for (var oeVi = 0; oeVi < outputVisibility[oeNode.id].length; oeVi++) {
+            oeVisibleSet[outputVisibility[oeNode.id][oeVi]] = true;
+          }
+        }
         var oeOutputs = oeNode.outputs || [];
         for (var oe2 = 0; oe2 < oeOutputs.length; oe2++) {
           var oeOut = oeOutputs[oe2];
+          if (oeOut.is_gate_internal) continue;
+          if (oeVisibleSet !== null && !oeVisibleSet[oeOut.name]) continue;
           var oeData = 'data_' + oeNode.id + '_' + oeOut.name;
           sceneEdges.push({
             id: oeNode.id + '__' + oeData,

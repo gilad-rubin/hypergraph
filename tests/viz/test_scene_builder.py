@@ -204,6 +204,37 @@ def test_multi_value_edge_emits_one_scene_edge_per_value_merged_mode():
     assert value_names == {"a", "b"}, f"Expected one edge per value name; got {value_names}"
 
 
+def test_branch_emit_output_connects_to_its_data_node_in_separate_mode():
+    """A BRANCH gate with ``emit=...`` produces a DATA node for the
+    emitted value; the producer→DATA "output" edge must be emitted so
+    the DATA node isn't a visible orphan."""
+    from hypergraph import ifelse
+
+    @node(output_name="value")
+    def src(seed: int) -> int:
+        return seed
+
+    @ifelse(when_true="accept", when_false="reject", emit="decision_made")
+    def gate(value: int) -> bool:
+        return value > 0
+
+    @node(output_name="accepted")
+    def accept(value: int) -> int:
+        return value
+
+    @node(output_name="rejected")
+    def reject(value: int) -> int:
+        return value
+
+    flat_graph = Graph(nodes=[src, gate, accept, reject]).to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+    scene = build_initial_scene(ir, separate_outputs=True)
+
+    output_edges_from_gate = [e for e in scene["edges"] if e["source"] == "gate" and e["data"].get("edgeType") == "output"]
+    targets = {e["target"] for e in output_edges_from_gate}
+    assert "data_gate_decision_made" in targets, f"BRANCH gate emit-output DATA node has no producer edge; output edges from gate: {targets}"
+
+
 def test_multi_value_edge_routes_through_per_value_data_nodes_in_separate_mode():
     """In separate_outputs mode every value_name routes through its own
     DATA node. A producer with outputs ("a","b") feeding a consumer must

@@ -216,11 +216,19 @@ def build_initial_scene(
             )
 
     if separate_outputs:
-        # Add output edges from each producer to its DATA nodes.
+        # Add output edges from each producer to its DATA nodes. Mirrors
+        # the DATA-node-creation loop above: BRANCH gates with emitted
+        # outputs need producer→DATA edges too, and gate-internal outputs
+        # are filtered out so we don't connect to a non-existent DATA node.
         for ir_node in ir.nodes:
-            if ir_node.node_type not in ("FUNCTION", "GRAPH"):
+            if ir_node.node_type not in ("FUNCTION", "GRAPH", "BRANCH"):
                 continue
+            visible_for_node = set(output_visibility.get(ir_node.id, ())) if ir_node.node_type == "GRAPH" else None
             for out in ir_node.outputs:
+                if out.get("is_gate_internal"):
+                    continue
+                if visible_for_node is not None and out["name"] not in visible_for_node:
+                    continue
                 data_node_id = f"data_{ir_node.id}_{out['name']}"
                 scene_edges.append(
                     {
