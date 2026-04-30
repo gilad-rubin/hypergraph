@@ -136,12 +136,17 @@
 
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
+      var src = irEdge.source;
+      if (expansionState[src] && irEdge.source_when_expanded) src = irEdge.source_when_expanded;
+      var tgt = irEdge.target;
+      if (expansionState[tgt] && irEdge.target_when_expanded) tgt = irEdge.target_when_expanded;
+
       sceneEdges.push({
-        id: irEdge.source + '__' + irEdge.target,
-        source: irEdge.source,
-        target: irEdge.target,
+        id: src + '__' + tgt,
+        source: src,
+        target: tgt,
         data: { edgeType: irEdge.edge_type },
-        hidden: !visibleIds[irEdge.source] || !visibleIds[irEdge.target],
+        hidden: !visibleIds[src] || !visibleIds[tgt],
       });
     }
 

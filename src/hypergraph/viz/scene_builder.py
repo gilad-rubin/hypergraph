@@ -89,13 +89,23 @@ def build_initial_scene(
     scene_edges: list[dict[str, Any]] = []
 
     for ir_edge in ir.edges:
+        # Container expansion rewrites: when source/target container is
+        # expanded, route the edge to the deepest internal producer/consumer
+        # instead of the container hull.
+        source = ir_edge.source
+        if expansion_state.get(source) and ir_edge.source_when_expanded:
+            source = ir_edge.source_when_expanded
+        target = ir_edge.target
+        if expansion_state.get(target) and ir_edge.target_when_expanded:
+            target = ir_edge.target_when_expanded
+
         scene_edges.append(
             {
-                "id": f"{ir_edge.source}__{ir_edge.target}",
-                "source": ir_edge.source,
-                "target": ir_edge.target,
+                "id": f"{source}__{target}",
+                "source": source,
+                "target": target,
                 "data": {"edgeType": ir_edge.edge_type},
-                "hidden": ir_edge.source not in visible_ids or ir_edge.target not in visible_ids,
+                "hidden": source not in visible_ids or target not in visible_ids,
             }
         )
 

@@ -28,6 +28,12 @@ class IREdge:
     source: str
     target: str
     edge_type: str = "data"
+    # When the source is a container, source_when_expanded is the deepest
+    # internal producer of the value flowing along this edge. scene_builder
+    # rewrites the edge's source to this when the container is expanded.
+    source_when_expanded: str | None = None
+    # Symmetric: deepest internal consumer when the target container is expanded.
+    target_when_expanded: str | None = None
 
 
 @dataclass(frozen=True)
