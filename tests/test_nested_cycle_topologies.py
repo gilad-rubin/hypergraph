@@ -52,7 +52,8 @@ class TestThreeLevelNestedWithInnerCycle:
         outer = Graph([middle.as_node()], entrypoint="middle")
 
         runner = SyncRunner()
-        result = runner.run(outer, {"count": 0, "limit": 3})
+        # count/limit are private to middle.inner GraphNode chain
+        result = runner.run(outer, {"middle.inner.count": 0, "middle.inner.limit": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["count"] == 3
@@ -77,7 +78,10 @@ class TestThreeLevelNestedWithInnerCycle:
         outer = Graph([middle.as_node(), finalize], entrypoint="middle")
 
         runner = SyncRunner()
-        result = runner.run(outer, {"count": 0, "limit": 2})
+        # count is consumed by leaf process_count inside middle, declared at middle scope.
+        # At outer, no leaf consumes count → count is private to middle → middle.count
+        # limit is private at every level → middle.inner.limit
+        result = runner.run(outer, {"middle.count": 0, "middle.inner.limit": 2})
 
         # count goes 0->1->2, then 2*10=20, then 20+1=21
         assert result.status == RunStatus.COMPLETED
@@ -154,13 +158,15 @@ class TestParallelNestedGraphsWithCycles:
         outer = Graph([inner_a.as_node(), inner_b.as_node(), combine], entrypoint=["inner_a", "inner_b"])
 
         runner = SyncRunner()
+        # count_a/count_b consumed by leaf combine at outer → declared, stay flat.
+        # limit_a/limit_b only consumed inside inner_a/inner_b → private dot-paths.
         result = runner.run(
             outer,
             {
                 "count_a": 0,
-                "limit_a": 3,
+                "inner_a.limit_a": 3,
                 "count_b": 0,
-                "limit_b": 5,
+                "inner_b.limit_b": 5,
             },
         )
 
@@ -229,7 +235,15 @@ class TestDeeplyNestedConvergence:
         outer = Graph([level2.as_node()], entrypoint="level2")
 
         runner = SyncRunner()
-        result = runner.run(outer, {"approx": 0.0, "target": 10.0, "rate": 0.5})
+        # No leaves at outer/level2 declare these → private through level2.level3
+        result = runner.run(
+            outer,
+            {
+                "level2.level3.approx": 0.0,
+                "level2.level3.target": 10.0,
+                "level2.level3.rate": 0.5,
+            },
+        )
 
         assert result.status == RunStatus.COMPLETED
         # Should converge close to 10.0
@@ -261,11 +275,13 @@ class TestNestedCyclesWithDifferentSeeds:
         outer = Graph([inner.as_node(), process_inner], entrypoint="inner")
 
         runner = SyncRunner()
+        # inner_count/multiplier consumed by leaf process_inner → declared, stay flat.
+        # inner_limit only inside inner GraphNode → private dot-path.
         result = runner.run(
             outer,
             {
                 "inner_count": 0,
-                "inner_limit": 3,
+                "inner.inner_limit": 3,
                 "multiplier": 10,
             },
         )
@@ -307,13 +323,15 @@ class TestNestedCyclesWithDifferentSeeds:
         outer = Graph([inner_a.as_node(), inner_b.as_node(), combine], entrypoint=["inner_a", "inner_b"])
 
         runner = SyncRunner()
+        # a/b consumed by leaf combine → declared, stay flat.
+        # limit_a/limit_b private to inner_a/inner_b GraphNodes.
         result = runner.run(
             outer,
             {
                 "a": 0,
-                "limit_a": 3,
+                "inner_a.limit_a": 3,
                 "b": 0,
-                "limit_b": 5,
+                "inner_b.limit_b": 5,
             },
         )
 
@@ -332,7 +350,8 @@ class TestNestedCyclesAsync:
         outer = Graph([inner.as_node()], entrypoint="inner")
 
         runner = AsyncRunner()
-        result = await runner.run(outer, {"count": 0, "limit": 3})
+        # count/limit are private to inner GraphNode → addressed via dot-path
+        result = await runner.run(outer, {"inner.count": 0, "inner.limit": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["count"] == 3
@@ -354,7 +373,8 @@ class TestNestedCyclesAsync:
         outer = Graph([middle.as_node()], entrypoint="middle")
 
         runner = AsyncRunner()
-        result = await runner.run(outer, {"count": 0, "limit": 3})
+        # count/limit are private through middle.inner GraphNode chain
+        result = await runner.run(outer, {"middle.inner.count": 0, "middle.inner.limit": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["count"] == 3
@@ -372,11 +392,12 @@ class TestCycleWithMapOver:
         outer = Graph([inner.as_node().map_over("count")], entrypoint="inner")
 
         runner = SyncRunner()
+        # count/limit are private to inner GraphNode → addressed via dot-path
         result = runner.run(
             outer,
             {
-                "count": [0, 1, 2],
-                "limit": 5,
+                "inner.count": [0, 1, 2],
+                "inner.limit": 5,
             },
         )
 
@@ -390,11 +411,12 @@ class TestCycleWithMapOver:
         outer = Graph([inner.as_node().map_over("count", "limit", mode="zip")], entrypoint="inner")
 
         runner = SyncRunner()
+        # count/limit are private to inner GraphNode → addressed via dot-path
         result = runner.run(
             outer,
             {
-                "count": [0, 0, 0],
-                "limit": [2, 3, 4],
+                "inner.count": [0, 0, 0],
+                "inner.limit": [2, 3, 4],
             },
         )
 

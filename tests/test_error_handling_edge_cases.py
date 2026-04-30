@@ -237,7 +237,8 @@ class TestMapOverAllFail:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3]})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": [1, 2, 3]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [None, None, None]
 
@@ -247,7 +248,8 @@ class TestMapOverAllFail:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = AsyncRunner()
-        result = await runner.run(outer, {"x": [1, 2, 3]})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = await runner.run(outer, {"inner.x": [1, 2, 3]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [None, None, None]
 
@@ -260,7 +262,8 @@ class TestMapOverMultipleFailures:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [None, 4, None, 8, None]
 
@@ -273,7 +276,8 @@ class TestMapOverSingleItem:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1]})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": [1]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [None]
 
@@ -283,7 +287,8 @@ class TestMapOverSingleItem:
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
         with pytest.raises(FailError):
-            runner.run(outer, {"x": [1]})
+            # x is private to inner GraphNode → addressed via dot-path
+            runner.run(outer, {"inner.x": [1]})
 
 
 class TestMapOverWithRenamedOutputs:
@@ -299,7 +304,8 @@ class TestMapOverWithRenamedOutputs:
 
         outer = Graph([gn, consume])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3, 4]})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": [1, 2, 3, 4]})
         assert result.status == RunStatus.COMPLETED
         assert result["final"] == [None, 4, None, 8]
 
@@ -312,7 +318,8 @@ class TestMapOverEmptyInput:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": []})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": []})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == []
 
@@ -327,4 +334,5 @@ class TestMapOverRaisePartialValues:
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
         with pytest.raises(FailError):
-            runner.run(outer, {"x": [1, 2]})
+            # x is private to inner GraphNode → addressed via dot-path
+            runner.run(outer, {"inner.x": [1, 2]})

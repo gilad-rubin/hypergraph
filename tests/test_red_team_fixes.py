@@ -347,6 +347,7 @@ class TestOutputRenamePropagation:
 
         outer_graph = Graph(nodes=[graph_node, outer_step])
         runner = SyncRunner()
-        result = runner.run(outer_graph, {"x": 5})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer_graph, {"inner.x": 5})
 
         assert result["final"] == 11, f"Expected 11 (5*2+1), got {result['final']}"

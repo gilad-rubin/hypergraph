@@ -15,7 +15,7 @@ import pytest
 from hypergraph import InMemoryCache
 from hypergraph.runners import AsyncRunner, RunStatus, SyncRunner
 
-from .builders import build_graph_for_capability, get_test_inputs
+from .builders import build_graph_for_capability, get_test_inputs, remap_inputs_to_addressable
 from .matrix import (
     Binding,
     Caching,
@@ -47,7 +47,7 @@ def _make_cache(cap: Capability):
 def run_capability_sync(cap: Capability) -> None:
     """Run a capability test with SyncRunner."""
     graph = build_graph_for_capability(cap)
-    inputs = get_test_inputs(cap)
+    inputs = remap_inputs_to_addressable(get_test_inputs(cap), graph)
 
     runner = SyncRunner(cache=_make_cache(cap))
     kwargs = {"max_iterations": 10} if cap.topology == Topology.CYCLIC else {}
@@ -59,7 +59,7 @@ def run_capability_sync(cap: Capability) -> None:
 async def run_capability_async(cap: Capability) -> None:
     """Run a capability test with AsyncRunner."""
     graph = build_graph_for_capability(cap)
-    inputs = get_test_inputs(cap)
+    inputs = remap_inputs_to_addressable(get_test_inputs(cap), graph)
 
     runner = AsyncRunner(cache=_make_cache(cap))
     kwargs = {"max_iterations": 10} if cap.topology == Topology.CYCLIC else {}
@@ -194,7 +194,7 @@ class TestMapOverBehavior:
     def test_zip_mode_produces_equal_length_outputs(self, cap: Capability):
         """Zip mode should produce outputs matching input length."""
         graph = build_graph_for_capability(cap)
-        inputs = get_test_inputs(cap)
+        inputs = remap_inputs_to_addressable(get_test_inputs(cap), graph)
 
         runner = SyncRunner()
         result = runner.run(graph, inputs)

@@ -1801,16 +1801,18 @@ class TestGraphNodeCapabilities:
         outer_gn = outer_graph.as_node()
 
         # Types should flow correctly: inner produces str, outer consumes str
+        # The bare name resolves to int via inner_gn (which still exposes flat names)
         assert outer_gn.get_input_type("a") is int
         assert outer_gn.get_output_type("intermediate") is str
         assert outer_gn.get_output_type("final") is int
 
-        # Both a and b appear in outer's inputs (b is optional due to binding)
-        assert "a" in outer_gn.inputs
-        assert "b" in outer_gn.inputs
-        # b has a default (the bound value)
-        assert outer_gn.has_default_for("b") is True
-        assert outer_gn.get_default_for("b") == 10
+        # Both a and b are private to the nested inner GraphNode at outer's scope,
+        # so they appear under the dot-path "inner.a" / "inner.b"
+        assert "inner.a" in outer_gn.inputs
+        assert "inner.b" in outer_gn.inputs
+        # b has a default (the bound value), addressed via dot-path
+        assert outer_gn.has_default_for("inner.b") is True
+        assert outer_gn.get_default_for("inner.b") == 10
 
 
 class TestStrictTypesWithNestedGraphNode:

@@ -102,9 +102,10 @@ class TestNonCopyableBoundValues:
         # Use as node in outer graph
         outer_graph = Graph([inner_graph.as_node()], name="outer")
 
-        # Should NOT raise error about deep-copy failure
+        # Should NOT raise error about deep-copy failure.
+        # query is private to inner GraphNode → addressed via dot-path
         runner = SyncRunner()
-        result = runner.run(outer_graph, {"query": "test"})
+        result = runner.run(outer_graph, {"inner.query": "test"})
 
         assert result["result"] == "Used test"
 

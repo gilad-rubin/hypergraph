@@ -346,10 +346,22 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
 def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:
     """Apply binding to the graph based on the binding mode.
 
-    Returns a new graph with bound values.
+    Returns a new graph with bound values. Under lexical scope, private inner
+    inputs surface as dot-paths on the outer graph, so we look up the actual
+    addressable name in graph.inputs.all rather than assuming flat names.
     """
     if binding == Binding.NONE:
         return graph
+
+    def _resolve_addressable(graph: Graph, target: str) -> str | None:
+        """Find the addressable input name (dot-path or flat) ending in `target`."""
+        all_inputs = graph.inputs.all
+        if target in all_inputs:
+            return target
+        for name in all_inputs:
+            if name == target or name.endswith(f".{target}"):
+                return name
+        return None
 
     # Find an optional input to bind (one with a default or that we can provide)
     # For cyclic graphs, we can bind the 'limit' parameter
@@ -357,12 +369,14 @@ def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:
     if topology == Topology.CYCLIC:
         # Bind the limit parameter which has a default
         # Use limit=3 so it stabilizes quickly (within 5 iterations)
-        if "limit" in graph.inputs.all:
-            return graph.bind(limit=3)
+        addr = _resolve_addressable(graph, "limit")
+        if addr is not None:
+            return graph.bind(**{addr: 3})
     elif topology == Topology.CONVERGING:
         # For converging, bind one of the inputs
-        if "y" in graph.inputs.all:
-            return graph.bind(y=100)
+        addr = _resolve_addressable(graph, "y")
+        if addr is not None:
+            return graph.bind(**{addr: 100})
     else:
         # For other topologies, we need to be careful not to bind required inputs
         # that don't have defaults. Check if x has a default or is optional
@@ -427,6 +441,31 @@ def _get_map_input_for_topology(topology: Topology) -> str | None:
         Topology.CONVERGING: "x",  # Map over first input
     }
     return topology_map_inputs.get(topology)
+
+
+def remap_inputs_to_addressable(inputs: dict, graph: Graph) -> dict:
+    """Remap flat input names to their addressable form (dot-path or flat).
+
+    Under lexical scope, an input that is private to a nested GraphNode appears
+    on the outer graph as ``"<graphnode>.<name>"``. This helper looks up each
+    flat key in graph.inputs.all and rewrites it to whatever addressable form
+    the graph exposes (matching by suffix when no flat key is found).
+    """
+    all_inputs = set(graph.inputs.all)
+    remapped: dict = {}
+    for key, value in inputs.items():
+        if key in all_inputs:
+            remapped[key] = value
+            continue
+        # Find a dot-pathed equivalent ending in `.{key}`
+        candidates = [name for name in all_inputs if name.endswith(f".{key}")]
+        if len(candidates) == 1:
+            remapped[candidates[0]] = value
+        else:
+            # No unique mapping (or zero) — leave the original key; the runner
+            # will surface a clear MissingInputError if it really matters.
+            remapped[key] = value
+    return remapped
 
 
 def get_test_inputs(cap: Capability) -> dict:
