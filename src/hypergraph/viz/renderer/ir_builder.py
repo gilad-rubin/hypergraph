@@ -79,6 +79,7 @@ def _build_ir_edge(src: str, tgt: str, attrs: dict, flat_graph: nx.DiGraph) -> I
         edge_type=attrs.get("edge_type", "data"),
         source_when_expanded=source_when_expanded,
         target_when_expanded=target_when_expanded,
+        value_names=tuple(attrs.get("value_names", ())),
     )
 
 

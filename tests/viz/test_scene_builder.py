@@ -105,3 +105,44 @@ def test_outer_scene_edges_match_legacy():
     scene = build_initial_scene(ir)
     oracle = render_graph(flat_graph)
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
+
+
+def test_show_inputs_false_hides_all_input_nodes():
+    """When the user toggles 'show inputs' off, every INPUT/INPUT_GROUP
+    scene node should be hidden — matching the legacy renderer's
+    behavior when show_inputs=False."""
+    flat_graph = make_simple_graph().to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(ir, show_inputs=False)
+
+    visible_inputs = [n for n in scene["nodes"] if n["data"]["nodeType"] in ("INPUT", "INPUT_GROUP") and not n.get("hidden")]
+    assert visible_inputs == []
+
+
+def test_separate_outputs_true_materializes_data_nodes():
+    """separate_outputs=True should make every function output a visible
+    DATA scene node — the legacy contract for the 'separate outputs'
+    visualization mode."""
+    flat_graph = make_simple_graph().to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(ir, separate_outputs=True)
+    oracle = render_graph(flat_graph, separate_outputs=True)
+
+    visible_scene_data = {n["id"] for n in scene["nodes"] if n["data"]["nodeType"] == "DATA" and not n.get("hidden")}
+    visible_oracle_data = {n["id"] for n in oracle["nodes"] if n["data"].get("nodeType") == "DATA" and not n.get("hidden")}
+
+    assert visible_scene_data == visible_oracle_data
+
+
+def test_separate_outputs_true_edges_match_legacy():
+    """In separate_outputs mode, data flows producer -> DATA -> consumer.
+    Edge signatures should match the legacy renderer's."""
+    flat_graph = make_simple_graph().to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(ir, separate_outputs=True)
+    oracle = render_graph(flat_graph, separate_outputs=True)
+
+    assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)

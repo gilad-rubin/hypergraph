@@ -34,6 +34,10 @@ class IREdge:
     source_when_expanded: str | None = None
     # Symmetric: deepest internal consumer when the target container is expanded.
     target_when_expanded: str | None = None
+    # Output-value names this edge carries (for separate_outputs mode, where
+    # the data flow goes producer -> data_node -> consumer instead of
+    # producer -> consumer directly).
+    value_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

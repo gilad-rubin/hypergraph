@@ -18,6 +18,7 @@ def build_initial_scene(
     *,
     expansion_state: dict[str, bool] | None = None,
     separate_outputs: bool = False,
+    show_inputs: bool = True,
 ) -> dict[str, Any]:
     """Build a React Flow scene (nodes + edges) for the IR's initial state."""
     expansion_state = expansion_state or {}
@@ -65,6 +66,8 @@ def build_initial_scene(
         scene_nodes.append(scene_node)
 
     for ext in ir.external_inputs:
+        # show_inputs=False hides every INPUT regardless of expansion state.
+        hidden = (not show_inputs) or _input_hidden(ext.deepest_owner, parent_map, expansion_state)
         scene_nodes.append(
             {
                 "id": f"input_{ext.name}",
@@ -80,9 +83,35 @@ def build_initial_scene(
                 },
                 "sourcePosition": "bottom",
                 "targetPosition": "top",
-                "hidden": _input_hidden(ext.deepest_owner, parent_map, expansion_state),
+                "hidden": hidden,
             }
         )
+
+    if separate_outputs:
+        for ir_node in ir.nodes:
+            if ir_node.node_type not in ("FUNCTION", "GRAPH"):
+                continue
+            for out in ir_node.outputs:
+                data_node_id = f"data_{ir_node.id}_{out['name']}"
+                ancestor_hidden = _ancestor_collapsed(ir_node.id, parent_map, expansion_state)
+                scene_node: dict[str, Any] = {
+                    "id": data_node_id,
+                    "type": "custom",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "nodeType": "DATA",
+                        "label": out["name"],
+                        "typeHint": out.get("type"),
+                        "sourceId": ir_node.id,
+                    },
+                    "sourcePosition": "bottom",
+                    "targetPosition": "top",
+                    "hidden": ancestor_hidden,
+                }
+                if ir_node.parent is not None:
+                    scene_node["parentNode"] = ir_node.parent
+                    scene_node["extent"] = "parent"
+                scene_nodes.append(scene_node)
 
     visible_ids = {n["id"] for n in scene_nodes if not n["hidden"]}
 
@@ -99,6 +128,12 @@ def build_initial_scene(
         if expansion_state.get(target) and ir_edge.target_when_expanded:
             target = ir_edge.target_when_expanded
 
+        # separate_outputs reroutes data edges through DATA nodes:
+        # producer -> data_<producer>_<value_name> -> consumer
+        if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
+            value_name = ir_edge.value_names[0]
+            source = f"data_{source}_{value_name}"
+
         scene_edges.append(
             {
                 "id": f"{source}__{target}",
@@ -108,6 +143,23 @@ def build_initial_scene(
                 "hidden": source not in visible_ids or target not in visible_ids,
             }
         )
+
+    if separate_outputs:
+        # Add output edges from each producer to its DATA nodes.
+        for ir_node in ir.nodes:
+            if ir_node.node_type not in ("FUNCTION", "GRAPH"):
+                continue
+            for out in ir_node.outputs:
+                data_node_id = f"data_{ir_node.id}_{out['name']}"
+                scene_edges.append(
+                    {
+                        "id": f"{ir_node.id}__{data_node_id}",
+                        "source": ir_node.id,
+                        "target": data_node_id,
+                        "data": {"edgeType": "output"},
+                        "hidden": ir_node.id not in visible_ids or data_node_id not in visible_ids,
+                    }
+                )
 
     for ext in ir.external_inputs:
         input_node_id = f"input_{ext.name}"

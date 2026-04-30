@@ -54,6 +54,7 @@
     var sceneNodes = [];
 
     var separateOutputs = !!opts.separateOutputs;
+    var showInputs = opts.showInputs !== false;
 
     for (var j = 0; j < ir.nodes.length; j++) {
       var irNode = ir.nodes[j];
@@ -109,6 +110,7 @@
     var externalInputs = ir.external_inputs || [];
     for (var k = 0; k < externalInputs.length; k++) {
       var ext = externalInputs[k];
+      var hidden = !showInputs || inputHidden(ext.deepest_owner, parentMap, expansionState);
       sceneNodes.push({
         id: 'input_' + ext.name,
         type: 'custom',
@@ -123,8 +125,41 @@
         },
         sourcePosition: 'bottom',
         targetPosition: 'top',
-        hidden: inputHidden(ext.deepest_owner, parentMap, expansionState),
+        hidden: hidden,
       });
+    }
+
+    if (separateOutputs) {
+      // Materialize DATA scene nodes — one per (producer, output_name).
+      for (var dn = 0; dn < ir.nodes.length; dn++) {
+        var producer = ir.nodes[dn];
+        if (producer.node_type !== 'FUNCTION' && producer.node_type !== 'GRAPH') continue;
+        var producerOutputs = producer.outputs || [];
+        for (var dn2 = 0; dn2 < producerOutputs.length; dn2++) {
+          var pout = producerOutputs[dn2];
+          var dataId = 'data_' + producer.id + '_' + pout.name;
+          var ancestorHidden = ancestorCollapsed(producer.id, parentMap, expansionState);
+          var dataNode = {
+            id: dataId,
+            type: 'custom',
+            position: { x: 0, y: 0 },
+            data: {
+              nodeType: 'DATA',
+              label: pout.name,
+              typeHint: pout.type,
+              sourceId: producer.id,
+            },
+            sourcePosition: 'bottom',
+            targetPosition: 'top',
+            hidden: ancestorHidden,
+          };
+          if (producer.parent) {
+            dataNode.parentNode = producer.parent;
+            dataNode.extent = 'parent';
+          }
+          sceneNodes.push(dataNode);
+        }
+      }
     }
 
     var visibleIds = {};
@@ -141,6 +176,13 @@
       var tgt = irEdge.target;
       if (expansionState[tgt] && irEdge.target_when_expanded) tgt = irEdge.target_when_expanded;
 
+      // separate_outputs mode reroutes data edges through DATA nodes:
+      // producer -> data_<producer>_<value> -> consumer
+      var valueNames = irEdge.value_names || [];
+      if (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) {
+        src = 'data_' + src + '_' + valueNames[0];
+      }
+
       sceneEdges.push({
         id: src + '__' + tgt,
         source: src,
@@ -148,6 +190,25 @@
         data: { edgeType: irEdge.edge_type },
         hidden: !visibleIds[src] || !visibleIds[tgt],
       });
+    }
+
+    if (separateOutputs) {
+      for (var oe = 0; oe < ir.nodes.length; oe++) {
+        var oeNode = ir.nodes[oe];
+        if (oeNode.node_type !== 'FUNCTION' && oeNode.node_type !== 'GRAPH') continue;
+        var oeOutputs = oeNode.outputs || [];
+        for (var oe2 = 0; oe2 < oeOutputs.length; oe2++) {
+          var oeOut = oeOutputs[oe2];
+          var oeData = 'data_' + oeNode.id + '_' + oeOut.name;
+          sceneEdges.push({
+            id: oeNode.id + '__' + oeData,
+            source: oeNode.id,
+            target: oeData,
+            data: { edgeType: 'output' },
+            hidden: !visibleIds[oeNode.id] || !visibleIds[oeData],
+          });
+        }
+      }
     }
 
     for (var q = 0; q < externalInputs.length; q++) {
