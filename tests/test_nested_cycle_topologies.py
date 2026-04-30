@@ -52,8 +52,9 @@ class TestThreeLevelNestedWithInnerCycle:
         outer = Graph([middle.as_node()], entrypoint="middle")
 
         runner = SyncRunner()
-        # count/limit are private to middle.inner GraphNode chain
-        result = runner.run(outer, {"middle.inner.count": 0, "middle.inner.limit": 3})
+        # count auto-links upward via each GraphNode's output. limit stays
+        # private to the innermost subgraph.
+        result = runner.run(outer, {"count": 0, "middle.inner.limit": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["count"] == 3
@@ -78,10 +79,9 @@ class TestThreeLevelNestedWithInnerCycle:
         outer = Graph([middle.as_node(), finalize], entrypoint="middle")
 
         runner = SyncRunner()
-        # count is consumed by leaf process_count inside middle, declared at middle scope.
-        # At outer, no leaf consumes count → count is private to middle → middle.count
-        # limit is private at every level → middle.inner.limit
-        result = runner.run(outer, {"middle.count": 0, "middle.inner.limit": 2})
+        # count auto-links across every level (GraphNode outputs declare it at the
+        # parent scope). limit is private at every level.
+        result = runner.run(outer, {"count": 0, "middle.inner.limit": 2})
 
         # count goes 0->1->2, then 2*10=20, then 20+1=21
         assert result.status == RunStatus.COMPLETED
@@ -235,11 +235,12 @@ class TestDeeplyNestedConvergence:
         outer = Graph([level2.as_node()], entrypoint="level2")
 
         runner = SyncRunner()
-        # No leaves at outer/level2 declare these → private through level2.level3
+        # approx auto-links through level2.level3 (GraphNode outputs declare it at
+        # each parent scope). target and rate stay private to level3.
         result = runner.run(
             outer,
             {
-                "level2.level3.approx": 0.0,
+                "approx": 0.0,
                 "level2.level3.target": 10.0,
                 "level2.level3.rate": 0.5,
             },
@@ -350,8 +351,8 @@ class TestNestedCyclesAsync:
         outer = Graph([inner.as_node()], entrypoint="inner")
 
         runner = AsyncRunner()
-        # count/limit are private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.count": 0, "inner.limit": 3})
+        # count auto-links via inner's output. limit is private to inner.
+        result = await runner.run(outer, {"count": 0, "inner.limit": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["count"] == 3
@@ -373,8 +374,8 @@ class TestNestedCyclesAsync:
         outer = Graph([middle.as_node()], entrypoint="middle")
 
         runner = AsyncRunner()
-        # count/limit are private through middle.inner GraphNode chain
-        result = await runner.run(outer, {"middle.inner.count": 0, "middle.inner.limit": 3})
+        # count auto-links through middle.inner. limit is private to inner.
+        result = await runner.run(outer, {"count": 0, "middle.inner.limit": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["count"] == 3
@@ -392,11 +393,11 @@ class TestCycleWithMapOver:
         outer = Graph([inner.as_node().map_over("count")], entrypoint="inner")
 
         runner = SyncRunner()
-        # count/limit are private to inner GraphNode → addressed via dot-path
+        # count auto-links via inner's output (mapped). limit is private to inner.
         result = runner.run(
             outer,
             {
-                "inner.count": [0, 1, 2],
+                "count": [0, 1, 2],
                 "inner.limit": 5,
             },
         )
@@ -411,11 +412,11 @@ class TestCycleWithMapOver:
         outer = Graph([inner.as_node().map_over("count", "limit", mode="zip")], entrypoint="inner")
 
         runner = SyncRunner()
-        # count/limit are private to inner GraphNode → addressed via dot-path
+        # count auto-links via inner's output (mapped). limit is private to inner.
         result = runner.run(
             outer,
             {
-                "inner.count": [0, 0, 0],
+                "count": [0, 0, 0],
                 "inner.limit": [2, 3, 4],
             },
         )

@@ -168,20 +168,25 @@ def _unique_params(nodes: dict[str, HyperNode]) -> Iterator[str]:
 def _names_declared_at_scope(nodes: dict[str, HyperNode]) -> set[str]:
     """Names declared directly at this graph's scope.
 
-    A name is declared at this scope if a leaf (non-GraphNode) node here
-    consumes or produces it. Sibling GraphNodes happening to share an input
-    name does NOT count as declaration at the parent scope -- under lexical
-    scope, each GraphNode is its own subscope, and an unshared inner input
-    stays private.
+    A name is declared at this scope if any node here can produce it (leaf
+    output OR GraphNode output, since both surface at this scope) or if a
+    leaf node here consumes it. GraphNode inputs do NOT count -- they are
+    private to the subscope unless declared by something else here.
+
+    Two siblings GraphNodes that happen to share an input name therefore stay
+    private to each. But a GraphNode whose output flows (via edge) to a sibling
+    GraphNode's same-named input auto-links, because the producer's output is
+    declared at this scope.
     """
     from hypergraph.nodes.graph_node import GraphNode
 
     names: set[str] = set()
     for node in nodes.values():
         if isinstance(node, GraphNode):
-            continue
-        names.update(node.inputs)
-        names.update(node.outputs)
+            names.update(node.outputs)
+        else:
+            names.update(node.inputs)
+            names.update(node.outputs)
     return names
 
 
