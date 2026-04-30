@@ -97,19 +97,20 @@ def compute_input_spec(
     )
 
     required, optional = [], []
+    declared = _names_declared_at_scope(active_nodes)
 
-    for param in _unique_params(active_nodes):
-        if param in cycle_seed_params:
-            if param in bound:
-                optional.append(param)
+    for addressed, original, _source in _addressed_params(active_nodes, declared):
+        if original in cycle_seed_params:
+            if addressed in all_bound:
+                optional.append(addressed)
             else:
-                required.append(param)
+                required.append(addressed)
             continue
-        category = _categorize_param(param, edge_produced, all_bound, active_nodes)
+        category = _categorize_addressed_param(addressed, original, edge_produced, all_bound, active_nodes)
         if category == "required":
-            required.append(param)
+            required.append(addressed)
         elif category == "optional":
-            optional.append(param)
+            optional.append(addressed)
 
     return InputSpec(
         required=tuple(required),
@@ -164,6 +165,54 @@ def _unique_params(nodes: dict[str, HyperNode]) -> Iterator[str]:
                 yield param
 
 
+def _names_declared_at_scope(nodes: dict[str, HyperNode]) -> set[str]:
+    """Names declared directly at this graph's scope.
+
+    A name is declared at this scope if a leaf (non-GraphNode) node here
+    consumes or produces it. Sibling GraphNodes happening to share an input
+    name does NOT count as declaration at the parent scope -- under lexical
+    scope, each GraphNode is its own subscope, and an unshared inner input
+    stays private.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    names: set[str] = set()
+    for node in nodes.values():
+        if isinstance(node, GraphNode):
+            continue
+        names.update(node.inputs)
+        names.update(node.outputs)
+    return names
+
+
+def _addressed_params(
+    nodes: dict[str, HyperNode],
+    declared: set[str],
+) -> Iterator[tuple[str, str, str | None]]:
+    """Yield (addressed_name, original_name, source_node_name_or_None) per input.
+
+    Inputs declared at this scope are emitted once with their flat name and no
+    source. Inputs private to a GraphNode subscope are emitted as dot-paths.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    seen_flat: set[str] = set()
+    for node_name, node in nodes.items():
+        if isinstance(node, GraphNode):
+            for param in node.inputs:
+                if param in declared:
+                    if param not in seen_flat:
+                        seen_flat.add(param)
+                        yield (param, param, None)
+                else:
+                    yield (f"{node_name}.{param}", param, node_name)
+        else:
+            for param in node.inputs:
+                if param not in seen_flat:
+                    seen_flat.add(param)
+                    yield (param, param, None)
+
+
 def _categorize_param(
     param: str,
     edge_produced: set[str],
@@ -175,6 +224,27 @@ def _categorize_param(
         return None  # Produced by an edge, not a user input
 
     if param in bound or _all_consumers_have_default(param, nodes):
+        return "optional"
+
+    return "required"
+
+
+def _categorize_addressed_param(
+    addressed: str,
+    original: str,
+    edge_produced: set[str],
+    bound: dict[str, Any],
+    nodes: dict[str, HyperNode],
+) -> str | None:
+    """Categorize an addressed parameter: 'required', 'optional', or None (edge-produced)."""
+    # Edge-produced is checked against the original name, since edges act in scope.
+    if original in edge_produced and addressed == original:
+        return None
+
+    if addressed in bound:
+        return "optional"
+
+    if addressed == original and _all_consumers_have_default(original, nodes):
         return "optional"
 
     return "required"
@@ -335,12 +405,12 @@ def _collect_bound_values(
     nodes: dict[str, HyperNode],
     bound: dict[str, Any],
 ) -> dict[str, Any]:
-    """Collect all bound values from graph and nested GraphNodes.
+    """Collect all bound values from graph and nested GraphNodes under lexical scope.
 
-    When a graph contains GraphNodes with bound values, those values need to be
-    accessible at runtime for parameter resolution. This function merges:
-    1. The graph's own bound values
-    2. Bound values from all nested GraphNodes (recursively)
+    Inner binds whose public name is declared at this scope (consumed/produced by a
+    leaf node here) auto-link upward and surface as a flat key on the outer bound
+    dict. Inner binds whose public name is private to the subgraph surface as
+    dot-pathed keys (``"<graphnode_name>.<public_name>"``).
 
     Args:
         nodes: Map of node name -> HyperNode
@@ -351,27 +421,22 @@ def _collect_bound_values(
     """
     from hypergraph.nodes.graph_node import GraphNode
 
-    # Start with current graph's bound values
     all_bound = dict(bound)
-    nested_candidates: dict[str, list[Any]] = {}
+    declared = _names_declared_at_scope(nodes)
 
-    # Merge bound values from nested GraphNodes
-    for node in nodes.values():
-        if isinstance(node, GraphNode):
-            # Get bound values from the inner graph
-            inner_bound = node.graph.inputs.bound
-            # Merge unique nested bindings only. If sibling nested graphs bind
-            # the same key to different values, that key is ambiguous at the
-            # outer graph level and should stay out of graph.inputs.bound.
-            for key, value in inner_bound.items():
-                public_key = node.map_input_name_from_original(key)
-                if public_key in all_bound:
-                    continue
-                nested_candidates.setdefault(public_key, []).append(value)
-
-    for key, candidates in nested_candidates.items():
-        if len(candidates) == 1 or _all_values_equal(candidates):
-            all_bound[key] = candidates[0]
+    for node_name, node in nodes.items():
+        if not isinstance(node, GraphNode):
+            continue
+        for inner_key, value in node.graph.inputs.bound.items():
+            public_key = node.map_input_name_from_original(inner_key)
+            if public_key in declared:
+                # Auto-link to ancestor: set as flat default if not already set.
+                all_bound.setdefault(public_key, value)
+            else:
+                # Private to subgraph: dot-path it. The leaf label is the public
+                # name as seen on the GraphNode (post with_inputs rename), so a
+                # rename only changes the leaf without moving scope.
+                all_bound[f"{node_name}.{public_key}"] = value
 
     return all_bound
 
