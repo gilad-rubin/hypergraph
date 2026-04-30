@@ -113,3 +113,80 @@ def test_bind_with_no_ancestor_declaration_builds_cleanly():
     outer = Graph([consume_y, inner.as_node()], name="outer")
 
     assert outer.inputs.bound == {"inner.x": 10}
+
+
+def test_run_value_overriding_primitive_bind_emits_warning_with_values():
+    """A run value that overrides a bound primitive emits a warning showing
+    both the bound and the new value."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    graph = Graph([use_x], name="g").bind(x=10)
+
+    with pytest.warns(UserWarning, match=r"(?i)override.*x.*10.*42|override.*x.*42.*10"):
+        result = SyncRunner().run(graph, {"x": 42})
+
+    assert result["out"] == 42
+
+
+def test_run_value_overriding_opaque_bind_emits_generic_warning():
+    """A run value that overrides a bound non-primitive value emits a generic
+    warning without dumping the value text."""
+
+    class Opaque:
+        def __repr__(self) -> str:
+            return "<should-not-appear-in-warning>"
+
+    @node(output_name="out")
+    def use_x(x) -> str:
+        return "ok"
+
+    graph = Graph([use_x], name="g").bind(x=Opaque())
+
+    with pytest.warns(UserWarning) as records:
+        SyncRunner().run(graph, {"x": Opaque()})
+
+    msgs = [str(w.message) for w in records]
+    assert any("override" in m.lower() and "x" in m for m in msgs)
+    assert not any("should-not-appear-in-warning" in m for m in msgs)
+
+
+def test_run_with_no_override_emits_no_warning():
+    """A run that doesn't override anything emits no warnings."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    graph = Graph([use_x], name="g").bind(x=10)
+
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        result = SyncRunner().run(graph)
+
+    assert result["out"] == 10
+
+
+def test_run_value_overriding_dot_pathed_bind_emits_warning():
+    """Override warning fires uniformly for dot-path overrides (not just flat)."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    inner = Graph([use_x], name="inner").bind(x=10)
+
+    @node(output_name="other_out")
+    def consume_unrelated(y: int = 0) -> int:
+        return y
+
+    outer = Graph([inner.as_node(), consume_unrelated], name="outer")
+
+    with pytest.warns(UserWarning, match=r"(?i)override.*inner\.x"):
+        result = SyncRunner().run(outer, {"inner.x": 99})
+
+    assert result["out"] == 99

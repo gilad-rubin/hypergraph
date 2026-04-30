@@ -38,6 +38,7 @@ from hypergraph.runners._shared.helpers import (
     get_ready_nodes,
     initialize_state,
     is_interrupt_resume_payload,
+    warn_on_bind_overrides,
 )
 from hypergraph.runners._shared.input_normalization import (
     ASYNC_MAP_RESERVED_OPTION_NAMES,
@@ -211,6 +212,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
             graph=graph,
         )
+        # Only fire override warning at the user-initiated outer run; nested
+        # GraphNode delegations propagate the same value and would re-warn.
+        if _parent_span_id is None and _parent_run_id is None:
+            warn_on_bind_overrides(graph, normalized_values)
 
         # Structural validation (doesn't depend on values)
         if _validation_ctx is None:

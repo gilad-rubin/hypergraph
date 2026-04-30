@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -272,6 +273,48 @@ class ValueSource(Enum):
     PROVIDED = "provided"  # From run() call
     BOUND = "bound"  # From graph.bind() - NEVER copy
     DEFAULT = "default"  # From function signature - MUST copy
+
+
+_SHORT_REPR_MAX_LEN = 40
+
+
+def short_value_repr(value: Any, max_len: int = _SHORT_REPR_MAX_LEN) -> str | None:
+    """Short repr for primitive values; None for everything else.
+
+    Single source of truth for inlining user-supplied values into error and
+    warning text. Returns a length-capped repr for bool/int/float/str/bytes/None,
+    and None for everything else (DataFrames, numpy arrays, custom classes) so
+    callers can fall back to a generic message rather than dumping or hitting an
+    expensive __repr__.
+    """
+    if value is None or isinstance(value, (bool, int, float, bytes, str)):
+        rep = repr(value)
+        return rep if len(rep) <= max_len else None
+    return None
+
+
+def warn_on_bind_overrides(graph: Graph, provided_values: dict[str, Any]) -> None:
+    """Emit a UserWarning for each provided value that overrides a bound value.
+
+    Fires uniformly regardless of whether the override address is flat or
+    dotted -- both surfaces share the same canonical form on graph.inputs.bound
+    and provided_values. For primitive bound/provided pairs the warning shows
+    both values; otherwise it stays generic.
+    """
+    bound = graph.inputs.bound
+    for key, new_value in provided_values.items():
+        if key not in bound:
+            continue
+        old_value = bound[key]
+        if old_value is new_value:
+            continue
+        old_repr = short_value_repr(old_value)
+        new_repr = short_value_repr(new_value)
+        if old_repr is not None and new_repr is not None:
+            msg = f"Run value overrides bound value for {key!r}: {old_repr} -> {new_repr}"
+        else:
+            msg = f"Run value overrides bound value for {key!r}"
+        warnings.warn(msg, UserWarning, stacklevel=4)
 
 
 def _safe_deepcopy(value: Any, param_name: str = "<unknown>") -> Any:
