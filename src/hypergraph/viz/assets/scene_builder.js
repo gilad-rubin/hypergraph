@@ -12,6 +12,16 @@
   var D = global.HypergraphDerivation;
   if (!D) throw new Error('HypergraphDerivation not loaded — load derivation.js before scene_builder.js');
 
+  // Pinned by Python via GraphIR.schema_version. Bump in lockstep with
+  // ir_schema.py:CURRENT_SCHEMA_VERSION when the IR shape changes.
+  var SUPPORTED_SCHEMA_VERSION = '1';
+
+  function isSchemaSupported(ir) {
+    if (!ir) return true;
+    var v = ir.schema_version;
+    return v === undefined || v === null || v === SUPPORTED_SCHEMA_VERSION;
+  }
+
   var ancestorCollapsed = D.ancestorCollapsed;
   var inputHidden = D.inputHidden;
   var resolveToVisible = D.resolveToVisible;
@@ -22,6 +32,16 @@
 
   function buildInitialScene(ir, opts) {
     opts = opts || {};
+    if (!isSchemaSupported(ir)) {
+      return {
+        nodes: [],
+        edges: [],
+        schemaVersionMismatch: {
+          got: (ir && ir.schema_version) || null,
+          supported: SUPPORTED_SCHEMA_VERSION,
+        },
+      };
+    }
     var expansionState = opts.expansionState || {};
 
     var parentMap = D.buildParentMap(ir);
@@ -324,5 +344,7 @@
 
   global.HypergraphSceneBuilder = {
     buildInitialScene: buildInitialScene,
+    isSchemaSupported: isSchemaSupported,
+    SUPPORTED_SCHEMA_VERSION: SUPPORTED_SCHEMA_VERSION,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

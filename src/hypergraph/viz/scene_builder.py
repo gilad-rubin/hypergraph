@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hypergraph.viz.ir_schema import GraphIR
+from hypergraph.viz.ir_schema import CURRENT_SCHEMA_VERSION, GraphIR, IRSchemaError
 
 
 def build_initial_scene(
@@ -22,6 +22,11 @@ def build_initial_scene(
     show_bounded_inputs: bool = False,
 ) -> dict[str, Any]:
     """Build a React Flow scene (nodes + edges) for the IR's initial state."""
+    if ir.schema_version != CURRENT_SCHEMA_VERSION:
+        raise IRSchemaError(
+            f"scene_builder.py supports IR schema_version={CURRENT_SCHEMA_VERSION!r}; "
+            f"got {ir.schema_version!r}. Regenerate the IR with a matching build_graph_ir."
+        )
     expansion_state = expansion_state or {}
     parent_map = {n.id: n.parent for n in ir.nodes if n.parent is not None}
     output_visibility = ir.graph_output_visibility or {}

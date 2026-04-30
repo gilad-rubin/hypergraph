@@ -1451,23 +1451,32 @@
       });
     }, []);
 
-    // Select scene nodes for the current state via scene_builder.
-    var selectedNodes = useMemo(function() {
-      if (!ir || !root.HypergraphSceneBuilder) {
-        return (initialData.nodes || EMPTY_ARR).map(function(n) {
-          return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } };
-        });
-      }
+    // Build the scene once per (state, options, ir) tuple; nodes/edges
+    // are projected from the same memoized result so we don't double the
+    // derivation work and so schemaVersionMismatch is observed exactly once.
+    var scene = useMemo(function() {
+      if (!ir || !root.HypergraphSceneBuilder) return null;
       var stateObj = {};
       expansionState.forEach(function(v, k) { stateObj[k] = v; });
-      var base = root.HypergraphSceneBuilder.buildInitialScene(ir, {
+      return root.HypergraphSceneBuilder.buildInitialScene(ir, {
         expansionState: stateObj,
         separateOutputs: separateOutputs,
         showInputs: showInputs,
         showBoundedInputs: showBoundedInputs,
-      }).nodes;
-      return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, initialData.nodes, ir]);
+      });
+    }, [expansionState, separateOutputs, showInputs, showBoundedInputs, ir]);
+
+    var schemaMismatch = scene && scene.schemaVersionMismatch ? scene.schemaVersionMismatch : null;
+
+    // Select scene nodes for the current state via scene_builder.
+    var selectedNodes = useMemo(function() {
+      if (!scene) {
+        return (initialData.nodes || EMPTY_ARR).map(function(n) {
+          return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } };
+        });
+      }
+      return scene.nodes.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
+    }, [scene, activeTheme, showTypes, separateOutputs, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1515,16 +1524,9 @@
 
     // Select scene edges for the current state via scene_builder.
     var selectedEdges = useMemo(function() {
-      if (!ir || !root.HypergraphSceneBuilder) return (initialData.edges || EMPTY_ARR);
-      var stateObj = {};
-      expansionState.forEach(function(v, k) { stateObj[k] = v; });
-      return root.HypergraphSceneBuilder.buildInitialScene(ir, {
-        expansionState: stateObj,
-        separateOutputs: separateOutputs,
-        showInputs: showInputs,
-        showBoundedInputs: showBoundedInputs,
-      }).edges;
-    }, [expansionState, separateOutputs, showInputs, initialData.edges, ir]);
+      if (!scene) return (initialData.edges || EMPTY_ARR);
+      return scene.edges;
+    }, [scene, initialData.edges]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1801,6 +1803,13 @@
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
         <//>
+        ${schemaMismatch ? html`
+          <div data-testid="hypergraph-schema-banner"
+               className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-md text-xs font-mono bg-slate-900/85 text-amber-200 border border-amber-500/40 shadow pointer-events-auto z-50">
+            Visualization needs an updated runtime — showing static view.
+            <span className="ml-2 text-amber-400/80">(IR v${schemaMismatch.got || '?'}, runtime v${schemaMismatch.supported})</span>
+          </div>
+        ` : null}
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="px-4 py-2 rounded-lg border text-xs font-mono bg-slate-900/80 text-amber-200 border-amber-500/40 shadow-lg pointer-events-auto">

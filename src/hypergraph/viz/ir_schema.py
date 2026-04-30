@@ -74,6 +74,17 @@ class IRExternalInput:
         return len(self.params) > 1
 
 
+# Bump when the IR shape changes in a way old scene_builders can't read.
+# Both Python and JS scene_builders pin to this value; mismatches trigger
+# the static-fallback banner instead of a runtime exception.
+CURRENT_SCHEMA_VERSION = "1"
+
+
+class IRSchemaError(ValueError):
+    """Raised when a scene_builder is asked to consume an IR whose
+    ``schema_version`` it doesn't know how to interpret."""
+
+
 @dataclass(frozen=True)
 class GraphIR:
     nodes: list[IRNode] = field(default_factory=list)
@@ -88,3 +99,4 @@ class GraphIR:
     # (consumed exclusively by descendants) are absent so they don't leak
     # to the container surface.
     graph_output_visibility: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    schema_version: str = CURRENT_SCHEMA_VERSION
