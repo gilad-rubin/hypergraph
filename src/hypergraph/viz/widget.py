@@ -9,8 +9,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
+from dataclasses import asdict
+
+from hypergraph.viz._common import build_expansion_state
 from hypergraph.viz.html import estimate_layout, generate_widget_html
 from hypergraph.viz.renderer import render_graph
+from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
 
 class ScrollablePipelineWidget:
@@ -74,6 +78,7 @@ def visualize(
     show_bounded_inputs: bool = False,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
+    use_ir: bool = True,
     _debug_overlays: bool = False,
 ) -> ScrollablePipelineWidget | None:
     """Create a visualization widget for a graph.
@@ -127,20 +132,40 @@ def visualize(
     final_width = max(400, est_width)
     final_height = max(200, est_height)
 
-    # Create flattened graph and render to React Flow format
     flat_graph = graph.to_flat_graph()
-    graph_data = render_graph(
-        flat_graph,
-        depth=depth,
-        theme=theme,
-        show_types=show_types,
-        separate_outputs=separate_outputs,
-        show_inputs=show_inputs,
-        show_bounded_inputs=show_bounded_inputs,
-        debug_overlays=_debug_overlays,
-    )
 
-    # Generate HTML
+    if use_ir:
+        # Compact IR path: ship pure-graph facts; viz.js derives the
+        # scene client-side via assets/scene_builder.js. No 2^N
+        # expansion-state precompute. See PRD #88.
+        ir = build_graph_ir(flat_graph)
+        initial_expansion = build_expansion_state(flat_graph, depth)
+        graph_data = {
+            "nodes": [],
+            "edges": [],
+            "meta": {
+                "ir": asdict(ir),
+                "initial_expansion": initial_expansion,
+                "theme_preference": theme,
+                "show_types": show_types,
+                "separate_outputs": separate_outputs,
+                "show_inputs": show_inputs,
+                "show_bounded_inputs": show_bounded_inputs,
+                "debug_overlays": _debug_overlays,
+            },
+        }
+    else:
+        graph_data = render_graph(
+            flat_graph,
+            depth=depth,
+            theme=theme,
+            show_types=show_types,
+            separate_outputs=separate_outputs,
+            show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
+            debug_overlays=_debug_overlays,
+        )
+
     html_content = generate_widget_html(graph_data)
 
     # If output path specified, save to HTML file

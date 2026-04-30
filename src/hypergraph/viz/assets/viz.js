@@ -1384,6 +1384,12 @@
     var manualTheme = manState[0], setManualTheme = manState[1];
     var expState = useState(function() {
       var map = new Map();
+      // IR mode: seed from meta.initial_expansion (Python computed it from depth=N).
+      var initial = initialData.meta && initialData.meta.initial_expansion;
+      if (initial) {
+        Object.keys(initial).forEach(function(k) { map.set(k, !!initial[k]); });
+      }
+      // Legacy mode: seed from PIPELINE node isExpanded flags.
       initialData.nodes.forEach(function(n) {
         if (n.data && n.data.nodeType === 'PIPELINE') map.set(n.id, n.data.isExpanded || false);
       });
