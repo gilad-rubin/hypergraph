@@ -409,7 +409,7 @@ class TestAsyncRunnerRun:
         outer = Graph([inner.as_node()])
         runner = AsyncRunner()
 
-        result = await runner.run(outer, {"x": 5})
+        result = await runner.run(outer, {"inner.x": 5})
 
         assert result["doubled"] == 10
 
@@ -419,7 +419,7 @@ class TestAsyncRunnerRun:
         outer = Graph([inner.as_node(), async_add.with_inputs(a="doubled")])
         runner = AsyncRunner()
 
-        result = await runner.run(outer, {"x": 5, "b": 3})
+        result = await runner.run(outer, {"inner.x": 5, "b": 3})
 
         assert result["sum"] == 13
 

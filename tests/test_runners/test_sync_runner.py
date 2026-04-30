@@ -397,7 +397,7 @@ class TestSyncRunnerRun:
         outer = Graph([inner.as_node()])
         runner = SyncRunner()
 
-        result = runner.run(outer, {"x": 5})
+        result = runner.run(outer, {"inner.x": 5})
 
         assert result["doubled"] == 10
 
@@ -412,7 +412,7 @@ class TestSyncRunnerRun:
         )
         runner = SyncRunner()
 
-        result = runner.run(outer, {"x": 5, "b": 3})
+        result = runner.run(outer, {"inner.x": 5, "b": 3})
 
         assert result["sum"] == 13
 
@@ -423,7 +423,12 @@ class TestSyncRunnerRun:
         outer = Graph([middle.as_node()])
         runner = SyncRunner()
 
-        result = runner.run(outer, {"x": 5})
+        # x is private at innermost (consumed by GraphNode middle), and middle has a leaf
+        # increment that consumes x → x is declared at middle scope (via increment.x).
+        # Wait: increment.with_inputs(x="doubled") renames x to doubled, so increment
+        # consumes "doubled", not "x". The innermost GraphNode consumes "x" privately.
+        # At outer, middle is GraphNode and has private "x" → outer.x = "middle.innermost.x"
+        result = runner.run(outer, {"middle.innermost.x": 5})
 
         assert result["incremented"] == 11  # (5*2) + 1
 
