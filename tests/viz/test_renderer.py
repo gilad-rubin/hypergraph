@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from hypergraph import END, Graph, interrupt, node, route
+from hypergraph import END, Graph, ifelse, interrupt, node, route
 from hypergraph.viz import visualize
 from hypergraph.viz.renderer import render_graph
 
@@ -683,3 +683,61 @@ class TestNodeToParentMap:
 
         # Flat graph has no parent relationships
         assert node_to_parent == {}
+
+
+class TestExclusiveBranchEdges:
+    """Edges from mutex producers feeding the same consumer get marked exclusive."""
+
+    @staticmethod
+    def _build_ifelse_merge_graph() -> Graph:
+        @ifelse(when_true="branch_a", when_false="branch_b")
+        def decide(x: int) -> bool:
+            return x > 0
+
+        @node(output_name="result")
+        def branch_a(x: int) -> str:
+            return "a"
+
+        @node(output_name="result")
+        def branch_b(x: int) -> str:
+            return "b"
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        return Graph([decide, branch_a, branch_b, consumer])
+
+    def test_merged_mode_marks_exclusive(self):
+        graph = self._build_ifelse_merge_graph()
+        result = render_graph(graph.to_flat_graph(), separate_outputs=False)
+
+        data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
+        assert len(data_edges) == 2
+        assert all(e["target"] == "consumer" for e in data_edges)
+        assert all(e["data"]["exclusive"] is True for e in data_edges)
+
+    def test_separate_mode_marks_exclusive(self):
+        graph = self._build_ifelse_merge_graph()
+        result = render_graph(graph.to_flat_graph(), separate_outputs=True)
+
+        consumer_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumer"]
+        assert len(consumer_edges) == 2
+        assert {e["source"] for e in consumer_edges} == {"data_branch_a_result", "data_branch_b_result"}
+        assert all(e["data"]["exclusive"] is True for e in consumer_edges)
+
+    def test_linear_data_edges_not_marked(self):
+        @node(output_name="x")
+        def first() -> int:
+            return 1
+
+        @node(output_name="y")
+        def second(x: int) -> int:
+            return x + 1
+
+        graph = Graph([first, second])
+        result = render_graph(graph.to_flat_graph())
+
+        data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
+        assert len(data_edges) == 1
+        assert data_edges[0]["data"]["exclusive"] is False

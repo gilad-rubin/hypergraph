@@ -14,6 +14,7 @@ import networkx as nx
 from hypergraph.viz._common import (
     build_output_to_producer_map,
     build_param_to_consumer_map,
+    compute_exclusive_data_edges,
     is_descendant_of,
     is_node_visible,
 )
@@ -261,6 +262,7 @@ def add_merged_output_edges(
     """
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state)
     output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
+    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
 
     for source, target, edge_data in flat_graph.edges(data=True):
         if not is_node_visible(source, flat_graph, expansion_state):
@@ -375,6 +377,7 @@ def add_merged_output_edges(
             if value_name:
                 edge_id = f"e_{actual_source}_{value_name}_{actual_target}"
 
+            is_exclusive = (source, target, value_name) in exclusive_data_edges
             rf_edge = {
                 "id": edge_id,
                 "source": actual_source,
@@ -384,6 +387,7 @@ def add_merged_output_edges(
                 "data": {
                     "edgeType": edge_type,
                     "valueName": value_name,
+                    "exclusive": is_exclusive,
                 },
             }
 
@@ -404,6 +408,7 @@ def add_separate_output_edges(
     """
     output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
+    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
 
     # 1. Add edges from function nodes to their DATA nodes
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -506,6 +511,7 @@ def add_separate_output_edges(
 
                 edge_id = f"e_{data_node_id}_to_{actual_target}"
 
+                is_exclusive = (source, target, value_name) in exclusive_data_edges
                 edges.append(
                     {
                         "id": edge_id,
@@ -516,6 +522,7 @@ def add_separate_output_edges(
                         "data": {
                             "edgeType": "data",
                             "valueName": value_name,
+                            "exclusive": is_exclusive,
                         },
                     }
                 )

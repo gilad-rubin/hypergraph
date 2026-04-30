@@ -22,6 +22,7 @@ from hypergraph.viz._common import (
     build_expansion_state,
     build_output_to_producer_map,
     build_param_to_consumer_map,
+    compute_exclusive_data_edges,
     is_descendant_of,
     is_node_visible,
 )
@@ -312,6 +313,7 @@ def _render_merged_edges(
         flat_graph,
         expansion_state,
     )
+    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     seen_edges: set[tuple[str, str, str]] = set()
 
     for source, target, edge_data in flat_graph.edges(data=True):
@@ -374,7 +376,8 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            lines.append(_format_edge(actual_source, actual_target, None))
+            is_exclusive = (source, target, value_name) in exclusive_data_edges
+            lines.append(_format_edge(actual_source, actual_target, None, exclusive=is_exclusive))
 
     return lines
 
@@ -393,6 +396,7 @@ def _render_separate_edges(
         expansion_state,
         use_deepest=True,
     )
+    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     seen_edges: set[tuple[str, ...]] = set()
 
     # Function → DATA edges
@@ -436,7 +440,8 @@ def _render_separate_edges(
                 edge_key = (_sanitize_id(data_id), _sanitize_id(target))
                 if edge_key not in seen_edges:
                     seen_edges.add(edge_key)
-                    lines.append(_format_edge(data_id, target, value_name))
+                    is_exclusive = (source, target, value_name) in exclusive_data_edges
+                    lines.append(_format_edge(data_id, target, value_name, exclusive=is_exclusive))
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
@@ -472,12 +477,14 @@ def _format_edge(
     source: str,
     target: str,
     label: str | None,
+    exclusive: bool = False,
 ) -> str:
-    """Format a solid-arrow Mermaid edge."""
+    """Format a Mermaid data edge; dashed when fed by mutex producers."""
     s, t = _sanitize_id(source), _sanitize_id(target)
+    arrow = "-.->" if exclusive else "-->"
     if label:
-        return f"    {s} -->|{label}| {t}"
-    return f"    {s} --> {t}"
+        return f"    {s} {arrow}|{label}| {t}"
+    return f"    {s} {arrow} {t}"
 
 
 def _format_ordering_edge(source: str, target: str, label: str) -> str:
