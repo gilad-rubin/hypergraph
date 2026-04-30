@@ -418,7 +418,7 @@ class VizDebugger:
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
-            ScrollablePipelineWidget if output is None, otherwise None
+            A cell-output object when displayed in a notebook, otherwise None.
 
         Example:
             >>> debugger = graph.debug_viz()

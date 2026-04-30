@@ -18,8 +18,37 @@ import tempfile
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.viz._common import get_expandable_nodes
 from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph
+from hypergraph.viz.renderer.ir_builder import build_graph_ir
+from hypergraph.viz.scene_builder import build_initial_scene
+
+
+def scene_for_state(
+    graph_or_flat,
+    *,
+    expansion_state: dict[str, bool] | None = None,
+    expand_all: bool = False,
+    separate_outputs: bool = False,
+    show_inputs: bool = True,
+) -> dict:
+    """Build a single-state ``{"nodes", "edges"}`` scene via the IR + scene_builder.
+
+    This is the Python twin of ``assets/scene_builder.js``. Tests assert
+    against this shape; the JS port must produce semantically equivalent
+    output for the same IR.
+    """
+    flat = graph_or_flat.to_flat_graph() if hasattr(graph_or_flat, "to_flat_graph") else graph_or_flat
+    if expansion_state is None:
+        expansion_state = {n: True for n in get_expandable_nodes(flat)} if expand_all else {}
+    ir = build_graph_ir(flat)
+    return build_initial_scene(
+        ir,
+        expansion_state=expansion_state,
+        separate_outputs=separate_outputs,
+        show_inputs=show_inputs,
+    )
 
 
 def _check_playwright_available() -> bool:

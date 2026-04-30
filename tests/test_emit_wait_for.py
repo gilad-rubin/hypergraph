@@ -461,7 +461,7 @@ class TestVizOrderingEdges:
     """Ordering edges appear in visualization with correct style."""
 
     def test_ordering_edges_in_merged_mode(self):
-        """Ordering edges appear in merged output mode."""
+        """Ordering edges appear in merged output mode with the correct semantic flag."""
         from hypergraph.viz.renderer import render_graph
 
         @node(output_name="a", emit="a_done")
@@ -480,11 +480,9 @@ class TestVizOrderingEdges:
         edge = ordering_edges[0]
         assert edge["source"] == "step_a"
         assert edge["target"] == "step_b"
-        assert edge["style"]["stroke"] == "#8b5cf6"
-        assert "strokeDasharray" in edge["style"]
 
     def test_ordering_edges_in_separate_mode(self):
-        """Ordering edges appear in separate output mode."""
+        """Ordering edges still carry the semantic ``edgeType`` flag in separate mode."""
         from hypergraph.viz.renderer import render_graph
 
         @node(output_name="a", emit="a_done")
@@ -503,7 +501,6 @@ class TestVizOrderingEdges:
         edge = ordering_edges[0]
         assert edge["source"] == "step_a"
         assert edge["target"] == "step_b"
-        assert edge["style"]["stroke"] == "#8b5cf6"
 
     def test_emit_sentinels_not_in_data_outputs_nx(self):
         """NetworkX graph stores data_outputs separate from outputs."""

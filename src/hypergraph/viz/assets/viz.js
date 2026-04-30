@@ -49,6 +49,13 @@
   // ║  Section 1: Constants + Helpers                          ║
   // ╚═══════════════════════════════════════════════════════════╝
 
+  // Frozen singletons for `|| EMPTY_OBJ` / `|| EMPTY_ARR` fallbacks in
+  // App body. A fresh `{}` / `[]` literal at component-body scope
+  // re-allocates every render and, if it ends up in a hook dep array,
+  // produces an unbounded render loop. See DEBUGGING.md § Performance.
+  var EMPTY_OBJ = Object.freeze({});
+  var EMPTY_ARR = Object.freeze([]);
+
   var TYPE_HINT_MAX_CHARS = 25;
   var NODE_LABEL_MAX_CHARS = 25;
   var CHAR_WIDTH_PX = 7;
@@ -1301,12 +1308,21 @@
     var themePreference = props.themePreference;
     var panOnScroll = props.panOnScroll;
 
+    // Render-count tripwire (PR #88, Stage 5). The pre-IR live widget
+    // had a hook-deps bug that triggered ~10,000 App renders per click;
+    // tests reset this counter, click an expandable, then assert the
+    // delta stays under a small ceiling.
+    var renderCountRef = useRef(0);
+    renderCountRef.current += 1;
+    root.__hypergraphAppRenderCount = renderCountRef.current;
+
     var sepState = useState(props.initialSeparateOutputs);
     var separateOutputs = sepState[0], setSeparateOutputs = sepState[1];
     var typState = useState(props.initialShowTypes);
     var showTypes = typState[0], setShowTypes = typState[1];
     var inputsState = useState(props.initialShowInputs);
     var showInputs = inputsState[0], setShowInputs = inputsState[1];
+    var showBoundedInputs = !!props.initialShowBoundedInputs;
 
     // Edge convergence state (dev-only controls)
     var convState = useState(EDGE_CONVERGE_TO_CENTER);
@@ -1377,6 +1393,12 @@
     var manualTheme = manState[0], setManualTheme = manState[1];
     var expState = useState(function() {
       var map = new Map();
+      // IR mode: seed from meta.initial_expansion (Python computed it from depth=N).
+      var initial = initialData.meta && initialData.meta.initial_expansion;
+      if (initial) {
+        Object.keys(initial).forEach(function(k) { map.set(k, !!initial[k]); });
+      }
+      // Legacy mode: seed from PIPELINE node isExpanded flags.
       initialData.nodes.forEach(function(n) {
         if (n.data && n.data.nodeType === 'PIPELINE') map.set(n.id, n.data.isExpanded || false);
       });
@@ -1384,18 +1406,10 @@
     });
     var expansionState = expState[0], setExpansionState = expState[1];
 
-    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
-    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
-    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
-
-    var expansionStateToKey = function(es, sep, showInputs) {
-      var sepKey = 'sep:' + (sep ? '1' : '0');
-      var extKey = 'ext:' + (showInputs ? '1' : '0');
-      if (!expandableNodes.length) return sepKey + '|' + extKey;
-      var parts = [];
-      expandableNodes.forEach(function(id) { parts.push(id + ':' + (es.get(id) ? '1' : '0')); });
-      return parts.join(',') + '|' + sepKey + '|' + extKey;
-    };
+    // Pure-graph facts shipped in meta.ir; scene_builder re-derives the
+    // visible nodes/edges client-side on every state change. The legacy
+    // edgesByState/nodesByState 2^N precompute is gone (PR #88, stage 1).
+    var ir = (initialData.meta && initialData.meta.ir) || null;
 
     var nsState = useNodesState([]);
     var rfNodes = nsState[0], setNodes = nsState[1], onNodesChange = nsState[2];
@@ -1445,16 +1459,32 @@
       });
     }, []);
 
-    // Select precomputed nodes
+    // Build the scene once per (state, options, ir) tuple; nodes/edges
+    // are projected from the same memoized result so we don't double the
+    // derivation work and so schemaVersionMismatch is observed exactly once.
+    var scene = useMemo(function() {
+      if (!ir || !root.HypergraphSceneBuilder) return null;
+      var stateObj = {};
+      expansionState.forEach(function(v, k) { stateObj[k] = v; });
+      return root.HypergraphSceneBuilder.buildInitialScene(ir, {
+        expansionState: stateObj,
+        separateOutputs: separateOutputs,
+        showInputs: showInputs,
+        showBoundedInputs: showBoundedInputs,
+      });
+    }, [expansionState, separateOutputs, showInputs, showBoundedInputs, ir]);
+
+    var schemaMismatch = scene && scene.schemaVersionMismatch ? scene.schemaVersionMismatch : null;
+
+    // Select scene nodes for the current state via scene_builder.
     var selectedNodes = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
-      var base = Object.prototype.hasOwnProperty.call(nodesByState, key)
-        ? nodesByState[key]
-        : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
-          ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
-          : initialData.nodes);
-      return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes]);
+      if (!scene) {
+        return (initialData.nodes || EMPTY_ARR).map(function(n) {
+          return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } };
+        });
+      }
+      return scene.nodes.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
+    }, [scene, activeTheme, showTypes, separateOutputs, initialData.nodes]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1500,13 +1530,11 @@
       else setManualTheme(null);
     }, [manualTheme, activeTheme]);
 
-    // Select edges
+    // Select scene edges for the current state via scene_builder.
     var selectedEdges = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
-      if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
-      var fallback = expansionStateToKey(expansionState, separateOutputs, true);
-      return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, showInputs, edgesByState, initialData.edges]);
+      if (!scene) return (initialData.edges || EMPTY_ARR);
+      return scene.edges;
+    }, [scene, initialData.edges]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1783,6 +1811,13 @@
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
         <//>
+        ${schemaMismatch ? html`
+          <div data-testid="hypergraph-schema-banner"
+               className="absolute top-2 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-md text-xs font-mono bg-slate-900/85 text-amber-200 border border-amber-500/40 shadow pointer-events-auto z-50">
+            Visualization needs an updated runtime — showing static view.
+            <span className="ml-2 text-amber-400/80">(IR v${schemaMismatch.got || '?'}, runtime v${schemaMismatch.supported})</span>
+          </div>
+        ` : null}
         ${(!isLayouting && (layoutError || !layoutedNodes.length)) ? html`
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
             <div className="px-4 py-2 rounded-lg border text-xs font-mono bg-slate-900/80 text-amber-200 border-amber-500/40 shadow-lg pointer-events-auto">
@@ -1806,7 +1841,8 @@
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
-          initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)} />
+          initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)}
+          initialShowBoundedInputs=${Boolean(initialData.meta && initialData.meta.show_bounded_inputs)} />
       <//>
     `);
     if (fallback) fallback.remove();

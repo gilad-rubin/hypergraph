@@ -21,13 +21,12 @@ from hypergraph.viz.debug import (
     validate_graph,
 )
 from hypergraph.viz.mermaid import MermaidDiagram, to_mermaid
-from hypergraph.viz.widget import ScrollablePipelineWidget, visualize
+from hypergraph.viz.widget import visualize
 
 __all__ = [
     "MermaidDiagram",
     "RenderedDebugData",
     "RenderedEdge",
-    "ScrollablePipelineWidget",
     "VizDebugger",
     "extract_debug_data",
     "find_issues",
