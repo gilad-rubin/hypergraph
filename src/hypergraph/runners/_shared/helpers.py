@@ -335,14 +335,25 @@ def get_value_source(
     if param in state.values:
         return (ValueSource.EDGE, state.values[param])
 
-    # 2. Input value (from run() call)
+    # 2. Input value (from run() call). For GraphNodes, a dot-pathed entry
+    # ("<node_name>.<param>") addresses a private input of the subgraph and
+    # takes precedence over a bare flat name (which only auto-links when the
+    # name is declared at this scope).
+    if isinstance(node, GraphNode):
+        dotted = f"{node.name}.{param}"
+        if dotted in provided_values:
+            return (ValueSource.PROVIDED, provided_values[dotted])
     if param in provided_values:
         return (ValueSource.PROVIDED, provided_values[param])
 
-    # 3. Bound value resolved at this graph boundary.
-    # graph.inputs.bound includes this graph's own bindings plus any unique,
-    # non-ambiguous nested GraphNode bindings that are intentionally exposed as
-    # outer defaults.
+    # 3. Bound value resolved at this graph boundary. Under lexical scope,
+    # graph.inputs.bound holds either flat keys (auto-linked at this scope) or
+    # dot-pathed keys for inputs private to a child subgraph. For GraphNode
+    # children we look up the dot-pathed key first.
+    if isinstance(node, GraphNode):
+        dotted = f"{node.name}.{param}"
+        if dotted in graph.inputs.bound:
+            return (ValueSource.BOUND, graph.inputs.bound[dotted])
     if param in graph.inputs.bound:
         return (ValueSource.BOUND, graph.inputs.bound[param])
 
@@ -820,6 +831,8 @@ def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
 
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if a single input parameter is available."""
+    from hypergraph.nodes.graph_node import GraphNode
+
     # Value in state (from edge or initial input)
     if param in state.values:
         return True
@@ -827,6 +840,12 @@ def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> 
     # Bound value in graph
     if param in graph.inputs.bound:
         return True
+
+    # GraphNode private input addressed by dot-path at this scope
+    if isinstance(node, GraphNode):
+        dotted = f"{node.name}.{param}"
+        if dotted in state.values or dotted in graph.inputs.bound:
+            return True
 
     # Node has default for this parameter
     return bool(node.has_default_for(param))

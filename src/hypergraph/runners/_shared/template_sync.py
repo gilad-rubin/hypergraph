@@ -209,6 +209,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             values,
             input_values,
             reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
+            graph=graph,
         )
 
         # Structural validation (doesn't depend on values)
@@ -559,6 +560,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             values,
             input_values,
             reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
+            graph=graph,
         )
 
         # Resolve show_progress and merge processors

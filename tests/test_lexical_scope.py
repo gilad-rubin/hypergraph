@@ -10,7 +10,10 @@ old lift/promote machinery) are not asserted here.
 
 from __future__ import annotations
 
+import pytest
+
 from hypergraph import Graph, node
+from hypergraph.runners import SyncRunner
 
 
 def test_sibling_subgraphs_private_inputs_appear_as_dot_paths():
@@ -36,3 +39,35 @@ def test_sibling_subgraphs_private_inputs_appear_as_dot_paths():
     assert outer.inputs.bound == {"A.overwrite": True}
     assert "overwrite" not in outer.inputs.required
     assert "overwrite" not in outer.inputs.bound
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param({"A.overwrite": True, "B.overwrite": False}, id="dot-path"),
+        pytest.param({"A": {"overwrite": True}, "B": {"overwrite": False}}, id="nested-dict"),
+    ],
+)
+def test_run_addresses_private_inputs_by_dot_path_or_nested_dict(values):
+    """Dot-path and nested-dict forms route a value to the right subgraph.
+
+    Both forms must produce identical results -- they are two surfaces over the
+    same canonical addressing.
+    """
+
+    @node(output_name="out_a")
+    def use_a(overwrite: bool) -> str:
+        return f"A:{overwrite}"
+
+    @node(output_name="out_b")
+    def use_b(overwrite: bool) -> str:
+        return f"B:{overwrite}"
+
+    inner_a = Graph([use_a], name="A")
+    inner_b = Graph([use_b], name="B")
+    outer = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+
+    result = SyncRunner().run(outer, values)
+
+    assert result["out_a"] == "A:True"
+    assert result["out_b"] == "B:False"
