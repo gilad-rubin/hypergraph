@@ -12,18 +12,12 @@ import networkx as nx
 
 from hypergraph.viz._common import get_expandable_nodes
 from hypergraph.viz.ir_schema import GraphIR, IREdge, IRExternalInput, IRNode
+from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.scope import compute_deepest_input_scope, get_deepest_consumers
 
 
 def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
-    nodes = [
-        IRNode(
-            id=node_id,
-            node_type=attrs.get("node_type", "FUNCTION"),
-            parent=attrs.get("parent"),
-        )
-        for node_id, attrs in flat_graph.nodes(data=True)
-    ]
+    nodes = [_build_ir_node(node_id, attrs) for node_id, attrs in flat_graph.nodes(data=True)]
     edges = [
         IREdge(
             source=src,
@@ -48,4 +42,30 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
         edges=edges,
         expandable_nodes=get_expandable_nodes(flat_graph),
         external_inputs=external_inputs,
+    )
+
+
+def _build_ir_node(node_id: str, attrs: dict) -> IRNode:
+    output_types = attrs.get("output_types", {})
+    outputs = tuple({"name": out, "type": format_type(output_types.get(out))} for out in attrs.get("outputs", ()))
+
+    input_types = attrs.get("input_types", {})
+    has_defaults = attrs.get("has_defaults", {})
+    inputs = tuple(
+        {
+            "name": param,
+            "type": format_type(input_types.get(param)),
+            "has_default": has_defaults.get(param, False),
+        }
+        for param in attrs.get("inputs", ())
+    )
+
+    return IRNode(
+        id=node_id,
+        node_type=attrs.get("node_type", "FUNCTION"),
+        parent=attrs.get("parent"),
+        label=attrs.get("label"),
+        outputs=outputs,
+        inputs=inputs,
+        branch_data=attrs.get("branch_data"),
     )

@@ -17,6 +17,10 @@ class IRNode:
     id: str
     node_type: str
     parent: str | None = None
+    label: str | None = None
+    outputs: tuple[dict, ...] = ()
+    inputs: tuple[dict, ...] = ()
+    branch_data: dict | None = None
 
 
 @dataclass(frozen=True)

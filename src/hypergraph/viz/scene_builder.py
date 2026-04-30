@@ -26,14 +26,43 @@ def build_initial_scene(
     scene_nodes: list[dict[str, Any]] = []
 
     for ir_node in ir.nodes:
-        scene_nodes.append(
-            {
-                "id": ir_node.id,
-                "data": {"nodeType": _scene_node_type(ir_node.node_type), "label": ir_node.id},
-                "parentNode": ir_node.parent,
-                "hidden": _ancestor_collapsed(ir_node.id, parent_map, expansion_state),
-            }
-        )
+        is_expanded = expansion_state.get(ir_node.id, False) if ir_node.node_type == "GRAPH" else None
+        scene_node_type = _scene_node_type(ir_node.node_type)
+        rf_type = "pipelineGroup" if scene_node_type == "PIPELINE" and is_expanded else "custom"
+
+        data = {
+            "nodeType": scene_node_type,
+            "label": ir_node.label or ir_node.id,
+            "separateOutputs": separate_outputs,
+            "inputs": [{**i, "is_bound": False} for i in ir_node.inputs],
+        }
+        if not separate_outputs and scene_node_type in ("FUNCTION", "PIPELINE"):
+            data["outputs"] = list(ir_node.outputs)
+        if scene_node_type == "PIPELINE":
+            data["isExpanded"] = bool(is_expanded)
+        if ir_node.branch_data:
+            if "when_true" in ir_node.branch_data:
+                data["whenTrueTarget"] = ir_node.branch_data["when_true"]
+                data["whenFalseTarget"] = ir_node.branch_data["when_false"]
+            if "targets" in ir_node.branch_data:
+                data["targets"] = ir_node.branch_data["targets"]
+
+        scene_node = {
+            "id": ir_node.id,
+            "type": rf_type,
+            "position": {"x": 0, "y": 0},
+            "data": data,
+            "sourcePosition": "bottom",
+            "targetPosition": "top",
+            "hidden": _ancestor_collapsed(ir_node.id, parent_map, expansion_state),
+        }
+        if ir_node.parent is not None:
+            scene_node["parentNode"] = ir_node.parent
+            scene_node["extent"] = "parent"
+        if scene_node_type == "PIPELINE" and is_expanded:
+            scene_node["style"] = {"width": 600, "height": 400}
+
+        scene_nodes.append(scene_node)
 
     for ext in ir.external_inputs:
         scene_nodes.append(

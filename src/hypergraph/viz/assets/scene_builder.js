@@ -53,14 +53,57 @@
 
     var sceneNodes = [];
 
+    var separateOutputs = !!opts.separateOutputs;
+
     for (var j = 0; j < ir.nodes.length; j++) {
       var irNode = ir.nodes[j];
-      sceneNodes.push({
-        id: irNode.id,
-        data: { nodeType: scenenodeType(irNode.node_type), label: irNode.id },
-        parentNode: irNode.parent,
-        hidden: ancestorCollapsed(irNode.id, parentMap, expansionState),
+      var sceneType = scenenodeType(irNode.node_type);
+      var isExpanded = irNode.node_type === 'GRAPH' ? !!expansionState[irNode.id] : null;
+      var rfType = sceneType === 'PIPELINE' && isExpanded ? 'pipelineGroup' : 'custom';
+
+      var inputs = (irNode.inputs || []).map(function (i) {
+        return Object.assign({}, i, { is_bound: false });
       });
+
+      var data = {
+        nodeType: sceneType,
+        label: irNode.label || irNode.id,
+        separateOutputs: separateOutputs,
+        inputs: inputs,
+      };
+      if (!separateOutputs && (sceneType === 'FUNCTION' || sceneType === 'PIPELINE')) {
+        data.outputs = (irNode.outputs || []).slice();
+      }
+      if (sceneType === 'PIPELINE') {
+        data.isExpanded = !!isExpanded;
+      }
+      if (irNode.branch_data) {
+        if (irNode.branch_data.when_true) {
+          data.whenTrueTarget = irNode.branch_data.when_true;
+          data.whenFalseTarget = irNode.branch_data.when_false;
+        }
+        if (irNode.branch_data.targets) {
+          data.targets = irNode.branch_data.targets;
+        }
+      }
+
+      var sceneNode = {
+        id: irNode.id,
+        type: rfType,
+        position: { x: 0, y: 0 },
+        data: data,
+        sourcePosition: 'bottom',
+        targetPosition: 'top',
+        hidden: ancestorCollapsed(irNode.id, parentMap, expansionState),
+      };
+      if (irNode.parent) {
+        sceneNode.parentNode = irNode.parent;
+        sceneNode.extent = 'parent';
+      }
+      if (sceneType === 'PIPELINE' && isExpanded) {
+        sceneNode.style = { width: 600, height: 400 };
+      }
+      sceneNodes.push(sceneNode);
     }
 
     var externalInputs = ir.external_inputs || [];
