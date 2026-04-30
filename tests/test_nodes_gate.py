@@ -42,26 +42,56 @@ class TestENDSentinel:
         assert END in targets
         assert "process" in targets
 
-    def test_external_string_collision_rejected(self):
+    def test_external_string_collision_rejected_during_graph_run(self):
         """A gate returning the raw underlying value (e.g. from an LLM)
-        must raise rather than silently terminate."""
+        must raise during graph execution, not silently terminate.
+
+        This guards the runner path (execute_route -> validate_routing_decision),
+        which calls node.func directly and bypasses RouteNode.__call__.
+        Set membership in valid_targets would otherwise accept the collision
+        because hash and __eq__ both match END.
+        """
+        from hypergraph import Graph, SyncRunner, node
+
+        @node(output_name="x")
+        def start() -> int:
+            return 1
 
         @route(targets=["a", END])
         def collision_gate(x: int) -> str:
-            return "__hg_end__"  # external string equal to END but not the singleton
+            return "__hg_end__"  # collides with END's underlying value
 
+        @node(output_name="result")
+        def a(x: int) -> int:
+            return x
+
+        graph = Graph([start, collision_gate, a])
         with pytest.raises(ValueError, match="not the END sentinel"):
-            collision_gate(1)
+            SyncRunner().run(graph)
 
-    def test_external_string_collision_rejected_in_list(self):
+    def test_external_string_collision_rejected_in_multi_target_list(self):
         """Collision detection must recurse into multi_target lists."""
+        from hypergraph import Graph, SyncRunner, node
+
+        @node(output_name="x")
+        def start() -> int:
+            return 1
 
         @route(targets=["a", "b", END], multi_target=True)
         def multi_gate(x: int) -> list[str]:
             return ["a", "__hg_end__"]  # one good item, one collision
 
+        @node(output_name="ra")
+        def a(x: int) -> int:
+            return x
+
+        @node(output_name="rb")
+        def b(x: int) -> int:
+            return x
+
+        graph = Graph([start, multi_gate, a, b])
         with pytest.raises(ValueError, match="not the END sentinel"):
-            multi_gate(1)
+            SyncRunner().run(graph)
 
 
 # =============================================================================

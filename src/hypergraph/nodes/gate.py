@@ -294,9 +294,7 @@ class RouteNode(GateNode):
 
     def __call__(self, *args: Any, **kwargs: Any) -> str | list | None:
         """Call the routing function directly."""
-        result = self.func(*args, **kwargs)
-        _check_no_end_collision(result, self.name)
-        return result
+        return self.func(*args, **kwargs)
 
     def __repr__(self) -> str:
         """Informative string representation."""
