@@ -1308,6 +1308,14 @@
     var themePreference = props.themePreference;
     var panOnScroll = props.panOnScroll;
 
+    // Render-count tripwire (PR #88, Stage 5). The pre-IR live widget
+    // had a hook-deps bug that triggered ~10,000 App renders per click;
+    // tests reset this counter, click an expandable, then assert the
+    // delta stays under a small ceiling.
+    var renderCountRef = useRef(0);
+    renderCountRef.current += 1;
+    root.__hypergraphAppRenderCount = renderCountRef.current;
+
     var sepState = useState(props.initialSeparateOutputs);
     var separateOutputs = sepState[0], setSeparateOutputs = sepState[1];
     var typState = useState(props.initialShowTypes);
