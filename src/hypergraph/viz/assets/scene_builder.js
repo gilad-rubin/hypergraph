@@ -171,6 +171,11 @@
           if (visibleProducerOutputs && !visibleProducerOutputs[pout.name]) continue;
           var dataId = 'data_' + producer.id + '_' + pout.name;
           var ancestorHidden = ancestorCollapsed(producer.id, parentMap, expansionState);
+          // When a GRAPH container itself is expanded the data edge is
+          // re-routed to the internal producer's DATA node, leaving the
+          // container-level DATA node disconnected. Hide it so it doesn't
+          // render as an orphan duplicate.
+          var selfExpanded = producer.node_type === 'GRAPH' && !!expansionState[producer.id];
           var dataNode = {
             id: dataId,
             type: 'custom',
@@ -184,7 +189,7 @@
             },
             sourcePosition: 'bottom',
             targetPosition: 'top',
-            hidden: ancestorHidden,
+            hidden: ancestorHidden || selfExpanded,
           };
           if (producer.parent) {
             dataNode.parentNode = producer.parent;

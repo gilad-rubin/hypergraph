@@ -152,6 +152,11 @@ def build_initial_scene(
                     continue
                 data_node_id = f"data_{ir_node.id}_{out['name']}"
                 ancestor_hidden = _ancestor_collapsed(ir_node.id, parent_map, expansion_state)
+                # When a GRAPH container itself is expanded the data edge is
+                # re-routed to the internal producer's DATA node, leaving
+                # the container-level DATA node disconnected. Hide it so it
+                # doesn't render as an orphan duplicate.
+                self_expanded = ir_node.node_type == "GRAPH" and bool(expansion_state.get(ir_node.id))
                 scene_node: dict[str, Any] = {
                     "id": data_node_id,
                     "type": "custom",
@@ -165,7 +170,7 @@ def build_initial_scene(
                     },
                     "sourcePosition": "bottom",
                     "targetPosition": "top",
-                    "hidden": ancestor_hidden,
+                    "hidden": ancestor_hidden or self_expanded,
                 }
                 if ir_node.parent is not None:
                     scene_node["parentNode"] = ir_node.parent

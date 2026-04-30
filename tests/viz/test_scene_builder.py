@@ -204,6 +204,27 @@ def test_multi_value_edge_emits_one_scene_edge_per_value_merged_mode():
     assert value_names == {"a", "b"}, f"Expected one edge per value name; got {value_names}"
 
 
+def test_expanded_graph_container_data_nodes_are_hidden_in_separate_mode():
+    """When a GRAPH container is expanded in separate_outputs mode, the
+    data edge is re-routed to the internal producer's DATA node, leaving
+    the container-level DATA node disconnected. It must be hidden so it
+    doesn't render as an orphan duplicate."""
+    flat_graph = make_workflow().to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(
+        ir,
+        expansion_state={"preprocess": True},
+        separate_outputs=True,
+    )
+
+    container_data = [n for n in scene["nodes"] if n["id"].startswith("data_preprocess_") and n["data"]["nodeType"] == "DATA"]
+    assert container_data, "preprocess container DATA nodes missing from scene"
+    assert all(n["hidden"] for n in container_data), (
+        f"Expanded-container DATA nodes must be hidden; got visible: {[n['id'] for n in container_data if not n['hidden']]}"
+    )
+
+
 def test_branch_emit_output_connects_to_its_data_node_in_separate_mode():
     """A BRANCH gate with ``emit=...`` produces a DATA node for the
     emitted value; the producer→DATA "output" edge must be emitted so
