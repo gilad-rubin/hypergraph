@@ -9,6 +9,8 @@ These tests verify:
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.viz.renderer import render_graph
+from tests.viz.conftest import scene_for_state
 
 # =============================================================================
 # Test Graph: Generation with nested prompt_building
@@ -83,18 +85,10 @@ class TestEdgeRoutingToInternalNodes:
 
         This is because build_context is the actual consumer of filtered_document.
         """
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_generation_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
-
         # Get pre-computed edges for expanded state
-        edges_by_state = result["meta"]["edgesByState"]
-        expanded_key = "prompt_building:1|sep:0"  # expanded, merged outputs
-
-        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
-        edges = edges_by_state[expanded_key]
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from filter_document_pages
         fdp_edges = [e for e in edges if e["source"] == "filter_document_pages"]
@@ -117,18 +111,10 @@ class TestEdgeRoutingToInternalNodes:
         The flat graph has: filter_document_pages -> prompt_building
         When collapsed, this should remain as-is since internal nodes aren't visible.
         """
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_generation_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=0)
-
         # Get pre-computed edges for collapsed state
-        edges_by_state = result["meta"]["edgesByState"]
-        collapsed_key = "prompt_building:0|sep:0"  # collapsed, merged outputs
-
-        assert collapsed_key in edges_by_state, f"Key {collapsed_key} not found"
-        edges = edges_by_state[collapsed_key]
+        scene = scene_for_state(graph, expansion_state={})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from filter_document_pages
         fdp_edges = [e for e in edges if e["source"] == "filter_document_pages"]
@@ -151,61 +137,28 @@ class TestInputNodePositioning:
     """Test that INPUT nodes are positioned correctly relative to containers."""
 
     def test_internal_only_input_has_owner_container(self):
-        """system_instructions should have ownerContainer=prompt_building when expanded.
-
-        system_instructions is only consumed by get_system_prompt (inside prompt_building).
-        When the container is expanded, the INPUT should be scoped to that container.
-        """
-        from hypergraph.viz.renderer import render_graph
-
+        """system_instructions should have ownerContainer=prompt_building when expanded."""
         graph = make_generation_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True})
 
-        # Find the system_instructions INPUT node
-        input_node = None
-        for item in result["nodes"]:
-            if item["id"] == "input_system_instructions":
-                input_node = item
-                break
-
-        assert input_node is not None, "input_system_instructions node not found"
-
-        owner = input_node["data"].get("ownerContainer")
-        assert owner == "prompt_building", (
-            f"SCOPE BUG!\n"
-            f"Expected: ownerContainer='prompt_building'\n"
-            f"Actual: ownerContainer={owner}\n"
-            f"\nsystem_instructions is only consumed by get_system_prompt\n"
-            f"which is inside prompt_building. It should be scoped to that container."
+        input_node = next(
+            (n for n in scene["nodes"] if n["id"] == "input_system_instructions"),
+            None,
         )
+        assert input_node is not None, "input_system_instructions node not found"
+        assert input_node["data"]["ownerContainer"] == "prompt_building"
 
     def test_external_input_has_no_owner(self):
-        """query should have no ownerContainer (consumed by both inner and outer).
-
-        query is consumed by:
-        - build_prompt (inside prompt_building)
-        - format_response (outside, at root level)
-
-        Since it has consumers at multiple levels, it should stay at root.
-        """
-        from hypergraph.viz.renderer import render_graph
-
+        """query has consumers at multiple levels — its ownerContainer is None at root."""
         graph = make_generation_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True})
 
-        # Find the query INPUT node
-        input_node = None
-        for item in result["nodes"]:
-            if item["id"] == "input_query":
-                input_node = item
-                break
-
+        input_node = next(
+            (n for n in scene["nodes"] if n["id"] == "input_query"),
+            None,
+        )
         assert input_node is not None, "input_query node not found"
-
-        owner = input_node["data"].get("ownerContainer")
-        assert owner is None, f"Expected: ownerContainer=None (query has external consumers)\nActual: ownerContainer={owner}"
+        assert input_node["data"]["ownerContainer"] is None
 
 
 # =============================================================================
@@ -381,57 +334,33 @@ class TestInternalOnlyDataNodes:
     """Test that internal-only DATA nodes have the correct flag."""
 
     def test_context_text_is_internal_only(self):
-        """context_text should be marked as internalOnly.
+        """context_text DATA node should carry ``internalOnly=True``.
 
-        context_text is produced by build_context and consumed by build_prompt.
-        Both are inside prompt_building, so it's internal-only.
+        context_text is produced and consumed entirely inside
+        prompt_building, so its DATA node is internal-only.
         """
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_generation_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, separate_outputs=True)
 
-        # Find the context_text DATA node (from prompt_building/build_context)
-        data_node = None
-        for item in result["nodes"]:
-            if item["id"] == "data_prompt_building/build_context_context_text":
-                data_node = item
-                break
-
-        assert data_node is not None, "data_prompt_building/build_context_context_text node not found"
-
-        internal_only = data_node["data"].get("internalOnly")
-        assert internal_only is True, (
-            f"INTERNAL-ONLY BUG!\n"
-            f"Expected: internalOnly=True\n"
-            f"Actual: internalOnly={internal_only}\n"
-            f"\ncontext_text is produced and consumed entirely within prompt_building."
+        data_node = next(
+            (n for n in scene["nodes"] if n["id"] == "data_prompt_building/build_context_context_text"),
+            None,
         )
+        assert data_node is not None, "data_prompt_building/build_context_context_text node not found"
+        assert data_node["data"]["internalOnly"] is True
 
     def test_chat_messages_is_not_internal_only(self):
-        """chat_messages should NOT be marked as internalOnly.
-
-        chat_messages is produced by build_prompt (inside) but consumed by
-        generate_answer (outside). It has external consumers.
-        """
-        from hypergraph.viz.renderer import render_graph
-
+        """chat_messages DATA node should carry ``internalOnly=False`` —
+        it has an external consumer (``generate_answer``)."""
         graph = make_generation_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+        scene = scene_for_state(graph, expansion_state={"prompt_building": True}, separate_outputs=True)
 
-        # Find the chat_messages DATA node (from prompt_building/build_prompt)
-        data_node = None
-        for item in result["nodes"]:
-            if item["id"] == "data_prompt_building/build_prompt_chat_messages":
-                data_node = item
-                break
-
+        data_node = next(
+            (n for n in scene["nodes"] if n["id"] == "data_prompt_building/build_prompt_chat_messages"),
+            None,
+        )
         assert data_node is not None, "data_prompt_building/build_prompt_chat_messages node not found"
-
-        internal_only = data_node["data"].get("internalOnly")
-        assert internal_only is False, f"Expected: internalOnly=False (chat_messages has external consumer)\nActual: internalOnly={internal_only}"
+        assert data_node["data"]["internalOnly"] is False
 
 
 # =============================================================================
@@ -449,7 +378,6 @@ class TestControlEdgeRouting:
         the edge should go to the container boundary.
         """
         from hypergraph import END, Graph, node, route
-        from hypergraph.viz.renderer import render_graph
 
         @node(output_name="result")
         def inner_step(x: int) -> int:
@@ -461,14 +389,9 @@ class TestControlEdgeRouting:
 
         inner = Graph(nodes=[inner_step], name="inner_graph")
         outer = Graph(nodes=[decide, inner.as_node()], name="outer")
-        flat_graph = outer.to_flat_graph()
 
-        result = render_graph(flat_graph, depth=0)
-        edges_by_state = result["meta"]["edgesByState"]
-        collapsed_key = "inner_graph:0|sep:0"
-
-        assert collapsed_key in edges_by_state
-        edges = edges_by_state[collapsed_key]
+        scene = scene_for_state(outer, expansion_state={})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find control edges from decide (excluding END edges)
         control_edges = [e for e in edges if e["source"] == "decide" and e["target"] != "__end__"]
@@ -485,7 +408,6 @@ class TestControlEdgeRouting:
         the edge should go to the entry point node inside the container.
         """
         from hypergraph import END, Graph, node, route
-        from hypergraph.viz.renderer import render_graph
 
         @node(output_name="result")
         def inner_step(x: int) -> int:
@@ -497,14 +419,9 @@ class TestControlEdgeRouting:
 
         inner = Graph(nodes=[inner_step], name="inner_graph")
         outer = Graph(nodes=[decide, inner.as_node()], name="outer")
-        flat_graph = outer.to_flat_graph()
 
-        result = render_graph(flat_graph, depth=1)
-        edges_by_state = result["meta"]["edgesByState"]
-        expanded_key = "inner_graph:1|sep:0"
-
-        assert expanded_key in edges_by_state
-        edges = edges_by_state[expanded_key]
+        scene = scene_for_state(outer, expansion_state={"inner_graph": True})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find control edges from decide (excluding END edges)
         control_edges = [e for e in edges if e["source"] == "decide" and e["target"] != "__end__"]
@@ -584,18 +501,10 @@ class TestEdgeRoutingIntoExpandedContainer:
         When batch_eval is expanded, the edge carrying eval_pairs should route
         to the actual internal consumer (run_single_eval), not the container.
         """
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_batch_eval_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
-
         # Get pre-computed edges for expanded state
-        edges_by_state = result["meta"]["edgesByState"]
-        expanded_key = "batch_eval:1|sep:0"  # expanded, merged outputs
-
-        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
-        edges = edges_by_state[expanded_key]
+        scene = scene_for_state(graph, expansion_state={"batch_eval": True})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from build_pairs
         bp_edges = [e for e in edges if e["source"] == "build_pairs"]
@@ -614,18 +523,10 @@ class TestEdgeRoutingIntoExpandedContainer:
 
     def test_edge_routes_to_container_when_collapsed(self):
         """Edge from build_pairs should go to batch_eval when collapsed."""
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_batch_eval_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=0)
-
         # Get pre-computed edges for collapsed state
-        edges_by_state = result["meta"]["edgesByState"]
-        collapsed_key = "batch_eval:0|sep:0"
-
-        assert collapsed_key in edges_by_state, f"Key {collapsed_key} not found"
-        edges = edges_by_state[collapsed_key]
+        scene = scene_for_state(graph, expansion_state={})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge from build_pairs
         bp_edges = [e for e in edges if e["source"] == "build_pairs"]
@@ -655,18 +556,10 @@ class TestEdgeRoutingFromExpandedContainer:
         When batch_eval is expanded, the edge carrying eval_results should show
         it comes from the actual internal producer (run_single_eval).
         """
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_batch_eval_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
-
         # Get pre-computed edges for expanded state
-        edges_by_state = result["meta"]["edgesByState"]
-        expanded_key = "batch_eval:1|sep:0"  # expanded, merged outputs
-
-        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
-        edges = edges_by_state[expanded_key]
+        scene = scene_for_state(graph, expansion_state={"batch_eval": True})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge to compute_metrics
         cm_edges = [e for e in edges if e["target"] == "compute_metrics"]
@@ -689,18 +582,10 @@ class TestEdgeRoutingFromExpandedContainer:
 
     def test_edge_from_container_when_collapsed(self):
         """Edge to compute_metrics should come from batch_eval when collapsed."""
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_batch_eval_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=0)
-
         # Get pre-computed edges for collapsed state
-        edges_by_state = result["meta"]["edgesByState"]
-        collapsed_key = "batch_eval:0|sep:0"
-
-        assert collapsed_key in edges_by_state, f"Key {collapsed_key} not found"
-        edges = edges_by_state[collapsed_key]
+        scene = scene_for_state(graph, expansion_state={})
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
         # Find the edge to compute_metrics
         cm_edges = [e for e in edges if e["target"] == "compute_metrics"]
@@ -773,30 +658,29 @@ class TestInputVisibilityWhenCollapsed:
 
 
 class TestInputGroupEdgesAcrossExpansion:
-    """INPUT_GROUP edge sources should match visible group IDs when expanded."""
+    """INPUT scoping is state-independent in the IR; expanded views must
+    surface individual INPUT-to-consumer edges."""
 
-    def test_input_group_edges_exist_when_expanded(self):
-        """Expanded edge set should NOT reference INPUT_GROUP node; individual inputs take over."""
-        from hypergraph.viz.renderer import render_graph
+    def test_individual_input_edges_when_expanded(self):
+        """When ``inner`` is expanded each scoped param routes to its own consumer.
 
+        Note: the legacy renderer collapsed alpha+beta into a single
+        INPUT_GROUP scene node when ``inner`` was collapsed and split
+        them apart on expansion. Under the IR (state-independent
+        grouping by ultimate consumer set) they are always two separate
+        INPUTs. This test pins the post-IR behavior; a future refinement
+        could re-introduce per-state grouping at scene_builder if the
+        collapsed visual requires it.
+        """
         graph = make_input_group_container_graph()
-        flat_graph = graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=0)
+        scene = scene_for_state(graph, expand_all=True)
+        edges = [e for e in scene["edges"] if not e.get("hidden")]
 
-        group_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "INPUT_GROUP")
+        alpha_targets = {e["target"] for e in edges if e["source"] == "input_alpha"}
+        beta_targets = {e["target"] for e in edges if e["source"] == "input_beta"}
 
-        edges_by_state = result["meta"]["edgesByState"]
-        expandable = result["meta"]["expandableNodes"]
-        expanded_key = ",".join(f"{node_id}:1" for node_id in expandable) + "|sep:0"
-
-        assert expanded_key in edges_by_state, f"Key {expanded_key} not found"
-        edges = edges_by_state[expanded_key]
-
-        group_edges = [e for e in edges if e["source"] == group_node["id"]]
-
-        assert not group_edges, (
-            f"Expected NO edges from INPUT_GROUP {group_node['id']} in expanded state.\nEdges: {[(e['source'], e['target']) for e in edges]}"
-        )
+        assert alpha_targets == {"inner/alpha_step"}
+        assert beta_targets == {"inner/beta_step"}
 
 
 # =============================================================================
@@ -835,8 +719,6 @@ class TestContainerOutputVisibility:
 
     def test_internal_container_output_hidden_in_merged_mode(self):
         """Merged outputs should omit internal-only container outputs."""
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_container_output_graph()
         result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=False)
 
@@ -848,8 +730,6 @@ class TestContainerOutputVisibility:
 
     def test_internal_container_output_hidden_in_separate_mode(self):
         """Separate outputs should omit DATA nodes for internal-only container outputs."""
-        from hypergraph.viz.renderer import render_graph
-
         graph = make_container_output_graph()
         result = render_graph(graph.to_flat_graph(), depth=0, separate_outputs=True)
 

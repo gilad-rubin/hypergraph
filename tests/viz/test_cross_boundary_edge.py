@@ -122,36 +122,21 @@ class TestCrossBoundaryEdge:
                 continue
             assert source in node_ids, f"Edge source '{source}' not found in nodes. Edge: {edge['source']} -> {edge['target']}"
 
-    def test_precomputed_edges_depth1_correct_source(self):
-        """Pre-computed edges for depth=1 should have correct source."""
-        bound_graph = build_triple_nested_graph()
-        flat_graph = bound_graph.to_flat_graph()
-        result = render_graph(flat_graph, depth=1)
+    def test_edge_source_routes_through_internal_producer_when_expanded(self):
+        """When ``batch_recall`` is expanded the edge to ``compute_retrieval_metrics``
+        must originate from the deepest internal producer."""
+        from tests.viz.conftest import scene_for_state
 
-        # Find the edge state key for batch_recall:1 (expanded)
-        edges_by_state = result["meta"]["edgesByState"]
+        graph = build_triple_nested_graph()
+        scene = scene_for_state(graph, expansion_state={"batch_recall": True})
 
-        # Find the key that has batch_recall expanded
-        depth1_key = None
-        for key in edges_by_state:
-            if "batch_recall:1" in key and "sep:0" in key:
-                depth1_key = key
-                break
-
-        assert depth1_key is not None, f"Should have depth=1 edge state. Keys: {list(edges_by_state.keys())}"
-
-        depth1_edges = edges_by_state[depth1_key]
-
-        # Find edge to compute_retrieval_metrics
-        edge_to_metrics = None
-        for e in depth1_edges:
-            if e["target"] == "compute_retrieval_metrics":
-                edge_to_metrics = e
-                break
-
-        assert edge_to_metrics is not None, "Should have edge to compute_retrieval_metrics in depth=1 state"
+        edge_to_metrics = next(
+            (e for e in scene["edges"] if e["target"] == "compute_retrieval_metrics" and not e.get("hidden")),
+            None,
+        )
+        assert edge_to_metrics is not None, "Should have edge to compute_retrieval_metrics with batch_recall expanded"
         assert edge_to_metrics["source"] == "batch_recall/compute_recall", (
-            f"Pre-computed edge source should be 'batch_recall/compute_recall' but got '{edge_to_metrics['source']}'"
+            f"Expected source 'batch_recall/compute_recall' but got '{edge_to_metrics['source']}'"
         )
 
 

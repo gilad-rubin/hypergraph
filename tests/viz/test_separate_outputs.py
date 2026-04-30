@@ -4,7 +4,7 @@ import pytest
 
 from hypergraph import END, Graph, ifelse, node, route
 from hypergraph.viz.renderer import render_graph
-from tests.viz.conftest import HAS_PLAYWRIGHT
+from tests.viz.conftest import HAS_PLAYWRIGHT, scene_for_state
 
 
 @node(output_name="cleaned")
@@ -61,31 +61,18 @@ class TestSeparateOutputsEdges:
             f"No edges from DATA nodes found!\nDATA nodes: {data_node_ids}\nAll edges: {[(e['source'], e['target']) for e in edges]}"
         )
 
-    def test_precomputed_edges_include_output_edges_when_separate(self):
-        """Pre-computed edges should include output edges for separate outputs mode."""
+    def test_separate_mode_emits_edges_to_data_nodes_in_every_state(self):
+        """Every separate-outputs scene should include edges into DATA nodes."""
         preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
         workflow = Graph(nodes=[preprocess.as_node(), analyze])
 
-        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True)
-
-        # Pre-computed edges are in meta.edgesByState
-        edges_by_state = result["meta"].get("edgesByState", {})
-
-        # Find DATA nodes
-        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
-        data_node_ids = {n["id"] for n in data_nodes}
-
-        # Look for keys with sep:1 (separate outputs mode)
-        sep_keys = [k for k in edges_by_state if "sep:1" in k]
-
-        # Should have at least one key with sep:1
-        assert len(sep_keys) > 0, f"No edge state keys with 'sep:1' found!\nAvailable keys: {list(edges_by_state.keys())}"
-
-        for state_key in sep_keys:
-            edges = edges_by_state[state_key]
-            edges_to_data = [e for e in edges if e["target"] in data_node_ids]
-            assert len(edges_to_data) > 0, (
-                f"State '{state_key}' has no edges to DATA nodes!\nDATA nodes: {data_node_ids}\nEdges: {[(e['source'], e['target']) for e in edges]}"
+        for expand_all in (False, True):
+            scene = scene_for_state(workflow, expand_all=expand_all, separate_outputs=True)
+            data_node_ids = {n["id"] for n in scene["nodes"] if n["data"]["nodeType"] == "DATA"}
+            edges_to_data = [e for e in scene["edges"] if e["target"] in data_node_ids]
+            assert edges_to_data, (
+                f"No edges to DATA nodes (expand_all={expand_all}). "
+                f"DATA: {data_node_ids}, Edges: {[(e['source'], e['target']) for e in scene['edges']]}"
             )
 
 
@@ -221,7 +208,6 @@ class TestDeeplyNestedSeparateOutputs:
     def test_deeply_nested_edges_route_through_data_nodes(self):
         """Edges should route through DATA nodes, not direct function→function."""
 
-        # Level 1: Simple transform
         @node(output_name="step1_out")
         def step1(x: int) -> int:
             return x + 1
@@ -232,51 +218,28 @@ class TestDeeplyNestedSeparateOutputs:
 
         inner = Graph(nodes=[step1, step2], name="inner")
 
-        # Level 2: Wrap inner + add validation
         @node(output_name="validated")
         def validate(step2_out: int) -> int:
             return step2_out
 
         middle = Graph(nodes=[inner.as_node(), validate], name="middle")
 
-        # Level 3: Wrap middle + add logging
         @node(output_name="logged")
         def log_result(validated: int) -> int:
             return validated
 
         outer = Graph(nodes=[middle.as_node(), log_result])
 
-        # Render with all containers expanded and separate outputs
-        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True)
+        scene = scene_for_state(outer, expand_all=True, separate_outputs=True)
+        edges_to_validate = [e for e in scene["edges"] if e["target"] == "middle/validate" and not e.get("hidden")]
 
-        # Get the sep:1 edges for fully expanded state
-        edges_by_state = result["meta"].get("edgesByState", {})
-
-        # Find the key with all containers expanded (middle:1, inner:1) and sep:1
-        expanded_sep1_keys = [k for k in edges_by_state if "sep:1" in k and "middle:1" in k and "inner:1" in k]
-
-        assert len(expanded_sep1_keys) > 0, f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
-
-        edges = edges_by_state[expanded_sep1_keys[0]]
-
-        # Find edge to middle/validate - should come from DATA node, not function (hierarchical IDs)
-        edges_to_validate = [e for e in edges if e["target"] == "middle/validate"]
-
-        assert len(edges_to_validate) > 0, f"No edges to 'middle/validate' found!\nAll edges: {[(e['source'], e['target']) for e in edges]}"
-
-        # The source should be a DATA node, not a function
+        assert edges_to_validate, f"No edges to 'middle/validate' found!\nAll edges: {[(e['source'], e['target']) for e in scene['edges']]}"
         for edge in edges_to_validate:
-            source = edge["source"]
-            assert source.startswith("data_"), (
-                f"Edge to 'middle/validate' should come from DATA node, not function!\n"
-                f"Got source: {source}\n"
-                f"Expected: data_middle/inner/step2_step2_out or similar DATA node"
-            )
+            assert edge["source"].startswith("data_"), f"Edge to 'middle/validate' should come from a DATA node; got {edge['source']}"
 
     def test_deeply_nested_collapsed_then_expanded_edges(self):
-        """Test edges when rendered at depth=0 then containers expanded interactively."""
+        """Same routing should hold when starting collapsed and expanding interactively."""
 
-        # Level 1: Simple transform
         @node(output_name="step1_out")
         def step1(x: int) -> int:
             return x + 1
@@ -287,44 +250,30 @@ class TestDeeplyNestedSeparateOutputs:
 
         inner = Graph(nodes=[step1, step2], name="inner")
 
-        # Level 2: Wrap inner + add validation
         @node(output_name="validated")
         def validate(step2_out: int) -> int:
             return step2_out
 
         middle = Graph(nodes=[inner.as_node(), validate], name="middle")
 
-        # Level 3: Wrap middle + add logging
         @node(output_name="logged")
         def log_result(validated: int) -> int:
             return validated
 
         outer = Graph(nodes=[middle.as_node(), log_result])
 
-        # Render at depth=0 (collapsed) with separate outputs
-        # This is how the user sees it initially
-        result = render_graph(outer.to_flat_graph(), depth=0, separate_outputs=True)
-
-        edges_by_state = result["meta"].get("edgesByState", {})
-
-        # Check the key for when middle AND inner are both expanded (user expands interactively)
-        # Key format: "inner:1,middle:1|sep:1"
-        expanded_sep1_keys = [k for k in edges_by_state if "sep:1" in k and "middle:1" in k and "inner:1" in k]
-
-        assert len(expanded_sep1_keys) > 0, f"No fully expanded sep:1 key found. Keys: {list(edges_by_state.keys())}"
-
-        edges = edges_by_state[expanded_sep1_keys[0]]
-
-        # Find edge to middle/validate - should come from DATA node (hierarchical IDs)
-        edges_to_validate = [e for e in edges if e["target"] == "middle/validate"]
-
-        assert len(edges_to_validate) > 0, f"No edges to 'middle/validate' found!\nAll edges: {[(e['source'], e['target']) for e in edges]}"
-
+        # Start collapsed — IR is the same. Expanding interactively must
+        # produce the same DATA-node-routed edge set as the all-expanded
+        # render.
+        scene = scene_for_state(
+            outer,
+            expansion_state={"middle": True, "middle/inner": True},
+            separate_outputs=True,
+        )
+        edges_to_validate = [e for e in scene["edges"] if e["target"] == "middle/validate" and not e.get("hidden")]
+        assert edges_to_validate
         for edge in edges_to_validate:
-            source = edge["source"]
-            assert source.startswith("data_"), (
-                f"Edge to 'middle/validate' should come from DATA node!\nGot source: {source}\nExpected: data_middle/inner/step2_step2_out"
-            )
+            assert edge["source"].startswith("data_"), f"Edge to 'middle/validate' should come from a DATA node; got {edge['source']}"
 
     def test_deeply_nested_no_function_to_function_data_edges(self):
         """In separate outputs mode, data edges should never go direct function→function."""
@@ -377,42 +326,6 @@ class TestDeeplyNestedSeparateOutputs:
                         f"Edge: {edge['source']} → {edge['target']}\n"
                         f"Data edges should route through DATA nodes"
                     )
-
-
-class TestSeparateOutputsEdgeKeys:
-    """Test that edge state keys properly encode separateOutputs flag."""
-
-    def test_edge_state_keys_include_sep_flag(self):
-        """Edge state keys should include sep:0 and sep:1 variants."""
-        preprocess = Graph(nodes=[clean_text, normalize], name="preprocess")
-        workflow = Graph(nodes=[preprocess.as_node(), analyze])
-
-        result = render_graph(workflow.to_flat_graph(), depth=0, separate_outputs=True)
-        edges_by_state = result["meta"].get("edgesByState", {})
-
-        keys = list(edges_by_state.keys())
-
-        # Should have both sep:0 and sep:1 variants for each expansion state
-        sep0_keys = [k for k in keys if "sep:0" in k]
-        sep1_keys = [k for k in keys if "sep:1" in k]
-
-        assert len(sep0_keys) > 0, f"No sep:0 keys found. Keys: {keys}"
-        assert len(sep1_keys) > 0, f"No sep:1 keys found. Keys: {keys}"
-        assert len(sep0_keys) == len(sep1_keys), f"Mismatch in sep:0 vs sep:1 keys.\nsep:0: {sep0_keys}\nsep:1: {sep1_keys}"
-
-    def test_empty_graph_edge_key_format(self):
-        """For graphs with no containers, keys should be just 'sep:0' or 'sep:1'."""
-        # Simple graph with no containers
-        simple = Graph(nodes=[clean_text, normalize, analyze])
-
-        result = render_graph(simple.to_flat_graph(), depth=0, separate_outputs=True)
-        edges_by_state = result["meta"].get("edgesByState", {})
-
-        keys = list(edges_by_state.keys())
-
-        # Should have "sep:0" and "sep:1" as the only keys (no expansion part)
-        assert "sep:0" in keys, f"'sep:0' not found. Keys: {keys}"
-        assert "sep:1" in keys, f"'sep:1' not found. Keys: {keys}"
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")

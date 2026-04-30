@@ -38,6 +38,17 @@ class IREdge:
     # the data flow goes producer -> data_node -> consumer instead of
     # producer -> consumer directly).
     value_names: tuple[str, ...] = ()
+    # Branch label for control edges originating from a gate (e.g. "True"
+    # / "False" for an ifelse, or the route key for a route).
+    label: str | None = None
+    # True when this data edge belongs to an exclusive (mutex) gate branch.
+    # Two data edges that feed the same value into one consumer from
+    # different branches of an exclusive gate are both flagged.
+    exclusive: bool = False
+    # DFS back-edge — an edge that closes a cycle in the execution
+    # subgraph. Frontends route these as feedback loops so they don't
+    # disappear when an enclosing container expands.
+    is_back_edge: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,3 +80,11 @@ class GraphIR:
     edges: list[IREdge] = field(default_factory=list)
     expandable_nodes: list[str] = field(default_factory=list)
     external_inputs: list[IRExternalInput] = field(default_factory=list)
+    # Top-level entrypoints declared via ``Graph.with_entrypoint(...)``.
+    # scene_builder synthesizes a __start__ node + edges to these (after
+    # resolving any ancestor that is currently collapsed).
+    configured_entrypoints: tuple[str, ...] = ()
+    # GRAPH-id -> visible output names when collapsed. Inner-only outputs
+    # (consumed exclusively by descendants) are absent so they don't leak
+    # to the container surface.
+    graph_output_visibility: dict[str, tuple[str, ...]] = field(default_factory=dict)

@@ -1,15 +1,20 @@
 """Visualization tests for complex nested graphs and batch patterns."""
 
 from hypergraph import Graph, ifelse, node
-from hypergraph.viz.renderer import render_graph
+from tests.viz.conftest import scene_for_state
 
 
-def _expanded_edges(result: dict, *, separate_outputs: bool = False) -> list[dict]:
-    expandable = result["meta"]["expandableNodes"]
-    exp_key = ",".join(f"{node_id}:1" for node_id in expandable)
-    sep_key = "sep:1" if separate_outputs else "sep:0"
-    key = f"{exp_key}|{sep_key}" if exp_key else sep_key
-    return result["meta"]["edgesByState"][key]
+def _expanded_edges(graph_or_result, *, separate_outputs: bool = False) -> list[dict]:
+    """Return the visible-edge set when every container is expanded.
+
+    Accepts either a :class:`Graph` (preferred) or the legacy
+    ``render_graph`` result dict (which still works because the IR is
+    embedded in ``meta``).
+    """
+    if hasattr(graph_or_result, "to_flat_graph"):
+        scene = scene_for_state(graph_or_result, expand_all=True, separate_outputs=separate_outputs)
+        return [e for e in scene["edges"] if not e.get("hidden")]
+    raise TypeError("_expanded_edges expects a Graph instance")
 
 
 # =============================================================================
@@ -106,8 +111,7 @@ def make_rag_style_graph() -> Graph:
 
 def test_rag_style_query_edges_route_to_internal_nodes_when_expanded() -> None:
     graph = make_rag_style_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     query_targets = {edge["target"] for edge in edges if edge["source"] == "input_query"}
 
@@ -118,8 +122,7 @@ def test_rag_style_query_edges_route_to_internal_nodes_when_expanded() -> None:
 
 def test_rag_style_retrieval_output_routes_from_internal_producer() -> None:
     graph = make_rag_style_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     sources = {edge["source"] for edge in edges if edge["target"] == "rag_select_document"}
 
@@ -128,8 +131,7 @@ def test_rag_style_retrieval_output_routes_from_internal_producer() -> None:
 
 def test_rag_style_control_edge_routes_to_entrypoint_when_expanded() -> None:
     graph = make_rag_style_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     control_edges = [
         edge
@@ -190,8 +192,7 @@ def make_batch_recommendations_graph() -> Graph:
 
 def test_batch_recommendations_input_group_routes_to_container() -> None:
     graph = make_batch_recommendations_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     group_edges = [edge for edge in edges if edge["source"] == "input_group_feedbacks_results"]
 
@@ -202,8 +203,7 @@ def test_batch_recommendations_input_group_routes_to_container() -> None:
 
 def test_batch_recommendations_outputs_route_from_internal_nodes() -> None:
     graph = make_batch_recommendations_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     sources = {edge["source"] for edge in edges if edge["target"] == "rec_build_batch_prompt"}
 
@@ -271,8 +271,7 @@ def make_batch_recall_graph() -> Graph:
 
 def test_batch_recall_input_edges_route_from_external_builder() -> None:
     graph = make_batch_recall_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     # With hierarchical IDs, batch_extract_query is inside batch_recall
     sources = {edge["source"] for edge in edges if edge["target"] == "batch_recall/batch_extract_query"}
@@ -282,8 +281,7 @@ def test_batch_recall_input_edges_route_from_external_builder() -> None:
 
 def test_batch_recall_routes_through_nested_retrieval_when_expanded() -> None:
     graph = make_batch_recall_graph()
-    result = render_graph(graph.to_flat_graph(), depth=0)
-    edges = _expanded_edges(result)
+    edges = _expanded_edges(graph)
 
     # With hierarchical IDs, nodes are inside batch_recall and batch_recall/retrieval
     assert any(

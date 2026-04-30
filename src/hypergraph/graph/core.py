@@ -1498,7 +1498,8 @@ class Graph:
             filepath: Path to save HTML file (default: None, display in notebook)
 
         Returns:
-            ScrollablePipelineWidget if output is None, otherwise None (saves to file)
+            A cell-output object when displayed in a notebook, otherwise None
+            (the file is written to ``filepath``).
 
         Example:
             >>> graph = Graph(nodes=[double, add_one])

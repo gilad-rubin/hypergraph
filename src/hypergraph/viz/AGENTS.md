@@ -4,19 +4,39 @@ This document captures the current visualization architecture, key invariants, a
 
 Cross-widget UX defaults live in: `dev/WIDGET-PREFERENCES.md`.
 
-## System Overview
+## System Overview (PR #88, Stage 1)
+
+The viz stack is built around a **compact IR + twin scene_builders**: a single
+``GraphIR`` describes pure-graph facts; one Python and one JS scene_builder
+turn that IR + an expansion state into a React Flow scene. The legacy 2^N
+``edgesByState``/``nodesByState`` precompute is gone — clicks re-derive the
+scene client-side without a kernel round-trip.
 
 **Python pipeline**
 1. `Graph` → `to_flat_graph()`
-2. `renderer/` → React Flow nodes/edges + `meta` (includes `nodesByState`, `edgesByState`)
-3. `html/generator.py` → HTML + JS assets
+2. `renderer/ir_builder.py:build_graph_ir(flat_graph)` → `GraphIR`
+   (pure facts: nodes, edges, expandable_nodes, external_inputs,
+   configured_entrypoints, graph_output_visibility)
+3. `scene_builder.py:build_initial_scene(ir, expansion_state, ...)` → React
+   Flow `{nodes, edges}` for the initial render. Same function powers
+   the test oracle.
+4. `renderer/__init__.py:render_graph` is now a thin wrapper that ships
+   the IR + initial scene to `html/generator.py`.
 
-**JavaScript pipeline** (single file: `assets/viz.js`)
-1. Section 7 (App) builds expansion state + selects `nodesByState`/`edgesByState`
-2. `layoutGraph()` runs dagre for node positioning + native edge routing
-3. `performRecursiveLayout()` handles expanded containers (recursive dagre passes)
-4. `addConvergenceStems()` inserts merge/diverge points for shared endpoints
-5. `CustomEdge` renders B-spline curves via `curveBasis()`
+**JavaScript pipeline** (`assets/viz.js` + `assets/scene_builder.js`)
+1. `scene_builder.js:buildInitialScene` mirrors the Python twin — same IR,
+   same expansion state, semantically equivalent output.
+2. Section 7 (App in `viz.js`) calls `buildInitialScene` on every
+   expansion / separateOutputs / showInputs change.
+3. `layoutGraph()` runs dagre for node positioning + native edge routing.
+4. `performRecursiveLayout()` handles expanded containers (recursive dagre passes).
+5. `addConvergenceStems()` inserts merge/diverge points for shared endpoints.
+6. `CustomEdge` renders B-spline curves via `curveBasis()`.
+
+**Mermaid (untouched)**: `mermaid.py` still consumes the legacy
+`renderer/nodes.py` + `renderer/scope.py` helpers. PR #88 keeps those modules
+alive so Mermaid output is byte-identical; migration to the IR path is
+out of scope.
 
 ## Single-File Architecture (viz.js)
 
@@ -53,16 +73,24 @@ Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `false`):
 
 **Invariant**: Container detection must use `node_type == "GRAPH"` in Python and `nodeType == "PIPELINE"` in JS.
 
-## Expansion State + Precomputed State
+## Expansion State (IR-driven)
 
-Nodes and edges are **precomputed** for all valid expansion states (and both `separate_outputs` modes).
+There is no precomputed state table. The scene for a given
+``(expansion_state, separate_outputs, show_inputs, show_bounded_inputs)``
+tuple is derived on demand by ``scene_builder`` from the IR.
 
-Key format:
-- `"nodeId:0|sep:0|ext:1"` (collapsed, merged outputs, inputs shown)
-- `"nodeId:1|sep:1|ext:0"` (expanded, separate outputs, inputs hidden)
-- `"sep:0|ext:1"` / `"sep:1|ext:0"` (no expandable nodes)
+In tests, use the ``scene_for_state(graph, expansion_state=..., ...)``
+helper from ``tests/viz/conftest.py``. In the browser, App calls
+``HypergraphSceneBuilder.buildInitialScene`` from ``assets/scene_builder.js``.
 
-Selection happens in App via `expansionStateToKey()` and lookups in `meta.nodesByState` / `meta.edgesByState`.
+The IR carries all expansion-rewriting information eagerly:
+- ``IREdge.source_when_expanded`` / ``target_when_expanded`` re-route
+  edges to the deepest internal producer/consumer when a container is expanded.
+- ``IREdge.is_back_edge`` marks DFS back-edges so feedback routing survives
+  arbitrary expansion changes.
+- ``IRNode.outputs[i].internal_only`` flags outputs whose consumers all
+  live in the same container — used to filter ``data.outputs`` on collapsed
+  GRAPH containers and to drive ``data.internalOnly`` styling on DATA nodes.
 
 ## Edge Computation Model
 
@@ -130,11 +158,12 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 
 | Symptom | Likely Cause | Fix Location |
 | --- | --- | --- |
-| Edge points to container when expanded | edgesByState key mismatch | `renderer/` |
-| Input appears outside expanded container | ownerContainer not set | `renderer/` |
+| Edge points to container when expanded | `target_when_expanded` not populated in IR | `renderer/ir_builder.py` |
+| Input appears outside expanded container | `ownerContainer` not derived from `deepest_owner` | `scene_builder.py` (Python + JS) |
 | Edge starts/ends with visible gap | wrong node-type offset | viz.js Section 1 |
 | Incoming edges don't merge | convergence stem not inserted | `addConvergenceStems()` |
 | Branch labels at wrong position | `outgoingMidpointDistance` heuristic | viz.js Section 4 |
+| Python and JS scene differ | scene_builder.py / scene_builder.js out of sync | tests/viz/test_scene_builder.py + Stage 3 parity |
 
 ## Test Coverage Pointers
 
@@ -145,9 +174,13 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 
 ## File Map
 
-- `src/hypergraph/viz/renderer/` — edge computation, scoping, precomputed states
+- `src/hypergraph/viz/ir_schema.py` — `GraphIR` / `IRNode` / `IREdge` / `IRExternalInput` dataclasses
+- `src/hypergraph/viz/renderer/ir_builder.py` — `build_graph_ir(flat_graph)`
+- `src/hypergraph/viz/scene_builder.py` — Python scene builder (test oracle + initial-render path)
+- `src/hypergraph/viz/assets/scene_builder.js` — JS twin
+- `src/hypergraph/viz/renderer/__init__.py` — `render_graph()` thin wrapper (IR + initial scene)
+- `src/hypergraph/viz/renderer/nodes.py` + `edges.py` + `scope.py` — legacy helpers retained for `mermaid.py`
 - `src/hypergraph/viz/assets/viz.js` — single-file JS app (layout, rendering, controls)
 - `src/hypergraph/viz/html/generator.py` — HTML assembly with embedded assets
 - `src/hypergraph/viz/html/estimator.py` — iframe dimension estimation
-- `src/hypergraph/viz/renderer/instructions.py` — VizInstructions data contract
 - `scripts/render_notebook_viz.py` — gallery generator with DialKit controls

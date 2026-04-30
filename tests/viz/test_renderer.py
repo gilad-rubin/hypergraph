@@ -1,12 +1,41 @@
 """Tests for the visualization renderer."""
 
+import itertools
 import re
 
 import pytest
 
 from hypergraph import END, Graph, ifelse, interrupt, node, route
 from hypergraph.viz import visualize
+from hypergraph.viz._common import get_expandable_nodes
 from hypergraph.viz.renderer import render_graph
+from tests.viz.conftest import scene_for_state
+
+
+def _enumerate_scenes(graph, *, show_inputs: bool):
+    """Yield ``(state_key, visible_nodes, visible_edges)`` for every
+    (expansion × separate_outputs) combination. Hidden nodes/edges are
+    filtered out so callers see the visible-only contract that the legacy
+    ``edgesByState`` precompute used to expose.
+    """
+    flat = graph.to_flat_graph()
+    expandable = sorted(get_expandable_nodes(flat))
+    ext_key = "ext:1" if show_inputs else "ext:0"
+    for bits in itertools.product([False, True], repeat=len(expandable)):
+        exp_state = dict(zip(expandable, bits, strict=True))
+        for separate in (False, True):
+            scene = scene_for_state(
+                flat,
+                expansion_state=exp_state,
+                separate_outputs=separate,
+                show_inputs=show_inputs,
+            )
+            visible_nodes = [n for n in scene["nodes"] if not n.get("hidden")]
+            visible_edges = [e for e in scene["edges"] if not e.get("hidden")]
+            sep_key = "sep:1" if separate else "sep:0"
+            parts = [f"{n}:{1 if exp_state[n] else 0}" for n in expandable]
+            key = (",".join(parts) + f"|{sep_key}|{ext_key}") if parts else f"{sep_key}|{ext_key}"
+            yield key, visible_nodes, visible_edges
 
 
 @node(output_name="doubled")
@@ -111,27 +140,32 @@ class TestRenderGraph:
         assert "edges" in result
         assert "meta" in result
 
-        # Now always creates: INPUT, FUNCTION, DATA nodes (individual inputs, not grouped)
         node_types = {n["data"]["nodeType"] for n in result["nodes"]}
         assert "FUNCTION" in node_types
         assert "INPUT" in node_types  # For external input 'x' (individual, not grouped)
-        assert "DATA" in node_types  # For output 'doubled'
 
         fn_node = next(n for n in result["nodes"] if n["data"]["nodeType"] == "FUNCTION")
         assert fn_node["id"] == "double"
         assert fn_node["data"]["label"] == "double"
 
     def test_render_node_outputs(self):
-        """Test that node outputs are captured as DATA nodes."""
+        """In separate-outputs mode each function output becomes a DATA node."""
         graph = Graph(nodes=[double])
-        result = render_graph(graph.to_flat_graph())
+        result = render_graph(graph.to_flat_graph(), separate_outputs=True)
 
-        # Outputs are now separate DATA nodes (always created)
         data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
         assert len(data_nodes) == 1
         assert data_nodes[0]["data"]["label"] == "doubled"
         assert data_nodes[0]["data"]["typeHint"] == "int"
         assert data_nodes[0]["data"]["sourceId"] == "double"
+
+    def test_merged_mode_omits_data_nodes(self):
+        """Merged mode (default) does not materialize DATA scene nodes."""
+        graph = Graph(nodes=[double])
+        result = render_graph(graph.to_flat_graph())
+
+        data_nodes = [n for n in result["nodes"] if n["data"]["nodeType"] == "DATA"]
+        assert data_nodes == []
 
     def test_render_node_inputs(self):
         """Test that node inputs are captured correctly."""
@@ -495,7 +529,7 @@ class TestRenderGraph:
         assert "data_middle_step2_out" not in data_node_ids
 
     def test_interrupt_cycle_hides_all_inputs_when_inputs_disabled(self):
-        """Notebook regression: no INPUT nodes/edges should appear in any ext:0 state."""
+        """Notebook regression: no INPUT nodes/edges should appear with show_inputs=False."""
         graph = _build_interrupt_cycle_graph()
 
         result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
@@ -504,15 +538,10 @@ class TestRenderGraph:
         assert all(n["data"]["nodeType"] not in {"INPUT", "INPUT_GROUP"} for n in result["nodes"])
         assert all(e.get("data", {}).get("edgeType") != "input" for e in result["edges"])
 
-        # Every ext:0 precomputed state should also hide all INPUT/INPUT_GROUP nodes and edges.
-        nodes_by_state = result["meta"]["nodesByState"]
-        edges_by_state = result["meta"]["edgesByState"]
-        ext0_keys = [k for k in nodes_by_state if k.endswith("|ext:0")]
-        assert ext0_keys, "Expected ext:0 precomputed states"
-
-        for key in ext0_keys:
-            nodes = nodes_by_state[key]
-            edges = edges_by_state[key]
+        # Every (expansion × separate) state with show_inputs=False must do the same.
+        scenes = list(_enumerate_scenes(graph, show_inputs=False))
+        assert scenes, "Expected at least one expansion-state scene"
+        for key, nodes, edges in scenes:
             assert all(n["data"]["nodeType"] not in {"INPUT", "INPUT_GROUP"} for n in nodes), f"INPUT node leaked in state {key}"
             assert all(e.get("data", {}).get("edgeType") != "input" for e in edges), f"INPUT edge leaked in state {key}"
 
@@ -520,30 +549,22 @@ class TestRenderGraph:
         """Notebook regression: should_continue -> ask_user control edge must not disappear."""
         graph = _build_interrupt_cycle_graph()
 
-        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
-        edges_by_state = result["meta"]["edgesByState"]
-        ext0_keys = [k for k in edges_by_state if k.endswith("|ext:0")]
-        assert ext0_keys, "Expected ext:0 precomputed states"
+        scenes = list(_enumerate_scenes(graph, show_inputs=False))
+        assert scenes, "Expected at least one expansion-state scene"
 
-        for key in ext0_keys:
-            control_edges = [
-                e for e in edges_by_state[key] if e.get("data", {}).get("edgeType") == "control" and e.get("source") == "should_continue"
-            ]
+        for key, _nodes, edges in scenes:
+            control_edges = [e for e in edges if e.get("data", {}).get("edgeType") == "control" and e.get("source") == "should_continue"]
             assert control_edges, f"Missing should_continue control edge in state {key}"
 
             ask_user_targets = [e for e in control_edges if str(e.get("target", "")).startswith("ask_user")]
             assert ask_user_targets, f"Missing should_continue -> ask_user* control edge in state {key}"
-
-            # Gate-origin edges should be dashed.
-            assert all(e.get("style", {}).get("strokeDasharray") for e in ask_user_targets), (
-                f"Control edge should be dashed in state {key}: {ask_user_targets}"
-            )
+            # Semantic invariant: edge type marks it as control. The CSS
+            # dashed style is derived from this flag in viz.js (Stage 5
+            # pixel parity), not asserted here.
 
     def test_interrupt_cycle_expected_edges_for_0_1_2_expanded_graph_nodes(self):
         """Notebook demo: edge routing should be correct for collapsed/1-expanded/2-expanded states."""
         graph = _build_interrupt_cycle_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
-        edges_by_state = result["meta"]["edgesByState"]
 
         expected_by_state = {
             "ask_user:0,llm:0|sep:0|ext:0": {
@@ -584,30 +605,28 @@ class TestRenderGraph:
             },
         }
 
+        edges_by_key = {key: edges for key, _nodes, edges in _enumerate_scenes(graph, show_inputs=False)}
+
         for state_key, expected in expected_by_state.items():
-            assert state_key in edges_by_state, f"Missing precomputed state: {state_key}"
-            actual = {_edge_signature(edge) for edge in edges_by_state[state_key]}
+            assert state_key in edges_by_key, f"Missing scene for state: {state_key}"
+            actual = {_edge_signature(edge) for edge in edges_by_key[state_key]}
             assert actual == expected, f"Unexpected edges for state {state_key}"
 
-            control_edges = [e for e in edges_by_state[state_key] if e.get("data", {}).get("edgeType") == "control"]
+            control_edges = [e for e in edges_by_key[state_key] if e.get("data", {}).get("edgeType") == "control"]
             assert control_edges, f"Expected control edge in state {state_key}"
-            assert all(edge.get("style", {}).get("strokeDasharray") for edge in control_edges), (
-                f"Control edges must be dashed in state {state_key}: {control_edges}"
-            )
 
     def test_interrupt_cycle_messages_feedback_edge_present_in_separate_outputs_mode(self):
         """Notebook regression: llm messages edge to ask_user should not disappear in sep mode."""
         graph = _build_interrupt_cycle_graph()
-        result = render_graph(graph.to_flat_graph(), depth=0, show_inputs=False)
-        edges_by_state = result["meta"]["edgesByState"]
+        edges_by_key = {key: edges for key, _nodes, edges in _enumerate_scenes(graph, show_inputs=False)}
 
         state_collapsed_target = "ask_user:0,llm:1|sep:1|ext:0"
         state_expanded_target = "ask_user:1,llm:1|sep:1|ext:0"
-        assert state_collapsed_target in edges_by_state
-        assert state_expanded_target in edges_by_state
+        assert state_collapsed_target in edges_by_key
+        assert state_expanded_target in edges_by_key
 
-        collapsed_signatures = {_edge_signature(edge) for edge in edges_by_state[state_collapsed_target]}
-        expanded_signatures = {_edge_signature(edge) for edge in edges_by_state[state_expanded_target]}
+        collapsed_signatures = {_edge_signature(edge) for edge in edges_by_key[state_collapsed_target]}
+        expanded_signatures = {_edge_signature(edge) for edge in edges_by_key[state_expanded_target]}
 
         assert ("data_llm/add_assistant_message_messages", "ask_user", "data") in collapsed_signatures
         assert ("data_llm/add_assistant_message_messages", "ask_user/ask_slack", "data") in expanded_signatures

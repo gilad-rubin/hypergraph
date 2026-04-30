@@ -325,14 +325,12 @@ class TestDebugVisualize:
 
     def test_visualize_returns_widget(self, capsys):
         """Test that visualize() returns a widget with debug overlays."""
-        from hypergraph.viz.widget import ScrollablePipelineWidget
-
         graph = Graph(nodes=[double, add_one])
         debugger = VizDebugger(graph)
 
         widget = debugger.visualize()
 
-        assert isinstance(widget, ScrollablePipelineWidget)
+        assert hasattr(widget, "_repr_html_")
         # Check debug info was printed
         captured = capsys.readouterr()
         assert "Debug Visualization" in captured.out

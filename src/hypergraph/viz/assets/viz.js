@@ -1314,6 +1314,7 @@
     var showTypes = typState[0], setShowTypes = typState[1];
     var inputsState = useState(props.initialShowInputs);
     var showInputs = inputsState[0], setShowInputs = inputsState[1];
+    var showBoundedInputs = !!props.initialShowBoundedInputs;
 
     // Edge convergence state (dev-only controls)
     var convState = useState(EDGE_CONVERGE_TO_CENTER);
@@ -1397,23 +1398,10 @@
     });
     var expansionState = expState[0], setExpansionState = expState[1];
 
-    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || EMPTY_OBJ;
-    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || EMPTY_OBJ;
-    // IR mode: pure-graph facts shipped in meta.ir; scene re-derives client-side
-    // on every state change. Empty/null when running on the legacy precompute path.
+    // Pure-graph facts shipped in meta.ir; scene_builder re-derives the
+    // visible nodes/edges client-side on every state change. The legacy
+    // edgesByState/nodesByState 2^N precompute is gone (PR #88, stage 1).
     var ir = (initialData.meta && initialData.meta.ir) || null;
-    var expandableNodes = ir
-      ? (ir.expandable_nodes || EMPTY_ARR)
-      : ((initialData.meta && initialData.meta.expandableNodes) || EMPTY_ARR);
-
-    var expansionStateToKey = function(es, sep, showInputs) {
-      var sepKey = 'sep:' + (sep ? '1' : '0');
-      var extKey = 'ext:' + (showInputs ? '1' : '0');
-      if (!expandableNodes.length) return sepKey + '|' + extKey;
-      var parts = [];
-      expandableNodes.forEach(function(id) { parts.push(id + ':' + (es.get(id) ? '1' : '0')); });
-      return parts.join(',') + '|' + sepKey + '|' + extKey;
-    };
 
     var nsState = useNodesState([]);
     var rfNodes = nsState[0], setNodes = nsState[1], onNodesChange = nsState[2];
@@ -1463,28 +1451,23 @@
       });
     }, []);
 
-    // Select scene nodes for the current state. IR mode re-derives via
-    // scene_builder; legacy mode looks up the precomputed nodesByState map.
+    // Select scene nodes for the current state via scene_builder.
     var selectedNodes = useMemo(function() {
-      var base;
-      if (ir && root.HypergraphSceneBuilder) {
-        var stateObj = {};
-        expansionState.forEach(function(v, k) { stateObj[k] = v; });
-        base = root.HypergraphSceneBuilder.buildInitialScene(ir, {
-          expansionState: stateObj,
-          separateOutputs: separateOutputs,
-          showInputs: showInputs,
-        }).nodes;
-      } else {
-        var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
-        base = Object.prototype.hasOwnProperty.call(nodesByState, key)
-          ? nodesByState[key]
-          : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
-            ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
-            : initialData.nodes);
+      if (!ir || !root.HypergraphSceneBuilder) {
+        return (initialData.nodes || EMPTY_ARR).map(function(n) {
+          return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } };
+        });
       }
+      var stateObj = {};
+      expansionState.forEach(function(v, k) { stateObj[k] = v; });
+      var base = root.HypergraphSceneBuilder.buildInitialScene(ir, {
+        expansionState: stateObj,
+        separateOutputs: separateOutputs,
+        showInputs: showInputs,
+        showBoundedInputs: showBoundedInputs,
+      }).nodes;
       return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes, ir]);
+    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, initialData.nodes, ir]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1530,22 +1513,18 @@
       else setManualTheme(null);
     }, [manualTheme, activeTheme]);
 
-    // Select scene edges for the current state. IR mode re-derives.
+    // Select scene edges for the current state via scene_builder.
     var selectedEdges = useMemo(function() {
-      if (ir && root.HypergraphSceneBuilder) {
-        var stateObj = {};
-        expansionState.forEach(function(v, k) { stateObj[k] = v; });
-        return root.HypergraphSceneBuilder.buildInitialScene(ir, {
-          expansionState: stateObj,
-          separateOutputs: separateOutputs,
-          showInputs: showInputs,
-        }).edges;
-      }
-      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
-      if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
-      var fallback = expansionStateToKey(expansionState, separateOutputs, true);
-      return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, showInputs, edgesByState, initialData.edges, ir]);
+      if (!ir || !root.HypergraphSceneBuilder) return (initialData.edges || EMPTY_ARR);
+      var stateObj = {};
+      expansionState.forEach(function(v, k) { stateObj[k] = v; });
+      return root.HypergraphSceneBuilder.buildInitialScene(ir, {
+        expansionState: stateObj,
+        separateOutputs: separateOutputs,
+        showInputs: showInputs,
+        showBoundedInputs: showBoundedInputs,
+      }).edges;
+    }, [expansionState, separateOutputs, showInputs, initialData.edges, ir]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1845,7 +1824,8 @@
           panOnScroll=${Boolean(initialData.meta && initialData.meta.pan_on_scroll)}
           initialSeparateOutputs=${Boolean(initialData.meta && initialData.meta.separate_outputs)}
           initialShowTypes=${Boolean((initialData.meta && initialData.meta.show_types) !== false)}
-          initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)} />
+          initialShowInputs=${Boolean((initialData.meta && initialData.meta.show_inputs) !== false)}
+          initialShowBoundedInputs=${Boolean(initialData.meta && initialData.meta.show_bounded_inputs)} />
       <//>
     `);
     if (fallback) fallback.remove();

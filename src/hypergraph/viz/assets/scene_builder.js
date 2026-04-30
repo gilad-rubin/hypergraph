@@ -55,6 +55,8 @@
 
     var separateOutputs = !!opts.separateOutputs;
     var showInputs = opts.showInputs !== false;
+    var showBoundedInputs = !!opts.showBoundedInputs;
+    var outputVisibility = ir.graph_output_visibility || {};
 
     for (var j = 0; j < ir.nodes.length; j++) {
       var irNode = ir.nodes[j];
@@ -63,7 +65,7 @@
       var rfType = sceneType === 'PIPELINE' && isExpanded ? 'pipelineGroup' : 'custom';
 
       var inputs = (irNode.inputs || []).map(function (i) {
-        return Object.assign({}, i, { is_bound: false });
+        return Object.assign({}, i);
       });
 
       var data = {
@@ -73,7 +75,15 @@
         inputs: inputs,
       };
       if (!separateOutputs && (sceneType === 'FUNCTION' || sceneType === 'PIPELINE')) {
-        data.outputs = (irNode.outputs || []).slice();
+        var nodeOutputs = (irNode.outputs || []).slice();
+        if (sceneType === 'PIPELINE' && outputVisibility[irNode.id]) {
+          var visibleSet = {};
+          for (var vi = 0; vi < outputVisibility[irNode.id].length; vi++) {
+            visibleSet[outputVisibility[irNode.id][vi]] = true;
+          }
+          nodeOutputs = nodeOutputs.filter(function (o) { return visibleSet[o.name]; });
+        }
+        data.outputs = nodeOutputs;
       }
       if (sceneType === 'PIPELINE') {
         data.isExpanded = !!isExpanded;
@@ -110,6 +120,7 @@
     var externalInputs = ir.external_inputs || [];
     for (var k = 0; k < externalInputs.length; k++) {
       var ext = externalInputs[k];
+      if (ext.is_bound && !showBoundedInputs) continue;
       var hidden = !showInputs || inputHidden(ext.deepest_owner, parentMap, expansionState);
       var params = ext.params || [];
       var typeHints = ext.type_hints || [];
@@ -147,10 +158,19 @@
       // Materialize DATA scene nodes — one per (producer, output_name).
       for (var dn = 0; dn < ir.nodes.length; dn++) {
         var producer = ir.nodes[dn];
-        if (producer.node_type !== 'FUNCTION' && producer.node_type !== 'GRAPH') continue;
+        if (producer.node_type !== 'FUNCTION' && producer.node_type !== 'GRAPH' && producer.node_type !== 'BRANCH') continue;
         var producerOutputs = producer.outputs || [];
+        var visibleProducerOutputs = null;
+        if (producer.node_type === 'GRAPH' && outputVisibility[producer.id]) {
+          visibleProducerOutputs = {};
+          for (var po = 0; po < outputVisibility[producer.id].length; po++) {
+            visibleProducerOutputs[outputVisibility[producer.id][po]] = true;
+          }
+        }
         for (var dn2 = 0; dn2 < producerOutputs.length; dn2++) {
           var pout = producerOutputs[dn2];
+          if (pout.is_gate_internal) continue;
+          if (visibleProducerOutputs && !visibleProducerOutputs[pout.name]) continue;
           var dataId = 'data_' + producer.id + '_' + pout.name;
           var ancestorHidden = ancestorCollapsed(producer.id, parentMap, expansionState);
           var dataNode = {
@@ -162,6 +182,7 @@
               label: pout.name,
               typeHint: pout.type,
               sourceId: producer.id,
+              internalOnly: !!pout.internal_only,
             },
             sourcePosition: 'bottom',
             targetPosition: 'top',
@@ -201,7 +222,13 @@
         id: src + '__' + tgt,
         source: src,
         target: tgt,
-        data: { edgeType: irEdge.edge_type },
+        data: {
+          edgeType: irEdge.edge_type,
+          valueName: valueNames.length > 0 ? valueNames[0] : null,
+          label: (irEdge.label === undefined ? null : irEdge.label),
+          exclusive: !!irEdge.exclusive,
+          forceFeedback: !!irEdge.is_back_edge,
+        },
         hidden: !visibleIds[src] || !visibleIds[tgt],
       });
     }
@@ -244,7 +271,93 @@
       }
     }
 
+    addStartEndNodesAndEdges(ir, sceneNodes, sceneEdges, parentMap, expansionState, visibleIds);
+
     return { nodes: sceneNodes, edges: sceneEdges };
+  }
+
+  function syntheticNode(id, nodeType, label) {
+    return {
+      id: id,
+      type: 'custom',
+      position: { x: 0, y: 0 },
+      data: { nodeType: nodeType, label: label },
+      sourcePosition: 'bottom',
+      targetPosition: 'top',
+      hidden: false,
+    };
+  }
+
+  function resolveToVisible(nodeId, parentMap, visibleIds) {
+    var current = nodeId;
+    while (current !== undefined && current !== null && !visibleIds[current]) {
+      current = parentMap[current];
+    }
+    return (current === undefined || current === null) ? null : current;
+  }
+
+  function routesToEnd(branchData) {
+    if (!branchData) return false;
+    if (branchData.when_true === 'END' || branchData.when_false === 'END') return true;
+    var targets = branchData.targets;
+    if (targets && typeof targets === 'object' && !Array.isArray(targets)) {
+      for (var k in targets) if (targets[k] === 'END') return true;
+    }
+    if (Array.isArray(targets)) {
+      for (var i = 0; i < targets.length; i++) if (targets[i] === 'END') return true;
+    }
+    return false;
+  }
+
+  function addStartEndNodesAndEdges(ir, sceneNodes, sceneEdges, parentMap, expansionState, visibleIds) {
+    var configured = ir.configured_entrypoints || [];
+    var startTargets = [];
+    var seenStart = {};
+    for (var i = 0; i < configured.length; i++) {
+      var resolved = resolveToVisible(configured[i], parentMap, visibleIds);
+      if (resolved && !seenStart[resolved]) {
+        seenStart[resolved] = true;
+        startTargets.push(resolved);
+      }
+    }
+    if (startTargets.length > 0) {
+      sceneNodes.push(syntheticNode('__start__', 'START', 'Start'));
+      for (var s = 0; s < startTargets.length; s++) {
+        var target = startTargets[s];
+        sceneEdges.push({
+          id: '__start____' + target,
+          source: '__start__',
+          target: target,
+          data: { edgeType: 'start' },
+          hidden: false,
+        });
+      }
+    }
+
+    var endSources = [];
+    var seenEnd = {};
+    for (var j = 0; j < ir.nodes.length; j++) {
+      var node = ir.nodes[j];
+      if (!routesToEnd(node.branch_data)) continue;
+      var resolvedSrc = resolveToVisible(node.id, parentMap, visibleIds);
+      if (resolvedSrc && !seenEnd[resolvedSrc]) {
+        seenEnd[resolvedSrc] = true;
+        endSources.push(resolvedSrc);
+      }
+    }
+    if (endSources.length > 0) {
+      sceneNodes.push(syntheticNode('__end__', 'END', 'End'));
+      for (var e = 0; e < endSources.length; e++) {
+        var source = endSources[e];
+        sceneEdges.push({
+          id: source + '____end__',
+          source: source,
+          target: '__end__',
+          data: { edgeType: 'end' },
+          hidden: false,
+        });
+      }
+    }
   }
 
   global.HypergraphSceneBuilder = {

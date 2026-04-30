@@ -1,48 +1,40 @@
-"""Jupyter widget for graph visualization with VSCode scroll support."""
+"""Cell-context renderer for graph visualization.
+
+Stage 1 of PR #88 keeps a thin iframe-based display object as the in-notebook
+output of ``visualize()``. Stage 4 will replace it with an ``anywidget`` shell
+that survives save+reopen without a kernel; the public ``visualize()`` signature
+should not change again at that point.
+"""
 
 from __future__ import annotations
 
 import html as html_module
 import warnings
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
 
-from dataclasses import asdict
-
 from hypergraph.viz._common import build_expansion_state
 from hypergraph.viz.html import estimate_layout, generate_widget_html
-from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
 
 
-class ScrollablePipelineWidget:
-    """Widget for visualizing graphs in Jupyter/VSCode notebooks.
+class _VizCellOutput:
+    """Iframe-wrapped HTML for in-notebook display.
 
-    Uses explicit iframe sizing to avoid double scrolling. The iframe
-    dimensions are estimated from the graph structure to fit the content.
+    Private — users get this from :func:`visualize` and only ever interact
+    with it through Jupyter's ``_repr_html_`` protocol.
     """
 
     def __init__(self, html_content: str, width: int, height: int):
-        """Create a scrollable widget.
-
-        Args:
-            html_content: Complete HTML document for the visualization
-            width: Widget width in pixels
-            height: Widget height in pixels
-        """
         self.html_content = html_content
         self.width = width
         self.height = height
-        self._id = id(self)
 
     def _repr_html_(self) -> str:
-        """Return HTML representation for Jupyter display."""
-        # Escape HTML for srcdoc attribute
         escaped_html = html_module.escape(self.html_content, quote=True)
-
-        # CSS fix for VS Code white background on ipywidgets
         css_fix = """<style>
 .cell-output-ipywidget-background {
    background-color: transparent !important;
@@ -51,10 +43,6 @@ class ScrollablePipelineWidget:
    background-color: transparent;
 }
 </style>"""
-
-        # Simple iframe with explicit dimensions - no wrapper needed
-        # Dimensions are set as both HTML attributes AND CSS for compatibility
-        # The JS inside the iframe will resize via window.frameElement if needed
         return (
             f"{css_fix}"
             f'<iframe srcdoc="{escaped_html}" '
@@ -78,35 +66,25 @@ def visualize(
     show_bounded_inputs: bool = False,
     show_external_inputs: bool | None = None,
     filepath: str | None = None,
-    use_ir: bool = True,
     _debug_overlays: bool = False,
-) -> ScrollablePipelineWidget | None:
-    """Create a visualization widget for a graph.
+) -> _VizCellOutput | None:
+    """Create a visualization for a graph.
 
     Args:
-        graph: The hypergraph Graph to visualize
-        depth: How many levels of nested graphs to expand (default: 0)
-        theme: "dark", "light", or "auto" (default: "auto")
-        show_types: Whether to show type annotations (default: True)
-        separate_outputs: Whether to render outputs as separate nodes (default: False)
-        show_inputs: Whether to show INPUT/INPUT_GROUP nodes (default: True)
-        show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes when
-            show_inputs=True (default: False)
-        show_external_inputs: Deprecated alias for show_inputs
-        filepath: Path to save HTML file (default: None, display in notebook)
-        _debug_overlays: Internal flag to enable debug overlays (use VizDebugger.visualize())
+        graph: The hypergraph Graph to visualize.
+        depth: How many levels of nested graphs to expand (default: 0).
+        theme: "dark", "light", or "auto".
+        show_types: Whether to show type annotations.
+        separate_outputs: Whether to render outputs as separate DATA nodes.
+        show_inputs: Whether to show INPUT/INPUT_GROUP nodes.
+        show_bounded_inputs: Whether to include bound INPUT/INPUT_GROUP nodes.
+        show_external_inputs: Deprecated alias for ``show_inputs``.
+        filepath: Path to save standalone HTML (default: display in notebook).
+        _debug_overlays: Internal flag to enable debug overlays.
 
     Returns:
-        ScrollablePipelineWidget if output is None, otherwise None (saves to file)
-
-    Example:
-        >>> from hypergraph import Graph, node
-        >>> @node(output_name="doubled")
-        ... def double(x: int) -> int:
-        ...     return x * 2
-        >>> graph = Graph(nodes=[double])
-        >>> widget = visualize(graph)  # Display in notebook
-        >>> visualize(graph, filepath="graph.html")  # Save to HTML file
+        A cell-output object when displaying in a notebook; ``None`` when
+        ``filepath`` is given (the file is written to disk).
     """
     if show_external_inputs is not None:
         if show_inputs is not None and show_inputs != show_external_inputs:
@@ -120,61 +98,40 @@ def visualize(
     elif show_inputs is None:
         show_inputs = True
 
-    # Estimate dimensions if not provided
     est_width, est_height = estimate_layout(
         graph,
         separate_outputs=separate_outputs,
         show_types=show_types,
         depth=depth,
     )
-
-    # Use estimated dimensions, applying minimums
     final_width = max(400, est_width)
     final_height = max(200, est_height)
 
     flat_graph = graph.to_flat_graph()
-
-    if use_ir:
-        # Compact IR path: ship pure-graph facts; viz.js derives the
-        # scene client-side via assets/scene_builder.js. No 2^N
-        # expansion-state precompute. See PRD #88.
-        ir = build_graph_ir(flat_graph)
-        initial_expansion = build_expansion_state(flat_graph, depth)
-        graph_data = {
-            "nodes": [],
-            "edges": [],
-            "meta": {
-                "ir": asdict(ir),
-                "initial_expansion": initial_expansion,
-                "theme_preference": theme,
-                "show_types": show_types,
-                "separate_outputs": separate_outputs,
-                "show_inputs": show_inputs,
-                "show_bounded_inputs": show_bounded_inputs,
-                "debug_overlays": _debug_overlays,
-            },
-        }
-    else:
-        graph_data = render_graph(
-            flat_graph,
-            depth=depth,
-            theme=theme,
-            show_types=show_types,
-            separate_outputs=separate_outputs,
-            show_inputs=show_inputs,
-            show_bounded_inputs=show_bounded_inputs,
-            debug_overlays=_debug_overlays,
-        )
+    ir = build_graph_ir(flat_graph)
+    initial_expansion = build_expansion_state(flat_graph, depth)
+    graph_data = {
+        "nodes": [],
+        "edges": [],
+        "meta": {
+            "ir": asdict(ir),
+            "initial_expansion": initial_expansion,
+            "theme_preference": theme,
+            "show_types": show_types,
+            "separate_outputs": separate_outputs,
+            "show_inputs": show_inputs,
+            "show_bounded_inputs": show_bounded_inputs,
+            "debug_overlays": _debug_overlays,
+        },
+    }
 
     html_content = generate_widget_html(graph_data)
 
-    # If output path specified, save to HTML file
     if filepath is not None:
-        # Ensure .html extension
         if not filepath.endswith(".html"):
             filepath = filepath + ".html"
         with open(filepath, "w") as f:
             f.write(html_content)
         return None
 
-    return ScrollablePipelineWidget(html_content, final_width, final_height)
+    return _VizCellOutput(html_content, final_width, final_height)
