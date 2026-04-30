@@ -303,29 +303,25 @@ class TestDeeplyNestedSeparateOutputs:
 
         outer = Graph(nodes=[middle.as_node(), log_result])
 
-        result = render_graph(outer.to_flat_graph(), depth=2, separate_outputs=True)
-        edges_by_state = result["meta"].get("edgesByState", {})
+        # Sweep every expansion state for the 3-level fixture: in
+        # separate_outputs mode no visible data edge should connect two
+        # function/container nodes directly — they must route through a
+        # DATA node.
+        from itertools import product
 
-        # Check all sep:1 keys
-        sep1_keys = [k for k in edges_by_state if "sep:1" in k]
-
-        # Get function node IDs (not DATA, not INPUT)
-        function_ids = {n["id"] for n in result["nodes"] if n["data"].get("nodeType") in ("FUNCTION", "PIPELINE")}
-
-        for key in sep1_keys:
-            edges = edges_by_state[key]
-            for edge in edges:
-                edge_type = edge.get("data", {}).get("edgeType", "")
-                # Data edges should not go direct function→function
-                if edge_type == "data":
-                    is_source_function = edge["source"] in function_ids
-                    is_target_function = edge["target"] in function_ids
-                    assert not (is_source_function and is_target_function), (
-                        f"Data edge goes direct function→function in sep:1 mode!\n"
-                        f"Key: {key}\n"
-                        f"Edge: {edge['source']} → {edge['target']}\n"
-                        f"Data edges should route through DATA nodes"
-                    )
+        expandables = ["middle", "middle/inner"]
+        for bits in product([False, True], repeat=len(expandables)):
+            state = dict(zip(expandables, bits, strict=True))
+            scene = scene_for_state(outer, expansion_state=state, separate_outputs=True)
+            function_ids = {n["id"] for n in scene["nodes"] if n["data"].get("nodeType") in ("FUNCTION", "PIPELINE")}
+            for edge in scene["edges"]:
+                if edge.get("hidden"):
+                    continue
+                if edge.get("data", {}).get("edgeType") != "data":
+                    continue
+                assert not (edge["source"] in function_ids and edge["target"] in function_ids), (
+                    f"Direct function→function data edge in separate_outputs mode!\nExpansion: {state}\nEdge: {edge['source']} → {edge['target']}"
+                )
 
 
 @pytest.mark.skipif(not HAS_PLAYWRIGHT, reason="playwright not installed")
