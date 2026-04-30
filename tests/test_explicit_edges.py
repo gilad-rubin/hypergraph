@@ -273,7 +273,7 @@ class TestExplicitEdgesWithEmitWaitFor:
             return val
 
         @route(targets=["do_thing", END])
-        def gate(x: int) -> str | type[END]:
+        def gate(x: int) -> str:
             return "do_thing"
 
         @node(output_name="result")

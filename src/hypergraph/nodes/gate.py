@@ -51,22 +51,31 @@ def _validate_routing_func(func: Callable, node_type: str) -> None:
         )
 
 
-def _validate_not_string_end(target: str | type[END], func_name: str) -> None:
-    """Reject string 'END' as target (easily confused with END sentinel).
+def _validate_not_string_end(target: str, func_name: str) -> None:
+    """Reject reserved END-like strings as targets.
+
+    Two values are reserved: the human-friendly form "END" (rejected because
+    it's easily confused with the END sentinel) and END's hidden underlying
+    value (rejected because raw strings that match it would otherwise pass
+    set-membership checks while failing identity checks). The actual END
+    singleton always passes through unchanged.
 
     Args:
         target: The target to validate
         func_name: Function name for error messages
 
     Raises:
-        ValueError: If target is the string "END"
+        ValueError: If target is the string "END" or the reserved underlying
+            value, but is not the END sentinel itself
     """
-    if target == "END":
+    if target is END:
+        return
+    if target == "END" or target == _END_VALUE:
         raise ValueError(
-            f"Gate '{func_name}' has 'END' as a string target.\n\n"
-            f"The string 'END' is not allowed because it's easily confused "
-            f"with the END sentinel.\n\n"
-            f"How to fix: Use 'from hypergraph import END' and use END directly, "
+            f"Gate '{func_name}' uses a reserved END-like string target ({target!r}).\n\n"
+            f"This string is reserved because it would be confused with the "
+            f"END sentinel at runtime.\n\n"
+            f"How to fix: Use 'from hypergraph import END' and pass END directly, "
             f"or rename your target to something else."
         )
 
@@ -86,15 +95,15 @@ class GateNode(CallableMixin, HyperNode):
     - name: str
     - inputs: tuple[str, ...]
     - outputs: tuple[str, ...] (empty or emit-only for gates)
-    - targets: list[str | type[END]]
+    - targets: list[str]
     - descriptions: dict[...key..., str] (key type varies by subclass)
     - func: Callable (the routing function)
     - _definition_hash: str
     - _rename_history: list[RenameEntry]
     """
 
-    targets: list[str | type[END]]
-    descriptions: dict[str | type[END] | bool, str]
+    targets: list[str]
+    descriptions: dict[str | bool, str]
     func: Callable
     _definition_hash: str
     _cache: bool
@@ -187,15 +196,15 @@ class RouteNode(GateNode):
         ...     return "process_a" if x > 0 else "process_b"
     """
 
-    fallback: str | type[END] | None
+    fallback: str | None
     multi_target: bool
 
     def __init__(
         self,
-        func: Callable[..., str | type[END] | list[str | type[END]] | None],
+        func: Callable[..., str | list[str] | None],
         targets: TargetsSpec,
         *,
-        fallback: str | type[END] | None = None,
+        fallback: str | None = None,
         multi_target: bool = False,
         cache: bool = False,
         hide: bool = False,
@@ -244,8 +253,8 @@ class RouteNode(GateNode):
             _validate_not_string_end(t, func.__name__)
 
         # Deduplicate targets (preserve order)
-        seen: set[str | type[END]] = set()
-        unique_targets: list[str | type[END]] = []
+        seen: set[str] = set()
+        unique_targets: list[str] = []
         for t in target_list:
             if t not in seen:
                 seen.add(t)
@@ -260,9 +269,11 @@ class RouteNode(GateNode):
                 f"How to fix: Remove fallback or set multi_target=False"
             )
 
-        # Add fallback to targets if not already present
-        if fallback is not None and fallback not in target_list:
-            target_list.append(fallback)
+        # Validate and add fallback to targets if not already present
+        if fallback is not None:
+            _validate_not_string_end(fallback, func.__name__)
+            if fallback not in target_list:
+                target_list.append(fallback)
 
         resolved_name = name or func.__name__
         self.name = resolved_name
@@ -292,7 +303,7 @@ class RouteNode(GateNode):
             self.inputs,
         )
 
-    def __call__(self, *args: Any, **kwargs: Any) -> str | type[END] | list | None:
+    def __call__(self, *args: Any, **kwargs: Any) -> str | list | None:
         """Call the routing function directly."""
         return self.func(*args, **kwargs)
 
@@ -321,7 +332,7 @@ class RouteNode(GateNode):
 def route(
     targets: TargetsSpec,
     *,
-    fallback: str | type[END] | None = None,
+    fallback: str | None = None,
     multi_target: bool = False,
     cache: bool = False,
     hide: bool = False,
@@ -362,7 +373,7 @@ def route(
     Example:
         >>> @route(targets=["process", END])
         ... def decide(x: int) -> str:
-        ...     return "process" if x > 0 else END
+        ...     return END if x == 0 else "process"
 
         >>> @route(targets={"fast": "Quick path", "slow": "Thorough path"})
         ... def choose_path(complexity: int) -> str:
@@ -416,14 +427,14 @@ class IfElseNode(GateNode):
         ...     return data.get("valid", False)
     """
 
-    when_true: str | type[END]
-    when_false: str | type[END]
+    when_true: str
+    when_false: str
 
     def __init__(
         self,
         func: Callable[..., bool],
-        when_true: str | type[END],
-        when_false: str | type[END],
+        when_true: str,
+        when_false: str,
         *,
         cache: bool = False,
         hide: bool = False,
@@ -526,8 +537,8 @@ class IfElseNode(GateNode):
 
 
 def ifelse(
-    when_true: str | type[END],
-    when_false: str | type[END],
+    when_true: str,
+    when_false: str,
     *,
     cache: bool = False,
     hide: bool = False,
@@ -595,34 +606,80 @@ def ifelse(
 # END Sentinel
 # =============================================================================
 
-
-class _ENDMeta(type):
-    """Metaclass for END sentinel to prevent instantiation and provide clean repr."""
-
-    def __repr__(cls) -> str:
-        return "END"
-
-    def __str__(cls) -> str:
-        return "END"
-
-    def __call__(cls, *args, **kwargs):
-        raise TypeError("END cannot be instantiated. Use END directly as a sentinel.")
+# Hidden underlying value. Obscure enough that accidental collisions from
+# external sources (LLM output, config, deserialization) are extremely unlikely.
+_END_VALUE = "__hg_end__"
 
 
-class END(metaclass=_ENDMeta):
-    """Sentinel class indicating execution should terminate along this path.
+class _End(str):
+    """Singleton str subclass used as the END sentinel.
 
-    Use END in route targets to indicate a path terminates:
-
-        @route(targets=["process", END])
-        def decide(x):
-            return END if x == 0 else "process"
-
-    Note: END is a class, not an instance. Use it directly (END, not END()).
+    END is an instance of this class (a string with value `__hg_end__`) so
+    routing functions annotated `-> str` accept `return END` without typing
+    pain, while `target is END` still uniquely identifies the sentinel.
     """
 
-    pass
+    __slots__ = ()
+
+    def __new__(cls) -> _End:
+        return super().__new__(cls, _END_VALUE)
+
+    def __repr__(self) -> str:
+        return "END"
+
+    def __str__(self) -> str:
+        return "END"
+
+    def __reduce__(self) -> tuple:
+        return (_resolve_end_singleton, ())
+
+
+def _resolve_end_singleton() -> _End:
+    """Reconstruct the END singleton during unpickling.
+
+    Without this, pickle would route through the default str-subclass path
+    (calling `_End("__hg_end__")`), but `_End.__new__` takes no arguments
+    so it raises TypeError. Returning the module-level singleton also
+    preserves identity (`restored is END`) across pickle / deepcopy /
+    multiprocessing round-trips, which gate caching and checkpointing
+    rely on for `decision is END` checks to remain correct.
+    """
+    return END
+
+
+END: _End = _End()
+"""Sentinel indicating execution should terminate along a routing path.
+
+    @route(targets=["process", END])
+    def decide(x) -> str:
+        return END if x == 0 else "process"
+
+END is a singleton `str` subclass. Use `is END` to test for it; equality
+against arbitrary strings is False (its underlying value is intentionally
+obscure to prevent collisions).
+"""
+
+
+def _check_no_end_collision(value: Any, gate_name: str) -> None:
+    """Reject external strings that string-equal END but aren't the singleton.
+
+    Catches the rare case where an LLM, config file, or deserialized object
+    emits the reserved underlying value. Without this, such a value would
+    silently terminate the path.
+    """
+    if isinstance(value, list):
+        for item in value:
+            _check_no_end_collision(item, gate_name)
+        return
+    if isinstance(value, str) and value == END and value is not END:
+        raise ValueError(
+            f"Gate '{gate_name}' returned the string {value!r}, "
+            f"but it is not the END sentinel.\n\n"
+            f"This usually means an external source (LLM output, config, "
+            f"deserialization) emitted the reserved value.\n\n"
+            f"How to fix: Use 'from hypergraph import END' and return END directly."
+        )
 
 
 # Type alias for targets parameter (list or dict with descriptions)
-TargetsSpec = list[str | type[END]] | dict[str | type[END], str]
+TargetsSpec = list[str] | dict[str, str]

@@ -21,9 +21,17 @@ def validate_routing_decision(node: RouteNode, decision: Any) -> None:
 
     Raises:
         TypeError: If decision type doesn't match multi_target setting
-        ValueError: If decision is not in the valid targets list
+        ValueError: If decision is not in the valid targets list,
+            or string-equals END but is not the END singleton
     """
-    from hypergraph.nodes.gate import END
+    from hypergraph.nodes.gate import END, _check_no_end_collision
+
+    # Reject external strings that string-equal END but aren't the singleton
+    # (e.g., LLM output, config, or deserialized values that happen to match
+    # END's hidden underlying value). Without this, set membership in
+    # _validate_single_target would silently accept the value, then
+    # downstream `is END` checks would all fail — a silent no-op.
+    _check_no_end_collision(decision, node.name)
 
     # Warn if user returned string "END" instead of END sentinel
     # (string "END" is never a valid target - it's rejected at construction time)

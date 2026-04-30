@@ -16,25 +16,19 @@ from hypergraph.nodes.gate import END, GateNode, route
 
 
 class TestENDSentinel:
-    """Tests for the END sentinel class."""
+    """Tests for the END sentinel singleton."""
 
-    def test_end_cannot_be_instantiated(self):
-        """END() should raise TypeError."""
-        with pytest.raises(TypeError, match="cannot be instantiated"):
-            END()
+    def test_end_is_str_subtype(self):
+        """END is a str instance so it's accepted by `-> str` annotations."""
+        assert isinstance(END, str)
 
     def test_end_repr_is_clean(self):
         """END should have clean string representation."""
         assert repr(END) == "END"
         assert str(END) == "END"
 
-    def test_end_is_class_not_instance(self):
-        """END should be a class (type), not an instance."""
-        assert isinstance(END, type)
-
-    def test_end_not_equal_to_string(self):
-        """END should not be equal to the string 'END'."""
-        assert END != "END"
+    def test_end_not_equal_to_literal_end_string(self):
+        """END's underlying value is hidden, so it doesn't equal the string 'END'."""
         assert END != "END"
 
     def test_end_identity(self):
@@ -47,6 +41,76 @@ class TestENDSentinel:
         targets = ["process", END]
         assert END in targets
         assert "process" in targets
+
+    def test_external_string_collision_rejected_during_graph_run(self):
+        """A gate returning the raw underlying value (e.g. from an LLM)
+        must raise during graph execution, not silently terminate.
+
+        This guards the runner path (execute_route -> validate_routing_decision),
+        which calls node.func directly and bypasses RouteNode.__call__.
+        Set membership in valid_targets would otherwise accept the collision
+        because hash and __eq__ both match END.
+        """
+        from hypergraph import Graph, SyncRunner, node
+
+        @node(output_name="x")
+        def start() -> int:
+            return 1
+
+        @route(targets=["a", END])
+        def collision_gate(x: int) -> str:
+            return "__hg_end__"  # collides with END's underlying value
+
+        @node(output_name="result")
+        def a(x: int) -> int:
+            return x
+
+        graph = Graph([start, collision_gate, a])
+        with pytest.raises(ValueError, match="not the END sentinel"):
+            SyncRunner().run(graph)
+
+    def test_external_string_collision_rejected_in_multi_target_list(self):
+        """Collision detection must recurse into multi_target lists."""
+        from hypergraph import Graph, SyncRunner, node
+
+        @node(output_name="x")
+        def start() -> int:
+            return 1
+
+        @route(targets=["a", "b", END], multi_target=True)
+        def multi_gate(x: int) -> list[str]:
+            return ["a", "__hg_end__"]  # one good item, one collision
+
+        @node(output_name="ra")
+        def a(x: int) -> int:
+            return x
+
+        @node(output_name="rb")
+        def b(x: int) -> int:
+            return x
+
+        graph = Graph([start, multi_gate, a, b])
+        with pytest.raises(ValueError, match="not the END sentinel"):
+            SyncRunner().run(graph)
+
+    def test_end_pickle_round_trip_preserves_singleton(self):
+        """END must remain the same singleton across pickle/deepcopy.
+
+        Without __reduce__, pickle.loads would call _End("__hg_end__")
+        — but _End.__new__ takes no args, so it would raise TypeError.
+        And even if reconstruction succeeded the result would be a fresh
+        instance, breaking `decision is END` checks that the persistent
+        DiskCache (which uses pickle.dumps under the hood) and any other
+        pickle-based round-trip rely on.
+        """
+        import copy
+        import pickle
+
+        restored = pickle.loads(pickle.dumps(END))
+        assert restored is END
+
+        deep = copy.deepcopy(END)
+        assert deep is END
 
 
 # =============================================================================
@@ -107,11 +171,40 @@ class TestRouteNodeConstruction:
 
     def test_string_end_target_raises(self):
         """String 'END' as target should raise (too confusing with END sentinel)."""
-        with pytest.raises(ValueError, match="'END' as a string target"):
+        with pytest.raises(ValueError, match="reserved END-like string target"):
 
             @route(targets=["END", "process"])
             def decide(x):
                 return "process"
+
+    def test_reserved_underlying_value_target_raises(self):
+        """END's hidden underlying value must be rejected at registration.
+
+        If a user accidentally types the raw value as a target, it would
+        otherwise reach the runtime collision check — but rejecting at
+        configuration time gives a clearer, earlier error.
+        """
+        with pytest.raises(ValueError, match="reserved END-like string target"):
+
+            @route(targets=["__hg_end__", "process"])
+            def decide(x):
+                return "process"
+
+    def test_string_end_fallback_raises(self):
+        """Fallback must also be validated at registration, not just targets."""
+        with pytest.raises(ValueError, match="reserved END-like string target"):
+
+            @route(targets=["a"], fallback="END")
+            def decide(x):
+                return None
+
+    def test_reserved_underlying_value_fallback_raises(self):
+        """Fallback must also reject the raw underlying value."""
+        with pytest.raises(ValueError, match="reserved END-like string target"):
+
+            @route(targets=["a"], fallback="__hg_end__")
+            def decide(x):
+                return None
 
     def test_duplicate_targets_deduplicated(self):
         """Duplicate targets should be deduplicated (preserve order)."""
@@ -500,7 +593,7 @@ class TestGateNodeTypeAnnotations:
             return ReviewDecision(status="accept")
 
         @route(targets=["done", END])
-        def gate(decision: ReviewDecision) -> str | type[END]:
+        def gate(decision: ReviewDecision) -> str:
             return "done" if decision.status == "accept" else END
 
         @node(output_name="done")

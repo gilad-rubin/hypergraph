@@ -17,8 +17,8 @@ Create an IfElseNode from a boolean function. Simplest way to branch on true/fal
 
 ```python
 def ifelse(
-    when_true: str | type[END],
-    when_false: str | type[END],
+    when_true: str,
+    when_false: str,
     *,
     cache: bool = False,
     hide: bool = False,
@@ -34,8 +34,8 @@ def ifelse(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `when_true` | `str \| END` | required | Target when function returns `True` |
-| `when_false` | `str \| END` | required | Target when function returns `False` |
+| `when_true` | `str` | required | Target when function returns `True` (pass `END` to terminate) |
+| `when_false` | `str` | required | Target when function returns `False` (pass `END` to terminate) |
 | `cache` | `bool` | `False` | Whether to cache routing decisions |
 | `hide` | `bool` | `False` | Whether to hide from visualization |
 | `default_open` | `bool` | `True` | If True, targets may execute before the gate runs. If False, targets are blocked until the gate executes. |
@@ -88,8 +88,8 @@ Binary gate that routes based on boolean decision. Use `@ifelse` decorator for m
 def __init__(
     self,
     func: Callable[..., bool],
-    when_true: str | type[END],
-    when_false: str | type[END],
+    when_true: str,
+    when_false: str,
     *,
     cache: bool = False,
     hide: bool = False,
@@ -113,7 +113,7 @@ Input parameter names from function signature.
 
 Always empty tuple. Gates produce no data outputs.
 
-#### `targets: list[str | type[END]]`
+#### `targets: list[str]`
 
 Always `[when_true, when_false]` (2 elements).
 
@@ -122,14 +122,14 @@ Always `[when_true, when_false]` (2 elements).
 def check(x: int) -> bool:
     return x > 0
 
-print(check.targets)  # ["process", <class 'END'>]
+print(check.targets)  # ['process', END]
 ```
 
-#### `when_true: str | type[END]`
+#### `when_true: str`
 
 Target when function returns `True`.
 
-#### `when_false: str | type[END]`
+#### `when_false: str`
 
 Target when function returns `False`.
 
@@ -198,9 +198,9 @@ Create a RouteNode from a routing function.
 
 ```python
 def route(
-    targets: list[str | type[END]] | dict[str | type[END], str],
+    targets: list[str] | dict[str, str],
     *,
-    fallback: str | type[END] | None = None,
+    fallback: str | None = None,
     multi_target: bool = False,
     cache: bool = False,
     hide: bool = False,
@@ -217,7 +217,7 @@ def route(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `targets` | `list` or `dict` | required | Valid target node names. Dict values are descriptions for documentation. |
-| `fallback` | `str \| END \| None` | `None` | Default target if function returns `None` |
+| `fallback` | `str \| None` | `None` | Default target if function returns `None` (pass `END` to terminate) |
 | `multi_target` | `bool` | `False` | If `True`, function returns list of targets |
 | `cache` | `bool` | `False` | Whether to cache routing decisions |
 | `hide` | `bool` | `False` | Whether to hide from visualization |
@@ -233,7 +233,7 @@ The decorated function should return:
 - `str` - Target node name to activate
 - `END` - Terminate execution along this path
 - `None` - Use fallback (if set) or activate no targets
-- `list[str | END]` - Multiple targets (only with `multi_target=True`)
+- `list[str]` - Multiple targets (only with `multi_target=True`; entries may be `END`)
 
 ### Basic Usage
 
@@ -293,10 +293,10 @@ Concrete gate that routes to target nodes based on a routing function.
 ```python
 def __init__(
     self,
-    func: Callable[..., str | type[END] | list[str | type[END]] | None],
-    targets: list[str | type[END]] | dict[str | type[END], str],
+    func: Callable[..., str | list[str] | None],
+    targets: list[str] | dict[str, str],
     *,
-    fallback: str | type[END] | None = None,
+    fallback: str | None = None,
     multi_target: bool = False,
     cache: bool = False,
     hide: bool = False,
@@ -342,7 +342,7 @@ Always empty tuple. Gates produce no data outputs.
 print(decide.outputs)  # ()
 ```
 
-#### `targets: list[str | type[END]]`
+#### `targets: list[str]`
 
 List of valid target names.
 
@@ -351,10 +351,10 @@ List of valid target names.
 def decide(x: int) -> str:
     return "process"
 
-print(decide.targets)  # ["process", <class 'END'>]
+print(decide.targets)  # ['process', END]
 ```
 
-#### `descriptions: dict[str | type[END], str]`
+#### `descriptions: dict[str, str]`
 
 Target descriptions (empty if not provided).
 
@@ -366,7 +366,7 @@ def decide(x: int) -> str:
 print(decide.descriptions)  # {"a": "First option", "b": "Second option"}
 ```
 
-#### `fallback: str | type[END] | None`
+#### `fallback: str | None`
 
 Default target when function returns `None`.
 
@@ -495,7 +495,7 @@ print(repr(decide))
 
 ## END Sentinel
 
-Class indicating execution should terminate along this path.
+Singleton sentinel indicating execution should terminate along this path.
 
 ### Usage
 
@@ -509,24 +509,33 @@ def decide(x: int) -> str:
     return "process"
 ```
 
-### Properties
+`END` is a singleton instance of a `str` subclass. This means:
 
-- `END` is a class, not an instance. Use it directly.
-- Cannot be instantiated: `END()` raises `TypeError`
-- String representation: `"END"`
+- Routing functions can be annotated `-> str` and return `END` without typing friction.
+- `END` has a clean string display (`repr(END) == "END"`, `str(END) == "END"`).
+- Identity checks (`target is END`) uniquely distinguish the sentinel from any user-supplied string.
+- `END` does not equal the literal string `"END"` (its underlying value is intentionally hidden to prevent collisions).
 
 ```python
 print(END)              # END
 print(repr(END))        # END
-END()                   # TypeError: END cannot be instantiated
+isinstance(END, str)    # True
+END is END              # True
+END == "END"            # False
 ```
 
 ### Checking for END
+
+Always use identity (`is`), not equality:
 
 ```python
 if target is END:
     print("Terminating")
 ```
+
+### Collision Detection
+
+If a routing function returns a plain string that happens to match `END`'s underlying value (for example, an LLM emitting the reserved token), the gate raises a `ValueError` instead of silently terminating. Use the `END` sentinel directly to terminate.
 
 ---
 
@@ -542,8 +551,8 @@ All GateNode subclasses have:
 node.name: str                           # Public node name
 node.inputs: tuple[str, ...]             # Input parameter names
 node.outputs: tuple[str, ...]            # Always empty for gates
-node.targets: list[str | type[END]]      # Valid target names
-node.descriptions: dict[str | type[END], str]  # Target descriptions
+node.targets: list[str]      # Valid target names
+node.descriptions: dict[str, str]  # Target descriptions
 node.cache: bool                         # Whether to cache decisions
 ```
 

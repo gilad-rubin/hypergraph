@@ -813,7 +813,7 @@ class Graph:
         for node in nodes:
             if not isinstance(node, GateNode):
                 continue
-            blocked = {target for target in node.targets if target is not END and isinstance(target, str) and target != node.name}
+            blocked = {target for target in node.targets if target is not END and target != node.name}
             if blocked:
                 invalid[node.name] = blocked
         return invalid
@@ -1185,7 +1185,7 @@ class Graph:
         Includes node identity/topology and declared interfaces, but excludes
         function source code so bug-fix edits do not force forking.
         """
-        from hypergraph.nodes.gate import GateNode
+        from hypergraph.nodes.gate import END, GateNode
         from hypergraph.nodes.graph_node import GraphNode
 
         node_signatures: list[str] = []
@@ -1198,7 +1198,7 @@ class Graph:
                 ",".join(getattr(node, "wait_for", ())),
             ]
             if isinstance(node, GateNode):
-                targets = [t if isinstance(t, str) else "END" for t in node.targets]
+                targets = [t if t is not END else "END" for t in node.targets]
                 parts.extend(
                     [
                         "targets=" + ",".join(targets),
@@ -1209,12 +1209,13 @@ class Graph:
                     parts.append(f"multi_target={node.multi_target}")
                 if hasattr(node, "fallback"):
                     fb = node.fallback
-                    parts.append(f"fallback={fb if isinstance(fb, str) else 'END' if fb is not None else 'None'}")
+                    fb_str = "None" if fb is None else "END" if fb is END else fb
+                    parts.append(f"fallback={fb_str}")
                 if hasattr(node, "when_true") and hasattr(node, "when_false"):
                     wt = node.when_true
                     wf = node.when_false
-                    parts.append(f"when_true={wt if isinstance(wt, str) else 'END'}")
-                    parts.append(f"when_false={wf if isinstance(wf, str) else 'END'}")
+                    parts.append(f"when_true={wt if wt is not END else 'END'}")
+                    parts.append(f"when_false={wf if wf is not END else 'END'}")
             if isinstance(node, GraphNode):
                 parts.append(f"nested_struct={node.graph.structural_hash}")
                 if getattr(node, "_complete_on_stop", False):
