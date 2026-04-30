@@ -111,18 +111,32 @@
     for (var k = 0; k < externalInputs.length; k++) {
       var ext = externalInputs[k];
       var hidden = !showInputs || inputHidden(ext.deepest_owner, parentMap, expansionState);
+      var params = ext.params || [];
+      var typeHints = ext.type_hints || [];
+      var isGroup = params.length > 1;
+      var inputId = isGroup ? 'input_group_' + params.join('_') : 'input_' + params[0];
+      var data = isGroup
+        ? {
+            nodeType: 'INPUT_GROUP',
+            params: params.slice(),
+            paramTypes: typeHints.slice(),
+            isBound: !!ext.is_bound,
+            deepestOwnerContainer: ext.deepest_owner,
+            actualTargets: (ext.consumers || []).slice(),
+          }
+        : {
+            nodeType: 'INPUT',
+            label: params[0],
+            typeHint: typeHints[0] || null,
+            isBound: !!ext.is_bound,
+            deepestOwnerContainer: ext.deepest_owner,
+            actualTargets: (ext.consumers || []).slice(),
+          };
       sceneNodes.push({
-        id: 'input_' + ext.name,
+        id: inputId,
         type: 'custom',
         position: { x: 0, y: 0 },
-        data: {
-          nodeType: 'INPUT',
-          label: ext.name,
-          typeHint: ext.type_hint,
-          isBound: !!ext.is_bound,
-          deepestOwnerContainer: ext.deepest_owner,
-          actualTargets: (ext.consumers || []).slice(),
-        },
+        data: data,
         sourcePosition: 'bottom',
         targetPosition: 'top',
         hidden: hidden,
@@ -213,7 +227,10 @@
 
     for (var q = 0; q < externalInputs.length; q++) {
       var ext2 = externalInputs[q];
-      var inputNodeId = 'input_' + ext2.name;
+      var ext2Params = ext2.params || [];
+      var inputNodeId = ext2Params.length > 1
+        ? 'input_group_' + ext2Params.join('_')
+        : 'input_' + ext2Params[0];
       var consumers = ext2.consumers || [];
       for (var r = 0; r < consumers.length; r++) {
         var consumer = consumers[r];

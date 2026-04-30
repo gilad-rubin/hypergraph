@@ -136,6 +136,32 @@ def test_separate_outputs_true_materializes_data_nodes():
     assert visible_scene_data == visible_oracle_data
 
 
+def test_multi_param_consumer_yields_single_input_group():
+    """When a single consumer takes multiple external params, the legacy
+    renderer groups them into one INPUT_GROUP scene node — the IR path
+    must do the same so labels/handles line up."""
+    from hypergraph import Graph, node
+
+    @node(output_name="out")
+    def two_param(alpha: int, beta: int) -> int:
+        return alpha + beta
+
+    flat_graph = Graph([two_param]).to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(ir)
+    oracle = render_graph(flat_graph)
+
+    scene_inputs = {
+        (n["id"], n["data"]["nodeType"]) for n in scene["nodes"] if n["data"]["nodeType"] in ("INPUT", "INPUT_GROUP") and not n.get("hidden")
+    }
+    oracle_inputs = {
+        (n["id"], n["data"].get("nodeType")) for n in oracle["nodes"] if n["data"].get("nodeType") in ("INPUT", "INPUT_GROUP") and not n.get("hidden")
+    }
+
+    assert scene_inputs == oracle_inputs
+
+
 def test_separate_outputs_true_edges_match_legacy():
     """In separate_outputs mode, data flows producer -> DATA -> consumer.
     Edge signatures should match the legacy renderer's."""

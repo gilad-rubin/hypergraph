@@ -42,11 +42,25 @@ class IREdge:
 
 @dataclass(frozen=True)
 class IRExternalInput:
-    name: str
+    """An external-input group. Single-param groups render as INPUT;
+    multi-param groups (e.g. one consumer takes both `alpha` and
+    `beta`) render as INPUT_GROUP with a stable id like
+    `input_group_alpha_beta`."""
+
+    params: tuple[str, ...]  # one or more param names
     deepest_owner: str | None = None
     consumers: tuple[str, ...] = ()
-    type_hint: str | None = None
+    type_hints: tuple[str | None, ...] = ()  # one per param
     is_bound: bool = False
+
+    @property
+    def name(self) -> str:
+        """Backward-compat single-name accessor for single-param groups."""
+        return self.params[0] if len(self.params) == 1 else "_".join(self.params)
+
+    @property
+    def is_group(self) -> bool:
+        return len(self.params) > 1
 
 
 @dataclass(frozen=True)

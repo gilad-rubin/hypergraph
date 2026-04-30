@@ -68,24 +68,44 @@ def build_initial_scene(
     for ext in ir.external_inputs:
         # show_inputs=False hides every INPUT regardless of expansion state.
         hidden = (not show_inputs) or _input_hidden(ext.deepest_owner, parent_map, expansion_state)
-        scene_nodes.append(
-            {
-                "id": f"input_{ext.name}",
-                "type": "custom",
-                "position": {"x": 0, "y": 0},
-                "data": {
-                    "nodeType": "INPUT",
-                    "label": ext.name,
-                    "typeHint": ext.type_hint,
-                    "isBound": ext.is_bound,
-                    "deepestOwnerContainer": ext.deepest_owner,
-                    "actualTargets": list(ext.consumers),
-                },
-                "sourcePosition": "bottom",
-                "targetPosition": "top",
-                "hidden": hidden,
-            }
-        )
+        if ext.is_group:
+            scene_nodes.append(
+                {
+                    "id": f"input_group_{'_'.join(ext.params)}",
+                    "type": "custom",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "nodeType": "INPUT_GROUP",
+                        "params": list(ext.params),
+                        "paramTypes": list(ext.type_hints),
+                        "isBound": ext.is_bound,
+                        "deepestOwnerContainer": ext.deepest_owner,
+                        "actualTargets": list(ext.consumers),
+                    },
+                    "sourcePosition": "bottom",
+                    "targetPosition": "top",
+                    "hidden": hidden,
+                }
+            )
+        else:
+            scene_nodes.append(
+                {
+                    "id": f"input_{ext.params[0]}",
+                    "type": "custom",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "nodeType": "INPUT",
+                        "label": ext.params[0],
+                        "typeHint": ext.type_hints[0] if ext.type_hints else None,
+                        "isBound": ext.is_bound,
+                        "deepestOwnerContainer": ext.deepest_owner,
+                        "actualTargets": list(ext.consumers),
+                    },
+                    "sourcePosition": "bottom",
+                    "targetPosition": "top",
+                    "hidden": hidden,
+                }
+            )
 
     if separate_outputs:
         for ir_node in ir.nodes:
@@ -162,7 +182,7 @@ def build_initial_scene(
                 )
 
     for ext in ir.external_inputs:
-        input_node_id = f"input_{ext.name}"
+        input_node_id = f"input_group_{'_'.join(ext.params)}" if ext.is_group else f"input_{ext.params[0]}"
         for consumer in ext.consumers:
             scene_edges.append(
                 {
