@@ -1393,7 +1393,12 @@
 
     var edgesByState = (initialData.meta && initialData.meta.edgesByState) || EMPTY_OBJ;
     var nodesByState = (initialData.meta && initialData.meta.nodesByState) || EMPTY_OBJ;
-    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || EMPTY_ARR;
+    // IR mode: pure-graph facts shipped in meta.ir; scene re-derives client-side
+    // on every state change. Empty/null when running on the legacy precompute path.
+    var ir = (initialData.meta && initialData.meta.ir) || null;
+    var expandableNodes = ir
+      ? (ir.expandable_nodes || EMPTY_ARR)
+      : ((initialData.meta && initialData.meta.expandableNodes) || EMPTY_ARR);
 
     var expansionStateToKey = function(es, sep, showInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');
@@ -1452,16 +1457,28 @@
       });
     }, []);
 
-    // Select precomputed nodes
+    // Select scene nodes for the current state. IR mode re-derives via
+    // scene_builder; legacy mode looks up the precomputed nodesByState map.
     var selectedNodes = useMemo(function() {
-      var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
-      var base = Object.prototype.hasOwnProperty.call(nodesByState, key)
-        ? nodesByState[key]
-        : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
-          ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
-          : initialData.nodes);
+      var base;
+      if (ir && root.HypergraphSceneBuilder) {
+        var stateObj = {};
+        expansionState.forEach(function(v, k) { stateObj[k] = v; });
+        base = root.HypergraphSceneBuilder.buildInitialScene(ir, {
+          expansionState: stateObj,
+          separateOutputs: separateOutputs,
+          showInputs: showInputs,
+        }).nodes;
+      } else {
+        var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
+        base = Object.prototype.hasOwnProperty.call(nodesByState, key)
+          ? nodesByState[key]
+          : (Object.prototype.hasOwnProperty.call(nodesByState, expansionStateToKey(expansionState, separateOutputs, true))
+            ? nodesByState[expansionStateToKey(expansionState, separateOutputs, true)]
+            : initialData.nodes);
+      }
       return base.map(function(n) { return { ...n, data: { ...n.data, theme: activeTheme, showTypes: showTypes, separateOutputs: separateOutputs } }; });
-    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes]);
+    }, [expansionState, separateOutputs, showTypes, showInputs, activeTheme, nodesByState, initialData.nodes, ir]);
 
     var nodesWithCb = useMemo(function() {
       return selectedNodes.map(function(n) {
@@ -1507,13 +1524,22 @@
       else setManualTheme(null);
     }, [manualTheme, activeTheme]);
 
-    // Select edges
+    // Select scene edges for the current state. IR mode re-derives.
     var selectedEdges = useMemo(function() {
+      if (ir && root.HypergraphSceneBuilder) {
+        var stateObj = {};
+        expansionState.forEach(function(v, k) { stateObj[k] = v; });
+        return root.HypergraphSceneBuilder.buildInitialScene(ir, {
+          expansionState: stateObj,
+          separateOutputs: separateOutputs,
+          showInputs: showInputs,
+        }).edges;
+      }
       var key = expansionStateToKey(expansionState, separateOutputs, showInputs);
       if (Object.prototype.hasOwnProperty.call(edgesByState, key)) return edgesByState[key];
       var fallback = expansionStateToKey(expansionState, separateOutputs, true);
       return Object.prototype.hasOwnProperty.call(edgesByState, fallback) ? edgesByState[fallback] : (initialData.edges || []);
-    }, [expansionState, separateOutputs, showInputs, edgesByState, initialData.edges]);
+    }, [expansionState, separateOutputs, showInputs, edgesByState, initialData.edges, ir]);
 
     useEffect(function() {
       nodesRef.current = nodesWithCb;
@@ -1804,17 +1830,6 @@
   function init() {
     var graphDataEl = document.getElementById('graph-data');
     var initialData = JSON.parse((graphDataEl && graphDataEl.textContent) || '{"nodes":[],"edges":[]}');
-
-    // IR-driven path: when initialData carries an IR instead of a
-    // pre-rendered scene, derive nodes/edges client-side. State changes
-    // (expand, separate_outputs, show_inputs) re-derive without a Python
-    // round-trip. See src/hypergraph/viz/scene_builder.py + assets/scene_builder.js.
-    if (initialData.meta && initialData.meta.ir && root.HypergraphSceneBuilder) {
-      var derived = root.HypergraphSceneBuilder.buildInitialScene(initialData.meta.ir, {});
-      initialData.nodes = derived.nodes;
-      initialData.edges = derived.edges;
-    }
-
     var themePreference = normalizeThemePref((initialData.meta && initialData.meta.theme_preference) || 'auto');
     var rootEl = document.getElementById('root');
     var fallback = document.getElementById('fallback');
