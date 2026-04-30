@@ -68,11 +68,18 @@ def build_initial_scene(
         scene_nodes.append(
             {
                 "id": f"input_{ext.name}",
+                "type": "custom",
+                "position": {"x": 0, "y": 0},
                 "data": {
                     "nodeType": "INPUT",
                     "label": ext.name,
+                    "typeHint": ext.type_hint,
+                    "isBound": ext.is_bound,
                     "deepestOwnerContainer": ext.deepest_owner,
+                    "actualTargets": list(ext.consumers),
                 },
+                "sourcePosition": "bottom",
+                "targetPosition": "top",
                 "hidden": _input_hidden(ext.deepest_owner, parent_map, expansion_state),
             }
         )

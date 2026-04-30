@@ -111,11 +111,18 @@
       var ext = externalInputs[k];
       sceneNodes.push({
         id: 'input_' + ext.name,
+        type: 'custom',
+        position: { x: 0, y: 0 },
         data: {
           nodeType: 'INPUT',
           label: ext.name,
+          typeHint: ext.type_hint,
+          isBound: !!ext.is_bound,
           deepestOwnerContainer: ext.deepest_owner,
+          actualTargets: (ext.consumers || []).slice(),
         },
+        sourcePosition: 'bottom',
+        targetPosition: 'top',
         hidden: inputHidden(ext.deepest_owner, parentMap, expansionState),
       });
     }

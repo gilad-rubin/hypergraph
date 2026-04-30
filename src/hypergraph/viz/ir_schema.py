@@ -35,6 +35,8 @@ class IRExternalInput:
     name: str
     deepest_owner: str | None = None
     consumers: tuple[str, ...] = ()
+    type_hint: str | None = None
+    is_bound: bool = False
 
 
 @dataclass(frozen=True)
