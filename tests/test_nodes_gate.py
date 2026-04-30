@@ -16,25 +16,19 @@ from hypergraph.nodes.gate import END, GateNode, route
 
 
 class TestENDSentinel:
-    """Tests for the END sentinel class."""
+    """Tests for the END sentinel singleton."""
 
-    def test_end_cannot_be_instantiated(self):
-        """END() should raise TypeError."""
-        with pytest.raises(TypeError, match="cannot be instantiated"):
-            END()
+    def test_end_is_str_subtype(self):
+        """END is a str instance so it's accepted by `-> str` annotations."""
+        assert isinstance(END, str)
 
     def test_end_repr_is_clean(self):
         """END should have clean string representation."""
         assert repr(END) == "END"
         assert str(END) == "END"
 
-    def test_end_is_class_not_instance(self):
-        """END should be a class (type), not an instance."""
-        assert isinstance(END, type)
-
-    def test_end_not_equal_to_string(self):
-        """END should not be equal to the string 'END'."""
-        assert END != "END"
+    def test_end_not_equal_to_literal_end_string(self):
+        """END's underlying value is hidden, so it doesn't equal the string 'END'."""
         assert END != "END"
 
     def test_end_identity(self):
@@ -47,6 +41,27 @@ class TestENDSentinel:
         targets = ["process", END]
         assert END in targets
         assert "process" in targets
+
+    def test_external_string_collision_rejected(self):
+        """A gate returning the raw underlying value (e.g. from an LLM)
+        must raise rather than silently terminate."""
+
+        @route(targets=["a", END])
+        def collision_gate(x: int) -> str:
+            return "__hg_end__"  # external string equal to END but not the singleton
+
+        with pytest.raises(ValueError, match="not the END sentinel"):
+            collision_gate(1)
+
+    def test_external_string_collision_rejected_in_list(self):
+        """Collision detection must recurse into multi_target lists."""
+
+        @route(targets=["a", "b", END], multi_target=True)
+        def multi_gate(x: int) -> list[str]:
+            return ["a", "__hg_end__"]  # one good item, one collision
+
+        with pytest.raises(ValueError, match="not the END sentinel"):
+            multi_gate(1)
 
 
 # =============================================================================
@@ -500,7 +515,7 @@ class TestGateNodeTypeAnnotations:
             return ReviewDecision(status="accept")
 
         @route(targets=["done", END])
-        def gate(decision: ReviewDecision) -> str | type[END]:
+        def gate(decision: ReviewDecision) -> str:
             return "done" if decision.status == "accept" else END
 
         @node(output_name="done")

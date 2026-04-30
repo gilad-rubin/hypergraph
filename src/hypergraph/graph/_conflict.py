@@ -242,7 +242,7 @@ def _expand_mutex_groups(G: nx.DiGraph, nodes: list[HyperNode]) -> list[list[set
         elif not isinstance(node, IfElseNode):
             continue
 
-        targets = [t for t in node.targets if t is not END and isinstance(t, str)]
+        targets = [t for t in node.targets if t is not END]
         if len(targets) < 2:
             continue
 
