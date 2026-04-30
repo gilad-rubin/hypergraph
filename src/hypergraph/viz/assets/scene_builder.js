@@ -96,7 +96,10 @@
     for (var k = 0; k < externalInputs.length; k++) {
       var ext = externalInputs[k];
       if (ext.is_bound && !showBoundedInputs) continue;
-      var hidden = !showInputs || inputHidden(ext.deepest_owner, parentMap, expansionState);
+      // Mirror Python: when show_inputs is off, INPUT nodes (and their
+      // edges) are skipped entirely, not just hidden.
+      if (!showInputs) continue;
+      var hidden = inputHidden(ext.deepest_owner, parentMap, expansionState);
       var params = ext.params || [];
       var typeHints = ext.type_hints || [];
       var isGroup = params.length > 1;
@@ -229,6 +232,8 @@
 
     for (var q = 0; q < externalInputs.length; q++) {
       var ext2 = externalInputs[q];
+      if (ext2.is_bound && !showBoundedInputs) continue;
+      if (!showInputs) continue;
       var ext2Params = ext2.params || [];
       var inputNodeId = ext2Params.length > 1
         ? 'input_group_' + ext2Params.join('_')
