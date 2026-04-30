@@ -12,7 +12,7 @@ import networkx as nx
 
 from hypergraph.viz._common import get_expandable_nodes
 from hypergraph.viz.ir_schema import GraphIR, IREdge, IRExternalInput, IRNode
-from hypergraph.viz.renderer.scope import compute_deepest_input_scope
+from hypergraph.viz.renderer.scope import compute_deepest_input_scope, get_deepest_consumers
 
 
 def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
@@ -35,7 +35,12 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
 
     input_spec = flat_graph.graph.get("input_spec", {})
     external_inputs = [
-        IRExternalInput(name=name, deepest_owner=compute_deepest_input_scope(name, flat_graph)) for name in input_spec.get("required", ())
+        IRExternalInput(
+            name=name,
+            deepest_owner=compute_deepest_input_scope(name, flat_graph),
+            consumers=tuple(get_deepest_consumers(name, flat_graph)),
+        )
+        for name in input_spec.get("required", ())
     ]
 
     return GraphIR(

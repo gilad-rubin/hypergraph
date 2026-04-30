@@ -30,6 +30,7 @@ class IREdge:
 class IRExternalInput:
     name: str
     deepest_owner: str | None = None
+    consumers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

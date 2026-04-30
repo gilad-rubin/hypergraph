@@ -48,7 +48,35 @@ def build_initial_scene(
             }
         )
 
-    return {"nodes": scene_nodes, "edges": []}
+    visible_ids = {n["id"] for n in scene_nodes if not n["hidden"]}
+
+    scene_edges: list[dict[str, Any]] = []
+
+    for ir_edge in ir.edges:
+        scene_edges.append(
+            {
+                "id": f"{ir_edge.source}__{ir_edge.target}",
+                "source": ir_edge.source,
+                "target": ir_edge.target,
+                "data": {"edgeType": ir_edge.edge_type},
+                "hidden": ir_edge.source not in visible_ids or ir_edge.target not in visible_ids,
+            }
+        )
+
+    for ext in ir.external_inputs:
+        input_node_id = f"input_{ext.name}"
+        for consumer in ext.consumers:
+            scene_edges.append(
+                {
+                    "id": f"{input_node_id}__{consumer}",
+                    "source": input_node_id,
+                    "target": consumer,
+                    "data": {"edgeType": "input"},
+                    "hidden": input_node_id not in visible_ids or consumer not in visible_ids,
+                }
+            )
+
+    return {"nodes": scene_nodes, "edges": scene_edges}
 
 
 def _scene_node_type(ir_node_type: str) -> str:
