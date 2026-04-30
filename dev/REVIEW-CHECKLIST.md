@@ -77,6 +77,24 @@ rg -F -- 'on_cache_hit' src/ tests/ docs/
 - The test should fail if the validation is removed (not vacuously true)
 - Check: `rg -n 'def test_.*<validation_name>' tests/` to verify coverage exists
 
+### Frontend Render-Loop Sweep
+
+**When:** You touched `src/hypergraph/viz/assets/viz.js` — especially the App component body, hook dep arrays, or any code path where a meta-derived value can fall back to an empty literal.
+
+**What:** React's `useMemo` / `useEffect` / `useCallback` compare deps with `===` (referential identity). A fresh `{}` / `[]` literal at component-body scope re-allocates every render and, if it ends up in a dep array, triggers an unbounded render loop. See `src/hypergraph/viz/DEBUGGING.md` § Performance & Layout Regressions for a shipped regression (9,833 layouts in 6 seconds before iframe locked up).
+
+```bash
+# Top-level App-body fallbacks (the historic offenders)
+rg -nE '^\s+var \w+ = .*\|\| (\{\}|\[\])' src/hypergraph/viz/assets/viz.js
+
+# All ref-creating expressions in App body — review whether each one is later captured into a hook dep
+rg -nE '^\s+var \w+ = (\w+\.(map|filter|concat)\(|\{[a-zA-Z_]|\[\w)' src/hypergraph/viz/assets/viz.js
+```
+
+**Replace** `|| {}` / `|| []` with `|| EMPTY_OBJ` / `|| EMPTY_ARR` (frozen singletons; see `viz.js:52`). **Wrap** `.map()` / `.filter()` / object literals in `useMemo(...)` if their result is captured into another hook's deps. **Hoist** stable JSX-prop objects (like `nodeTypes={...}`) to module scope.
+
+A single unstable dep can produce an exponentially-runaway state machine where every individual operation is fast (~0.5ms) but the loop never terminates — wallclock per-call timing won't catch it. Use `window.__hgAllMarks` instrumentation + Playwright drive-through if you suspect one (recipe in viz/DEBUGGING.md).
+
 ---
 
 ## Pre-Submit Checklist (Coding Agents)

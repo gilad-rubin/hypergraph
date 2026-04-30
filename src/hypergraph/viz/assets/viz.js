@@ -49,6 +49,13 @@
   // ║  Section 1: Constants + Helpers                          ║
   // ╚═══════════════════════════════════════════════════════════╝
 
+  // Frozen singletons for `|| EMPTY_OBJ` / `|| EMPTY_ARR` fallbacks in
+  // App body. A fresh `{}` / `[]` literal at component-body scope
+  // re-allocates every render and, if it ends up in a hook dep array,
+  // produces an unbounded render loop. See DEBUGGING.md § Performance.
+  var EMPTY_OBJ = Object.freeze({});
+  var EMPTY_ARR = Object.freeze([]);
+
   var TYPE_HINT_MAX_CHARS = 25;
   var NODE_LABEL_MAX_CHARS = 25;
   var CHAR_WIDTH_PX = 7;
@@ -1384,9 +1391,9 @@
     });
     var expansionState = expState[0], setExpansionState = expState[1];
 
-    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || {};
-    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
-    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || [];
+    var edgesByState = (initialData.meta && initialData.meta.edgesByState) || EMPTY_OBJ;
+    var nodesByState = (initialData.meta && initialData.meta.nodesByState) || EMPTY_OBJ;
+    var expandableNodes = (initialData.meta && initialData.meta.expandableNodes) || EMPTY_ARR;
 
     var expansionStateToKey = function(es, sep, showInputs) {
       var sepKey = 'sep:' + (sep ? '1' : '0');

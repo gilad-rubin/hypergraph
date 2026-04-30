@@ -520,3 +520,54 @@ for node in dump['nodes']:
 | `src/hypergraph/viz/geometry.py` | NodeGeometry, EdgeGeometry, EdgeConnectionValidator |
 | `tests/viz/conftest.py` | Playwright helpers, test fixtures |
 | `src/hypergraph/viz/CLAUDE.md` | Architecture notes, known issues |
+
+---
+
+## Performance & Layout Regressions
+
+### Render-loop traps in `viz.js`
+
+**Symptom:** click on an expandable container takes ~1–2s to respond; browser CPU pegs; iframe stops responding to further clicks during the freeze.
+
+**Cause:** React compares `useMemo` / `useEffect` / `useCallback` deps with `===` (referential identity). A fresh `{}` or `[]` literal evaluated in the App component body re-allocates every render; if that value ends up in any hook dep array, the dep ref-changes every render and the hook never settles.
+
+```js
+// BUG — fresh `{}` every render whenever the meta lookup misses
+var nodesByState = (initialData.meta && initialData.meta.nodesByState) || {};
+```
+
+If `nodesByState` later becomes a `useMemo` dep, the memo recomputes every render → downstream memos recompute → effects re-fire → state updates → render → repeat. We measured **9,833 layouts in 6 seconds** in one shipped regression before the iframe locked up. Static-default paths can mask it because `meta.nodesByState` is usually populated; the fallback path is what bites.
+
+**Fix:** frozen module-scope singletons (`viz.js:52`):
+
+```js
+var EMPTY_OBJ = Object.freeze({});
+var EMPTY_ARR = Object.freeze([]);
+// ...
+var nodesByState = (initialData.meta && initialData.meta.nodesByState) || EMPTY_OBJ;
+```
+
+Frozen on purpose — if anyone later mutates a fallback, `freeze` surfaces the error instead of silently leaking shared state across widget instances.
+
+#### Diagnostic recipe (count, don't time)
+
+When wallclock per-call timing shows everything fast but the UI freezes, **count, don't time** — the signal is in mark counts, not durations.
+
+1. **Instrument hot paths** with a marker function that pushes to a cumulative array (`window.__hgAllMarks` — *never* clear on dump). Sprinkle at click handlers, layout completion, useMemo recompute sites.
+2. **Drive a real browser via Playwright** to observe from outside the loop. DevTools inside the iframe is uselessly throttled while the main thread is pegged.
+3. After a scripted click, query `window.__hgAllMarks` and **count by name**. Any mark exceeding ~100 per user action is a render loop.
+4. **Find the unstable dep**: capture each dep into a `useRef`, compare `prevRef.current[k] !== d[k]` on each fire, log the changed keys. The looping dep will be the only consistent member of the `changed` list.
+
+#### Hot-path patterns to flag in code review
+
+| Pattern in App body | Why dangerous | Safe alternative |
+| --- | --- | --- |
+| `var x = ... \|\| {};` | Fresh `{}` whenever fallback fires | `\|\| EMPTY_OBJ` (frozen module-scope singleton) |
+| `var x = ... \|\| [];` | Same | `\|\| EMPTY_ARR` |
+| `var x = { foo: y };` (later used as dep) | Fresh object every render | Wrap in `useMemo(() => ({foo: y}), [y])` |
+| `var x = arr.map(...);` (later used as dep) | Fresh array every render | Wrap in `useMemo(() => arr.map(...), [arr])` |
+| `nodeTypes={{ custom: ... }}` JSX inline | Fresh object → breaks ReactFlow memo | Hoist to module scope |
+
+### Why the test suite didn't catch it
+
+`tests/viz/` checks rendering *correctness* (right nodes, right edges, right positions) inside a static HTML harness. A render-loop produces correct output, just inefficiently — no assertion checks render counts, so the test passes even if 9k layouts ran. End-to-end JupyterLab driving via Playwright is what surfaces it; even a single smoke test asserting `__hgAllMarks.length < 50` per click catches re-introduction.
