@@ -90,8 +90,9 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
     tailwind_css = _read_asset("tailwind.min.css", "css", _vendor)
     custom_css = _read_asset("custom.css", "css") or ""
 
-    # Load our single visualization module
+    # Load our single visualization module + scene_builder
     viz_js = _read_asset("viz.js", "js")
+    scene_builder_js = _read_asset("scene_builder.js", "js") or ""
 
     # Check that all required assets are available
     required_library_assets = [react_js, react_dom_js, htm_js, dagre_js, rf_js, rf_css, tailwind_css]
@@ -155,6 +156,8 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
     {htm_js}
     {dagre_js}
     {rf_js}
+    <!-- Hypergraph IR -> scene derivation (must load before viz.js) -->
+    {scene_builder_js}
     <!-- Hypergraph visualization module -->
     {viz_js}
 </head>

@@ -1804,6 +1804,17 @@
   function init() {
     var graphDataEl = document.getElementById('graph-data');
     var initialData = JSON.parse((graphDataEl && graphDataEl.textContent) || '{"nodes":[],"edges":[]}');
+
+    // IR-driven path: when initialData carries an IR instead of a
+    // pre-rendered scene, derive nodes/edges client-side. State changes
+    // (expand, separate_outputs, show_inputs) re-derive without a Python
+    // round-trip. See src/hypergraph/viz/scene_builder.py + assets/scene_builder.js.
+    if (initialData.meta && initialData.meta.ir && root.HypergraphSceneBuilder) {
+      var derived = root.HypergraphSceneBuilder.buildInitialScene(initialData.meta.ir, {});
+      initialData.nodes = derived.nodes;
+      initialData.edges = derived.edges;
+    }
+
     var themePreference = normalizeThemePref((initialData.meta && initialData.meta.theme_preference) || 'auto');
     var rootEl = document.getElementById('root');
     var fallback = document.getElementById('fallback');

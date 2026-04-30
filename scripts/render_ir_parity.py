@@ -1,19 +1,21 @@
 """Render legacy and IR-based HTML side-by-side for visual parity check.
 
-Generates two HTML files per fixture: one through the legacy
-render_graph -> generate_widget_html path, one through
-build_graph_ir -> build_initial_scene -> generate_widget_html.
+Generates two HTML files per fixture:
+  - <name>_legacy.html: legacy 2^N precompute path (render_graph)
+  - <name>_ir.html:     compact IR shipped raw; viz.js derives the scene
+                        client-side via assets/scene_builder.js
+
 Open both and compare.
 """
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
-from hypergraph.viz.scene_builder import build_initial_scene
 from tests.viz.conftest import make_outer, make_simple_graph, make_workflow
 
 FIXTURES = {
@@ -35,18 +37,19 @@ def main() -> None:
         (OUT_DIR / f"{name}_legacy.html").write_text(legacy_html)
 
         ir = build_graph_ir(flat)
-        scene = build_initial_scene(ir)
+        # Ship raw IR — the JS scene_builder derives scene client-side.
+        # nodes/edges are placeholders that viz.js replaces on init.
         ir_data = {
-            "nodes": scene["nodes"],
-            "edges": scene["edges"],
-            "meta": {},
+            "nodes": [],
+            "edges": [],
+            "meta": {"ir": asdict(ir)},
         }
         ir_html = generate_widget_html(ir_data)
         (OUT_DIR / f"{name}_ir.html").write_text(ir_html)
 
-        print(
-            f"{name:10} legacy={legacy_data and len(legacy_data['nodes'])}n/{len(legacy_data['edges'])}e  ir={len(scene['nodes'])}n/{len(scene['edges'])}e"
-        )
+        legacy_size = len(legacy_html)
+        ir_size = len(ir_html)
+        print(f"{name:10} legacy={legacy_size:>9,} B   ir={ir_size:>9,} B   delta={(ir_size - legacy_size) / legacy_size:+.1%}")
 
     print(f"\nWrote to {OUT_DIR}/")
     print(f"  open {OUT_DIR}/outer_legacy.html")
