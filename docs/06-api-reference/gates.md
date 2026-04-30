@@ -34,8 +34,8 @@ def ifelse(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `when_true` | `str \| END` | required | Target when function returns `True` |
-| `when_false` | `str \| END` | required | Target when function returns `False` |
+| `when_true` | `str` | required | Target when function returns `True` (pass `END` to terminate) |
+| `when_false` | `str` | required | Target when function returns `False` (pass `END` to terminate) |
 | `cache` | `bool` | `False` | Whether to cache routing decisions |
 | `hide` | `bool` | `False` | Whether to hide from visualization |
 | `default_open` | `bool` | `True` | If True, targets may execute before the gate runs. If False, targets are blocked until the gate executes. |
@@ -217,7 +217,7 @@ def route(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `targets` | `list` or `dict` | required | Valid target node names. Dict values are descriptions for documentation. |
-| `fallback` | `str \| END \| None` | `None` | Default target if function returns `None` |
+| `fallback` | `str \| None` | `None` | Default target if function returns `None` (pass `END` to terminate) |
 | `multi_target` | `bool` | `False` | If `True`, function returns list of targets |
 | `cache` | `bool` | `False` | Whether to cache routing decisions |
 | `hide` | `bool` | `False` | Whether to hide from visualization |
@@ -233,7 +233,7 @@ The decorated function should return:
 - `str` - Target node name to activate
 - `END` - Terminate execution along this path
 - `None` - Use fallback (if set) or activate no targets
-- `list[str | END]` - Multiple targets (only with `multi_target=True`)
+- `list[str]` - Multiple targets (only with `multi_target=True`; entries may be `END`)
 
 ### Basic Usage
 

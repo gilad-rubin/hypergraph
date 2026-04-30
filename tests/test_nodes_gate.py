@@ -93,6 +93,25 @@ class TestENDSentinel:
         with pytest.raises(ValueError, match="not the END sentinel"):
             SyncRunner().run(graph)
 
+    def test_end_pickle_round_trip_preserves_singleton(self):
+        """END must remain the same singleton across pickle/deepcopy.
+
+        Without __reduce__, pickle.loads would call _End("__hg_end__")
+        — but _End.__new__ takes no args, so it would raise TypeError.
+        And even if reconstruction succeeded the result would be a fresh
+        instance, breaking `decision is END` checks that the persistent
+        DiskCache (which uses pickle.dumps under the hood) and any other
+        pickle-based round-trip rely on.
+        """
+        import copy
+        import pickle
+
+        restored = pickle.loads(pickle.dumps(END))
+        assert restored is END
+
+        deep = copy.deepcopy(END)
+        assert deep is END
+
 
 # =============================================================================
 # RouteNode Construction Tests
@@ -152,11 +171,40 @@ class TestRouteNodeConstruction:
 
     def test_string_end_target_raises(self):
         """String 'END' as target should raise (too confusing with END sentinel)."""
-        with pytest.raises(ValueError, match="'END' as a string target"):
+        with pytest.raises(ValueError, match="reserved END-like string target"):
 
             @route(targets=["END", "process"])
             def decide(x):
                 return "process"
+
+    def test_reserved_underlying_value_target_raises(self):
+        """END's hidden underlying value must be rejected at registration.
+
+        If a user accidentally types the raw value as a target, it would
+        otherwise reach the runtime collision check — but rejecting at
+        configuration time gives a clearer, earlier error.
+        """
+        with pytest.raises(ValueError, match="reserved END-like string target"):
+
+            @route(targets=["__hg_end__", "process"])
+            def decide(x):
+                return "process"
+
+    def test_string_end_fallback_raises(self):
+        """Fallback must also be validated at registration, not just targets."""
+        with pytest.raises(ValueError, match="reserved END-like string target"):
+
+            @route(targets=["a"], fallback="END")
+            def decide(x):
+                return None
+
+    def test_reserved_underlying_value_fallback_raises(self):
+        """Fallback must also reject the raw underlying value."""
+        with pytest.raises(ValueError, match="reserved END-like string target"):
+
+            @route(targets=["a"], fallback="__hg_end__")
+            def decide(x):
+                return None
 
     def test_duplicate_targets_deduplicated(self):
         """Duplicate targets should be deduplicated (preserve order)."""

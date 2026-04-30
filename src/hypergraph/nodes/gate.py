@@ -52,21 +52,30 @@ def _validate_routing_func(func: Callable, node_type: str) -> None:
 
 
 def _validate_not_string_end(target: str, func_name: str) -> None:
-    """Reject string 'END' as target (easily confused with END sentinel).
+    """Reject reserved END-like strings as targets.
+
+    Two values are reserved: the human-friendly form "END" (rejected because
+    it's easily confused with the END sentinel) and END's hidden underlying
+    value (rejected because raw strings that match it would otherwise pass
+    set-membership checks while failing identity checks). The actual END
+    singleton always passes through unchanged.
 
     Args:
         target: The target to validate
         func_name: Function name for error messages
 
     Raises:
-        ValueError: If target is the string "END"
+        ValueError: If target is the string "END" or the reserved underlying
+            value, but is not the END sentinel itself
     """
-    if target == "END":
+    if target is END:
+        return
+    if target == "END" or target == _END_VALUE:
         raise ValueError(
-            f"Gate '{func_name}' has 'END' as a string target.\n\n"
-            f"The string 'END' is not allowed because it's easily confused "
-            f"with the END sentinel.\n\n"
-            f"How to fix: Use 'from hypergraph import END' and use END directly, "
+            f"Gate '{func_name}' uses a reserved END-like string target ({target!r}).\n\n"
+            f"This string is reserved because it would be confused with the "
+            f"END sentinel at runtime.\n\n"
+            f"How to fix: Use 'from hypergraph import END' and pass END directly, "
             f"or rename your target to something else."
         )
 
@@ -260,9 +269,11 @@ class RouteNode(GateNode):
                 f"How to fix: Remove fallback or set multi_target=False"
             )
 
-        # Add fallback to targets if not already present
-        if fallback is not None and fallback not in target_list:
-            target_list.append(fallback)
+        # Validate and add fallback to targets if not already present
+        if fallback is not None:
+            _validate_not_string_end(fallback, func.__name__)
+            if fallback not in target_list:
+                target_list.append(fallback)
 
         resolved_name = name or func.__name__
         self.name = resolved_name
@@ -618,6 +629,22 @@ class _End(str):
 
     def __str__(self) -> str:
         return "END"
+
+    def __reduce__(self) -> tuple:
+        return (_resolve_end_singleton, ())
+
+
+def _resolve_end_singleton() -> _End:
+    """Reconstruct the END singleton during unpickling.
+
+    Without this, pickle would route through the default str-subclass path
+    (calling `_End("__hg_end__")`), but `_End.__new__` takes no arguments
+    so it raises TypeError. Returning the module-level singleton also
+    preserves identity (`restored is END`) across pickle / deepcopy /
+    multiprocessing round-trips, which gate caching and checkpointing
+    rely on for `decision is END` checks to remain correct.
+    """
+    return END
 
 
 END: _End = _End()
