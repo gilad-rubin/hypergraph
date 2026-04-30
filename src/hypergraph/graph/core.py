@@ -188,6 +188,8 @@ class Graph:
         self._cached_structural_hash: str | None = None
         self._controlled_by: dict[str, list[str]] | None = None
         self._validate()
+        # Eagerly compute inputs so bind-conflict validation fires at build time.
+        _ = self.inputs
 
     def _normalize_constructor_entrypoints(
         self,

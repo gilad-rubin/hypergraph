@@ -412,10 +412,11 @@ def _collect_bound_values(
 ) -> dict[str, Any]:
     """Collect all bound values from graph and nested GraphNodes under lexical scope.
 
-    Inner binds whose public name is declared at this scope (consumed/produced by a
-    leaf node here) auto-link upward and surface as a flat key on the outer bound
-    dict. Inner binds whose public name is private to the subgraph surface as
-    dot-pathed keys (``"<graphnode_name>.<public_name>"``).
+    Inner binds surface as dot-pathed keys (``"<graphnode_name>.<public_name>"``)
+    on the outer bound dict. If an inner bind's public name is declared at this
+    scope (would auto-link to an ancestor's same-named input), the bind would be
+    silently overridden by the ancestor's value at run time -- so this is a
+    build-time error pointing to both the bind site and the ancestor scope.
 
     Args:
         nodes: Map of node name -> HyperNode
@@ -423,7 +424,11 @@ def _collect_bound_values(
 
     Returns:
         Merged dict of all bound values (current graph + nested graphs)
+
+    Raises:
+        GraphConfigError: when a nested bind is shadowed by an ancestor-declared name.
     """
+    from hypergraph.graph.validation import GraphConfigError
     from hypergraph.nodes.graph_node import GraphNode
 
     all_bound = dict(bound)
@@ -435,13 +440,14 @@ def _collect_bound_values(
         for inner_key, value in node.graph.inputs.bound.items():
             public_key = node.map_input_name_from_original(inner_key)
             if public_key in declared:
-                # Auto-link to ancestor: set as flat default if not already set.
-                all_bound.setdefault(public_key, value)
-            else:
-                # Private to subgraph: dot-path it. The leaf label is the public
-                # name as seen on the GraphNode (post with_inputs rename), so a
-                # rename only changes the leaf without moving scope.
-                all_bound[f"{node_name}.{public_key}"] = value
+                raise GraphConfigError(
+                    f"Bind on '{node_name}.{public_key}' is shadowed by '{public_key}' "
+                    f"declared at this scope (a node here consumes or produces it). "
+                    f"At run time the parent's value would silently override the bind. "
+                    f"Fix: either remove the bind on the inner subgraph, or rename "
+                    f"the input via with_inputs(...) so it no longer matches the ancestor."
+                )
+            all_bound[f"{node_name}.{public_key}"] = value
 
     return all_bound
 
