@@ -367,6 +367,9 @@ class TestEdgeTypes:
 
         assert "branch_a -.-> consumer" in mermaid
         assert "branch_b -.-> consumer" in mermaid
+        # Exclusive (and control) dashed edges must not be styled with the
+        # purple ordering linkStyle — only true ordering edges get that.
+        assert "linkStyle" not in mermaid.source
 
 
 # =============================================================================

@@ -741,3 +741,74 @@ class TestExclusiveBranchEdges:
         data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data"]
         assert len(data_edges) == 1
         assert data_edges[0]["data"]["exclusive"] is False
+
+    def test_route_branches_marked_exclusive(self):
+        """N-ary @route with default multi_target=False is also exclusive."""
+
+        @route(targets=["path_a", "path_b"])
+        def decide(x: int) -> str:
+            return "path_a"
+
+        @node(output_name="value")
+        def path_a(x: int) -> int:
+            return 1
+
+        @node(output_name="value")
+        def path_b(x: int) -> int:
+            return 2
+
+        @node(output_name="final")
+        def consumer(value: int) -> int:
+            return value
+
+        graph = Graph([decide, path_a, path_b, consumer])
+        result = render_graph(graph.to_flat_graph())
+
+        data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumer"]
+        assert len(data_edges) == 2
+        assert all(e["data"]["exclusive"] is True for e in data_edges)
+
+    def test_multi_target_route_not_marked(self):
+        """multi_target=True routes run targets concurrently, not exclusively."""
+
+        @route(targets=["path_a", "path_b"], multi_target=True)
+        def fan_out(x: int) -> list:
+            return ["path_a", "path_b"]
+
+        @node(output_name="value")
+        def path_a(x: int) -> int:
+            return 1
+
+        @node(output_name="value_b")
+        def path_b(x: int) -> int:
+            return 2
+
+        @node(output_name="final")
+        def consumer(value: int, value_b: int) -> int:
+            return value + value_b
+
+        graph = Graph([fan_out, path_a, path_b, consumer])
+        result = render_graph(graph.to_flat_graph())
+
+        data_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumer"]
+        assert all(e["data"]["exclusive"] is False for e in data_edges)
+
+    def test_multi_target_route_excluded_from_mutex_groups(self):
+        """Unit-level: parallel routes never claim their branches as mutex."""
+        from hypergraph.viz._common import _compute_mutex_groups
+
+        @route(targets=["path_a", "path_b"], multi_target=True)
+        def fan_out(x: int) -> list:
+            return ["path_a", "path_b"]
+
+        @node(output_name="va")
+        def path_a(x: int) -> int:
+            return 1
+
+        @node(output_name="vb")
+        def path_b(x: int) -> int:
+            return 2
+
+        graph = Graph([fan_out, path_a, path_b])
+        groups = _compute_mutex_groups(graph.to_flat_graph())
+        assert groups == [], "multi_target route must not produce mutex groups"

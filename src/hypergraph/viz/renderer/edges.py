@@ -254,6 +254,7 @@ def add_merged_output_edges(
     edges: list[dict[str, Any]],
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    exclusive_data_edges: set[tuple[str, str, str]] | None = None,
 ) -> None:
     """Add edges in merged output mode (separateOutputs=false).
 
@@ -262,7 +263,8 @@ def add_merged_output_edges(
     """
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state)
     output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
-    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
+    if exclusive_data_edges is None:
+        exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
 
     for source, target, edge_data in flat_graph.edges(data=True):
         if not is_node_visible(source, flat_graph, expansion_state):
@@ -399,6 +401,7 @@ def add_separate_output_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     graph_output_visibility: dict[str, set[str]] | None = None,
+    exclusive_data_edges: set[tuple[str, str, str]] | None = None,
 ) -> None:
     """Add edges in separate output mode (separateOutputs=true).
 
@@ -408,7 +411,8 @@ def add_separate_output_edges(
     """
     output_to_producer = build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True)
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
-    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
+    if exclusive_data_edges is None:
+        exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
 
     # 1. Add edges from function nodes to their DATA nodes
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -658,10 +662,22 @@ def compute_edges_for_state(
                     )
 
     # 2. Add edges between function nodes
+    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     if separate_outputs:
-        add_separate_output_edges(edges, flat_graph, expansion_state, graph_output_visibility)
+        add_separate_output_edges(
+            edges,
+            flat_graph,
+            expansion_state,
+            graph_output_visibility,
+            exclusive_data_edges=exclusive_data_edges,
+        )
     else:
-        add_merged_output_edges(edges, flat_graph, expansion_state)
+        add_merged_output_edges(
+            edges,
+            flat_graph,
+            expansion_state,
+            exclusive_data_edges=exclusive_data_edges,
+        )
 
     # 3. Add edges from START node
     add_start_node_edges(edges, flat_graph, expansion_state)

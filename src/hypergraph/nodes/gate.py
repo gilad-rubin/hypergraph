@@ -309,6 +309,7 @@ class RouteNode(GateNode):
         """Branch-specific data for visualization."""
         return {
             "targets": ["END" if t is END else t for t in self.targets],
+            "multi_target": self.multi_target,
         }
 
 
