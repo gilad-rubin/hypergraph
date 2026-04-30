@@ -295,7 +295,8 @@ class TestSyncRunnerRun:
         graph = Graph([add]).bind(a=5, b=10)
         runner = SyncRunner()
 
-        result = runner.run(graph, {"a": 100, "b": 200})
+        with pytest.warns(UserWarning, match="(?i)override"):
+            result = runner.run(graph, {"a": 100, "b": 200})
 
         assert result["sum"] == 300
 

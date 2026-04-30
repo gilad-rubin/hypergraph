@@ -573,8 +573,9 @@ class TestBindWithGraphNode:
         result = runner.run(outer, {"inner.x": 5})
         assert result["result"] == 10
 
-        # Override with runtime value
-        result = runner.run(outer, {"inner.x": 5, "inner.factor": 3})
+        # Override with runtime value (warning expected for the bind override)
+        with pytest.warns(UserWarning, match="(?i)override.*inner\\.factor"):
+            result = runner.run(outer, {"inner.x": 5, "inner.factor": 3})
         assert result["result"] == 15
 
 

@@ -39,8 +39,9 @@ class TestValueSourceDetection:
         graph = Graph([process]).bind(x=99)
         runner = SyncRunner()
 
-        # Provided value should override both binding and default
-        result = runner.run(graph, {"x": 42})
+        # Provided value should override both binding and default (warning expected).
+        with pytest.warns(UserWarning, match="(?i)override"):
+            result = runner.run(graph, {"x": 42})
         assert result["result"] == 42
 
     def test_bound_value_source(self):

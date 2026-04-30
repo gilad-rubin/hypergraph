@@ -155,16 +155,6 @@ def _compute_cycle_seed_params(
     return required
 
 
-def _unique_params(nodes: dict[str, HyperNode]) -> Iterator[str]:
-    """Yield each unique parameter name across all nodes."""
-    seen: set[str] = set()
-    for node in nodes.values():
-        for param in node.inputs:
-            if param not in seen:
-                seen.add(param)
-                yield param
-
-
 def _names_declared_at_scope(nodes: dict[str, HyperNode]) -> set[str]:
     """Names declared directly at this graph's scope.
 
@@ -216,22 +206,6 @@ def _addressed_params(
                 if param not in seen_flat:
                     seen_flat.add(param)
                     yield (param, param, None)
-
-
-def _categorize_param(
-    param: str,
-    edge_produced: set[str],
-    bound: dict[str, Any],
-    nodes: dict[str, HyperNode],
-) -> str | None:
-    """Categorize a non-cycle parameter: 'required', 'optional', or None (edge-produced)."""
-    if param in edge_produced:
-        return None  # Produced by an edge, not a user input
-
-    if param in bound or _all_consumers_have_default(param, nodes):
-        return "optional"
-
-    return "required"
 
 
 def _categorize_addressed_param(
@@ -450,23 +424,3 @@ def _collect_bound_values(
             all_bound[f"{node_name}.{public_key}"] = value
 
     return all_bound
-
-
-def _all_values_equal(values: list[Any]) -> bool:
-    """Best-effort equality check for merged nested bound values."""
-    if len(values) <= 1:
-        return True
-    first = values[0]
-    for value in values[1:]:
-        if first is value:
-            continue
-        try:
-            equal = first == value
-            if hasattr(equal, "__iter__"):
-                if not all(equal):
-                    return False
-            elif not bool(equal):
-                return False
-        except Exception:
-            return False
-    return True
