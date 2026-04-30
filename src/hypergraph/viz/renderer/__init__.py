@@ -66,8 +66,10 @@ def render_graph(
             "show_inputs": show_inputs,
             "show_bounded_inputs": show_bounded_inputs,
             "debug_overlays": debug_overlays,
-            # Routing maps kept for the legacy live-widget path; the
-            # IR-driven scene_builder.js does not consume them.
+            # Routing maps consumed by viz.js (`routingData` in
+            # `assets/viz.js`). They feed `performRecursiveLayout` for
+            # nested-container edge routing and the debug API. The
+            # IR-driven `scene_builder.js` doesn't read them itself.
             "output_to_producer": build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True),
             "param_to_consumer": build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True),
             "node_to_parent": _build_node_to_parent_map(flat_graph),
