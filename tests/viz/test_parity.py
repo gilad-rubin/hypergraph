@@ -96,18 +96,37 @@ def _all_expansion_states(ir_dict: dict) -> list[dict]:
     return states
 
 
+def make_bound_graph():
+    """A 2-node graph where one external param is bound at the graph level —
+    exercises the ``ext.is_bound`` branch in both scene builders so the
+    ``show_bounded_inputs`` flag has something to filter."""
+    from hypergraph import Graph, node
+
+    @node(output_name="scaled")
+    def scale(x: int, factor: int) -> int:
+        return x * factor
+
+    @node(output_name="result")
+    def report(scaled: int) -> int:
+        return scaled
+
+    return Graph(nodes=[scale, report]).bind(factor=10)
+
+
 FIXTURES = {
     "simple": make_simple_graph,
     "chain": make_chain_graph,
     "workflow": make_workflow,
     "outer": make_outer,
+    "bound": make_bound_graph,
 }
 
 
 @pytest.mark.parametrize("fixture_name", list(FIXTURES.keys()))
 @pytest.mark.parametrize("separate_outputs", [False, True])
 @pytest.mark.parametrize("show_inputs", [False, True])
-def test_python_js_scenes_match(fixture_name: str, separate_outputs: bool, show_inputs: bool) -> None:
+@pytest.mark.parametrize("show_bounded_inputs", [False, True])
+def test_python_js_scenes_match(fixture_name: str, separate_outputs: bool, show_inputs: bool, show_bounded_inputs: bool) -> None:
     graph = FIXTURES[fixture_name]()
     flat_graph = graph.to_flat_graph()
     ir = build_graph_ir(flat_graph)
@@ -119,6 +138,7 @@ def test_python_js_scenes_match(fixture_name: str, separate_outputs: bool, show_
             expansion_state=expansion_state,
             separate_outputs=separate_outputs,
             show_inputs=show_inputs,
+            show_bounded_inputs=show_bounded_inputs,
         )
         js_scene = _node_scene(
             ir_dict,
@@ -126,21 +146,17 @@ def test_python_js_scenes_match(fixture_name: str, separate_outputs: bool, show_
                 "expansionState": expansion_state,
                 "separateOutputs": separate_outputs,
                 "showInputs": show_inputs,
+                "showBoundedInputs": show_bounded_inputs,
             },
         )
 
         py_nodes, py_edges = _project(py_scene)
         js_nodes, js_edges = _project(js_scene)
 
+        ctx = f"fixture={fixture_name} state={expansion_state} sep={separate_outputs} inputs={show_inputs} bounded={show_bounded_inputs}"
         assert py_nodes == js_nodes, (
-            f"Node-set drift for fixture={fixture_name} state={expansion_state} "
-            f"sep={separate_outputs} inputs={show_inputs}\n"
-            f"Only in Python: {sorted(py_nodes - js_nodes)}\n"
-            f"Only in JS:     {sorted(js_nodes - py_nodes)}"
+            f"Node-set drift for {ctx}\nOnly in Python: {sorted(py_nodes - js_nodes)}\nOnly in JS:     {sorted(js_nodes - py_nodes)}"
         )
         assert py_edges == js_edges, (
-            f"Edge-set drift for fixture={fixture_name} state={expansion_state} "
-            f"sep={separate_outputs} inputs={show_inputs}\n"
-            f"Only in Python: {sorted(py_edges - js_edges)}\n"
-            f"Only in JS:     {sorted(js_edges - py_edges)}"
+            f"Edge-set drift for {ctx}\nOnly in Python: {sorted(py_edges - js_edges)}\nOnly in JS:     {sorted(js_edges - py_edges)}"
         )
