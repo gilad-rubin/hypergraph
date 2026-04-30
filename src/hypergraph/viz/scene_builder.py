@@ -309,7 +309,7 @@ def _add_start_end_nodes_and_edges(
                 }
             )
 
-    end_sources: list[str] = []
+    end_sources: list[tuple[str, str | None]] = []
     seen_end: set[str] = set()
     for ir_node in ir.nodes:
         branch_data = ir_node.branch_data or {}
@@ -321,17 +321,17 @@ def _add_start_end_nodes_and_edges(
         if resolved is None or resolved in seen_end:
             continue
         seen_end.add(resolved)
-        end_sources.append(resolved)
+        end_sources.append((resolved, _end_branch_label(branch_data)))
 
     if end_sources:
         scene_nodes.append(_synthetic_node("__end__", "END", "End"))
-        for source in end_sources:
+        for source, label in end_sources:
             scene_edges.append(
                 {
                     "id": f"{source}____end__",
                     "source": source,
                     "target": "__end__",
-                    "data": {"edgeType": "end"},
+                    "data": {"edgeType": "end", "label": label},
                     "hidden": False,
                 }
             )
@@ -346,6 +346,25 @@ def _routes_to_end(branch_data: dict) -> bool:
     if isinstance(targets, (list, tuple)):
         return "END" in targets
     return False
+
+
+def _end_branch_label(branch_data: dict) -> str | None:
+    """Return the user-facing label for a branch edge that routes to END.
+
+    Mirrors ``ir_builder._branch_label_for_edge`` but answers for the
+    synthetic ``branch → __end__`` edge by inspecting which arm of the
+    gate routes to END.
+    """
+    if branch_data.get("when_true") == "END":
+        return "True"
+    if branch_data.get("when_false") == "END":
+        return "False"
+    targets = branch_data.get("targets")
+    if isinstance(targets, dict):
+        for label, t in targets.items():
+            if t == "END":
+                return str(label)
+    return None
 
 
 def _resolve_to_visible(

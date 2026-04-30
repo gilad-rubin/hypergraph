@@ -204,6 +204,33 @@ def test_multi_value_edge_emits_one_scene_edge_per_value_merged_mode():
     assert value_names == {"a", "b"}, f"Expected one edge per value name; got {value_names}"
 
 
+def test_branch_to_end_edge_carries_label_for_when_false():
+    """``@ifelse(when_false=END)`` produces a synthetic branch→__end__
+    edge. The label ("True"/"False") that identifies which arm exits
+    must be preserved so the rendered stop path is readable."""
+    from hypergraph import END, ifelse
+
+    @node(output_name="value")
+    def src(seed: int) -> int:
+        return seed
+
+    @ifelse(when_true="accept", when_false=END)
+    def gate(value: int) -> bool:
+        return value > 0
+
+    @node(output_name="accepted")
+    def accept(value: int) -> int:
+        return value
+
+    flat_graph = Graph(nodes=[src, gate, accept]).to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+    scene = build_initial_scene(ir)
+
+    end_edges = [e for e in scene["edges"] if e["target"] == "__end__"]
+    assert end_edges, "branch→__end__ edge missing from scene"
+    assert end_edges[0]["data"].get("label") == "False", f"Expected branch→__end__ edge label 'False'; got {end_edges[0]['data'].get('label')!r}"
+
+
 def test_expanded_graph_container_data_nodes_are_hidden_in_separate_mode():
     """When a GRAPH container is expanded in separate_outputs mode, the
     data edge is re-routed to the internal producer's DATA node, leaving

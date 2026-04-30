@@ -349,22 +349,36 @@
       var resolvedSrc = resolveToVisible(node.id, parentMap, visibleIds);
       if (resolvedSrc && !seenEnd[resolvedSrc]) {
         seenEnd[resolvedSrc] = true;
-        endSources.push(resolvedSrc);
+        endSources.push({ source: resolvedSrc, label: endBranchLabel(node.branch_data) });
       }
     }
     if (endSources.length > 0) {
       sceneNodes.push(syntheticNode('__end__', 'END', 'End'));
       for (var e = 0; e < endSources.length; e++) {
-        var source = endSources[e];
+        var entry = endSources[e];
         sceneEdges.push({
-          id: source + '____end__',
-          source: source,
+          id: entry.source + '____end__',
+          source: entry.source,
           target: '__end__',
-          data: { edgeType: 'end' },
+          data: { edgeType: 'end', label: entry.label },
           hidden: false,
         });
       }
     }
+  }
+
+  function endBranchLabel(branchData) {
+    if (!branchData) return null;
+    if (branchData.when_true === 'END') return 'True';
+    if (branchData.when_false === 'END') return 'False';
+    var targets = branchData.targets;
+    if (targets && typeof targets === 'object' && !Array.isArray(targets)) {
+      var keys = Object.keys(targets);
+      for (var i = 0; i < keys.length; i++) {
+        if (targets[keys[i]] === 'END') return String(keys[i]);
+      }
+    }
+    return null;
   }
 
   global.HypergraphSceneBuilder = {
