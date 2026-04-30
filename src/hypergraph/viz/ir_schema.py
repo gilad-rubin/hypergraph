@@ -29,6 +29,7 @@ class IREdge:
 @dataclass(frozen=True)
 class IRExternalInput:
     name: str
+    deepest_owner: str | None = None
 
 
 @dataclass(frozen=True)
