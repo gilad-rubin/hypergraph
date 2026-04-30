@@ -343,6 +343,34 @@ class TestEdgeTypes:
         assert len(true_edges) == 1, f"Expected 1 True→END edge, got {true_edges}"
         assert len(false_edges) == 1, f"Expected 1 False→END edge, got {false_edges}"
 
+    def test_exclusive_branch_data_edge_dashed(self):
+        """Data edges from mutex producers feeding the same consumer use dashed arrows."""
+
+        @ifelse(when_true="branch_a", when_false="branch_b")
+        def decide(x: int) -> bool:
+            return x > 0
+
+        @node(output_name="result")
+        def branch_a(x: int) -> str:
+            return "a"
+
+        @node(output_name="result")
+        def branch_b(x: int) -> str:
+            return "b"
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        graph = Graph([decide, branch_a, branch_b, consumer])
+        mermaid = graph.to_mermaid()
+
+        assert "branch_a -.-> consumer" in mermaid
+        assert "branch_b -.-> consumer" in mermaid
+        # Exclusive (and control) dashed edges must not be styled with the
+        # purple ordering linkStyle — only true ordering edges get that.
+        assert "linkStyle" not in mermaid.source
+
 
 # =============================================================================
 # ID Sanitization

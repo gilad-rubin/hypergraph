@@ -81,6 +81,15 @@ Selection happens in App via `expansionStateToKey()` and lookups in `meta.nodesB
    - `edge_type="ordering"` in NetworkX graph
    - Rendered with dashed style
 
+4. **Exclusive (mutex) data edges** (both modes)
+   - When two producers in different branches of an exclusive gate
+     (`@ifelse`, or `@route` with `multi_target=False`) feed the same input,
+     each contributing edge is tagged with `data.exclusive=True`.
+   - Detection lives in `viz/_common.py::compute_exclusive_data_edges` and
+     reads gate `branch_data` off the flat graph.
+   - React Flow renders them with `strokeDasharray='4 4'`; Mermaid uses the
+     dotted arrow (`-.->`).
+
 ## Input Grouping + Scope
 
 External inputs are grouped by **consumer set** and **bound status**:

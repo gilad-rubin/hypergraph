@@ -7,11 +7,14 @@ one place prevents the two code paths from diverging.
 
 from __future__ import annotations
 
-from itertools import product
+from collections import Counter, defaultdict
+from itertools import combinations, product
 from typing import TYPE_CHECKING
 
+import networkx as nx
+
 if TYPE_CHECKING:
-    import networkx as nx
+    pass
 
 
 # =============================================================================
@@ -267,3 +270,96 @@ def build_output_to_producer_map(
                     output_to_producer[output] = node_id
 
     return output_to_producer
+
+
+# =============================================================================
+# Mutex (exclusive-branch) Detection
+# =============================================================================
+
+
+def _gate_branch_targets(branch_data: dict) -> list[str]:
+    """Return mutex-branch targets for a gate, or [] if not exclusive."""
+    if branch_data.get("multi_target"):
+        return []
+    targets: list[str] = []
+    if "when_true" in branch_data:
+        for key in ("when_true", "when_false"):
+            value = branch_data.get(key)
+            if isinstance(value, str) and value and value != "END":
+                targets.append(value)
+    elif "targets" in branch_data:
+        target_data = branch_data["targets"]
+        values = target_data.values() if isinstance(target_data, dict) else target_data
+        targets = [t for t in values if isinstance(t, str) and t and t != "END"]
+    return targets
+
+
+def _compute_mutex_groups(flat_graph: nx.DiGraph) -> list[list[set[str]]]:
+    """Compute mutex groups from a flat graph using gate ``branch_data``.
+
+    Each entry is a list of branch sets (one per gate target); two nodes are
+    mutex iff they appear in different branch sets of the same entry.
+    """
+    groups: list[list[set[str]]] = []
+    for _, attrs in flat_graph.nodes(data=True):
+        branch_data = attrs.get("branch_data") or {}
+        if not branch_data:
+            continue
+        targets = _gate_branch_targets(branch_data)
+        targets = [t for t in targets if t in flat_graph]
+        if len(targets) < 2:
+            continue
+        reachable = {t: set(nx.descendants(flat_graph, t)) | {t} for t in targets}
+        counts = Counter(node for nodes in reachable.values() for node in nodes)
+        groups.append([{n for n in reachable[t] if counts[n] == 1} for t in targets])
+    return groups
+
+
+def _is_pair_mutex(a: str, b: str, mutex_groups: list[list[set[str]]]) -> bool:
+    """Return True if two nodes are in different branches of the same gate."""
+    for branches in mutex_groups:
+        a_branch: int | None = None
+        b_branch: int | None = None
+        for i, branch in enumerate(branches):
+            if a in branch:
+                a_branch = i
+            if b in branch:
+                b_branch = i
+        if a_branch is not None and b_branch is not None and a_branch != b_branch:
+            return True
+    return False
+
+
+def compute_exclusive_data_edges(flat_graph: nx.DiGraph) -> set[tuple[str, str, str]]:
+    """Identify ``(source, target, value_name)`` data edges fed by mutex producers.
+
+    An edge is exclusive when another producer of the same value name feeds the
+    same consumer and the two producers live in different branches of the same
+    exclusive gate. Returned tuples cover both producers in such pairs.
+    """
+    mutex_groups = _compute_mutex_groups(flat_graph)
+    if not mutex_groups:
+        return set()
+
+    producers_by_input: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for source, target, attrs in flat_graph.edges(data=True):
+        if attrs.get("edge_type") != "data":
+            continue
+        # Match renderer behaviour: edges without explicit value names still
+        # emit a single edge keyed by "" — track them under that key too.
+        value_names = attrs.get("value_names") or [""]
+        for value_name in value_names:
+            producers_by_input[(target, value_name)].append(source)
+
+    exclusive: set[tuple[str, str, str]] = set()
+    for (target, value_name), producers in producers_by_input.items():
+        if len(producers) < 2:
+            continue
+        mutex_sources: set[str] = set()
+        for a, b in combinations(producers, 2):
+            if _is_pair_mutex(a, b, mutex_groups):
+                mutex_sources.add(a)
+                mutex_sources.add(b)
+        for source in mutex_sources:
+            exclusive.add((source, target, value_name))
+    return exclusive

@@ -22,6 +22,7 @@ from hypergraph.viz._common import (
     build_expansion_state,
     build_output_to_producer_map,
     build_param_to_consumer_map,
+    compute_exclusive_data_edges,
     is_descendant_of,
     is_node_visible,
 )
@@ -297,12 +298,14 @@ def _format_node(safe_id: str, label: str, node_type: str) -> str:
 def _render_merged_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
-) -> list[str]:
+    exclusive_data_edges: set[tuple[str, str, str]],
+) -> list[tuple[str, str]]:
     """Render edges in merged output mode (no DATA intermediaries).
 
-    Mirrors add_merged_output_edges() from renderer/edges.py.
+    Mirrors add_merged_output_edges() from renderer/edges.py. Returns a list
+    of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
     """
-    lines: list[str] = []
+    out: list[tuple[str, str]] = []
     output_to_producer = build_output_to_producer_map(
         flat_graph,
         expansion_state,
@@ -335,7 +338,7 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            lines.append(_format_control_edge(source, actual_target, label))
+            out.append((_format_control_edge(source, actual_target, label), "control"))
             continue
 
         if edge_type == "ordering":
@@ -346,7 +349,7 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            lines.append(_format_ordering_edge(source, target, value_name))
+            out.append((_format_ordering_edge(source, target, value_name), "ordering"))
             continue
 
         # Data edges
@@ -374,20 +377,23 @@ def _render_merged_edges(
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            lines.append(_format_edge(actual_source, actual_target, None))
+            is_exclusive = (source, target, value_name) in exclusive_data_edges
+            out.append((_format_edge(actual_source, actual_target, None, exclusive=is_exclusive), "data"))
 
-    return lines
+    return out
 
 
 def _render_separate_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
-) -> list[str]:
+    exclusive_data_edges: set[tuple[str, str, str]],
+) -> list[tuple[str, str]]:
     """Render edges in separate output mode (with DATA intermediaries).
 
-    Mirrors add_separate_output_edges() from renderer/edges.py.
+    Mirrors add_separate_output_edges() from renderer/edges.py. Returns a list
+    of ``(line, kind)`` tuples where kind ∈ {"data", "control", "ordering"}.
     """
-    lines: list[str] = []
+    out: list[tuple[str, str]] = []
     output_to_producer = build_output_to_producer_map(
         flat_graph,
         expansion_state,
@@ -406,7 +412,7 @@ def _render_separate_edges(
             edge_key = (_sanitize_id(node_id), _sanitize_id(data_id))
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                lines.append(_format_edge(node_id, data_id, None))
+                out.append((_format_edge(node_id, data_id, None), "data"))
 
     # DATA → consumer edges + control/ordering edges
     for source, target, edge_data in flat_graph.edges(data=True):
@@ -436,14 +442,15 @@ def _render_separate_edges(
                 edge_key = (_sanitize_id(data_id), _sanitize_id(target))
                 if edge_key not in seen_edges:
                     seen_edges.add(edge_key)
-                    lines.append(_format_edge(data_id, target, value_name))
+                    is_exclusive = (source, target, value_name) in exclusive_data_edges
+                    out.append((_format_edge(data_id, target, value_name, exclusive=is_exclusive), "data"))
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
             edge_key = (_sanitize_id(source), _sanitize_id(target), f"ord_{value_name}")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                lines.append(_format_ordering_edge(source, target, value_name))
+                out.append((_format_ordering_edge(source, target, value_name), "ordering"))
 
         elif edge_type == "control":
             actual_target = _resolve_control_target(
@@ -458,9 +465,9 @@ def _render_separate_edges(
             edge_key = (_sanitize_id(source), _sanitize_id(actual_target), label or "")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                lines.append(_format_control_edge(source, actual_target, label))
+                out.append((_format_control_edge(source, actual_target, label), "control"))
 
-    return lines
+    return out
 
 
 # =============================================================================
@@ -472,12 +479,14 @@ def _format_edge(
     source: str,
     target: str,
     label: str | None,
+    exclusive: bool = False,
 ) -> str:
-    """Format a solid-arrow Mermaid edge."""
+    """Format a Mermaid data edge; dashed when fed by mutex producers."""
     s, t = _sanitize_id(source), _sanitize_id(target)
+    arrow = "-.->" if exclusive else "-->"
     if label:
-        return f"    {s} -->|{label}| {t}"
-    return f"    {s} --> {t}"
+        return f"    {s} {arrow}|{label}| {t}"
+    return f"    {s} {arrow} {t}"
 
 
 def _format_ordering_edge(source: str, target: str, label: str) -> str:
@@ -840,9 +849,10 @@ def to_mermaid(
         lines.append(_format_node(_sanitize_id(end_id), "End", "END"))
         node_class_map[end_id] = "end"
 
-    # --- Input → consumer edges ---
+    # --- Edge collection (kind-tagged so linkStyle can target ordering only) ---
     lines.append("    %% Edges")
-    lines.extend(_render_start_edges(start_targets))
+    edge_pairs: list[tuple[str, str]] = []
+    edge_pairs.extend((line, "start") for line in _render_start_edges(start_targets))
 
     for group in input_groups:
         params = group["params"]
@@ -850,18 +860,18 @@ def to_mermaid(
 
         targets = _get_input_targets(params, flat_graph, param_to_consumers, expansion_state)
         for tgt in targets:
-            lines.append(_format_edge(input_node_id, tgt, None))
+            edge_pairs.append((_format_edge(input_node_id, tgt, None), "input"))
 
-    # --- Internal edges ---
-    edge_lines = _render_separate_edges(flat_graph, expansion_state) if separate_outputs else _render_merged_edges(flat_graph, expansion_state)
-    lines.extend(edge_lines)
+    exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
+    if separate_outputs:
+        edge_pairs.extend(_render_separate_edges(flat_graph, expansion_state, exclusive_data_edges))
+    else:
+        edge_pairs.extend(_render_merged_edges(flat_graph, expansion_state, exclusive_data_edges))
 
-    # --- END edges ---
-    end_edges = _render_end_edges(flat_graph, expansion_state)
-    lines.extend(end_edges)
+    edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state))
 
-    # Track ordering edge indices for linkStyle
-    ordering_indices = _find_ordering_edge_indices(lines)
+    ordering_indices = [i for i, (_, kind) in enumerate(edge_pairs) if kind == "ordering"]
+    lines.extend(line for line, _ in edge_pairs)
 
     # --- Styling ---
     lines.append("")
@@ -974,21 +984,3 @@ def _render_end_edges(
 def _render_start_edges(start_targets: list[str]) -> list[str]:
     """Render edges from START to explicitly configured entrypoints."""
     return [_format_edge("__start__", target, None) for target in start_targets]
-
-
-def _find_ordering_edge_indices(lines: list[str]) -> list[int]:
-    """Find 0-based edge indices for ordering (dotted) edges.
-
-    Mermaid linkStyle uses the order edges appear in the document.
-    We count all edge lines (containing --> or -.-> ) and track which
-    are ordering edges.
-    """
-    indices: list[int] = []
-    edge_index = 0
-    for line in lines:
-        stripped = line.strip()
-        if "-->" in stripped or "-.->" in stripped:
-            if "-.->" in stripped:
-                indices.append(edge_index)
-            edge_index += 1
-    return indices

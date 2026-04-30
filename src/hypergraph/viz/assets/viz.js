@@ -1748,9 +1748,11 @@
         var edgeType = e.data && e.data.edgeType;
         var isControl = edgeType === 'control';
         var isOrdering = edgeType === 'ordering';
+        var isExclusive = !!(e.data && e.data.exclusive);
         var st = { ...edgeOpts.style, strokeWidth: (e.data && e.data.isDataLink) ? 1.5 : 2 };
         if (isControl) st.strokeDasharray = '6 4';
         if (isOrdering) { st.stroke = '#8b5cf6'; st.strokeWidth = 1.5; st.strokeDasharray = '6 3'; }
+        if (isExclusive && !isControl && !isOrdering) st.strokeDasharray = '4 4';
         return { ...e, id: e.id + '_exp_' + (expansionKey ? expansionKey.replace(/,/g, '_') : 'none') + '_mode_' + renderModeKey,
           ...edgeOpts, style: st, markerEnd: edgeOpts.markerEnd, data: e.data };
       });
