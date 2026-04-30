@@ -2,54 +2,29 @@
 // src/hypergraph/viz/scene_builder.py — both implementations must
 // produce semantically equivalent output for the same IR.
 //
-// IR shape (see hypergraph.viz.ir_schema):
-//   { nodes: [{id, node_type, parent}],
-//     edges: [{source, target, edge_type}],
-//     expandable_nodes: [...],
-//     external_inputs: [{name, deepest_owner, consumers}] }
-//
-// The IR carries pure-graph facts only. Expansion state, separate_outputs,
-// and show_inputs are passed in as the second arg and re-derived here on
-// each toggle — no Python round-trip needed.
+// Pure graph-walk primitives live in derivation.js; this file consumes
+// them to assemble React Flow nodes/edges. Load order: derivation.js
+// must be evaluated before scene_builder.js.
 
 (function (global) {
   'use strict';
 
-  function scenenodeType(irNodeType) {
-    if (irNodeType === 'GRAPH') return 'PIPELINE';
-    return irNodeType;
-  }
+  var D = global.HypergraphDerivation;
+  if (!D) throw new Error('HypergraphDerivation not loaded — load derivation.js before scene_builder.js');
 
-  function ancestorCollapsed(nodeId, parentMap, expansionState) {
-    var current = nodeId;
-    while (true) {
-      var parent = parentMap[current];
-      if (parent === undefined || parent === null) return false;
-      if (!expansionState[parent]) return true;
-      current = parent;
-    }
-  }
-
-  function inputHidden(deepestOwner, parentMap, expansionState) {
-    if (deepestOwner === null || deepestOwner === undefined) return false;
-    if (!expansionState[deepestOwner]) return true;
-    var current = parentMap[deepestOwner];
-    while (current !== undefined && current !== null) {
-      if (!expansionState[current]) return true;
-      current = parentMap[current];
-    }
-    return false;
-  }
+  var ancestorCollapsed = D.ancestorCollapsed;
+  var inputHidden = D.inputHidden;
+  var resolveToVisible = D.resolveToVisible;
+  var visibleOwner = D.visibleOwner;
+  var expandedContainerEntrypoints = D.expandedContainerEntrypoints;
+  var routesToEnd = D.routesToEnd;
+  var sceneNodeType = D.sceneNodeType;
 
   function buildInitialScene(ir, opts) {
     opts = opts || {};
     var expansionState = opts.expansionState || {};
 
-    var parentMap = {};
-    for (var i = 0; i < ir.nodes.length; i++) {
-      var n = ir.nodes[i];
-      if (n.parent) parentMap[n.id] = n.parent;
-    }
+    var parentMap = D.buildParentMap(ir);
 
     var sceneNodes = [];
 
@@ -60,7 +35,7 @@
 
     for (var j = 0; j < ir.nodes.length; j++) {
       var irNode = ir.nodes[j];
-      var sceneType = scenenodeType(irNode.node_type);
+      var sceneType = sceneNodeType(irNode.node_type);
       var isExpanded = irNode.node_type === 'GRAPH' ? !!expansionState[irNode.id] : null;
       var rfType = sceneType === 'PIPELINE' && isExpanded ? 'pipelineGroup' : 'custom';
 
@@ -288,33 +263,15 @@
     };
   }
 
-  function resolveToVisible(nodeId, parentMap, visibleIds) {
-    var current = nodeId;
-    while (current !== undefined && current !== null && !visibleIds[current]) {
-      current = parentMap[current];
-    }
-    return (current === undefined || current === null) ? null : current;
-  }
-
-  function routesToEnd(branchData) {
-    if (!branchData) return false;
-    if (branchData.when_true === 'END' || branchData.when_false === 'END') return true;
-    var targets = branchData.targets;
-    if (targets && typeof targets === 'object' && !Array.isArray(targets)) {
-      for (var k in targets) if (targets[k] === 'END') return true;
-    }
-    if (Array.isArray(targets)) {
-      for (var i = 0; i < targets.length; i++) if (targets[i] === 'END') return true;
-    }
-    return false;
-  }
-
   function addStartEndNodesAndEdges(ir, sceneNodes, sceneEdges, parentMap, expansionState, visibleIds) {
     var configured = ir.configured_entrypoints || [];
+    var overrides = expandedContainerEntrypoints(ir, expansionState);
     var startTargets = [];
     var seenStart = {};
     for (var i = 0; i < configured.length; i++) {
-      var resolved = resolveToVisible(configured[i], parentMap, visibleIds);
+      var entry = configured[i];
+      var target = overrides[entry] || entry;
+      var resolved = resolveToVisible(target, parentMap, visibleIds);
       if (resolved && !seenStart[resolved]) {
         seenStart[resolved] = true;
         startTargets.push(resolved);
