@@ -5,6 +5,7 @@ This is the Python reference implementation that will be ported to JS
 semantically equivalent scenes for the same IR.
 """
 
+from hypergraph import Graph, node
 from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
@@ -172,3 +173,46 @@ def test_separate_outputs_true_edges_match_legacy():
     oracle = render_graph(flat_graph, separate_outputs=True)
 
     assert _visible_edge_sigs(scene) == _visible_edge_sigs(oracle)
+
+
+def _make_multi_value_graph() -> Graph:
+    """A producer with two outputs feeds a single consumer that needs both —
+    yields one NetworkX edge whose ``value_names`` is ``["a", "b"]``."""
+
+    @node(output_name=("a", "b"))
+    def split(x: int) -> tuple[int, int]:
+        return 1, 2
+
+    @node(output_name="r")
+    def merge(a: int, b: int) -> int:
+        return a + b
+
+    return Graph(nodes=[split, merge])
+
+
+def test_multi_value_edge_emits_one_scene_edge_per_value_merged_mode():
+    """A data edge with value_names=("a","b") must produce two scene
+    edges so each value renders as a labeled connection. Mirrors the
+    legacy renderer (one edge per value)."""
+    flat_graph = _make_multi_value_graph().to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(ir, separate_outputs=False)
+
+    split_to_merge = [e for e in scene["edges"] if e["source"] == "split" and e["target"] == "merge"]
+    value_names = {e["data"]["valueName"] for e in split_to_merge}
+    assert value_names == {"a", "b"}, f"Expected one edge per value name; got {value_names}"
+
+
+def test_multi_value_edge_routes_through_per_value_data_nodes_in_separate_mode():
+    """In separate_outputs mode every value_name routes through its own
+    DATA node. A producer with outputs ("a","b") feeding a consumer must
+    produce two distinct producer→DATA→consumer paths."""
+    flat_graph = _make_multi_value_graph().to_flat_graph()
+    ir = build_graph_ir(flat_graph)
+
+    scene = build_initial_scene(ir, separate_outputs=True)
+
+    edges_to_merge = [e for e in scene["edges"] if e["target"] == "merge"]
+    sources_to_merge = {e["source"] for e in edges_to_merge}
+    assert sources_to_merge == {"data_split_a", "data_split_b"}, f"Both per-value DATA nodes must connect to the consumer; got {sources_to_merge}"

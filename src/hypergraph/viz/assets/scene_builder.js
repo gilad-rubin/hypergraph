@@ -204,31 +204,38 @@
 
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
-      var src = irEdge.source;
-      if (expansionState[src] && irEdge.source_when_expanded) src = irEdge.source_when_expanded;
+      var baseSrc = irEdge.source;
+      if (expansionState[baseSrc] && irEdge.source_when_expanded) baseSrc = irEdge.source_when_expanded;
       var tgt = irEdge.target;
       if (expansionState[tgt] && irEdge.target_when_expanded) tgt = irEdge.target_when_expanded;
 
-      // separate_outputs mode reroutes data edges through DATA nodes:
-      // producer -> data_<producer>_<value> -> consumer
+      // A data edge can carry multiple value_names (one NetworkX edge per
+      // (src,tgt) merges them). Emit one scene edge per value to mirror
+      // the legacy renderer; in separate_outputs mode each routes through
+      // its own data_<producer>_<value> node.
       var valueNames = irEdge.value_names || [];
-      if (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) {
-        src = 'data_' + src + '_' + valueNames[0];
-      }
+      var valuesToEmit = (irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
 
-      sceneEdges.push({
-        id: src + '__' + tgt,
-        source: src,
-        target: tgt,
-        data: {
-          edgeType: irEdge.edge_type,
-          valueName: valueNames.length > 0 ? valueNames[0] : null,
-          label: (irEdge.label === undefined ? null : irEdge.label),
-          exclusive: !!irEdge.exclusive,
-          forceFeedback: !!irEdge.is_back_edge,
-        },
-        hidden: !visibleIds[src] || !visibleIds[tgt],
-      });
+      for (var v = 0; v < valuesToEmit.length; v++) {
+        var valueName = valuesToEmit[v];
+        var src = baseSrc;
+        if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
+          src = 'data_' + src + '_' + valueName;
+        }
+        sceneEdges.push({
+          id: valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName,
+          source: src,
+          target: tgt,
+          data: {
+            edgeType: irEdge.edge_type,
+            valueName: valueName,
+            label: (irEdge.label === undefined ? null : irEdge.label),
+            exclusive: !!irEdge.exclusive,
+            forceFeedback: !!irEdge.is_back_edge,
+          },
+          hidden: !visibleIds[src] || !visibleIds[tgt],
+        });
+      }
     }
 
     if (separateOutputs) {
