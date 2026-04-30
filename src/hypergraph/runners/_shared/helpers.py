@@ -358,7 +358,7 @@ def get_value_source(
         return (ValueSource.DEFAULT, default)
 
     # No value found - this shouldn't happen if validation passed
-    raise KeyError(f"No value for input '{param}'")
+    raise KeyError(f"No value for input '{param}' on node '{node.name}'")
 
 
 def get_ready_nodes(

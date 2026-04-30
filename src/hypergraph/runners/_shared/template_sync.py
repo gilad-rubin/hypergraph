@@ -47,6 +47,7 @@ from hypergraph.runners._shared.input_normalization import (
 from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus
 from hypergraph.runners._shared.validation import (
+    build_resume_seed_message as _build_resume_seed_message,
     precompute_input_validation,
     resolve_runtime_selected,
     validate_delegated_runners,
@@ -322,11 +323,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     raise MissingInputError(
                         missing=missing_seed_inputs,
                         provided=sorted(normalized_values),
-                        message=(
-                            "Checkpoint resume is missing required seed inputs: "
-                            + ", ".join(repr(name) for name in missing_seed_inputs)
-                            + ". The restored checkpoint state does not make any pending nodes runnable."
-                        ),
+                        message=_build_resume_seed_message(graph, missing_seed_inputs, scope.active_nodes),
                     )
 
         max_iter = max_iterations or self.default_max_iterations

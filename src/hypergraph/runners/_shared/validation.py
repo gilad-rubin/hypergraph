@@ -103,13 +103,15 @@ def validate_item_inputs(
             cycle_ep_params=ctx.cycle_ep_params,
         )
         if conflict_errors:
-            raise ValueError("Cannot determine whether to run or skip node(s):\n" + "\n".join(conflict_errors))
+            scope = f" in graph '{ctx.graph.name}'" if ctx.graph.name else ""
+            raise ValueError(f"Cannot determine whether to run or skip node(s){scope}:\n" + "\n".join(conflict_errors))
         raise ValueError(
             _build_internal_override_message(
                 internal_edge=internal_edge,
                 unknown=set(),
                 expected_inputs=expected_inputs,
                 active_nodes=ctx.active_nodes,
+                graph_name=ctx.graph.name,
             )
         )
 
@@ -118,6 +120,7 @@ def validate_item_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
             active_nodes=ctx.active_nodes,
+            graph_name=ctx.graph.name,
         )
 
     # Step 4: Completeness check for required inputs
@@ -129,11 +132,14 @@ def validate_item_inputs(
 
     all_inputs = set(inputs_spec.all)
     suggestions = _get_suggestions(sorted(missing_required), all_inputs, provided)
+    consumers = {m: _find_consumer_paths(ctx.active_nodes, m) for m in sorted(missing_required)}
     message = _build_missing_input_message(
         missing=sorted(missing_required),
         provided=list(provided),
         suggestions=suggestions,
         entrypoints=inputs_spec.entrypoints,
+        consumers=consumers,
+        graph_name=ctx.graph.name,
     )
 
     raise MissingInputError(
@@ -193,10 +199,22 @@ def _build_missing_input_message(
     provided: list[str],
     suggestions: dict[str, list[str]],
     entrypoints: dict[str, tuple[str, ...]] | None = None,
+    consumers: dict[str, list[str]] | None = None,
+    graph_name: str | None = None,
 ) -> str:
     """Build a helpful error message for missing inputs."""
     missing_str = ", ".join(f"'{m}'" for m in sorted(missing))
-    msg = f"Missing required inputs: {missing_str}"
+    scope = f" in graph '{graph_name}'" if graph_name else ""
+    msg = f"Missing required inputs{scope}: {missing_str}"
+
+    if consumers and any(consumers.values()):
+        msg += "\n\nNeeded by:"
+        for m in sorted(missing):
+            paths = consumers.get(m) or []
+            if paths:
+                msg += f"\n  - '{m}' <- {', '.join(paths)}"
+            else:
+                msg += f"\n  - '{m}'"
 
     if provided:
         msg += f"\n\nProvided: {', '.join(f'{p!r}' for p in sorted(provided))}"
@@ -217,6 +235,63 @@ def _build_missing_input_message(
     msg += "\n  ✅ graph = graph.bind(x=10)   # Correct"
 
     return msg
+
+
+def build_resume_seed_message(
+    graph: Graph,
+    missing: list[str],
+    active_node_names: set[str] | frozenset[str] | None,
+) -> str:
+    """Build the message body for a missing-seed-inputs resume failure.
+
+    The active scope here may be a name-set (from ``compute_execution_scope``)
+    rather than the full HyperNode mapping, so we look the nodes back up before
+    walking nested consumers.
+    """
+    if active_node_names is None:
+        active_nodes_dict = dict(graph._nodes)
+    else:
+        active_nodes_dict = {name: graph._nodes[name] for name in active_node_names if name in graph._nodes}
+
+    scope = f" in graph '{graph.name}'" if graph.name else ""
+    msg = f"Checkpoint resume is missing required seed inputs{scope}: " + ", ".join(repr(name) for name in missing) + "."
+
+    consumer_lines: list[str] = []
+    for name in missing:
+        paths = _find_consumer_paths(active_nodes_dict, name)
+        if paths:
+            consumer_lines.append(f"  - '{name}' <- {', '.join(paths)}")
+    if consumer_lines:
+        msg += "\nNeeded by:\n" + "\n".join(consumer_lines)
+
+    msg += "\nThe restored checkpoint state does not make any pending nodes runnable."
+    return msg
+
+
+def _find_consumer_paths(active_nodes: dict[str, HyperNode], param: str) -> list[str]:
+    """Return dot-paths for nodes that consume ``param``, descending into nested graphs.
+
+    A flat-graph node consuming the param yields its name. A GraphNode that
+    exposes the param returns paths into whichever inner node ultimately reads
+    it, so callers can pinpoint the deeply nested consumer.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    paths: list[str] = []
+    for node in active_nodes.values():
+        if param not in node.inputs:
+            continue
+        if isinstance(node, GraphNode):
+            original = node._resolve_original_input_name(param)
+            inner_active = {n.name: n for n in node.iter_active_inner_nodes()}
+            inner_paths = _find_consumer_paths(inner_active, original)
+            if inner_paths:
+                paths.extend(f"{node.name}.{p}" for p in inner_paths)
+            else:
+                paths.append(node.name)
+        else:
+            paths.append(node.name)
+    return paths
 
 
 def validate_runner_compatibility(
@@ -397,6 +472,7 @@ def _warn_on_unrecognized_inputs(
     unknown: set[str],
     expected_inputs: set[str],
     active_nodes: dict[str, HyperNode],
+    graph_name: str | None = None,
 ) -> None:
     """Warn when extra provided keys are outside the active graph scope."""
     if not unknown:
@@ -410,6 +486,7 @@ def _warn_on_unrecognized_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
             active_nodes=active_nodes,
+            graph_name=graph_name,
         ),
         UserWarning,
         stacklevel=4,
@@ -422,10 +499,12 @@ def _build_internal_override_message(
     unknown: set[str],
     expected_inputs: set[str],
     active_nodes: dict[str, HyperNode],
+    graph_name: str | None = None,
 ) -> str:
     """Create a clear internal override message with producer mapping."""
     unexpected = sorted(internal_edge | unknown)
-    message = [f"Providing values for internal parameters: {unexpected}."]
+    scope = f" in graph '{graph_name}'" if graph_name else ""
+    message = [f"Providing values for internal parameters{scope}: {unexpected}."]
 
     if internal_edge:
         producers: list[str] = []
