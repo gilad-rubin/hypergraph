@@ -1133,6 +1133,57 @@ class TestGraphNodeOutputAnnotation:
         # Both inner and outer produce typed outputs
         assert outer_gn.output_annotation == {"x": str, "y": float}
 
+    def test_output_annotation_is_cached(self):
+        """output_annotation is a cached_property — same object returned twice."""
+
+        @node(output_name="x")
+        def inner_func(_a: int) -> str:
+            return "hello"
+
+        gn = Graph([inner_func], name="inner").as_node()
+
+        first = gn.output_annotation
+        second = gn.output_annotation
+        assert first is second
+
+    def test_map_over_copy_recomputes_annotation(self):
+        """Accessing output_annotation on original must not poison the map_over copy."""
+
+        @node(output_name="x")
+        def inner_func(_a: int) -> str:
+            return "hello"
+
+        gn = Graph([inner_func], name="inner").as_node()
+
+        # Populate cache on original
+        assert gn.output_annotation == {"x": str}
+
+        # Copy via map_over — must recompute with list-wrapped type
+        mapped = gn.map_over("_a")
+        assert mapped.output_annotation == {"x": list[str]}
+
+        # Original is unaffected
+        assert gn.output_annotation == {"x": str}
+
+    def test_with_inputs_copy_does_not_inherit_stale_cache(self):
+        """Renamed copy recomputes output_annotation independently of original."""
+
+        @node(output_name="result")
+        def inner_func(_a: int) -> float:
+            return 0.0
+
+        gn = Graph([inner_func], name="inner").as_node()
+
+        # Populate cache on original
+        assert gn.output_annotation == {"result": float}
+
+        # Copy via with_inputs rename — cache must be cleared
+        renamed = gn.with_inputs(_a="value")
+        # output_annotation should still be correct (rename doesn't change output types)
+        assert renamed.output_annotation == {"result": float}
+        # But it must be a freshly computed object, not shared with original
+        assert renamed.output_annotation is not gn.output_annotation
+
 
 class TestGraphStrictTypes:
     """Test Graph strict_types parameter for type validation."""

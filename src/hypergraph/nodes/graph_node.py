@@ -1,9 +1,10 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
+import functools
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from hypergraph.nodes._rename import build_reverse_rename_map
-from hypergraph.nodes.base import HyperNode, RenameEntry
+from hypergraph.nodes.base import HyperNode, RenameEntry, _invalidate_cached_properties
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
 _GN = TypeVar("_GN", bound="GraphNode")
@@ -170,7 +171,7 @@ class GraphNode(HyperNode):
             return (self._map_over, self._map_mode, self._error_handling)
         return None
 
-    @property
+    @functools.cached_property
     def output_annotation(self) -> dict[str, Any]:
         """Type annotations for output values from the inner graph.
 
@@ -630,6 +631,7 @@ class GraphNode(HyperNode):
         if isinstance(self._clone, list):
             new._clone = list(self._clone)
         # runner_override is preserved as-is (runner instances are shared)
+        _invalidate_cached_properties(new)
         return new
 
     def with_inputs(
