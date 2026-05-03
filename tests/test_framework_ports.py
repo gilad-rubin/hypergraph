@@ -29,11 +29,13 @@ def test_agentic_rag_routes_latest_questions_to_web():
         graph,
         {
             "question": "What changed in the latest release for interrupts?",
-            "local_documents": [
+            # `local_documents` and `web_documents` are private to the
+            # `retrieve_context` GraphNode at outer scope.
+            "retrieve_context.local_documents": [
                 "Hypergraph supports interrupt nodes for human review.",
                 "Nested graphs make composition natural.",
             ],
-            "web_documents": [
+            "retrieve_context.web_documents": [
                 "Latest release notes mention better interrupt resume semantics.",
                 "Recent release adds richer run logs for nested graphs.",
             ],
@@ -58,10 +60,12 @@ async def test_support_inbox_nested_interrupt_propagates_pause():
                 "issue": "refund API timeout after release",
             }
         },
-        "knowledge_base": [
+        # `knowledge_base` is private to `customer_support`; `release_notes` is
+        # private to `technical_support`.
+        "customer_support.knowledge_base": [
             "General account changes are applied within one hour.",
         ],
-        "release_notes": [
+        "technical_support.release_notes": [
             "Refund API timeout fixed in patch 2026.03.",
             "Release 2026.03 improves webhook retries.",
         ],
@@ -83,8 +87,9 @@ def test_ml_model_selection_uses_mapped_trials_to_pick_best_model():
         graph,
         {
             "dataset_name": "toy_flowers",
-            "feature_names": ("length", "width"),
-            "model_types": ["threshold", "centroid"],
+            # `feature_names` and `model_types` are private to the `trial` GraphNode.
+            "trial.feature_names": ("length", "width"),
+            "trial.model_types": ["threshold", "centroid"],
         },
     )
 
@@ -101,7 +106,8 @@ def test_document_batch_pipeline_maps_one_document_graph_over_many_inputs():
     result = runner.run(
         graph,
         {
-            "documents": [
+            # `documents` is private to the `process_document` GraphNode at outer scope.
+            "process_document.documents": [
                 "Hypergraph composes graphs into larger workflows. It keeps nodes testable.",
                 "Mapped graph nodes let one document pipeline scale across a batch. Automatic wiring keeps the graph readable.",
             ]

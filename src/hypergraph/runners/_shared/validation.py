@@ -402,15 +402,15 @@ def _find_internal_override_conflicts(
 
 
 def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> bool:
-    """True when node can run from provided/bound/default values before execution."""
-    # NOTE: this iterates the node's flat input names against `provided`. For a
-    # GraphNode whose input is addressed dot-pathed at this scope, `provided`
-    # contains "<node.name>.<param>" -- so flat-only matching can miss it. Only
-    # triggers when the user simultaneously provides a downstream node's outputs
-    # (compute+inject conflict path), and isn't currently exercised by any test
-    # with a dot-pathed bind. Use address_for_node_input here when this case is
-    # ever observed in the wild.
-    return all(param in provided or node.has_default_for(param) for param in node.inputs)
+    """True when node can run from provided/bound/default values before execution.
+
+    Resolves each input via the canonical address so a GraphNode's private
+    input addressed as ``"<node.name>.<param>"`` in ``provided`` is matched
+    correctly under lexical scope (matches sync/async runners' get_value_source).
+    """
+    from hypergraph.runners._shared.helpers import address_for_node_input
+
+    return all(address_for_node_input(node, param, provided) in provided or node.has_default_for(param) for param in node.inputs)
 
 
 def _warn_on_unrecognized_inputs(

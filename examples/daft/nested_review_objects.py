@@ -70,11 +70,14 @@ def main() -> None:
     runner = DaftRunner()
     result = runner.run(
         workflow,
-        reviews=[
-            Review("Ava", 9, "Loved it"),
-            Review("Ben", 4, "It broke during setup"),
-            Review("Chen", 6, "Good, but not great"),
-        ],
+        # `reviews` is private to the `assess_reviews` GraphNode at outer scope.
+        {
+            "assess_reviews.reviews": [
+                Review("Ava", 9, "Loved it"),
+                Review("Ben", 4, "It broke during setup"),
+                Review("Chen", 6, "Good, but not great"),
+            ]
+        },
     )
 
     print(result["summary"])

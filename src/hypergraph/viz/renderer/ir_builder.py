@@ -99,13 +99,21 @@ def _build_input_group(
                 seen.add(consumer)
                 consumers.append(consumer)
     deepest_owner = compute_deepest_input_scope(raw_params[0], flat_graph)
-    # Type hints are looked up by the dot-pathed name first, then by the
-    # leaf — leaf consumers carry the type under their scope-local name.
+    # Type hints are looked up by the dot-pathed name first. If that misses
+    # (collapsed view, leaf consumer carries the type under its scope-local
+    # name), fall back to the leaf name -- but only when at least one of the
+    # param's actual consumers exposes that type, to avoid grabbing an
+    # unrelated sibling's annotation when two private inputs share a leaf name.
     type_hints: list[str | None] = []
     for p in raw_params:
         param_type = get_param_type(p, flat_graph)
         if param_type is None:
-            param_type = get_param_type(external_input_display_name(p), flat_graph)
+            leaf = external_input_display_name(p)
+            for consumer in get_deepest_consumers(p, flat_graph):
+                consumer_type = flat_graph.nodes[consumer].get("input_types", {}).get(leaf)
+                if consumer_type is not None:
+                    param_type = consumer_type
+                    break
         type_hints.append(format_type(param_type))
     # Display labels are the leaf segments; synthetic ids fall back to
     # the full dot-path when leaf names collide.
