@@ -946,22 +946,42 @@ class Graph:
 
         return False
 
-    def bind(self, **values: Any) -> Graph:
+    def bind(self, _values: dict[str, Any] | None = None, /, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).
 
-        Accepts graph input names in the current configured scope.
-        Bound values act as pre-filled run() values — overridable at run time.
-        If you want to bind a value that would normally be produced upstream,
-        first slice the graph with ``with_entrypoint()`` / ``select()`` so that
-        value becomes a true graph input.
+        Accepts graph input names in the current configured scope. A private
+        subgraph input may be addressed three equivalent ways:
+
+            graph.bind(A={"x": v})       # nested-dict kwarg (recommended)
+            graph.bind({"A.x": v})       # positional dict with dot-path
+            inner.bind(x=v)              # bind on the inner Graph itself
+
+        Bound values act as pre-filled run() values -- overridable at run time
+        (an override emits a UserWarning). If you want to bind a value that
+        would normally be produced upstream, first slice the graph with
+        ``with_entrypoint()`` / ``select()`` so that value becomes a true
+        graph input.
 
         Raises:
-            ValueError: If key is not a valid graph input in the current scope
+            ValueError: If a key is not a valid graph input in the current scope.
         """
+        from hypergraph.graph._helpers import flatten_subgraph_addressing
+
+        merged: dict[str, Any] = {}
+        if _values is not None:
+            merged.update(_values)
+        if values:
+            overlap = sorted(set(merged) & set(values))
+            if overlap:
+                raise ValueError(f"Bind keys provided in both positional dict and kwargs: {overlap}. Use one source per key.")
+            merged.update(values)
+
+        canonical = flatten_subgraph_addressing(merged, self)
+
         valid_names = set(self.inputs.all)
         output_names = set(self.outputs)
 
-        for key in values:
+        for key in canonical:
             if key not in valid_names:
                 if key in output_names:
                     raise ValueError(
@@ -975,7 +995,7 @@ class Graph:
                 raise ValueError(f"Cannot bind '{key}': not a graph input in the current scope. Valid inputs: {sorted(valid_names)}")
 
         new_graph = self._shallow_copy()
-        new_graph._bound = {**self._bound, **values}
+        new_graph._bound = {**self._bound, **canonical}
         return new_graph
 
     def unbind(self, *keys: str) -> Graph:

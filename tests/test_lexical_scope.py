@@ -307,6 +307,46 @@ def test_override_warning_annotates_subgraph_for_dot_pathed_address():
     assert any("'x' of subgraph 'inner'" in m for m in msgs), msgs
 
 
+@pytest.mark.parametrize(
+    "bind_call",
+    [
+        pytest.param(lambda outer, value: outer.bind(A={"x": value}), id="nested-dict-kwarg"),
+        pytest.param(lambda outer, value: outer.bind({"A.x": value}), id="dot-path-positional-dict"),
+    ],
+)
+def test_bind_addresses_private_subgraph_input_via_nested_dict_or_dot_path(bind_call):
+    """A user can bind a private subgraph input using either form, mirroring
+    the run() addressing surfaces. Both produce the same canonical entry on
+    inputs.bound and the same runtime behavior.
+    """
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    inner = Graph([use_x], name="A")
+    outer = Graph([inner.as_node()], name="outer")
+
+    bound = bind_call(outer, 42)
+
+    assert bound.inputs.bound == {"A.x": 42}
+    assert SyncRunner().run(bound)["out"] == 42
+
+
+def test_bind_with_dict_value_for_non_subgraph_key_passes_through_as_value():
+    """When the outer key isn't a GraphNode name, a dict value is just an
+    opaque value -- not addressing. Mirrors normalize_inputs's rule."""
+
+    @node(output_name="out")
+    def use_config(config: dict) -> dict:
+        return config
+
+    graph = Graph([use_config], name="g")
+    bound = graph.bind(config={"key": "value"})  # config is a flat input, value IS a dict
+
+    assert bound.inputs.bound == {"config": {"key": "value"}}
+
+
 def test_changed_dot_pathed_input_marks_graphnode_as_stale_on_replay():
     """A GraphNode whose private dot-pathed input changed must be seen as stale
     against its previous execution record.

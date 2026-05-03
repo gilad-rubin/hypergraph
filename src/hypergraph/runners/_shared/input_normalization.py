@@ -89,24 +89,6 @@ def normalize_inputs(
 
     if graph is None:
         return merged
-    return _flatten_subgraph_dicts(merged, graph)
+    from hypergraph.graph._helpers import flatten_subgraph_addressing
 
-
-def _flatten_subgraph_dicts(values: dict[str, Any], graph: Graph) -> dict[str, Any]:
-    """Flatten dict values whose key names a GraphNode child into dot-paths."""
-    from hypergraph.nodes.graph_node import GraphNode
-
-    flat: dict[str, Any] = {}
-    for key, value in values.items():
-        child = graph._nodes.get(key) if isinstance(graph._nodes.get(key), GraphNode) else None
-        if isinstance(value, dict) and child is not None:
-            for sub_key, sub_value in _flatten_subgraph_dicts(value, child.graph).items():
-                full_key = f"{key}.{sub_key}"
-                if full_key in flat:
-                    raise ValueError(f"Input key {full_key!r} provided twice (mixed dot-path and nested-dict).")
-                flat[full_key] = sub_value
-        else:
-            if key in flat:
-                raise ValueError(f"Input key {key!r} provided twice (mixed dot-path and nested-dict).")
-            flat[key] = value
-    return flat
+    return flatten_subgraph_addressing(merged, graph)
