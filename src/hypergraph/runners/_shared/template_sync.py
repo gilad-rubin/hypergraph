@@ -567,6 +567,10 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
             graph=graph,
         )
+        # Same parity as run(): only fire override warning at the user-initiated
+        # outer call; nested delegations would re-warn for the propagated value.
+        if _parent_span_id is None and _parent_run_id is None:
+            warn_on_bind_overrides(graph, normalized_values)
 
         # Resolve show_progress and merge processors
         effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)

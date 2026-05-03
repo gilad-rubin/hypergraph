@@ -403,9 +403,12 @@ def get_value_source(
     """
     from hypergraph.nodes.graph_node import GraphNode
 
-    # 1. Edge value (from upstream node output)
-    if param in state.values:
-        return (ValueSource.EDGE, state.values[param])
+    # 1. Edge / restored-state value. For a GraphNode, a checkpoint may have
+    # restored its private input under the dot-pathed address; resolve to the
+    # canonical key so the lookup matches the readiness/staleness checks.
+    state_addr = address_for_node_input(node, param, state.values)
+    if state_addr in state.values:
+        return (ValueSource.EDGE, state.values[state_addr])
 
     # 2. Input value (from run() call). The address may be dot-pathed when
     # this is a GraphNode's private input.

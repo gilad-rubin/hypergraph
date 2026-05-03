@@ -83,8 +83,15 @@ class IRExternalInput:
 
     @property
     def synthetic_id(self) -> str:
-        """Stable scene-graph id of the INPUT/INPUT_GROUP node."""
-        segs = self.id_segments or self.params
+        """Stable scene-graph id of the INPUT/INPUT_GROUP node.
+
+        Uses ``id_segments`` only when its length matches ``params`` -- mirrors
+        the JS twin (assets/scene_builder.js) which guards on the same length
+        check. Without this guard, a Python/JS payload with ``id_segments`` of
+        a different length would diverge: Python would use ``id_segments``
+        while JS falls back to ``params``, producing mismatched scene IDs.
+        """
+        segs = self.id_segments if self.id_segments and len(self.id_segments) == len(self.params) else self.params
         if len(segs) == 1:
             return f"input_{segs[0]}"
         return f"input_group_{'_'.join(segs)}"

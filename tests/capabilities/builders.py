@@ -354,14 +354,16 @@ def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:
         return graph
 
     def _resolve_addressable(graph: Graph, target: str) -> str | None:
-        """Find the addressable input name (dot-path or flat) ending in `target`."""
+        """Find the addressable input name (dot-path or flat) ending in `target`.
+
+        Returns None when no match exists OR when multiple dot-paths share the
+        same leaf -- ambiguous targets must be addressed by their full path.
+        """
         all_inputs = graph.inputs.all
         if target in all_inputs:
             return target
-        for name in all_inputs:
-            if name == target or name.endswith(f".{target}"):
-                return name
-        return None
+        candidates = [name for name in all_inputs if name.endswith(f".{target}")]
+        return candidates[0] if len(candidates) == 1 else None
 
     # Find an optional input to bind (one with a default or that we can provide)
     # For cyclic graphs, we can bind the 'limit' parameter

@@ -47,14 +47,23 @@ def flatten_subgraph_addressing(values: dict[str, Any], graph: Graph) -> dict[st
 
     Raises:
         ValueError: when the same leaf is addressed both as dot-path and
-            as nested-dict in the same call.
+            as nested-dict in the same call, OR when a key is ambiguous
+            because it names BOTH a child GraphNode AND a flat input
+            declared at this scope.
     """
     from hypergraph.nodes.graph_node import GraphNode
 
+    flat_input_names = set(graph.inputs.all)
     flat: dict[str, Any] = {}
     for key, value in values.items():
         child = graph._nodes.get(key) if isinstance(graph._nodes.get(key), GraphNode) else None
         if isinstance(value, dict) and child is not None:
+            if key in flat_input_names:
+                raise ValueError(
+                    f"Ambiguous addressing: {key!r} is both a flat input of this graph and the "
+                    f"name of a child GraphNode. Pass a flat dict value via the dot-path form "
+                    f"(e.g., {{{key + '.<inner>'!r}: ...}}) to disambiguate."
+                )
             for sub_key, sub_value in flatten_subgraph_addressing(value, child.graph).items():
                 full_key = f"{key}.{sub_key}"
                 if full_key in flat:

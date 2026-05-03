@@ -100,14 +100,14 @@ def compute_input_spec(
     required, optional = [], []
     declared = _names_declared_at_scope(active_nodes)
 
-    for addressed, original, _source in _addressed_params(active_nodes, declared):
+    for addressed, original, source in _addressed_params(active_nodes, declared):
         if original in cycle_seed_params:
             if addressed in all_bound:
                 optional.append(addressed)
             else:
                 required.append(addressed)
             continue
-        category = _categorize_addressed_param(addressed, original, edge_produced, all_bound, active_nodes)
+        category = _categorize_addressed_param(addressed, original, source, edge_produced, all_bound, active_nodes)
         if category == "required":
             required.append(addressed)
         elif category == "optional":
@@ -212,16 +212,28 @@ def _addressed_params(
 def _categorize_addressed_param(
     addressed: str,
     original: str,
+    source: str | None,
     edge_produced: set[str],
     bound: dict[str, Any],
     nodes: dict[str, HyperNode],
 ) -> str | None:
-    """Categorize an addressed parameter: 'required', 'optional', or None (edge-produced)."""
+    """Categorize an addressed parameter: 'required', 'optional', or None (edge-produced).
+
+    For a flat (declared-at-scope) param, ``source`` is None and optionality
+    is decided by ``_all_consumers_have_default(original, nodes)``. For a
+    private dot-pathed param, ``source`` names the owning GraphNode and
+    optionality is decided by THAT node's defaults specifically -- siblings'
+    defaults don't influence each other.
+    """
     # Edge-produced is checked against the original name, since edges act in scope.
     if original in edge_produced and addressed == original:
         return None
 
     if addressed in bound:
+        return "optional"
+
+    if source is not None and nodes[source].has_default_for(original):
+        # Private dot-pathed input whose owning GraphNode supplies a default.
         return "optional"
 
     if addressed == original and _all_consumers_have_default(original, nodes):

@@ -323,14 +323,17 @@ def create_operation(
     """Route a node to the appropriate DaftOperation class."""
     from hypergraph.nodes.function import FunctionNode
     from hypergraph.nodes.graph_node import GraphNode
+    from hypergraph.runners._shared.helpers import address_for_node_input
 
-    # Determine which bound values apply to this node
-    # NOTE: under lexical scope `bound_values` may be keyed by dot-paths for a
-    # GraphNode's private inputs. This flat-name match misses those. No daft
-    # test currently exercises a GraphNode with dot-pathed binds; see
-    # address_for_node_input in runners/_shared/helpers.py for the canonical
-    # resolver if this is ever observed in the wild.
-    node_bound = {k: v for k, v in bound_values.items() if k in node.inputs}
+    # Determine which bound values apply to this node. For a GraphNode private
+    # input, bound_values may be keyed by dot-path; resolve to the canonical
+    # address (matching the sync/async runners) and store under the flat param
+    # name the inner node expects.
+    node_bound: dict[str, Any] = {}
+    for param in node.inputs:
+        addr = address_for_node_input(node, param, bound_values)
+        if addr in bound_values:
+            node_bound[param] = bound_values[addr]
 
     # Determine input columns (those not provided by bound values)
     input_cols = [p for p in node.inputs if p not in node_bound]

@@ -80,7 +80,7 @@ def test_bind_shadowed_by_ancestor_leaf_consumer_is_build_time_error():
     declares the same name.
 
     Without the check, the parent's value would silently override the bind at
-    run time -- the bind would look like a lock but be one. The validator
+    run time -- the bind would look like a lock but NOT be one. The validator
     fires at the outermost graph that surfaces the conflict and reports both
     the bind path and the ancestor scope that shadowed it.
     """
@@ -191,6 +191,55 @@ def test_run_value_overriding_dot_pathed_bind_emits_warning():
         result = SyncRunner().run(outer, {"inner.x": 99})
 
     assert result["out"] == 99
+
+
+def test_private_input_with_signature_default_is_optional_not_required():
+    """A private subgraph input whose inner function has a signature default
+    must be classified as optional at the outer scope, not required.
+
+    Regression for #95 review feedback: before this test, the addressed-param
+    categorizer dropped the `source` GraphNode and only checked
+    _all_consumers_have_default with the original (flat) name. For a single
+    GraphNode whose inner has a default, that worked; for siblings where only
+    one inner declares a default, it incorrectly returned False (required).
+    """
+
+    @node(output_name="out")
+    def use_x(x: int = 5) -> int:
+        return x * 2
+
+    inner = Graph([use_x], name="inner")
+    outer = Graph([inner.as_node()], name="outer")
+
+    assert "inner.x" in outer.inputs.optional
+    assert "inner.x" not in outer.inputs.required
+
+    # Run without providing inner.x: the inner function's default fires.
+    assert SyncRunner().run(outer)["out"] == 10
+
+
+def test_sibling_private_inputs_with_only_one_default_classified_per_source():
+    """Each private input is classified per its OWNING GraphNode's defaults.
+
+    A's inner has a default for x; B's inner does not. Outer should report
+    A.x as optional and B.x as required, not both as required.
+    """
+
+    @node(output_name="out_a")
+    def use_a(x: int = 7) -> int:
+        return x
+
+    @node(output_name="out_b")
+    def use_b(x: int) -> int:
+        return x
+
+    inner_a = Graph([use_a], name="A")
+    inner_b = Graph([use_b], name="B")
+    outer = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+
+    assert "A.x" in outer.inputs.optional
+    assert "B.x" in outer.inputs.required
+    assert "A.x" not in outer.inputs.required
 
 
 def test_with_inputs_renames_leaf_label_only_not_scope():
