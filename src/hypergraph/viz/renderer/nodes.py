@@ -11,6 +11,8 @@ from typing import Any
 import networkx as nx
 
 from hypergraph.viz._common import (
+    disambiguate_external_input_ids,
+    external_input_display_name,
     get_root_ancestor,
     is_node_visible,
 )

@@ -95,10 +95,11 @@ def build_initial_scene(
         # deepestOwnerContainer is the state-independent fact (always the
         # deepest scope); ownerContainer is per-render.
         owner_container = _visible_owner(ext.deepest_owner, parent_map, expansion_state)
+        input_node_id = ext.synthetic_id
         if ext.is_group:
             scene_nodes.append(
                 {
-                    "id": f"input_group_{'_'.join(ext.params)}",
+                    "id": input_node_id,
                     "type": "custom",
                     "position": {"x": 0, "y": 0},
                     "data": {
@@ -118,7 +119,7 @@ def build_initial_scene(
         else:
             scene_nodes.append(
                 {
-                    "id": f"input_{ext.params[0]}",
+                    "id": input_node_id,
                     "type": "custom",
                     "position": {"x": 0, "y": 0},
                     "data": {
@@ -250,7 +251,7 @@ def build_initial_scene(
             continue
         if not show_inputs:
             continue
-        input_node_id = f"input_group_{'_'.join(ext.params)}" if ext.is_group else f"input_{ext.params[0]}"
+        input_node_id = ext.synthetic_id
         for consumer in ext.consumers:
             scene_edges.append(
                 {

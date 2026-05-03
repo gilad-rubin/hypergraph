@@ -123,7 +123,11 @@
       var params = ext.params || [];
       var typeHints = ext.type_hints || [];
       var isGroup = params.length > 1;
-      var inputId = isGroup ? 'input_group_' + params.join('_') : 'input_' + params[0];
+      // ``id_segments`` falls back to ``params`` (leaf names) and mirrors
+      // the Python disambiguator that swaps in the full dot-path when
+      // leaf names collide between sibling subgraphs (issue #94).
+      var idSegments = (ext.id_segments && ext.id_segments.length === params.length) ? ext.id_segments : params;
+      var inputId = isGroup ? 'input_group_' + idSegments.join('_') : 'input_' + idSegments[0];
       var data = isGroup
         ? {
             nodeType: 'INPUT_GROUP',
@@ -280,9 +284,10 @@
       if (ext2.is_bound && !showBoundedInputs) continue;
       if (!showInputs) continue;
       var ext2Params = ext2.params || [];
+      var ext2Ids = (ext2.id_segments && ext2.id_segments.length === ext2Params.length) ? ext2.id_segments : ext2Params;
       var inputNodeId = ext2Params.length > 1
-        ? 'input_group_' + ext2Params.join('_')
-        : 'input_' + ext2Params[0];
+        ? 'input_group_' + ext2Ids.join('_')
+        : 'input_' + ext2Ids[0];
       var consumers = ext2.consumers || [];
       for (var r = 0; r < consumers.length; r++) {
         var consumer = consumers[r];

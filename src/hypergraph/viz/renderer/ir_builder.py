@@ -13,6 +13,8 @@ import networkx as nx
 from hypergraph.viz._common import (
     build_param_to_consumer_map,
     compute_exclusive_data_edges,
+    disambiguate_external_input_ids,
+    external_input_display_name,
     get_expandable_nodes,
 )
 from hypergraph.viz.ir_schema import GraphIR, IREdge, IRExternalInput, IRNode
@@ -56,7 +58,10 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
         shared_params=shared_params,
         show_bounded_inputs=True,
     )
-    external_inputs = [_build_input_group(group, flat_graph) for group in groups]
+    # Pre-compute the synthetic-id mapping so colliding leaf names
+    # (e.g. ``A.x`` and ``B.x``) get unique ``input_<id>`` ids.
+    id_for_param = disambiguate_external_input_ids([list(group["params"]) for group in groups])
+    external_inputs = [_build_input_group(group, flat_graph, id_for_param) for group in groups]
 
     configured_entrypoints = tuple(flat_graph.graph.get("configured_entrypoints") or ())
     visibility = build_graph_output_visibility(flat_graph)
@@ -72,28 +77,47 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     )
 
 
-def _build_input_group(group: dict, flat_graph: nx.DiGraph) -> IRExternalInput:
+def _build_input_group(
+    group: dict,
+    flat_graph: nx.DiGraph,
+    id_for_param: dict[str, str] | None = None,
+) -> IRExternalInput:
     """Convert a build_input_groups dict into an IRExternalInput.
 
     Multi-param groups (e.g. one consumer takes both alpha and beta)
     become a single IRExternalInput with len(params) > 1, which
     scene_builder renders as INPUT_GROUP."""
-    params = tuple(group["params"])
+    raw_params = tuple(group["params"])
     consumers: list[str] = []
     seen: set[str] = set()
-    for param in params:
+    for param in raw_params:
+        # Resolve consumers using the (possibly dot-pathed) full name so
+        # the dot-path walk in get_deepest_consumers can address nested
+        # subgraphs (issue #94). Deduplicate while preserving order.
         for consumer in get_deepest_consumers(param, flat_graph):
             if consumer not in seen:
                 seen.add(consumer)
                 consumers.append(consumer)
-    deepest_owner = compute_deepest_input_scope(params[0], flat_graph)
-    type_hints = tuple(format_type(get_param_type(p, flat_graph)) for p in params)
+    deepest_owner = compute_deepest_input_scope(raw_params[0], flat_graph)
+    # Type hints are looked up by the dot-pathed name first, then by the
+    # leaf — leaf consumers carry the type under their scope-local name.
+    type_hints: list[str | None] = []
+    for p in raw_params:
+        param_type = get_param_type(p, flat_graph)
+        if param_type is None:
+            param_type = get_param_type(external_input_display_name(p), flat_graph)
+        type_hints.append(format_type(param_type))
+    # Display labels are the leaf segments; synthetic ids fall back to
+    # the full dot-path when leaf names collide.
+    display_params = tuple(external_input_display_name(p) for p in raw_params)
+    id_segments = tuple((id_for_param or {}).get(p, external_input_display_name(p)) for p in raw_params)
     return IRExternalInput(
-        params=params,
+        params=display_params,
         deepest_owner=deepest_owner,
         consumers=tuple(consumers),
-        type_hints=type_hints,
+        type_hints=tuple(type_hints),
         is_bound=bool(group.get("is_bound", False)),
+        id_segments=id_segments,
     )
 
 
