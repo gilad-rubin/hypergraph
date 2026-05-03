@@ -11,6 +11,8 @@ from __future__ import annotations
 import networkx as nx
 
 from hypergraph.viz._common import (
+    _compute_mutex_groups,
+    _is_pair_mutex,
     build_param_to_consumer_map,
     compute_exclusive_data_edges,
     disambiguate_external_input_ids,
@@ -140,7 +142,7 @@ def _build_ir_edge(
     """Pre-compute the source-when-expanded / target-when-expanded rewrites
     so the JS scene_builder can re-route edges on container expansion
     without re-walking the graph."""
-    source_when_expanded: str | None = None
+    source_when_expanded: str | tuple[str, ...] | None = None
     target_when_expanded: str | None = None
 
     edge_type = attrs.get("edge_type", "data")
@@ -149,9 +151,9 @@ def _build_ir_edge(
     src_attrs = flat_graph.nodes.get(src, {})
     if src_attrs.get("node_type") == "GRAPH":
         for value_name in value_names:
-            internal = _find_deepest_internal_producer(src, value_name, flat_graph)
-            if internal is not None:
-                source_when_expanded = internal
+            internal = _find_deepest_internal_producers(src, value_name, flat_graph)
+            if internal:
+                source_when_expanded = internal[0] if len(internal) == 1 else internal
                 break
 
     tgt_attrs = flat_graph.nodes.get(tgt, {})
@@ -170,6 +172,13 @@ def _build_ir_edge(
     label = _branch_label_for_edge(src_attrs, tgt) if edge_type == "control" else None
 
     exclusive = edge_type == "data" and any((src, tgt, value_name) in exclusive_edges for value_name in value_names)
+    if not exclusive and edge_type == "data" and isinstance(source_when_expanded, tuple) and len(source_when_expanded) > 1:
+        mutex_groups = _compute_mutex_groups(flat_graph)
+        exclusive = any(
+            _is_pair_mutex(left, right, mutex_groups)
+            for index, left in enumerate(source_when_expanded)
+            for right in source_when_expanded[index + 1 :]
+        )
 
     return IREdge(
         source=src,
@@ -188,14 +197,15 @@ def _branch_label_for_edge(src_attrs: dict, target: str) -> str | None:
     """Read ``branch_data`` off the gate source and return the user-facing
     branch label for the edge to ``target`` (e.g. "True"/"False")."""
     branch_data = src_attrs.get("branch_data") or {}
-    if "when_true" in branch_data and target == branch_data["when_true"]:
+    local_target = target.rsplit("/", 1)[-1]
+    if "when_true" in branch_data and local_target == branch_data["when_true"]:
         return "True"
-    if "when_false" in branch_data and target == branch_data["when_false"]:
+    if "when_false" in branch_data and local_target == branch_data["when_false"]:
         return "False"
     targets = branch_data.get("targets")
     if isinstance(targets, dict):
         for label, t in targets.items():
-            if t == target:
+            if t == local_target:
                 return str(label)
     return None
 
@@ -288,6 +298,20 @@ def _find_deepest_internal_producer(container_id: str, value_name: str, flat_gra
     if fuzzy:
         return max(fuzzy, key=lambda c: _depth_below(c, container_id, flat_graph))
     return None
+
+
+def _find_deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
+    """Return all deepest internal producers for a container output."""
+    descendants = [(node_id, attrs) for node_id, attrs in flat_graph.nodes(data=True) if _is_descendant(node_id, container_id, flat_graph)]
+
+    candidates = [node_id for node_id, attrs in descendants if value_name in attrs.get("outputs", ())]
+    if not candidates:
+        candidates = [node_id for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in value_name or value_name in out]
+    if not candidates:
+        return ()
+
+    max_depth = max(_depth_below(node_id, container_id, flat_graph) for node_id in candidates)
+    return tuple(node_id for node_id in candidates if _depth_below(node_id, container_id, flat_graph) == max_depth)
 
 
 def _find_deepest_internal_consumer(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str | None:

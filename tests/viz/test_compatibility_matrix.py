@@ -8,7 +8,7 @@ Manual rows (Colab, nbviewer, VSCode kernel-running, JupyterLab
 trusted-no-kernel) are listed in ``dev/VIZ-COMPATIBILITY-MATRIX.md``
 for the PR author to walk through before requesting review.
 
-Fallback contract (a)+(b)+(c)+(d) per the issue:
+Static-render contract (a)+(b)+(c)+(d) per the issue:
 - (a) The graph is visible — initial expansion state rendered.
 - (b) Zero console errors — no broken script references.
 - (c) Saved output is preserved bytewise — re-opening in a supported
@@ -83,7 +83,7 @@ def test_filepath_html_opens_offline(tmp_path):
 
 
 @pytestmark_playwright
-def test_github_render_with_js_disabled_fallback_contract(tmp_path):
+def test_github_render_with_js_disabled_boot_message_contract(tmp_path):
     """Simulate GitHub's notebook rendering: HTML loads, JS is disabled.
 
     Asserts contract (b)+(c): the page loads with no broken script
@@ -92,9 +92,9 @@ def test_github_render_with_js_disabled_fallback_contract(tmp_path):
     file:// without modification).
 
     Contract (a) — "graph is visible" — when JS is disabled the iframe
-    body shows the static fallback element ``#fallback`` containing a
-    "Rendering interactive view…" placeholder. This is a documented
-    placeholder, not a regression: GitHub disables JS so by
+    body shows the static boot-message element ``#boot-message``
+    containing a "Rendering interactive view…" placeholder. This is a
+    documented placeholder, not a regression: GitHub disables JS so by
     construction no JS-rendered scene can appear there. The test
     confirms the placeholder element exists and the surrounding chrome
     is intact (no half-broken DOM)."""
@@ -118,10 +118,10 @@ def test_github_render_with_js_disabled_fallback_contract(tmp_path):
         # checking JS exceptions specifically.
         assert not console_errors, f"GitHub-render contract (b) violated: {console_errors}"
 
-        # The fallback placeholder is the always-present static surface.
-        fallback = page.locator("#fallback")
-        assert fallback.count() == 1, "GitHub-render contract (a): fallback element missing"
-        assert fallback.is_visible(), "GitHub-render contract (a): fallback element hidden"
+        # The boot message placeholder is the always-present static surface.
+        boot_message = page.locator("#boot-message")
+        assert boot_message.count() == 1, "GitHub-render contract (a): boot message missing"
+        assert boot_message.is_visible(), "GitHub-render contract (a): boot message hidden"
 
         # Contract (c): saved bytes preserved. The iframe srcdoc HTML
         # we wrote is the same HTML we rendered.

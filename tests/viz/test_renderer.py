@@ -745,6 +745,61 @@ class TestExclusiveBranchEdges:
         assert {e["source"] for e in consumer_edges} == {"data_branch_a_result", "data_branch_b_result"}
         assert all(e["data"]["exclusive"] is True for e in consumer_edges)
 
+    def test_expanded_nested_mutex_outputs_route_all_internal_producers(self):
+        """Container outputs with mutex internal producers should fan out from both leaves."""
+
+        @ifelse(when_true="branch_a", when_false="branch_b")
+        def decide(x: int) -> bool:
+            return x > 0
+
+        @node(output_name="result")
+        def branch_a(x: int) -> str:
+            return "a"
+
+        @node(output_name="result")
+        def branch_b(x: int) -> str:
+            return "b"
+
+        producers = Graph([decide, branch_a, branch_b], name="producers").select("result")
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        consumers = Graph([consumer], name="consumers")
+        graph = Graph([producers.as_node(), consumers.as_node()])
+
+        result = render_graph(graph.to_flat_graph(), depth=1, separate_outputs=True)
+
+        consumer_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumers/consumer"]
+        assert {e["source"] for e in consumer_edges} == {
+            "data_producers/branch_a_result",
+            "data_producers/branch_b_result",
+        }
+        assert all(e["data"]["exclusive"] is True for e in consumer_edges)
+
+    def test_expanded_nested_ifelse_edges_keep_labels(self):
+        """Control labels should survive hierarchical target IDs."""
+
+        @ifelse(when_true="branch_a", when_false="branch_b")
+        def decide(x: int) -> bool:
+            return x > 0
+
+        @node(output_name="result")
+        def branch_a(x: int) -> str:
+            return "a"
+
+        @node(output_name="result")
+        def branch_b(x: int) -> str:
+            return "b"
+
+        graph = Graph([Graph([decide, branch_a, branch_b], name="inner").as_node()])
+        result = render_graph(graph.to_flat_graph(), depth=1, separate_outputs=True)
+
+        labels_by_target = {e["target"]: e["data"].get("label") for e in result["edges"] if e.get("data", {}).get("edgeType") == "control"}
+        assert labels_by_target["inner/branch_a"] == "True"
+        assert labels_by_target["inner/branch_b"] == "False"
+
     def test_linear_data_edges_not_marked(self):
         @node(output_name="x")
         def first() -> int:

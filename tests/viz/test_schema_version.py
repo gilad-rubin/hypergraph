@@ -30,7 +30,7 @@ NODE = shutil.which("node")
 def test_current_schema_version_pinned() -> None:
     """A bump must be deliberate — pin both ends so the hard-coded JS
     constant in scene_builder.js stays in lockstep with Python."""
-    assert CURRENT_SCHEMA_VERSION == "1"
+    assert CURRENT_SCHEMA_VERSION == "2"
 
 
 def test_build_graph_ir_emits_current_schema_version() -> None:
@@ -69,7 +69,7 @@ def test_js_scene_builder_returns_mismatch_sentinel_for_future_version() -> None
     )
     assert proc.returncode == 0, proc.stderr
     scene = json.loads(proc.stdout)
-    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "1"}
+    assert scene.get("schemaVersionMismatch") == {"got": "999", "supported": "2"}
     # The mismatch-sentinel must short-circuit derivation entirely so the
     # frontend can render the static fallback without dragging in any
     # potentially-stale interpretation of the IR.

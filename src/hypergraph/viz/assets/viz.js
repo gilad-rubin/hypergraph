@@ -65,8 +65,6 @@
   var GRAPH_PADDING = 12;
   var HEADER_HEIGHT = 32;
   var LAYOUT_PADDING = 36;
-  var EDGE_CONVERGE_TO_CENTER = false;
-  var EDGE_CONVERGENCE_OFFSET = 20;
   var EDGE_ENDPOINT_PADDING = 0.25;  // fraction of node width (0-0.5)
   var LAYOUT_RANKSEP = 80;
   var FEEDBACK_EDGE_GUTTER = 70;
@@ -308,12 +306,10 @@
    * This is THE key change: dagre computes multi-point edge paths,
    * and we use them directly instead of generating 2-point straight lines.
    */
-  function layoutGraph(nodes, edges, convergeToCenter, convergenceOffset, endpointPadding, ranksep) {
-    if (convergeToCenter === undefined) convergeToCenter = EDGE_CONVERGE_TO_CENTER;
-    if (convergenceOffset === undefined) convergenceOffset = EDGE_CONVERGENCE_OFFSET;
+  function layoutGraph(nodes, edges, endpointPadding, ranksep) {
     if (endpointPadding === undefined) endpointPadding = EDGE_ENDPOINT_PADDING;
     if (ranksep === undefined) ranksep = LAYOUT_RANKSEP;
-    var g = new dagre.graphlib.Graph();
+    var g = new dagre.graphlib.Graph({ multigraph: true });
     g.setGraph({ rankdir: 'TB', nodesep: 42, ranksep: ranksep, marginx: 0, marginy: 0 });
     g.setDefaultEdgeLabel(function() { return {}; });
 
@@ -323,11 +319,9 @@
       g.setNode(n.id, { width: n.width, height: n.height });
     });
 
-    var edgeSet = new Set();
     edges.forEach(function(e) {
       if (nodeIds.has(e.source) && nodeIds.has(e.target)) {
-        var key = e.source + '\0' + e.target;
-        if (!edgeSet.has(key)) { edgeSet.add(key); g.setEdge(e.source, e.target); }
+        g.setEdge(e.source, e.target, {}, e.id);
       }
     });
 
@@ -357,104 +351,32 @@
       var srcForceCenterX = srcType === 'BRANCH' || srcType === 'START' || srcType === 'END';
       var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'START' || tgtType === 'END';
 
-      var dagreEdge = g.edge(e.source, e.target);
+      var dagreEdge = g.edge(e.source, e.target, e.id);
       if (dagreEdge && dagreEdge.points && dagreEdge.points.length > 0) {
         var pts = dagreEdge.points.map(function(p) { return { x: p.x, y: p.y }; });
-        if (convergeToCenter) {
-          // Center mode: all edges go to node center-x
-          pts[0] = { x: src.x, y: srcBottom };
-          pts[pts.length - 1] = { x: tgt.x, y: tgtTop };
-        } else {
-          // Dagre mode: keep dagre's native x-positions, clamp Y and pad X
-          var srcPad = src.width * endpointPadding;
-          var tgtPad = tgt.width * endpointPadding;
-          var srcLeft = src.x - src.width * 0.5 + srcPad;
-          var srcRight = src.x + src.width * 0.5 - srcPad;
-          var tgtLeft = tgt.x - tgt.width * 0.5 + tgtPad;
-          var tgtRight = tgt.x + tgt.width * 0.5 - tgtPad;
-          pts[0] = {
-            x: srcForceCenterX ? src.x : Math.max(srcLeft, Math.min(srcRight, pts[0].x)),
-            y: srcBottom,
-          };
-          pts[pts.length - 1] = {
-            x: tgtForceCenterX ? tgt.x : Math.max(tgtLeft, Math.min(tgtRight, pts[pts.length - 1].x)),
-            y: tgtTop,
-          };
-        }
+        var srcPad = src.width * endpointPadding;
+        var tgtPad = tgt.width * endpointPadding;
+        var srcLeft = src.x - src.width * 0.5 + srcPad;
+        var srcRight = src.x + src.width * 0.5 - srcPad;
+        var tgtLeft = tgt.x - tgt.width * 0.5 + tgtPad;
+        var tgtRight = tgt.x + tgt.width * 0.5 - tgtPad;
+        pts[0] = {
+          x: srcForceCenterX ? src.x : Math.max(srcLeft, Math.min(srcRight, pts[0].x)),
+          y: srcBottom,
+        };
+        pts[pts.length - 1] = {
+          x: tgtForceCenterX ? tgt.x : Math.max(tgtLeft, Math.min(tgtRight, pts[pts.length - 1].x)),
+          y: tgtTop,
+        };
         e.points = pts;
       } else {
-        // Fallback: no dagre edge data, use center-x for both modes
-        e.points = [{ x: src.x, y: srcBottom }, { x: tgt.x, y: tgtTop }];
+        throw new Error('Dagre did not return routing points for edge ' + (e.id || (e.source + ' -> ' + e.target)));
       }
     });
-
-    // Add convergence/divergence stems when edges converge to center
-    if (convergeToCenter) {
-      addConvergenceStems(edges, nodeById, convergenceOffset);
-    }
 
     var size = computeBounds(nodes, LAYOUT_PADDING);
     offsetAll(nodes, edges, size.min);
     return { nodes: nodes, edges: edges, size: size };
-  }
-
-  /**
-   * Insert convergence/divergence stem points for edges that share endpoints.
-   * When multiple edges arrive at the same target center, inserting a convergence
-   * point creates the V-shape merge effect. Same for divergence from sources.
-   */
-  function addConvergenceStems(edges, nodeById, offset) {
-    // Group edges by target
-    var byTarget = {};
-    edges.forEach(function(e) {
-      if (!e.points || e.points.length < 2) return;
-      if (!byTarget[e.target]) byTarget[e.target] = [];
-      byTarget[e.target].push(e);
-    });
-
-    // Add convergence points for targets with 2+ incoming edges
-    Object.keys(byTarget).forEach(function(targetId) {
-      var group = byTarget[targetId];
-      if (group.length < 2) return;
-      var tgt = nodeById[targetId];
-      if (!tgt) return;
-
-      var tgtType = resolveNodeType(tgt.data && tgt.data.nodeType, tgt.data && tgt.data.isExpanded);
-      var tgtTop = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
-      var convergeY = tgtTop - offset;
-
-      group.forEach(function(e) {
-        var last = e.points[e.points.length - 1];
-        // Insert convergence point before the final target point
-        e.points.splice(e.points.length - 1, 0, { x: last.x, y: convergeY });
-      });
-    });
-
-    // Group edges by source
-    var bySource = {};
-    edges.forEach(function(e) {
-      if (!e.points || e.points.length < 2) return;
-      if (!bySource[e.source]) bySource[e.source] = [];
-      bySource[e.source].push(e);
-    });
-
-    // Add divergence points for sources with 2+ outgoing edges
-    Object.keys(bySource).forEach(function(sourceId) {
-      var group = bySource[sourceId];
-      if (group.length < 2) return;
-      var src = nodeById[sourceId];
-      if (!src) return;
-
-      var srcType = resolveNodeType(src.data && src.data.nodeType, src.data && src.data.isExpanded);
-      var srcBottom = src.y + src.height * 0.5 - getOffset(srcType);
-      var divergeY = srcBottom + offset;
-
-      group.forEach(function(e) {
-        var first = e.points[0];
-        // Insert divergence point after the initial source point
-        e.points.splice(1, 0, { x: first.x, y: divergeY });
-      });
-    });
   }
 
   // ── Feedback edge selection (Python-precomputed hints) ──
@@ -494,311 +416,178 @@
     ];
   }
 
-  // ── Recursive layout helpers ──
+  function adjustEdgeEndpoints(edge, points, nodeById, endpointPadding) {
+    if (!points || points.length < 2) return points;
+    var src = nodeById.get(edge.source), tgt = nodeById.get(edge.target);
+    if (!src || !tgt) return points;
 
-  function groupNodesByParent(nodes) {
-    var groups = new Map();
-    nodes.forEach(function(n) {
-      var pid = n.parentNode || null;
-      if (!groups.has(pid)) groups.set(pid, []);
-      groups.get(pid).push(n);
-    });
-    return groups;
-  }
+    var srcType = resolveNodeType(src.data && src.data.nodeType, src.data && src.data.isExpanded);
+    var tgtType = resolveNodeType(tgt.data && tgt.data.nodeType, tgt.data && tgt.data.isExpanded);
+    var srcBottom = src.y + src.height * 0.5 - getOffset(srcType);
+    var tgtTop = tgt.y - tgt.height * 0.5 + getTopInset(tgtType);
+    var srcForceCenterX = srcType === 'BRANCH' || srcType === 'START' || srcType === 'END';
+    var tgtForceCenterX = tgtType === 'BRANCH' || tgtType === 'START' || tgtType === 'END';
+    var srcPad = src.width * endpointPadding;
+    var tgtPad = tgt.width * endpointPadding;
+    var srcLeft = src.x - src.width * 0.5 + srcPad;
+    var srcRight = src.x + src.width * 0.5 - srcPad;
+    var tgtLeft = tgt.x - tgt.width * 0.5 + tgtPad;
+    var tgtRight = tgt.x + tgt.width * 0.5 - tgtPad;
 
-  function getLayoutOrder(nodes, expansionState) {
-    var nodeById = new Map(nodes.map(function(n) { return [n.id, n]; }));
-    var getDepth = function(id, d) {
-      var n = nodeById.get(id);
-      return (!n || !n.parentNode) ? (d || 0) : getDepth(n.parentNode, (d || 0) + 1);
+    points[0] = {
+      x: srcForceCenterX ? src.x : Math.max(srcLeft, Math.min(srcRight, points[0].x)),
+      y: srcBottom,
     };
-    return nodes
-      .filter(function(n) { return n.data && n.data.nodeType === 'PIPELINE' && expansionState.get(n.id) === true && !n.hidden; })
-      .sort(function(a, b) { return getDepth(b.id) - getDepth(a.id); });
+    points[points.length - 1] = {
+      x: tgtForceCenterX ? tgt.x : Math.max(tgtLeft, Math.min(tgtRight, points[points.length - 1].x)),
+      y: tgtTop,
+    };
+    return points;
   }
 
-  function buildDeepToChildMap(visibleNodes, childIds) {
-    var deepToChild = new Map();
-    var byId = new Map(visibleNodes.map(function(n) { return [n.id, n]; }));
+  // ── Compound dagre layout for visible nested graphs ──
+
+  function performCompoundLayout(visibleNodes, edges, expansionState, endpointPadding, ranksep) {
+    var g = new dagre.graphlib.Graph({ compound: true, multigraph: true });
+    g.setGraph({ rankdir: 'TB', nodesep: 42, ranksep: ranksep, marginx: 0, marginy: 0 });
+    g.setDefaultEdgeLabel(function() { return {}; });
+
+    var visibleIds = new Set(visibleNodes.map(function(n) { return n.id; }));
+    var visibleNodeById = new Map(visibleNodes.map(function(n) { return [n.id, n]; }));
+    var displayParentById = new Map();
+    var layoutNodes = [];
+
     visibleNodes.forEach(function(n) {
-      if (childIds.has(n.id)) return;
-      var cur = n, visited = [];
-      while (cur && cur.parentNode) {
-        visited.push(cur.id);
-        if (childIds.has(cur.parentNode)) {
-          visited.forEach(function(id) { deepToChild.set(id, cur.parentNode); });
-          break;
-        }
-        cur = byId.get(cur.parentNode);
-      }
+      var d = calculateDimensions(n);
+      layoutNodes.push({ id: n.id, width: d.width, height: d.height, x: 0, y: 0, data: n.data, _original: n });
+      g.setNode(n.id, { width: d.width, height: d.height });
     });
-    return deepToChild;
-  }
 
-  // Note: dagre uses a simple graph for layout, so we dedupe by (source,target)
-  // only for the internal layout pass. Original edges are restored later so the
-  // rendered edge set still matches Python exactly.
-  function collectEdgesForGroup(edges, memberIds, deepToChild) {
-    var seen = new Set(), result = [];
-    edges.forEach(function(e) {
-      var s = deepToChild.has(e.source) ? deepToChild.get(e.source) : e.source;
-      var t = deepToChild.has(e.target) ? deepToChild.get(e.target) : e.target;
-      if (memberIds.has(s) && memberIds.has(t) && s !== t) {
-        var key = s + '->' + t;
-        if (!seen.has(key)) { seen.add(key); result.push({ id: key, source: s, target: t, _original: e }); }
-      }
-    });
-    return result;
-  }
-
-  function buildLayoutNodes(nodes, nodeDimensions) {
-    return nodes.map(function(n) {
-      var d = nodeDimensions.get(n.id);
-      return { id: n.id, width: d.width, height: d.height, x: 0, y: 0, data: n.data, _original: n };
-    });
-  }
-
-  // ── Recursive layout ──
-
-  function performRecursiveLayout(visibleNodes, edges, expansionState, debugMode, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep) {
-    var nodeGroups = groupNodesByParent(visibleNodes);
-    var layoutOrder = getLayoutOrder(visibleNodes, expansionState);
-
-    // Build dimensions and type maps
-    var nodeDimensions = new Map();
-    var nodeTypes = new Map();
     visibleNodes.forEach(function(n) {
-      nodeDimensions.set(n.id, calculateDimensions(n));
-      var nt = (n.data && n.data.nodeType) || 'FUNCTION';
-      if (nt === 'PIPELINE' && !(n.data && n.data.isExpanded)) nt = 'FUNCTION';
-      nodeTypes.set(n.id, nt);
+      var parentId = null;
+      if (n.parentNode && visibleIds.has(n.parentNode)) {
+        parentId = n.parentNode;
+      } else if (n.data && (n.data.nodeType === 'INPUT' || n.data.nodeType === 'INPUT_GROUP')) {
+        var owner = n.data.deepestOwnerContainer || n.data.ownerContainer;
+        var ownerPrefix = owner ? owner + '/' : '';
+        var outgoing = edges.filter(function(e) { return e.source === n.id && visibleIds.has(e.target); });
+        var onlyFeedsOwner = outgoing.length > 0 && outgoing.every(function(e) {
+          return e.target === owner || e.target.indexOf(ownerPrefix) === 0;
+        });
+        if (owner && visibleIds.has(owner) && expansionState.get(owner) && onlyFeedsOwner) parentId = owner;
+      }
+
+      if (parentId) {
+        displayParentById.set(n.id, parentId);
+        g.setParent(n.id, parentId);
+      }
     });
 
     var feedbackEdgeKeys = computeFeedbackEdgeKeys(visibleNodes, edges);
+    var layoutEdges = edges
+      .filter(function(e) { return visibleIds.has(e.source) && visibleIds.has(e.target); })
+      .filter(function(e) { return !feedbackEdgeKeys.has(e.source + '->' + e.target); })
+      .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-    // Find input nodes owned by containers
-    var inputNodesInContainers = new Map();
-    var parentMap = new Map();
-    visibleNodes.forEach(function(n) { if (n.parentNode) parentMap.set(n.id, n.parentNode); });
-    visibleNodes.forEach(function(n) {
-      var nt = n.data && n.data.nodeType;
-      if (nt !== 'INPUT' && nt !== 'INPUT_GROUP') return;
-      var owner = n.data.deepestOwnerContainer || n.data.ownerContainer;
-      if (!owner) return;
-      var cur = owner;
-      while (cur) {
-        if (expansionState.get(cur)) { inputNodesInContainers.set(n.id, cur); break; }
-        cur = parentMap.get(cur);
+    layoutEdges.forEach(function(e) {
+      var sourceParent = displayParentById.get(e.source);
+      var targetParent = displayParentById.get(e.target);
+      var sourceNode = visibleNodeById.get(e.source);
+      var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
+      var edgeLabel = {};
+      if (!sourceParent && targetParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
+        edgeLabel = { minlen: 4, weight: 10 };
       }
+      g.setEdge(e.source, e.target, edgeLabel, e.id);
+    });
+    dagre.layout(g);
+
+    var nodeById = new Map();
+    layoutNodes.forEach(function(n) {
+      var pos = g.node(n.id);
+      if (pos) {
+        n.x = pos.x;
+        n.y = pos.y;
+        n.width = pos.width || n.width;
+        n.height = pos.height || n.height;
+      }
+      nodeById.set(n.id, n);
     });
 
-    // Phase 1: Layout children (deepest first)
-    var childLayoutResults = new Map();
-    layoutOrder.forEach(function(graphNode) {
-      var children = (nodeGroups.get(graphNode.id) || []).slice();
-      visibleNodes.forEach(function(n) {
-        if (inputNodesInContainers.get(n.id) === graphNode.id) children.push(n);
-      });
-      if (!children.length) return;
-
-      var childIds = new Set(children.map(function(c) { return c.id; }));
-      var deep = buildDeepToChildMap(visibleNodes, childIds);
-      var intEdges = collectEdgesForGroup(edges, childIds, deep);
-      var fbKeys = computeFeedbackEdgeKeys(children, intEdges);
-      var layoutEdges = intEdges.filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); });
-
-      var result = layoutGraph(buildLayoutNodes(children, nodeDimensions), layoutEdges, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
-      result.size = computeBounds(result.nodes, GRAPH_PADDING);
-      childLayoutResults.set(graphNode.id, result);
-
-      nodeDimensions.set(graphNode.id, {
-        width: result.size.width,
-        height: result.size.height + HEADER_HEIGHT,
-      });
+    layoutEdges.forEach(function(e) {
+      var dagreEdge = g.edge(e.source, e.target, e.id);
+      if (!dagreEdge || !dagreEdge.points || !dagreEdge.points.length) {
+        throw new Error('Dagre did not return routing points for edge ' + (e.id || (e.source + ' -> ' + e.target)));
+      }
+      e.points = adjustEdgeEndpoints(
+        e,
+        dagreEdge.points.map(function(p) { return { x: p.x, y: p.y }; }),
+        nodeById,
+        endpointPadding
+      );
     });
 
-    // Phase 2: Layout root
-    var rootNodes = (nodeGroups.get(null) || []).filter(function(n) { return !inputNodesInContainers.has(n.id); });
-    var rootNodeIds = new Set(rootNodes.map(function(n) { return n.id; }));
+    var size = computeBounds(layoutNodes, LAYOUT_PADDING);
+    offsetAll(layoutNodes, layoutEdges, size.min);
 
-    // Lift deep edges to root ancestors
-    var childToRoot = new Map();
-    var byIdForLift = new Map(visibleNodes.map(function(n) { return [n.id, n]; }));
-    visibleNodes.forEach(function(n) {
-      if (rootNodeIds.has(n.id)) return;
-      if (inputNodesInContainers.has(n.id)) {
-        var oid = inputNodesInContainers.get(n.id);
-        if (rootNodeIds.has(oid)) childToRoot.set(n.id, oid);
-        return;
-      }
-      var cur = n;
-      while (cur && cur.parentNode) {
-        if (rootNodeIds.has(cur.parentNode)) { childToRoot.set(n.id, cur.parentNode); break; }
-        cur = byIdForLift.get(cur.parentNode);
-      }
-    });
-
-    var rootEdges = collectEdgesForGroup(edges, rootNodeIds, childToRoot);
-    var rootFbKeys = computeFeedbackEdgeKeys(rootNodes, rootEdges);
-    var filteredRootEdges = rootEdges.filter(function(e) { return !rootFbKeys.has(e.source + '->' + e.target); });
-
-    var rootResult = layoutGraph(buildLayoutNodes(rootNodes, nodeDimensions), filteredRootEdges, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
-    rootResult.size = computeBounds(rootResult.nodes, LAYOUT_PADDING);
-
-    // Phase 3: Compose positions
     var nodePositions = new Map();
-    var allNodes = [], allEdges = [];
+    var nodeDimensions = new Map();
+    layoutNodes.forEach(function(n) {
+      nodePositions.set(n.id, { x: n.x - n.width / 2, y: n.y - n.height / 2 });
+      nodeDimensions.set(n.id, { width: n.width, height: n.height });
+    });
 
-    rootResult.nodes.forEach(function(n) {
-      var w = n.width, h = n.height;
-      var x = n.x - w / 2 - rootResult.size.min.x;
-      var y = n.y - h / 2 - rootResult.size.min.y;
-      nodePositions.set(n.id, { x: x, y: y });
-      allNodes.push({
-        ...n._original, position: { x: x, y: y }, width: w, height: h,
-        style: { ...n._original.style, width: w, height: h },
+    var allNodes = layoutNodes.map(function(n) {
+      var parentId = displayParentById.get(n.id);
+      var absPos = nodePositions.get(n.id);
+      var pos = absPos;
+      var nwp = { ...n._original };
+      if (parentId) {
+        var parentPos = nodePositions.get(parentId);
+        if (parentPos) pos = { x: absPos.x - parentPos.x, y: absPos.y - parentPos.y };
+        nwp.parentNode = parentId;
+        nwp.extent = 'parent';
+      }
+      return {
+        ...nwp, position: pos, width: n.width, height: n.height,
+        style: { ...nwp.style, width: n.width, height: n.height },
         handles: [
-          { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
-          { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
+          { type: 'target', position: 'top', x: n.width / 2, y: 0, width: 8, height: 8, id: null },
+          { type: 'source', position: 'bottom', x: n.width / 2, y: n.height, width: 8, height: 8, id: null },
         ],
-      });
+      };
     });
 
-    // Add edges from root dagre pass (with native routing points)
-    // Skip lifted edges — their dagre routing connects containers, not actual nodes.
-    // Cross-boundary phase (Phase 4) will handle them with correct internal endpoints.
-    rootResult.edges.forEach(function(e) {
-      if (!e.points || !e.points.length) return;
-      if (e._original && (e._original.source !== e.source || e._original.target !== e.target)) return;
-      var offsetPts = e.points.map(function(pt) {
-        return { x: pt.x - rootResult.size.min.x, y: pt.y - rootResult.size.min.y };
-      });
-      allEdges.push({ ...(e._original || e), data: { ...(e._original || e).data, points: offsetPts } });
+    var allEdges = layoutEdges.map(function(e) {
+      return { ...e._original, data: { ...e._original.data, points: e.points } };
     });
 
-    layoutOrder.slice().reverse().forEach(function(graphNode) {
-      var childResult = childLayoutResults.get(graphNode.id);
-      if (!childResult) return;
-      var parentPos = nodePositions.get(graphNode.id);
-      if (!parentPos) return;
-
-      var offX = parentPos.x, offY = parentPos.y + HEADER_HEIGHT;
-
-      childResult.nodes.forEach(function(n) {
-        var w = n.width, h = n.height;
-        var cx = n.x - w / 2 - childResult.size.min.x;
-        var cy = n.y - h / 2 - childResult.size.min.y;
-        nodePositions.set(n.id, { x: offX + cx, y: offY + cy });
-        nodeDimensions.set(n.id, { width: w, height: h });
-
-        var nwp = { ...n._original };
-        if (inputNodesInContainers.has(n.id)) {
-          nwp.parentNode = inputNodesInContainers.get(n.id);
-          nwp.extent = 'parent';
-        }
-        allNodes.push({
-          ...nwp, position: { x: cx, y: cy + HEADER_HEIGHT }, width: w, height: h,
-          style: { ...nwp.style, width: w, height: h },
-          handles: [
-            { type: 'target', position: 'top', x: w / 2, y: 0, width: 8, height: 8, id: null },
-            { type: 'source', position: 'bottom', x: w / 2, y: h, width: 8, height: 8, id: null },
-          ],
-        });
+    edges
+      .filter(function(e) { return visibleIds.has(e.source) && visibleIds.has(e.target); })
+      .filter(function(e) { return feedbackEdgeKeys.has(e.source + '->' + e.target); })
+      .forEach(function(e) {
+        var pts = buildFeedbackEdgePoints(e, nodePositions, nodeDimensions, new Map());
+        if (pts) allEdges.push({ ...e, data: { ...e.data, points: pts, isFeedbackEdge: true } });
       });
 
-      childResult.edges.forEach(function(e) {
-        // Skip lifted edges — cross-boundary phase handles them with correct endpoints
-        if (e._original && (e._original.source !== e.source || e._original.target !== e.target)) return;
-        var pts = (e.points || []).map(function(pt) {
-          return { x: pt.x - childResult.size.min.x + offX, y: pt.y - childResult.size.min.y + offY };
-        });
-        allEdges.push({ ...(e._original || e), data: { ...(e._original || e).data, points: pts } });
-      });
-    });
-
-    // Phase 4: Route cross-boundary edges
-    var handledEdgeIds = new Set(allEdges.map(function(e) { return e.id; }));
-
-    var pickExpandedContainerAnchor = function(nodeId, direction) {
-      if (!expansionState.get(nodeId)) return null;
-      if ((nodeTypes.get(nodeId) || 'FUNCTION') !== 'PIPELINE') return null;
-
-      var candidates = [];
-      visibleNodes.forEach(function(n) {
-        if (n.hidden || n.parentNode !== nodeId) return;
-        var nt = (n.data && n.data.nodeType) || 'FUNCTION';
-        if (nt === 'DATA' || nt === 'INPUT' || nt === 'INPUT_GROUP' || nt === 'START' || nt === 'END') return;
-
-        var pos = nodePositions.get(n.id);
-        var dims = nodeDimensions.get(n.id);
-        if (!pos || !dims) return;
-
-        candidates.push({ id: n.id, x: pos.x, y: pos.y, bottom: pos.y + dims.height });
-      });
-
-      if (!candidates.length) return null;
-
-      candidates.sort(function(a, b) {
-        if (direction === 'out') {
-          if (b.bottom !== a.bottom) return b.bottom - a.bottom;
-          return a.x - b.x;
-        }
-        if (a.y !== b.y) return a.y - b.y;
-        return a.x - b.x;
-      });
-
-      return candidates[0].id;
-    };
-
-    edges.forEach(function(e) {
-      if (handledEdgeIds.has(e.id)) return;
-
-      var actualSrc = e.source, actualTgt = e.target;
-      var srcPos = nodePositions.get(actualSrc), tgtPos = nodePositions.get(actualTgt);
-      var srcDims = nodeDimensions.get(actualSrc), tgtDims = nodeDimensions.get(actualTgt);
-
-      if (!srcPos || !tgtPos || !srcDims || !tgtDims) return;
-      if (actualSrc === actualTgt) return;
-
-      var srcCX = srcPos.x + srcDims.width / 2;
-      var srcNT = nodeTypes.get(actualSrc) || 'FUNCTION';
-      var srcBY = srcPos.y + srcDims.height - getOffset(srcNT);
-      var tgtCX = tgtPos.x + tgtDims.width / 2;
-      var tgtNT = nodeTypes.get(actualTgt) || 'FUNCTION';
-      var tgtTY = getVisibleTop(tgtPos, tgtNT);
-
-      var isFb = feedbackEdgeKeys.has(e.source + '->' + e.target);
-      var points = isFb
-        ? buildFeedbackEdgePoints({ source: actualSrc, target: actualTgt }, nodePositions, nodeDimensions, nodeTypes)
-        : [{ x: srcCX, y: srcBY }, { x: tgtCX, y: tgtTY }];
-
-      if (!points) points = [{ x: srcCX, y: srcBY }, { x: tgtCX, y: tgtTY }];
-
-      allEdges.push({
-        ...e,
-        data: { ...e.data, points: points, actualSource: actualSrc, actualTarget: actualTgt, isFeedbackEdge: isFb },
-      });
-    });
-
-    return { nodes: allNodes, edges: allEdges, size: rootResult.size };
+    return { nodes: allNodes, edges: allEdges, size: size };
   }
 
   // ── useLayout hook ──
 
-  function useLayout(nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep) {
+  function useLayout(nodes, edges, expansionState, endpointPadding, ranksep) {
     var nodesState = useState([]), edgesState = useState([]);
     var errorState = useState(null), versionState = useState(0);
     var heightState = useState(600), widthState = useState(600), busyState = useState(false);
 
     useEffect(function() {
-      var debug = root.__hypergraph_debug_viz || false;
       if (!nodes.length) { busyState[1](false); return; }
       busyState[1](true);
       try {
         var visible = nodes.filter(function(n) { return !n.hidden; });
 
         if (expansionState && expansionState.size > 0) {
-          var res = performRecursiveLayout(visible, edges, expansionState, debug, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
+          var res = performCompoundLayout(visible, edges, expansionState, endpointPadding, ranksep);
           nodesState[1](res.nodes); edgesState[1](res.edges);
           versionState[1](function(v) { return v + 1; }); busyState[1](false); errorState[1](null);
           if (res.size) { widthState[1](res.size.width); heightState[1](res.size.height); }
@@ -818,7 +607,7 @@
           .filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); })
           .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-        var result = layoutGraph(layoutNodes, layoutEdges, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
+        var result = layoutGraph(layoutNodes, layoutEdges, endpointPadding, ranksep);
 
         var positioned = result.nodes.map(function(n) {
           return {
@@ -854,14 +643,10 @@
       } catch (err) {
         console.error('Layout error:', err);
         errorState[1](err && err.message ? err.message : 'Layout error');
-        var fallback = nodes.map(function(n, i) {
-          var w = (n.style && n.style.width) || 200, h = (n.style && n.style.height) || 68;
-          return { ...n, position: { x: 80 * (i % 4), y: 120 * Math.floor(i / 4) }, width: w, height: h };
-        });
-        nodesState[1](fallback); edgesState[1](edges);
+        nodesState[1]([]); edgesState[1]([]);
         versionState[1](function(v) { return v + 1; }); busyState[1](false);
       }
-    }, [nodes, edges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep]);
+    }, [nodes, edges, expansionState, endpointPadding, ranksep]);
 
     return {
       layoutedNodes: nodesState[0], layoutedEdges: edgesState[0], layoutError: errorState[0],
@@ -957,8 +742,8 @@
       var r = getBezierPath({ sourceX: props.sourceX, sourceY: props.sourceY, sourcePosition: props.sourcePosition,
         targetX: props.targetX, targetY: props.targetY, targetPosition: props.targetPosition });
       edgePath = r[0];
-      var isBranchFallback = edgeLabel === 'True' || edgeLabel === 'False';
-      var t = isBranchFallback ? 0.5 : 0.35;
+      var isBranchDecisionLabel = edgeLabel === 'True' || edgeLabel === 'False';
+      var t = isBranchDecisionLabel ? 0.5 : 0.35;
       labelX = sourceX + (props.targetX - sourceX) * t;
       labelY = sourceY + (props.targetY - sourceY) * t;
     }
@@ -1241,9 +1026,9 @@
       <//>`;
   };
 
-  // ── Dev-only edge convergence controls (DialKit) ──
+  // ── Dev-only layout controls (DialKit) ──
 
-  var DevEdgeControls = function(props) {
+  var DevLayoutControls = function(props) {
     var isLight = props.theme === 'light';
     var bg = isLight ? 'bg-white/90 border-slate-300' : 'bg-slate-900/90 border-slate-700';
     var text = isLight ? 'text-slate-700' : 'text-slate-300';
@@ -1252,37 +1037,17 @@
 
     return html`
       <${Panel} position="top-left" className=${'p-3 rounded-lg border shadow-lg backdrop-blur-sm ' + bg}>
-        <div className=${'text-xs font-semibold mb-2 ' + muted}>Edge Routing</div>
-        <label className=${'flex items-center gap-2 text-xs cursor-pointer ' + text}>
-          <input type="checkbox" checked=${props.convergeToCenter}
-            className=${accent}
-            onChange=${function(e) { props.onToggleConverge(e.target.checked); }} />
-          Converge to center
-        </label>
-        ${props.convergeToCenter ? html`
-          <div className="mt-2">
-            <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
-              <span>Stem height</span>
-              <span className=${'font-mono ' + text}>${props.convergenceOffset}px</span>
-            </div>
-            <input type="range" min="0" max="60" step="1"
-              value=${props.convergenceOffset}
-              className=${'w-full h-1 rounded-lg appearance-none cursor-pointer ' + accent}
-              onInput=${function(e) { props.onChangeOffset(Number(e.target.value)); }} />
+        <div className=${'text-xs font-semibold mb-2 ' + muted}>Dagre Layout</div>
+        <div className="mt-2">
+          <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
+            <span>Endpoint padding</span>
+            <span className=${'font-mono ' + text}>${Math.round(props.endpointPadding * 100)}%</span>
           </div>
-        ` : null}
-        ${!props.convergeToCenter ? html`
-          <div className="mt-2">
-            <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
-              <span>Endpoint padding</span>
-              <span className=${'font-mono ' + text}>${Math.round(props.endpointPadding * 100)}%</span>
-            </div>
-            <input type="range" min="0" max="0.45" step="0.01"
-              value=${props.endpointPadding}
-              className=${'w-full h-1 rounded-lg appearance-none cursor-pointer ' + accent}
-              onInput=${function(e) { props.onChangePadding(Number(e.target.value)); }} />
-          </div>
-        ` : null}
+          <input type="range" min="0" max="0.45" step="0.01"
+            value=${props.endpointPadding}
+            className=${'w-full h-1 rounded-lg appearance-none cursor-pointer ' + accent}
+            onInput=${function(e) { props.onChangePadding(Number(e.target.value)); }} />
+        </div>
         <div className="mt-2">
           <div className=${'flex items-center justify-between text-xs mb-1 ' + muted}>
             <span>Vertical gap</span>
@@ -1324,11 +1089,6 @@
     var showInputs = inputsState[0], setShowInputs = inputsState[1];
     var showBoundedInputs = !!props.initialShowBoundedInputs;
 
-    // Edge convergence state (dev-only controls)
-    var convState = useState(EDGE_CONVERGE_TO_CENTER);
-    var convergeToCenter = convState[0], setConvergeToCenter = convState[1];
-    var convOffState = useState(EDGE_CONVERGENCE_OFFSET);
-    var convergenceOffset = convOffState[0], setConvergenceOffset = convOffState[1];
     var padState = useState(EDGE_ENDPOINT_PADDING);
     var endpointPadding = padState[0], setEndpointPadding = padState[1];
     var rsState = useState(LAYOUT_RANKSEP);
@@ -1354,14 +1114,6 @@
         if (Object.prototype.hasOwnProperty.call(opts, 'separateOutputs')) onToggleSep(!!opts.separateOutputs);
         if (Object.prototype.hasOwnProperty.call(opts, 'showTypes')) onToggleTyp(!!opts.showTypes);
         if (Object.prototype.hasOwnProperty.call(opts, 'showInputs')) onToggleInputs(!!opts.showInputs);
-        if (Object.prototype.hasOwnProperty.call(opts, 'convergeToCenter')) {
-          root.__hypergraphVizReady = false;
-          setConvergeToCenter(!!opts.convergeToCenter);
-        }
-        if (Object.prototype.hasOwnProperty.call(opts, 'convergenceOffset')) {
-          root.__hypergraphVizReady = false;
-          setConvergenceOffset(Number(opts.convergenceOffset));
-        }
         if (Object.prototype.hasOwnProperty.call(opts, 'endpointPadding')) {
           root.__hypergraphVizReady = false;
           setEndpointPadding(Number(opts.endpointPadding));
@@ -1385,7 +1137,7 @@
         delete root.__hypergraphVizSetRenderOptions;
         root.removeEventListener('message', onMessage);
       };
-    }, [onToggleSep, onToggleTyp, onToggleInputs, setConvergeToCenter, setConvergenceOffset, setEndpointPadding, setRanksep]);
+    }, [onToggleSep, onToggleTyp, onToggleInputs, setEndpointPadding, setRanksep]);
 
     var detState = useState(function() { return detectHostTheme(); });
     var detectedTheme = detState[0], setDetectedTheme = detState[1];
@@ -1549,7 +1301,7 @@
       };
     }, [initialData]);
 
-    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, routingData, convergeToCenter, convergenceOffset, endpointPadding, ranksep);
+    var layoutResult = useLayout(nodesWithCb, selectedEdges, expansionState, endpointPadding, ranksep);
     var layoutedNodes = layoutResult.layoutedNodes;
     var layoutedEdges = layoutResult.layoutedEdges;
     var layoutError = layoutResult.layoutError;
@@ -1803,10 +1555,7 @@
             onToggleTypes=${function() { onToggleTyp(); }} showInputs=${showInputs}
             onToggleInputs=${function() { onToggleInputs(); }} onFitView=${fitWithFixedPadding} />
           ${root.__hypergraph_debug_viz ? html`
-            <${DevEdgeControls} theme=${theme} convergeToCenter=${convergeToCenter}
-              convergenceOffset=${convergenceOffset} endpointPadding=${endpointPadding} ranksep=${ranksep}
-              onToggleConverge=${function(v) { root.__hypergraphVizReady = false; setConvergeToCenter(v); }}
-              onChangeOffset=${function(v) { root.__hypergraphVizReady = false; setConvergenceOffset(v); }}
+            <${DevLayoutControls} theme=${theme} endpointPadding=${endpointPadding} ranksep=${ranksep}
               onChangePadding=${function(v) { root.__hypergraphVizReady = false; setEndpointPadding(v); }}
               onChangeRanksep=${function(v) { root.__hypergraphVizReady = false; setRanksep(v); }} />
           ` : null}
@@ -1834,7 +1583,7 @@
     var initialData = JSON.parse((graphDataEl && graphDataEl.textContent) || '{"nodes":[],"edges":[]}');
     var themePreference = normalizeThemePref((initialData.meta && initialData.meta.theme_preference) || 'auto');
     var rootEl = document.getElementById('root');
-    var fallback = document.getElementById('fallback');
+    var bootMessage = document.getElementById('boot-message');
     ReactDOM.createRoot(rootEl).render(html`
       <${ReactFlowProvider}>
         <${App} initialData=${initialData} themePreference=${themePreference}
@@ -1845,7 +1594,7 @@
           initialShowBoundedInputs=${Boolean(initialData.meta && initialData.meta.show_bounded_inputs)} />
       <//>
     `);
-    if (fallback) fallback.remove();
+    if (bootMessage) bootMessage.remove();
   }
 
   root.HypergraphViz = { init: init };
