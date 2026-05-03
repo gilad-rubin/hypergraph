@@ -413,14 +413,20 @@ def _collect_bound_values(
             continue
         for inner_key, value in node.graph.inputs.bound.items():
             public_key = node.map_input_name_from_original(inner_key)
-            if public_key in declared:
+            full_path = f"{node_name}.{public_key}"
+            # Conflict surfaces at the OUTERMOST scope that declares the bind's
+            # leaf name. For a deeply-nested bind addressed `a.b.c` reaching
+            # this scope, the leaf is `c`; if a leaf at this scope consumes or
+            # produces `c`, the bind would be silently overridden.
+            leaf = public_key.rsplit(".", 1)[-1]
+            if leaf in declared:
                 raise GraphConfigError(
-                    f"Bind on '{node_name}.{public_key}' is shadowed by '{public_key}' "
+                    f"Bind on '{full_path}' is shadowed by '{leaf}' "
                     f"declared at this scope (a node here consumes or produces it). "
                     f"At run time the parent's value would silently override the bind. "
                     f"Fix: either remove the bind on the inner subgraph, or rename "
                     f"the input via with_inputs(...) so it no longer matches the ancestor."
                 )
-            all_bound[f"{node_name}.{public_key}"] = value
+            all_bound[full_path] = value
 
     return all_bound

@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.exceptions import MissingInputError
 from hypergraph.graph.validation import GraphConfigError
 from hypergraph.runners import SyncRunner
 
@@ -190,3 +191,101 @@ def test_run_value_overriding_dot_pathed_bind_emits_warning():
         result = SyncRunner().run(outer, {"inner.x": 99})
 
     assert result["out"] == 99
+
+
+def test_with_inputs_renames_leaf_label_only_not_scope():
+    """with_inputs(...) changes only the leaf label of an input's path; it
+    does not move the input out of the subgraph's scope.
+
+    Before: a bare-name with_inputs implicitly "lifted" the input. Under
+    lexical scope the renamed input stays under the subgraph (the path is
+    still ``<graphnode>.<new_label>``), and a same-named ancestor input
+    remains independent.
+    """
+
+    @node(output_name="inner_out")
+    def consume_x(x: int) -> int:
+        return x
+
+    @node(output_name="outer_out")
+    def consume_x_outer(x: int) -> int:  # outer also has x; declared at outer
+        return x + 1000
+
+    inner_graph = Graph([consume_x], name="inner")
+    # Rename inner's "x" -> "inner_x" via with_inputs on the GraphNode.
+    inner_node = inner_graph.as_node().with_inputs(x="inner_x")
+
+    outer = Graph([inner_node, consume_x_outer], name="outer")
+
+    # The renamed input stays under the subgraph -- new leaf label only.
+    assert "inner.inner_x" in outer.inputs.required
+    # Outer's own x is still an independent flat input.
+    assert "x" in outer.inputs.required
+    # Bare "inner_x" at outer is NOT auto-linked: rename didn't move scope.
+    assert "inner_x" not in outer.inputs.required
+
+
+def test_no_warning_or_error_on_silent_bind_with_no_ancestor_declaration():
+    """A bind on a name no ancestor declares is a normal default and is silent."""
+    import warnings as _warnings
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    inner = Graph([use_x], name="inner").bind(x=10)
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        outer = Graph([inner.as_node()], name="outer")
+        # Building the graph emits no warnings/errors -- bind is private and silent.
+        assert outer.inputs.bound == {"inner.x": 10}
+
+
+def test_bare_name_at_outer_resolving_only_to_private_input_errors():
+    """Strict mode: a bare name passed to runner.run() that doesn't resolve at
+    the call's scope errors instead of silently smart-routing to a deeper
+    private input. The error names the actual expected dot-path."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    inner = Graph([use_x], name="inner")
+    outer = Graph([inner.as_node()], name="outer")
+
+    # x is private to inner (no leaf at outer declares it). Bare 'x' must
+    # error -- the user has to address it as 'inner.x' (or via nested-dict).
+    # The validator emits a warning naming the expected path AND raises a
+    # MissingInputError; both surface the same fact.
+    with pytest.warns(UserWarning, match=r"inner\.x"), pytest.raises(MissingInputError, match=r"inner\.x"):
+        SyncRunner().run(outer, {"x": 5})
+
+    # And the legitimate dot-path works.
+    result = SyncRunner().run(outer, {"inner.x": 5})
+    assert result["out"] == 5
+
+
+def test_bind_conflict_walks_descendants_fires_at_outermost():
+    """A deeply-nested bind whose leaf name matches an ancestor declaration
+    triggers a build-time error at the outermost graph that surfaces it."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    @node(output_name="root_out")
+    def consume_x_at_root(x: int) -> int:
+        return x
+
+    # Three-level nest: bind x at the innermost.
+    inner = Graph([use_x], name="inner").bind(x=10)
+    middle = Graph([inner.as_node()], name="middle")  # builds clean -- no x at middle
+
+    # Sanity: middle holds the bind dot-pathed and didn't error.
+    assert middle.inputs.bound == {"inner.x": 10}
+
+    # Outermost scope declares x via a leaf -- the bind's leaf name `x` is
+    # shadowed even though the addressing chain is `inner.x`.
+    with pytest.raises(GraphConfigError, match=r"(?i)bind.*shadow|shadow.*bind|bind.*conflict"):
+        Graph([middle.as_node(), consume_x_at_root], name="root")
