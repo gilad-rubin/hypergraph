@@ -186,9 +186,10 @@ def build_initial_scene(
         # Container expansion rewrites: when source/target container is
         # expanded, route the edge to the deepest internal producer/consumer
         # instead of the container hull.
-        base_source = ir_edge.source
-        if expansion_state.get(base_source) and ir_edge.source_when_expanded:
-            base_source = ir_edge.source_when_expanded
+        base_sources = [ir_edge.source]
+        if expansion_state.get(ir_edge.source) and ir_edge.source_when_expanded:
+            expanded_sources = ir_edge.source_when_expanded
+            base_sources = list(expanded_sources) if isinstance(expanded_sources, tuple) else [expanded_sources]
         target = ir_edge.target
         if expansion_state.get(target) and ir_edge.target_when_expanded:
             target = ir_edge.target_when_expanded
@@ -197,29 +198,30 @@ def build_initial_scene(
         # (src,tgt) merges them). Emit one scene edge per value to mirror
         # the legacy renderer; in separate_outputs mode each routes through
         # its own data_<producer>_<value> node.
-        if ir_edge.edge_type == "data" and ir_edge.value_names:
-            edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
-        else:
-            edges_to_emit = [(None, base_source)]
+        for base_source in base_sources:
+            if ir_edge.edge_type == "data" and ir_edge.value_names:
+                edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
+            else:
+                edges_to_emit = [(None, base_source)]
 
-        for value_name, source in edges_to_emit:
-            if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
-                source = f"data_{source}_{value_name}"
-            scene_edges.append(
-                {
-                    "id": f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}",
-                    "source": source,
-                    "target": target,
-                    "data": {
-                        "edgeType": ir_edge.edge_type,
-                        "valueName": value_name,
-                        "label": ir_edge.label,
-                        "exclusive": bool(ir_edge.exclusive),
-                        "forceFeedback": bool(ir_edge.is_back_edge),
-                    },
-                    "hidden": source not in visible_ids or target not in visible_ids,
-                }
-            )
+            for value_name, source in edges_to_emit:
+                if separate_outputs and ir_edge.edge_type == "data" and value_name is not None:
+                    source = f"data_{source}_{value_name}"
+                scene_edges.append(
+                    {
+                        "id": f"{source}__{target}" if value_name is None else f"{source}__{target}__{value_name}",
+                        "source": source,
+                        "target": target,
+                        "data": {
+                            "edgeType": ir_edge.edge_type,
+                            "valueName": value_name,
+                            "label": ir_edge.label,
+                            "exclusive": bool(ir_edge.exclusive),
+                            "forceFeedback": bool(ir_edge.is_back_edge),
+                        },
+                        "hidden": source not in visible_ids or target not in visible_ids,
+                    }
+                )
 
     if separate_outputs:
         # Add output edges from each producer to its DATA nodes. Mirrors

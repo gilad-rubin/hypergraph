@@ -409,6 +409,20 @@ def _gate_branch_targets(branch_data: dict) -> list[str]:
     return targets
 
 
+def _resolve_branch_target(node_id: str, target: str, flat_graph: nx.DiGraph) -> str | None:
+    """Resolve local branch target metadata to a flat-graph node id."""
+    if target in flat_graph:
+        return target
+
+    parent = get_parent(node_id, flat_graph)
+    if parent is not None:
+        nested_target = f"{parent}/{target}"
+        if nested_target in flat_graph:
+            return nested_target
+
+    return None
+
+
 def _compute_mutex_groups(flat_graph: nx.DiGraph) -> list[list[set[str]]]:
     """Compute mutex groups from a flat graph using gate ``branch_data``.
 
@@ -416,17 +430,17 @@ def _compute_mutex_groups(flat_graph: nx.DiGraph) -> list[list[set[str]]]:
     mutex iff they appear in different branch sets of the same entry.
     """
     groups: list[list[set[str]]] = []
-    for _, attrs in flat_graph.nodes(data=True):
+    for node_id, attrs in flat_graph.nodes(data=True):
         branch_data = attrs.get("branch_data") or {}
         if not branch_data:
             continue
         targets = _gate_branch_targets(branch_data)
-        targets = [t for t in targets if t in flat_graph]
-        if len(targets) < 2:
+        resolved_targets = [resolved for target in targets if (resolved := _resolve_branch_target(node_id, target, flat_graph)) is not None]
+        if len(resolved_targets) < 2:
             continue
-        reachable = {t: set(nx.descendants(flat_graph, t)) | {t} for t in targets}
+        reachable = {t: set(nx.descendants(flat_graph, t)) | {t} for t in resolved_targets}
         counts = Counter(node for nodes in reachable.values() for node in nodes)
-        groups.append([{n for n in reachable[t] if counts[n] == 1} for t in targets])
+        groups.append([{n for n in reachable[t] if counts[n] == 1} for t in resolved_targets])
     return groups
 
 

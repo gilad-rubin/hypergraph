@@ -29,9 +29,10 @@ class IREdge:
     target: str
     edge_type: str = "data"
     # When the source is a container, source_when_expanded is the deepest
-    # internal producer of the value flowing along this edge. scene_builder
-    # rewrites the edge's source to this when the container is expanded.
-    source_when_expanded: str | None = None
+    # internal producer(s) of the value flowing along this edge. Mutex
+    # branches can expose the same container output from multiple internal
+    # producers, so scene_builder rewrites to all of them when expanded.
+    source_when_expanded: str | tuple[str, ...] | None = None
     # Symmetric: deepest internal consumer when the target container is expanded.
     target_when_expanded: str | None = None
     # Output-value names this edge carries (for separate_outputs mode, where
@@ -100,7 +101,7 @@ class IRExternalInput:
 # Bump when the IR shape changes in a way old scene_builders can't read.
 # Both Python and JS scene_builders pin to this value; mismatches trigger
 # the static-fallback banner instead of a runtime exception.
-CURRENT_SCHEMA_VERSION = "1"
+CURRENT_SCHEMA_VERSION = "2"
 
 
 class IRSchemaError(ValueError):

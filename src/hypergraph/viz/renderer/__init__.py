@@ -67,7 +67,7 @@ def render_graph(
             "show_bounded_inputs": show_bounded_inputs,
             "debug_overlays": debug_overlays,
             # Routing maps consumed by viz.js (`routingData` in
-            # `assets/viz.js`). They feed `performRecursiveLayout` for
+            # `assets/viz.js`). They feed compound dagre layout for
             # nested-container edge routing and the debug API. The
             # IR-driven `scene_builder.js` doesn't read them itself.
             "output_to_producer": build_output_to_producer_map(flat_graph, expansion_state, use_deepest=True),

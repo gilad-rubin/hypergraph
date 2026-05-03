@@ -14,7 +14,7 @@
 
   // Pinned by Python via GraphIR.schema_version. Bump in lockstep with
   // ir_schema.py:CURRENT_SCHEMA_VERSION when the IR shape changes.
-  var SUPPORTED_SCHEMA_VERSION = '1';
+  var SUPPORTED_SCHEMA_VERSION = '2';
 
   function isSchemaSupported(ir) {
     if (!ir) return true;
@@ -213,8 +213,12 @@
 
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
-      var baseSrc = irEdge.source;
-      if (expansionState[baseSrc] && irEdge.source_when_expanded) baseSrc = irEdge.source_when_expanded;
+      var baseSources = [irEdge.source];
+      if (expansionState[irEdge.source] && irEdge.source_when_expanded) {
+        baseSources = Array.isArray(irEdge.source_when_expanded)
+          ? irEdge.source_when_expanded.slice()
+          : [irEdge.source_when_expanded];
+      }
       var tgt = irEdge.target;
       if (expansionState[tgt] && irEdge.target_when_expanded) tgt = irEdge.target_when_expanded;
 
@@ -225,25 +229,28 @@
       var valueNames = irEdge.value_names || [];
       var valuesToEmit = (irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
 
-      for (var v = 0; v < valuesToEmit.length; v++) {
-        var valueName = valuesToEmit[v];
-        var src = baseSrc;
-        if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
-          src = 'data_' + src + '_' + valueName;
+      for (var bs = 0; bs < baseSources.length; bs++) {
+        var baseSrc = baseSources[bs];
+        for (var v = 0; v < valuesToEmit.length; v++) {
+          var valueName = valuesToEmit[v];
+          var src = baseSrc;
+          if (separateOutputs && irEdge.edge_type === 'data' && valueName !== null) {
+            src = 'data_' + src + '_' + valueName;
+          }
+          sceneEdges.push({
+            id: valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName,
+            source: src,
+            target: tgt,
+            data: {
+              edgeType: irEdge.edge_type,
+              valueName: valueName,
+              label: (irEdge.label === undefined ? null : irEdge.label),
+              exclusive: !!irEdge.exclusive,
+              forceFeedback: !!irEdge.is_back_edge,
+            },
+            hidden: !visibleIds[src] || !visibleIds[tgt],
+          });
         }
-        sceneEdges.push({
-          id: valueName === null ? src + '__' + tgt : src + '__' + tgt + '__' + valueName,
-          source: src,
-          target: tgt,
-          data: {
-            edgeType: irEdge.edge_type,
-            valueName: valueName,
-            label: (irEdge.label === undefined ? null : irEdge.label),
-            exclusive: !!irEdge.exclusive,
-            forceFeedback: !!irEdge.is_back_edge,
-          },
-          hidden: !visibleIds[src] || !visibleIds[tgt],
-        });
       }
     }
 

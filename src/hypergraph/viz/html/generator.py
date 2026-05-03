@@ -130,7 +130,7 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
         body {{ margin: 0; overflow: hidden; background: transparent; color: #e5e7eb; font-family: 'Inter', system-ui, -apple-system, sans-serif; }}
         .react-flow__attribution {{ display: none; }}
         #root {{ height: 100vh; width: 100vw; background: transparent; display: flex; align-items: center; justify-content: center; }}
-        #fallback {{ font-size: 13px; letter-spacing: 0.4px; color: #94a3b8; }}
+        #boot-message {{ font-size: 13px; letter-spacing: 0.4px; color: #94a3b8; }}
 
         /* Canvas Outline */
         .canvas-outline {{
@@ -165,12 +165,12 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
 </head>
 <body>
   <div id="root">
-    <div id="fallback">Rendering interactive view…</div>
+    <div id="boot-message">Rendering interactive view…</div>
   </div>
   <div class="canvas-outline"></div>
   <script>
     window.onerror = function(message, source, lineno, colno, error) {{
-      var el = document.getElementById("fallback");
+      var el = document.getElementById("boot-message");
       if (el) {{
         el.textContent = "Viz error: " + message + (source ? " (" + source + ":" + lineno + ")" : "");
         el.style.color = "#f87171";
@@ -195,7 +195,7 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
       var missing = requiredModules.filter(function(m) {{ return !window[m]; }});
 
       if (missing.length > 0) {{
-        var el = document.getElementById("fallback");
+        var el = document.getElementById("boot-message");
         if (el) {{
           el.innerHTML = '<div style="display: flex; flex-direction: column; gap: 8px; max-width: 80%;">' +
             '<div style="color: #f87171; font-family: monospace; user-select: text; background: #2a1b1b; padding: 12px; border-radius: 4px;">Missing modules: ' + missing.join(', ') + '</div>' +
@@ -210,7 +210,7 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
         window.HypergraphViz.init();
       }} catch(err) {{
         console.error('Visualization initialization error:', err);
-        var el = document.getElementById("fallback");
+        var el = document.getElementById("boot-message");
         if (el) {{
           el.innerHTML = '<div style="display: flex; flex-direction: column; gap: 8px; max-width: 80%;">' +
             '<div style="color: #f87171; font-family: monospace; user-select: text; background: #2a1b1b; padding: 12px; border-radius: 4px;">' + (err && err.message ? err.message : err) + '</div>' +

@@ -29,39 +29,30 @@ scene client-side without a kernel round-trip.
 2. Section 7 (App in `viz.js`) calls `buildInitialScene` on every
    expansion / separateOutputs / showInputs change.
 3. `layoutGraph()` runs dagre for node positioning + native edge routing.
-4. `performRecursiveLayout()` handles expanded containers (recursive dagre passes).
-5. `addConvergenceStems()` inserts merge/diverge points for shared endpoints.
-6. `CustomEdge` renders B-spline curves via `curveBasis()`.
+4. `performCompoundLayout()` handles expanded containers with a compound dagre pass.
+5. `CustomEdge` renders B-spline curves through dagre-provided points via `curveBasis()`.
 
 **Mermaid (untouched)**: `mermaid.py` still consumes the legacy
 `renderer/nodes.py` + `renderer/scope.py` helpers. PR #88 keeps those modules
 alive so Mermaid output is byte-identical; migration to the IR path is
 out of scope.
 
-## Single-File Architecture (viz.js)
+## Viz.js Architecture
 
-All JS is in one file (`assets/viz.js`) organized in 7 sections:
+`assets/viz.js` is organized in 7 sections:
 1. **Constants + Helpers** — layout constants, node-type offsets
 2. **Theme** — host theme detection, light/dark switching
-3. **Layout** — `layoutGraph()`, `performRecursiveLayout()`, feedback edge routing
+3. **Layout** — `layoutGraph()`, `performCompoundLayout()`, feedback edge routing
 4. **Edge Component** — `curveBasis()`, `CustomEdge`, label placement
 5. **Node Components** — `CustomNode` for all node types
-6. **Controls** — zoom/fit/toggle buttons, `DevEdgeControls` (DialKit)
+6. **Controls** — zoom/fit/toggle buttons, `DevLayoutControls` (DialKit)
 7. **App + Init** — state management, `useLayout` hook, rendering
 
-## Edge Routing Modes
+## Edge Routing
 
-Controlled by `EDGE_CONVERGE_TO_CENTER` flag (default: `false`):
-
-**Center mode** (`convergeToCenter=true`):
-- All edge endpoints forced to node center-x
-- `addConvergenceStems()` inserts V-shape merge points for targets with 2+ incoming edges
-- `EDGE_CONVERGENCE_OFFSET` controls stem height (default: 20px)
-
-**Dagre mode** (`convergeToCenter=false`):
 - Edge endpoints use dagre's native x-positions (spread across node width)
 - Endpoints clamped within padded region: `EDGE_ENDPOINT_PADDING` (default: 0.25, fraction of node width)
-- No convergence stems needed
+- Do not add Hypergraph-side merge stems or synthetic routed paths; dagre owns edge routing.
 
 **BRANCH/END exception**: Always use center-x regardless of mode (diamond has single exit point at bottom vertex).
 
@@ -135,9 +126,8 @@ Offsets defined in viz.js Section 1:
 ## Dev Controls (DialKit)
 
 Dev-only controls visible when `window.__hypergraph_debug_viz = true`:
-- Toggle: "Converge to center" (switches edge routing mode)
-- Slider: "Stem height" (convergence offset, 0-60px)
-- Slider: "Endpoint padding" (dagre mode only, 0–0.45 as a fraction of node width; overrides `EDGE_ENDPOINT_PADDING` default of 0.25)
+- Slider: "Endpoint padding" (0–0.45 as a fraction of node width; overrides `EDGE_ENDPOINT_PADDING` default of 0.25)
+- Slider: "Vertical gap" (dagre rank separation)
 
 Gallery page (`scripts/render_notebook_viz.py`) has a DialKit bar that broadcasts settings to all iframes via `postMessage`. Viz.js listens for `{ type: 'hypergraph-set-options', options: {...} }` messages.
 
@@ -161,7 +151,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 | Edge points to container when expanded | `target_when_expanded` not populated in IR | `renderer/ir_builder.py` |
 | Input appears outside expanded container | `ownerContainer` not derived from `deepest_owner` | `scene_builder.py` (Python + JS) |
 | Edge starts/ends with visible gap | wrong node-type offset | viz.js Section 1 |
-| Incoming edges don't merge | convergence stem not inserted | `addConvergenceStems()` |
+| Incoming edges overlap unexpectedly | dagre route or endpoint padding needs inspection | `assets/viz.js` |
 | Branch labels at wrong position | `outgoingMidpointDistance` heuristic | viz.js Section 4 |
 | Python and JS scene differ | scene_builder.py / scene_builder.js out of sync | tests/viz/test_scene_builder.py + Stage 3 parity |
 

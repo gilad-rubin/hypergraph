@@ -12,6 +12,8 @@ from typing import Any
 import networkx as nx
 
 from hypergraph.viz._common import (
+    _compute_mutex_groups,
+    _is_pair_mutex,
     build_output_to_producer_map,
     build_param_to_consumer_map,
     compute_exclusive_data_edges,
@@ -29,10 +31,38 @@ from hypergraph.viz.renderer.nodes import (
 from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
     find_internal_producer_for_output,
+    find_internal_producers_for_output,
 )
 
 _SYNTHETIC_NODE_PREFIXES = ("input_", "input_group_", "data_")
 _SYNTHETIC_NODE_IDS = {"__start__", "__end__"}
+
+
+def _matches_branch_target(actual_target: str, branch_target: str) -> bool:
+    """Match branch metadata targets against root or hierarchical node IDs."""
+    return actual_target == branch_target or actual_target.endswith(f"/{branch_target}")
+
+
+def _add_ifelse_label(rf_edge: dict[str, Any], branch_data: dict[str, Any], target: str) -> None:
+    """Attach True/False labels for ifelse control edges."""
+    if not branch_data or "when_true" not in branch_data:
+        return
+    if _matches_branch_target(target, branch_data["when_true"]):
+        rf_edge["data"]["label"] = "True"
+    elif _matches_branch_target(target, branch_data["when_false"]):
+        rf_edge["data"]["label"] = "False"
+
+
+def _producer_pair_is_mutex(
+    producers: list[str],
+    mutex_groups: list[list[set[str]]],
+) -> bool:
+    """Whether any producer pair is in exclusive branches."""
+    for index, source in enumerate(producers):
+        for other in producers[index + 1 :]:
+            if _is_pair_mutex(source, other, mutex_groups):
+                return True
+    return False
 
 
 def _is_synthetic_node_id(node_id: str) -> bool:
@@ -302,11 +332,7 @@ def add_merged_output_edges(
 
             original_source_attrs = flat_graph.nodes.get(source, {})
             branch_data = original_source_attrs.get("branch_data", {})
-            if branch_data and "when_true" in branch_data:
-                if target == branch_data["when_true"]:
-                    rf_edge["data"]["label"] = "True"
-                elif target == branch_data["when_false"]:
-                    rf_edge["data"]["label"] = "False"
+            _add_ifelse_label(rf_edge, branch_data, target)
 
             edges.append(rf_edge)
             continue
@@ -413,6 +439,7 @@ def add_separate_output_edges(
     param_to_consumers = build_param_to_consumer_map(flat_graph, expansion_state, use_deepest=True)
     if exclusive_data_edges is None:
         exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
+    mutex_groups = _compute_mutex_groups(flat_graph)
 
     # 1. Add edges from function nodes to their DATA nodes
     for node_id, attrs in flat_graph.nodes(data=True):
@@ -472,33 +499,6 @@ def add_separate_output_edges(
                     if value_name not in allowed_outputs:
                         continue
 
-                if is_source_container and is_source_expanded:
-                    mapped_producer = output_to_producer.get(value_name)
-                    if mapped_producer and mapped_producer != source and is_descendant_of(mapped_producer, source, flat_graph):
-                        actual_producer = mapped_producer
-                    else:
-                        actual_producer = source
-                    data_value = value_name
-                    if actual_producer == source:
-                        internal_producer = find_internal_producer_for_output(source, value_name, flat_graph, expansion_state)
-                        if internal_producer:
-                            actual_producer = internal_producer
-                            internal_outputs = flat_graph.nodes[actual_producer].get("outputs", ())
-                            internal_value = value_name
-                            for out in internal_outputs:
-                                if out in value_name or value_name in out:
-                                    internal_value = out
-                                    break
-                            data_value = internal_value
-                    data_source = actual_producer
-                    if not is_data_node_visible(data_source, data_value, flat_graph, expansion_state):
-                        continue
-                    data_node_id = f"data_{data_source}_{data_value}"
-                else:
-                    if not is_data_node_visible(source, value_name, flat_graph, expansion_state):
-                        continue
-                    data_node_id = f"data_{source}_{value_name}"
-
                 actual_target = target
                 target_attrs = flat_graph.nodes.get(target, {})
                 is_target_container = target_attrs.get("node_type") == "GRAPH"
@@ -513,23 +513,47 @@ def add_separate_output_edges(
                         if entrypoints:
                             actual_target = entrypoints[0]
 
-                edge_id = f"e_{data_node_id}_to_{actual_target}"
+                source_output_pairs: list[tuple[str, str]]
+                if is_source_container and is_source_expanded:
+                    source_output_pairs = find_internal_producers_for_output(source, value_name, flat_graph, expansion_state)
+                    if not source_output_pairs:
+                        mapped_producer = output_to_producer.get(value_name)
+                        if mapped_producer and mapped_producer != source and is_descendant_of(mapped_producer, source, flat_graph):
+                            source_output_pairs = [(mapped_producer, value_name)]
+                        else:
+                            source_output_pairs = [(source, value_name)]
+                else:
+                    source_output_pairs = [(source, value_name)]
+
+                source_output_pairs = [
+                    (data_source, data_value)
+                    for data_source, data_value in source_output_pairs
+                    if is_data_node_visible(data_source, data_value, flat_graph, expansion_state)
+                ]
+                if not source_output_pairs:
+                    continue
 
                 is_exclusive = (source, target, value_name) in exclusive_data_edges
-                edges.append(
-                    {
-                        "id": edge_id,
-                        "source": data_node_id,
-                        "target": actual_target,
-                        "animated": False,
-                        "style": {"stroke": "#64748b", "strokeWidth": 2},
-                        "data": {
-                            "edgeType": "data",
-                            "valueName": value_name,
-                            "exclusive": is_exclusive,
-                        },
-                    }
-                )
+                if not is_exclusive and len(source_output_pairs) > 1:
+                    is_exclusive = _producer_pair_is_mutex([producer for producer, _ in source_output_pairs], mutex_groups)
+
+                for data_source, data_value in source_output_pairs:
+                    data_node_id = f"data_{data_source}_{data_value}"
+                    edge_id = f"e_{data_node_id}_to_{actual_target}"
+                    edges.append(
+                        {
+                            "id": edge_id,
+                            "source": data_node_id,
+                            "target": actual_target,
+                            "animated": False,
+                            "style": {"stroke": "#64748b", "strokeWidth": 2},
+                            "data": {
+                                "edgeType": "data",
+                                "valueName": value_name,
+                                "exclusive": is_exclusive,
+                            },
+                        }
+                    )
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
             edge_id = f"e_ord_{source}_{target}"
@@ -583,11 +607,7 @@ def add_separate_output_edges(
             if edge_type == "control":
                 source_attrs = flat_graph.nodes.get(source, {})
                 branch_data = source_attrs.get("branch_data", {})
-                if branch_data and "when_true" in branch_data:
-                    if target == branch_data["when_true"]:
-                        rf_edge["data"]["label"] = "True"
-                    elif target == branch_data["when_false"]:
-                        rf_edge["data"]["label"] = "False"
+                _add_ifelse_label(rf_edge, branch_data, target)
 
             edges.append(rf_edge)
 

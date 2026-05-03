@@ -407,7 +407,7 @@ def get_value_source(
     # restored its private input under the dot-pathed address; resolve to the
     # canonical key so the lookup matches the readiness/staleness checks.
     state_addr = address_for_node_input(node, param, state.values)
-    if state_addr in state.values:
+    if state_addr in state.values and _state_value_satisfies_input(param, node, graph, state, state_addr):
         return (ValueSource.EDGE, state.values[state_addr])
 
     # 2. Input value (from run() call). The address may be dot-pathed when
@@ -897,9 +897,86 @@ def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if a single input parameter is available."""
     addr = address_for_node_input(node, param, state.values, graph.inputs.bound)
-    if addr in state.values or addr in graph.inputs.bound:
+    if addr in state.values and _state_value_satisfies_input(param, node, graph, state, addr):
+        return True
+    if addr in graph.inputs.bound:
         return True
     return bool(node.has_default_for(param))
+
+
+def _state_value_satisfies_input(
+    param: str,
+    node: HyperNode,
+    graph: Graph,
+    state: GraphState,
+    state_addr: str | None = None,
+) -> bool:
+    """Whether the current state value is a valid source for this node input.
+
+    For inputs with declared data producers, the current value must either be
+    the original graph input seed or the current output from one of those
+    producers. This prevents explicit-edge graphs from consuming an identically
+    named value produced by an undeclared branch.
+    """
+    producers = graph.input_data_producers.get(node.name, {}).get(param)
+    if not producers:
+        return True
+
+    value_addr = state_addr or param
+    current_version = state.versions.get(value_addr, 0)
+    if _version_produced_by(param, current_version, producers, state):
+        return True
+
+    if not _version_produced_by_any_node(param, current_version, state):
+        return value_addr in graph.inputs.all or param in graph.inputs.all or not any(producer in state.node_executions for producer in producers)
+
+    return False
+
+
+def _version_produced_by(
+    param: str,
+    version: int,
+    producers: frozenset[str],
+    state: GraphState,
+) -> bool:
+    """Return whether ``version`` of ``param`` came from an eligible producer."""
+    for producer in producers:
+        execution = state.node_executions.get(producer)
+        if execution is None:
+            continue
+        if execution.output_versions.get(param) == version:
+            return True
+        if _unversioned_execution_can_own_value(param, producer, state):
+            return True
+    return False
+
+
+def _version_produced_by_any_node(
+    param: str,
+    version: int,
+    state: GraphState,
+) -> bool:
+    """Return whether ``version`` of ``param`` was written by any executed node."""
+    return any(
+        execution.output_versions.get(param) == version or _unversioned_execution_can_own_value(param, node_name, state)
+        for node_name, execution in state.node_executions.items()
+    )
+
+
+def _unversioned_execution_can_own_value(param: str, node_name: str, state: GraphState) -> bool:
+    """Backward-compat ownership check for executions without output_versions."""
+    execution = state.node_executions.get(node_name)
+    if execution is None or param not in execution.outputs or param in execution.output_versions:
+        return False
+
+    seen = False
+    for executed_name, executed in state.node_executions.items():
+        if executed_name == node_name:
+            seen = True
+            continue
+        if seen and param in executed.outputs:
+            return False
+    return True
 
 
 def _needs_execution(node: HyperNode, graph: Graph, state: GraphState) -> bool:
