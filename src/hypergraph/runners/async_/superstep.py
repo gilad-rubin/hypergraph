@@ -104,9 +104,7 @@ async def run_superstep_async(
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
         # Record input versions under the same addressed key the staleness
         # check reads -- dotted for a GraphNode's private input, flat otherwise.
-        input_versions = {
-            (addr := address_for_node_input(node, param, state.versions)): state.versions.get(addr, 0) for param in node.inputs
-        }
+        input_versions = {(addr := address_for_node_input(node, param, state.versions)): state.versions.get(addr, 0) for param in node.inputs}
         wait_for_versions = {name: state.get_version(name) for name in node.wait_for}
 
         # Check cache before execution

@@ -72,9 +72,7 @@ def run_superstep_sync(
 
         # Record input versions under the same addressed key the staleness
         # check reads -- dotted for a GraphNode's private input, flat otherwise.
-        input_versions = {
-            (addr := address_for_node_input(node, param, state.versions)): state.versions.get(addr, 0) for param in node.inputs
-        }
+        input_versions = {(addr := address_for_node_input(node, param, state.versions)): state.versions.get(addr, 0) for param in node.inputs}
 
         # Check cache before execution
         cache_key, cached_outputs = ("", None)

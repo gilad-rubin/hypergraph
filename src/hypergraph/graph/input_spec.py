@@ -449,10 +449,7 @@ def _bind_conflict_message(
             shadowers.append(f"{n_name!r} (produces {leaf!r})")
 
     scope_text = f" at scope {graph_name!r}" if graph_name else " at this scope"
-    if shadowers:
-        shadow_text = f"by node {' / '.join(shadowers)}"
-    else:
-        shadow_text = f"by '{leaf}' declared at this scope"
+    shadow_text = f"by node {' / '.join(shadowers)}" if shadowers else f"by '{leaf}' declared at this scope"
 
     return (
         f"Bind on {full_path!r} is shadowed{scope_text} {shadow_text}. "

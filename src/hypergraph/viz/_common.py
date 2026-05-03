@@ -263,7 +263,7 @@ def resolve_dot_path_consumers(
         attrs = flat_graph.nodes.get(candidate)
         if attrs is None or attrs.get("node_type") != "GRAPH":
             return []  # unresolvable: malformed path
-        rest_local = ".".join(parts[idx + 1:])
+        rest_local = ".".join(parts[idx + 1 :])
         if rest_local not in attrs.get("inputs", ()):
             return []  # container does not declare this scope-local input
         consumers.append(candidate)
@@ -277,9 +277,7 @@ def resolve_dot_path_consumers(
     for node_id, attrs in flat_graph.nodes(data=True):
         if leaf not in attrs.get("inputs", ()):
             continue
-        if current_scope is None:
-            consumers.append(node_id)
-        elif is_descendant_of(node_id, current_scope, flat_graph):
+        if current_scope is None or is_descendant_of(node_id, current_scope, flat_graph):
             consumers.append(node_id)
 
     # Deduplicate while preserving order.
