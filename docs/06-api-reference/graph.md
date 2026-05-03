@@ -291,7 +291,7 @@ Hide type hints when you only want names:
 print(g.describe(show_types=False))
 ```
 
-### `bind(**values) -> Graph`
+### `bind(values=None, /, **kwargs) -> Graph`
 
 Pre-fill input parameters with values. Returns a new Graph (immutable pattern).
 
@@ -308,12 +308,61 @@ print(g.inputs.required)  # ('x',)
 ```
 
 **Args:**
-- `**values`: Named values to bind. Keys must be graph inputs in the current scope.
+- `values` (dict, positional-only): Optional mapping of input names to values. Supports dot-paths for nested subgraph inputs.
+- `**kwargs`: Named values to bind. Keys must be graph inputs in the current scope. A nested-dict value addresses a nested `GraphNode`'s private inputs.
 
 **Returns:** New Graph with bindings applied
 
 **Raises:**
-- `ValueError` - If binding a name not recognized as a graph input in the current scope
+- `ValueError` - If binding a name not recognized as a graph input in the current scope, or if the same key is provided in both the positional dict and as a kwarg.
+- `GraphConfigError` - At graph-construction time, if an inner subgraph's bind is shadowed by a leaf declared at an ancestor scope (see below).
+
+#### Addressing nested subgraph inputs
+
+A nested `GraphNode`'s private inputs (inputs not declared at the parent scope) are addressed under the `GraphNode`'s name. `bind()` accepts three equivalent forms:
+
+```python
+@node(output_name="result")
+def inner_func(x: int) -> int:
+    return x * 2
+
+inner = Graph([inner_func], name="inner")
+outer = Graph([inner.as_node()], name="outer")
+
+# 1. Positional dict, dot-path
+outer.bind({"inner.x": 5})
+
+# 2. Kwarg, nested-dict
+outer.bind(inner={"x": 5})
+
+# 3. Bind on the inner graph before composing
+Graph([inner.bind(x=5).as_node()], name="outer")
+```
+
+All three produce the same `outer.inputs.bound == {"inner.x": 5}`.
+
+For multi-level nesting, dot-paths chain (`"middle.inner.x"`) and nested-dicts nest (`{"middle": {"inner": {"x": 5}}}`).
+
+#### Bind-conflict validation
+
+If you bind an inner subgraph input whose leaf name is also declared at any ancestor scope, graph construction raises `GraphConfigError`. At run time, the parent scope's value would silently override the bind, so the conflict is reported up front:
+
+```python
+@node(output_name="result")
+def inner_func(x: int) -> int:
+    return x * 2
+
+@node(output_name="final")
+def outer_func(result: int, x: int) -> int:  # outer also consumes 'x'
+    return result + x
+
+inner = Graph([inner_func], name="inner").bind(x=5)
+Graph([inner.as_node(), outer_func], name="outer")
+# GraphConfigError: Bind on 'inner.x' is shadowed at scope 'outer' by node
+# 'outer_func' (consumes 'x'). At run time the parent's value would silently
+# override the bind. Fix: either remove the bind on the inner subgraph, or
+# rename the input via with_inputs(...) so it no longer matches the ancestor.
+```
 
 #### Shared State and Non-Copyable Objects
 

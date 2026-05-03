@@ -47,7 +47,8 @@ class TestMemoryCheckpointer:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        result = await runner.run(outer, {"x": 5}, workflow_id="nested-memory")
+        # x is private to "embed" GraphNode → addressed via dot-path
+        result = await runner.run(outer, {"embed.x": 5}, workflow_id="nested-memory")
 
         assert result["tripled"] == 30
 

@@ -56,13 +56,21 @@ class IRExternalInput:
     """An external-input group. Single-param groups render as INPUT;
     multi-param groups (e.g. one consumer takes both `alpha` and
     `beta`) render as INPUT_GROUP with a stable id like
-    `input_group_alpha_beta`."""
+    `input_group_alpha_beta`.
 
-    params: tuple[str, ...]  # one or more param names
+    ``params`` stores the user-visible leaf names (the lexical-scope leaf
+    of dot-pathed external inputs from issue #94). ``id_segments`` are
+    the corresponding identifier-safe segments used to construct the
+    synthetic ``input_*`` node id; they are equal to ``params`` except
+    when colliding leaf names force a fallback to the full dot-path.
+    """
+
+    params: tuple[str, ...]  # display labels (leaf segments)
     deepest_owner: str | None = None
     consumers: tuple[str, ...] = ()
     type_hints: tuple[str | None, ...] = ()  # one per param
     is_bound: bool = False
+    id_segments: tuple[str, ...] = ()  # one per param; falls back to params if empty
 
     @property
     def name(self) -> str:
@@ -72,6 +80,21 @@ class IRExternalInput:
     @property
     def is_group(self) -> bool:
         return len(self.params) > 1
+
+    @property
+    def synthetic_id(self) -> str:
+        """Stable scene-graph id of the INPUT/INPUT_GROUP node.
+
+        Uses ``id_segments`` only when its length matches ``params`` -- mirrors
+        the JS twin (assets/scene_builder.js) which guards on the same length
+        check. Without this guard, a Python/JS payload with ``id_segments`` of
+        a different length would diverge: Python would use ``id_segments``
+        while JS falls back to ``params``, producing mismatched scene IDs.
+        """
+        segs = self.id_segments if self.id_segments and len(self.id_segments) == len(self.params) else self.params
+        if len(segs) == 1:
+            return f"input_{segs[0]}"
+        return f"input_group_{'_'.join(segs)}"
 
 
 # Bump when the IR shape changes in a way old scene_builders can't read.

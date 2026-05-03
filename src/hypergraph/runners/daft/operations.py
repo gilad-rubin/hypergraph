@@ -246,8 +246,18 @@ class GraphNodeOperation(DaftOperation):
     def apply(self, df: daft.DataFrame) -> daft.DataFrame:
         import daft as daft_mod
 
+        from hypergraph.runners._shared.helpers import address_for_node_input
+
         node = self.node
-        input_cols = self.input_columns
+        # Resolve each public input to the actual DataFrame column. Under
+        # lexical scope a private GraphNode input may arrive under its
+        # dot-pathed address; address_for_node_input picks whichever column
+        # the schema actually has.
+        df_columns = {name: None for name in df.column_names}
+        param_to_col = {p: address_for_node_input(node, p, df_columns) for p in self.input_columns}
+        col_names_for_df = list(param_to_col.values())
+        col_names_for_inner = list(param_to_col.keys())
+
         output_col = self.output_columns[0] if len(self.output_columns) == 1 else f"_pack_{node.name}"
         multi_output = len(self.output_columns) > 1
         cache = self.cache
@@ -256,7 +266,11 @@ class GraphNodeOperation(DaftOperation):
         inner_graph = node.graph
         # map_config is (params, mode, error_handling) or None
         map_config = node.map_config
-        col_names = input_cols  # capture for closure
+
+        # Capture for the closure: build inner_inputs from positional args
+        # using the GraphNode's public input names (not the DataFrame column
+        # names, which may be dot-pathed).
+        inner_param_names = col_names_for_inner
 
         @daft_mod.func(return_dtype=daft_mod.DataType.python())
         def execute_graph(*args: Any) -> Any:
@@ -266,7 +280,7 @@ class GraphNodeOperation(DaftOperation):
             )
             from hypergraph.runners.sync.runner import SyncRunner
 
-            raw_inputs = {**bound, **dict(zip(col_names, args, strict=True))}
+            raw_inputs = {**bound, **dict(zip(inner_param_names, args, strict=True))}
             # Translate renamed input keys back to original inner graph names
             inner_inputs = map_inputs_to_func_params(node, raw_inputs)
             runner = SyncRunner(cache=cache)
@@ -299,7 +313,7 @@ class GraphNodeOperation(DaftOperation):
                     return result.values
                 return next(iter(result.values.values()))
 
-        col_refs = [df[c] for c in input_cols]
+        col_refs = [df[c] for c in col_names_for_df]
         df = df.with_column(output_col, execute_graph(*col_refs))
 
         if multi_output:
@@ -323,11 +337,22 @@ def create_operation(
     """Route a node to the appropriate DaftOperation class."""
     from hypergraph.nodes.function import FunctionNode
     from hypergraph.nodes.graph_node import GraphNode
+    from hypergraph.runners._shared.helpers import address_for_node_input
 
-    # Determine which bound values apply to this node
-    node_bound = {k: v for k, v in bound_values.items() if k in node.inputs}
+    # Determine which bound values apply to this node. For a GraphNode private
+    # input, bound_values may be keyed by dot-path; resolve to the canonical
+    # address (matching the sync/async runners) and store under the flat param
+    # name the inner node expects.
+    node_bound: dict[str, Any] = {}
+    for param in node.inputs:
+        addr = address_for_node_input(node, param, bound_values)
+        if addr in bound_values:
+            node_bound[param] = bound_values[addr]
 
-    # Determine input columns (those not provided by bound values)
+    # Determine input columns (those not provided by bound values). For
+    # GraphNode private inputs the actual DataFrame column may be either flat
+    # or dot-pathed depending on how the user addressed the input -- the
+    # GraphNodeOperation resolves at apply() time once the schema is known.
     input_cols = [p for p in node.inputs if p not in node_bound]
     output_cols = list(node.data_outputs)
 

@@ -39,8 +39,9 @@ class TestValueSourceDetection:
         graph = Graph([process]).bind(x=99)
         runner = SyncRunner()
 
-        # Provided value should override both binding and default
-        result = runner.run(graph, {"x": 42})
+        # Provided value should override both binding and default (warning expected).
+        with pytest.warns(UserWarning, match="(?i)override"):
+            result = runner.run(graph, {"x": 42})
         assert result["result"] == 42
 
     def test_bound_value_source(self):
@@ -102,9 +103,10 @@ class TestNonCopyableBoundValues:
         # Use as node in outer graph
         outer_graph = Graph([inner_graph.as_node()], name="outer")
 
-        # Should NOT raise error about deep-copy failure
+        # Should NOT raise error about deep-copy failure.
+        # query is private to inner GraphNode → addressed via dot-path
         runner = SyncRunner()
-        result = runner.run(outer_graph, {"query": "test"})
+        result = runner.run(outer_graph, {"inner.query": "test"})
 
         assert result["result"] == "Used test"
 

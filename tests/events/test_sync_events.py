@@ -285,7 +285,8 @@ class TestNestedGraphEvents:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        result = runner.run(outer, {"x": 5}, event_processors=[lp])
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": 5}, event_processors=[lp])
 
         assert result["final"] == 11
 
@@ -309,7 +310,8 @@ class TestNestedGraphEvents:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        runner.run(outer, {"x": 5}, event_processors=[lp])
+        # x is private to inner GraphNode → addressed via dot-path
+        runner.run(outer, {"inner.x": 5}, event_processors=[lp])
 
         run_starts = lp.of_type(RunStartEvent)
         assert len(run_starts) == 2
@@ -503,7 +505,8 @@ class TestDeeplyNestedGraph:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        result = runner.run(outer, {"x": 3}, event_processors=[lp])
+        # x is private through middle.inner GraphNode chain
+        result = runner.run(outer, {"middle.inner.x": 3}, event_processors=[lp])
 
         assert result["final"] == 7  # 3 * 2 + 1
 
@@ -528,7 +531,8 @@ class TestDeeplyNestedGraph:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        runner.run(outer, {"x": 3}, event_processors=[lp])
+        # x is private through middle.inner GraphNode chain
+        runner.run(outer, {"middle.inner.x": 3}, event_processors=[lp])
 
         run_starts = lp.of_type(RunStartEvent)
         run_ids = [s.run_id for s in run_starts]
@@ -550,7 +554,14 @@ class TestMapWithNestedError:
         runner = SyncRunner()
         lp = ListProcessor()
 
-        results = runner.map(graph, {"x": [1, 2, 3]}, map_over="x", error_handling="continue", event_processors=[lp])
+        # x is private to inner GraphNode → addressed via dot-path; map_over uses that name
+        results = runner.map(
+            graph,
+            {"inner.x": [1, 2, 3]},
+            map_over="inner.x",
+            error_handling="continue",
+            event_processors=[lp],
+        )
 
         # run() catches exceptions and returns RunResult(status=FAILED)
         # so map completes but some results are failed

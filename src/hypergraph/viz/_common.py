@@ -191,6 +191,105 @@ def enumerate_valid_expansion_states(
 # =============================================================================
 
 
+def external_input_display_name(param: str) -> str:
+    """Return the leaf segment of a dot-pathed external-input name.
+
+    Synthetic INPUT-node IDs (``input_<name>``) and visible labels use the
+    leaf segment so users see ``x`` rather than ``middle.inner.x``. The
+    full dot path is an implementation detail of input addressing.
+    """
+    if not param:
+        return param
+    return param.rsplit(".", 1)[-1]
+
+
+def disambiguate_external_input_ids(
+    params_by_group: list[list[str]],
+) -> dict[str, str]:
+    """Map each dot-pathed external-input name to a unique synthetic id.
+
+    Returns ``{full_param: id_safe_name}``. When two groups would otherwise
+    collide on the leaf segment (e.g. ``A.x`` and ``B.x`` both map to
+    ``x``), each colliding name keeps its full dot-path so the synthetic
+    ``input_*`` node IDs stay unique.
+    """
+    leaf_counts: dict[str, int] = {}
+    for params in params_by_group:
+        for p in params:
+            leaf = external_input_display_name(p)
+            leaf_counts[leaf] = leaf_counts.get(leaf, 0) + 1
+
+    mapping: dict[str, str] = {}
+    for params in params_by_group:
+        for p in params:
+            leaf = external_input_display_name(p)
+            mapping[p] = leaf if leaf_counts.get(leaf, 0) == 1 else p
+    return mapping
+
+
+def resolve_dot_path_consumers(
+    param: str,
+    flat_graph: nx.DiGraph,
+) -> list[str]:
+    """Resolve a dot-pathed external-input name to its consumer chain.
+
+    External inputs surface in ``input_spec.required`` as dot paths like
+    ``"middle.inner.x"`` — meaning the GraphNode named ``middle`` (a child
+    of the current scope) has a subscope where ``inner.x`` is the further
+    address. This walks the chain and returns every consumer along it,
+    from outermost to innermost.
+
+    For a path ``head.rest`` at scope ``S``:
+    - the child of ``S`` named ``head`` (a GraphNode whose scope-local
+      inputs include ``rest``) is a consumer.
+    - recurse into that container with ``rest``.
+
+    At the leaf (no remaining dots), every descendant of the current
+    scope whose ``inputs`` contains the leaf name is added as a consumer.
+    Plain (non-dotted) params fall through to the same flat-graph
+    descendant scan, preserving legacy behavior.
+
+    Returns ``[]`` if the path cannot be resolved against the flat graph.
+    """
+    parts = param.split(".") if param else []
+    if not parts:
+        return []
+
+    # Walk down GraphNode chain for all but the final segment.
+    consumers: list[str] = []
+    current_scope: str | None = None  # None = root
+    for idx, head in enumerate(parts[:-1]):
+        candidate = f"{current_scope}/{head}" if current_scope is not None else head
+        attrs = flat_graph.nodes.get(candidate)
+        if attrs is None or attrs.get("node_type") != "GRAPH":
+            return []  # unresolvable: malformed path
+        rest_local = ".".join(parts[idx + 1 :])
+        if rest_local not in attrs.get("inputs", ()):
+            return []  # container does not declare this scope-local input
+        consumers.append(candidate)
+        current_scope = candidate
+
+    leaf = parts[-1]
+    # All descendants of current_scope (or all root nodes when None) whose
+    # inputs declare the leaf name are also consumers. For a single-segment
+    # plain param, current_scope is None and this becomes the legacy
+    # descendant scan.
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if leaf not in attrs.get("inputs", ()):
+            continue
+        if current_scope is None or is_descendant_of(node_id, current_scope, flat_graph):
+            consumers.append(node_id)
+
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for c in consumers:
+        if c not in seen:
+            seen.add(c)
+            deduped.append(c)
+    return deduped
+
+
 def build_param_to_consumer_map(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
@@ -217,6 +316,22 @@ def build_param_to_consumer_map(
             if param not in param_to_consumers:
                 param_to_consumers[param] = []
             param_to_consumers[param].append(node_id)
+
+    # External inputs surface as dot-pathed lexical addresses (issue #94).
+    # Resolve each one against the flat-graph hierarchy so the consumer
+    # chain (container -> ... -> leaf) is available for visibility-aware
+    # filtering below. Plain (non-dotted) params already match by exact
+    # name in the loop above and are skipped here.
+    input_spec = flat_graph.graph.get("input_spec", {})
+    for param in tuple(input_spec.get("required", ())) + tuple(input_spec.get("optional", ())):
+        if "." not in param:
+            continue
+        chain = resolve_dot_path_consumers(param, flat_graph)
+        if not chain:
+            continue
+        if not use_deepest:
+            chain = [c for c in chain if is_node_visible(c, flat_graph, expansion_state)]
+        param_to_consumers[param] = chain
 
     # Filter out containers that have deeper visible consumers
     for param, consumers in param_to_consumers.items():

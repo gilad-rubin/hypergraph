@@ -158,6 +158,72 @@ print(g.inputs.required)    # ('state', 'input')
 print(g.inputs.entrypoints) # {}
 ```
 
+### Nested Subgraph Inputs
+
+When a graph contains nested `GraphNode`s, each subgraph is its own scope. An input name not declared at a graph's scope — meaning no leaf node consumes or produces it, and no nested `GraphNode` exposes it as an output — is **private** to its subgraph and surfaces in the outer `InputSpec` under a dot-path: `"<graphnode_name>.<input>"`.
+
+This applies to both `inputs.required` and `inputs.bound`.
+
+```python
+from hypergraph import Graph, node
+
+@node(output_name="result")
+def inner_func(x: int) -> int:
+    return x * 2
+
+inner = Graph([inner_func], name="inner")
+outer = Graph([inner.as_node()], name="outer")
+
+print(outer.inputs.required)  # ('inner.x',)
+```
+
+Sibling subgraphs that share an input name stay independent — there is no merge:
+
+```python
+@node(output_name="out_a")
+def use_a(x: int) -> int:
+    return x + 1
+
+@node(output_name="out_b")
+def use_b(x: int) -> int:
+    return x * 10
+
+inner_a = Graph([use_a], name="A")
+inner_b = Graph([use_b], name="B")
+outer = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+
+print(outer.inputs.required)  # ('A.x', 'B.x')
+```
+
+Adding a leaf node at the outer scope that declares the same name links the two together — the inner `GraphNode`'s input auto-wires to the outer-scope name, and the dot-path goes away:
+
+```python
+@node(output_name="result")
+def inner_func(x: int) -> int:
+    return x * 2
+
+@node(output_name="final")
+def outer_func(result: int, x: int) -> int:  # outer also consumes 'x'
+    return result + x
+
+inner = Graph([inner_func], name="inner")
+outer = Graph([inner.as_node(), outer_func], name="outer")
+
+print(outer.inputs.required)  # ('x',) — outer 'x' feeds both leaves
+```
+
+A bound value on an inner subgraph surfaces under the same dot-path:
+
+```python
+inner = Graph([inner_func], name="inner").bind(x=5)
+outer = Graph([inner.as_node()], name="outer")
+
+print(outer.inputs.bound)     # {'inner.x': 5}
+print(outer.inputs.required)  # ()
+```
+
+If a `bind` on an inner subgraph would be shadowed by a leaf at any ancestor scope, graph construction fails with `GraphConfigError` at build time. See [Graph.bind](graph.md) for the addressing forms accepted by `bind()`.
+
 ### Scope Narrowing (Entrypoint and Select)
 
 `with_entrypoint()` and `select()` narrow which nodes are considered when computing InputSpec. Parameters from excluded nodes do not appear in `required`, `optional`, or `entrypoints`.

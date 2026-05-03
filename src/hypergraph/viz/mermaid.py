@@ -23,6 +23,8 @@ from hypergraph.viz._common import (
     build_output_to_producer_map,
     build_param_to_consumer_map,
     compute_exclusive_data_edges,
+    disambiguate_external_input_ids,
+    external_input_display_name,
     is_descendant_of,
     is_node_visible,
 )
@@ -769,18 +771,23 @@ def to_mermaid(
         set(shared_params),
         False,
     )
+    id_for_param = disambiguate_external_input_ids([list(g["params"]) for g in input_groups])
     if input_groups:
         lines.append("    %% Inputs")
     for group in input_groups:
         params = group["params"]
-        param_types = [format_type(_get_param_type(p, flat_graph)) for p in params]
-        label = _build_input_label(params, param_types, show_types)
+        # Display labels are scope-local leaf names; type lookup falls
+        # back to the leaf if the dot-pathed key has no entry.
+        display_params = [external_input_display_name(p) for p in params]
+        param_types = [format_type(_get_param_type(p, flat_graph) or _get_param_type(external_input_display_name(p), flat_graph)) for p in params]
+        label = _build_input_label(display_params, param_types, show_types)
 
         if len(params) == 1:
-            node_id = f"input_{params[0]}"
+            node_id = f"input_{id_for_param.get(params[0], display_params[0])}"
             node_type = "INPUT"
         else:
-            node_id = f"input_group_{'_'.join(params)}"
+            id_segs = [id_for_param.get(p, external_input_display_name(p)) for p in params]
+            node_id = f"input_group_{'_'.join(id_segs)}"
             node_type = "INPUT_GROUP"
 
         lines.append(_format_node(_sanitize_id(node_id), label, node_type))
@@ -856,7 +863,11 @@ def to_mermaid(
 
     for group in input_groups:
         params = group["params"]
-        input_node_id = f"input_{params[0]}" if len(params) == 1 else f"input_group_{'_'.join(params)}"
+        if len(params) == 1:
+            input_node_id = f"input_{id_for_param.get(params[0], external_input_display_name(params[0]))}"
+        else:
+            id_segs = [id_for_param.get(p, external_input_display_name(p)) for p in params]
+            input_node_id = f"input_group_{'_'.join(id_segs)}"
 
         targets = _get_input_targets(params, flat_graph, param_to_consumers, expansion_state)
         for tgt in targets:

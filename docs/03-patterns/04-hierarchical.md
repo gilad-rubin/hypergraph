@@ -150,11 +150,14 @@ evaluation = Graph([
     aggregate_metrics,
 ], name="evaluation")
 
-# Run evaluation: the cyclic conversation runs inside the DAG
+# Run evaluation: the cyclic conversation runs inside the DAG.
+# `query` is consumed only inside the nested `conversation` graph, so at the
+# evaluation scope it is private to that GraphNode — address it via the
+# dot-path. `history` is declared by `score_responses` here, so it stays flat.
 runner = AsyncRunner()
 report = await runner.run(evaluation, {
     "dataset_path": "test_conversations.json",
-    "query": "initial query",  # First query for each test case
+    "conversation.query": "initial query",  # First query for each test case
     "history": [],
 })
 ```
@@ -348,6 +351,109 @@ graph_node = my_graph.as_node().map_over("items")
 - Type annotations flow through for `strict_types` validation
 
 ---
+
+## Addressing private subgraph inputs
+
+Each subgraph is its own scope. An input that's only declared inside a nested `GraphNode` — not consumed or produced by any leaf at the parent scope, and not exposed as a `GraphNode` output there — stays **private** to that subgraph. The parent addresses it under the `GraphNode`'s name.
+
+This keeps composed graphs **refactor-safe**: renaming or rewiring inputs inside one subgraph never silently affects a sibling.
+
+### The mental model
+
+```python
+from hypergraph import Graph, SyncRunner, node
+
+@node(output_name="result")
+def double(x: int) -> int:
+    return x * 2
+
+inner = Graph([double], name="inner")
+outer = Graph([inner.as_node()], name="outer")
+
+# 'x' is only declared inside `inner` — at the outer scope it's private
+print(outer.inputs.required)  # ('inner.x',)
+```
+
+If a leaf at the outer scope also declares `x` (consumes or produces it), the inner `x` auto-links to it and the dot-path goes away. Lexical scope is doing exactly what local variable scoping does in Python.
+
+### Sibling isolation
+
+Two sibling subgraphs that share an input name remain independent:
+
+```python
+@node(output_name="out_a")
+def use_a(x: int) -> int:
+    return x + 1
+
+@node(output_name="out_b")
+def use_b(x: int) -> int:
+    return x * 10
+
+inner_a = Graph([use_a], name="A")
+inner_b = Graph([use_b], name="B")
+outer = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+
+print(outer.inputs.required)  # ('A.x', 'B.x')
+
+# A bind on A's input does NOT leak into B
+configured = outer.bind({"A.x": 1})
+print(configured.inputs.required)  # ('B.x',)
+print(configured.inputs.bound)     # {'A.x': 1}
+```
+
+### Four equivalent addressing forms
+
+For an input `x` private to a `GraphNode` named `inner`, all four forms below are equivalent:
+
+```python
+@node(output_name="result")
+def double(x: int) -> int:
+    return x * 2
+
+inner = Graph([double], name="inner")
+outer = Graph([inner.as_node()], name="outer")
+runner = SyncRunner()
+
+# 1. Run-time dot-path
+runner.run(outer, {"inner.x": 5})
+
+# 2. Run-time nested-dict
+runner.run(outer, {"inner": {"x": 5}})
+
+# 3. Build-time dot-path
+configured = outer.bind({"inner.x": 5})
+runner.run(configured, {})
+
+# 4. Build-time nested-dict kwarg
+configured = outer.bind(inner={"x": 5})
+runner.run(configured, {})
+```
+
+Binding directly on the inner graph (`Graph([inner.bind(x=5).as_node()], name="outer")`) before composing is also valid and produces the same `outer.inputs.bound == {"inner.x": 5}`.
+
+Use the dot-path form for single-key addressing; reach for the nested-dict form when you're grouping several private inputs of the same `GraphNode`.
+
+### Bind-conflict is caught at build time
+
+If you bind an input on an inner subgraph whose leaf name is also declared at any ancestor scope, graph construction raises `GraphConfigError` immediately:
+
+```python
+@node(output_name="result")
+def inner_func(x: int) -> int:
+    return x * 2
+
+@node(output_name="final")
+def outer_func(result: int, x: int) -> int:  # outer also consumes 'x'
+    return result + x
+
+inner = Graph([inner_func], name="inner").bind(x=5)
+Graph([inner.as_node(), outer_func], name="outer")
+# GraphConfigError: Bind on 'inner.x' is shadowed at scope 'outer' by node
+# 'outer_func' (consumes 'x'). At run time the parent's value would silently
+# override the bind. ...
+```
+
+The error names both the bind's full dot-path and the shadowing leaf so you can navigate straight to the source. Fix it by removing the inner bind, or by renaming the inner input via `with_inputs(...)` so it no longer collides.
 
 ## When to Use Hierarchical Composition
 

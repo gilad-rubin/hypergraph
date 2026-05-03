@@ -145,7 +145,7 @@ class TestNestedGraphCheckpointing:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        result = await runner.run(outer, {"x": 5}, workflow_id="nested")
+        result = await runner.run(outer, {"embed.x": 5}, workflow_id="nested")
 
         assert result["tripled"] == 30
 
@@ -162,7 +162,7 @@ class TestNestedGraphCheckpointing:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        await runner.run(outer, {"x": 5}, workflow_id="nested-step")
+        await runner.run(outer, {"embed.x": 5}, workflow_id="nested-step")
 
         steps = async_cp.steps("nested-step")
         embed_step = next(s for s in steps if s.node_name == "embed")
@@ -178,7 +178,8 @@ class TestNestedGraphCheckpointing:
         embed = inner.as_node(name="embed").map_over("x")
         outer = Graph([embed], name="outer")
 
-        await runner.run(outer, {"x": [1, 2]}, workflow_id="nested-map")
+        # x is private to "embed" GraphNode → addressed via dot-path
+        await runner.run(outer, {"embed.x": [1, 2]}, workflow_id="nested-map")
 
         runs = async_cp.runs()
         run_ids = {r.id for r in runs}
@@ -203,7 +204,8 @@ class TestNestedGraphCheckpointing:
         outer_node = mid.as_node(name="A")
         outer = Graph([outer_node], name="outer")
 
-        result = await runner.run(outer, {"x": 5}, workflow_id="deep")
+        # x is private through A.B GraphNode chain (mid_node B wraps inner C)
+        result = await runner.run(outer, {"A.B.x": 5}, workflow_id="deep")
         assert result["result"] == 6
 
         runs = async_cp.runs()
@@ -218,7 +220,8 @@ class TestNestedGraphCheckpointing:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        result = await runner.run(outer, {"x": 5})
+        # x is private to "embed" GraphNode → addressed via dot-path
+        result = await runner.run(outer, {"embed.x": 5})
         assert result["tripled"] == 30
         assert result.workflow_id is not None
 
@@ -233,9 +236,10 @@ class TestNestedGraphCheckpointing:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        await runner.run(outer, {"x": 5}, workflow_id="nested-root")
+        await runner.run(outer, {"embed.x": 5}, workflow_id="nested-root")
         fork_id, fork_cp = async_cp.fork_workflow("nested-root", workflow_id="nested-root-fork")
-        await runner.run(outer, {"x": 10}, checkpoint=fork_cp, workflow_id=fork_id)
+        # x is private to "embed" GraphNode → use nested-dict form (alternative to dot-path)
+        await runner.run(outer, {"embed": {"x": 10}}, checkpoint=fork_cp, workflow_id=fork_id)
 
         fork_run = async_cp.get_run("nested-root-fork")
         assert fork_run is not None
@@ -309,7 +313,7 @@ class TestSyncNestedCheckpointing:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        result = runner.run(outer, {"x": 5}, workflow_id="sync-nested")
+        result = runner.run(outer, {"embed.x": 5}, workflow_id="sync-nested")
         assert result["tripled"] == 30
 
         db = sync_cp._sync_db()
@@ -325,7 +329,7 @@ class TestSyncNestedCheckpointing:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node(name="embed"), triple], name="outer")
 
-        runner.run(outer, {"x": 5}, workflow_id="sync-step")
+        runner.run(outer, {"embed.x": 5}, workflow_id="sync-step")
 
         db = sync_cp._sync_db()
         step = db.execute(
@@ -341,7 +345,8 @@ class TestSyncNestedCheckpointing:
         embed = inner.as_node(name="embed").map_over("x")
         outer = Graph([embed], name="outer")
 
-        runner.run(outer, {"x": [1, 2]}, workflow_id="sync-map-nest")
+        # x is private to "embed" GraphNode → addressed via dot-path
+        runner.run(outer, {"embed.x": [1, 2]}, workflow_id="sync-map-nest")
 
         db = sync_cp._sync_db()
         runs = db.execute("SELECT id FROM runs ORDER BY id").fetchall()

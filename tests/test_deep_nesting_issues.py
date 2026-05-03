@@ -67,7 +67,9 @@ class TestFourLevelNestingSync:
         g1 = Graph(nodes=[g2.as_node(), level1], name="g1")
 
         runner = SyncRunner()
-        result = runner.run(g1, {"x": 0})
+        # x is consumed only by leaf level4 inside g4 (innermost), and is private
+        # at every level it bubbles through → addressed as g2.g3.g4.x
+        result = runner.run(g1, {"g2.g3.g4.x": 0})
 
         assert result["l4"] == 1
         assert result["l3"] == 2
@@ -89,7 +91,8 @@ class TestSameInnerGraphTwice:
 
         outer = Graph(nodes=[node_a, node_b])
         runner = SyncRunner()
-        result = runner.run(outer, {"a": 3, "b": 5})
+        # a/b are private to inner_a/inner_b GraphNodes → addressed via dot-path
+        result = runner.run(outer, {"inner_a.a": 3, "inner_b.b": 5})
 
         assert result["res_a"] == 6
         assert result["res_b"] == 10

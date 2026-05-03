@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+import warnings
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -274,6 +275,77 @@ class ValueSource(Enum):
     DEFAULT = "default"  # From function signature - MUST copy
 
 
+def address_for_node_input(
+    node: HyperNode,
+    param: str,
+    *namespaces: dict[str, Any],
+) -> str:
+    """Resolve which key (dotted or flat) addresses ``param`` of ``node``.
+
+    Under lexical scope, a GraphNode's private input may be addressed at the
+    parent scope as ``"<node.name>.<param>"`` (state.values, state.versions,
+    provided_values, graph.inputs.bound, and per-execution input_versions all
+    share this convention). When the dotted key is present in any provided
+    namespace, it wins; otherwise the flat name is the auto-link fallback.
+
+    Used both for reading (find-the-key) and recording (consistent-key) so
+    that whatever key gets written must be the same key that gets read.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    if isinstance(node, GraphNode):
+        dotted = f"{node.name}.{param}"
+        if any(dotted in ns for ns in namespaces):
+            return dotted
+    return param
+
+
+_SHORT_REPR_MAX_LEN = 40
+
+
+def short_value_repr(value: Any, max_len: int = _SHORT_REPR_MAX_LEN) -> str | None:
+    """Short repr for primitive values; None for everything else.
+
+    Single source of truth for inlining user-supplied values into error and
+    warning text. Returns a length-capped repr for bool/int/float/str/bytes/None,
+    and None for everything else (DataFrames, numpy arrays, custom classes) so
+    callers can fall back to a generic message rather than dumping or hitting an
+    expensive __repr__.
+    """
+    if value is None or isinstance(value, (bool, int, float, bytes, str)):
+        rep = repr(value)
+        return rep if len(rep) <= max_len else None
+    return None
+
+
+def warn_on_bind_overrides(graph: Graph, provided_values: dict[str, Any]) -> None:
+    """Emit a UserWarning for each provided value that overrides a bound value.
+
+    Fires uniformly regardless of whether the override address is flat or
+    dotted -- both surfaces share the same canonical form on graph.inputs.bound
+    and provided_values. For primitive bound/provided pairs the warning shows
+    both values; otherwise it stays generic. Dot-pathed addresses are annotated
+    with their owning subgraph for clarity.
+    """
+    from hypergraph.graph._helpers import describe_addressed_input
+
+    bound = graph.inputs.bound
+    for key, new_value in provided_values.items():
+        if key not in bound:
+            continue
+        old_value = bound[key]
+        if old_value is new_value:
+            continue
+        described = describe_addressed_input(key)
+        old_repr = short_value_repr(old_value)
+        new_repr = short_value_repr(new_value)
+        if old_repr is not None and new_repr is not None:
+            msg = f"Run value overrides bound value for {described} (address {key!r}): {old_repr} -> {new_repr}"
+        else:
+            msg = f"Run value overrides bound value for {described} (address {key!r})"
+        warnings.warn(msg, UserWarning, stacklevel=4)
+
+
 def _safe_deepcopy(value: Any, param_name: str = "<unknown>") -> Any:
     """Deep-copy a value, falling back gracefully for non-copyable objects.
 
@@ -331,20 +403,24 @@ def get_value_source(
     """
     from hypergraph.nodes.graph_node import GraphNode
 
-    # 1. Edge value (from upstream node output)
-    if param in state.values:
-        return (ValueSource.EDGE, state.values[param])
+    # 1. Edge / restored-state value. For a GraphNode, a checkpoint may have
+    # restored its private input under the dot-pathed address; resolve to the
+    # canonical key so the lookup matches the readiness/staleness checks.
+    state_addr = address_for_node_input(node, param, state.values)
+    if state_addr in state.values:
+        return (ValueSource.EDGE, state.values[state_addr])
 
-    # 2. Input value (from run() call)
-    if param in provided_values:
-        return (ValueSource.PROVIDED, provided_values[param])
+    # 2. Input value (from run() call). The address may be dot-pathed when
+    # this is a GraphNode's private input.
+    provided_addr = address_for_node_input(node, param, provided_values)
+    if provided_addr in provided_values:
+        return (ValueSource.PROVIDED, provided_values[provided_addr])
 
-    # 3. Bound value resolved at this graph boundary.
-    # graph.inputs.bound includes this graph's own bindings plus any unique,
-    # non-ambiguous nested GraphNode bindings that are intentionally exposed as
-    # outer defaults.
-    if param in graph.inputs.bound:
-        return (ValueSource.BOUND, graph.inputs.bound[param])
+    # 3. Bound value resolved at this graph boundary. Same addressing applies
+    # for graph.inputs.bound (dot-pathed for private subgraph inputs).
+    bound_addr = address_for_node_input(node, param, graph.inputs.bound)
+    if bound_addr in graph.inputs.bound:
+        return (ValueSource.BOUND, graph.inputs.bound[bound_addr])
 
     # 3b. For GraphNode: check if inner graph has it bound
     if isinstance(node, GraphNode):
@@ -820,15 +896,9 @@ def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
 
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if a single input parameter is available."""
-    # Value in state (from edge or initial input)
-    if param in state.values:
+    addr = address_for_node_input(node, param, state.values, graph.inputs.bound)
+    if addr in state.values or addr in graph.inputs.bound:
         return True
-
-    # Bound value in graph
-    if param in graph.inputs.bound:
-        return True
-
-    # Node has default for this parameter
     return bool(node.has_default_for(param))
 
 
@@ -899,8 +969,11 @@ def _is_stale(
             # Descendant Producer Rule: all producers are downstream (DAGs only)
             if param in downstream:
                 continue
-        current_version = state.get_version(param)
-        consumed_version = last_exec.input_versions.get(param, 0)
+        # Resolve the key the same way it was recorded -- dotted for a
+        # GraphNode's private input, flat otherwise.
+        addr = address_for_node_input(node, param, state.versions, last_exec.input_versions)
+        current_version = state.versions.get(addr, 0)
+        consumed_version = last_exec.input_versions.get(addr, 0)
         if current_version == consumed_version:
             continue
 

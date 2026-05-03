@@ -295,7 +295,8 @@ class TestSyncRunnerRun:
         graph = Graph([add]).bind(a=5, b=10)
         runner = SyncRunner()
 
-        result = runner.run(graph, {"a": 100, "b": 200})
+        with pytest.warns(UserWarning, match="(?i)override"):
+            result = runner.run(graph, {"a": 100, "b": 200})
 
         assert result["sum"] == 300
 
@@ -397,7 +398,7 @@ class TestSyncRunnerRun:
         outer = Graph([inner.as_node()])
         runner = SyncRunner()
 
-        result = runner.run(outer, {"x": 5})
+        result = runner.run(outer, {"inner.x": 5})
 
         assert result["doubled"] == 10
 
@@ -412,7 +413,7 @@ class TestSyncRunnerRun:
         )
         runner = SyncRunner()
 
-        result = runner.run(outer, {"x": 5, "b": 3})
+        result = runner.run(outer, {"inner.x": 5, "b": 3})
 
         assert result["sum"] == 13
 
@@ -423,7 +424,11 @@ class TestSyncRunnerRun:
         outer = Graph([middle.as_node()])
         runner = SyncRunner()
 
-        result = runner.run(outer, {"x": 5})
+        # `increment.with_inputs(x="doubled")` renames increment's parameter, so it
+        # consumes the output of `double` rather than an external "x". `double`
+        # (inside `innermost`) is the only consumer of external "x", so "x" is private
+        # to `innermost` within `middle`, and addressed from outer as "middle.innermost.x".
+        result = runner.run(outer, {"middle.innermost.x": 5})
 
         assert result["incremented"] == 11  # (5*2) + 1
 

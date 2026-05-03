@@ -22,6 +22,10 @@ rg -F -- '<old_value>' docs/ README.md examples/ notebooks/ src/hypergraph/
 **Scope:** docstrings, doc pages, README, examples, notebooks, `__init__.py` exports,
 viz/CLI output strings, error messages.
 
+**Note:** files under `examples/` are exercised by `tests/test_examples_*.py` via
+`runpy` — they're tests, not just docs. A behavior migration that updates tests
+must also update example scripts that hit the same code path.
+
 For public event changes, mirrors specifically include:
 - `src/hypergraph/events/__init__.py`
 - `src/hypergraph/__init__.py`
@@ -101,7 +105,8 @@ A single unstable dep can produce an exponentially-runaway state machine where e
 
 Before pushing or creating a PR:
 
-- [ ] **Tests pass (CI-equivalent)**: `uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'`
+- [ ] **All extras installed** so CI-skipped tests run locally: `uv sync --group dev --extra daft && uv run playwright install chromium`. CI fails on `skipped > 0` — see [CONTRIBUTING.md § CI parity](CONTRIBUTING.md#ci-parity--install-all-extras-before-the-gate).
+- [ ] **Tests pass (CI-equivalent)**: `uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'` reports `0 skipped` and `0 failed`.
 - [ ] **Lint passes**: `uv run ruff check src/ tests/`
 - [ ] **Format correct**: `uv run ruff format --check src/ tests/`
 - [ ] **New public API** added to `__init__.py` `__all__`?

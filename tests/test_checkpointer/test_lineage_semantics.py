@@ -352,7 +352,8 @@ class TestLineageSemantics:
         outer_v2 = Graph([Graph([inner_v2_mid, inner_v2_end], name="inner").as_node(name="nested"), finalize])
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        await runner.run(outer_v1, {"x": 5}, workflow_id="wf-nested-hash")
+        # x is private to "nested" GraphNode → addressed via dot-path
+        await runner.run(outer_v1, {"nested.x": 5}, workflow_id="wf-nested-hash")
 
         with pytest.raises(GraphChangedError):
             await runner.run(outer_v2, workflow_id="wf-nested-hash")

@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING, Any
 from hypergraph.viz._common import (
     build_expansion_state,
     build_param_to_consumer_map,
+    disambiguate_external_input_ids,
     enumerate_valid_expansion_states,
     expansion_state_to_key,
+    external_input_display_name,
     get_expandable_nodes,
     get_nesting_depth,
     is_node_visible,
@@ -254,11 +256,12 @@ def _compute_edges_for_state(
     input_spec = flat_graph.graph.get("input_spec", {})
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
-    external_inputs = set(required) | set(optional)
+    external_inputs = list(required) + list(optional)
+    id_for_param = disambiguate_external_input_ids([[p] for p in external_inputs])
 
     # 1. Add edges from INPUT nodes to their actual consumers
     for param in external_inputs:
-        input_node_id = f"input_{param}"
+        input_node_id = f"input_{id_for_param[param]}"
         actual_target = _pick_primary_consumer(param_to_consumers.get(param, []), flat_graph)
 
         if actual_target:
@@ -344,20 +347,29 @@ def _add_input_nodes(
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
     external_inputs = list(required) + list(optional)
+    id_for_param = disambiguate_external_input_ids([[p] for p in external_inputs])
 
     for param in external_inputs:
+        # Dot-pathed external inputs (issue #94) carry the lexical scope
+        # in their name (``middle.inner.x``); the param's *type* lives
+        # under its scope-local leaf name on the leaf consumer's
+        # ``input_types``.
+        leaf = external_input_display_name(param)
         param_type = None
         for _node_id, attrs in flat_graph.nodes(data=True):
-            if param in attrs.get("inputs", ()):
+            inputs = attrs.get("inputs", ())
+            if param in inputs:
                 param_type = attrs.get("input_types", {}).get(param)
-                if param_type is not None:
-                    break
+            elif leaf in inputs:
+                param_type = attrs.get("input_types", {}).get(leaf)
+            if param_type is not None:
+                break
 
         instructions.add_node(
             VizNode(
-                id=f"input_{param}",
+                id=f"input_{id_for_param[param]}",
                 type=NodeType.INPUT,
-                label=param,
+                label=leaf,
                 type_hint=_format_type(param_type),
                 theme=theme,
                 show_types=show_types,
@@ -415,11 +427,12 @@ def _add_edges(
     input_spec = flat_graph.graph.get("input_spec", {})
     required = input_spec.get("required", ())
     optional = input_spec.get("optional", ())
-    external_inputs = set(required) | set(optional)
+    external_inputs = list(required) + list(optional)
+    id_for_param = disambiguate_external_input_ids([[p] for p in external_inputs])
 
     # 1. Add edges from INPUT nodes to their actual consumers
     for param in external_inputs:
-        input_node_id = f"input_{param}"
+        input_node_id = f"input_{id_for_param[param]}"
         actual_target = _pick_primary_consumer(param_to_consumers.get(param, []), flat_graph)
 
         if actual_target:

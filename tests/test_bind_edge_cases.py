@@ -530,7 +530,8 @@ class TestBindWithGraphNode:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node()])
 
-        outer_bound = outer.bind(x=5)
+        # x is private to inner GraphNode → bind via dot-path
+        outer_bound = outer.bind(**{"inner.x": 5})
 
         runner = SyncRunner()
         result = runner.run(outer_bound, {})
@@ -549,7 +550,8 @@ class TestBindWithGraphNode:
         outer = Graph([inner_bound.as_node()])
 
         runner = SyncRunner()
-        result = runner.run(outer, {"x": 5})
+        # x is private to inner GraphNode → addressed via dot-path
+        result = runner.run(outer, {"inner.x": 5})
         assert result["result"] == 15
 
     def test_outer_bind_overrides_inner(self):
@@ -566,12 +568,14 @@ class TestBindWithGraphNode:
 
         runner = SyncRunner()
 
+        # x and factor are private to inner GraphNode → addressed via dot-path
         # Run with inner's binding
-        result = runner.run(outer, {"x": 5})
+        result = runner.run(outer, {"inner.x": 5})
         assert result["result"] == 10
 
-        # Override with runtime value
-        result = runner.run(outer, {"x": 5, "factor": 3})
+        # Override with runtime value (warning expected for the bind override)
+        with pytest.warns(UserWarning, match="(?i)override.*inner\\.factor"):
+            result = runner.run(outer, {"inner.x": 5, "inner.factor": 3})
         assert result["result"] == 15
 
 

@@ -165,10 +165,23 @@ def _collect_param_default_info(
     Only checks actual function signature defaults, not bound values from
     graph.bind(). This ensures validation only checks for consistent defaults
     in function signatures, not configuration values.
+
+    Under lexical scope, a GraphNode's input that is NOT declared at this
+    scope is private to its subgraph and lives in a different namespace from
+    a sibling GraphNode's same-named input. Such private inputs are excluded
+    from the cross-node consistency check -- their defaults are validated
+    inside the owning inner graph at its own construction time.
     """
+    from hypergraph.graph.input_spec import _names_declared_at_scope
+    from hypergraph.nodes.graph_node import GraphNode
+
+    declared = _names_declared_at_scope(nodes)
     param_info: dict[str, list[tuple[bool, Any, str]]] = defaultdict(list)
     for node in nodes.values():
         for param in node.inputs:
+            if isinstance(node, GraphNode) and param not in declared:
+                # Private to the subgraph -- different namespace from this scope.
+                continue
             # Check for signature defaults only (excludes bound values)
             has_default = node.has_signature_default_for(param)
             if has_default:

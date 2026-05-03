@@ -105,7 +105,8 @@ class TestSelectNested:
             return f"val={sum}"
 
         outer = Graph([inner.as_node(), fmt])
-        result = SyncRunner().run(outer, {"x": 5, "b": 3})
+        # x and b are private to inner GraphNode → addressed via dot-path
+        result = SyncRunner().run(outer, {"inner.x": 5, "inner.b": 3})
         assert result.values["formatted"] == "val=13"
 
     def test_nested_graph_hides_unselected_from_parent(self):

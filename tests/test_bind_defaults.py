@@ -23,32 +23,25 @@ def test_bound_params_not_treated_as_defaults():
     so it shouldn't trigger the "inconsistent defaults" validation error.
     """
 
-    # Inner graph with bound parameter
+    # Inner graph (no bind on config -- under lexical scope, an inner bind on a
+    # name the outer declares would be shadowed and is a build-time error).
     @node(output_name="result")
     def inner_func(x: int, config: str) -> str:
         return f"{x}:{config}"
 
-    inner_graph = Graph([inner_func], name="inner").bind(config="bound_value")
+    inner_graph = Graph([inner_func], name="inner")
 
     # Outer function with same param but NO default
     @node(output_name="final")
     def outer_func(result: str, config: str) -> str:
         return f"{result}:{config}"
 
-    # Should NOT raise GraphConfigError about inconsistent defaults
-    # config is bound in inner_graph, but that's not a "default"
-    # This is the main test - it should not raise during graph construction
-    outer_graph = Graph([inner_graph.as_node(), outer_func], name="outer")
+    # Outer binds config at the scope where it's declared (auto-links into inner).
+    outer_graph = Graph([inner_graph.as_node(), outer_func], name="outer").bind(config="bound_value")
 
-    # config is now optional because the GraphNode has it bound (has_default_for returns True)
-    # This allows the outer graph to optionally provide config for outer_func
-    assert set(outer_graph.inputs.required) == {"x"}
-    assert set(outer_graph.inputs.optional) == {"config"}
-
-    # If we bind config at the outer level, it's still in bound dict
-    outer_bound = outer_graph.bind(config="outer_config")
-    assert set(outer_bound.inputs.required) == {"x"}
-    assert "config" in outer_bound.inputs.bound
+    # x is private to inner GraphNode -> addressed as inner.x
+    assert set(outer_graph.inputs.required) == {"inner.x"}
+    assert "config" in outer_graph.inputs.bound
 
 
 def test_actual_defaults_still_validated():
@@ -83,8 +76,8 @@ def test_nested_graph_with_bound_and_defaults():
 
     # Should work: y has consistent defaults, x is bound (not a default)
     graph = Graph([inner.as_node(), outer_func])
-    # Both x and y are optional: x is bound in inner, y has defaults
-    assert set(graph.inputs.optional) == {"x", "y"}
+    # Both x and y are optional: x is bound in inner (private → inner.x), y has defaults
+    assert set(graph.inputs.optional) == {"inner.x", "y"}
     assert set(graph.inputs.required) == set()
 
 
@@ -100,19 +93,19 @@ def test_user_rag_example():
     def judge_answer(query: str, answer: str, expected_answer: str, llm) -> dict:
         return {"judgment": "good"}
 
-    # RAG graph with bound llm
-    rag_graph = Graph([rag_func], name="rag").bind(llm="llm_instance")
+    # RAG graph (no bind on llm -- judge_answer at eval also consumes llm, so a
+    # bind here would be shadowed at the outer scope).
+    rag_graph = Graph([rag_func], name="rag")
 
-    # Evaluation graph - should NOT raise error
-    # llm is bound in rag_graph (not a default), and judge_answer has no default for llm
+    # Bind llm once at eval scope where it's declared by both judge_answer and
+    # (transitively) rag_func.
     eval_graph = Graph(
         [rag_graph.as_node(name="rag"), judge_answer],
         name="evaluation",
-    )
+    ).bind(llm="llm_instance")
 
-    # llm is optional because the rag GraphNode has it bound
-    # The user can provide llm to override both nodes, or omit it to use rag's binding
-    assert "llm" in eval_graph.inputs.optional
+    # llm is now in bound (optional) at eval; required set excludes it.
+    assert "llm" in eval_graph.inputs.bound
     assert "llm" not in eval_graph.inputs.required
 
 
@@ -249,13 +242,16 @@ def test_three_level_nested_binding():
         name="retrieval",
     ).bind(embedder=embedder, vector_store=vector_store)
 
-    # Level 2: RAG graph using retrieval as nested node
+    # Level 2: RAG graph using retrieval as nested node. llm is declared at
+    # rag (generate consumes it). We don't bind it here -- judge at eval also
+    # consumes llm, so a bind here would be shadowed at the outer scope.
     rag_graph = Graph(
         [retrieval_graph.as_node(name="retrieval"), generate],
         name="rag",
-    ).bind(llm=llm)
+    )
 
-    # Level 3: evaluation graph using RAG as nested node
+    # Level 3: evaluation graph binds llm once at the outermost scope where
+    # both judge and (transitively) generate need it.
     eval_graph = Graph(
         [rag_graph.as_node(name="rag"), judge],
         name="evaluation",
@@ -266,20 +262,24 @@ def test_three_level_nested_binding():
     assert "vector_store" in retrieval_graph.inputs.bound
 
     # Key assertion: bound values from retrieval_graph must appear in rag_graph
-    assert "embedder" in rag_graph.inputs.bound
-    assert "vector_store" in rag_graph.inputs.bound
-    assert "llm" in rag_graph.inputs.bound
+    # embedder/vector_store are private to retrieval GraphNode → addressed as retrieval.X
+    assert "retrieval.embedder" in rag_graph.inputs.bound
+    assert "retrieval.vector_store" in rag_graph.inputs.bound
 
     # Key assertion: bound values must propagate to eval_graph
-    assert "embedder" in eval_graph.inputs.bound
-    assert "vector_store" in eval_graph.inputs.bound
+    # embedder/vector_store are private through rag.retrieval.X
+    assert "rag.retrieval.embedder" in eval_graph.inputs.bound
+    assert "rag.retrieval.vector_store" in eval_graph.inputs.bound
+    # llm bound at eval scope; auto-links to both judge.llm and rag.generate.llm.
     assert "llm" in eval_graph.inputs.bound
 
     # Runtime execution should work
+    # text is private at rag.retrieval (consumed by leaf 'embed' inside retrieval graph,
+    # which is a GraphNode at rag scope and a sub-GraphNode at eval scope)
     runner = SyncRunner()
     result = runner.run(
         eval_graph,
-        {"text": "test query", "query": "test query", "expected_answer": "expected"},
+        {"rag.retrieval.text": "test query", "query": "test query", "expected_answer": "expected"},
     )
 
     assert result["judgment"] == "Judged: Answer: test query"
@@ -302,7 +302,8 @@ def test_sibling_nested_bindings_do_not_leak():
 
     assert "cfg" not in graph.inputs.bound
 
-    result = SyncRunner().run(graph, {"x": 1})
+    # x is private to each inner GraphNode → addressed by dot-path
+    result = SyncRunner().run(graph, {"inner_a.x": 1, "inner_b.x": 1})
     assert result["out_a"] == "A:1:CFG_A"
     assert result["out_b"] == "B:1:CFG_B"
 
@@ -318,6 +319,7 @@ def test_nested_bound_values_use_graphnode_public_input_names():
     nested = inner.as_node().with_inputs(cfg="public_cfg")
     outer = Graph([nested], name="outer")
 
-    assert "public_cfg" in outer.inputs.bound
+    # public_cfg is private to inner GraphNode → addressed as inner.public_cfg
+    assert "inner.public_cfg" in outer.inputs.bound
     assert "cfg" not in outer.inputs.bound
-    assert outer.inputs.bound["public_cfg"] == "inner-cfg"
+    assert outer.inputs.bound["inner.public_cfg"] == "inner-cfg"

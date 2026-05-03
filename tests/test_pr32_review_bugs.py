@@ -61,7 +61,7 @@ class TestCollectAsListsLengthConsistency:
         gn = inner.as_node().map_over("x")
         outer = Graph([gn, combine])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3]})
+        result = runner.run(outer, {"inner.x": [1, 2, 3]})
         assert result["combined"]["a"] == [2, 3, 4]
         assert result["combined"]["b"] == [10, 20, 30]
 
@@ -75,7 +75,7 @@ class TestCollectAsListsLengthConsistency:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, combine])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3, 4]})
+        result = runner.run(outer, {"inner.x": [1, 2, 3, 4]})
         a_list = result["combined"]["a"]
         b_list = result["combined"]["b"]
         # Both lists must be same length (4 items)
@@ -95,7 +95,7 @@ class TestCollectAsListsLengthConsistency:
 
         outer = Graph([gn, use_renamed])
         runner = SyncRunner()
-        result = runner.run(outer, {"x": [1, 2, 3]})
+        result = runner.run(outer, {"inner.x": [1, 2, 3]})
         assert len(result["result"]["alpha"]) == len(result["result"]["beta"]) == 3
 
     def test_runner_map_continue_multi_output_graph(self):

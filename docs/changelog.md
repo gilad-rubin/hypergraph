@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Lexical scope for nested subgraph inputs (breaking)** — An input name not declared at a graph's scope (no leaf node consumes or produces it, and no nested `GraphNode` exposes it as an output) is now **private** to its subgraph. Outer code addresses a private input via a dot-path (`"inner.x"`) or an equivalent nested dict (`{"inner": {"x": ...}}`). The previous "auto-lift" behavior — where an inner input silently surfaced at the outermost scope — has been removed. ([#94](https://github.com/gilad-rubin/hypergraph/issues/94))
+
+  **Why:** auto-lift was a silent-leak hazard. Two sibling subgraphs that happened to share an input name would collide at the outer scope, and a `bind` on the outer graph could silently flow into a deeply nested input the user didn't intend to reach. Lexical scope makes addressing explicit and refactor-safe.
+
+  **Migration.** Anywhere you previously passed a flat name that belonged to a nested subgraph, address it under its owning `GraphNode`. The four equivalent forms for an input `x` private to a `GraphNode` named `inner`:
+
+  ```python
+  # Run-time (positional dict, dot-path):
+  runner.run(outer, {"inner.x": 5})
+
+  # Run-time (positional dict, nested-dict):
+  runner.run(outer, {"inner": {"x": 5}})
+
+  # Build-time (positional dict, dot-path):
+  outer.bind({"inner.x": 5})
+
+  # Build-time (kwarg, nested-dict):
+  outer.bind(inner={"x": 5})
+  ```
+
+  Binding directly on the inner graph (`inner.bind(x=5)`) before composing it is also valid and equivalent in result.
+
+- **Bind-conflict is a build-time error** — A `bind` on an inner subgraph input whose leaf name is also declared at any ancestor scope now raises `GraphConfigError` at construction time. The error names the bind's full dot-path and the shadowing leaf node so you can fix the source directly. Previously this case silently overrode the bind at run time.
+
+- **Run-time override of a bound value emits a `UserWarning`** — Passing a value at `runner.run(...)` for a key already present in `inputs.bound` is allowed but warned. The warning shows the old and new value for primitive types and a generic message for opaque types, so accidental overrides surface in test logs.
+
+- **`with_inputs(...)` only renames the leaf label** — It no longer moves an input out of its subgraph's scope. Combined with lexical scope, this means renaming an inner input does not promote it to the outer namespace.
+
+- **`inputs.required` and `inputs.bound` use dot-paths** — When a graph has nested `GraphNode`s with private inputs, the outer graph's `InputSpec` now reports those inputs as dot-pathed entries (e.g. `"inner.x"`). See [InputSpec API Reference](06-api-reference/inputspec.md#nested-subgraph-inputs).
+
 ## March 2026
 
 ### Added

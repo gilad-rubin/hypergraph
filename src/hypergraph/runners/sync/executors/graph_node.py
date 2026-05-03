@@ -60,8 +60,16 @@ class SyncGraphNodeExecutor:
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
             prefix = f"{node.name}."
+            # Resume-values are interrupt outputs prefixed with the GraphNode's
+            # name. Skip suffixes that match this node's public inputs -- those
+            # are dot-pathed user-provided inputs already routed via inner_inputs.
+            node_input_set = set(node.inputs)
             resume_values = {
-                node.resolve_original_output_name(key[len(prefix) :]): value for key, value in state.values.items() if key.startswith(prefix)
+                node.resolve_original_output_name(suffix): value
+                for key, value in state.values.items()
+                if key.startswith(prefix)
+                for suffix in [key[len(prefix) :]]
+                if suffix not in node_input_set
             }
             child_fork_from: str | None = None
             child_retry_from: str | None = None
