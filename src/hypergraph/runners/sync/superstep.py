@@ -20,7 +20,7 @@ from hypergraph.runners._shared.event_helpers import (
     build_node_start_event,
     build_route_decision_event,
 )
-from hypergraph.runners._shared.helpers import apply_node_result, collect_inputs_for_node
+from hypergraph.runners._shared.helpers import address_for_node_input, apply_node_result, collect_inputs_for_node
 from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
@@ -70,8 +70,11 @@ def run_superstep_sync(
         # in this superstep see the same values (deterministic execution order)
         inputs = collect_inputs_for_node(node, graph, state, provided_values)
 
-        # Record input versions from the snapshot we used
-        input_versions = {param: state.get_version(param) for param in node.inputs}
+        # Record input versions under the same addressed key the staleness
+        # check reads -- dotted for a GraphNode's private input, flat otherwise.
+        input_versions = {
+            (addr := address_for_node_input(node, param, state.versions)): state.versions.get(addr, 0) for param in node.inputs
+        }
 
         # Check cache before execution
         cache_key, cached_outputs = ("", None)

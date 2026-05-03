@@ -403,6 +403,13 @@ def _find_internal_override_conflicts(
 
 def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> bool:
     """True when node can run from provided/bound/default values before execution."""
+    # NOTE: this iterates the node's flat input names against `provided`. For a
+    # GraphNode whose input is addressed dot-pathed at this scope, `provided`
+    # contains "<node.name>.<param>" -- so flat-only matching can miss it. Only
+    # triggers when the user simultaneously provides a downstream node's outputs
+    # (compute+inject conflict path), and isn't currently exercised by any test
+    # with a dot-pathed bind. Use address_for_node_input here when this case is
+    # ever observed in the wild.
     return all(param in provided or node.has_default_for(param) for param in node.inputs)
 
 

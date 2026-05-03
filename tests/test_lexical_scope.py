@@ -307,6 +307,48 @@ def test_override_warning_annotates_subgraph_for_dot_pathed_address():
     assert any("'x' of subgraph 'inner'" in m for m in msgs), msgs
 
 
+def test_changed_dot_pathed_input_marks_graphnode_as_stale_on_replay():
+    """A GraphNode whose private dot-pathed input changed must be seen as stale
+    against its previous execution record.
+
+    This locks in the invariant that the version recorded for a GraphNode
+    input at execution time uses the same key the staleness check reads.
+    Without alignment, _is_stale silently classifies a changed dot-pathed
+    input as unchanged (both record and read default to 0).
+    """
+    from hypergraph.runners._shared.helpers import _is_stale
+    from hypergraph.runners._shared.types import GraphState, NodeExecution
+
+    @node(output_name="doubled")
+    def double(x: int) -> int:
+        return x * 2
+
+    inner = Graph([double], name="inner")
+    outer = Graph([inner.as_node(name="embed")], name="outer")
+    embed_node = outer._nodes["embed"]
+
+    # Simulate a prior run that consumed embed.x=5 (state v1, recorded v1).
+    state = GraphState()
+    state.update_value("embed.x", 5)
+    # Record what an aligned superstep WOULD record for embed's prior exec.
+    # The address used here must match the staleness-check lookup.
+    prior_exec = NodeExecution(
+        node_name="embed",
+        input_versions={"embed.x": 1},  # aligned key
+        outputs={"doubled": 10},
+        output_versions={"doubled": 1},
+        wait_for_versions={},
+    )
+    state.node_executions["embed"] = prior_exec
+
+    # User provides a new value -- state version advances for the dotted key.
+    state.update_value("embed.x", 10)
+    assert state.versions["embed.x"] == 2
+
+    # The staleness check must see embed's prior input as stale (consumed v1, current v2).
+    assert _is_stale(embed_node, outer, state, prior_exec) is True
+
+
 def test_bare_name_at_outer_resolving_only_to_private_input_errors():
     """Strict mode: a bare name passed to runner.run() that doesn't resolve at
     the call's scope errors instead of silently smart-routing to a deeper

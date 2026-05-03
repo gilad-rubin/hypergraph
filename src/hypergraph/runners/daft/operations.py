@@ -325,6 +325,11 @@ def create_operation(
     from hypergraph.nodes.graph_node import GraphNode
 
     # Determine which bound values apply to this node
+    # NOTE: under lexical scope `bound_values` may be keyed by dot-paths for a
+    # GraphNode's private inputs. This flat-name match misses those. No daft
+    # test currently exercises a GraphNode with dot-pathed binds; see
+    # address_for_node_input in runners/_shared/helpers.py for the canonical
+    # resolver if this is ever observed in the wild.
     node_bound = {k: v for k, v in bound_values.items() if k in node.inputs}
 
     # Determine input columns (those not provided by bound values)

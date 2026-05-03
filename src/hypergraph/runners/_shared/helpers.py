@@ -275,6 +275,31 @@ class ValueSource(Enum):
     DEFAULT = "default"  # From function signature - MUST copy
 
 
+def address_for_node_input(
+    node: HyperNode,
+    param: str,
+    *namespaces: dict[str, Any],
+) -> str:
+    """Resolve which key (dotted or flat) addresses ``param`` of ``node``.
+
+    Under lexical scope, a GraphNode's private input may be addressed at the
+    parent scope as ``"<node.name>.<param>"`` (state.values, state.versions,
+    provided_values, graph.inputs.bound, and per-execution input_versions all
+    share this convention). When the dotted key is present in any provided
+    namespace, it wins; otherwise the flat name is the auto-link fallback.
+
+    Used both for reading (find-the-key) and recording (consistent-key) so
+    that whatever key gets written must be the same key that gets read.
+    """
+    from hypergraph.nodes.graph_node import GraphNode
+
+    if isinstance(node, GraphNode):
+        dotted = f"{node.name}.{param}"
+        if any(dotted in ns for ns in namespaces):
+            return dotted
+    return param
+
+
 _SHORT_REPR_MAX_LEN = 40
 
 
@@ -382,27 +407,17 @@ def get_value_source(
     if param in state.values:
         return (ValueSource.EDGE, state.values[param])
 
-    # 2. Input value (from run() call). For GraphNodes, a dot-pathed entry
-    # ("<node_name>.<param>") addresses a private input of the subgraph and
-    # takes precedence over a bare flat name (which only auto-links when the
-    # name is declared at this scope).
-    if isinstance(node, GraphNode):
-        dotted = f"{node.name}.{param}"
-        if dotted in provided_values:
-            return (ValueSource.PROVIDED, provided_values[dotted])
-    if param in provided_values:
-        return (ValueSource.PROVIDED, provided_values[param])
+    # 2. Input value (from run() call). The address may be dot-pathed when
+    # this is a GraphNode's private input.
+    provided_addr = address_for_node_input(node, param, provided_values)
+    if provided_addr in provided_values:
+        return (ValueSource.PROVIDED, provided_values[provided_addr])
 
-    # 3. Bound value resolved at this graph boundary. Under lexical scope,
-    # graph.inputs.bound holds either flat keys (auto-linked at this scope) or
-    # dot-pathed keys for inputs private to a child subgraph. For GraphNode
-    # children we look up the dot-pathed key first.
-    if isinstance(node, GraphNode):
-        dotted = f"{node.name}.{param}"
-        if dotted in graph.inputs.bound:
-            return (ValueSource.BOUND, graph.inputs.bound[dotted])
-    if param in graph.inputs.bound:
-        return (ValueSource.BOUND, graph.inputs.bound[param])
+    # 3. Bound value resolved at this graph boundary. Same addressing applies
+    # for graph.inputs.bound (dot-pathed for private subgraph inputs).
+    bound_addr = address_for_node_input(node, param, graph.inputs.bound)
+    if bound_addr in graph.inputs.bound:
+        return (ValueSource.BOUND, graph.inputs.bound[bound_addr])
 
     # 3b. For GraphNode: check if inner graph has it bound
     if isinstance(node, GraphNode):
@@ -878,23 +893,9 @@ def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
 
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if a single input parameter is available."""
-    from hypergraph.nodes.graph_node import GraphNode
-
-    # Value in state (from edge or initial input)
-    if param in state.values:
+    addr = address_for_node_input(node, param, state.values, graph.inputs.bound)
+    if addr in state.values or addr in graph.inputs.bound:
         return True
-
-    # Bound value in graph
-    if param in graph.inputs.bound:
-        return True
-
-    # GraphNode private input addressed by dot-path at this scope
-    if isinstance(node, GraphNode):
-        dotted = f"{node.name}.{param}"
-        if dotted in state.values or dotted in graph.inputs.bound:
-            return True
-
-    # Node has default for this parameter
     return bool(node.has_default_for(param))
 
 
@@ -965,8 +966,11 @@ def _is_stale(
             # Descendant Producer Rule: all producers are downstream (DAGs only)
             if param in downstream:
                 continue
-        current_version = state.get_version(param)
-        consumed_version = last_exec.input_versions.get(param, 0)
+        # Resolve the key the same way it was recorded -- dotted for a
+        # GraphNode's private input, flat otherwise.
+        addr = address_for_node_input(node, param, state.versions, last_exec.input_versions)
+        current_version = state.versions.get(addr, 0)
+        consumed_version = last_exec.input_versions.get(addr, 0)
         if current_version == consumed_version:
             continue
 
