@@ -60,7 +60,7 @@ uv run pytest -k "test_name"              # single test
 uv run pytest -m slow                      # slow tests
 uv run pytest -m full_matrix               # full capability matrix
 
-# CI-equivalent (run before PR)
+# CI-equivalent (run before PR) — see "CI parity" below for required setup
 uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
 
 # Lint & format
@@ -71,6 +71,27 @@ uv run pre-commit run --all-files          # all hooks
 # Viz tests
 uv run pytest tests/viz/                   # requires Playwright
 ```
+
+### CI parity — install ALL extras before the gate
+
+CI's test job installs `daft` and runs `playwright install chromium`, then parses
+`pytest.xml` and **fails on any skipped test or warning**. A "passing" local run
+that shows `2394 passed, 110 skipped` will fail in CI because each skip — daft
+tests, viz tests, and any conditional skip — counts.
+
+Before pushing a behavior change that touches runners, viz, examples, or
+public input/output addressing, run the full CI gate locally:
+
+```bash
+uv sync --group dev --extra daft
+uv run playwright install chromium
+uv run pytest -W error -W 'ignore::pytest.PytestUnraisableExceptionWarning'
+```
+
+The skip-zero / warning-zero invariant catches bugs that the default `uv run pytest`
+silently skips past: e.g. test migrations that miss daft- or playwright-only
+fixtures, and `UserWarning`s emitted by code paths only some optional extras
+exercise.
 
 ## Workflow
 
