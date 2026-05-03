@@ -242,6 +242,71 @@ def test_no_warning_or_error_on_silent_bind_with_no_ancestor_declaration():
         assert outer.inputs.bound == {"inner.x": 10}
 
 
+def test_missing_input_error_names_subgraph_for_dot_pathed_inputs():
+    """MissingInputError text annotates each dot-pathed missing input with
+    its owning subgraph, so the user knows where the input belongs."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    inner = Graph([use_x], name="inner")
+    outer = Graph([inner.as_node()], name="outer")
+
+    with pytest.raises(MissingInputError) as exc_info:
+        SyncRunner().run(outer, {})
+
+    msg = str(exc_info.value)
+    # The new annotation: "input 'x' of subgraph 'inner'".
+    assert "'x' of subgraph 'inner'" in msg
+    # The bind() hint, irrelevant to a lexical-scope miss, is gone.
+    assert "graph.bind(x=10)" not in msg
+
+
+def test_bind_conflict_error_names_scope_and_shadowing_node():
+    """The bind-conflict GraphConfigError names the scope (graph) and the
+    specific shadowing node (a leaf at this scope) -- not just the bare
+    leaf name -- so the user can navigate to the source of the conflict."""
+
+    @node(output_name="inner_out")
+    def consume_x(x: int) -> int:
+        return x
+
+    @node(output_name="judge_out")
+    def judge_consumes_x(x: int) -> int:  # leaf at outer that shadows the bind
+        return x
+
+    inner = Graph([consume_x], name="inner").bind(x=10)
+    with pytest.raises(GraphConfigError) as exc_info:
+        Graph([inner.as_node(), judge_consumes_x], name="evaluation")
+
+    msg = str(exc_info.value)
+    # Scope (graph name) named explicitly.
+    assert "evaluation" in msg
+    # Shadowing leaf node named explicitly.
+    assert "judge_consumes_x" in msg
+    # Original bind path still present.
+    assert "inner.x" in msg
+
+
+def test_override_warning_annotates_subgraph_for_dot_pathed_address():
+    """The override UserWarning annotates the dot-pathed override target with
+    its owning subgraph, matching the missing-input message style."""
+
+    @node(output_name="out")
+    def use_x(x: int) -> int:
+        return x
+
+    inner = Graph([use_x], name="inner").bind(x=10)
+    outer = Graph([inner.as_node()], name="outer")
+
+    with pytest.warns(UserWarning) as records:
+        SyncRunner().run(outer, {"inner.x": 99})
+
+    msgs = [str(w.message) for w in records]
+    assert any("'x' of subgraph 'inner'" in m for m in msgs), msgs
+
+
 def test_bare_name_at_outer_resolving_only_to_private_input_errors():
     """Strict mode: a bare name passed to runner.run() that doesn't resolve at
     the call's scope errors instead of silently smart-routing to a deeper

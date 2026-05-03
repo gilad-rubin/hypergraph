@@ -54,6 +54,7 @@ def compute_input_spec(
     entrypoints: tuple[str, ...] | None = None,
     selected: tuple[str, ...] | None = None,
     _active_scope: tuple[dict[str, HyperNode], nx.DiGraph] | None = None,
+    graph_name: str | None = None,
 ) -> InputSpec:
     """Compute input specification for a graph.
 
@@ -87,7 +88,7 @@ def compute_input_spec(
 
     data_subgraph = _data_only_subgraph(active_subgraph)
     edge_produced = get_edge_produced_values(active_subgraph)
-    all_bound = _collect_bound_values(active_nodes, bound)
+    all_bound = _collect_bound_values(active_nodes, bound, graph_name=graph_name)
     cycle_seed_params = _compute_cycle_seed_params(
         active_nodes,
         data_subgraph,
@@ -383,6 +384,8 @@ def _active_from_selection(
 def _collect_bound_values(
     nodes: dict[str, HyperNode],
     bound: dict[str, Any],
+    *,
+    graph_name: str | None = None,
 ) -> dict[str, Any]:
     """Collect all bound values from graph and nested GraphNodes under lexical scope.
 
@@ -420,13 +423,40 @@ def _collect_bound_values(
             # produces `c`, the bind would be silently overridden.
             leaf = public_key.rsplit(".", 1)[-1]
             if leaf in declared:
-                raise GraphConfigError(
-                    f"Bind on '{full_path}' is shadowed by '{leaf}' "
-                    f"declared at this scope (a node here consumes or produces it). "
-                    f"At run time the parent's value would silently override the bind. "
-                    f"Fix: either remove the bind on the inner subgraph, or rename "
-                    f"the input via with_inputs(...) so it no longer matches the ancestor."
-                )
+                raise GraphConfigError(_bind_conflict_message(full_path, leaf, nodes, graph_name))
             all_bound[full_path] = value
 
     return all_bound
+
+
+def _bind_conflict_message(
+    full_path: str,
+    leaf: str,
+    nodes: dict[str, HyperNode],
+    graph_name: str | None,
+) -> str:
+    """Compose a build-time bind-conflict error naming the scope and the
+    specific shadowing node so the user can navigate straight to the source."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    shadowers: list[str] = []
+    for n_name, n in nodes.items():
+        if isinstance(n, GraphNode):
+            continue
+        if leaf in n.inputs:
+            shadowers.append(f"{n_name!r} (consumes {leaf!r})")
+        elif leaf in n.outputs:
+            shadowers.append(f"{n_name!r} (produces {leaf!r})")
+
+    scope_text = f" at scope {graph_name!r}" if graph_name else " at this scope"
+    if shadowers:
+        shadow_text = f"by node {' / '.join(shadowers)}"
+    else:
+        shadow_text = f"by '{leaf}' declared at this scope"
+
+    return (
+        f"Bind on {full_path!r} is shadowed{scope_text} {shadow_text}. "
+        f"At run time the parent's value would silently override the bind. "
+        f"Fix: either remove the bind on the inner subgraph, or rename "
+        f"the input via with_inputs(...) so it no longer matches the ancestor."
+    )

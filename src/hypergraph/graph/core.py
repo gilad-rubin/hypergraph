@@ -357,6 +357,7 @@ class Graph:
             self._bound,
             entrypoints=self._entrypoints,
             selected=self._selected,
+            graph_name=self.name,
         )
 
     @functools.cached_property

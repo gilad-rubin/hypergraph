@@ -195,8 +195,18 @@ def _build_missing_input_message(
     entrypoints: dict[str, tuple[str, ...]] | None = None,
 ) -> str:
     """Build a helpful error message for missing inputs."""
-    missing_str = ", ".join(f"'{m}'" for m in sorted(missing))
-    msg = f"Missing required inputs: {missing_str}"
+    from hypergraph.graph._helpers import describe_addressed_input
+
+    sorted_missing = sorted(missing)
+    any_dotted = any("." in m for m in sorted_missing)
+
+    if any_dotted:
+        # Show each missing input with its subgraph annotation, one per line.
+        lines = [f"  - {describe_addressed_input(m)}  (address as {m!r})" for m in sorted_missing]
+        msg = "Missing required inputs:\n" + "\n".join(lines)
+    else:
+        missing_str = ", ".join(f"'{m}'" for m in sorted_missing)
+        msg = f"Missing required inputs: {missing_str}"
 
     if provided:
         msg += f"\n\nProvided: {', '.join(f'{p!r}' for p in sorted(provided))}"
@@ -212,9 +222,13 @@ def _build_missing_input_message(
         for m, sugg in suggestions.items():
             msg += f"\n  - '{m}' -> '{sugg[0]}'?"
 
-    msg += "\n\nHint: If you used graph.bind(), remember it returns a NEW graph."
-    msg += "\n  ❌ graph.bind(x=10)           # Result discarded!"
-    msg += "\n  ✅ graph = graph.bind(x=10)   # Correct"
+    if not any_dotted:
+        # The bind()-returns-new-graph hint applies when the user is wrestling
+        # with bind() chaining. For dot-pathed lexical-scope misses it's a
+        # distraction -- the actual fix is to use the right address form.
+        msg += "\n\nHint: If you used graph.bind(), remember it returns a NEW graph."
+        msg += "\n  ❌ graph.bind(x=10)           # Result discarded!"
+        msg += "\n  ✅ graph = graph.bind(x=10)   # Correct"
 
     return msg
 

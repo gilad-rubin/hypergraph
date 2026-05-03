@@ -224,13 +224,25 @@ def create_input_nodes(
             show_bounded_inputs,
         )
 
+    id_for_param = disambiguate_external_input_ids([list(g["params"]) for g in input_groups])
+
+    def _typed(param: str) -> type | None:
+        # Dot-pathed external inputs (issue #94) carry the lexical scope
+        # in their name; the type lives under the scope-local leaf on the
+        # leaf consumer's ``input_types``.
+        param_type = get_param_type(param, flat_graph)
+        if param_type is None:
+            param_type = get_param_type(external_input_display_name(param), flat_graph)
+        return param_type
+
     for group in input_groups:
         params = group["params"]
         is_bound = group["is_bound"]
         if len(params) == 1:
             param = params[0]
-            input_node_id = f"input_{param}"
-            param_type = get_param_type(param, flat_graph)
+            display = external_input_display_name(param)
+            input_node_id = f"input_{id_for_param.get(param, display)}"
+            param_type = _typed(param)
             actual_targets = get_group_targets([param], flat_graph, param_to_consumers)
             owner_container = compute_input_scope(param, flat_graph, expansion_state)
             deepest_owner = compute_deepest_input_scope(param, flat_graph)
@@ -241,7 +253,7 @@ def create_input_nodes(
                 "position": {"x": 0, "y": 0},
                 "data": {
                     "nodeType": "INPUT",
-                    "label": param,
+                    "label": display,
                     "typeHint": format_type(param_type),
                     "isBound": is_bound,
                     "actualTargets": actual_targets,
@@ -255,8 +267,10 @@ def create_input_nodes(
             }
             nodes.append(input_node)
         else:
-            group_id = f"input_group_{'_'.join(params)}"
-            param_types = [format_type(get_param_type(p, flat_graph)) for p in params]
+            id_segs = [id_for_param.get(p, external_input_display_name(p)) for p in params]
+            group_id = f"input_group_{'_'.join(id_segs)}"
+            display_params = [external_input_display_name(p) for p in params]
+            param_types = [format_type(_typed(p)) for p in params]
             actual_targets = get_group_targets(params, flat_graph, param_to_consumers)
 
             owner_container = compute_input_scope(params[0], flat_graph, expansion_state)
@@ -268,7 +282,7 @@ def create_input_nodes(
                 "position": {"x": 0, "y": 0},
                 "data": {
                     "nodeType": "INPUT_GROUP",
-                    "params": params,
+                    "params": display_params,
                     "paramTypes": param_types,
                     "isBound": is_bound,
                     "actualTargets": actual_targets,

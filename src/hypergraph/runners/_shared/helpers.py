@@ -299,8 +299,11 @@ def warn_on_bind_overrides(graph: Graph, provided_values: dict[str, Any]) -> Non
     Fires uniformly regardless of whether the override address is flat or
     dotted -- both surfaces share the same canonical form on graph.inputs.bound
     and provided_values. For primitive bound/provided pairs the warning shows
-    both values; otherwise it stays generic.
+    both values; otherwise it stays generic. Dot-pathed addresses are annotated
+    with their owning subgraph for clarity.
     """
+    from hypergraph.graph._helpers import describe_addressed_input
+
     bound = graph.inputs.bound
     for key, new_value in provided_values.items():
         if key not in bound:
@@ -308,12 +311,13 @@ def warn_on_bind_overrides(graph: Graph, provided_values: dict[str, Any]) -> Non
         old_value = bound[key]
         if old_value is new_value:
             continue
+        described = describe_addressed_input(key)
         old_repr = short_value_repr(old_value)
         new_repr = short_value_repr(new_value)
         if old_repr is not None and new_repr is not None:
-            msg = f"Run value overrides bound value for {key!r}: {old_repr} -> {new_repr}"
+            msg = f"Run value overrides bound value for {described} (address {key!r}): {old_repr} -> {new_repr}"
         else:
-            msg = f"Run value overrides bound value for {key!r}"
+            msg = f"Run value overrides bound value for {described} (address {key!r})"
         warnings.warn(msg, UserWarning, stacklevel=4)
 
 
