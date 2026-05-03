@@ -387,7 +387,7 @@
     // Python-precomputed contract: this edge must be routed as feedback.
     edges.forEach(function(edge) {
       var d = edge.data || (edge._original && edge._original.data) || {};
-      if (d && d.forceFeedback) feedback.add(edge.source + '->' + edge.target);
+      if (d && d.forceFeedback) feedback.add(edge.id);
     });
     return feedback;
   }
@@ -486,7 +486,7 @@
     var feedbackEdgeKeys = computeFeedbackEdgeKeys(visibleNodes, edges);
     var layoutEdges = edges
       .filter(function(e) { return visibleIds.has(e.source) && visibleIds.has(e.target); })
-      .filter(function(e) { return !feedbackEdgeKeys.has(e.source + '->' + e.target); })
+      .filter(function(e) { return !feedbackEdgeKeys.has(e.id); })
       .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
     layoutEdges.forEach(function(e) {
@@ -532,9 +532,13 @@
 
     var nodePositions = new Map();
     var nodeDimensions = new Map();
+    var nodeTypes = new Map();
     layoutNodes.forEach(function(n) {
       nodePositions.set(n.id, { x: n.x - n.width / 2, y: n.y - n.height / 2 });
       nodeDimensions.set(n.id, { width: n.width, height: n.height });
+      var nt = (n.data && n.data.nodeType) || 'FUNCTION';
+      if (nt === 'PIPELINE' && !(n.data && n.data.isExpanded)) nt = 'FUNCTION';
+      nodeTypes.set(n.id, nt);
     });
 
     var allNodes = layoutNodes.map(function(n) {
@@ -564,9 +568,9 @@
 
     edges
       .filter(function(e) { return visibleIds.has(e.source) && visibleIds.has(e.target); })
-      .filter(function(e) { return feedbackEdgeKeys.has(e.source + '->' + e.target); })
+      .filter(function(e) { return feedbackEdgeKeys.has(e.id); })
       .forEach(function(e) {
-        var pts = buildFeedbackEdgePoints(e, nodePositions, nodeDimensions, new Map());
+        var pts = buildFeedbackEdgePoints(e, nodePositions, nodeDimensions, nodeTypes);
         if (pts) allEdges.push({ ...e, data: { ...e.data, points: pts, isFeedbackEdge: true } });
       });
 
@@ -604,7 +608,7 @@
           return { id: n.id, width: d.width, height: d.height, x: 0, y: 0, data: n.data, _original: n };
         });
         var layoutEdges = visEdges
-          .filter(function(e) { return !fbKeys.has(e.source + '->' + e.target); })
+          .filter(function(e) { return !fbKeys.has(e.id); })
           .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
         var result = layoutGraph(layoutNodes, layoutEdges, endpointPadding, ranksep);
@@ -632,7 +636,7 @@
           if (nt === 'PIPELINE' && !(n.data && n.data.isExpanded)) nt = 'FUNCTION';
           nodeTyp.set(n.id, nt);
         });
-        visEdges.filter(function(e) { return fbKeys.has(e.source + '->' + e.target); }).forEach(function(e) {
+        visEdges.filter(function(e) { return fbKeys.has(e.id); }).forEach(function(e) {
           var pts = buildFeedbackEdgePoints(e, nodePos, nodeDim, nodeTyp);
           if (pts) posEdges.push({ ...e, data: { ...e.data, points: pts, isFeedbackEdge: true } });
         });

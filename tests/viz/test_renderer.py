@@ -778,6 +778,40 @@ class TestExclusiveBranchEdges:
         }
         assert all(e["data"]["exclusive"] is True for e in consumer_edges)
 
+    def test_expanded_grandchild_mutex_outputs_route_all_internal_producers(self):
+        """Expanded child containers should route from nested mutex leaves."""
+
+        @ifelse(when_true="branch_a", when_false="branch_b")
+        def decide(x: int) -> bool:
+            return x > 0
+
+        @node(output_name="result")
+        def branch_a(x: int) -> str:
+            return "a"
+
+        @node(output_name="result")
+        def branch_b(x: int) -> str:
+            return "b"
+
+        inner = Graph([decide, branch_a, branch_b], name="inner").select("result")
+        producers = Graph([inner.as_node()], name="producers").select("result")
+
+        @node(output_name="final")
+        def consumer(result: str) -> str:
+            return result
+
+        consumers = Graph([consumer], name="consumers")
+        graph = Graph([producers.as_node(), consumers.as_node()])
+
+        result = render_graph(graph.to_flat_graph(), depth=2, separate_outputs=True)
+
+        consumer_edges = [e for e in result["edges"] if e.get("data", {}).get("edgeType") == "data" and e["target"] == "consumers/consumer"]
+        assert {e["source"] for e in consumer_edges} == {
+            "data_producers/inner/branch_a_result",
+            "data_producers/inner/branch_b_result",
+        }
+        assert all(e["data"]["exclusive"] is True for e in consumer_edges)
+
     def test_expanded_nested_ifelse_edges_keep_labels(self):
         """Control labels should survive hierarchical target IDs."""
 

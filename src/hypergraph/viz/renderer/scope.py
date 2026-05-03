@@ -7,6 +7,7 @@ and which outputs are externally consumed (visible outside their container).
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from hypergraph.viz._common import (
@@ -299,17 +300,17 @@ def find_internal_producers_for_output(
         ``[(producer_node_id, producer_output_name), ...]`` in graph order.
     """
     internal_producers: dict[str, list[str]] = defaultdict(list)
-    for node_id, attrs in flat_graph.nodes(data=True):
-        if attrs.get("parent") != container_id:
-            continue
+    for node_id, attrs in _iter_visible_internal_output_producers(container_id, flat_graph, expansion_state):
         for output in attrs.get("outputs", ()):
             internal_producers[output].append(node_id)
 
     consumed_by_producer: set[tuple[str, str]] = set()
     for source, target, edge_data in flat_graph.edges(data=True):
-        if get_parent(source, flat_graph) != container_id:
+        if not is_descendant_of(source, container_id, flat_graph):
             continue
-        if get_parent(target, flat_graph) != container_id:
+        if not is_descendant_of(target, container_id, flat_graph):
+            continue
+        if not is_node_visible(source, flat_graph, expansion_state) or not is_node_visible(target, flat_graph, expansion_state):
             continue
         if edge_data.get("edge_type", "data") != "data":
             continue
@@ -334,3 +335,19 @@ def find_internal_producers_for_output(
         if internal_out in output_name or output_name in internal_out:
             matches.extend(visible_terminals(internal_out, producers))
     return matches
+
+
+def _iter_visible_internal_output_producers(
+    container_id: str,
+    flat_graph: nx.DiGraph,
+    expansion_state: dict[str, bool],
+) -> Iterator[tuple[str, dict]]:
+    for node_id, attrs in flat_graph.nodes(data=True):
+        if not is_descendant_of(node_id, container_id, flat_graph):
+            continue
+        if not is_node_visible(node_id, flat_graph, expansion_state):
+            continue
+        if attrs.get("node_type") == "GRAPH" and expansion_state.get(node_id, False):
+            continue
+        if attrs.get("outputs", ()):
+            yield node_id, attrs

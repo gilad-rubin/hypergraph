@@ -40,9 +40,10 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
         _build_ir_node(node_id, attrs, bound_params, flat_graph) for node_id, attrs in flat_graph.nodes(data=True) if node_id not in hidden_nodes
     ]
     exclusive_edges = compute_exclusive_data_edges(flat_graph)
+    mutex_groups = _compute_mutex_groups(flat_graph)
     back_edges = _find_back_edges(flat_graph)
     edges = [
-        _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, back_edges)
+        _build_ir_edge(src, tgt, attrs, flat_graph, exclusive_edges, mutex_groups, back_edges)
         for src, tgt, attrs in flat_graph.edges(data=True)
         if src not in hidden_nodes and tgt not in hidden_nodes
     ]
@@ -137,6 +138,7 @@ def _build_ir_edge(
     attrs: dict,
     flat_graph: nx.DiGraph,
     exclusive_edges: set[tuple[str, str, str]],
+    mutex_groups: list[list[set[str]]],
     back_edges: set[tuple[str, str]],
 ) -> IREdge:
     """Pre-compute the source-when-expanded / target-when-expanded rewrites
@@ -173,7 +175,6 @@ def _build_ir_edge(
 
     exclusive = edge_type == "data" and any((src, tgt, value_name) in exclusive_edges for value_name in value_names)
     if not exclusive and edge_type == "data" and isinstance(source_when_expanded, tuple) and len(source_when_expanded) > 1:
-        mutex_groups = _compute_mutex_groups(flat_graph)
         exclusive = any(
             _is_pair_mutex(left, right, mutex_groups)
             for index, left in enumerate(source_when_expanded)

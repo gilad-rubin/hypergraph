@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from hypergraph import AsyncRunner, Graph, RunStatus, SyncRunner, ifelse, node
+from hypergraph.runners._shared.helpers import _has_input
+from hypergraph.runners._shared.types import GraphState, NodeExecution
 
 
 def same_graph() -> Graph:
@@ -141,6 +143,50 @@ def test_explicit_edge_missing_false_branch_still_runs_wired_branch() -> None:
 
     assert result.status == RunStatus.COMPLETED
     assert result["final"] == "final:a:1"
+
+
+def test_missing_output_versions_do_not_accept_later_undeclared_writer() -> None:
+    graph = explicit_edge_missing_false_branch()
+    consumer = graph._nodes["consumer"]
+    state = GraphState(
+        values={"o1": "b:-1"},
+        versions={"o1": 2},
+        node_executions={
+            "path_a": NodeExecution(
+                node_name="path_a",
+                input_versions={"x": 1},
+                outputs={"o1": "a:1"},
+                output_versions={},
+            ),
+            "path_b": NodeExecution(
+                node_name="path_b",
+                input_versions={"x": 1},
+                outputs={"o1": "b:-1"},
+                output_versions={},
+            ),
+        },
+    )
+
+    assert not _has_input("o1", consumer, graph, state)
+
+
+def test_missing_output_versions_still_accept_current_declared_writer() -> None:
+    graph = explicit_edge_missing_false_branch()
+    consumer = graph._nodes["consumer"]
+    state = GraphState(
+        values={"o1": "a:1"},
+        versions={"o1": 1},
+        node_executions={
+            "path_a": NodeExecution(
+                node_name="path_a",
+                input_versions={"x": 1},
+                outputs={"o1": "a:1"},
+                output_versions={},
+            ),
+        },
+    )
+
+    assert _has_input("o1", consumer, graph, state)
 
 
 async def test_async_mutex_duplicate_outputs_feed_consumer_at_runtime() -> None:

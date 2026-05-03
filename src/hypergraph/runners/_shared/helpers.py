@@ -946,7 +946,7 @@ def _version_produced_by(
             continue
         if execution.output_versions.get(param) == version:
             return True
-        if param in execution.outputs and param not in execution.output_versions:
+        if _unversioned_execution_can_own_value(param, producer, state):
             return True
     return False
 
@@ -958,9 +958,25 @@ def _version_produced_by_any_node(
 ) -> bool:
     """Return whether ``version`` of ``param`` was written by any executed node."""
     return any(
-        execution.output_versions.get(param) == version or (param in execution.outputs and param not in execution.output_versions)
-        for execution in state.node_executions.values()
+        execution.output_versions.get(param) == version or _unversioned_execution_can_own_value(param, node_name, state)
+        for node_name, execution in state.node_executions.items()
     )
+
+
+def _unversioned_execution_can_own_value(param: str, node_name: str, state: GraphState) -> bool:
+    """Backward-compat ownership check for executions without output_versions."""
+    execution = state.node_executions.get(node_name)
+    if execution is None or param not in execution.outputs or param in execution.output_versions:
+        return False
+
+    seen = False
+    for executed_name, executed in state.node_executions.items():
+        if executed_name == node_name:
+            seen = True
+            continue
+        if seen and param in executed.outputs:
+            return False
+    return True
 
 
 def _needs_execution(node: HyperNode, graph: Graph, state: GraphState) -> bool:
