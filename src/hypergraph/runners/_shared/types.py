@@ -12,6 +12,7 @@ from hypergraph._utils import plural
 
 if TYPE_CHECKING:
     from hypergraph.events.processor import EventProcessor
+    from hypergraph.runners._shared.inspect import FailureCase, NodeSnapshot, RunView
 
 ErrorHandling = Literal["raise", "continue"]
 
@@ -173,8 +174,11 @@ class RunResult:
     run_id: str = field(default_factory=_generate_run_id)
     workflow_id: str | None = None
     error: BaseException | None = None
+    failure: FailureCase | None = None
     pause: PauseInfo | None = None
     log: RunLog | None = None
+    _inspect_data: tuple[NodeSnapshot, ...] | None = field(default=None, repr=False)
+    _inspect_graph_html: str | None = field(default=None, repr=False)
 
     @property
     def stopped(self) -> bool:
@@ -200,9 +204,21 @@ class RunResult:
         """One-line overview: 'completed | 3 nodes | 12ms' or 'failed: ValueError'."""
         if self.log:
             return self.log.summary()
+        if self.failure is not None:
+            return f"{self.status.value}: {self.failure.node_name}: {type(self.failure.error).__name__}: {self.failure.error}"
         if self.error:
             return f"{self.status.value}: {type(self.error).__name__}: {self.error}"
         return self.status.value
+
+    def view(self) -> RunView:
+        """Build the reusable inspect artifact for this run."""
+        from hypergraph.runners._shared.inspect import build_run_view
+
+        return build_run_view(self)
+
+    def inspect(self) -> RunView:
+        """Render-friendly alias for the reusable inspect artifact."""
+        return self.view()
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict with status, run_id, and log.
@@ -219,6 +235,16 @@ class RunResult:
             d["log"] = self.log.to_dict()
         if self.error:
             d["error"] = f"{type(self.error).__name__}: {self.error}"
+        if self.failure:
+            d["failure"] = {
+                "node_name": self.failure.node_name,
+                "error": f"{type(self.failure.error).__name__}: {self.failure.error}",
+                "superstep": self.failure.superstep,
+                "duration_ms": self.failure.duration_ms,
+                "started_at_ms": self.failure.started_at_ms,
+                "ended_at_ms": self.failure.ended_at_ms,
+                "item_index": self.failure.item_index,
+            }
         return d
 
     def __getitem__(self, key: str) -> Any:
@@ -694,11 +720,15 @@ class ExecutionContext:
     show_progress: bool | None = None
     parent_span_id: str | None = None
     workflow_id: str | None = None
+    item_index: int | None = None
     run_id: str = ""
     provided_values: dict[str, Any] = field(default_factory=dict)
     is_resuming: bool = False
     on_inner_log: Callable[[RunLog], None] | None = None
+    on_node_start: Callable[[str, int, dict[str, Any], float | None], None] | None = None
+    on_node_snapshot: Callable[[str, int, dict[str, Any], dict[str, Any], float, float, float, bool], None] | None = None
     emit_fn: Callable[[Any], None] | None = None
+    run_started_at: float = 0.0
 
 
 @dataclass

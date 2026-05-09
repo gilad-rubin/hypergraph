@@ -21,6 +21,7 @@ from hypergraph.runners._shared.event_helpers import (
     build_route_decision_event,
 )
 from hypergraph.runners._shared.helpers import apply_node_result, collect_inputs_for_node
+from hypergraph.runners._shared.inspect import FailureCase
 from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
@@ -38,10 +39,13 @@ def run_superstep_sync(
     executors: dict[type[HyperNode], NodeExecutor[Any]],
     ctx_base: ExecutionContext,
     *,
+    superstep_idx: int = 0,
     cache: CacheBackend | None = None,
     dispatcher: EventDispatcher | None = None,
     run_id: str = "",
     run_span_id: str = "",
+    workflow_id: str | None = None,
+    item_index: int | None = None,
 ) -> GraphState:
     """Execute one superstep: run all ready nodes and update state.
 
@@ -80,22 +84,88 @@ def run_superstep_sync(
         if cached_outputs is not None:
             outputs = cached_outputs
             restore_routing_decision(node, outputs, new_state)
+            cached_started_at_ms = (time.time() - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
+            if ctx_base.on_node_snapshot is not None:
+                ctx_base.on_node_snapshot(
+                    node.name,
+                    superstep_idx,
+                    inputs,
+                    outputs,
+                    0.0,
+                    cached_started_at_ms,
+                    cached_started_at_ms,
+                    True,
+                )
             # Emit NodeStartEvent -> CacheHitEvent -> NodeEndEvent(cached=True)
-            node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+            node_span_id, start_evt = build_node_start_event(
+                run_id,
+                run_span_id,
+                node,
+                graph,
+                workflow_id=workflow_id,
+                item_index=item_index,
+                superstep=superstep_idx,
+            )
             if active:
                 dispatcher.emit(start_evt)
-                dispatcher.emit(build_cache_hit_event(run_id, node_span_id, run_span_id, node, graph, cache_key))
-                route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                dispatcher.emit(
+                    build_cache_hit_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        cache_key,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
+                    )
+                )
+                route_evt = build_route_decision_event(
+                    run_id,
+                    run_span_id,
+                    node_span_id,
+                    node,
+                    graph,
+                    new_state,
+                    workflow_id=workflow_id,
+                    item_index=item_index,
+                    superstep=superstep_idx,
+                )
                 if route_evt is not None:
                     dispatcher.emit(route_evt)
-                dispatcher.emit(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
+                dispatcher.emit(
+                    build_node_end_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        duration_ms=0.0,
+                        cached=True,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
+                    )
+                )
         else:
             # Emit NodeStartEvent
-            node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+            node_span_id, start_evt = build_node_start_event(
+                run_id,
+                run_span_id,
+                node,
+                graph,
+                workflow_id=workflow_id,
+                item_index=item_index,
+                superstep=superstep_idx,
+            )
             if active:
                 dispatcher.emit(start_evt)
 
             node_start = time.time()
+            started_at_ms = (node_start - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
+            if ctx_base.on_node_start is not None:
+                ctx_base.on_node_start(node.name, superstep_idx, inputs, started_at_ms)
             try:
                 executor = executors.get(type(node))
                 if executor is None:
@@ -112,14 +182,38 @@ def run_superstep_sync(
                 # Execute node
                 outputs = executor(node, new_state, inputs, ctx)
 
-                duration_ms = (time.time() - node_start) * 1000
+                node_end = time.time()
+                duration_ms = (node_end - node_start) * 1000
+                ended_at_ms = (node_end - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
 
                 # Store result in cache
                 if cache is not None and cache_key:
                     store_in_cache(node, outputs, new_state, cache, cache_key)
 
+                if ctx_base.on_node_snapshot is not None:
+                    ctx_base.on_node_snapshot(
+                        node.name,
+                        superstep_idx,
+                        inputs,
+                        outputs,
+                        duration_ms,
+                        started_at_ms,
+                        ended_at_ms,
+                        False,
+                    )
+
                 if active:
-                    route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                    route_evt = build_route_decision_event(
+                        run_id,
+                        run_span_id,
+                        node_span_id,
+                        node,
+                        graph,
+                        new_state,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
+                    )
                     if route_evt is not None:
                         dispatcher.emit(route_evt)
                     dispatcher.emit(
@@ -131,19 +225,47 @@ def run_superstep_sync(
                             graph,
                             duration_ms,
                             inner_logs=tuple(inner_logs),
+                            workflow_id=workflow_id,
+                            item_index=item_index,
+                            superstep=superstep_idx,
                         )
                     )
 
             except BaseException as e:
-                duration_ms = (time.time() - node_start) * 1000
+                node_end = time.time()
+                duration_ms = (node_end - node_start) * 1000
+                ended_at_ms = (node_end - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
                 if active:
-                    dispatcher.emit(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
+                    dispatcher.emit(
+                        build_node_error_event(
+                            run_id,
+                            node_span_id,
+                            run_span_id,
+                            node,
+                            graph,
+                            workflow_id=workflow_id,
+                            item_index=item_index,
+                            superstep=superstep_idx,
+                        )
+                    )
                 # Re-raise PauseExecution unwrapped (needed for InterruptNode)
                 if isinstance(e, PauseExecution):
                     raise
                 # Wrap only Exception subclasses
                 if isinstance(e, Exception):
-                    raise ExecutionError(e, new_state) from e
+                    raise ExecutionError(
+                        e,
+                        new_state,
+                        failure_case=FailureCase(
+                            node_name=node.name,
+                            error=e,
+                            inputs=dict(inputs),
+                            superstep=superstep_idx,
+                            duration_ms=duration_ms,
+                            started_at_ms=started_at_ms,
+                            ended_at_ms=ended_at_ms,
+                        ),
+                    ) from e
                 # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
                 raise
 

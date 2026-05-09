@@ -63,6 +63,110 @@ processor = RichProgressProcessor(force_mode="non-tty")
 processor = RichProgressProcessor(force_mode="tty")
 ```
 
+## OpenTelemetry Export
+
+Use OpenTelemetry when you want to send Hypergraph execution data to an external
+observability backend such as Jaeger, Honeycomb, Datadog, Grafana, or Logfire.
+
+Important:
+
+- Hypergraph's native `inspect=True`, `RunLog`, `FailureCase`, and checkpointing remain the primary debugging workflow.
+- OpenTelemetry is the opt-in export layer for interoperability, not Hypergraph's internal state model.
+- Exported spans focus on identifiers, status, timing, hierarchy, and lineage metadata, not raw values or inspect payloads.
+
+Install:
+
+```bash
+pip install 'hypergraph[otel]'
+```
+
+Use it like any other event processor:
+
+```python
+from hypergraph import AsyncRunner
+from hypergraph.events.otel import OpenTelemetryProcessor
+
+runner = AsyncRunner()
+result = await runner.run(
+    graph,
+    inputs,
+    workflow_id="wf-rag-001",
+    event_processors=[OpenTelemetryProcessor()],
+)
+```
+
+### Span Hierarchy
+
+Hypergraph exports long-lived execution scopes as spans:
+
+- graph runs -> `graph {graph_name}`
+- `runner.map()` batch scopes -> `map {graph_name}`
+- node executions -> `node {node_name}`
+- nested graph runs -> child run spans under the parent `GraphNode` span
+
+Example structure for a nested graph inside a mapped workflow item:
+
+```text
+map evaluate_batch                      workflow_id=batch-1
+└── graph evaluate_batch                workflow_id=batch-1/0 item_index=0
+    ├── node prepare
+    ├── node answer
+    └── node scorer
+        └── graph score_inner           workflow_id=batch-1/0/scorer
+            └── node judge
+```
+
+### Exported Attributes
+
+Run spans include explicit semantic attributes such as:
+
+- `hypergraph.run_id`
+- `hypergraph.workflow_id`
+- `hypergraph.parent_workflow_id`
+- `hypergraph.item_index`
+- `hypergraph.graph_name`
+- `hypergraph.run.kind` (`graph` or `map`)
+- `hypergraph.map_size`
+- `hypergraph.forked_from`
+- `hypergraph.fork_superstep`
+- `hypergraph.retry_of`
+- `hypergraph.retry_index`
+- `hypergraph.is_resume`
+- `hypergraph.lineage_depth`
+
+Node spans include:
+
+- `hypergraph.node_name`
+- `hypergraph.superstep`
+- `hypergraph.cached`
+- run-scoping identifiers such as `hypergraph.run_id` and `hypergraph.workflow_id`
+
+### Exported Span Events
+
+Short-lived execution milestones are exported as span events instead of their own spans:
+
+- `hypergraph.superstep.start`
+- `hypergraph.route.decision`
+- `hypergraph.cache.hit`
+- `hypergraph.pause`
+- `hypergraph.stop.requested`
+- `hypergraph.resume`
+- `hypergraph.fork`
+- `hypergraph.retry`
+- `exception` on failed node or run scopes
+
+### What Stays Native-Only
+
+Hypergraph intentionally keeps rich debugging artifacts in its native UX:
+
+- `result.inspect()` / `RunView`
+- `FailureCase.inputs`
+- checkpoint value snapshots and step payloads
+- graph HTML / native visualization
+- raw cache keys and streamed value payloads
+
+Use OTel to answer "which run/node failed, where, how long did it take, and what lineage did it come from?" Use Hypergraph's native inspect/checkpoint tools to answer "what exact values and UI-ready artifacts should I debug with?"
+
 ## Custom Event Processors
 
 ### Collect All Events

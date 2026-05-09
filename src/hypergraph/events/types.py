@@ -41,12 +41,16 @@ class BaseEvent:
         run_id: Unique identifier for the run that produced this event.
         span_id: Unique identifier for this event's scope.
         parent_span_id: Span ID of the parent scope, or None for root runs.
+        workflow_id: Optional persistent workflow identifier for this run.
+        item_index: Map item index when this event belongs to a mapped child run.
         timestamp: Unix timestamp when the event was created.
     """
 
     run_id: str
     span_id: str = field(default_factory=_generate_span_id)
     parent_span_id: str | None = None
+    workflow_id: str | None = None
+    item_index: int | None = None
     timestamp: float = field(default_factory=_now)
 
 
@@ -56,15 +60,25 @@ class RunStartEvent(BaseEvent):
 
     Attributes:
         graph_name: Name of the graph being executed.
-        workflow_id: Optional workflow identifier for tracking related runs.
         is_map: Whether this run is part of a map operation.
         map_size: Number of items in the map operation, if applicable.
+        parent_workflow_id: Parent workflow identifier for nested graphs/map items.
+        forked_from: Source workflow ID when this run was forked from a checkpoint.
+        fork_superstep: Source superstep when the fork originated.
+        retry_of: Source workflow ID when this run is a retry.
+        retry_index: Monotonic retry index for repeated retries of the same source.
+        is_resume: Whether this run started from restored checkpoint state.
     """
 
     graph_name: str = ""
-    workflow_id: str | None = None
     is_map: bool = False
     map_size: int | None = None
+    parent_workflow_id: str | None = None
+    forked_from: str | None = None
+    fork_superstep: int | None = None
+    retry_of: str | None = None
+    retry_index: int | None = None
+    is_resume: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,12 +90,24 @@ class RunEndEvent(BaseEvent):
         status: Outcome of the run (completed, failed, or paused).
         error: Error message if status is FAILED.
         duration_ms: Wall-clock duration in milliseconds.
+        parent_workflow_id: Parent workflow identifier for nested graphs/map items.
+        forked_from: Source workflow ID when this run was forked from a checkpoint.
+        fork_superstep: Source superstep when the fork originated.
+        retry_of: Source workflow ID when this run is a retry.
+        retry_index: Monotonic retry index for repeated retries of the same source.
+        is_resume: Whether this run started from restored checkpoint state.
     """
 
     graph_name: str = ""
     status: RunStatus = RunStatus.COMPLETED
     error: str | None = None
     duration_ms: float = 0.0
+    parent_workflow_id: str | None = None
+    forked_from: str | None = None
+    fork_superstep: int | None = None
+    retry_of: str | None = None
+    retry_index: int | None = None
+    is_resume: bool = False
 
     def __post_init__(self) -> None:
         # Coerce string status values to RunStatus enum
@@ -96,10 +122,12 @@ class NodeStartEvent(BaseEvent):
     Attributes:
         node_name: Name of the node.
         graph_name: Name of the graph containing the node.
+        superstep: Zero-indexed superstep where the node started.
     """
 
     node_name: str = ""
     graph_name: str = ""
+    superstep: int = 0
 
 
 @dataclass(frozen=True)
@@ -110,10 +138,12 @@ class NodeEndEvent(BaseEvent):
         node_name: Name of the node.
         graph_name: Name of the graph containing the node.
         duration_ms: Wall-clock duration in milliseconds.
+        superstep: Zero-indexed superstep where the node completed.
     """
 
     node_name: str = ""
     graph_name: str = ""
+    superstep: int = 0
     duration_ms: float = 0.0
     cached: bool = False
     inner_logs: tuple = ()  # tuple[RunLog, ...] at runtime; untyped to avoid import
@@ -127,11 +157,13 @@ class CacheHitEvent(BaseEvent):
         node_name: Name of the cached node.
         graph_name: Name of the graph containing the node.
         cache_key: The cache key that was hit.
+        superstep: Zero-indexed superstep where the cache hit occurred.
     """
 
     node_name: str = ""
     graph_name: str = ""
     cache_key: str = ""
+    superstep: int = 0
 
 
 @dataclass(frozen=True)
@@ -143,12 +175,14 @@ class NodeErrorEvent(BaseEvent):
         graph_name: Name of the graph containing the node.
         error: Error message.
         error_type: Fully qualified exception type name.
+        superstep: Zero-indexed superstep where the node failed.
     """
 
     node_name: str = ""
     graph_name: str = ""
     error: str = ""
     error_type: str = ""
+    superstep: int = 0
 
 
 @dataclass(frozen=True)
@@ -159,11 +193,15 @@ class RouteDecisionEvent(BaseEvent):
         node_name: Name of the routing node.
         graph_name: Name of the graph containing the node.
         decision: The chosen target(s).
+        node_span_id: Span ID of the node execution that made the decision.
+        superstep: Zero-indexed superstep where the decision happened.
     """
 
     node_name: str = ""
     graph_name: str = ""
     decision: str | list[str] = ""
+    node_span_id: str | None = None
+    superstep: int = 0
 
 
 @dataclass(frozen=True)
@@ -173,16 +211,16 @@ class InterruptEvent(BaseEvent):
     Attributes:
         node_name: Name of the node that triggered the interrupt.
         graph_name: Name of the graph containing the node.
-        workflow_id: Optional workflow identifier.
         value: The interrupt payload.
         response_param: Parameter name expected for the response.
+        superstep: Zero-indexed superstep where execution paused.
     """
 
     node_name: str = ""
     graph_name: str = ""
-    workflow_id: str | None = None
     value: object = None
     response_param: str = ""
+    superstep: int = 0
 
 
 @dataclass(frozen=True)
@@ -203,11 +241,11 @@ class StopRequestedEvent(BaseEvent):
     """Emitted when a stop is requested on a workflow.
 
     Attributes:
-        workflow_id: Optional workflow identifier.
+        graph_name: Name of the graph whose run was stopped.
         info: Optional metadata from ``runner.stop(workflow_id, info=...)``.
     """
 
-    workflow_id: str | None = None
+    graph_name: str = ""
     info: object = None
 
 

@@ -7,6 +7,39 @@ Runners execute graphs. They handle the execution loop, node scheduling, and con
 - **AsyncRunner** - Concurrent execution with async support and `max_concurrency`
 - **RunResult** - Output values, status, and error information
 - **map()** - Batch processing with zip or cartesian product modes
+- **start_run() / start_map()** - Background handles for object-first debugging and control
+
+## Background Handles
+
+Both `SyncRunner` and `AsyncRunner` expose background entrypoints that return a handle immediately instead of forcing exception-first control flow.
+
+```python
+# Sync
+run = SyncRunner().start_run(graph, {"x": 5}, inspect=True)
+view = run.view()  # live view while the run is active
+result = run.result(raise_on_failure=False)
+
+# Async
+run = AsyncRunner().start_run(graph, {"x": 5}, inspect=True)
+result = await run.result(raise_on_failure=False)
+```
+
+Use `start_run()` when you want:
+
+- a real object immediately
+- `run.view()` / `run.inspect()` while the run is active
+- `run.stop()` without wrapping the execution in `try/except`
+- the same rich inspector later through `result.inspect()`
+
+Use `start_map()` when you want:
+
+- a background batch handle
+- `batch.result(...)` instead of immediate raising
+- `batch.failures` with per-item `FailureCase` data after completion
+
+Today, `start_run()` is the richer live-debug surface. `start_map()` already gives you delayed raising and structured failure drilldown, but it does not yet expose the same live inspect/view + stop control story while the batch is still running.
+
+With `inspect=True`, `start_run()` notebook renders use a richer HTML widget: timeline, failure banner, graph tab, and typed value viewers. For `start_map()`, `inspect=True` captures inspect data for child results; render a specific item with `result[i].inspect()` after the batch finishes.
 
 ## Overview
 
@@ -66,6 +99,7 @@ def run(
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    inspect: bool = False,
     checkpoint: Checkpoint | None = None,
     workflow_id: str | None = None,
     override_workflow: bool = False,
@@ -91,6 +125,7 @@ Execute a graph once.
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `inspect` - If `True`, capture inspect data and auto-render a live notebook inspector while the run is active. The same data is available later via `result.view()` / `result.inspect()`.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted: auto-generated for `run()`
@@ -133,6 +168,15 @@ result = runner.run(graph.select("answer"), values, on_missing="error")
 # With progress bars
 from hypergraph import RichProgressProcessor
 result = runner.run(graph, values, event_processors=[RichProgressProcessor()])
+
+# Live inspect widget + reusable inspect data
+result = runner.run(graph, {"x": 5}, inspect=True, error_handling="continue")
+if result.failed:
+    failure = result.failure
+    assert failure is not None
+    print(failure.node_name)
+    print(failure.inputs)
+    print(result.view()["double"].outputs)
 
 # Collect partial results instead of raising on failure
 from hypergraph import RunStatus
@@ -177,6 +221,7 @@ def map(
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    inspect: bool = False,
     workflow_id: str | None = None,
     **input_values: Any,
 ) -> MapResult: ...
@@ -196,6 +241,7 @@ Execute a graph multiple times with different inputs.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `inspect` - If `True`, forward inspect capture to each child run. Failed items expose structured `FailureCase` data through the returned handle or per-item results.
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand (merged with `values`)
 
@@ -601,6 +647,7 @@ async def run(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    inspect: bool = False,
     checkpoint: Checkpoint | None = None,
     workflow_id: str | None = None,
     override_workflow: bool = False,
@@ -624,6 +671,7 @@ Execute a graph asynchronously.
   - `"raise"` (default): Re-raise the original exception. Clean traceback, no wrapper.
   - `"continue"`: Return `RunResult` with `status=FAILED` and partial values instead of raising.
 - `event_processors` - Optional list of [event processors](events.md) to observe execution (supports `AsyncEventProcessor`)
+- `inspect` - If `True`, capture inspect data and auto-render a live notebook inspector while the run is active. The same data is available later via `result.view()` / `result.inspect()` or via `start_run(...).view()`.
 - `checkpoint` - Optional low-level checkpoint snapshot (`values + steps`) for explicit fork restores.
 - `workflow_id` - Optional workflow identifier for lineage tracking. With a checkpointer:
   - omitted: auto-generated for `run()`
@@ -692,6 +740,7 @@ async def map(
     max_concurrency: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
+    inspect: bool = False,
     workflow_id: str | None = None,
     **input_values: Any,
 ) -> MapResult: ...
@@ -713,6 +762,7 @@ Execute graph multiple times concurrently.
   - `"raise"` (default): Stop on first failure and raise the exception
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
+- `inspect` - If `True`, forward inspect capture to each child run so you can inspect per-item results and failures after completion.
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
 - `**input_values` - Input shorthand (merged with `values`)
 
@@ -791,10 +841,11 @@ else:
 @dataclass
 class RunResult:
     values: dict[str, Any]      # Output values
-    status: RunStatus           # COMPLETED, FAILED, or PAUSED
+    status: RunStatus           # COMPLETED, FAILED, PAUSED, or STOPPED
     run_id: str                 # Unique identifier (auto-generated)
     workflow_id: str | None     # Optional workflow tracking
     error: BaseException | None # Exception if FAILED
+    failure: FailureCase | None # Structured failed-node context if FAILED
     pause: PauseInfo | None     # Pause info if PAUSED (InterruptNode)
 ```
 
@@ -804,6 +855,7 @@ class RunResult:
 result.completed  # True if status == COMPLETED
 result.paused     # True if status == PAUSED
 result.failed     # True if status == FAILED
+result.stopped    # True if status == STOPPED
 ```
 
 ### Dict-like Access
@@ -832,9 +884,31 @@ if result.status == RunStatus.FAILED:
     # values contains outputs from nodes that succeeded before the failure
     partial = result.values  # e.g. {"step1_output": 10}
     error = result.error     # the exception that caused the failure
+    failure = result.failure # exact failed node + resolved inputs
 ```
 
-This is useful for debugging — you can inspect which nodes completed successfully.
+This is useful for debugging — you can inspect which nodes completed successfully and exactly which node failed:
+
+```python
+if result.failed:
+    failure = result.failure
+    assert failure is not None
+    print(failure.node_name)
+    print(failure.inputs)
+```
+
+### Inspect Views
+
+```python
+result = runner.run(graph, {"x": 5}, inspect=True, error_handling="continue")
+
+view = result.view()      # structured inspect artifact
+result.inspect()          # render-friendly alias for the same artifact
+
+view["double"].inputs
+view["double"].outputs
+view.failures
+```
 
 ### Progressive Disclosure
 
@@ -909,6 +983,8 @@ class RunStatus(Enum):
     COMPLETED = "completed"  # Success
     FAILED = "failed"        # Error occurred
     PAUSED = "paused"        # Waiting for human input (InterruptNode)
+    PARTIAL = "partial"      # Mixed success/failure batch result
+    STOPPED = "stopped"      # Cooperatively stopped via start_run()/runner.stop()
 ```
 
 **Usage:**

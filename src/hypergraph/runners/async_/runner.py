@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.exceptions import ExecutionError, InfiniteLoopError, WorkflowAlreadyRunningError
@@ -12,7 +13,9 @@ from hypergraph.nodes.function import FunctionNode
 from hypergraph.nodes.gate import IfElseNode, RouteNode
 from hypergraph.nodes.graph_node import GraphNode
 from hypergraph.nodes.interrupt import InterruptNode
+from hypergraph.runners._shared.handles import AsyncMapHandle, AsyncRunHandle
 from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
+from hypergraph.runners._shared.inspect import LiveInspectState, MapInspectWidget
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
@@ -119,6 +122,45 @@ class AsyncRunner(AsyncRunnerTemplate):
         if signal is not None:
             signal.set(info=info)
 
+    def start_run(self, graph: Graph, values: dict[str, Any] | None = None, **kwargs: Any) -> AsyncRunHandle:
+        """Start run() in the current event loop and return a handle."""
+        stop_signal = StopSignal()
+        kwargs.pop("error_handling", None)
+        live_state = LiveInspectState() if kwargs.get("inspect") else None
+        task = asyncio.create_task(
+            self.run(
+                graph,
+                values,
+                error_handling="continue",
+                _stop_signal=stop_signal,
+                _inspect_state=live_state,
+                **kwargs,
+            )
+        )
+        return AsyncRunHandle(task, stop_callback=stop_signal.set, live_state=live_state)
+
+    def start_map(self, graph: Graph, values: dict[str, Any] | None = None, **kwargs: Any) -> AsyncMapHandle:
+        """Start map() in the current event loop and return a handle."""
+        kwargs.pop("error_handling", None)
+        inspect_widget = MapInspectWidget(graph_name=graph.name or None) if kwargs.get("inspect") else None
+        if inspect_widget is not None:
+            inspect_widget.refresh_running()
+        task = asyncio.create_task(self.map(graph, values, error_handling="continue", **kwargs))
+
+        if inspect_widget is not None:
+
+            def _on_done(done_task: asyncio.Task[Any]) -> None:
+                try:
+                    result = done_task.result()
+                except BaseException as exc:
+                    inspect_widget.refresh_error(exc)
+                else:
+                    inspect_widget.refresh_result(result)
+
+            task.add_done_callback(_on_done)
+
+        return AsyncMapHandle(task, inspect_widget=inspect_widget)
+
     @property
     def _checkpointer(self) -> Checkpointer | None:
         """Checkpointer for workflow persistence."""
@@ -157,9 +199,13 @@ class AsyncRunner(AsyncRunnerTemplate):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        on_node_start: Callable[[str, int, dict[str, Any], float | None], None] | None = None,
+        on_node_snapshot: Callable[[str, int, dict[str, Any], dict[str, Any], float, float | None, float | None, bool], None] | None = None,
         workflow_id: str | None = None,
+        item_index: int | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _stop_signal: StopSignal | None = None,
         _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph until no more ready nodes or max_iterations reached.
@@ -191,7 +237,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         # Set up StopSignal for this run.
         # Inherit parent signal so nested graphs see the outer stop.
         parent_signal = get_stop_signal()
-        signal = StopSignal(parent=parent_signal)
+        signal = _stop_signal or StopSignal(parent=parent_signal)
         if workflow_id is not None:
             if workflow_id in self._active_signals:
                 raise WorkflowAlreadyRunningError(workflow_id)
@@ -207,9 +253,13 @@ class AsyncRunner(AsyncRunnerTemplate):
                 # sub-runners from double-adding RichProgressProcessor.
                 show_progress=False,
                 workflow_id=workflow_id,
+                item_index=item_index,
                 run_id=run_id,
                 provided_values=values,
                 is_resuming=(checkpoint is not None if self._checkpointer_instance is not None else True),
+                run_started_at=time.time(),
+                on_node_start=on_node_start,
+                on_node_snapshot=on_node_snapshot,
                 emit_fn=dispatcher.emit if dispatcher.active else None,
             )
 
@@ -240,6 +290,8 @@ class AsyncRunner(AsyncRunnerTemplate):
                             run_id=run_id,
                             span_id=_generate_span_id(),
                             parent_span_id=run_span_id,
+                            workflow_id=workflow_id,
+                            item_index=item_index,
                             graph_name=graph.name,
                             superstep=superstep_idx,
                         )
@@ -264,10 +316,13 @@ class AsyncRunner(AsyncRunnerTemplate):
                         self._executors,
                         ctx_base,
                         max_concurrency,
+                        superstep_idx=superstep_idx,
                         cache=self._cache,
                         dispatcher=dispatcher,
                         run_id=run_id,
                         run_span_id=run_span_id,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
                     )
                 except PauseExecution:
                     # Save step records before propagating the pause.
@@ -415,16 +470,32 @@ class AsyncRunner(AsyncRunnerTemplate):
         graph: Graph,
         parent_span_id: str | None,
         *,
+        workflow_id: str | None = None,
+        parent_workflow_id: str | None = None,
+        item_index: int | None = None,
         is_map: bool = False,
         map_size: int | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        is_resume: bool = False,
     ) -> tuple[str, str]:
         """Emit run-start event via async helper."""
         return await _emit_run_start(
             dispatcher,
             graph,
             parent_span_id,
+            workflow_id=workflow_id,
+            parent_workflow_id=parent_workflow_id,
+            item_index=item_index,
             is_map=is_map,
             map_size=map_size,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
         )
 
     async def _emit_run_end_async(
@@ -436,7 +507,16 @@ class AsyncRunner(AsyncRunnerTemplate):
         start_time: float,
         parent_span_id: str | None,
         *,
+        workflow_id: str | None = None,
+        parent_workflow_id: str | None = None,
+        item_index: int | None = None,
+        status: str | None = None,
         error: BaseException | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        is_resume: bool = False,
     ) -> None:
         """Emit run-end event via async helper."""
         await _emit_run_end(
@@ -446,7 +526,16 @@ class AsyncRunner(AsyncRunnerTemplate):
             graph,
             start_time,
             parent_span_id,
+            workflow_id=workflow_id,
+            parent_workflow_id=parent_workflow_id,
+            item_index=item_index,
+            status=status,
             error=error,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
         )
 
     async def _shutdown_dispatcher_async(self, dispatcher: EventDispatcher) -> None:
@@ -486,8 +575,16 @@ async def _emit_run_start(
     graph: Graph,
     parent_span_id: str | None,
     *,
+    workflow_id: str | None = None,
+    parent_workflow_id: str | None = None,
+    item_index: int | None = None,
     is_map: bool = False,
     map_size: int | None = None,
+    forked_from: str | None = None,
+    fork_superstep: int | None = None,
+    retry_of: str | None = None,
+    retry_index: int | None = None,
+    is_resume: bool = False,
 ) -> tuple[str, str]:
     """Emit RunStartEvent and return (run_id, span_id)."""
     from hypergraph.events.types import _generate_span_id
@@ -505,9 +602,17 @@ async def _emit_run_start(
             run_id=run_id,
             span_id=span_id,
             parent_span_id=parent_span_id,
+            workflow_id=workflow_id,
+            item_index=item_index,
             graph_name=graph.name,
             is_map=is_map,
             map_size=map_size,
+            parent_workflow_id=parent_workflow_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
         )
     )
     return run_id, span_id
@@ -521,7 +626,16 @@ async def _emit_run_end(
     start_time: float,
     parent_span_id: str | None,
     *,
+    workflow_id: str | None = None,
+    parent_workflow_id: str | None = None,
+    item_index: int | None = None,
+    status: str | None = None,
     error: BaseException | None = None,
+    forked_from: str | None = None,
+    fork_superstep: int | None = None,
+    retry_of: str | None = None,
+    retry_index: int | None = None,
+    is_resume: bool = False,
 ) -> None:
     """Emit RunEndEvent."""
     if not dispatcher.active:
@@ -535,9 +649,17 @@ async def _emit_run_end(
             run_id=run_id,
             span_id=span_id,
             parent_span_id=parent_span_id,
+            workflow_id=workflow_id,
+            item_index=item_index,
             graph_name=graph.name,
-            status="failed" if error else "completed",
+            status=status or ("failed" if error else "completed"),
             error=str(error) if error else None,
             duration_ms=duration_ms,
+            parent_workflow_id=parent_workflow_id,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
         )
     )

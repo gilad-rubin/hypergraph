@@ -23,6 +23,7 @@ from hypergraph.runners._shared.event_helpers import (
     build_route_decision_event,
 )
 from hypergraph.runners._shared.helpers import apply_node_result, collect_inputs_for_node
+from hypergraph.runners._shared.inspect import FailureCase
 from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
@@ -59,10 +60,13 @@ async def run_superstep_async(
     ctx_base: ExecutionContext,
     max_concurrency: int | None = None,
     *,
+    superstep_idx: int = 0,
     cache: CacheBackend | None = None,
     dispatcher: EventDispatcher | None = None,
     run_id: str = "",
     run_span_id: str = "",
+    workflow_id: str | None = None,
+    item_index: int | None = None,
 ) -> GraphState:
     """Execute one superstep with concurrent node execution.
 
@@ -112,23 +116,89 @@ async def run_superstep_async(
         if cached_outputs is not None:
             outputs = cached_outputs
             restore_routing_decision(node, outputs, new_state)
+            cached_started_at_ms = (time.time() - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
+            if ctx_base.on_node_snapshot is not None:
+                ctx_base.on_node_snapshot(
+                    node.name,
+                    superstep_idx,
+                    inputs,
+                    outputs,
+                    0.0,
+                    cached_started_at_ms,
+                    cached_started_at_ms,
+                    True,
+                )
             # Emit NodeStartEvent -> CacheHitEvent -> RouteDecision? -> NodeEndEvent(cached=True)
-            node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+            node_span_id, start_evt = build_node_start_event(
+                run_id,
+                run_span_id,
+                node,
+                graph,
+                workflow_id=workflow_id,
+                item_index=item_index,
+                superstep=superstep_idx,
+            )
             if active:
                 await dispatcher.emit_async(start_evt)
-                await dispatcher.emit_async(build_cache_hit_event(run_id, node_span_id, run_span_id, node, graph, cache_key))
-                route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                await dispatcher.emit_async(
+                    build_cache_hit_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        cache_key,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
+                    )
+                )
+                route_evt = build_route_decision_event(
+                    run_id,
+                    run_span_id,
+                    node_span_id,
+                    node,
+                    graph,
+                    new_state,
+                    workflow_id=workflow_id,
+                    item_index=item_index,
+                    superstep=superstep_idx,
+                )
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
-                await dispatcher.emit_async(build_node_end_event(run_id, node_span_id, run_span_id, node, graph, duration_ms=0.0, cached=True))
+                await dispatcher.emit_async(
+                    build_node_end_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        duration_ms=0.0,
+                        cached=True,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
+                    )
+                )
             return node, outputs, input_versions, wait_for_versions, 0.0, True
 
         # Emit NodeStartEvent
-        node_span_id, start_evt = build_node_start_event(run_id, run_span_id, node, graph)
+        node_span_id, start_evt = build_node_start_event(
+            run_id,
+            run_span_id,
+            node,
+            graph,
+            workflow_id=workflow_id,
+            item_index=item_index,
+            superstep=superstep_idx,
+        )
         if active:
             await dispatcher.emit_async(start_evt)
 
         node_start = time.time()
+        started_at_ms = (node_start - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
+        if ctx_base.on_node_start is not None:
+            ctx_base.on_node_start(node.name, superstep_idx, inputs, started_at_ms)
         try:
             executor = executors.get(type(node))
             if executor is None:
@@ -145,14 +215,38 @@ async def run_superstep_async(
             # Pass new_state so routing decisions are stored in the updated state
             outputs = await executor(node, new_state, inputs, ctx)
 
-            duration_ms = (time.time() - node_start) * 1000
+            node_end = time.time()
+            duration_ms = (node_end - node_start) * 1000
+            ended_at_ms = (node_end - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
 
             # Store result in cache
             if cache is not None and cache_key:
                 store_in_cache(node, outputs, new_state, cache, cache_key)
 
+            if ctx_base.on_node_snapshot is not None:
+                ctx_base.on_node_snapshot(
+                    node.name,
+                    superstep_idx,
+                    inputs,
+                    outputs,
+                    duration_ms,
+                    started_at_ms,
+                    ended_at_ms,
+                    False,
+                )
+
             if active:
-                route_evt = build_route_decision_event(run_id, run_span_id, node, graph, new_state)
+                route_evt = build_route_decision_event(
+                    run_id,
+                    run_span_id,
+                    node_span_id,
+                    node,
+                    graph,
+                    new_state,
+                    workflow_id=workflow_id,
+                    item_index=item_index,
+                    superstep=superstep_idx,
+                )
                 if route_evt is not None:
                     await dispatcher.emit_async(route_evt)
                 await dispatcher.emit_async(
@@ -164,6 +258,9 @@ async def run_superstep_async(
                         graph,
                         duration_ms,
                         inner_logs=tuple(inner_logs),
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
                     )
                 )
 
@@ -171,10 +268,36 @@ async def run_superstep_async(
         except PauseExecution as exc:
             exc.span_id = node_span_id
             raise
-        except Exception:
+        except Exception as exc:
+            node_end = time.time()
+            duration_ms = (node_end - node_start) * 1000
+            ended_at_ms = (node_end - ctx_base.run_started_at) * 1000 if ctx_base.run_started_at else None
             if active:
-                await dispatcher.emit_async(build_node_error_event(run_id, node_span_id, run_span_id, node, graph))
-            raise
+                await dispatcher.emit_async(
+                    build_node_error_event(
+                        run_id,
+                        node_span_id,
+                        run_span_id,
+                        node,
+                        graph,
+                        workflow_id=workflow_id,
+                        item_index=item_index,
+                        superstep=superstep_idx,
+                    )
+                )
+            raise ExecutionError(
+                exc,
+                new_state,
+                failure_case=FailureCase(
+                    node_name=node.name,
+                    error=exc,
+                    inputs=dict(inputs),
+                    superstep=superstep_idx,
+                    duration_ms=duration_ms,
+                    started_at_ms=started_at_ms,
+                    ended_at_ms=ended_at_ms,
+                ),
+            ) from exc
 
     # Execute all ready nodes concurrently
     # Concurrency is controlled at the FunctionNode level via the global semaphore

@@ -1,5 +1,7 @@
 """Execution runners for hypergraph."""
 
+from hypergraph.runners._shared.handles import AsyncMapHandle, AsyncRunHandle, SyncMapHandle, SyncRunHandle
+from hypergraph.runners._shared.inspect import FailureCase, RunView
 from hypergraph.runners._shared.types import (
     ErrorHandling,
     GraphState,
@@ -28,6 +30,8 @@ __all__ = [
     "PauseInfo",
     "RunResult",
     "MapResult",
+    "FailureCase",
+    "RunView",
     "RunLog",
     "MapLog",
     "NodeRecord",
@@ -40,4 +44,8 @@ __all__ = [
     "SyncRunner",
     "AsyncRunner",
     "DaftRunner",
+    "SyncRunHandle",
+    "AsyncRunHandle",
+    "SyncMapHandle",
+    "AsyncMapHandle",
 ]

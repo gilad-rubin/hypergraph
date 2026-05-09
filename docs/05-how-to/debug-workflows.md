@@ -1,12 +1,100 @@
 # Debug Workflows
 
-Three tools for running and understanding graph execution, from quick in-process inspection to cross-process persistence and CLI execution/debugging.
+Four tools for running and understanding graph execution, from live in-process inspection to cross-process persistence and CLI execution/debugging.
 
 | Tool | When to Use | Setup | Scope |
 |------|-------------|-------|-------|
+| **Inspect** | "What is happening right now?" / "What failed?" | `inspect=True` | In-process, live or current run |
 | **RunLog** | "What happened in this run?" | Zero — always on | In-process, current run |
 | **Checkpointer** | "What happened yesterday?" | Pass to runner | Cross-process, persisted |
 | **CLI** | "Run this graph" / "Show me the failing run" | `pip install hypergraph[cli]` | Terminal, any process |
+
+## Inspect — Live Failure Debugging
+
+`inspect=True` turns on a live notebook inspector and captures reusable inspect data for later code-driven debugging.
+
+What you get:
+- a live execution timeline while the run is active
+- a failure banner that stays visible after errors
+- a graph tab that reuses Hypergraph's existing visualization
+- typed output viewers for JSON-like values, markdown, images, tables, dataclasses, and pydantic-style models
+- the same `RunView` artifact later through `result.view()` / `result.inspect()`
+
+### Quick Start
+
+```python
+from hypergraph import Graph, RunStatus, SyncRunner, node
+
+@node(output_name="doubled")
+def double(x: int) -> int:
+    return x * 2
+
+@node(output_name="boom")
+def fail_after_double(doubled: int) -> int:
+    raise ValueError("boom")
+
+graph = Graph([double, fail_after_double])
+runner = SyncRunner()
+
+result = runner.run(graph, {"x": 5}, inspect=True, error_handling="continue")
+
+if result.status == RunStatus.FAILED:
+    failure = result.failure
+    assert failure is not None
+    print(failure.node_name)   # fail_after_double
+    print(failure.inputs)      # {"doubled": 10}
+
+view = result.view()
+print(view["double"].outputs)         # {"doubled": 10}
+```
+
+### Object-First Debugging with start_run()
+
+Use `start_run()` when you want an object immediately, without wrapping the call in `try/except`:
+
+```python
+run = runner.start_run(graph, {"x": 5}, inspect=True)
+
+# Live view while the run is active
+live = run.view()
+print(live.status)  # "running"
+
+# Wait for terminal result without raising
+result = run.result(raise_on_failure=False)
+failure = run.failure
+assert failure is not None
+print(failure.inputs)
+```
+
+Async follows the same shape:
+
+```python
+run = AsyncRunner().start_run(graph, {"x": 5}, inspect=True)
+result = await run.result(raise_on_failure=False)
+print(run.view()["double"].outputs)
+```
+
+### Batch Failure Drilldown with start_map()
+
+```python
+batch = runner.start_map(
+    graph,
+    {"x": [1, 2, 3]},
+    map_over="x",
+    inspect=True,
+)
+results = batch.result(raise_on_failure=False)
+
+for case in batch.failures:
+    print(case.item_index, case.node_name, case.inputs)
+
+failed_item = results[batch.failures[0].item_index]
+failed_item.inspect()
+```
+
+Use this when you care about failed items as first-class debugging objects rather than just a raised exception.
+
+Today, `start_map()` is best for delayed raising and failure drilldown after completion. `inspect=True` captures inspect data for each child result, but it does not yet auto-show a single live batch widget. Render a specific child result with `failed_item.inspect()` once the batch finishes. Live batch inspection and stop control are currently richer on `start_run()`.
 
 ## RunLog — Always-On Run Trace
 

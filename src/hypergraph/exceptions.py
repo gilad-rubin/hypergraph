@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from hypergraph.runners._shared.inspect import FailureCase, NodeSnapshot
     from hypergraph.runners._shared.types import GraphState
 
 
@@ -103,8 +104,17 @@ class ExecutionError(Exception):
         partial_state: GraphState snapshot from before the failure
     """
 
-    def __init__(self, cause: BaseException, partial_state: GraphState) -> None:
+    def __init__(
+        self,
+        cause: BaseException,
+        partial_state: GraphState,
+        *,
+        failure_case: FailureCase | None = None,
+        inspect_data: tuple[NodeSnapshot, ...] | None = None,
+    ) -> None:
         self.partial_state = partial_state
+        self.failure_case = failure_case
+        self.inspect_data = inspect_data
         super().__init__(str(cause))
         self.__cause__ = cause
 

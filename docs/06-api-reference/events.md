@@ -39,10 +39,12 @@ class BaseEvent:
     run_id: str                    # Unique identifier for the run
     span_id: str                   # Unique identifier for this event's scope
     parent_span_id: str | None     # Parent scope, or None for root runs
+    workflow_id: str | None        # Persistent workflow identifier, if any
+    item_index: int | None         # Map item index for mapped child runs
     timestamp: float               # Unix timestamp
 ```
 
-Every event carries tracing context: `run_id` groups events from the same execution, `span_id` uniquely identifies the scope, and `parent_span_id` links nested graphs to their parents.
+Every event carries tracing context: `run_id` groups events from the same execution, `span_id` uniquely identifies the scope, `parent_span_id` links nested graphs to their parents, and `workflow_id` connects events to persisted lineage when checkpointing is active.
 
 ### RunStartEvent
 
@@ -52,9 +54,14 @@ Emitted when a graph run begins.
 @dataclass(frozen=True)
 class RunStartEvent(BaseEvent):
     graph_name: str              # Name of the graph
-    workflow_id: str | None      # Optional workflow tracking ID
     is_map: bool                 # True if this is a map() operation
     map_size: int | None         # Number of items in map, if applicable
+    parent_workflow_id: str | None
+    forked_from: str | None
+    fork_superstep: int | None
+    retry_of: str | None
+    retry_index: int | None
+    is_resume: bool
 ```
 
 ### RunEndEvent
@@ -65,9 +72,15 @@ Emitted when a graph run completes (successfully or not).
 @dataclass(frozen=True)
 class RunEndEvent(BaseEvent):
     graph_name: str              # Name of the graph
-    status: str                  # "completed" or "failed"
+    status: str                  # "completed", "failed", "paused", or "stopped"
     error: str | None            # Error message if failed
     duration_ms: float           # Wall-clock duration in milliseconds
+    parent_workflow_id: str | None
+    forked_from: str | None
+    fork_superstep: int | None
+    retry_of: str | None
+    retry_index: int | None
+    is_resume: bool
 ```
 
 ### NodeStartEvent
@@ -79,6 +92,7 @@ Emitted when a node begins execution.
 class NodeStartEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
+    superstep: int               # Superstep where the node started
 ```
 
 ### NodeEndEvent
@@ -90,6 +104,7 @@ Emitted when a node completes successfully.
 class NodeEndEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
+    superstep: int               # Superstep where the node completed
     duration_ms: float           # Wall-clock duration in milliseconds
     cached: bool                 # True if result was served from cache
 ```
@@ -103,6 +118,7 @@ Emitted when a node fails with an exception.
 class NodeErrorEvent(BaseEvent):
     node_name: str               # Name of the node
     graph_name: str              # Graph containing the node
+    superstep: int               # Superstep where the node failed
     error: str                   # Error message
     error_type: str              # Fully qualified exception type
 ```
@@ -117,6 +133,8 @@ class RouteDecisionEvent(BaseEvent):
     node_name: str               # Name of the routing node
     graph_name: str              # Graph containing the node
     decision: str | list[str]    # Chosen target(s)
+    node_span_id: str | None     # Node execution span that made the decision
+    superstep: int               # Superstep where the decision happened
 ```
 
 ### InterruptEvent
@@ -128,7 +146,7 @@ Emitted when execution pauses for human-in-the-loop input.
 class InterruptEvent(BaseEvent):
     node_name: str               # Node that triggered the interrupt
     graph_name: str              # Graph containing the node
-    workflow_id: str | None      # Workflow identifier
+    superstep: int               # Superstep where the pause occurred
     value: object                # Interrupt payload
     response_param: str          # Parameter name for the response
 ```
@@ -140,7 +158,7 @@ Emitted when a stop is requested on a workflow.
 ```python
 @dataclass(frozen=True)
 class StopRequestedEvent(BaseEvent):
-    workflow_id: str | None      # Workflow identifier
+    graph_name: str              # Graph whose run was stopped
 ```
 
 ### CacheHitEvent
@@ -153,6 +171,7 @@ class CacheHitEvent(BaseEvent):
     node_name: str               # Name of the cached node
     graph_name: str              # Graph containing the node
     cache_key: str               # The cache key that was hit
+    superstep: int               # Superstep where the cache hit occurred
 ```
 
 ### Event (Union Type)

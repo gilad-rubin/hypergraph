@@ -53,10 +53,13 @@ from hypergraph.nodes import (
     route,
 )
 from hypergraph.runners import (
+    AsyncMapHandle,
+    AsyncRunHandle,
     AsyncRunner,
     BaseRunner,
     DaftRunner,
     ErrorHandling,
+    FailureCase,
     MapLog,
     MapResult,
     NodeRecord,
@@ -65,6 +68,9 @@ from hypergraph.runners import (
     RunLog,
     RunResult,
     RunStatus,
+    RunView,
+    SyncMapHandle,
+    SyncRunHandle,
     SyncRunner,
 )
 from hypergraph.runners._shared.node_context import NodeContext
@@ -94,8 +100,14 @@ __all__ = [
     "ErrorHandling",
     "PauseInfo",
     "RunResult",
+    "RunView",
     "MapResult",
+    "FailureCase",
     "RunStatus",
+    "SyncRunHandle",
+    "AsyncRunHandle",
+    "SyncMapHandle",
+    "AsyncMapHandle",
     # Errors
     "RenameError",
     "GraphConfigError",

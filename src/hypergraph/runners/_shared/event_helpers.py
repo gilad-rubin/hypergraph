@@ -37,6 +37,10 @@ def build_node_start_event(
     run_span_id: str,
     node: HyperNode,
     graph: Graph,
+    *,
+    workflow_id: str | None = None,
+    item_index: int | None = None,
+    superstep: int = 0,
 ) -> tuple[str, Any]:
     """Build a NodeStartEvent. Returns (span_id, event)."""
     from hypergraph.events.types import NodeStartEvent, _generate_span_id
@@ -46,8 +50,11 @@ def build_node_start_event(
         run_id=run_id,
         span_id=span_id,
         parent_span_id=run_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         node_name=node.name,
         graph_name=graph.name,
+        superstep=superstep,
     )
     return span_id, event
 
@@ -61,6 +68,10 @@ def build_node_end_event(
     duration_ms: float,
     cached: bool = False,
     inner_logs: tuple = (),
+    *,
+    workflow_id: str | None = None,
+    item_index: int | None = None,
+    superstep: int = 0,
 ) -> Any:
     """Build a NodeEndEvent."""
     from hypergraph.events.types import NodeEndEvent
@@ -69,8 +80,11 @@ def build_node_end_event(
         run_id=run_id,
         span_id=node_span_id,
         parent_span_id=run_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         node_name=node.name,
         graph_name=graph.name,
+        superstep=superstep,
         duration_ms=duration_ms,
         cached=cached,
         inner_logs=inner_logs,
@@ -84,6 +98,10 @@ def build_cache_hit_event(
     node: HyperNode,
     graph: Graph,
     cache_key: str,
+    *,
+    workflow_id: str | None = None,
+    item_index: int | None = None,
+    superstep: int = 0,
 ) -> Any:
     """Build a CacheHitEvent."""
     from hypergraph.events.types import CacheHitEvent
@@ -92,9 +110,12 @@ def build_cache_hit_event(
         run_id=run_id,
         span_id=node_span_id,
         parent_span_id=run_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         node_name=node.name,
         graph_name=graph.name,
         cache_key=cache_key,
+        superstep=superstep,
     )
 
 
@@ -104,6 +125,10 @@ def build_node_error_event(
     run_span_id: str,
     node: HyperNode,
     graph: Graph,
+    *,
+    workflow_id: str | None = None,
+    item_index: int | None = None,
+    superstep: int = 0,
 ) -> Any:
     """Build a NodeErrorEvent from the current exception context."""
     from hypergraph.events.types import NodeErrorEvent
@@ -113,19 +138,27 @@ def build_node_error_event(
         run_id=run_id,
         span_id=node_span_id,
         parent_span_id=run_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         node_name=node.name,
         graph_name=graph.name,
         error=str(exc_val) if exc_val else "",
         error_type=f"{exc_type.__module__}.{exc_type.__qualname__}" if exc_type else "",
+        superstep=superstep,
     )
 
 
 def build_route_decision_event(
     run_id: str,
     run_span_id: str,
+    node_span_id: str,
     node: HyperNode,
     graph: Graph,
     state: GraphState,
+    *,
+    workflow_id: str | None = None,
+    item_index: int | None = None,
+    superstep: int = 0,
 ) -> Any | None:
     """Build a RouteDecisionEvent if the node made a routing decision.
 
@@ -143,9 +176,13 @@ def build_route_decision_event(
     return RouteDecisionEvent(
         run_id=run_id,
         parent_span_id=run_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         node_name=node.name,
         graph_name=graph.name,
         decision=state.routing_decisions[node.name],
+        node_span_id=node_span_id,
+        superstep=superstep,
     )
 
 
@@ -158,8 +195,16 @@ def build_run_start_event(
     graph: Graph,
     parent_span_id: str | None,
     *,
+    workflow_id: str | None = None,
+    parent_workflow_id: str | None = None,
+    item_index: int | None = None,
     is_map: bool = False,
     map_size: int | None = None,
+    forked_from: str | None = None,
+    fork_superstep: int | None = None,
+    retry_of: str | None = None,
+    retry_index: int | None = None,
+    is_resume: bool = False,
 ) -> tuple[str, str, Any]:
     """Build a RunStartEvent. Returns (run_id, span_id, event)."""
     from hypergraph.events.types import RunStartEvent, _generate_span_id
@@ -171,9 +216,17 @@ def build_run_start_event(
         run_id=run_id,
         span_id=span_id,
         parent_span_id=parent_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         graph_name=graph.name,
         is_map=is_map,
         map_size=map_size,
+        parent_workflow_id=parent_workflow_id,
+        forked_from=forked_from,
+        fork_superstep=fork_superstep,
+        retry_of=retry_of,
+        retry_index=retry_index,
+        is_resume=is_resume,
     )
     return run_id, span_id, event
 
@@ -185,7 +238,15 @@ def build_run_end_event(
     start_time: float,
     parent_span_id: str | None,
     *,
+    workflow_id: str | None = None,
+    parent_workflow_id: str | None = None,
+    item_index: int | None = None,
     error: BaseException | None = None,
+    forked_from: str | None = None,
+    fork_superstep: int | None = None,
+    retry_of: str | None = None,
+    retry_index: int | None = None,
+    is_resume: bool = False,
 ) -> Any:
     """Build a RunEndEvent."""
     from hypergraph.events.types import RunEndEvent, RunStatus
@@ -195,8 +256,16 @@ def build_run_end_event(
         run_id=run_id,
         span_id=span_id,
         parent_span_id=parent_span_id,
+        workflow_id=workflow_id,
+        item_index=item_index,
         graph_name=graph.name,
         status=RunStatus.FAILED if error else RunStatus.COMPLETED,
         error=str(error) if error else None,
         duration_ms=duration_ms,
+        parent_workflow_id=parent_workflow_id,
+        forked_from=forked_from,
+        fork_superstep=fork_superstep,
+        retry_of=retry_of,
+        retry_index=retry_index,
+        is_resume=is_resume,
     )

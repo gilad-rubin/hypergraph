@@ -8,6 +8,9 @@ import json
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import (
@@ -38,6 +41,8 @@ from hypergraph.runners._shared.input_normalization import (
     ASYNC_RUN_RESERVED_OPTION_NAMES,
     normalize_inputs,
 )
+from hypergraph.runners._shared.inspect import InspectCollector, InspectWidget, LiveInspectState
+from hypergraph.runners._shared.inspect_html import generate_inspect_graph_html
 from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import (
     ErrorHandling,
@@ -104,9 +109,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         run_id: str,
         run_span_id: str,
         event_processors: list[EventProcessor] | None = None,
+        on_node_start: Callable[[str, int, dict[str, Any], float | None], None] | None = None,
+        on_node_snapshot: Callable[[str, int, dict[str, Any], dict[str, Any], float, float | None, float | None, bool], None] | None = None,
         workflow_id: str | None = None,
+        item_index: int | None = None,
         checkpoint: Any | None = None,
         step_buffer: list[Any] | None = None,
+        _stop_signal: Any | None = None,
         _complete_on_stop: bool = False,
     ) -> GraphState:
         """Execute graph and return final state."""
@@ -127,8 +136,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         graph: Graph,
         parent_span_id: str | None,
         *,
+        workflow_id: str | None = None,
+        parent_workflow_id: str | None = None,
+        item_index: int | None = None,
         is_map: bool = False,
         map_size: int | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        is_resume: bool = False,
     ) -> tuple[str, str]:
         """Emit run-start event."""
         ...
@@ -143,7 +160,16 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         start_time: float,
         parent_span_id: str | None,
         *,
+        workflow_id: str | None = None,
+        parent_workflow_id: str | None = None,
+        item_index: int | None = None,
+        status: str | None = None,
         error: BaseException | None = None,
+        forked_from: str | None = None,
+        fork_superstep: int | None = None,
+        retry_of: str | None = None,
+        retry_index: int | None = None,
+        is_resume: bool = False,
     ) -> None:
         """Emit run-end event."""
         ...
@@ -184,6 +210,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
+        inspect: bool = False,
         checkpoint: Any | None = None,
         workflow_id: str | None = None,
         override_workflow: bool = False,
@@ -191,8 +218,12 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         retry_from: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
+        _item_index: int | None = None,
         _validation_ctx: _InputValidationContext | None = None,
         _run_config: dict[str, Any] | None = None,
+        _inspect_state: LiveInspectState | None = None,
+        _inspect_auto_display: bool = True,
+        _stop_signal: Any | None = None,
         _complete_on_stop: bool = False,
         **input_values: Any,
     ) -> RunResult:
@@ -319,13 +350,79 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
 
             event_processors = ensure_progress_processor(event_processors)
         collector = RunLogCollector()
+        inspect_state = _inspect_state if _inspect_state is not None else LiveInspectState() if inspect else None
+        inspect_collector = InspectCollector() if inspect_state is not None else None
+        inspect_graph_html = generate_inspect_graph_html(graph) if inspect_state is not None else None
         all_processors = [collector] + (event_processors or [])
         dispatcher = self._create_dispatcher(all_processors)
+        is_resume = resume_checkpoint is not None
         run_id, run_span_id = await self._emit_run_start_async(
             dispatcher,
             graph,
             _parent_span_id,
+            workflow_id=workflow_id,
+            parent_workflow_id=_parent_run_id,
+            item_index=_item_index,
+            forked_from=forked_from,
+            fork_superstep=fork_superstep,
+            retry_of=retry_of,
+            retry_index=retry_index,
+            is_resume=is_resume,
         )
+        inspect_widget = None
+        if inspect_state is not None:
+            inspect_state.set_run_id(run_id)
+            inspect_state.set_graph_html(inspect_graph_html)
+            if inspect and _inspect_auto_display:
+                inspect_widget = InspectWidget(inspect_state)
+                inspect_widget.refresh()
+
+        def _record_running(
+            node_name: str,
+            superstep: int,
+            inputs: dict[str, Any],
+            started_at_ms: float | None,
+        ) -> None:
+            if inspect_state is not None:
+                inspect_state.mark_running(node_name, superstep, inputs, started_at_ms)
+            if inspect_widget is not None:
+                inspect_widget.refresh()
+
+        def _record_snapshot(
+            node_name: str,
+            superstep: int,
+            inputs: dict[str, Any],
+            outputs: dict[str, Any],
+            duration_ms: float,
+            started_at_ms: float | None,
+            ended_at_ms: float | None,
+            cached: bool,
+        ) -> None:
+            if inspect_collector is not None:
+                inspect_collector.record(
+                    node_name,
+                    superstep,
+                    inputs,
+                    outputs,
+                    duration_ms,
+                    started_at_ms,
+                    ended_at_ms,
+                    cached,
+                )
+            if inspect_state is not None:
+                inspect_state.record_snapshot(
+                    node_name,
+                    superstep,
+                    inputs,
+                    outputs,
+                    duration_ms,
+                    started_at_ms,
+                    ended_at_ms,
+                    cached,
+                )
+            if inspect_widget is not None:
+                inspect_widget.refresh()
+
         start_time = time.time()
 
         # Checkpointer lifecycle — upsert run record
@@ -360,15 +457,23 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 run_span_id=run_span_id,
                 event_processors=event_processors,
+                on_node_start=None if inspect_state is None else _record_running,
+                on_node_snapshot=None if inspect_state is None else _record_snapshot,
                 workflow_id=workflow_id,
+                item_index=_item_index,
                 checkpoint=resume_checkpoint,
                 step_buffer=step_buffer,
+                _stop_signal=_stop_signal,
                 _complete_on_stop=_complete_on_stop,
             )
             output_values = filter_outputs(state, graph, select, on_missing)
             total_duration_ms = (time.time() - start_time) * 1000
             was_stopped = getattr(state, "_stopped", False)
             status = RunStatus.STOPPED if was_stopped else RunStatus.COMPLETED
+            if inspect_state is not None:
+                inspect_state.finish(status=status, total_duration_ms=total_duration_ms)
+                if inspect_widget is not None:
+                    inspect_widget.refresh()
 
             # Emit StopRequestedEvent if stopped
             if was_stopped and dispatcher.active:
@@ -381,6 +486,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         span_id=run_span_id,
                         parent_span_id=_parent_span_id,
                         workflow_id=workflow_id,
+                        item_index=_item_index,
+                        graph_name=graph.name,
                         info=stop_info,
                     )
                 )
@@ -391,6 +498,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                _inspect_data=None if inspect_collector is None else inspect_collector.snapshots,
+                _inspect_graph_html=inspect_graph_html,
             )
             await self._emit_run_end_async(
                 dispatcher,
@@ -399,6 +508,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                workflow_id=workflow_id,
+                parent_workflow_id=_parent_run_id,
+                item_index=_item_index,
+                status=status.value,
+                forked_from=forked_from,
+                fork_superstep=fork_superstep,
+                retry_of=retry_of,
+                retry_index=retry_index,
+                is_resume=is_resume,
             )
             # Flush buffered steps ("exit" mode) and mark run completed
             if has_checkpointer:
@@ -423,6 +541,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             was_stopped = getattr(pause, "_stopped", False)
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             total_duration_ms = (time.time() - start_time) * 1000
+            if inspect_state is not None:
+                inspect_state.finish(status=RunStatus.PAUSED, total_duration_ms=total_duration_ms)
+                if inspect_widget is not None:
+                    inspect_widget.refresh()
             if dispatcher.active:
                 from hypergraph.events.types import InterruptEvent, RunEndEvent
                 from hypergraph.events.types import RunStatus as EventRunStatus
@@ -432,11 +554,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         run_id=run_id,
                         span_id=pause.span_id or run_span_id,
                         parent_span_id=run_span_id,
+                        workflow_id=workflow_id,
+                        item_index=_item_index,
                         node_name=pause.pause_info.node_name,
                         graph_name=graph.name,
-                        workflow_id=workflow_id,
                         value=pause.pause_info.value,
                         response_param=pause.pause_info.output_param,
+                        superstep=collector._current_superstep,
                     )
                 )
                 await dispatcher.emit_async(
@@ -444,9 +568,17 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         run_id=run_id,
                         span_id=run_span_id,
                         parent_span_id=_parent_span_id,
+                        workflow_id=workflow_id,
+                        item_index=_item_index,
                         graph_name=graph.name,
                         status=EventRunStatus.PAUSED,
                         duration_ms=total_duration_ms,
+                        parent_workflow_id=_parent_run_id,
+                        forked_from=forked_from,
+                        fork_superstep=fork_superstep,
+                        retry_of=retry_of,
+                        retry_index=retry_index,
+                        is_resume=is_resume,
                     )
                 )
             if has_checkpointer:
@@ -472,13 +604,25 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 workflow_id=workflow_id,
                 pause=pause.pause_info,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                _inspect_data=None if inspect_collector is None else inspect_collector.snapshots,
+                _inspect_graph_html=inspect_graph_html,
             )
         except Exception as e:
             error = e
             partial_state = getattr(e, "_partial_state", None)
+            failure_case = None
             if isinstance(e, ExecutionError):
                 error = e.__cause__ or e
                 partial_state = e.partial_state
+                failure_case = e.failure_case
+                if inspect_collector is not None:
+                    e.inspect_data = inspect_collector.snapshots
+            total_duration_ms = (time.time() - start_time) * 1000
+            if inspect_state is not None:
+                inspect_state.record_failure(failure_case)
+                inspect_state.finish(status=RunStatus.FAILED, total_duration_ms=total_duration_ms, failure=failure_case)
+                if inspect_widget is not None:
+                    inspect_widget.refresh()
 
             await self._emit_run_end_async(
                 dispatcher,
@@ -487,7 +631,15 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                workflow_id=workflow_id,
+                parent_workflow_id=_parent_run_id,
+                item_index=_item_index,
                 error=error,
+                forked_from=forked_from,
+                fork_superstep=fork_superstep,
+                retry_of=retry_of,
+                retry_index=retry_index,
+                is_resume=is_resume,
             )
 
             if has_checkpointer:
@@ -511,9 +663,14 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 )
 
             if error_handling == "raise":
+                if failure_case is not None:
+                    with suppress(Exception):
+                        error.failure_case = failure_case
+                if inspect_collector is not None:
+                    with suppress(Exception):
+                        error.inspect_data = inspect_collector.snapshots
                 raise error from None
 
-            total_duration_ms = (time.time() - start_time) * 1000
             partial_values = filter_outputs(partial_state, graph, select) if partial_state is not None else {}
             return RunResult(
                 values=partial_values,
@@ -521,7 +678,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 run_id=run_id,
                 workflow_id=workflow_id,
                 error=error,
+                failure=failure_case,
                 log=collector.build(graph.name, run_id, total_duration_ms),
+                _inspect_data=None if inspect_collector is None else inspect_collector.snapshots,
+                _inspect_graph_html=inspect_graph_html,
             )
         finally:
             if _parent_span_id is None and dispatcher.active:
@@ -542,6 +702,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         error_handling: ErrorHandling = "raise",
         event_processors: list[EventProcessor] | None = None,
         show_progress: bool | None = None,
+        inspect: bool = False,
         workflow_id: str | None = None,
         _parent_span_id: str | None = None,
         _parent_run_id: str | None = None,
@@ -594,6 +755,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             dispatcher,
             graph,
             _parent_span_id,
+            workflow_id=workflow_id,
+            parent_workflow_id=_parent_run_id,
             is_map=True,
             map_size=len(input_variations),
         )
@@ -654,7 +817,10 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     error_handling="continue",
                     event_processors=event_processors,
                     show_progress=False,
+                    inspect=inspect,
+                    _inspect_auto_display=False,
                     workflow_id=child_workflow_id,
+                    _item_index=idx,
                     _parent_span_id=map_span_id,
                     _parent_run_id=workflow_id,
                     _validation_ctx=ctx,
@@ -663,12 +829,13 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             except Exception as e:
                 # Catch validation errors (e.g., MissingInputError) that raise
                 # before run()'s execution try block
-                return RunResult(
+                result = RunResult(
                     values={},
                     status=RunStatus.FAILED,
                     run_id=_generate_run_id(),
                     error=e,
                 )
+                return result
 
         try:
             if max_concurrency is None:
@@ -679,6 +846,9 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                     if isinstance(item, BaseException):
                         raise item
                     results.append(item)
+                for idx, result in enumerate(results):
+                    if result.failure is not None:
+                        result.failure = replace(result.failure, item_index=idx)
                 if error_handling == "raise":
                     for result in results:
                         if result.status == RunStatus.FAILED:
@@ -700,6 +870,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                         except asyncio.QueueEmpty:
                             return
                         result = await _run_map_item(idx, v)
+                        if result.failure is not None:
+                            result.failure = replace(result.failure, item_index=idx)
                         results_list.append(result)
                         order.append(idx)
                         if error_handling == "raise" and result.status == RunStatus.FAILED:
@@ -725,6 +897,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                workflow_id=workflow_id,
+                parent_workflow_id=_parent_run_id,
             )
             total_duration_ms = (time.time() - start_time) * 1000
 
@@ -761,6 +935,8 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 graph,
                 start_time,
                 _parent_span_id,
+                workflow_id=workflow_id,
+                parent_workflow_id=_parent_run_id,
                 error=e,
             )
             # Mark parent batch run as failed

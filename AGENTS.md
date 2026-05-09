@@ -59,13 +59,19 @@ Change validation expectations:
 - Keep nested-graph behavior consistent with flat-graph behavior.
 - If public API changes, update tests and relevant docs in the same task.
 - Use conventional commits with scopes, e.g. `feat(graph): ...`, `fix(runners): ...`.
+- When evaluating designs, optimize first for conceptual cleanliness and API coherence, not estimated implementation effort.
+- Treat effort estimates with skepticism in design conversations. Agent implementation cost is often much lower than human intuition suggests.
+- Do not argue against a design mainly because it seems like "too much work" or would take humans a long time; this repo is intentionally optimized for fast iteration with agents.
+- Backward compatibility is not a default constraint here. Hypergraph is currently a solo-user project, so prefer the best design unless compatibility is explicitly requested.
 
 ## Design Conversation Preferences
 
 When doing design work (exploring options, writing specs, proposing APIs):
 
+- **Start from user goals.** Begin design docs and design discussions with the concrete goals the API must satisfy before proposing shapes or mechanisms.
 - **Code examples over prose.** Show user-facing code first, explain rationale after. A concrete `runner.run(...)` call communicates more than a paragraph about execution semantics.
 - **Start from the real use case.** Don't design in the abstract. Start with "user presses stop in a chat app" and work backward to the API, not the other way around.
+- **Clean design over local minima.** Explore the best end-state API first, then discuss phasing. Do not prematurely narrow the design around "smallest change" reasoning.
 - **Build on existing patterns.** Before proposing new machinery, check if an existing feature (checkpointer, interrupt resume, event dispatch) already handles the case. Layer, don't duplicate.
 - **Simple top-level API, detail at lower levels.** `result.stopped` (boolean) for app control flow. Detailed metadata (which node, why, user-provided info) on events and step records. Don't force every consumer to destructure a dataclass for a yes/no question.
 - **Framework owns its own state.** If the framework needs a registry (active signals, handles), the framework manages it. Never leak internal bookkeeping to the app as dicts the user must maintain and clean up.
@@ -73,6 +79,14 @@ When doing design work (exploring options, writing specs, proposing APIs):
 - **Enforce constraints explicitly.** If "one active run per workflow_id" is an invariant, validate it with an error — don't hope users follow the convention.
 - **Separate "what happened" from "what's next."** Status answers "what should the app do now?" Stop/failure info answers "what happened during this run?" Don't overload one field with both meanings.
 - **Question the framing before diving in.** If a feature is being designed around `.iter()` but the real pattern is checkpointer-based resume, say so. The right framing avoids wasted design work.
+- **Do not over-weight backward compatibility.** If the current API shape is getting in the way, say so plainly and propose the cleaner replacement.
+- **Keep the main design surface user-facing.** In the main body, show only the proposed user-facing APIs and how each one satisfies the goals. Put internal mechanics and implementation notes in an addendum.
+- **Show the main journeys before the full matrix.** Lead with the 2-4 primary user journeys the feature is really about before expanding into broader scenario coverage.
+- **Make runner setup explicit in examples.** In design docs, do not use a floating `runner` variable without first showing whether it is a `SyncRunner` or `AsyncRunner` and how it was constructed.
+- **Make checkpoint requirements explicit in examples.** If an example uses `workflow_id`, `fork_from`, or `retry_from`, show a checkpointer in that example unless the point of the example is that Hypergraph should error without one.
+- **Show scenario coverage explicitly.** When working on a design doc, include a concrete scenario matrix for the important combinations. Cover sync/async, success/failure, stop/pause, inspect on/off, checkpoint on/off, nested graphs, and map when relevant. For broad features, aim for at least 10 scenarios. For each scenario, show the user-facing code, what the user sees visually, what they get in code, and which goals it serves.
+- **Design the plain error surface too.** If the feature affects debugging or failures, do not stop at widgets or structured objects. Also specify how plain raised errors and returned error fields should identify the failing graph/subgraph/node/item and suggest an immediate next step for fixing or rerunning.
+- **Call out dilemmas explicitly.** If there are real design forks or non-obvious tradeoffs, surface them in a dedicated dilemmas/open-questions section instead of mixing them into the primary API story.
 
 ## Progressive Disclosure
 

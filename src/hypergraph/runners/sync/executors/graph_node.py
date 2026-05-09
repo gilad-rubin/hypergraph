@@ -83,6 +83,7 @@ class SyncGraphNodeExecutor:
                 "event_processors": ctx.event_processors,
                 "show_progress": ctx.show_progress,
                 "workflow_id": child_workflow_id,
+                "_item_index": ctx.item_index,
                 "_parent_span_id": ctx.parent_span_id,
                 "_parent_run_id": ctx.workflow_id,
             }
@@ -99,6 +100,7 @@ class SyncGraphNodeExecutor:
             "event_processors": ctx.event_processors,
             "show_progress": ctx.show_progress,
             "workflow_id": child_workflow_id,
+            "_item_index": ctx.item_index,
             "_parent_span_id": ctx.parent_span_id,
             "_parent_run_id": ctx.workflow_id,
         }

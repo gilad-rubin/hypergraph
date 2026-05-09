@@ -4,6 +4,9 @@
 
 ### Added
 
+- **Structured failure capture** — `RunResult.failure` now includes `FailureCase` data with the failed node name, resolved inputs, duration, and map item index when available.
+- **Inspect views** — `runner.run(..., inspect=True)` captures reusable inspect data, and `RunResult.view()` / `RunResult.inspect()` expose node inputs/outputs for debugging.
+- **Background run handles** — `start_run()` returns a live object-first run handle, and `start_map()` returns a background batch handle for delayed raising and batch failure drilldown.
 - **Checkpoint lineage exceptions** — `WorkflowAlreadyCompletedError`, `GraphChangedError`, `WorkflowForkError`, and `InputOverrideRequiresForkError` for explicit resume/fork guidance.
 - **`checkpoint=` on `runner.run()`** — explicit fork entrypoint from a saved checkpoint snapshot (`values + steps`).
 - **First-class fork/retry helpers** — low-level `SqliteCheckpointer.fork_workflow()` / `retry_workflow()` (sync) and `fork_workflow_async()` / `retry_workflow_async()` (async) prepare lineage-aware checkpoints when you need manual control.

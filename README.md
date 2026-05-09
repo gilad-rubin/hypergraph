@@ -94,6 +94,39 @@ Rules:
 - Passing reserved runner option names via kwargs raises `ValueError`.
 - If an input name matches an option name, pass it in `values={...}`.
 
+### Debugging Failures
+
+Use `inspect=True` when you want a live notebook inspector and reusable failure data:
+
+```python
+from hypergraph import RunStatus
+
+result = runner.run(graph, {"text": "RAG tutorial", "query": "What is RAG?"}, inspect=True, error_handling="continue")
+
+if result.status == RunStatus.FAILED:
+    failure = result.failure
+    assert failure is not None
+    print(failure.node_name)
+    print(failure.inputs)
+
+view = result.view()
+print(view["generate"].inputs)
+```
+
+The inspector is the same surface everywhere:
+- live timeline while the run is active
+- failure banner that stays visible after errors
+- graph tab reusing Hypergraph's existing graph viz
+- typed value viewers for JSON-like values, markdown, images, tables, dataclasses, and pydantic-style models
+
+If you want an object immediately instead of exception-first control flow, use `start_run()`:
+
+```python
+run = runner.start_run(graph, {"text": "RAG tutorial", "query": "What is RAG?"}, inspect=True)
+result = run.result(raise_on_failure=False)
+print(run.failure)
+```
+
 ## Examples
 
 ### Branching
