@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inspect Widget — HEX-Style Redesign Comparison</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Inter", sans-serif;
+      background: #f0f0f5;
+      padding: 40px;
+      color: #1a1a2e;
+    }
+    .comparison {
+      display: flex;
+      gap: 40px;
+      align-items: flex-start;
+      max-width: 1860px;
+      margin: 0 auto;
+    }
+    .panel { flex: 1; min-width: 0; }
+    .panel-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.12em; margin-bottom: 12px; padding: 4px 10px;
+      border-radius: 4px; display: inline-block;
+    }
+    .panel-label.before { background: rgba(100,100,120,0.12); color: #555; }
+    .panel-label.after { background: rgba(71,57,130,0.10); color: #473982; }
+
+    /* ====== CURRENT (DARK) — faithful to screenshot ====== */
+    .current {
+      --sans: "Inter", sans-serif;
+      --mono: "JetBrains Mono", monospace;
+      font-family: var(--sans);
+      background:
+        radial-gradient(circle at top left, rgba(59,130,246,0.10), transparent 34%),
+        radial-gradient(circle at top right, rgba(139,92,246,0.10), transparent 24%),
+        linear-gradient(180deg, #050607, #090b0e);
+      color: #f3f6fa;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.45);
+    }
+
+    /* header row: icon / Inspect / run-id saved  ...  badge */
+    .cur-header {
+      height: 48px; display: flex; align-items: center; gap: 10px;
+      padding: 0 16px; background: #0b0d10;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .cur-header svg { color: #60a5fa; flex-shrink: 0; }
+    .cur-header h1 { font-size: 13px; font-weight: 600; }
+    .cur-header .sep { color: rgba(255,255,255,0.18); font-size: 14px; }
+    .cur-header .sub { font: 13px/1 var(--mono); color: #626b78; }
+    .cur-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font: 600 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em;
+      padding: 3px 8px; border-radius: 4px; white-space: nowrap;
+    }
+    .cur-badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; }
+    .cur-badge.failed { background: rgba(239,68,68,0.16); color: #f87171; margin-left: auto; }
+    .cur-badge.completed { background: rgba(16,185,129,0.18); color: #34d399; }
+    .cur-badge.cached { background: rgba(16,185,129,0.15); color: #10b981; }
+
+    /* controls row: [Timeline Values Graph] | 2 nodes | 35.7ms… | fail_after_double */
+    .cur-controls {
+      display: flex; align-items: center; gap: 16px;
+      padding: 8px 16px; background: #0b0d10;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    .cur-pill-group {
+      display: flex; background: #12161b; border-radius: 999px; padding: 2px; gap: 2px;
+    }
+    .cur-pill {
+      padding: 3px 10px; border-radius: 999px; font: 11px/1 var(--mono);
+      color: #8891a0; border: none; background: transparent;
+    }
+    .cur-pill.active { color: #fff; background: #60a5fa; }
+    .cur-div { width:1px; height:24px; background: rgba(255,255,255,0.08); flex-shrink:0; }
+    .cur-meta { font: 11px/1 var(--mono); color: #8891a0; white-space: nowrap; }
+
+    /* timeline area */
+    .cur-tl-head {
+      display: flex; justify-content: space-between; padding: 5px 12px;
+      background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05);
+      font: 11px/1 var(--mono); color: #8891a0;
+    }
+    .cur-tl { display: flex; }
+    .cur-labels { width: 160px; flex-shrink:0; border-right: 1px solid rgba(255,255,255,0.05); background: #0b0d10; }
+    .cur-lbl-pad { height: 24px; } /* space for time-axis text */
+    .cur-lbl {
+      display: flex; align-items: center; gap: 6px; height: 40px;
+      padding: 0 8px; cursor: pointer; transition: background .15s;
+    }
+    .cur-lbl:hover { background: rgba(255,255,255,0.05); }
+    .cur-lbl.sel { background: rgba(255,255,255,0.10); }
+    .cur-lbl-dot { width:4px; height:4px; border-radius:50%; background:#374151; flex-shrink:0; }
+    .cur-lbl-name { font: 500 11px/1 var(--mono); color: #d1d5db; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; }
+    .cur-lbl-name.fail { color: #ef4444; }
+    .cur-si { width:14px; height:14px; border-radius:50%; flex-shrink:0; }
+    .cur-si.ok  { background: rgba(34,197,94,0.18); border: 1px solid rgba(34,197,94,0.35); }
+    .cur-si.err { background: rgba(239,68,68,0.18); border: 1px solid rgba(239,68,68,0.35); }
+
+    .cur-bars { flex:1; position: relative; overflow: hidden; }
+    .cur-axis {
+      height: 24px; display: flex; justify-content: space-between;
+      padding: 0 4px; align-items: flex-end;
+      font: 10px/1 var(--mono); color: #4b5563;
+    }
+    .cur-row { height: 40px; display: flex; align-items: center; position: relative; }
+    .cur-row::after {
+      content:""; position:absolute; left:0; right:0; bottom:0;
+      height:1px; background:rgba(255,255,255,0.04);
+    }
+    .cur-track { position:absolute; left:0; right:0; height:20px; top:10px; border-radius:4px; background:rgba(255,255,255,0.02); }
+    .cur-bar {
+      position:absolute; height:20px; top:10px; border-radius:999px;
+      display:flex; align-items:center; justify-content:center;
+      font: 500 10px/1 var(--mono); color:#fff;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.04) inset;
+    }
+    .cur-bar.ok  { background: linear-gradient(90deg, rgba(16,185,129,0.6), rgba(16,185,129,0.95)); }
+    .cur-bar.err { background: linear-gradient(90deg, rgba(239,68,68,0.55), rgba(239,68,68,0.95)); }
+
+    /* vertical grid lines */
+    .cur-bars .vline {
+      position: absolute; top: 0; bottom: 0; width: 1px;
+      background: rgba(255,255,255,0.05);
+    }
+
+    /* detail panel */
+    .cur-detail {
+      border-top: 1px solid rgba(255,255,255,0.08); background: #0b0d10;
+    }
+    .cur-det-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);
+      background: rgba(255,255,255,0.03);
+    }
+    .cur-det-title { font: 600 14px/1 var(--sans); }
+    .cur-det-close {
+      width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+      color:#6b7280; cursor:pointer; border:none; background:none; font-size:16px;
+      border-radius:4px;
+    }
+    .cur-det-close:hover { background: rgba(255,255,255,0.08); color:#d1d5db; }
+    .cur-det-body { padding: 14px; }
+    .cur-det-sect { margin-bottom: 14px; }
+    .cur-det-kick {
+      font: 600 10px/1 var(--sans); text-transform:uppercase;
+      letter-spacing:.05em; color:#8891a0; margin-bottom:6px;
+    }
+    .cur-det-kv {
+      display:flex; justify-content:space-between; gap:12px;
+      font-size:11px; margin-bottom:3px;
+    }
+    .cur-det-kv .k { color:#8891a0; }
+    .cur-det-kv .v { font: 500 11px/1 var(--mono); color:#b6bfcb; }
+    .cur-err-block {
+      padding: 10px 12px; border-radius: 8px;
+      background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.16);
+      color: #f87171; font: 12px/1.5 var(--mono); white-space: pre-wrap;
+    }
+    .cur-tree-row { display:grid; grid-template-columns:90px 1fr; gap:12px; margin-bottom:6px; align-items:start; }
+    .cur-tree-key { font: 500 10px/1.4 var(--mono); text-transform:uppercase; letter-spacing:.08em; color:#8891a0; padding-top:2px; }
+    .cur-tree-val { font: 12px/1.45 var(--sans); color:#b6bfcb; }
+    .cur-scalar {
+      display:inline-flex; align-items:center; min-height:18px; padding:0 6px;
+      border-radius:999px; border:1px solid rgba(255,255,255,0.08);
+      background:rgba(255,255,255,0.04); font: 500 10px/1 var(--mono); color:#b6bfcb;
+    }
+    .cur-scalar.num { color:#60a5fa; }
+    .cur-scalar.nul { color:#8891a0; }
+    .cur-details-block {
+      border: 1px solid rgba(255,255,255,0.08); border-radius:8px;
+      background: #12161b; padding:8px 10px;
+    }
+    .cur-details-sum { font: 600 11px/1.5 var(--mono); color:#b6bfcb; }
+
+    /* ====== NEW HEX-STYLE DESIGN ====== */
+    .hex {
+      --sans: "IBM Plex Sans", sans-serif;
+      --mono: "IBM Plex Mono", monospace;
+      --bg: #ffffff;
+      --alt: #f8fafb;
+      --ink: #01011b;
+      --muted: #717a94;
+      --accent: #473982;
+      --accent-soft: rgba(71,57,130,0.07);
+      --border: #ecedf2;
+      --border-soft: #f2f3f7;
+      --success: #1a8754;
+      --success-bg: rgba(26,135,84,0.08);
+      --error: #c4320a;
+      --error-bg: rgba(196,50,10,0.06);
+      --running: #2563eb;
+      --running-bg: rgba(37,99,235,0.07);
+      --cached: #0e7490;
+      --cached-bg: rgba(14,116,144,0.07);
+      --warning: #a67908;
+
+      font-family: var(--sans); font-size: 12px; line-height: 15.6px;
+      background: var(--bg); color: var(--ink);
+      border-radius: 6px; overflow: hidden;
+      box-shadow: rgba(49,38,59,0.32) 0 0 0 1px,
+                  rgba(49,38,59,0.12) 0 103px 103px 0,
+                  rgba(49,38,59,0.15) 0 26px 57px 0;
+    }
+
+    .hex-header {
+      height: 38px; display: flex; align-items: center; gap: 8px;
+      padding: 0 12px; border-bottom: 1px solid var(--border);
+    }
+    .hex-header svg { width:15px; height:15px; color: var(--accent); flex-shrink:0; }
+    .hex-header h1 { font-size: 12px; font-weight: 600; color: var(--ink); }
+    .hex-header .sep { color: var(--muted); opacity:.4; }
+    .hex-header .sub { font: 12px/1 var(--mono); color: var(--muted); }
+    .hex-badge {
+      display:inline-flex; align-items:center; gap:4px;
+      font-size:11px; font-weight:500; padding:2px 8px; border-radius:3px;
+      white-space:nowrap;
+    }
+    .hex-badge::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; flex-shrink:0; }
+    .hex-badge.failed { background: var(--error-bg); color: var(--error); margin-left:auto; }
+    .hex-badge.completed { background: var(--success-bg); color: var(--success); }
+    .hex-badge.cached { background: var(--cached-bg); color: var(--cached); }
+
+    .hex-summary {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      border-bottom: 1px solid var(--border);
+    }
+    .hex-scell {
+      padding: 8px 12px; border-right: 1px solid var(--border);
+    }
+    .hex-scell:last-child { border-right:none; }
+    .hex-slbl { font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:2px; }
+    .hex-sval { font: 600 12px/1.3 var(--mono); color:var(--ink); }
+
+    .hex-tabs {
+      display:flex; align-items:center; border-bottom:1px solid var(--border);
+    }
+    .hex-tab {
+      padding:6px 14px; font-size:12px; font-weight:500; color:var(--muted);
+      border:none; background:transparent; border-bottom:2px solid transparent;
+      cursor:pointer; transition: color .15s, border-color .15s;
+    }
+    .hex-tab:hover { color:var(--ink); }
+    .hex-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+    .hex-tl-head {
+      display:flex; justify-content:space-between; align-items:center;
+      padding:4px 12px; background:var(--alt);
+      border-bottom:1px solid var(--border);
+      font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+    }
+
+    .hex-tl { display:flex; }
+    .hex-labels {
+      width:150px; flex-shrink:0; border-right:1px solid var(--border);
+    }
+    .hex-lpad { height:24px; }
+    .hex-lrow {
+      display:flex; align-items:center; gap:6px; height:40px;
+      padding: 0 8px 0 12px; cursor:pointer; transition: background .15s;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .hex-lrow:hover { background: rgba(71,57,130,0.04); }
+    .hex-lrow.sel { background: var(--accent-soft); }
+    .hex-lname {
+      font: 400 11px/1 var(--mono); color:var(--ink);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;
+    }
+    .hex-lname.fail { color: var(--error); }
+    .hex-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+    .hex-dot.ok { background: var(--success); }
+    .hex-dot.err { background: var(--error); }
+
+    .hex-bars { flex:1; position:relative; overflow:hidden; }
+    .hex-axis {
+      height:24px; display:flex; justify-content:space-between;
+      padding:0 4px; align-items:flex-end;
+      font: 10px/1 var(--mono); color: var(--muted);
+    }
+    .hex-brow {
+      height:40px; display:flex; align-items:center; position:relative;
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .hex-btrack {
+      position:absolute; left:0; right:0; height:20px; top:10px;
+      border-radius:3px; background:rgba(0,0,0,0.025);
+    }
+    .hex-bar {
+      position:absolute; height:20px; top:10px; border-radius:3px;
+      display:flex; align-items:center; justify-content:center;
+      font: 500 10px/1 var(--mono); color:#fff;
+      transition: left 220ms ease, width 220ms ease;
+    }
+    .hex-bar.ok  { background: var(--success); opacity:.82; }
+    .hex-bar.err { background: var(--error); opacity:.82; }
+    .hex-bars .vline {
+      position:absolute; top:0; bottom:0; width:1px; background:rgba(0,0,0,0.06);
+    }
+
+    /* detail */
+    .hex-detail { border-top: 1px solid var(--border); }
+    .hex-det-head {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:10px 14px; border-bottom:1px solid var(--border);
+    }
+    .hex-det-title { font-size:14px; font-weight:600; color:var(--ink); letter-spacing:-0.02em; }
+    .hex-det-close {
+      width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+      color:var(--muted); cursor:pointer; border:none; background:none;
+      font-size:14px; border-radius:3px;
+    }
+    .hex-det-close:hover { background: rgba(0,0,0,0.05); color:var(--ink); }
+    .hex-det-body { padding:14px; }
+    .hex-det-sect { margin-bottom:14px; }
+    .hex-det-kick {
+      font-size:10px; font-weight:500; text-transform:uppercase;
+      letter-spacing:.06em; color:var(--muted); margin-bottom:6px;
+    }
+    .hex-det-kv {
+      display:flex; justify-content:space-between; gap:12px;
+      font-size:11px; margin-bottom:4px; padding:2px 0;
+    }
+    .hex-det-kv .k { color:var(--muted); }
+    .hex-det-kv .v { font: 500 11px/1 var(--mono); color:var(--ink); }
+    .hex-err-block {
+      padding: 8px 10px; border-radius:4px;
+      background: var(--error-bg); border:1px solid rgba(196,50,10,0.14);
+      color: var(--error); font: 12px/1.5 var(--mono); white-space:pre-wrap;
+    }
+    .hex-tree-row { display:grid; grid-template-columns:90px 1fr; gap:12px; margin-bottom:6px; align-items:start; }
+    .hex-tree-key { font: 500 10px/1.4 var(--mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted); padding-top:2px; }
+    .hex-tree-val { font: 12px/1.45 var(--sans); color:var(--ink); }
+    .hex-scalar {
+      display:inline-flex; align-items:center; min-height:18px; padding:1px 6px;
+      border-radius:3px; background:rgba(0,0,0,0.04);
+      font: 400 11px/1 var(--mono); color:var(--ink);
+    }
+    .hex-scalar.num { color:#2563eb; }
+    .hex-scalar.nul { color:var(--muted); }
+    .hex-details-block {
+      border:1px solid var(--border); border-radius:4px;
+      background: var(--alt); padding:8px 10px;
+    }
+    .hex-details-sum { font: 500 11px/1.5 var(--mono); color:var(--ink); }
+  </style>
+</head>
+<body>
+
+<div style="text-align:center; margin-bottom:32px;">
+  <h2 style="font-size:20px; font-weight:700; letter-spacing:-0.03em; color:#1a1a2e;">
+    Inspect Widget — Design Comparison
+  </h2>
+  <p style="font-size:13px; color:#717a94; margin-top:4px;">
+    Matching the real notebook appearance (left) vs proposed HEX-style (right)
+  </p>
+</div>
+
+<div class="comparison">
+
+<!-- ====== CURRENT DESIGN (faithful to screenshot) ====== -->
+<div class="panel">
+  <div class="panel-label before">Current (as rendered in notebook)</div>
+  <div class="current">
+    <div class="cur-header">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 4-8"/></svg>
+      <h1>Inspect</h1>
+      <span class="sep">/</span>
+      <span class="sub">run-e29c3d96bbde</span>
+      <span class="sub" style="margin-left:4px;">saved</span>
+      <span class="cur-badge failed">FAILED</span>
+    </div>
+    <div class="cur-controls">
+      <div class="cur-pill-group">
+        <button class="cur-pill active">Timeline</button>
+        <button class="cur-pill">Values</button>
+        <button class="cur-pill">Graph</button>
+      </div>
+      <div class="cur-div"></div>
+      <span class="cur-meta">2 nodes</span>
+      <div class="cur-div"></div>
+      <span class="cur-meta">35.7ms active / 54.4ms wall</span>
+      <div class="cur-div"></div>
+      <span class="cur-meta">fail_after_double</span>
+    </div>
+
+    <div class="cur-tl-head">
+      <span>Execution timeline</span>
+      <span>35.7ms</span>
+    </div>
+    <div class="cur-tl">
+      <div class="cur-labels">
+        <div class="cur-lbl-pad"></div>
+        <div class="cur-lbl">
+          <span class="cur-lbl-dot"></span>
+          <span class="cur-lbl-name">double</span>
+          <span class="cur-si ok"></span>
+        </div>
+        <div class="cur-lbl sel">
+          <span class="cur-lbl-dot"></span>
+          <span class="cur-lbl-name fail">fail_after_d…</span>
+          <span class="cur-si err"></span>
+        </div>
+      </div>
+      <div class="cur-bars">
+        <div class="vline" style="left:0%"></div>
+        <div class="vline" style="left:25%"></div>
+        <div class="vline" style="left:50%"></div>
+        <div class="vline" style="left:75%"></div>
+        <div class="vline" style="left:100%"></div>
+        <div class="cur-axis">
+          <span>0.00s</span><span>0.01s</span><span>0.02s</span><span>0.03s</span><span>0.04s</span>
+        </div>
+        <div class="cur-row">
+          <div class="cur-track"></div>
+          <div class="cur-bar ok" style="left:4%; width:42%;">15.2ms</div>
+        </div>
+        <div class="cur-row" style="background:rgba(255,255,255,0.05);">
+          <div class="cur-track"></div>
+          <div class="cur-bar err" style="left:52%; width:46%;">20.5ms</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cur-detail">
+      <div class="cur-det-head">
+        <span class="cur-det-title">fail_after_double</span>
+        <button class="cur-det-close">✕</button>
+      </div>
+      <div class="cur-det-body">
+        <div class="cur-det-sect">
+          <div class="cur-det-kick">Status</div>
+          <div class="cur-det-kv"><span class="k">Status</span><span class="v"><span class="cur-badge failed" style="margin-left:0;">FAILED</span></span></div>
+          <div class="cur-det-kv"><span class="k">Duration</span><span class="v">20.5ms</span></div>
+          <div class="cur-det-kv"><span class="k">Superstep</span><span class="v">1</span></div>
+        </div>
+        <div class="cur-det-sect">
+          <div class="cur-det-kick">Error</div>
+          <div class="cur-err-block">boom</div>
+        </div>
+        <div class="cur-det-sect">
+          <div class="cur-det-kick">Inputs</div>
+          <div class="cur-details-block">
+            <div class="cur-details-sum">dict • 1 fields</div>
+            <div style="margin-top:8px;">
+              <div class="cur-tree-row">
+                <span class="cur-tree-key">DOUBLED</span>
+                <span class="cur-tree-val"><span class="cur-scalar num">10</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="cur-det-sect">
+          <div class="cur-det-kick">Outputs</div>
+          <span class="cur-scalar nul">null</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== NEW HEX-STYLE DESIGN ====== -->
+<div class="panel">
+  <div class="panel-label after">Proposed (HEX-style)</div>
+  <div class="hex">
+    <div class="hex-header">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 4-8"/></svg>
+      <h1>Inspect</h1>
+      <span class="sep">/</span>
+      <span class="sub">run-e29c3d96bbde</span>
+      <span class="hex-badge failed">FAILED</span>
+    </div>
+
+    <div class="hex-summary">
+      <div class="hex-scell">
+        <div class="hex-slbl">Nodes</div>
+        <div class="hex-sval">2</div>
+      </div>
+      <div class="hex-scell">
+        <div class="hex-slbl">Active time</div>
+        <div class="hex-sval">35.7ms</div>
+      </div>
+      <div class="hex-scell">
+        <div class="hex-slbl">Wall time</div>
+        <div class="hex-sval">54.4ms</div>
+      </div>
+      <div class="hex-scell">
+        <div class="hex-slbl">Failed</div>
+        <div class="hex-sval" style="color:var(--error)">1 / 2</div>
+      </div>
+    </div>
+
+    <div class="hex-tabs">
+      <button class="hex-tab active">Timeline</button>
+      <button class="hex-tab">Values</button>
+      <button class="hex-tab">Graph</button>
+    </div>
+
+    <div class="hex-tl-head">
+      <span>Execution timeline</span>
+      <span>35.7ms</span>
+    </div>
+    <div class="hex-tl">
+      <div class="hex-labels">
+        <div class="hex-lpad"></div>
+        <div class="hex-lrow">
+          <span class="hex-lname">double</span>
+          <span class="hex-dot ok"></span>
+        </div>
+        <div class="hex-lrow sel">
+          <span class="hex-lname fail">fail_after_d…</span>
+          <span class="hex-dot err"></span>
+        </div>
+      </div>
+      <div class="hex-bars">
+        <div class="vline" style="left:0%"></div>
+        <div class="vline" style="left:25%"></div>
+        <div class="vline" style="left:50%"></div>
+        <div class="vline" style="left:75%"></div>
+        <div class="vline" style="left:100%"></div>
+        <div class="hex-axis">
+          <span>0.00s</span><span>0.01s</span><span>0.02s</span><span>0.03s</span><span>0.04s</span>
+        </div>
+        <div class="hex-brow">
+          <div class="hex-btrack"></div>
+          <div class="hex-bar ok" style="left:4%; width:42%;">15.2ms</div>
+        </div>
+        <div class="hex-brow" style="background:rgba(71,57,130,0.04);">
+          <div class="hex-btrack"></div>
+          <div class="hex-bar err" style="left:52%; width:46%;">20.5ms</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hex-detail">
+      <div class="hex-det-head">
+        <span class="hex-det-title">fail_after_double</span>
+        <button class="hex-det-close">✕</button>
+      </div>
+      <div class="hex-det-body">
+        <div class="hex-det-sect">
+          <div class="hex-det-kick">Status</div>
+          <div class="hex-det-kv"><span class="k">Status</span><span class="v"><span class="hex-badge failed" style="margin-left:0;">FAILED</span></span></div>
+          <div class="hex-det-kv"><span class="k">Duration</span><span class="v">20.5ms</span></div>
+          <div class="hex-det-kv"><span class="k">Superstep</span><span class="v">1</span></div>
+        </div>
+        <div class="hex-det-sect">
+          <div class="hex-det-kick">Error</div>
+          <div class="hex-err-block">boom</div>
+        </div>
+        <div class="hex-det-sect">
+          <div class="hex-det-kick">Inputs</div>
+          <div class="hex-details-block">
+            <div class="hex-details-sum">dict • 1 fields</div>
+            <div style="margin-top:8px;">
+              <div class="hex-tree-row">
+                <span class="hex-tree-key">DOUBLED</span>
+                <span class="hex-tree-val"><span class="hex-scalar num">10</span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="hex-det-sect">
+          <div class="hex-det-kick">Outputs</div>
+          <span class="hex-scalar nul">null</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<!-- Key changes -->
+<div style="max-width:1860px; margin:40px auto 0; display:grid; grid-template-columns:1fr 1fr; gap:40px;">
+  <div style="padding:20px; background:white; border-radius:8px; border:1px solid #ecedf2;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:12px;">Key Design Changes</div>
+    <table style="width:100%; font-size:12px; border-collapse:collapse;">
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94; width:120px;">Fonts</td><td style="padding:6px 8px;"><s style="color:#999;">Inter + JetBrains Mono</s> → IBM Plex Sans + Mono</td></tr>
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94;">Background</td><td style="padding:6px 8px;"><s style="color:#999;">Dark #050607 + gradient</s> → Clean white</td></tr>
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94;">Accent</td><td style="padding:6px 8px;"><s style="color:#999;">Blue #60a5fa</s> → Purple #473982</td></tr>
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94;">Borders</td><td style="padding:6px 8px;"><s style="color:#999;">rgba alpha</s> → Solid #ecedf2</td></tr>
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94;">Radius</td><td style="padding:6px 8px;"><s style="color:#999;">10px / 999px pills</s> → 3-6px subtle</td></tr>
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94;">Tabs</td><td style="padding:6px 8px;"><s style="color:#999;">Pill group, filled active</s> → Underline indicator</td></tr>
+      <tr style="border-bottom:1px solid #ecedf2;"><td style="padding:6px 8px; color:#717a94;">Metrics</td><td style="padding:6px 8px;"><s style="color:#999;">Inline in toolbar</s> → Labeled grid cells</td></tr>
+      <tr><td style="padding:6px 8px; color:#717a94;">Selection</td><td style="padding:6px 8px;"><s style="color:#999;">White alpha</s> → Purple-tinted row</td></tr>
+    </table>
+  </div>
+  <div style="padding:20px; background:white; border-radius:8px; border:1px solid #ecedf2;">
+    <div style="font-size:13px; font-weight:600; margin-bottom:12px;">Structural Improvements</div>
+    <div style="font-size:12px; line-height:1.7; color:#333;">
+      <div style="margin-bottom:8px;"><strong style="color:#473982;">Summary grid.</strong> Key metrics (nodes, active/wall time, failure count) get labeled cells instead of being buried in the toolbar. Scannable at a glance.</div>
+      <div style="margin-bottom:8px;"><strong style="color:#473982;">Semantic status colors.</strong> Green (#1a8754), red (#c4320a), teal (#0e7490) are tuned for light backgrounds — more accessible than the dark-mode neons.</div>
+      <div style="margin-bottom:8px;"><strong style="color:#473982;">Consistent row heights.</strong> Timeline rows, label rows, and grid lines all snap to the same 40px rhythm, keeping bars aligned across the panel split.</div>
+      <div><strong style="color:#473982;">Error block contrast.</strong> Lighter red-tinted background with solid border instead of glowing dark panel — error text is more readable at small sizes.</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
