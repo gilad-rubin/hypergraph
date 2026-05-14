@@ -3,6 +3,7 @@
 import pytest
 
 from hypergraph.graph import Graph
+from hypergraph.graph.validation import GraphConfigError
 from hypergraph.nodes.function import node
 
 
@@ -530,8 +531,8 @@ class TestBindWithGraphNode:
         inner = Graph([double], name="inner")
         outer = Graph([inner.as_node()])
 
-        # x is private to inner GraphNode → bind via dot-path
-        outer_bound = outer.bind(**{"inner.x": 5})
+        # x is a parent-facing input address on the inner GraphNode.
+        outer_bound = outer.bind(**{"x": 5})
 
         runner = SyncRunner()
         result = runner.run(outer_bound, {})
@@ -550,8 +551,8 @@ class TestBindWithGraphNode:
         outer = Graph([inner_bound.as_node()])
 
         runner = SyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": 5})
         assert result["result"] == 15
 
     def test_outer_bind_overrides_inner(self):
@@ -568,15 +569,37 @@ class TestBindWithGraphNode:
 
         runner = SyncRunner()
 
-        # x and factor are private to inner GraphNode → addressed via dot-path
+        # Flat as_node() keeps x and factor in the parent flow.
         # Run with inner's binding
-        result = runner.run(outer, {"inner.x": 5})
+        result = runner.run(outer, {"x": 5})
         assert result["result"] == 10
 
         # Override with runtime value (warning expected for the bind override)
-        with pytest.warns(UserWarning, match="(?i)override.*inner\\.factor"):
-            result = runner.run(outer, {"inner.x": 5, "inner.factor": 3})
+        with pytest.warns(UserWarning, match="(?i)override.*factor"):
+            result = runner.run(outer, {"x": 5, "factor": 3})
         assert result["result"] == 15
+
+        # Outer bind at the same projected flat address wins over the inner bind.
+        outer_bound = outer.bind(factor=4)
+        with pytest.warns(UserWarning, match="Parent bind.*factor.*overrides nested bind"):
+            assert outer_bound.inputs.bound == {"factor": 4}
+        result = runner.run(outer_bound, {"x": 5})
+        assert result["result"] == 20
+
+    def test_conflicting_flat_sibling_inner_binds_error(self):
+        @node(output_name="a")
+        def use_a(cfg: str) -> str:
+            return cfg
+
+        @node(output_name="b")
+        def use_b(cfg: str) -> str:
+            return cfg
+
+        inner_a = Graph([use_a], name="a").bind(cfg="A")
+        inner_b = Graph([use_b], name="b").bind(cfg="B")
+
+        with pytest.raises(GraphConfigError, match="Conflicting nested binds"):
+            Graph([inner_a.as_node(), inner_b.as_node()])
 
 
 class TestBindWithGates:

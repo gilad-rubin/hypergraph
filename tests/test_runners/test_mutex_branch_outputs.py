@@ -118,7 +118,7 @@ def explicit_edge_missing_false_branch() -> Graph:
     [
         (same_graph, "x"),
         (consumer_in_subgraph, "x"),
-        (producers_and_consumer_in_separate_subgraphs, "producer_graph.x"),
+        (producers_and_consumer_in_separate_subgraphs, "x"),
         (explicit_edges_both_branches, "x"),
     ],
 )
@@ -190,7 +190,7 @@ def test_missing_output_versions_still_accept_current_declared_writer() -> None:
 
 
 async def test_async_mutex_duplicate_outputs_feed_consumer_at_runtime() -> None:
-    result = await AsyncRunner().run(producers_and_consumer_in_separate_subgraphs(), {"producer_graph.x": -1})
+    result = await AsyncRunner().run(producers_and_consumer_in_separate_subgraphs(), {"x": -1})
 
     assert result.status == RunStatus.COMPLETED
     assert result["final"] == "final:b:-1"

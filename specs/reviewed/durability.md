@@ -240,11 +240,11 @@ There are two boundaries people want:
   - Current reviewed default: `GraphNode.outputs = graph.outputs` (all inner outputs).
   - Use `.with_outputs()` to rename lifted output names.
 
-- **Return surface (nested RunResult):** the nested graph can still be returned as a nested `RunResult` under `result[graphnode.name][...]` (subject to `select=` filtering).
+- **Return surface (projected values):** the nested graph's selected outputs are returned under the GraphNode's projected output addresses.
 
 These are intentionally different:
 - wiring surface controls dependency/value-resolution in the parent graph,
-- return surface controls what the caller sees in the run result.
+- return surface controls what the caller sees in the flat run result.
 
 ### Practical consequence of the current default
 

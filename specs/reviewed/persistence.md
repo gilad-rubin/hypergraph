@@ -295,12 +295,13 @@ class PauseInfo:
     node_name: str           # Path to InterruptNode (uses "/" separator)
     value: Any               # Value to show user (input_param)
     response_param: str      # Local parameter name from InterruptNode
-    response_key: str        # Namespaced key for values dict (uses "." separator)
+    response_key: str        # Resolved parent-facing key for values dict
 ```
 
-**For nested graphs:** `response_key` automatically namespaces the response.
+**For nested graphs:** `response_key` crosses GraphNode boundaries using the resolved parent-facing address.
 - Top-level: `response_key == response_param` (e.g., `"decision"`)
-- Nested: `response_key` adds graph path (e.g., `"review.decision"` for `node_name="review/approval"`)
+- Flat GraphNode: `response_key` may remain flat (e.g., `"decision"` for `node_name="review/approval"`)
+- Namespaced GraphNode: `response_key` uses the projected address (e.g., `"review.decision"`)
 
 ---
 
@@ -682,14 +683,15 @@ result = await runner.run(outer, values={...}, workflow_id="order-123")
 # Child:  "order-123/rag"
 ```
 
-### Accessing Nested Results
+### Accessing Nested Outputs
 
 ```python
 result["final_output"]          # Top-level output
-result["rag"]                   # Nested RunResult
-result["rag"]["embedding"]      # Output from nested graph
-result["rag"].status            # RunStatus.COMPLETED
-result["rag"].workflow_id       # "order-123/rag"
+result["embedding"]             # Flat GraphNode output from nested graph
+
+namespaced = Graph(nodes=[preprocess, rag.as_node(namespaced=True), postprocess])
+result = await runner.run(namespaced, values={...}, workflow_id="order-123")
+result["rag.embedding"]         # Namespaced GraphNode output
 ```
 
 ### Nested Pauses
@@ -698,9 +700,8 @@ If a nested graph pauses, the parent pauses too:
 
 ```python
 if result.status == RunStatus.PAUSED:
-    # Check which graph paused
-    if result["review"].status == RunStatus.PAUSED:
-        print(f"Review waiting for: {result['review'].pause.response_param}")
+    print(f"Paused at: {result.pause.node_name}")
+    print(f"Waiting for: {result.pause.response_key}")
 ```
 
 ---
@@ -864,7 +865,7 @@ match result.status:
     case RunStatus.PAUSED:
         # Store for later, notify user
         await save_pending(result.workflow_id, result.pause)
-        return {"status": "pending", "waiting_for": result.pause.response_param}
+        return {"status": "pending", "waiting_for": result.pause.response_key}
     case RunStatus.FAILED:
         # Log and handle error
         logger.error(f"Workflow failed: {result.error}")

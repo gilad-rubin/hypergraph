@@ -515,12 +515,11 @@ outer = Graph([
 ]).as_node(complete_on_stop=True)  # Outer also completes
 ```
 
-If `complete_on_stop=True` on outer, then all nested GraphNodes must also have `complete_on_stop=True`. This is validated at graph construction time:
+There is no graph-wide inheritance rule: each GraphNode boundary decides independently. If an outer GraphNode has `complete_on_stop=True` but an inner GraphNode does not, the inner boundary may still propagate stop before its own remaining nodes run.
 
 ```python
-# This raises ValueError at construction time
 inner = Graph([...]).as_node(complete_on_stop=False)
-outer = Graph([inner]).as_node(complete_on_stop=True)  # ❌ Error!
+outer = Graph([inner]).as_node(complete_on_stop=True)
 ```
 
 **Default Behavior:**
@@ -534,7 +533,7 @@ By default, `complete_on_stop=False` — stop propagates immediately. This is pr
 | Partial output | Saved in stopped node's step | Accumulated into state |
 
 **See also:**
-- [GraphNode.complete_on_stop](node-types.md#graphnode-specific-properties) - Property definition
+- [Graph.as_node(..., complete_on_stop=...)](graph.md#as_node) - Boundary option
 - [StepStatus.STOPPED](execution-types.md#stepstatus) - Step status enum
 
 ### Checkpointer Interface

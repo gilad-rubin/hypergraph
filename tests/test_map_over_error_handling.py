@@ -39,7 +39,7 @@ class TestSyncMapOverErrorHandling:
         outer = Graph([inner.as_node().map_over("x"), passthrough])
         runner = SyncRunner()
         with pytest.raises(CustomMapError):
-            runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+            runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
     def test_continue_mode_returns_none_placeholders(self):
         """error_handling='continue' uses None for failed items, preserving list length."""
@@ -47,7 +47,7 @@ class TestSyncMapOverErrorHandling:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+        result = runner.run(outer, {"x": [1, 2, 3, 4, 5]})
         assert result.status == RunStatus.COMPLETED
         # List length preserved: 5 items in, 5 items out
         assert result["result"] == [2, 4, None, 8, 10]
@@ -58,7 +58,7 @@ class TestSyncMapOverErrorHandling:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": [1, 2, 4, 5]})
+        result = runner.run(outer, {"x": [1, 2, 4, 5]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [2, 4, 8, 10]
 
@@ -88,7 +88,7 @@ class TestAsyncMapOverErrorHandling:
         outer = Graph([inner.as_node().map_over("x"), passthrough])
         runner = AsyncRunner()
         with pytest.raises(CustomMapError):
-            await runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+            await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
     @pytest.mark.asyncio
     async def test_continue_mode_returns_none_placeholders(self):
@@ -96,7 +96,7 @@ class TestAsyncMapOverErrorHandling:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = AsyncRunner()
-        result = await runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+        result = await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [2, 4, None, 8, 10]
 
@@ -106,6 +106,6 @@ class TestAsyncMapOverErrorHandling:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, passthrough])
         runner = AsyncRunner()
-        result = await runner.run(outer, {"inner.x": [1, 2, 4, 5]})
+        result = await runner.run(outer, {"x": [1, 2, 4, 5]})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [2, 4, 8, 10]

@@ -433,8 +433,8 @@ class TestDeeplyNestedGraphs:
 
         # No exception raised
         assert "middle" in outer.nodes
-        # x is private to middle.inner_inner GraphNode chain
-        assert outer.inputs.required == ("middle.inner_inner.x",)
+        # x from nested inner_inner projects flat to the outer surface.
+        assert outer.inputs.required == ("x",)
         assert outer.outputs == ("z",)
 
     def test_three_level_inputs_propagate(self):
@@ -461,10 +461,10 @@ class TestDeeplyNestedGraphs:
         # Level 1: contains level 2 + its own node
         outer = Graph([middle.as_node(), level1_node], name="outer")
 
-        # All external inputs propagate (private inputs surface as dot-paths)
+        # All external inputs propagate (projected inputs surface as parent-facing addresses)
         all_inputs = outer.inputs.all
-        assert "middle.inner_inner.x" in all_inputs  # from level 3 (private through middle.inner_inner)
-        assert "middle.y" in all_inputs  # from level 2 (private through middle)
+        assert "x" in all_inputs  # from level 3 (projected through middle.inner_inner)
+        assert "y" in all_inputs  # from level 2 (projected through middle)
         assert "z" in all_inputs  # from level 1 (consumed by leaf at outer)
 
     def test_three_level_outputs_visible(self):

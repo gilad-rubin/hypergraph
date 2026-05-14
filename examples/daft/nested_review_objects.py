@@ -70,9 +70,9 @@ def main() -> None:
     runner = DaftRunner()
     result = runner.run(
         workflow,
-        # `reviews` is private to the `assess_reviews` GraphNode at outer scope.
+        # `reviews` is projected flat from the `assess_reviews` GraphNode.
         {
-            "assess_reviews.reviews": [
+            "reviews": [
                 Review("Ava", 9, "Loved it"),
                 Review("Ben", 4, "It broke during setup"),
                 Review("Chen", 6, "Good, but not great"),

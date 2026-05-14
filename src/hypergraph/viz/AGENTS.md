@@ -32,10 +32,10 @@ scene client-side without a kernel round-trip.
 4. `performCompoundLayout()` handles expanded containers with a compound dagre pass.
 5. `CustomEdge` renders B-spline curves through dagre-provided points via `curveBasis()`.
 
-**Mermaid (untouched)**: `mermaid.py` still consumes the legacy
-`renderer/nodes.py` + `renderer/scope.py` helpers. PR #88 keeps those modules
-alive so Mermaid output is byte-identical; migration to the IR path is
-out of scope.
+**Mermaid**: `mermaid.py` still consumes `renderer/nodes.py` +
+`renderer/scope.py` helpers rather than the compact IR path. Keep Mermaid and
+interactive viz aligned on resolved port addresses even though the rendering
+pipelines differ.
 
 ## Viz.js Architecture
 

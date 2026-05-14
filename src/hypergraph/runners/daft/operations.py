@@ -249,12 +249,9 @@ class GraphNodeOperation(DaftOperation):
         from hypergraph.runners._shared.helpers import address_for_node_input
 
         node = self.node
-        # Resolve each public input to the actual DataFrame column. Under
-        # lexical scope a private GraphNode input may arrive under its
-        # dot-pathed address; address_for_node_input picks whichever column
-        # the schema actually has.
-        df_columns = {name: None for name in df.column_names}
-        param_to_col = {p: address_for_node_input(node, p, df_columns) for p in self.input_columns}
+        # GraphNode inputs are already projected to DataFrame column names:
+        # flat, namespaced, or exposed depending on the boundary.
+        param_to_col = {p: address_for_node_input(node, p) for p in self.input_columns}
         col_names_for_df = list(param_to_col.values())
         col_names_for_inner = list(param_to_col.keys())
 
@@ -268,8 +265,8 @@ class GraphNodeOperation(DaftOperation):
         map_config = node.map_config
 
         # Capture for the closure: build inner_inputs from positional args
-        # using the GraphNode's public input names (not the DataFrame column
-        # names, which may be dot-pathed).
+        # using the GraphNode's projected input names (not necessarily the same
+        # strings as the DataFrame column names).
         inner_param_names = col_names_for_inner
 
         @daft_mod.func(return_dtype=daft_mod.DataType.python())
@@ -339,20 +336,17 @@ def create_operation(
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.runners._shared.helpers import address_for_node_input
 
-    # Determine which bound values apply to this node. For a GraphNode private
-    # input, bound_values may be keyed by dot-path; resolve to the canonical
-    # address (matching the sync/async runners) and store under the flat param
-    # name the inner node expects.
+    # Determine which bound values apply to this node. GraphNode bound values
+    # are keyed by their resolved parent-facing address; store them under the
+    # input name this operation receives.
     node_bound: dict[str, Any] = {}
     for param in node.inputs:
-        addr = address_for_node_input(node, param, bound_values)
+        addr = address_for_node_input(node, param)
         if addr in bound_values:
             node_bound[param] = bound_values[addr]
 
-    # Determine input columns (those not provided by bound values). For
-    # GraphNode private inputs the actual DataFrame column may be either flat
-    # or dot-pathed depending on how the user addressed the input -- the
-    # GraphNodeOperation resolves at apply() time once the schema is known.
+    # Determine input columns (those not provided by bound values). GraphNode
+    # boundaries have already projected the parent-facing column addresses.
     input_cols = [p for p in node.inputs if p not in node_bound]
     output_cols = list(node.data_outputs)
 

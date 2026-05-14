@@ -234,11 +234,11 @@ async def run(
     Args:
         graph: Graph to execute.
         values: Input values. Merged with checkpoint state if workflow_id exists.
-            Use "." separator to provide values to nested graphs:
-            - {"query": "hello"} → top-level value
-            - {"rag.top_k": 5} → value for nested "rag" GraphNode
-            - {"rag.inner.threshold": 0.8} → deeply nested value
-            See graph.md "Nested Graph Values" for details.
+            Keys use resolved graph-scope port addresses:
+            - {"query": "hello"} → flat parent value
+            - {"rag.top_k": 5} → value for a namespaced "rag" GraphNode
+            - {"rag.inner.threshold": 0.8} → multi-level namespaced value
+            See graph.md "Namespaced GraphNode Values" for details.
         select: Outputs to return.
         session_id: Session identifier.
         max_iterations: Max iterations before InfiniteLoopError.
@@ -572,11 +572,12 @@ class PauseInfo:
 
     @property
     def response_key(self) -> str:
-        """Namespaced key for values dict (uses "." separator).
+        """Resolved graph-scope key for values dict.
 
         Examples:
             - Top-level: "decision"
-            - Nested: "review.decision" (from node_name="review/approval")
+            - Flat GraphNode: "decision" (from node_name="review/approval")
+            - Namespaced GraphNode: "review.decision"
         """
 ```
 
@@ -584,10 +585,10 @@ class PauseInfo:
 ```python
 if result.pause:
     response = get_user_input(result.pause.value)
-    # values= accepts ".", "/", or nested dict - all equivalent:
+    # response_key is already the key this graph expects:
     result = await runner.run(
         graph,
-        values={result.pause.response_key: response},  # e.g., "review.decision"
+        values={result.pause.response_key: response},
         workflow_id=result.workflow_id,
     )
 ```
@@ -601,7 +602,7 @@ Returned by `AsyncRunner.run()`:
 ```python
 @dataclass
 class RunResult:
-    values: dict[str, Any | "RunResult"]  # Output name → value (or nested RunResult)
+    values: dict[str, Any]          # Output port address → value
     status: RunStatus             # COMPLETED, PAUSED, STOPPED, or FAILED
     workflow_id: str | None       # For persistence/resume (if checkpointer configured)
     run_id: str                   # Unique run identifier

@@ -346,18 +346,19 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
 def _apply_binding(graph: Graph, binding: Binding, topology: Topology) -> Graph:
     """Apply binding to the graph based on the binding mode.
 
-    Returns a new graph with bound values. Under lexical scope, private inner
-    inputs surface as dot-paths on the outer graph, so we look up the actual
-    addressable name in graph.inputs.all rather than assuming flat names.
+    Returns a new graph with bound values. GraphNode inputs use projected
+    parent-facing addresses, so we look up the actual addressable name in
+    graph.inputs.all rather than assuming only local names.
     """
     if binding == Binding.NONE:
         return graph
 
     def _resolve_addressable(graph: Graph, target: str) -> str | None:
-        """Find the addressable input name (dot-path or flat) ending in `target`.
+        """Find the addressable input name ending in `target`.
 
-        Returns None when no match exists OR when multiple dot-paths share the
-        same leaf -- ambiguous targets must be addressed by their full path.
+        Returns None when no match exists OR when multiple projected addresses
+        share the same leaf -- ambiguous targets must be addressed by their
+        full address.
         """
         all_inputs = graph.inputs.all
         if target in all_inputs:
@@ -446,12 +447,12 @@ def _get_map_input_for_topology(topology: Topology) -> str | None:
 
 
 def remap_inputs_to_addressable(inputs: dict, graph: Graph) -> dict:
-    """Remap flat input names to their addressable form (dot-path or flat).
+    """Remap flat input names to the graph's addressable form.
 
-    Under lexical scope, an input that is private to a nested GraphNode appears
-    on the outer graph as ``"<graphnode>.<name>"``. This helper looks up each
-    flat key in graph.inputs.all and rewrites it to whatever addressable form
-    the graph exposes (matching by suffix when no flat key is found).
+    GraphNode boundaries may expose flat or namespaced addresses. This helper
+    looks up each flat key in graph.inputs.all and rewrites it to whatever
+    addressable form the graph exposes (matching by suffix when no flat key is
+    found).
     """
     all_inputs = set(graph.inputs.all)
     remapped: dict = {}
@@ -459,7 +460,7 @@ def remap_inputs_to_addressable(inputs: dict, graph: Graph) -> dict:
         if key in all_inputs:
             remapped[key] = value
             continue
-        # Find a dot-pathed equivalent ending in `.{key}`
+        # Find a projected equivalent ending in `.{key}`
         candidates = [name for name in all_inputs if name.endswith(f".{key}")]
         if len(candidates) == 1:
             remapped[candidates[0]] = value

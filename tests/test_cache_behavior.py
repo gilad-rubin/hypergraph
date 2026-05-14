@@ -208,8 +208,8 @@ class TestCacheWithNestedGraph:
         outer = Graph([inner.as_node()])
         runner = SyncRunner(cache=InMemoryCache())
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": 5})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == 10
@@ -338,8 +338,8 @@ class TestCacheWithMapOver:
         outer = Graph([inner.as_node().map_over("x")])
         runner = SyncRunner(cache=InMemoryCache())
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
@@ -359,8 +359,8 @@ class TestCacheWithMapOver:
         runner = SyncRunner(cache=InMemoryCache())
 
         # Same value repeated — cache should deduplicate
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [5, 5, 5]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [5, 5, 5]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [10, 10, 10]

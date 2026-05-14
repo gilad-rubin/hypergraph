@@ -151,13 +151,12 @@ evaluation = Graph([
 ], name="evaluation")
 
 # Run evaluation: the cyclic conversation runs inside the DAG.
-# `query` is consumed only inside the nested `conversation` graph, so at the
-# evaluation scope it is private to that GraphNode — address it via the
-# dot-path. `history` is declared by `score_responses` here, so it stays flat.
+# Flat GraphNodes keep inputs in the parent flow, so both `query` and
+# `history` are parent-facing values here.
 runner = AsyncRunner()
 report = await runner.run(evaluation, {
     "dataset_path": "test_conversations.json",
-    "conversation.query": "initial query",  # First query for each test case
+    "query": "initial query",  # First query for each test case
     "history": [],
 })
 ```
@@ -352,11 +351,11 @@ graph_node = my_graph.as_node().map_over("items")
 
 ---
 
-## Addressing private subgraph inputs
+## GraphNode boundary addresses
 
-Each subgraph is its own scope. An input that's only declared inside a nested `GraphNode` — not consumed or produced by any leaf at the parent scope, and not exposed as a `GraphNode` output there — stays **private** to that subgraph. The parent addresses it under the `GraphNode`'s name.
+By default, `Graph.as_node()` keeps the wrapped graph's ports flat in the parent graph. This makes common values such as `query`, `messages`, and `config` easy to share across parent and child graphs.
 
-This keeps composed graphs **refactor-safe**: renaming or rewiring inputs inside one subgraph never silently affects a sibling.
+Use `as_node(namespaced=True)` when a subgraph needs its own independent namespace, then use `.expose(...)` to intentionally bring selected ports back into the parent flat flow.
 
 ### The mental model
 
@@ -370,15 +369,18 @@ def double(x: int) -> int:
 inner = Graph([double], name="inner")
 outer = Graph([inner.as_node()], name="outer")
 
-# 'x' is only declared inside `inner` — at the outer scope it's private
-print(outer.inputs.required)  # ('inner.x',)
+# Default: the GraphNode is flat at the parent boundary.
+print(outer.inputs.required)  # ('x',)
+
+namespaced = Graph([inner.as_node(namespaced=True)], name="outer")
+print(namespaced.inputs.required)  # ('inner.x',)
 ```
 
-If a leaf at the outer scope also declares `x` (consumes or produces it), the inner `x` auto-links to it and the dot-path goes away. Lexical scope is doing exactly what local variable scoping does in Python.
+If a leaf at the outer scope also declares `x` (consumes or produces it), a flat GraphNode's `x` auto-links to the same parent value.
 
 ### Sibling isolation
 
-Two sibling subgraphs that share an input name remain independent:
+Two sibling flat subgraphs that share an input name intentionally share one parent value. Opt into namespacing when they should be independent:
 
 ```python
 @node(output_name="out_a")
@@ -391,8 +393,11 @@ def use_b(x: int) -> int:
 
 inner_a = Graph([use_a], name="A")
 inner_b = Graph([use_b], name="B")
-outer = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+flat = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
 
+print(flat.inputs.required)  # ('x',)
+
+outer = Graph([inner_a.as_node(namespaced=True), inner_b.as_node(namespaced=True)], name="outer")
 print(outer.inputs.required)  # ('A.x', 'B.x')
 
 # A bind on A's input does NOT leak into B
@@ -401,9 +406,9 @@ print(configured.inputs.required)  # ('B.x',)
 print(configured.inputs.bound)     # {'A.x': 1}
 ```
 
-### Four equivalent addressing forms
+### Equivalent namespaced addressing forms
 
-For an input `x` private to a `GraphNode` named `inner`, all four forms below are equivalent:
+For an input `x` on a namespaced `GraphNode` named `inner`, all four forms below are equivalent:
 
 ```python
 @node(output_name="result")
@@ -411,16 +416,16 @@ def double(x: int) -> int:
     return x * 2
 
 inner = Graph([double], name="inner")
-outer = Graph([inner.as_node()], name="outer")
+outer = Graph([inner.as_node(namespaced=True)], name="outer")
 runner = SyncRunner()
 
-# 1. Run-time dot-path
+# 1. Run-time resolved address
 runner.run(outer, {"inner.x": 5})
 
 # 2. Run-time nested-dict
 runner.run(outer, {"inner": {"x": 5}})
 
-# 3. Build-time dot-path
+# 3. Build-time resolved address
 configured = outer.bind({"inner.x": 5})
 runner.run(configured, {})
 
@@ -429,31 +434,23 @@ configured = outer.bind(inner={"x": 5})
 runner.run(configured, {})
 ```
 
-Binding directly on the inner graph (`Graph([inner.bind(x=5).as_node()], name="outer")`) before composing is also valid and produces the same `outer.inputs.bound == {"inner.x": 5}`.
+Binding directly on the inner graph (`Graph([inner.bind(x=5).as_node(namespaced=True)], name="outer")`) before composing is also valid and produces the same `outer.inputs.bound == {"inner.x": 5}`.
 
-Use the dot-path form for single-key addressing; reach for the nested-dict form when you're grouping several private inputs of the same `GraphNode`.
+Use the resolved-address form for single-key addressing; reach for the nested-dict form when you're grouping several inputs of the same namespaced `GraphNode`.
 
-### Bind-conflict is caught at build time
+### Exposing selected ports
 
-If you bind an input on an inner subgraph whose leaf name is also declared at any ancestor scope, graph construction raises `GraphConfigError` immediately:
+`expose(...)` replaces the namespaced address at that boundary with a flat parent-facing address. It targets local port names before projection:
 
 ```python
-@node(output_name="result")
-def inner_func(x: int) -> int:
-    return x * 2
+retrieval = retrieval_graph.as_node(namespaced=True).expose("query")
+generation = generation_graph.as_node(namespaced=True).expose("query")
+outer = Graph([retrieval, generation])
 
-@node(output_name="final")
-def outer_func(result: int, x: int) -> int:  # outer also consumes 'x'
-    return result + x
-
-inner = Graph([inner_func], name="inner").bind(x=5)
-Graph([inner.as_node(), outer_func], name="outer")
-# GraphConfigError: Bind on 'inner.x' is shadowed at scope 'outer' by node
-# 'outer_func' (consumes 'x'). At run time the parent's value would silently
-# override the bind. ...
+print(outer.inputs.required)  # ('query',)
 ```
 
-The error names both the bind's full dot-path and the shadowing leaf so you can navigate straight to the source. Fix it by removing the inner bind, or by renaming the inner input via `with_inputs(...)` so it no longer collides.
+When a local name exists as both input and output, exposing it exposes both directions. That is useful for cyclic values such as `messages`, which need an initial input and also produce the next value. Duplicate aliases inside one GraphNode are rejected; different GraphNodes may still expose inputs to the same parent address.
 
 ## When to Use Hierarchical Composition
 

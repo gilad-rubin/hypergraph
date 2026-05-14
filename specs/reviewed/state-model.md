@@ -266,9 +266,10 @@ approval = InterruptNode(
 ┌─────────────────────────────────────────────────────────────────┐
 │  Returned State (RunResult) - USER-FACING                       │
 │                                                                  │
-│  All outputs returned to the user (or filtered with select=).  │
-│  Nested graphs return nested RunResult objects.                 │
-│  Dict-like access: result["answer"], result["rag"]["docs"]     │
+│  Graph outputs returned to the user.                            │
+│  Nested graphs project outputs through GraphNode boundaries.     │
+│  Dict-like access: result["answer"] (flat mode),                │
+│                    result["rag.docs"] (namespaced projection)   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

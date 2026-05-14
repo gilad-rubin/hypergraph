@@ -776,14 +776,14 @@ def to_mermaid(
         lines.append("    %% Inputs")
     for group in input_groups:
         params = group["params"]
-        # Display labels are scope-local leaf names; type lookup falls
-        # back to the leaf if the dot-pathed key has no entry.
-        display_params = [external_input_display_name(p) for p in params]
+        # Display labels are resolved graph-scope port addresses; type lookup
+        # falls back to the leaf if the projected key has no entry.
+        display_params = list(params)
         param_types = [format_type(_get_param_type(p, flat_graph) or _get_param_type(external_input_display_name(p), flat_graph)) for p in params]
         label = _build_input_label(display_params, param_types, show_types)
 
         if len(params) == 1:
-            node_id = f"input_{id_for_param.get(params[0], display_params[0])}"
+            node_id = f"input_{id_for_param.get(params[0], external_input_display_name(params[0]))}"
             node_type = "INPUT"
         else:
             id_segs = [id_for_param.get(p, external_input_display_name(p)) for p in params]

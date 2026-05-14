@@ -40,7 +40,6 @@ def validate_graph(
     _validate_graph_name(graph_name)
     _validate_reserved_names(nodes)
     _validate_valid_identifiers(nodes)
-    _validate_no_namespace_collision(nodes)
     _validate_consistent_defaults(nodes)
     _validate_gate_targets(nodes)
     _validate_no_gate_self_loop(nodes)
@@ -112,41 +111,6 @@ def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
                     )
 
 
-def _validate_no_namespace_collision(nodes: dict[str, HyperNode]) -> None:
-    """Ensure GraphNode names don't collide with output names.
-
-    GraphNode names are used for path-based result access (e.g., results['subgraph.output']).
-    If a GraphNode name matches an output name, it creates ambiguity.
-    """
-    from hypergraph.nodes.graph_node import GraphNode
-
-    graph_node_names = {node.name for node in nodes.values() if isinstance(node, GraphNode)}
-
-    if not graph_node_names:
-        return  # No GraphNodes, nothing to validate
-
-    # Collect ALL outputs (including from other GraphNodes)
-    all_outputs: dict[str, str] = {}  # output_name -> source_node_name
-    for node in nodes.values():
-        for output in node.outputs:
-            all_outputs[output] = node.name
-
-    # Check for collision between GraphNode names and any output
-    for gn_name in graph_node_names:
-        if gn_name in all_outputs:
-            source_node = all_outputs[gn_name]
-            # Skip if the GraphNode's own output matches its name (that's fine)
-            if source_node == gn_name:
-                continue
-            raise GraphConfigError(
-                f"GraphNode name '{gn_name}' collides with output name\n\n"
-                f"  -> GraphNode '{gn_name}' exists\n"
-                f"  -> Node '{source_node}' outputs '{gn_name}'\n\n"
-                f"How to fix:\n"
-                f"  Rename the GraphNode: graph.as_node(name='other_name')"
-            )
-
-
 def _validate_consistent_defaults(nodes: dict[str, HyperNode]) -> None:
     """Shared input parameters must have ALL-or-NONE consistent defaults."""
     param_info = _collect_param_default_info(nodes)
@@ -166,22 +130,12 @@ def _collect_param_default_info(
     graph.bind(). This ensures validation only checks for consistent defaults
     in function signatures, not configuration values.
 
-    Under lexical scope, a GraphNode's input that is NOT declared at this
-    scope is private to its subgraph and lives in a different namespace from
-    a sibling GraphNode's same-named input. Such private inputs are excluded
-    from the cross-node consistency check -- their defaults are validated
-    inside the owning inner graph at its own construction time.
+    GraphNode inputs are already projected into parent-facing addresses by the
+    GraphNode boundary, so they participate in this scope using those names.
     """
-    from hypergraph.graph.input_spec import _names_declared_at_scope
-    from hypergraph.nodes.graph_node import GraphNode
-
-    declared = _names_declared_at_scope(nodes)
     param_info: dict[str, list[tuple[bool, Any, str]]] = defaultdict(list)
     for node in nodes.values():
         for param in node.inputs:
-            if isinstance(node, GraphNode) and param not in declared:
-                # Private to the subgraph -- different namespace from this scope.
-                continue
             # Check for signature defaults only (excludes bound values)
             has_default = node.has_signature_default_for(param)
             if has_default:

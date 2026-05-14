@@ -146,11 +146,10 @@ research_team = Graph([
     review_gate,
 ], name="research_team")
 
-# Run the team
-# `topic` is consumed only inside `researcher`, so at the outer scope it is
-# private to that GraphNode — address it via the dot-path.
+# Run the team. Flat GraphNodes keep common inputs in the parent flow, so the
+# researcher's `topic` is addressed as `topic`.
 runner = SyncRunner()
-result = runner.run(research_team, {"researcher.topic": "Quantum Computing in 2024"})
+result = runner.run(research_team, {"topic": "Quantum Computing in 2024"})
 print(result["report"])
 ```
 
@@ -253,8 +252,7 @@ def test_writer():
 
 def test_team():
     runner = SyncRunner()
-    # `topic` is private to the inner `researcher` GraphNode at this scope.
-    result = runner.run(research_team, {"researcher.topic": "test topic"})
+    result = runner.run(research_team, {"topic": "test topic"})
 
     assert result["review_score"] >= 0.7
 ```

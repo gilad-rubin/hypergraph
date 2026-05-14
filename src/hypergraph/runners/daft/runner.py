@@ -186,11 +186,12 @@ class DaftRunner(BaseRunner):
         _validate_error_handling(error_handling)
         effective_selected = resolve_runtime_selected(select, graph)
         _validate_on_missing(on_missing)
-        precompute_input_validation(
+        ctx = precompute_input_validation(
             graph,
             entrypoint=None,
             selected=effective_selected,
         )
+        validate_item_inputs(ctx, normalized)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(
@@ -294,6 +295,15 @@ class DaftRunner(BaseRunner):
         # Merge graph.bind() + broadcast values — both captured in UDF closures
         bound = dict(graph.inputs.bound) if graph.inputs.bound else {}
         all_bound = {**bound, **normalized}
+        validation_values = {name: None for name in column_names}
+        validation_values.update(all_bound)
+        ctx = precompute_input_validation(graph, entrypoint=None, selected=None)
+        # DataFrames often carry passthrough columns that are not graph inputs.
+        # Keep stale-address and missing-input validation, but do not warn for
+        # extra columns that Daft will preserve untouched.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            validate_item_inputs(ctx, validation_values)
 
         plan = build_execution_plan(graph, all_bound, self._cache, clone)
         return execute_plan(dataframe.select(*column_names), plan)

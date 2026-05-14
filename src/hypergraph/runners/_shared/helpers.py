@@ -278,25 +278,14 @@ class ValueSource(Enum):
 def address_for_node_input(
     node: HyperNode,
     param: str,
-    *namespaces: dict[str, Any],
 ) -> str:
-    """Resolve which key (dotted or flat) addresses ``param`` of ``node``.
+    """Return the resolved graph-scope key for an input parameter.
 
-    Under lexical scope, a GraphNode's private input may be addressed at the
-    parent scope as ``"<node.name>.<param>"`` (state.values, state.versions,
-    provided_values, graph.inputs.bound, and per-execution input_versions all
-    share this convention). When the dotted key is present in any provided
-    namespace, it wins; otherwise the flat name is the auto-link fallback.
-
-    Used both for reading (find-the-key) and recording (consistent-key) so
-    that whatever key gets written must be the same key that gets read.
+    GraphNode boundary projection happens before runner execution, so
+    ``node.inputs`` already contains parent-facing addresses. The node argument
+    is kept so call sites read as "address for this node input" while the
+    current implementation simply returns the already-resolved address.
     """
-    from hypergraph.nodes.graph_node import GraphNode
-
-    if isinstance(node, GraphNode):
-        dotted = f"{node.name}.{param}"
-        if any(dotted in ns for ns in namespaces):
-            return dotted
     return param
 
 
@@ -403,30 +392,31 @@ def get_value_source(
     """
     from hypergraph.nodes.graph_node import GraphNode
 
-    # 1. Edge / restored-state value. For a GraphNode, a checkpoint may have
-    # restored its private input under the dot-pathed address; resolve to the
-    # canonical key so the lookup matches the readiness/staleness checks.
-    state_addr = address_for_node_input(node, param, state.values)
+    # 1. Edge / restored-state value. For a GraphNode, a checkpoint restores
+    # inputs under the parent-facing address; resolve to the canonical key so
+    # the lookup matches the readiness/staleness checks.
+    state_addr = address_for_node_input(node, param)
     if state_addr in state.values and _state_value_satisfies_input(param, node, graph, state, state_addr):
         return (ValueSource.EDGE, state.values[state_addr])
 
-    # 2. Input value (from run() call). The address may be dot-pathed when
-    # this is a GraphNode's private input.
-    provided_addr = address_for_node_input(node, param, provided_values)
+    # 2. Input value (from run() call). The address may differ from the local
+    # name when the input is projected through a GraphNode boundary.
+    provided_addr = address_for_node_input(node, param)
     if provided_addr in provided_values:
         return (ValueSource.PROVIDED, provided_values[provided_addr])
 
     # 3. Bound value resolved at this graph boundary. Same addressing applies
-    # for graph.inputs.bound (dot-pathed for private subgraph inputs).
-    bound_addr = address_for_node_input(node, param, graph.inputs.bound)
+    # for graph.inputs.bound.
+    bound_addr = address_for_node_input(node, param)
     if bound_addr in graph.inputs.bound:
         return (ValueSource.BOUND, graph.inputs.bound[bound_addr])
 
     # 3b. For GraphNode: check if inner graph has it bound
     if isinstance(node, GraphNode):
-        original_param = node._resolve_original_input_name(param)
-        if original_param in node._graph.inputs.bound:
-            return (ValueSource.BOUND, node._graph.inputs.bound[original_param])
+        for local_param in node._local_inputs_for_address(param):
+            original_param = node._resolve_original_input_name(local_param)
+            if original_param in node._graph.inputs.bound:
+                return (ValueSource.BOUND, node._graph.inputs.bound[original_param])
 
     # 4. Function default (from signature)
     if node.has_signature_default_for(param):
@@ -896,7 +886,7 @@ def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
 
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if a single input parameter is available."""
-    addr = address_for_node_input(node, param, state.values, graph.inputs.bound)
+    addr = address_for_node_input(node, param)
     if addr in state.values and _state_value_satisfies_input(param, node, graph, state, addr):
         return True
     if addr in graph.inputs.bound:
@@ -1046,9 +1036,8 @@ def _is_stale(
             # Descendant Producer Rule: all producers are downstream (DAGs only)
             if param in downstream:
                 continue
-        # Resolve the key the same way it was recorded -- dotted for a
-        # GraphNode's private input, flat otherwise.
-        addr = address_for_node_input(node, param, state.versions, last_exec.input_versions)
+        # Resolve the key the same way it was recorded at the graph boundary.
+        addr = address_for_node_input(node, param)
         current_version = state.versions.get(addr, 0)
         consumed_version = last_exec.input_versions.get(addr, 0)
         if current_version == consumed_version:
@@ -1357,10 +1346,8 @@ def _collect_interrupt_resume_keys(
 ) -> set[str]:
     """Collect valid interrupt resume keys for this graph scope.
 
-    Top-level interrupt outputs are exposed directly (``decision``).
-    Nested graph interrupts are exposed with dotted graph-node prefixes
-    (``inner.decision`` / ``outer.inner.decision``), matching
-    ``PauseInfo.response_key``.
+    Interrupt outputs are projected through GraphNode boundary maps the same
+    way ordinary outputs are.
     """
     from hypergraph.nodes.graph_node import GraphNode
 
@@ -1370,9 +1357,8 @@ def _collect_interrupt_resume_keys(
             allowed_outputs.update(f"{prefix}{output}" for output in node.data_outputs)
             continue
         if isinstance(node, GraphNode):
-            nested_prefix = f"{prefix}{node.name}."
             nested_keys = _collect_interrupt_resume_keys_from_nodes(node.iter_active_inner_nodes())
-            allowed_outputs.update(f"{nested_prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
+            allowed_outputs.update(f"{prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
     return allowed_outputs
 
 
@@ -1390,9 +1376,8 @@ def _collect_interrupt_resume_keys_from_nodes(
             allowed_outputs.update(f"{prefix}{output}" for output in node.data_outputs)
             continue
         if isinstance(node, GraphNode):
-            nested_prefix = f"{prefix}{node.name}."
             nested_keys = _collect_interrupt_resume_keys_from_nodes(node.iter_active_inner_nodes())
-            allowed_outputs.update(f"{nested_prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
+            allowed_outputs.update(f"{prefix}{node.map_resume_key_from_original(key)}" for key in nested_keys)
     return allowed_outputs
 
 

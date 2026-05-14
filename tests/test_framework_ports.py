@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from examples.framework_ports.agentic_rag import build_agentic_rag_graph
@@ -29,13 +31,13 @@ def test_agentic_rag_routes_latest_questions_to_web():
         graph,
         {
             "question": "What changed in the latest release for interrupts?",
-            # `local_documents` and `web_documents` are private to the
-            # `retrieve_context` GraphNode at outer scope.
-            "retrieve_context.local_documents": [
+            # `local_documents` and `web_documents` are projected flat from
+            # the `retrieve_context` GraphNode.
+            "local_documents": [
                 "Hypergraph supports interrupt nodes for human review.",
                 "Nested graphs make composition natural.",
             ],
-            "retrieve_context.web_documents": [
+            "web_documents": [
                 "Latest release notes mention better interrupt resume semantics.",
                 "Recent release adds richer run logs for nested graphs.",
             ],
@@ -60,12 +62,12 @@ async def test_support_inbox_nested_interrupt_propagates_pause():
                 "issue": "refund API timeout after release",
             }
         },
-        # `knowledge_base` is private to `customer_support`; `release_notes` is
-        # private to `technical_support`.
-        "customer_support.knowledge_base": [
+        # `knowledge_base` and `release_notes` are projected flat from their
+        # support subgraphs.
+        "knowledge_base": [
             "General account changes are applied within one hour.",
         ],
-        "technical_support.release_notes": [
+        "release_notes": [
             "Refund API timeout fixed in patch 2026.03.",
             "Release 2026.03 improves webhook retries.",
         ],
@@ -76,7 +78,7 @@ async def test_support_inbox_nested_interrupt_propagates_pause():
     assert paused.paused is True
     assert paused.pause is not None
     assert paused.pause.node_name == "technical_support/request_developer_review"
-    assert paused.pause.response_key == "technical_support.developer_reply"
+    assert paused.pause.response_key == "developer_reply"
 
 
 def test_ml_model_selection_uses_mapped_trials_to_pick_best_model():
@@ -87,9 +89,9 @@ def test_ml_model_selection_uses_mapped_trials_to_pick_best_model():
         graph,
         {
             "dataset_name": "toy_flowers",
-            # `feature_names` and `model_types` are private to the `trial` GraphNode.
-            "trial.feature_names": ("length", "width"),
-            "trial.model_types": ["threshold", "centroid"],
+            # `feature_names` and `model_types` are projected flat from `trial`.
+            "feature_names": ("length", "width"),
+            "model_types": ["threshold", "centroid"],
         },
     )
 
@@ -106,8 +108,8 @@ def test_document_batch_pipeline_maps_one_document_graph_over_many_inputs():
     result = runner.run(
         graph,
         {
-            # `documents` is private to the `process_document` GraphNode at outer scope.
-            "process_document.documents": [
+            # `documents` is projected flat from `process_document`.
+            "documents": [
                 "Hypergraph composes graphs into larger workflows. It keeps nodes testable.",
                 "Mapped graph nodes let one document pipeline scale across a batch. Automatic wiring keeps the graph readable.",
             ]
@@ -134,6 +136,24 @@ def test_daft_quickstart_port_processes_dataframe_rows():
 
     assert results["cleaned_text"] == ["alpha beta alpha", "gamma delta epsilon zeta eta"]
     assert results["review_bucket"] == ["short", "long"]
+
+
+def test_daft_map_dataframe_preserves_passthrough_columns_without_warning():
+    graph = build_daft_quickstart_graph()
+    runner = DaftRunner()
+    frame = daft.from_pylist(
+        [
+            {"text": "  Alpha beta alpha  ", "source": "sample-a"},
+        ]
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result_df = runner.map_dataframe(graph, frame)
+
+    results = result_df.collect().to_pydict()
+    assert results["source"] == ["sample-a"]
+    assert results["cleaned_text"] == ["alpha beta alpha"]
 
 
 def test_daft_llm_dataset_port_uses_nested_chunk_graphs():
@@ -176,3 +196,19 @@ def test_daft_image_query_port_maps_patch_classifier_inside_each_asset():
     assert results["patch_label"][0] == ["bright", "dark"]
     assert results["asset_summary"][0]["dominant_label"] == "bright"
     assert results["asset_summary"][1]["dominant_label"] == "dark"
+
+
+def test_daft_map_dataframe_rejects_stale_flat_graphnode_column_address():
+    graph = build_daft_llm_dataset_graph()
+    runner = DaftRunner()
+    frame = daft.from_pylist(
+        [
+            {
+                "query": "alpha",
+                "score_chunks.chunks": ["alpha alpha beta", "alpha beta gamma"],
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"'score_chunks\.chunks' is no longer valid\. Use 'chunks'"):
+        runner.map_dataframe(graph, frame)

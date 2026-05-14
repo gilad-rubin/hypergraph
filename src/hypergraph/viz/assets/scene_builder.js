@@ -124,8 +124,8 @@
       var typeHints = ext.type_hints || [];
       var isGroup = params.length > 1;
       // ``id_segments`` falls back to ``params`` (leaf names) and mirrors
-      // the Python disambiguator that swaps in the full dot-path when
-      // leaf names collide between sibling subgraphs (issue #94).
+      // the Python disambiguator that swaps in the full port address when
+      // suffixes collide between sibling subgraphs (issue #94).
       var idSegments = (ext.id_segments && ext.id_segments.length === params.length) ? ext.id_segments : params;
       var inputId = isGroup ? 'input_group_' + idSegments.join('_') : 'input_' + idSegments[0];
       var data = isGroup

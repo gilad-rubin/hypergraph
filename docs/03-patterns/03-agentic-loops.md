@@ -261,12 +261,13 @@ def should_continue(messages: list) -> str:
 - `emit="turn_done"` declares an ordering-only output. A sentinel value is auto-produced when `accumulate` runs — your function doesn't return it.
 - `wait_for="turn_done"` declares an ordering-only input. `should_continue` won't run until `turn_done` exists and is fresh (produced since `should_continue` last ran).
 - `emit` names appear in `node.outputs` but not in `node.data_outputs`. They're filtered from the final result.
+- In a parent graph, `wait_for` references the resolved port address. For a namespaced GraphNode emit, that can be a generated address such as `retrieval.done`; user-authored `emit` names themselves remain local names and cannot contain `.` or `/`.
 
 **When to use emit/wait_for vs data edges**:
 - If node B needs node A's output value → use a data edge (parameter matching)
 - If node B just needs to run after node A → use `emit`/`wait_for`
 
-**Validation**: emit names must not overlap with `output_name`, and wait_for names must not overlap with function parameters. Referencing a nonexistent emit/output in `wait_for` raises `GraphConfigError` at build time.
+**Validation**: emit names must not overlap with `output_name`, and wait_for names must not overlap with function parameters. Referencing a nonexistent emit/output address in `wait_for` raises `GraphConfigError` at build time.
 
 ## Entry Points
 

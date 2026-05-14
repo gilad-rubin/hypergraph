@@ -382,8 +382,8 @@ class TestNestedGraphEvents:
         runner = AsyncRunner()
         lp = ListProcessor()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": 5}, event_processors=[lp])
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await runner.run(outer, {"x": 5}, event_processors=[lp])
 
         assert result["final"] == 11
 
@@ -408,8 +408,8 @@ class TestNestedGraphEvents:
         runner = AsyncRunner()
         lp = ListProcessor()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        await runner.run(outer, {"inner.x": 5}, event_processors=[lp])
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        await runner.run(outer, {"x": 5}, event_processors=[lp])
 
         run_starts = lp.of_type(RunStartEvent)
         assert len(run_starts) == 2

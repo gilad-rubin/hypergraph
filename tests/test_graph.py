@@ -1028,8 +1028,8 @@ class TestGraphAsNode:
         outer = Graph([gnode])
         assert outer.has_cycles is False
 
-    def test_graphnode_definition_hash(self):
-        """Test GraphNode.definition_hash returns graph's hash."""
+    def test_graphnode_definition_hash_includes_boundary_surface(self):
+        """GraphNode.definition_hash includes graph code and boundary projection."""
 
         @node(output_name="result")
         def foo(x: int) -> int:
@@ -1038,7 +1038,8 @@ class TestGraphAsNode:
         g = Graph([foo], name="my_graph")
         gnode = g.as_node()
 
-        assert gnode.definition_hash == g.definition_hash
+        assert gnode.definition_hash != g.definition_hash
+        assert gnode.definition_hash != g.as_node(namespaced=True).definition_hash
 
     def test_graphnode_graph_property(self):
         """Test GraphNode.graph property returns wrapped graph."""
@@ -1493,7 +1494,7 @@ class TestGraphNodeRename:
         renamed = original.with_name("new_name")
 
         assert renamed.graph is original.graph
-        assert renamed.definition_hash == original.definition_hash
+        assert renamed.definition_hash != original.definition_hash
 
     def test_with_inputs_renames_inputs(self):
         """with_inputs renames inputs in returned GraphNode."""
@@ -1806,13 +1807,10 @@ class TestGraphNodeCapabilities:
         assert outer_gn.get_output_type("intermediate") is str
         assert outer_gn.get_output_type("final") is int
 
-        # Both a and b are private to the nested inner GraphNode at outer's scope,
-        # so they appear under the dot-path "inner.a" / "inner.b"
-        assert "inner.a" in outer_gn.inputs
-        assert "inner.b" in outer_gn.inputs
-        # b has a default (the bound value), addressed via dot-path
-        assert outer_gn.has_default_for("inner.b") is True
-        assert outer_gn.get_default_for("inner.b") == 10
+        assert "a" in outer_gn.inputs
+        assert "b" in outer_gn.inputs
+        assert outer_gn.has_default_for("b") is True
+        assert outer_gn.get_default_for("b") == 10
 
 
 class TestStrictTypesWithNestedGraphNode:

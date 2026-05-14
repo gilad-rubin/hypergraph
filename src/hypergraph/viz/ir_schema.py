@@ -59,14 +59,13 @@ class IRExternalInput:
     `beta`) render as INPUT_GROUP with a stable id like
     `input_group_alpha_beta`.
 
-    ``params`` stores the user-visible leaf names (the lexical-scope leaf
-    of dot-pathed external inputs from issue #94). ``id_segments`` are
-    the corresponding identifier-safe segments used to construct the
-    synthetic ``input_*`` node id; they are equal to ``params`` except
-    when colliding leaf names force a fallback to the full dot-path.
+    ``params`` stores the user-visible graph-scope port addresses.
+    ``id_segments`` are the corresponding identifier-safe segments used to
+    construct the synthetic ``input_*`` node id; they usually use the leaf
+    segment, falling back to the full address when leaf names collide.
     """
 
-    params: tuple[str, ...]  # display labels (leaf segments)
+    params: tuple[str, ...]  # display labels (graph-scope port addresses)
     deepest_owner: str | None = None
     consumers: tuple[str, ...] = ()
     type_hints: tuple[str | None, ...] = ()  # one per param

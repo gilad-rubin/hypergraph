@@ -71,11 +71,10 @@ def normalize_inputs(
     """Normalize inputs from values dict + kwargs shorthand.
 
     When ``graph`` is provided, nested-dict entries whose top-level keys match a
-    GraphNode in the graph (or any descendant addressable via further nested
-    dicts) are flattened to dot-paths (``{"A": {"overwrite": True}}`` becomes
-    ``{"A.overwrite": True}``). This makes nested-dict and dot-path forms two
-    equivalent surfaces over the same canonical address form. Dict values whose
-    top-level key is not a subgraph name are passed through unchanged.
+    namespaced GraphNode in the graph are flattened to resolved port addresses
+    (``{"A": {"overwrite": True}}`` becomes ``{"A.overwrite": True}``).
+    Dict values whose top-level key is not a namespaced GraphNode are passed
+    through unchanged.
     """
     base_values = dict(values) if values is not None else {}
 

@@ -54,28 +54,27 @@ InterruptNode execution has three paths:
 
 The `is_resuming` flag prevents false auto-resolve on fresh runs when provided_values happen to match interrupt output names.
 
-## Lexical-Scope Addressing (`address_for_node_input`)
+## GraphNode Boundary Addressing (`address_for_node_input`)
 
-Under lexical scope (issue #94), a `GraphNode`'s private input is addressed at
-the parent scope as `"<node.name>.<param>"` — the dotted form. Auto-linked
-inputs (a leaf at this scope declares the same name) stay flat.
+A `GraphNode`'s inputs are already projected to the parent-facing address:
+flat by default, or `"<node.name>.<param>"` when the node was created with
+`as_node(namespaced=True)` unless that port was exposed back to a flat name.
 
 State, provided values, and bound values all use this canonical form, so any
-code that looks up a node-input value against one of those dicts MUST resolve
-through the helper instead of using the bare param name:
+code that looks up a node-input value should use that canonical address instead
+of guessing a bare or prefixed name:
 
 ```python
 from hypergraph.runners._shared.helpers import address_for_node_input
 
-addr = address_for_node_input(node, param, state.values, graph.inputs.bound)
+addr = address_for_node_input(node, param)
 if addr in state.values:
     ...
 ```
 
-`namespaces` (the variadic) are checked in order; the first one containing the
-dotted form wins, otherwise the flat name is the auto-link fallback. Pass the
-dicts you intend to look up in — the resolver matches whichever one actually
-holds the value.
+The helper is intentionally thin after boundary projection: `node.inputs`
+already contains the resolved parent-facing address, so the helper currently
+returns `param`. It remains useful as a readable assertion at record/read sites.
 
 **Sites that already use it (canonical examples):**
 - `_has_input` (readiness check, helpers.py)
@@ -83,22 +82,21 @@ holds the value.
 - `_is_stale` (read side, helpers.py)
 - sync/async `superstep.py` (recording `input_versions` under the same key the
   staleness check reads — record-key MUST equal read-key)
-- `runners/daft/operations.py` (DataFrame column resolution at `apply()` time)
+- `runners/daft/operations.py` (DataFrame column naming)
 
-**Trap:** flat-only lookups (`state.values[param]`, `param in graph.inputs.bound`,
-`param in provided_values`) silently miss dot-pathed addresses. Both sides of a
-record/read pair must agree on the address — otherwise consumed-version
-defaults to 0 on read while being recorded as 0, and "not stale" silently
-classifies as fresh forever. PR #95 had exactly this bug at the staleness path
-(see commit `a3d3277` for the fix).
+**Trap:** local-name lookups (`state.values[param]`, `param in graph.inputs.bound`,
+`param in provided_values`) silently miss namespaced or exposed parent-facing
+addresses. Both sides of a record/read pair must agree on the address —
+otherwise consumed-version defaults to 0 on read while being recorded as 0,
+and "not stale" silently classifies as fresh forever. PR #95 had exactly this
+bug at the staleness path (see commit `a3d3277` for the fix).
 
-When the column / dict namespace is only known at run time (e.g. daft
-`apply()`), defer the resolution to that point — pass the actual column names
-as the namespace.
+If you find yourself trying to pass a namespace dict into the helper, the
+caller is probably carrying an old pre-projection assumption.
 
 ## Common Pitfalls
 
 - **Shared params + cycles**: a node that both consumes and produces `messages` triggers the Sole Producer Rule. Split into separate consume/produce nodes if the node is NOT gate-controlled.
 - **Inputless gate targets**: without `_has_pending_activation`, they never re-fire after first execution because `_is_stale` iterates over zero inputs.
 - **Control edges vs ordering edges**: control edges are excluded from `startup_predecessors`. If you need ordering, use `wait_for` or data edges. Gates handle control flow separately.
-- **Flat-name input lookups**: see "Lexical-Scope Addressing" above. If you're touching `helpers.py` / `superstep.py` / an executor and writing `state.values[param]` or `param in node_bound`, route through `address_for_node_input` instead — flat-only matching silently misses dot-pathed private GraphNode inputs.
+- **Local-name input lookups**: see "GraphNode Boundary Addressing" above. If you're touching `helpers.py` / `superstep.py` / an executor and writing `state.values[param]` or `param in node_bound`, route through `address_for_node_input` instead.

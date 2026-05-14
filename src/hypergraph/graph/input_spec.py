@@ -54,7 +54,6 @@ def compute_input_spec(
     entrypoints: tuple[str, ...] | None = None,
     selected: tuple[str, ...] | None = None,
     _active_scope: tuple[dict[str, HyperNode], nx.DiGraph] | None = None,
-    graph_name: str | None = None,
 ) -> InputSpec:
     """Compute input specification for a graph.
 
@@ -88,7 +87,7 @@ def compute_input_spec(
 
     data_subgraph = _data_only_subgraph(active_subgraph)
     edge_produced = get_edge_produced_values(active_subgraph)
-    all_bound = _collect_bound_values(active_nodes, bound, graph_name=graph_name)
+    all_bound = _collect_bound_values(active_nodes, bound)
     cycle_seed_params = _compute_cycle_seed_params(
         active_nodes,
         data_subgraph,
@@ -98,20 +97,18 @@ def compute_input_spec(
     )
 
     required, optional = [], []
-    declared = _names_declared_at_scope(active_nodes)
-
-    for addressed, original, source in _addressed_params(active_nodes, declared):
-        if original in cycle_seed_params:
-            if addressed in all_bound:
-                optional.append(addressed)
+    for address in _input_addresses(active_nodes):
+        if address in cycle_seed_params:
+            if address in all_bound:
+                optional.append(address)
             else:
-                required.append(addressed)
+                required.append(address)
             continue
-        category = _categorize_addressed_param(addressed, original, source, edge_produced, all_bound, active_nodes)
+        category = _categorize_input_address(address, edge_produced, all_bound, active_nodes)
         if category == "required":
-            required.append(addressed)
+            required.append(address)
         elif category == "optional":
-            optional.append(addressed)
+            optional.append(address)
 
     return InputSpec(
         required=tuple(required),
@@ -156,87 +153,41 @@ def _compute_cycle_seed_params(
     return required
 
 
-def _names_declared_at_scope(nodes: dict[str, HyperNode]) -> set[str]:
-    """Names declared directly at this graph's scope.
+def _input_addresses(nodes: dict[str, HyperNode]) -> Iterator[str]:
+    """Yield each graph-scope input port address once.
 
-    A name is declared at this scope if any node here can produce it (leaf
-    output OR GraphNode output, since both surface at this scope) or if a
-    leaf node here consumes it. GraphNode inputs do NOT count -- they are
-    private to the subscope unless declared by something else here.
-
-    Two siblings GraphNodes that happen to share an input name therefore stay
-    private to each. But a GraphNode whose output flows (via edge) to a sibling
-    GraphNode's same-named input auto-links, because the producer's output is
-    declared at this scope.
+    Inputs are emitted once by their parent-facing address. GraphNode boundary
+    projection owns flat/namespaced/exposed addressing; InputSpec does not
+    synthesize or parse addresses.
     """
-    from hypergraph.nodes.graph_node import GraphNode
 
-    names: set[str] = set()
+    seen: set[str] = set()
     for node in nodes.values():
-        if isinstance(node, GraphNode):
-            names.update(node.outputs)
-        else:
-            names.update(node.inputs)
-            names.update(node.outputs)
-    return names
+        for address in node.inputs:
+            if address in seen:
+                continue
+            seen.add(address)
+            yield address
 
 
-def _addressed_params(
-    nodes: dict[str, HyperNode],
-    declared: set[str],
-) -> Iterator[tuple[str, str, str | None]]:
-    """Yield (addressed_name, original_name, source_node_name_or_None) per input.
-
-    Inputs declared at this scope are emitted once with their flat name and no
-    source. Inputs private to a GraphNode subscope are emitted as dot-paths.
-    """
-    from hypergraph.nodes.graph_node import GraphNode
-
-    seen_flat: set[str] = set()
-    for node_name, node in nodes.items():
-        if isinstance(node, GraphNode):
-            for param in node.inputs:
-                if param in declared:
-                    if param not in seen_flat:
-                        seen_flat.add(param)
-                        yield (param, param, None)
-                else:
-                    yield (f"{node_name}.{param}", param, node_name)
-        else:
-            for param in node.inputs:
-                if param not in seen_flat:
-                    seen_flat.add(param)
-                    yield (param, param, None)
-
-
-def _categorize_addressed_param(
-    addressed: str,
-    original: str,
-    source: str | None,
+def _categorize_input_address(
+    address: str,
     edge_produced: set[str],
     bound: dict[str, Any],
     nodes: dict[str, HyperNode],
 ) -> str | None:
-    """Categorize an addressed parameter: 'required', 'optional', or None (edge-produced).
+    """Categorize an input address: 'required', 'optional', or None.
 
-    For a flat (declared-at-scope) param, ``source`` is None and optionality
-    is decided by ``_all_consumers_have_default(original, nodes)``. For a
-    private dot-pathed param, ``source`` names the owning GraphNode and
-    optionality is decided by THAT node's defaults specifically -- siblings'
-    defaults don't influence each other.
+    ``None`` means the address is edge-produced and should not appear as a
+    graph input.
     """
-    # Edge-produced is checked against the original name, since edges act in scope.
-    if original in edge_produced and addressed == original:
+    if address in edge_produced:
         return None
 
-    if addressed in bound:
+    if address in bound:
         return "optional"
 
-    if source is not None and nodes[source].has_default_for(original):
-        # Private dot-pathed input whose owning GraphNode supplies a default.
-        return "optional"
-
-    if addressed == original and _all_consumers_have_default(original, nodes):
+    if _all_consumers_have_default(address, nodes):
         return "optional"
 
     return "required"
@@ -396,16 +347,12 @@ def _active_from_selection(
 def _collect_bound_values(
     nodes: dict[str, HyperNode],
     bound: dict[str, Any],
-    *,
-    graph_name: str | None = None,
 ) -> dict[str, Any]:
-    """Collect all bound values from graph and nested GraphNodes under lexical scope.
+    """Collect all bound values from graph and nested GraphNodes.
 
-    Inner binds surface as dot-pathed keys (``"<graphnode_name>.<public_name>"``)
-    on the outer bound dict. If an inner bind's public name is declared at this
-    scope (would auto-link to an ancestor's same-named input), the bind would be
-    silently overridden by the ancestor's value at run time -- so this is a
-    build-time error pointing to both the bind site and the ancestor scope.
+    Inner binds surface under the GraphNode boundary's projected parent-facing
+    address: flat for flat graph nodes, namespaced for namespaced graph nodes,
+    or exposed alias for exposed ports.
 
     Args:
         nodes: Map of node name -> HyperNode
@@ -414,58 +361,39 @@ def _collect_bound_values(
     Returns:
         Merged dict of all bound values (current graph + nested graphs)
 
-    Raises:
-        GraphConfigError: when a nested bind is shadowed by an ancestor-declared name.
     """
-    from hypergraph.graph.validation import GraphConfigError
     from hypergraph.nodes.graph_node import GraphNode
 
     all_bound = dict(bound)
-    declared = _names_declared_at_scope(nodes)
+    inner_bound_sources: dict[str, str] = {}
 
     for node_name, node in nodes.items():
         if not isinstance(node, GraphNode):
             continue
         for inner_key, value in node.graph.inputs.bound.items():
-            public_key = node.map_input_name_from_original(inner_key)
-            full_path = f"{node_name}.{public_key}"
-            # Conflict surfaces at the OUTERMOST scope that declares the bind's
-            # leaf name. For a deeply-nested bind addressed `a.b.c` reaching
-            # this scope, the leaf is `c`; if a leaf at this scope consumes or
-            # produces `c`, the bind would be silently overridden.
-            leaf = public_key.rsplit(".", 1)[-1]
-            if leaf in declared:
-                raise GraphConfigError(_bind_conflict_message(full_path, leaf, nodes, graph_name))
-            all_bound[full_path] = value
+            address = node.map_input_name_from_original(inner_key)
+            if address in bound:
+                import warnings
+
+                warnings.warn(
+                    f"Parent bind for {address!r} overrides nested bind from GraphNode {node_name!r}.",
+                    UserWarning,
+                    stacklevel=4,
+                )
+                continue
+            if address in all_bound:
+                from hypergraph.graph.validation import GraphConfigError, _values_equal
+
+                if not _values_equal(all_bound[address], value):
+                    first = inner_bound_sources.get(address, "another GraphNode")
+                    raise GraphConfigError(
+                        f"Conflicting nested binds for {address!r}\n\n"
+                        f"  -> GraphNode {first!r} and GraphNode {node_name!r} both bind this parent-facing address.\n\n"
+                        f"How to fix:\n"
+                        f"  Bind {address!r} on the parent graph, or use namespaced/exposed aliases so the binds have distinct addresses."
+                    )
+                continue
+            all_bound[address] = value
+            inner_bound_sources[address] = node_name
 
     return all_bound
-
-
-def _bind_conflict_message(
-    full_path: str,
-    leaf: str,
-    nodes: dict[str, HyperNode],
-    graph_name: str | None,
-) -> str:
-    """Compose a build-time bind-conflict error naming the scope and the
-    specific shadowing node so the user can navigate straight to the source."""
-    from hypergraph.nodes.graph_node import GraphNode
-
-    shadowers: list[str] = []
-    for n_name, n in nodes.items():
-        if isinstance(n, GraphNode):
-            continue
-        if leaf in n.inputs:
-            shadowers.append(f"{n_name!r} (consumes {leaf!r})")
-        elif leaf in n.outputs:
-            shadowers.append(f"{n_name!r} (produces {leaf!r})")
-
-    scope_text = f" at scope {graph_name!r}" if graph_name else " at this scope"
-    shadow_text = f"by node {' / '.join(shadowers)}" if shadowers else f"by '{leaf}' declared at this scope"
-
-    return (
-        f"Bind on {full_path!r} is shadowed{scope_text} {shadow_text}. "
-        f"At run time the parent's value would silently override the bind. "
-        f"Fix: either remove the bind on the inner subgraph, or rename "
-        f"the input via with_inputs(...) so it no longer matches the ancestor."
-    )

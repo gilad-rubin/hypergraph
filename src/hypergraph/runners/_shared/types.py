@@ -612,25 +612,22 @@ class PauseInfo:
     def response_key(self) -> str:
         """Key to use in values dict when resuming (first output).
 
-        Top-level: returns output_param directly (e.g., 'decision').
-        Nested: dot-separated path (e.g., 'review.decision').
+        ``output_param`` is already the resolved graph-scope response address.
         """
-        parts = self.node_name.split("/")
-        if len(parts) == 1:
-            return self.output_param
-        return ".".join(parts[:-1]) + "." + self.output_param
+        return self.output_param
 
     @property
     def response_keys(self) -> dict[str, str]:
         """Map output names to resume keys.
 
-        Returns a dict mapping each output parameter name to the key to use
-        when providing the response value in the input dict.
+        Returns a dict mapping each output parameter name to the key to use when
+        providing the response value in the input dict. The names are already
+        resolved graph-scope addresses after GraphNode projection, so both key
+        and value are the same address (for example, ``"decision"`` in flat
+        mode or ``"review.decision"`` in namespaced mode).
         """
         params = self.output_params or (self.output_param,)
-        parts = self.node_name.split("/")
-        prefix = ".".join(parts[:-1]) + "." if len(parts) > 1 else ""
-        return {p: prefix + p for p in params}
+        return {p: p for p in params}
 
 
 class PauseExecution(BaseException):

@@ -48,11 +48,9 @@ class SyncGraphNodeExecutor:
         child_workflow_id = graphnode_child_workflow_id(ctx.workflow_id, node.name, state)
         map_config = node.map_config
 
-        # Route interrupt resume values into the inner graph.
-        # On pause, _handle_nested_result prefixes the node_name ("ask_user/ask_slack")
-        # and PauseInfo.response_key becomes "ask_user.user_input".  On resume the
-        # caller puts that dotted key into the outer state — we strip the prefix here
-        # so the inner graph sees the unprefixed key ("user_input").
+        # Route interrupt resume values into the inner graph. The parent sees
+        # the GraphNode's resolved output address ("decision", "review.verdict",
+        # etc.); the child run resumes with the inner graph's local output name.
         # When resuming a persisted child workflow, do not re-send normal child
         # inputs like "draft" — those are already captured by the child
         # checkpoint and would be treated as illegal overrides.
@@ -60,17 +58,27 @@ class SyncGraphNodeExecutor:
         # executed so the inner interrupt should fire again, not skip.
         if node.name not in state.node_executions:
             prefix = f"{node.name}."
-            # Resume-values are interrupt outputs prefixed with the GraphNode's
-            # name. Skip suffixes that match this node's public inputs -- those
-            # are dot-pathed user-provided inputs already routed via inner_inputs.
+            # Skip values that match this node's public inputs; those are
+            # user-provided GraphNode inputs already routed via inner_inputs.
             node_input_set = set(node.inputs)
-            resume_values = {
-                node.resolve_original_output_name(suffix): value
-                for key, value in state.values.items()
-                if key.startswith(prefix)
-                for suffix in [key[len(prefix) :]]
-                if suffix not in node_input_set
-            }
+            resume_values = {}
+            if not node.namespaced:
+                resume_values.update(
+                    {
+                        node.resolve_original_output_name(suffix): value
+                        for key, value in state.values.items()
+                        if key.startswith(prefix)
+                        for suffix in [key[len(prefix) :]]
+                        if suffix not in node_input_set
+                    }
+                )
+            resume_values.update(
+                {
+                    node.resolve_original_output_name(key): value
+                    for key, value in state.values.items()
+                    if key in node.outputs and key not in node_input_set
+                }
+            )
             child_fork_from: str | None = None
             child_retry_from: str | None = None
 

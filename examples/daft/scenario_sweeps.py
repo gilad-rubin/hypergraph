@@ -56,18 +56,18 @@ def build_scenario_sweep_graph() -> Graph:
 def main() -> None:
     graph = build_scenario_sweep_graph()
     runner = DaftRunner()
-    # `weights` and `candidates` are private to the `evaluate_candidates`
-    # GraphNode at outer scope; address via dot-path. `scenario_id` is
-    # consumed at the outer scope by `choose_best` so it stays flat.
+    # `weights` and `candidates` are projected flat from the
+    # `evaluate_candidates` GraphNode. `scenario_id` is consumed at the outer
+    # scope by `choose_best` so it is flat too.
     results = runner.map(
         graph,
         {
             "scenario_id": ["latency_sensitive", "quality_first"],
-            "evaluate_candidates.weights": [
+            "weights": [
                 {"accuracy": 1.0, "latency": 0.01, "cost": 0.5},
                 {"accuracy": 2.5, "latency": 0.002, "cost": 0.2},
             ],
-            "evaluate_candidates.candidates": [
+            "candidates": [
                 [
                     {"name": "fast-small", "accuracy": 0.81, "latency_ms": 40, "cost": 0.01},
                     {"name": "balanced", "accuracy": 0.9, "latency_ms": 85, "cost": 0.03},
@@ -78,7 +78,7 @@ def main() -> None:
                 ],
             ],
         },
-        map_over=["scenario_id", "evaluate_candidates.weights", "evaluate_candidates.candidates"],
+        map_over=["scenario_id", "weights", "candidates"],
     )
 
     print(results["best_candidate"])

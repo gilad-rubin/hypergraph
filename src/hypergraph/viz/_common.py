@@ -192,11 +192,11 @@ def enumerate_valid_expansion_states(
 
 
 def external_input_display_name(param: str) -> str:
-    """Return the leaf segment of a dot-pathed external-input name.
+    """Return the leaf segment of an external-input address.
 
-    Synthetic INPUT-node IDs (``input_<name>``) and visible labels use the
-    leaf segment so users see ``x`` rather than ``middle.inner.x``. The
-    full dot path is an implementation detail of input addressing.
+    The renderer shows resolved graph-scope port addresses as labels. This
+    helper remains useful for stable synthetic IDs and type fallbacks where
+    the local leaf segment is useful.
     """
     if not param:
         return param
@@ -206,11 +206,11 @@ def external_input_display_name(param: str) -> str:
 def disambiguate_external_input_ids(
     params_by_group: list[list[str]],
 ) -> dict[str, str]:
-    """Map each dot-pathed external-input name to a unique synthetic id.
+    """Map each external-input address to a unique synthetic id segment.
 
     Returns ``{full_param: id_safe_name}``. When two groups would otherwise
     collide on the leaf segment (e.g. ``A.x`` and ``B.x`` both map to
-    ``x``), each colliding name keeps its full dot-path so the synthetic
+    ``x``), each colliding name keeps its full address so the synthetic
     ``input_*`` node IDs stay unique.
     """
     leaf_counts: dict[str, int] = {}
@@ -227,21 +227,23 @@ def disambiguate_external_input_ids(
     return mapping
 
 
-def resolve_dot_path_consumers(
+def resolve_port_address_consumers(
     param: str,
     flat_graph: nx.DiGraph,
 ) -> list[str]:
-    """Resolve a dot-pathed external-input name to its consumer chain.
+    """Resolve an external input port address to its consumer chain.
 
-    External inputs surface in ``input_spec.required`` as dot paths like
-    ``"middle.inner.x"`` — meaning the GraphNode named ``middle`` (a child
-    of the current scope) has a subscope where ``inner.x`` is the further
-    address. This walks the chain and returns every consumer along it,
-    from outermost to innermost.
+    External inputs can surface in ``input_spec.required`` as graph-scope
+    addresses like ``"middle.inner.x"``. Each GraphNode on the path declares
+    the address visible at its parent boundary (``"middle.inner.x"`` on
+    ``middle``, then ``"inner.x"`` on ``middle/inner``), while the leaf node
+    still consumes its local input name (``"x"``). This walks that chain and
+    returns every consumer along it, from outermost to innermost.
 
     For a path ``head.rest`` at scope ``S``:
-    - the child of ``S`` named ``head`` (a GraphNode whose scope-local
-      inputs include ``rest``) is a consumer.
+    - the child of ``S`` named ``head`` is a consumer when it declares either
+      the current graph-scope address or the remaining address at that child
+      boundary.
     - recurse into that container with ``rest``.
 
     At the leaf (no remaining dots), every descendant of the current
@@ -264,7 +266,9 @@ def resolve_dot_path_consumers(
         if attrs is None or attrs.get("node_type") != "GRAPH":
             return []  # unresolvable: malformed path
         rest_local = ".".join(parts[idx + 1 :])
-        if rest_local not in attrs.get("inputs", ()):
+        current_address = ".".join(parts[idx:])
+        declared_inputs = attrs.get("inputs", ())
+        if rest_local not in declared_inputs and current_address not in declared_inputs:
             return []  # container does not declare this scope-local input
         consumers.append(candidate)
         current_scope = candidate
@@ -317,16 +321,15 @@ def build_param_to_consumer_map(
                 param_to_consumers[param] = []
             param_to_consumers[param].append(node_id)
 
-    # External inputs surface as dot-pathed lexical addresses (issue #94).
-    # Resolve each one against the flat-graph hierarchy so the consumer
-    # chain (container -> ... -> leaf) is available for visibility-aware
-    # filtering below. Plain (non-dotted) params already match by exact
-    # name in the loop above and are skipped here.
+    # External inputs can surface as namespaced graph-scope addresses.
+    # Resolve each one against the flat-graph hierarchy so the consumer chain
+    # (container -> ... -> leaf) is available for visibility-aware filtering
+    # below. Plain params already match by exact name and are skipped here.
     input_spec = flat_graph.graph.get("input_spec", {})
     for param in tuple(input_spec.get("required", ())) + tuple(input_spec.get("optional", ())):
         if "." not in param:
             continue
-        chain = resolve_dot_path_consumers(param, flat_graph)
+        chain = resolve_port_address_consumers(param, flat_graph)
         if not chain:
             continue
         if not use_deepest:
