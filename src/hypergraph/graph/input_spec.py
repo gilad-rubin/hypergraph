@@ -373,6 +373,13 @@ def _collect_bound_values(
         for inner_key, value in node.graph.inputs.bound.items():
             address = node.map_input_name_from_original(inner_key)
             if address in bound:
+                import warnings
+
+                warnings.warn(
+                    f"Parent bind for {address!r} overrides nested bind from GraphNode {node_name!r}.",
+                    UserWarning,
+                    stacklevel=4,
+                )
                 continue
             if address in all_bound:
                 from hypergraph.graph.validation import GraphConfigError, _values_equal

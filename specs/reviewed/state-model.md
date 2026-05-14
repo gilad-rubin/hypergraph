@@ -268,7 +268,8 @@ approval = InterruptNode(
 │                                                                  │
 │  Graph outputs returned to the user.                            │
 │  Nested graphs project outputs through GraphNode boundaries.     │
-│  Dict-like access: result["answer"], result["rag.docs"]         │
+│  Dict-like access: result["answer"] (flat mode),                │
+│                    result["rag.docs"] (namespaced projection)   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

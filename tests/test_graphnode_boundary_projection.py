@@ -292,7 +292,7 @@ def test_with_inputs_renames_local_name_before_projection():
     assert result["retrieval.answer"] == "answer:hello"
 
 
-def test_map_over_and_clone_use_local_input_names():
+def test_map_over_and_clone_accept_local_and_projected_input_names():
     @node(output_name="doubled")
     def double(x: int, config: dict[str, int]) -> int:
         return x * config["multiplier"]
@@ -309,11 +309,18 @@ def test_map_over_and_clone_use_local_input_names():
 
     assert result["worker.doubled"] == [3, 6]
 
-    with pytest.raises(ValueError, match="not an input"):
-        inner.as_node(namespaced=True).map_over("worker.x")
+    projected = inner.as_node(namespaced=True).map_over("worker.x", clone=["worker.config"])
+    projected_outer = Graph([projected])
+
+    assert projected.map_config is not None
+    assert projected.map_config[0] == ["x"]
+
+    projected_result = SyncRunner().run(projected_outer, {"worker.x": [1, 2], "worker.config": {"multiplier": 4}})
+
+    assert projected_result["worker.doubled"] == [4, 8]
 
     with pytest.raises(ValueError, match="not an input"):
-        inner.as_node(namespaced=True).map_over("x", clone=["worker.config"])
+        inner.as_node(namespaced=True).map_over("other.x")
 
 
 def test_same_local_name_can_be_projected_as_input_and_output_for_cycles():

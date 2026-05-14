@@ -39,7 +39,7 @@ def test_bound_params_not_treated_as_defaults():
     # Outer binds config at the scope where it's declared (auto-links into inner).
     outer_graph = Graph([inner_graph.as_node(), outer_func], name="outer").bind(config="bound_value")
 
-    # x is owned by inner GraphNode -> addressed as inner.x
+    # x is projected as flat parent-facing key "x".
     assert set(outer_graph.inputs.required) == {"x"}
     assert "config" in outer_graph.inputs.bound
 
@@ -262,12 +262,12 @@ def test_three_level_nested_binding():
     assert "vector_store" in retrieval_graph.inputs.bound
 
     # Key assertion: bound values from retrieval_graph must appear in rag_graph
-    # embedder/vector_store are owned by retrieval GraphNode → addressed as retrieval.X
+    # embedder/vector_store project through retrieval as flat parent-facing keys.
     assert "embedder" in rag_graph.inputs.bound
     assert "vector_store" in rag_graph.inputs.bound
 
     # Key assertion: bound values must propagate to eval_graph
-    # embedder/vector_store are projected through rag.retrieval.
+    # embedder/vector_store continue projecting flat through rag.retrieval.
     assert "embedder" in eval_graph.inputs.bound
     assert "vector_store" in eval_graph.inputs.bound
     # llm bound at eval scope; auto-links to both judge.llm and rag.generate.llm.
@@ -319,7 +319,7 @@ def test_nested_bound_values_use_graphnode_public_input_names():
     nested = inner.as_node().with_inputs(cfg="public_cfg")
     outer = Graph([nested], name="outer")
 
-    # public_cfg is owned by inner GraphNode → addressed as inner.public_cfg
+    # public_cfg is projected to outer as flat parent-facing "public_cfg".
     assert "public_cfg" in outer.inputs.bound
     assert "cfg" not in outer.inputs.bound
     assert outer.inputs.bound["public_cfg"] == "inner-cfg"

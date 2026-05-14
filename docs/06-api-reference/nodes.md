@@ -893,7 +893,7 @@ adapted = gn.with_name("my_processor")
 print(adapted.name)  # "my_processor"
 ```
 
-For namespaced GraphNodes, `with_inputs(...)`, `with_outputs(...)`, `map_over(...)`, and `clone` names target the current local port names before namespace projection. The projected parent-facing addresses are recomputed afterward.
+For namespaced GraphNodes, `with_inputs(...)` and `with_outputs(...)` names target the current local port names before namespace projection. `map_over(...)` and `clone` accept either current local names or projected parent-facing input addresses, then normalize to local names internally.
 
 ### expose()
 
@@ -922,7 +922,7 @@ def map_over(
 ```
 
 **Args:**
-- `*params` - Input parameter names to iterate over
+- `*params` - Input parameter names to iterate over. Use current local names or projected parent-facing input addresses.
 - `mode` - How to combine multiple parameters:
   - `"zip"` (default): Parallel iteration, equal-length lists required
   - `"product"`: Cartesian product, all combinations

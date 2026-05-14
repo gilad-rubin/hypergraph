@@ -80,7 +80,7 @@ class TestMultiOutputGraphNode:
         # 'a' and 'b' should NOT be in required inputs — they come from inner
         assert "a" not in outer.inputs.required
         assert "b" not in outer.inputs.required
-        # x is owned by inner GraphNode → addressed as inner.x
+        # x is owned by inner GraphNode, projected flat in default mode.
         assert "x" in outer.inputs.required
 
 

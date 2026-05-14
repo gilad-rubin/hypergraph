@@ -723,21 +723,39 @@ class GraphNode(HyperNode):
         if not params:
             raise ValueError("map_over requires at least one parameter")
 
-        # Validate all params exist in local inputs
-        for param in params:
-            if param not in self._local_inputs:
-                raise ValueError(f"Parameter '{param}' is not an input of this GraphNode. Available local inputs: {self._local_inputs}")
+        normalized_params = tuple(self._normalize_map_input_param(param) for param in params)
+        normalized_clone: bool | list[str]
+        if not isinstance(clone, (bool, list)):
+            raise TypeError(f"clone must be bool or list[str], got {type(clone).__name__}")
+        if isinstance(clone, list):
+            for entry in clone:
+                if not isinstance(entry, str):
+                    raise TypeError(f"clone list entries must be strings, got {type(entry).__name__}: {entry!r}")
+            normalized_clone = [self._normalize_map_input_param(param) for param in clone]
+        else:
+            normalized_clone = clone
 
         # Validate clone parameter
-        _validate_clone(clone, params, self._local_inputs)
+        _validate_clone(normalized_clone, normalized_params, self._local_inputs)
 
         # Create copy with map_over configuration
         new = self._copy()
-        new._map_over = list(params)
+        new._map_over = list(normalized_params)
         new._map_mode = mode
         new._error_handling = error_handling
-        new._clone = list(clone) if isinstance(clone, list) else clone
+        new._clone = list(normalized_clone) if isinstance(normalized_clone, list) else normalized_clone
         return new
+
+    def _normalize_map_input_param(self, param: str) -> str:
+        if param in self._local_inputs:
+            return param
+        if param in self.inputs:
+            local_candidates = self._local_inputs_for_address(param)
+            if len(local_candidates) == 1 and local_candidates[0] in self._local_inputs:
+                return local_candidates[0]
+        raise ValueError(
+            f"Parameter '{param}' is not an input of this GraphNode. Available local inputs: {self._local_inputs}; projected inputs: {self.inputs}"
+        )
 
     def _copy(self: _GN) -> _GN:
         """Create a shallow copy preserving map_over and runner_override."""

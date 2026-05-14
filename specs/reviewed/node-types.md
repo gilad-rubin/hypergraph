@@ -275,7 +275,7 @@ node.with_inputs(text="final")  # ERROR!
 
 #### map_over() Error Messages
 
-Same principle applies to `map_over()` - use current public names:
+Same principle applies to `map_over()` - use current local names or projected parent-facing addresses:
 
 ```python
 # After renaming, map_over must use the new name
@@ -1346,9 +1346,10 @@ def map_over(
     """
     Configure this GraphNode for iteration (config setter, not execution).
 
-    The params must be current local input names at the time of calling.
-    If you later call with_inputs() to rename a mapped param, the _map_over
-    list is updated automatically to use the new name.
+    The params may be current local input names or projected parent-facing
+    input addresses at the time of calling. GraphNode stores map_over in local
+    names internally. If you later call with_inputs() to rename a mapped param,
+    the _map_over list is updated automatically to use the new local name.
 
     This is a CONFIGURATION method for nested graphs. It stores which
     parameters should be iterated over when this GraphNode is executed
@@ -1359,7 +1360,8 @@ def map_over(
 
     Args:
         *params: Input parameter name(s) to iterate over. REQUIRED (at least one).
-                 Must be CURRENT names at time of call.
+                 Must be current local names or projected parent-facing addresses
+                 at time of call.
         mode: How to combine multiple mapped parameters:
               - "zip": Iterate in parallel (requires same-length iterables)
               - "product": Cartesian product of all combinations
@@ -1400,10 +1402,14 @@ def map_over(
 
         # Both result in _map_over = ["user_question"]
 
+        # For a namespaced GraphNode, projected addresses are also accepted
+        # and normalized back to local names.
+        worker = graph.as_node(name="worker", namespaced=True).map_over("worker.user_question")
+
         # For direct execution - use runner.map() instead:
         results = runner.map(graph, values={...}, map_over=["query"])
     """
-    _validate_map_over(params, self.inputs, self._rename_history)
+    params = _normalize_map_over(params, local_inputs=self.local_inputs, projected_inputs=self.inputs)
     clone = self._copy()
     clone._map_over = list(params)
     clone._map_mode = mode
@@ -1430,9 +1436,7 @@ This ensures consistent behavior regardless of call order.
 
 ### Shared Validation
 
-The `_validate_map_over` helper is used by:
-- `GraphNode.map_over()`
-- `runner.map()`
+The `_validate_map_over` helper is used by `runner.map()`. `GraphNode.map_over()` first normalizes projected parent-facing addresses back to local names, then applies the same existence checks.
 
 ```python
 def _validate_map_over(

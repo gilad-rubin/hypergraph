@@ -433,7 +433,7 @@ class TestDeeplyNestedGraphs:
 
         # No exception raised
         assert "middle" in outer.nodes
-        # x is owned by middle.inner_inner GraphNode chain
+        # x from nested inner_inner projects flat to the outer surface.
         assert outer.inputs.required == ("x",)
         assert outer.outputs == ("z",)
 

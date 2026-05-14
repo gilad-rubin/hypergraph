@@ -218,7 +218,7 @@ This ensures at-least-once semantics per node, not per superstep.
 | [Status Enums](#status-enums) | Execution state values | RunStatus, PauseReason |
 | [GraphState](#graphstate) | Runtime value storage | Internal to runners (not user-facing) |
 | [PauseInfo](#pauseinfo) | Pause details | Nested in `RunResult.pause` |
-| [RunResult](#runresult) | Execution result | Returned by `runner.run()`, supports nesting |
+| [RunResult](#runresult) | Execution result | Returned by `runner.run()`, with nested graph outputs projected into `values` |
 | [RunHandle](#runhandle) | Streaming execution handle | Returned by `AsyncRunner.iter()` |
 | [Event Types](#event-types) | Streaming events | Yielded during iteration |
 | [Persistence Types](#persistence-types) | Checkpoint storage | Workflow, StepRecord, Checkpoint |
@@ -658,7 +658,7 @@ class RunResult:
     # === Dict-like access for convenience ===
 
     def __getitem__(self, key: str) -> Any:
-        """Dict-like access: result['answer'] or result['rag.response']"""
+        """Dict-like access: result['answer'] or namespaced result['rag.response']"""
         return self.values[key]
 
     def __contains__(self, key: str) -> bool:
@@ -1828,8 +1828,8 @@ result = await runner.run(
 
 ```
 User-Facing Types:
-├── RunResult (primary result type, supports nesting)
-│   ├── values: dict[str, Any | RunResult]  ← nested graphs are RunResult
+├── RunResult (primary result type, flat projected graph outputs)
+│   ├── values: dict[str, Any]  ← projected port address → value
 │   ├── status: RunStatus
 │   ├── pause: PauseInfo | None  ← only when PAUSED
 │   ├── error: str | None        ← only when FAILED
@@ -1911,7 +1911,8 @@ Observability:
 │  ├── workflow_id: str | None                                        │
 │  └── run_id: str                                                    │
 │                                                                     │
-│  Dict-like access: result["answer"], result["rag.docs"]             │
+│  Dict-like access: result["answer"] (flat mode),                    │
+│                    result["rag.docs"] (namespaced projection)       │
 │                                                                     │
 │  Nested graphs: GraphNode projects outputs into flat values.        │
 │  Pause/error propagate up: if nested fails/pauses, parent does too. │

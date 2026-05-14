@@ -865,7 +865,7 @@ match result.status:
     case RunStatus.PAUSED:
         # Store for later, notify user
         await save_pending(result.workflow_id, result.pause)
-        return {"status": "pending", "waiting_for": result.pause.response_param}
+        return {"status": "pending", "waiting_for": result.pause.response_key}
     case RunStatus.FAILED:
         # Log and handle error
         logger.error(f"Workflow failed: {result.error}")

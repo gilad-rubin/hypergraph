@@ -78,10 +78,10 @@ _Avoid_: Start node, root node
 
 > **Dev:** "If `chat.messages` is both an input and output, does exposing `messages` only expose the input?"
 > **Domain expert:** "No. An **Exposed port** opens the matching child port into the parent flat flow; if the child has both input and output ports named `messages`, both are exposed."
-
+>
 > **Dev:** "Can I expose `response` as `research_answer` and then use `with_outputs(research_answer='answer')`?"
 > **Domain expert:** "No. `research_answer` is the parent-facing **Port address**, not a **Local port name**. Rename the local name first, or choose the final exposed name in `expose(...)`."
-
+>
 > **Dev:** "After `namespaced=True`, does `GraphNode.outputs` contain `response` or `researcher.response`?"
 > **Domain expert:** "`GraphNode.outputs` contains the resolved parent-facing **Port address**, so the value is `researcher.response`."
 

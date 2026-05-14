@@ -581,7 +581,8 @@ class TestBindWithGraphNode:
 
         # Outer bind at the same projected flat address wins over the inner bind.
         outer_bound = outer.bind(factor=4)
-        assert outer_bound.inputs.bound == {"factor": 4}
+        with pytest.warns(UserWarning, match="Parent bind.*factor.*overrides nested bind"):
+            assert outer_bound.inputs.bound == {"factor": 4}
         result = runner.run(outer_bound, {"x": 5})
         assert result["result"] == 20
 

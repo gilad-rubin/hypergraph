@@ -620,9 +620,11 @@ class PauseInfo:
     def response_keys(self) -> dict[str, str]:
         """Map output names to resume keys.
 
-        Returns a dict mapping each output parameter name to the key to use
-        when providing the response value in the input dict. Namespaced and
-        exposed GraphNode boundaries have already projected these keys.
+        Returns a dict mapping each output parameter name to the key to use when
+        providing the response value in the input dict. The names are already
+        resolved graph-scope addresses after GraphNode projection, so both key
+        and value are the same address (for example, ``"decision"`` in flat
+        mode or ``"review.decision"`` in namespaced mode).
         """
         params = self.output_params or (self.output_param,)
         return {p: p for p in params}
