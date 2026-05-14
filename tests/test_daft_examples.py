@@ -17,7 +17,7 @@ def test_quickstart_orders_example():
     result = runner.run(
         graph,
         {
-            "process_orders.orders": [
+            "orders": [
                 {"order_id": "A-1", "customer": " ada ", "country": "us", "unit_price": 25, "quantity": 2},
                 {"order_id": "B-2", "customer": "grace", "country": "uk", "unit_price": 80, "quantity": 2},
                 {"order_id": "C-3", "customer": "linus", "country": "de", "unit_price": 10, "quantity": 1, "rush": True},
@@ -40,7 +40,7 @@ def test_document_processing_example():
     result = runner.run(
         graph,
         {
-            "process_documents.documents": [
+            "documents": [
                 "Hypergraph composes graphs into larger workflows. Daft scales dataset fan-out.",
                 "This background note talks about deployment plans and rollout windows.",
             ]
@@ -59,17 +59,17 @@ def test_scenario_sweep_example():
     graph = build_scenario_sweep_graph()
     runner = DaftRunner()
 
-    # `weights` and `candidates` are owned by the `evaluate_candidates`
-    # GraphNode with projected GraphNode boundaries; `scenario_id` is consumed at outer.
+    # `weights` and `candidates` are projected flat from the
+    # `evaluate_candidates` GraphNode; `scenario_id` is consumed at outer.
     results = runner.map(
         graph,
         {
             "scenario_id": ["latency_sensitive", "quality_first"],
-            "evaluate_candidates.weights": [
+            "weights": [
                 {"accuracy": 1.0, "latency": 0.01, "cost": 0.5},
                 {"accuracy": 2.5, "latency": 0.002, "cost": 0.2},
             ],
-            "evaluate_candidates.candidates": [
+            "candidates": [
                 [
                     {"name": "fast-small", "accuracy": 0.81, "latency_ms": 40, "cost": 0.01},
                     {"name": "balanced", "accuracy": 0.9, "latency_ms": 85, "cost": 0.03},
@@ -80,10 +80,26 @@ def test_scenario_sweep_example():
                 ],
             ],
         },
-        map_over=["scenario_id", "evaluate_candidates.weights", "evaluate_candidates.candidates"],
+        map_over=["scenario_id", "weights", "candidates"],
     )
 
     assert results["best_candidate"] == [
         {"scenario_id": "latency_sensitive", "name": "fast-small", "score": 0.405, "accuracy": 0.81, "latency_ms": 40.0},
         {"scenario_id": "quality_first", "name": "accurate-large", "score": 2.108, "accuracy": 0.96, "latency_ms": 140.0},
     ]
+
+
+def test_daft_map_rejects_stale_flat_graphnode_input_address():
+    graph = build_scenario_sweep_graph()
+    runner = DaftRunner()
+
+    with pytest.raises(ValueError, match=r"'evaluate_candidates\.weights' is no longer valid\. Use 'weights'"):
+        runner.map(
+            graph,
+            {
+                "scenario_id": ["latency_sensitive"],
+                "evaluate_candidates.weights": [{"accuracy": 1.0, "latency": 0.01, "cost": 0.5}],
+                "evaluate_candidates.candidates": [[{"name": "fast-small", "accuracy": 0.81, "latency_ms": 40, "cost": 0.01}]],
+            },
+            map_over=["scenario_id", "evaluate_candidates.weights", "evaluate_candidates.candidates"],
+        )
