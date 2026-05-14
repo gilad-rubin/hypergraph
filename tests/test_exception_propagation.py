@@ -115,8 +115,8 @@ class TestExceptionInNestedGraphNode:
 
         runner = SyncRunner()
         with pytest.raises(CustomError, match="inner graph failed"):
-            # x is private to inner GraphNode → addressed via dot-path
-            runner.run(outer, {"inner.x": 5})
+            # x is owned by inner GraphNode → addressed by its parent-facing key
+            runner.run(outer, {"x": 5})
 
     def test_exception_in_deeply_nested_graph(self):
         """Exception in deeply nested graph propagates."""
@@ -131,8 +131,8 @@ class TestExceptionInNestedGraphNode:
 
         runner = SyncRunner()
         with pytest.raises(CustomError, match="deep failure"):
-            # x is private all the way down → level2.level3.x
-            runner.run(level1, {"level2.level3.x": 5})
+            # x is projected through each GraphNode boundary.
+            runner.run(level1, {"x": 5})
 
     def test_exception_after_successful_nested_graph(self):
         """Exception after nested graph completes successfully."""
@@ -151,8 +151,8 @@ class TestExceptionInNestedGraphNode:
 
         runner = SyncRunner()
         with pytest.raises(CustomError, match="outer failed after inner success"):
-            # x is private to inner GraphNode → addressed via dot-path
-            runner.run(outer, {"inner.x": 5})
+            # x is owned by inner GraphNode → addressed by its parent-facing key
+            runner.run(outer, {"x": 5})
 
 
 class TestExceptionInCycle:
@@ -217,8 +217,8 @@ class TestExceptionInMapOver:
 
         runner = SyncRunner()
         with pytest.raises(CustomError, match="failed on x=3"):
-            # x is private to inner GraphNode → addressed via dot-path
-            runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+            # x is owned by inner GraphNode → addressed by its parent-facing key
+            runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
     def test_exception_in_first_map_iteration(self):
         """Exception in first iteration of map_over."""
@@ -232,8 +232,8 @@ class TestExceptionInMapOver:
 
         runner = SyncRunner()
         with pytest.raises(CustomError, match="always fails"):
-            # x is private to inner GraphNode → addressed via dot-path
-            runner.run(outer, {"inner.x": [1, 2, 3]})
+            # x is owned by inner GraphNode → addressed by its parent-facing key
+            runner.run(outer, {"x": [1, 2, 3]})
 
 
 class TestExceptionPreservesPartialResults:
@@ -352,8 +352,8 @@ class TestAsyncExceptionHandling:
 
         runner = AsyncRunner()
         with pytest.raises(CustomError, match="async inner failure"):
-            # x is private to inner GraphNode → addressed via dot-path
-            await runner.run(outer, {"inner.x": 5})
+            # x is owned by inner GraphNode → addressed by its parent-facing key
+            await runner.run(outer, {"x": 5})
 
     async def test_async_partial_values_on_failure(self):
         """Async runner returns partial values when a node fails."""

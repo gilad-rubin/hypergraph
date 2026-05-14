@@ -308,18 +308,18 @@ print(g.inputs.required)  # ('x',)
 ```
 
 **Args:**
-- `values` (dict, positional-only): Optional mapping of input names to values. Supports dot-paths for nested subgraph inputs.
-- `**kwargs`: Named values to bind. Keys must be graph inputs in the current scope. A nested-dict value addresses a nested `GraphNode`'s private inputs.
+- `values` (dict, positional-only): Optional mapping of graph input names to values. Keys use the resolved parent-facing port addresses shown by `graph.inputs.all`.
+- `**kwargs`: Named values to bind. Keys must be graph inputs in the current scope. Nested-dict values are accepted for currently namespaced `GraphNode` inputs.
 
 **Returns:** New Graph with bindings applied
 
 **Raises:**
 - `ValueError` - If binding a name not recognized as a graph input in the current scope, or if the same key is provided in both the positional dict and as a kwarg.
-- `GraphConfigError` - At graph-construction time, if an inner subgraph's bind is shadowed by a leaf declared at an ancestor scope (see below).
+- `GraphConfigError` - If graph construction detects an invalid binding for the configured graph scope.
 
-#### Addressing nested subgraph inputs
+#### Addressing GraphNode inputs
 
-A nested `GraphNode`'s private inputs (inputs not declared at the parent scope) are addressed under the `GraphNode`'s name. `bind()` accepts three equivalent forms:
+By default, `Graph.as_node()` is flat: the wrapped graph's input names appear directly in the parent graph. Use `as_node(namespaced=True)` when sibling subgraphs need separate inputs with the same local name.
 
 ```python
 @node(output_name="result")
@@ -329,23 +329,32 @@ def inner_func(x: int) -> int:
 inner = Graph([inner_func], name="inner")
 outer = Graph([inner.as_node()], name="outer")
 
-# 1. Positional dict, dot-path
+print(outer.inputs.required)  # ('x',)
+outer.bind(x=5)
+```
+
+With a namespaced GraphNode, the parent-facing address is prefixed by the resolved GraphNode name. `bind()` accepts the resolved address, an equivalent nested dict, or a bind on the inner graph before composition:
+
+```python
+outer = Graph([inner.as_node(namespaced=True)], name="outer")
+
+# 1. Positional dict, resolved address
 outer.bind({"inner.x": 5})
 
 # 2. Kwarg, nested-dict
 outer.bind(inner={"x": 5})
 
 # 3. Bind on the inner graph before composing
-Graph([inner.bind(x=5).as_node()], name="outer")
+Graph([inner.bind(x=5).as_node(namespaced=True)], name="outer")
 ```
 
 All three produce the same `outer.inputs.bound == {"inner.x": 5}`.
 
-For multi-level nesting, dot-paths chain (`"middle.inner.x"`) and nested-dicts nest (`{"middle": {"inner": {"x": 5}}}`).
+For multi-level namespaced nesting, addresses chain (`"middle.inner.x"`) and nested-dicts nest (`{"middle": {"inner": {"x": 5}}}`).
 
-#### Bind-conflict validation
+#### Shared flat inputs
 
-If you bind an inner subgraph input whose leaf name is also declared at any ancestor scope, graph construction raises `GraphConfigError`. At run time, the parent scope's value would silently override the bind, so the conflict is reported up front:
+Flat GraphNodes participate in the same parent flow as any other node. If a parent node and a nested GraphNode both consume `x`, one `x` value feeds both. This is often what you want for common parameters such as `query`.
 
 ```python
 @node(output_name="result")
@@ -357,12 +366,13 @@ def outer_func(result: int, x: int) -> int:  # outer also consumes 'x'
     return result + x
 
 inner = Graph([inner_func], name="inner").bind(x=5)
-Graph([inner.as_node(), outer_func], name="outer")
-# GraphConfigError: Bind on 'inner.x' is shadowed at scope 'outer' by node
-# 'outer_func' (consumes 'x'). At run time the parent's value would silently
-# override the bind. Fix: either remove the bind on the inner subgraph, or
-# rename the input via with_inputs(...) so it no longer matches the ancestor.
+outer = Graph([inner.as_node(), outer_func], name="outer")
+
+print(outer.inputs.bound)     # {'x': 5}
+print(outer.inputs.required)  # ()
 ```
+
+Use `as_node(namespaced=True)` when sibling GraphNodes need independent values for the same local input name. Use `.expose("x")` on a namespaced GraphNode to intentionally join a specific local port back into the parent flat flow.
 
 #### Shared State and Non-Copyable Objects
 
@@ -445,7 +455,7 @@ print(partial.inputs.bound)  # {'y': 10}
 
 Set a default output selection. Returns a new Graph (immutable pattern).
 
-This controls which outputs are returned by `runner.run()` and which outputs are exposed when the graph is used as a nested node via `as_node()`.
+This controls which outputs are returned by `runner.run()` and which outputs are visible when the graph is used as a nested node via `as_node()`.
 
 `select` also narrows `graph.inputs` to only the parameters needed to produce the selected outputs. Nodes that don't contribute to those outputs are excluded from input computation.
 
@@ -497,7 +507,7 @@ When a graph with `select` is used as a nested node, only the selected outputs a
 ```python
 inner = Graph([embed, retrieve, generate], name="rag").select("answer")
 gn = inner.as_node()
-print(gn.outputs)  # ('answer',) — only "answer" is exposed
+print(gn.outputs)  # ('answer',) — only "answer" is visible
 
 # Parent graph can only use "answer" from the nested graph
 outer = Graph([gn, postprocess])  # postprocess must consume "answer", not "docs"
@@ -597,7 +607,7 @@ result = runner.run(g2, {"embedding": [0.1, 0.2], "query": "hello"})
 # Only retrieve and generate execute
 ```
 
-### `as_node(*, name=None) -> GraphNode`
+### `as_node(*, name=None, namespaced=False) -> GraphNode`
 
 Wrap graph as a node for composition. Returns a new GraphNode.
 
@@ -611,6 +621,7 @@ outer = Graph([gn, add_one])
 
 **Args:**
 - `name` (str | None): Node name. If not provided, uses `graph.name`.
+- `namespaced` (bool): When `False` (default), the GraphNode's inputs and outputs stay flat in the parent graph. When `True`, inputs and outputs are projected under the resolved GraphNode name, e.g. `retrieval.query` and `retrieval.docs`.
 
 **Returns:** GraphNode wrapping this graph
 

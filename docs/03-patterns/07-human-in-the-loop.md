@@ -412,10 +412,10 @@ result = await runner.run(outer, {"query": "hello"})
 
 assert result.paused
 assert result.pause.node_name == "inner/approval"
-assert result.pause.response_key == "inner.y"
+assert result.pause.response_key == "y"
 ```
 
-The `response_key` uses dot-separated paths for nested interrupts: `"inner.y"` means the output `y` inside the graph node `inner`.
+The `response_key` uses the parent-facing GraphNode boundary address. For the default flat boundary, that can stay as `"y"`; for `inner.as_node(namespaced=True)`, it would be `"inner.y"`.
 
 Think of `response_key` as a **resume slot identifier**. It is precise and stable, but it is primarily a runtime-facing detail. In user-facing applications, you will often wrap it behind your own inbox, form, or webhook layer.
 
@@ -510,8 +510,8 @@ def approval(draft: str) -> str | None:
 | `output_name` | `str \| tuple[str, ...]` | Name(s) for output value(s) — **required** |
 | `rename_inputs` | `dict[str, str] \| None` | Mapping to rename inputs {old: new} |
 | `cache` | `bool` | Enable result caching (default: `False`) |
-| `emit` | `str \| tuple[str, ...] \| None` | Ordering-only output name(s) |
-| `wait_for` | `str \| tuple[str, ...] \| None` | Ordering-only input name(s) |
+| `emit` | `str \| tuple[str, ...] \| None` | Ordering-only local output name(s) |
+| `wait_for` | `str \| tuple[str, ...] \| None` | Ordering-only graph-scope output/emit address(es) |
 | `hide` | `bool` | Whether to hide from visualization |
 
 ### InterruptNode Constructor
@@ -538,7 +538,7 @@ InterruptNode(my_func, name="review", output_name="decision",
 | `is_interrupt` | `bool` | Always `True` |
 | `cache` | `bool` | Whether caching is enabled (default: `False`) |
 | `hide` | `bool` | Whether hidden from visualization |
-| `wait_for` | `tuple[str, ...]` | Ordering-only inputs |
+| `wait_for` | `tuple[str, ...]` | Ordering-only graph-scope output/emit addresses |
 | `is_async` | `bool` | True if handler is async |
 | `is_generator` | `bool` | True if handler yields |
 | `definition_hash` | `str` | SHA256 hash of function source |
@@ -567,5 +567,5 @@ class PauseInfo:
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `response_key` | `str` | Key to use when resuming (first output). Top-level: `output_param`. Nested: dot-separated path (e.g., `"inner.decision"`) |
+| `response_key` | `str` | Key to use when resuming (first output). Uses the resolved graph-scope address after GraphNode projection. |
 | `response_keys` | `dict[str, str]` | Map of all output names to resume keys (for multi-output interrupts) |

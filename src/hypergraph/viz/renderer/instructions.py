@@ -350,10 +350,8 @@ def _add_input_nodes(
     id_for_param = disambiguate_external_input_ids([[p] for p in external_inputs])
 
     for param in external_inputs:
-        # Dot-pathed external inputs (issue #94) carry the lexical scope
-        # in their name (``middle.inner.x``); the param's *type* lives
-        # under its scope-local leaf name on the leaf consumer's
-        # ``input_types``.
+        # Namespaced external inputs carry their graph-scope address in the
+        # label; leaf consumers still keep type hints under the local name.
         leaf = external_input_display_name(param)
         param_type = None
         for _node_id, attrs in flat_graph.nodes(data=True):
@@ -369,7 +367,7 @@ def _add_input_nodes(
             VizNode(
                 id=f"input_{id_for_param[param]}",
                 type=NodeType.INPUT,
-                label=leaf,
+                label=param,
                 type_hint=_format_type(param_type),
                 theme=theme,
                 show_types=show_types,

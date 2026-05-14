@@ -60,7 +60,7 @@ class TestMultiOutputGraphNode:
         inner = Graph([compute_a, compute_b], name="inner")
         outer = Graph([inner.as_node(), consume_both])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": 5})
+        result = runner.run(outer, {"x": 5})
         assert result.status == RunStatus.COMPLETED
         assert result["final"] == {"a": 6, "b": 50}
 
@@ -69,7 +69,7 @@ class TestMultiOutputGraphNode:
         inner = Graph([async_compute_a, async_compute_b], name="inner")
         outer = Graph([inner.as_node(), consume_both])
         runner = AsyncRunner()
-        result = await runner.run(outer, {"inner.x": 5})
+        result = await runner.run(outer, {"x": 5})
         assert result.status == RunStatus.COMPLETED
         assert result["final"] == {"a": 6, "b": 50}
 
@@ -80,8 +80,8 @@ class TestMultiOutputGraphNode:
         # 'a' and 'b' should NOT be in required inputs — they come from inner
         assert "a" not in outer.inputs.required
         assert "b" not in outer.inputs.required
-        # x is private to inner GraphNode → addressed as inner.x
-        assert "inner.x" in outer.inputs.required
+        # x is owned by inner GraphNode → addressed as inner.x
+        assert "x" in outer.inputs.required
 
 
 # ============================================================
@@ -97,7 +97,7 @@ class TestMultiOutputGraphNodeMapOver:
         gn = inner.as_node().map_over("x")
         outer = Graph([gn, consume_both_lists])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": [1, 2, 3]})
+        result = runner.run(outer, {"x": [1, 2, 3]})
         assert result.status == RunStatus.COMPLETED
         assert result["final"] == {"a": [2, 3, 4], "b": [10, 20, 30]}
 
@@ -121,7 +121,7 @@ class TestMultiOutputGraphNodeMapOver:
         gn = inner.as_node().map_over("x", error_handling="continue")
         outer = Graph([gn, consume_both_lists])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": [-1, 2, 3]})
+        result = runner.run(outer, {"x": [-1, 2, 3]})
         assert result.status == RunStatus.COMPLETED
         assert result["final"] == {"a": [None, 3, 4], "b": [None, 20, 30]}
 
@@ -144,7 +144,7 @@ class TestMultiOutputPartialConsumption:
         inner = Graph([compute_a, compute_b], name="inner")
         outer = Graph([inner.as_node(), use_a])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": 5})
+        result = runner.run(outer, {"x": 5})
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == 600
 
@@ -162,7 +162,7 @@ class TestMultiOutputPartialConsumption:
         inner = Graph([compute_a, compute_b], name="inner")
         outer = Graph([inner.as_node(), use_a, use_b])
         runner = SyncRunner()
-        result = runner.run(outer, {"inner.x": 5})
+        result = runner.run(outer, {"x": 5})
         assert result.status == RunStatus.COMPLETED
         assert result["ra"] == 600
         assert result["rb"] == 51

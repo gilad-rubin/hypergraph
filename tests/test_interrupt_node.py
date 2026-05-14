@@ -244,11 +244,11 @@ class TestPauseInfo:
 
     def test_response_key_nested(self):
         p = PauseInfo(node_name="review/approval", output_param="decision", value=None)
-        assert p.response_key == "review.decision"
+        assert p.response_key == "decision"
 
     def test_response_key_deeply_nested(self):
         p = PauseInfo(node_name="outer/review/approval", output_param="decision", value=None)
-        assert p.response_key == "outer.review.decision"
+        assert p.response_key == "decision"
 
     def test_response_keys_single_output(self):
         p = PauseInfo(node_name="approval", output_param="decision", value=None)
@@ -270,10 +270,7 @@ class TestPauseInfo:
             value=None,
             output_params=("decision", "notes"),
         )
-        assert p.response_keys == {
-            "decision": "review.decision",
-            "notes": "review.notes",
-        }
+        assert p.response_keys == {"decision": "decision", "notes": "notes"}
 
     def test_multi_input_values(self):
         p = PauseInfo(
@@ -675,7 +672,7 @@ class TestNestedInterruptPropagation:
         result = await runner.run(outer, {"query": "hello"})
         assert result.paused
         assert result.pause.node_name == "inner/approval"
-        assert result.pause.response_key == "inner.y"
+        assert result.pause.response_key == "y"
         assert result.pause.value == "hello"
 
 
@@ -842,7 +839,7 @@ class TestInterruptNodeInCycle:
         r1 = await runner.run(graph, {"messages": []})
         assert r1.paused
         assert r1.pause.node_name == "ask/ask_user"
-        assert r1.pause.response_key == "ask.query"
+        assert r1.pause.response_key == "query"
 
         # Run 2: resume with query — cycle processes it, pauses again with updated messages
         r2 = await runner.run(
@@ -1248,7 +1245,7 @@ class TestInterruptDecoratorExecution:
         result = await runner.run(outer, {"query": "hello"})
         assert result.paused
         assert result.pause.node_name == "inner/approval"
-        assert result.pause.response_key == "inner.decision"
+        assert result.pause.response_key == "decision"
 
     @pytest.mark.asyncio
     async def test_nested_graph_interrupt_respects_graphnode_output_rename(self):
@@ -1273,7 +1270,7 @@ class TestInterruptDecoratorExecution:
         paused = await runner.run(outer, {"query": "hello"})
         assert paused.paused
         assert paused.pause.node_name == "inner/approval"
-        assert paused.pause.response_key == "inner.verdict"
+        assert paused.pause.response_key == "verdict"
 
         resumed = await runner.run(outer, {"query": "hello", paused.pause.response_key: "approved"})
         assert resumed.status == RunStatus.COMPLETED

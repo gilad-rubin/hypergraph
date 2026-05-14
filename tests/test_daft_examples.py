@@ -59,8 +59,8 @@ def test_scenario_sweep_example():
     graph = build_scenario_sweep_graph()
     runner = DaftRunner()
 
-    # `weights` and `candidates` are private to the `evaluate_candidates`
-    # GraphNode under lexical scope; `scenario_id` is consumed at outer.
+    # `weights` and `candidates` are owned by the `evaluate_candidates`
+    # GraphNode with projected GraphNode boundaries; `scenario_id` is consumed at outer.
     results = runner.map(
         graph,
         {

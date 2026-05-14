@@ -29,7 +29,7 @@ def test_agentic_rag_routes_latest_questions_to_web():
         graph,
         {
             "question": "What changed in the latest release for interrupts?",
-            # `local_documents` and `web_documents` are private to the
+            # `local_documents` and `web_documents` are owned by the
             # `retrieve_context` GraphNode at outer scope.
             "retrieve_context.local_documents": [
                 "Hypergraph supports interrupt nodes for human review.",
@@ -60,8 +60,8 @@ async def test_support_inbox_nested_interrupt_propagates_pause():
                 "issue": "refund API timeout after release",
             }
         },
-        # `knowledge_base` is private to `customer_support`; `release_notes` is
-        # private to `technical_support`.
+        # `knowledge_base` is owned by `customer_support`; `release_notes` is
+        # owned by `technical_support`.
         "customer_support.knowledge_base": [
             "General account changes are applied within one hour.",
         ],
@@ -87,7 +87,7 @@ def test_ml_model_selection_uses_mapped_trials_to_pick_best_model():
         graph,
         {
             "dataset_name": "toy_flowers",
-            # `feature_names` and `model_types` are private to the `trial` GraphNode.
+            # `feature_names` and `model_types` are owned by the `trial` GraphNode.
             "trial.feature_names": ("length", "width"),
             "trial.model_types": ["threshold", "centroid"],
         },
@@ -106,7 +106,7 @@ def test_document_batch_pipeline_maps_one_document_graph_over_many_inputs():
     result = runner.run(
         graph,
         {
-            # `documents` is private to the `process_document` GraphNode at outer scope.
+            # `documents` is owned by the `process_document` GraphNode at outer scope.
             "process_document.documents": [
                 "Hypergraph composes graphs into larger workflows. It keeps nodes testable.",
                 "Mapped graph nodes let one document pipeline scale across a batch. Automatic wiring keeps the graph readable.",

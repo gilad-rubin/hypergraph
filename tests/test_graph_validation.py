@@ -216,26 +216,24 @@ class TestConsistentDefaultsValidation:
         assert g2.inputs.bound == {"x": 100}
 
 
-class TestNamespaceCollisionValidation:
-    """Test GraphNode name collision with output names."""
+class TestGraphNodeNameOutputOverlap:
+    """GraphNode names and port addresses are separate surfaces."""
 
-    def test_graphnode_name_matches_output_raises(self):
-        """GraphNode name colliding with output name raises error."""
-
-        # Outer node outputs "subgraph" - same as GraphNode name
+    def test_graphnode_name_may_match_flat_output_name(self):
         @node(output_name="subgraph")
         def source_node(x: int) -> int:
             return x * 2
 
-        # Inner graph will be named "subgraph" - collision!
         @node(output_name="inner_out")
         def inner_func(a: int) -> int:
             return a
 
         inner_graph = Graph([inner_func], name="subgraph")
 
-        with pytest.raises(GraphConfigError, match="collides with output"):
-            Graph([source_node, inner_graph.as_node()])
+        graph = Graph([source_node, inner_graph.as_node()])
+
+        assert graph.nodes["subgraph"].name == "subgraph"
+        assert "subgraph" in graph.outputs
 
     def test_no_collision_different_names(self):
         """No error when GraphNode name differs from all outputs."""
@@ -273,9 +271,7 @@ class TestNamespaceCollisionValidation:
         outer = Graph([source_node, inner_graph.as_node()])
         assert "my-inner-graph" in outer.nodes
 
-    def test_graphnode_output_collision_with_other_graphnode(self):
-        """GraphNode name colliding with another GraphNode's output raises error."""
-
+    def test_graphnode_name_may_match_other_graphnode_output(self):
         @node(output_name="collider")
         def inner1_func(a: int) -> int:
             return a
@@ -288,8 +284,10 @@ class TestNamespaceCollisionValidation:
         inner1 = Graph([inner1_func], name="inner1")
         inner2 = Graph([inner2_func], name="collider")
 
-        with pytest.raises(GraphConfigError, match="collides with output"):
-            Graph([inner1.as_node(), inner2.as_node()])
+        graph = Graph([inner1.as_node(), inner2.as_node()])
+
+        assert graph.nodes["collider"].name == "collider"
+        assert "collider" in graph.outputs
 
 
 class TestNameValidationEdgeCases:

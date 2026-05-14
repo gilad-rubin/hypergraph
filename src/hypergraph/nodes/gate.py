@@ -124,7 +124,7 @@ class GateNode(CallableMixin, HyperNode):
 
     @property
     def wait_for(self) -> tuple[str, ...]:
-        """Ordering-only inputs this gate waits for."""
+        """Ordering-only graph-scope addresses this gate waits for."""
         return self._wait_for
 
     @property
@@ -225,9 +225,9 @@ class RouteNode(GateNode):
             hide: Whether to hide from visualization (default: False)
             name: Node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
-            emit: Ordering-only output name(s). Auto-produced when gate runs.
-            wait_for: Ordering-only input name(s). Gate won't run until these
-                      values exist and are fresh.
+            emit: Ordering-only local output name(s). Auto-produced when gate runs.
+            wait_for: Ordering-only graph-scope output/emit address(es). Gate
+                      won't run until these values exist and are fresh.
 
         Raises:
             TypeError: If func is async or generator
@@ -363,9 +363,9 @@ def route(
             and records a decision.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
-        emit: Ordering-only output name(s). Auto-produced when gate runs.
-        wait_for: Ordering-only input name(s). Gate won't run until these
-                  values exist and are fresh.
+        emit: Ordering-only local output name(s). Auto-produced when gate runs.
+        wait_for: Ordering-only graph-scope output/emit address(es). Gate
+                  won't run until these values exist and are fresh.
 
     Returns:
         Decorator that creates a RouteNode
@@ -457,9 +457,9 @@ class IfElseNode(GateNode):
                 executes and records a decision.
             name: Node name (default: func.__name__)
             rename_inputs: Mapping to rename inputs {old: new}
-            emit: Ordering-only output name(s). Auto-produced when gate runs.
-            wait_for: Ordering-only input name(s). Gate won't run until these
-                      values exist and are fresh.
+            emit: Ordering-only local output name(s). Auto-produced when gate runs.
+            wait_for: Ordering-only graph-scope output/emit address(es). Gate
+                      won't run until these values exist and are fresh.
 
         Raises:
             TypeError: If func is async or generator
@@ -568,9 +568,9 @@ def ifelse(
             and records a decision.
         name: Node name (default: func.__name__)
         rename_inputs: Mapping to rename inputs {old: new}
-        emit: Ordering-only output name(s). Auto-produced when gate runs.
-        wait_for: Ordering-only input name(s). Gate won't run until these
-                  values exist and are fresh.
+        emit: Ordering-only local output name(s). Auto-produced when gate runs.
+        wait_for: Ordering-only graph-scope output/emit address(es). Gate
+                  won't run until these values exist and are fresh.
 
     Returns:
         Decorator that creates an IfElseNode

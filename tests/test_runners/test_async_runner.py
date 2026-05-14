@@ -409,7 +409,7 @@ class TestAsyncRunnerRun:
         outer = Graph([inner.as_node()])
         runner = AsyncRunner()
 
-        result = await runner.run(outer, {"inner.x": 5})
+        result = await runner.run(outer, {"x": 5})
 
         assert result["doubled"] == 10
 
@@ -419,7 +419,7 @@ class TestAsyncRunnerRun:
         outer = Graph([inner.as_node(), async_add.with_inputs(a="doubled")])
         runner = AsyncRunner()
 
-        result = await runner.run(outer, {"inner.x": 5, "b": 3})
+        result = await runner.run(outer, {"x": 5, "b": 3})
 
         assert result["sum"] == 13
 
@@ -733,9 +733,7 @@ class TestDisconnectedSubgraphs:
         level1 = Graph([level2.as_node(), level1_node])
 
         runner = AsyncRunner()
-        # a is consumed only by leaf level3_node inside level3 GraphNode (private),
-        # which is wrapped by level2 GraphNode → addressed as level2.level3.a
-        result = await runner.run(level1, {"level2.level3.a": 5})
+        result = await runner.run(level1, {"a": 5})
 
         # a=5 -> x=10 -> y=11 -> z=33
         assert result.status == RunStatus.COMPLETED
@@ -823,8 +821,7 @@ class TestDisconnectedSubgraphs:
         outer = Graph([inner.as_node(), other_node])
         runner = AsyncRunner()
 
-        # a is private to inner GraphNode → dot-path; b is declared at outer (consumed by other_node)
-        result = await runner.run(outer, {"inner.a": 5, "b": 3})
+        result = await runner.run(outer, {"a": 5, "b": 3})
 
         assert result.status == RunStatus.COMPLETED
         assert result["inner_result"] == 10
@@ -862,8 +859,7 @@ class TestDeeplyNestedAsync:
         l1_graph = Graph([l2_graph.as_node(), level1])
 
         runner = AsyncRunner()
-        # x is private through l2.l3.l4 GraphNode chain
-        result = await runner.run(l1_graph, {"l2.l3.l4.x": 0})
+        result = await runner.run(l1_graph, {"x": 0})
 
         # 0 -> 1 -> 2 -> 3 -> 4
         assert result.status == RunStatus.COMPLETED
@@ -893,8 +889,7 @@ class TestDeeplyNestedAsync:
         outer = Graph([inner.as_node()])
 
         runner = AsyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": 5})
+        result = await runner.run(outer, {"x": 5})
 
         # a=10, b=15, sum=25
         assert result.status == RunStatus.COMPLETED
@@ -947,8 +942,7 @@ class TestGlobalConcurrencyLimit:
         outer = Graph([inner.as_node(), outer_slow])
         runner = AsyncRunner()
 
-        # x is private to inner GraphNode; y is declared at outer (consumed by outer_slow)
-        result = await runner.run(outer, {"inner.x": 5, "y": 10}, max_concurrency=1)
+        result = await runner.run(outer, {"x": 5, "y": 10}, max_concurrency=1)
 
         assert result.status == RunStatus.COMPLETED
         # With max_concurrency=1, only one operation should run at a time
@@ -1020,10 +1014,9 @@ class TestGlobalConcurrencyLimit:
         outer = Graph([inner_mapped, outer_tracked])
         runner = AsyncRunner()
 
-        # item is private to inner GraphNode; x declared at outer (consumed by outer_tracked)
         result = await runner.run(
             outer,
-            {"inner.item": [1, 2, 3], "x": 5},
+            {"item": [1, 2, 3], "x": 5},
             max_concurrency=2,
         )
 
@@ -1077,8 +1070,7 @@ class TestGlobalConcurrencyLimit:
         l1_graph = Graph([l2_graph.as_node(), level1])
 
         runner = AsyncRunner()
-        # a is private through l2.l3 GraphNode chain
-        result = await runner.run(l1_graph, {"l2.l3.a": 5}, max_concurrency=1)
+        result = await runner.run(l1_graph, {"a": 5}, max_concurrency=1)
 
         assert result.status == RunStatus.COMPLETED
         # All three levels share max_concurrency=1
@@ -1107,11 +1099,10 @@ class TestGlobalConcurrencyLimit:
         runner = AsyncRunner()
 
         # 4 map items, each with a nested graph.
-        # x is private to inner GraphNode → addressed via dot-path; map_over uses that name.
         results = await runner.map(
             outer,
-            {"inner.x": [1, 2, 3, 4]},
-            map_over="inner.x",
+            {"x": [1, 2, 3, 4]},
+            map_over="x",
             max_concurrency=2,
         )
 

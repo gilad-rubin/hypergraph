@@ -23,7 +23,7 @@ def test_bound_params_not_treated_as_defaults():
     so it shouldn't trigger the "inconsistent defaults" validation error.
     """
 
-    # Inner graph (no bind on config -- under lexical scope, an inner bind on a
+    # Inner graph (no bind on config -- with projected GraphNode boundaries, an inner bind on a
     # name the outer declares would be shadowed and is a build-time error).
     @node(output_name="result")
     def inner_func(x: int, config: str) -> str:
@@ -39,8 +39,8 @@ def test_bound_params_not_treated_as_defaults():
     # Outer binds config at the scope where it's declared (auto-links into inner).
     outer_graph = Graph([inner_graph.as_node(), outer_func], name="outer").bind(config="bound_value")
 
-    # x is private to inner GraphNode -> addressed as inner.x
-    assert set(outer_graph.inputs.required) == {"inner.x"}
+    # x is owned by inner GraphNode -> addressed as inner.x
+    assert set(outer_graph.inputs.required) == {"x"}
     assert "config" in outer_graph.inputs.bound
 
 
@@ -76,8 +76,8 @@ def test_nested_graph_with_bound_and_defaults():
 
     # Should work: y has consistent defaults, x is bound (not a default)
     graph = Graph([inner.as_node(), outer_func])
-    # Both x and y are optional: x is bound in inner (private → inner.x), y has defaults
-    assert set(graph.inputs.optional) == {"inner.x", "y"}
+    # Both x and y are optional: x is bound inside inner, y has defaults.
+    assert set(graph.inputs.optional) == {"x", "y"}
     assert set(graph.inputs.required) == set()
 
 
@@ -262,24 +262,24 @@ def test_three_level_nested_binding():
     assert "vector_store" in retrieval_graph.inputs.bound
 
     # Key assertion: bound values from retrieval_graph must appear in rag_graph
-    # embedder/vector_store are private to retrieval GraphNode → addressed as retrieval.X
-    assert "retrieval.embedder" in rag_graph.inputs.bound
-    assert "retrieval.vector_store" in rag_graph.inputs.bound
+    # embedder/vector_store are owned by retrieval GraphNode → addressed as retrieval.X
+    assert "embedder" in rag_graph.inputs.bound
+    assert "vector_store" in rag_graph.inputs.bound
 
     # Key assertion: bound values must propagate to eval_graph
-    # embedder/vector_store are private through rag.retrieval.X
-    assert "rag.retrieval.embedder" in eval_graph.inputs.bound
-    assert "rag.retrieval.vector_store" in eval_graph.inputs.bound
+    # embedder/vector_store are projected through rag.retrieval.
+    assert "embedder" in eval_graph.inputs.bound
+    assert "vector_store" in eval_graph.inputs.bound
     # llm bound at eval scope; auto-links to both judge.llm and rag.generate.llm.
     assert "llm" in eval_graph.inputs.bound
 
     # Runtime execution should work
-    # text is private at rag.retrieval (consumed by leaf 'embed' inside retrieval graph,
+    # text is projected through rag.retrieval (consumed by leaf 'embed' inside retrieval graph,
     # which is a GraphNode at rag scope and a sub-GraphNode at eval scope)
     runner = SyncRunner()
     result = runner.run(
         eval_graph,
-        {"rag.retrieval.text": "test query", "query": "test query", "expected_answer": "expected"},
+        {"text": "test query", "query": "test query", "expected_answer": "expected"},
     )
 
     assert result["judgment"] == "Judged: Answer: test query"
@@ -298,14 +298,14 @@ def test_sibling_nested_bindings_do_not_leak():
 
     inner_a = Graph([use_a], name="inner_a").bind(cfg="CFG_A")
     inner_b = Graph([use_b], name="inner_b").bind(cfg="CFG_B")
-    graph = Graph([inner_a.as_node(), inner_b.as_node()], name="outer")
+    graph = Graph([inner_a.as_node(namespaced=True), inner_b.as_node(namespaced=True)], name="outer")
 
     assert "cfg" not in graph.inputs.bound
+    assert graph.inputs.bound == {"inner_a.cfg": "CFG_A", "inner_b.cfg": "CFG_B"}
 
-    # x is private to each inner GraphNode → addressed by dot-path
     result = SyncRunner().run(graph, {"inner_a.x": 1, "inner_b.x": 1})
-    assert result["out_a"] == "A:1:CFG_A"
-    assert result["out_b"] == "B:1:CFG_B"
+    assert result["inner_a.out_a"] == "A:1:CFG_A"
+    assert result["inner_b.out_b"] == "B:1:CFG_B"
 
 
 def test_nested_bound_values_use_graphnode_public_input_names():
@@ -319,7 +319,7 @@ def test_nested_bound_values_use_graphnode_public_input_names():
     nested = inner.as_node().with_inputs(cfg="public_cfg")
     outer = Graph([nested], name="outer")
 
-    # public_cfg is private to inner GraphNode → addressed as inner.public_cfg
-    assert "inner.public_cfg" in outer.inputs.bound
+    # public_cfg is owned by inner GraphNode → addressed as inner.public_cfg
+    assert "public_cfg" in outer.inputs.bound
     assert "cfg" not in outer.inputs.bound
-    assert outer.inputs.bound["inner.public_cfg"] == "inner-cfg"
+    assert outer.inputs.bound["public_cfg"] == "inner-cfg"

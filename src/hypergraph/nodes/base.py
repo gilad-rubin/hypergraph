@@ -67,8 +67,8 @@ class HyperNode(ABC):
 
     Defines the minimal interface that all nodes share:
     - name: Public node name
-    - inputs: Input parameter names
-    - outputs: Output value names
+    - inputs: Parent-facing input names or addresses
+    - outputs: Parent-facing output names or addresses
     - _rename_history: Tracks renames for error messages
 
     All with_* methods return new instances (immutable pattern).
@@ -164,7 +164,7 @@ class HyperNode(ABC):
 
     @property
     def wait_for(self) -> tuple[str, ...]:
-        """Ordering-only inputs: node won't run until these values exist and are fresh.
+        """Ordering-only graph-scope addresses this node waits for.
 
         Default: empty tuple. Override in subclasses that support wait_for.
         """

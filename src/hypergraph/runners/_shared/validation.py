@@ -114,6 +114,12 @@ def validate_item_inputs(
         )
 
     if unknown:
+        stale_exposed_message = _build_stale_exposed_address_message(
+            unknown=unknown,
+            active_nodes=ctx.active_nodes,
+        )
+        if stale_exposed_message is not None:
+            raise ValueError(stale_exposed_message)
         _warn_on_unrecognized_inputs(
             unknown=unknown,
             expected_inputs=expected_inputs,
@@ -224,8 +230,9 @@ def _build_missing_input_message(
 
     if not any_dotted:
         # The bind()-returns-new-graph hint applies when the user is wrestling
-        # with bind() chaining. For dot-pathed lexical-scope misses it's a
-        # distraction -- the actual fix is to use the right address form.
+        # with bind() chaining. For namespaced address misses it's a
+        # distraction -- the actual fix is to use the right parent-facing
+        # address form.
         msg += "\n\nHint: If you used graph.bind(), remember it returns a NEW graph."
         msg += "\n  ❌ graph.bind(x=10)           # Result discarded!"
         msg += "\n  ✅ graph = graph.bind(x=10)   # Correct"
@@ -340,7 +347,7 @@ def _get_interrupt_outputs(
             continue
         if isinstance(node, GraphNode):
             nested_outputs = _get_interrupt_outputs({inner.name: inner for inner in node.iter_active_inner_nodes()})
-            outputs.update(f"{prefix}{node.name}.{node.map_resume_key_from_original(output)}" for output in nested_outputs)
+            outputs.update(f"{prefix}{node.map_resume_key_from_original(output)}" for output in nested_outputs)
     return outputs
 
 
@@ -404,13 +411,39 @@ def _find_internal_override_conflicts(
 def _node_is_runnable_from_seed_values(node: HyperNode, provided: set[str]) -> bool:
     """True when node can run from provided/bound/default values before execution.
 
-    Resolves each input via the canonical address so a GraphNode's private
-    input addressed as ``"<node.name>.<param>"`` in ``provided`` is matched
-    correctly under lexical scope (matches sync/async runners' get_value_source).
+    Resolves each input via the canonical parent-facing address so GraphNode
+    inputs match sync/async runners' ``get_value_source`` behavior.
     """
     from hypergraph.runners._shared.helpers import address_for_node_input
 
-    return all(address_for_node_input(node, param, provided) in provided or node.has_default_for(param) for param in node.inputs)
+    return all(address_for_node_input(node, param) in provided or node.has_default_for(param) for param in node.inputs)
+
+
+def _build_stale_exposed_address_message(
+    *,
+    unknown: set[str],
+    active_nodes: dict[str, HyperNode],
+) -> str | None:
+    """Detect stale graph-node addresses and suggest the current address."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    replacements: list[tuple[str, str]] = []
+    for address in sorted(unknown):
+        for node in active_nodes.values():
+            if not isinstance(node, GraphNode):
+                continue
+            replacement = node.replacement_for_stale_input_address(address)
+            if replacement is not None:
+                replacements.append((address, replacement))
+                break
+
+    if not replacements:
+        return None
+
+    lines = ["Input address is no longer valid:"]
+    for stale, replacement in replacements:
+        lines.append(f"  {stale!r} is no longer valid. Use {replacement!r}.")
+    return "\n".join(lines)
 
 
 def _warn_on_unrecognized_inputs(

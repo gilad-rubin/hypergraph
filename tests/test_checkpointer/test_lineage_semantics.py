@@ -202,7 +202,7 @@ class TestLineageSemantics:
         paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-nested-paused")
         assert paused.status == RunStatus.PAUSED
         assert paused.pause is not None
-        assert paused.pause.response_key == "inner.decision"
+        assert paused.pause.response_key == "decision"
         stored_parent = checkpointer.get_run("wf-nested-paused")
         stored_child = checkpointer.get_run("wf-nested-paused/inner")
         assert stored_parent is not None and stored_parent.status == WorkflowStatus.PAUSED
@@ -236,7 +236,7 @@ class TestLineageSemantics:
         paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-renamed-nested-paused")
         assert paused.status == RunStatus.PAUSED
         assert paused.pause is not None
-        assert paused.pause.response_key == "inner.verdict"
+        assert paused.pause.response_key == "verdict"
 
         resumed = await runner.run(
             graph,
@@ -269,12 +269,12 @@ class TestLineageSemantics:
         paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-inactive-interrupt")
         assert paused.status == RunStatus.PAUSED
         assert paused.pause is not None
-        assert paused.pause.response_key == "inner.verdict"
+        assert paused.pause.response_key == "verdict"
 
         with pytest.raises(InputOverrideRequiresForkError):
             await runner.run(
                 graph,
-                {"inner.decision_b": "wrong"},
+                {"decision_b": "wrong"},
                 workflow_id="wf-inactive-interrupt",
             )
 
@@ -352,8 +352,8 @@ class TestLineageSemantics:
         outer_v2 = Graph([Graph([inner_v2_mid, inner_v2_end], name="inner").as_node(name="nested"), finalize])
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        # x is private to "nested" GraphNode → addressed via dot-path
-        await runner.run(outer_v1, {"nested.x": 5}, workflow_id="wf-nested-hash")
+        # x is owned by "nested" GraphNode → addressed by its parent-facing key
+        await runner.run(outer_v1, {"x": 5}, workflow_id="wf-nested-hash")
 
         with pytest.raises(GraphChangedError):
             await runner.run(outer_v2, workflow_id="wf-nested-hash")

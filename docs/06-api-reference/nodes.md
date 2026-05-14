@@ -171,8 +171,8 @@ def __init__(
 - `rename_inputs`: Optional dict `{old_param: new_param}` for input renaming
 - `cache`: Whether to cache results (default: False)
 - `hide`: Whether to hide this node from visualization (default: False)
-- `emit`: Ordering-only output name(s). Auto-produced when the node runs
-- `wait_for`: Ordering-only input name(s). Node waits until these values exist and are fresh
+- `emit`: Ordering-only local output name(s). Auto-produced when the node runs
+- `wait_for`: Ordering-only graph-scope output/emit address(es). Node waits until these values exist and are fresh
 
 **Returns:** FunctionNode instance
 
@@ -303,7 +303,7 @@ print(producer.data_outputs)  # ("result",)
 
 ### `wait_for: tuple[str, ...]`
 
-Ordering-only inputs. Empty tuple when not set.
+Ordering-only graph-scope output/emit addresses. Empty tuple when not set.
 
 ```python
 @node(output_name="result", wait_for="signal")
@@ -480,8 +480,8 @@ def node(
 - `rename_inputs`: Optional dict to rename inputs
 - `cache`: Enable result caching for this node. Requires a cache backend on the runner. See [Caching](../03-patterns/08-caching.md). Not allowed on GraphNode
 - `hide`: Whether to hide this node from visualization (default: False)
-- `emit`: Ordering-only output name(s). Auto-produced when the node runs. Used with `wait_for` to enforce execution order without data dependency. See [Ordering](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for)
-- `wait_for`: Ordering-only input name(s). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node
+- `emit`: Ordering-only local output name(s). Auto-produced when the node runs. Used with `wait_for` to enforce execution order without data dependency. See [Ordering](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for)
+- `wait_for`: Ordering-only graph-scope output/emit address(es). Node won't run until these values exist and are fresh. Must reference an `emit` or `output_name` of another node at the current graph scope
 
 **Returns:**
 - FunctionNode if source provided (decorator without parens)
@@ -730,6 +730,25 @@ print(gn.inputs)   # ('x',)
 print(gn.outputs)  # ('doubled',)
 ```
 
+By default the GraphNode surface is flat in the parent graph. Use
+`as_node(namespaced=True)` when the parent-facing ports should be prefixed by
+the resolved GraphNode name:
+
+```python
+gn = inner.as_node(namespaced=True)
+print(gn.inputs)   # ('doubler.x',)
+print(gn.outputs)  # ('doubler.doubled',)
+```
+
+On a namespaced GraphNode, `.expose(...)` replaces selected namespaced ports
+with flat parent-facing addresses:
+
+```python
+gn = inner.as_node(namespaced=True).expose("x", doubled="result")
+print(gn.inputs)   # ('x',)
+print(gn.outputs)  # ('result',)
+```
+
 ### Overriding the Name
 
 You can override the name when calling `as_node()`:
@@ -749,7 +768,7 @@ The node name. Either from `graph.name` or explicitly provided to `as_node()`.
 
 #### `inputs: tuple[str, ...]`
 
-All inputs of the wrapped graph (required + optional + entry point params).
+Resolved parent-facing input addresses after boundary projection.
 
 ```python
 gn = inner.as_node()
@@ -758,7 +777,7 @@ print(gn.inputs)  # ('x',)
 
 #### `outputs: tuple[str, ...]`
 
-All outputs of the wrapped graph.
+Resolved parent-facing output addresses after boundary projection.
 
 ```python
 gn = inner.as_node()
@@ -790,11 +809,12 @@ print(gn.is_async)  # True
 
 #### `definition_hash: str`
 
-Delegates to the wrapped graph's `definition_hash`.
+Includes the wrapped graph and the GraphNode boundary surface, including
+`namespaced`, local renames, exposed ports, and map settings.
 
 ```python
 gn = inner.as_node()
-print(gn.definition_hash == inner.definition_hash)  # True
+print(gn.definition_hash == inner.definition_hash)  # False
 ```
 
 ### Type Annotation Forwarding
@@ -847,6 +867,10 @@ def finalize(tripled: int) -> str:
 outer = Graph([inner.as_node(), finalize])
 print(outer.inputs.required)  # ('x',)
 print(outer.outputs)          # ('doubled', 'tripled', 'final')
+
+outer_ns = Graph([inner.as_node(namespaced=True)])
+print(outer_ns.inputs.required)  # ('multiply.x',)
+print(outer_ns.outputs)          # ('multiply.doubled', 'multiply.tripled')
 ```
 
 ### Rename Methods
@@ -868,6 +892,21 @@ print(adapted.outputs)  # ('result',)
 adapted = gn.with_name("my_processor")
 print(adapted.name)  # "my_processor"
 ```
+
+For namespaced GraphNodes, `with_inputs(...)`, `with_outputs(...)`, `map_over(...)`, and `clone` names target the current local port names before namespace projection. The projected parent-facing addresses are recomputed afterward.
+
+### expose()
+
+Expose selected local ports from a namespaced GraphNode as flat parent-facing addresses.
+
+```python
+gn = inner.as_node(namespaced=True).expose("query", answer="final_answer")
+
+print(gn.inputs)   # ('query',)
+print(gn.outputs)  # ('final_answer',)
+```
+
+`expose(...)` is only valid on namespaced GraphNodes. It replaces the namespaced address at that boundary rather than adding a second alias. If a local name exists as both an input and output, exposing that name exposes both directions. Duplicate aliases inside one GraphNode are rejected; different GraphNodes may still expose inputs to the same parent address.
 
 ### map_over()
 
@@ -1140,8 +1179,8 @@ def approval(draft: str) -> str | None:
 - `output_name` (required): Output name(s)
 - `rename_inputs`: Optional dict to rename inputs
 - `cache`: Enable result caching (default: `False`)
-- `emit`: Ordering-only output name(s) (see [emit/wait_for](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for))
-- `wait_for`: Ordering-only input name(s)
+- `emit`: Ordering-only local output name(s) (see [emit/wait_for](../03-patterns/03-agentic-loops.md#ordering-with-emitwait_for))
+- `wait_for`: Ordering-only graph-scope output/emit address(es)
 - `hide`: Whether to hide from visualization
 
 ### Constructor
@@ -1175,7 +1214,7 @@ approval = InterruptNode(
 | `is_interrupt` | `bool` | Always `True` |
 | `cache` | `bool` | Whether caching is enabled (default: `False`) |
 | `hide` | `bool` | Whether hidden from visualization |
-| `wait_for` | `tuple[str, ...]` | Ordering-only inputs |
+| `wait_for` | `tuple[str, ...]` | Ordering-only graph-scope output/emit addresses |
 | `is_async` | `bool` | True if handler is async |
 | `is_generator` | `bool` | True if handler yields |
 | `definition_hash` | `str` | SHA256 hash of function source |

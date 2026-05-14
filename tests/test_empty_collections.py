@@ -181,8 +181,8 @@ class TestEmptyListToMapOver:
         outer = Graph([inner.as_node().map_over("x")])
         runner = SyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": []})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": []})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == []
@@ -201,8 +201,8 @@ class TestEmptyListToMapOver:
         outer = Graph([inner.as_node().map_over("x")])
         runner = SyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": []})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": []})
 
         assert result.status == RunStatus.COMPLETED
         assert call_count == 0
@@ -218,8 +218,8 @@ class TestNestedGraphWithEmptyInput:
         outer = Graph([inner.as_node()])
         runner = SyncRunner()
 
-        # items is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.items": []})
+        # items is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"items": []})
 
         assert result.status == RunStatus.COMPLETED
         assert result["processed"] == []
@@ -230,8 +230,8 @@ class TestNestedGraphWithEmptyInput:
         outer = Graph([inner.as_node()])
         runner = SyncRunner()
 
-        # items is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.items": []})
+        # items is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"items": []})
 
         assert result.status == RunStatus.COMPLETED
         assert result["length"] == 0

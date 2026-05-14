@@ -94,19 +94,19 @@ def _build_input_group(
     consumers: list[str] = []
     seen: set[str] = set()
     for param in raw_params:
-        # Resolve consumers using the (possibly dot-pathed) full name so
-        # the dot-path walk in get_deepest_consumers can address nested
-        # subgraphs (issue #94). Deduplicate while preserving order.
+        # Resolve consumers using the full graph-scope address so boundary
+        # projection can address nested subgraphs. Deduplicate while preserving
+        # order.
         for consumer in get_deepest_consumers(param, flat_graph):
             if consumer not in seen:
                 seen.add(consumer)
                 consumers.append(consumer)
     deepest_owner = compute_deepest_input_scope(raw_params[0], flat_graph)
-    # Type hints are looked up by the dot-pathed name first. If that misses
-    # (collapsed view, leaf consumer carries the type under its scope-local
+    # Type hints are looked up by the parent-facing address first. If that
+    # misses (collapsed view, leaf consumer carries the type under its local
     # name), fall back to the leaf name -- but only when at least one of the
     # param's actual consumers exposes that type, to avoid grabbing an
-    # unrelated sibling's annotation when two private inputs share a leaf name.
+    # unrelated sibling's annotation when two namespaced inputs share a leaf.
     type_hints: list[str | None] = []
     for p in raw_params:
         param_type = get_param_type(p, flat_graph)
@@ -118,9 +118,9 @@ def _build_input_group(
                     param_type = consumer_type
                     break
         type_hints.append(format_type(param_type))
-    # Display labels are the leaf segments; synthetic ids fall back to
-    # the full dot-path when leaf names collide.
-    display_params = tuple(external_input_display_name(p) for p in raw_params)
+    # Display labels are resolved graph-scope port addresses. Synthetic ids
+    # still use the short leaf segment when it is unambiguous.
+    display_params = raw_params
     id_segments = tuple((id_for_param or {}).get(p, external_input_display_name(p)) for p in raw_params)
     return IRExternalInput(
         params=display_params,

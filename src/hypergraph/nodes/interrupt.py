@@ -85,8 +85,8 @@ def interrupt(
         output_name: Name(s) for output value(s).
         rename_inputs: Mapping to rename inputs {old: new}.
         cache: Whether to cache results (default: False).
-        emit: Ordering-only output name(s).
-        wait_for: Ordering-only input name(s).
+        emit: Ordering-only local output name(s).
+        wait_for: Ordering-only graph-scope output/emit address(es).
         hide: Whether to hide from visualization (default: False).
 
     Examples::

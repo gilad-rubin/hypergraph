@@ -589,44 +589,37 @@ class PauseInfo:
     """
 
     response_param: str
-    """Local parameter name defined by the InterruptNode (e.g., "decision").
-
-    For the full namespaced key to use in values dict, use response_key property.
-    """
+    """Resolved graph-scope response key for values dict (e.g., "decision" or
+    "review.decision" after GraphNode boundary projection)."""
 
     value: Any
     """Value to show user (e.g., the draft for approval)."""
 
     @property
     def response_key(self) -> str:
-        """Namespaced key for the values dict when resuming.
-
-        Returns dot notation (e.g., "review.decision"), but since values=
-        accepts multiple formats, you can also use "/" or nested dict.
+        """Key for the values dict when resuming.
 
         For top-level interrupts: returns response_param as-is.
-        For nested interrupts: prefixes with GraphNode path.
+        For nested interrupts: returns the parent-facing address after the
+        containing GraphNode boundary has projected/renamed/exposed it.
 
         Examples:
             - Top-level: response_param="decision" → "decision"
-            - Nested: node_name="review/approval", response_param="decision" → "review.decision"
-            - Deeply nested: node_name="outer/inner/approval" → "outer.inner.decision"
+            - Flat GraphNode: node_name="review/approval" → "decision"
+            - Namespaced GraphNode: node_name="review/approval" → "review.decision"
 
         Usage:
             result = await runner.run(graph, values={...})
             if result.pause:
                 response = get_user_input(result.pause.value)
 
-                # All three are equivalent:
-                values={result.pause.response_key: response}  # "review.decision"
-                values={"review/decision": response}          # slash notation
-                values={"review": {"decision": response}}     # nested dict
+                # response_key is the resolved graph-scope key:
+                values={result.pause.response_key: response}
+
+                # For namespaced GraphNodes, nested dict sugar is equivalent:
+                values={"review": {"decision": response}}
         """
-        if "/" not in self.node_name:
-            return self.response_param
-        # Convert path separator "/" to value separator "."
-        namespace = self.node_name.rsplit("/", 1)[0].replace("/", ".")
-        return f"{namespace}.{self.response_param}"
+        return self.response_param
 ```
 
 ---
@@ -635,7 +628,7 @@ class PauseInfo:
 
 ### Purpose
 
-**The primary result type from graph execution.** Returned by `runner.run()`. Contains outputs, status, pause information, and supports nesting for composed graphs.
+**The primary result type from graph execution.** Returned by `runner.run()`. Contains projected graph outputs, status, and pause information. Nested graphs execute as child workflows internally, but their public values are projected through the `GraphNode` boundary into this flat result map.
 
 ### Class Definition
 
@@ -644,8 +637,8 @@ class PauseInfo:
 class RunResult:
     """Result from graph execution."""
 
-    values: dict[str, Any | "RunResult"]
-    """Output name → value mapping. For nested graphs, contains nested RunResult objects."""
+    values: dict[str, Any]
+    """Output port address → value mapping."""
 
     status: RunStatus
     """Execution status: COMPLETED, PAUSED, STOPPED, or FAILED."""
@@ -664,8 +657,8 @@ class RunResult:
 
     # === Dict-like access for convenience ===
 
-    def __getitem__(self, key: str) -> Any | "RunResult":
-        """Dict-like access: result['answer'] or result['nested_graph']['value']"""
+    def __getitem__(self, key: str) -> Any:
+        """Dict-like access: result['answer'] or result['rag.response']"""
         return self.values[key]
 
     def __contains__(self, key: str) -> bool:
@@ -688,11 +681,11 @@ class RunResult:
 
 ### Key Design Decisions
 
-- **Nested `RunResult` for nested graphs** - When a graph contains `GraphNode`s, their results are nested `RunResult` objects, preserving status and pause info per subgraph.
+- **Flat values for nested graphs** - When a graph contains `GraphNode`s, child outputs are projected through the GraphNode boundary. Flat GraphNodes expose local output names; `namespaced=True` prefixes unexposed outputs like `rag.response`.
 - **No `checkpoint: bytes`** - The checkpointer manages state internally by `workflow_id`. You don't pass checkpoint bytes around.
 - **`workflow_id` for resume** - Same `workflow_id` auto-resumes from where you left off (checkpointer detects paused state).
 - **Dict-like access** - `result["answer"]` is equivalent to `result.values["answer"]`.
-- **All values by default** - `values` contains all node outputs unless filtered with `select=`.
+- **Graph outputs by default** - `values` contains graph outputs present in state. `Graph.select(...)` changes the graph's output surface before runtime.
 
 ### Basic Example
 
@@ -716,9 +709,9 @@ if result.status == RunStatus.COMPLETED:
     print("Done!")
 ```
 
-### Nested Graph Results
+### GraphNode Result Surface
 
-When a graph contains nested graphs (via `GraphNode`), each nested graph's result is a nested `RunResult`:
+When a graph contains nested graphs (via `GraphNode`), each GraphNode projects its output ports into the parent graph:
 
 ```python
 # Define nested structure
@@ -734,16 +727,21 @@ outer = Graph(nodes=[
 
 result = await runner.run(outer, values={...}, workflow_id="order-123")
 
-# Access nested graph results
+# Access projected graph outputs
 result["final_output"]                    # Top-level output
-result["rag"]                             # RunResult for rag_pipeline
-result["rag"]["embedding"]                # Output from nested graph
-result["rag"].status                      # RunStatus.COMPLETED
-result["rag"].workflow_id                 # "order-123/rag"
+result["embedding"]                       # Flat GraphNode output from rag_pipeline
+result["draft"]                           # Flat GraphNode output from review_pipeline
 
-result["review"]                          # RunResult for review_pipeline
-result["review"].status                   # Could be PAUSED if interrupt hit
-result["review"]["draft"]                 # Output from nested graph
+outer_namespaced = Graph(nodes=[
+    preprocess,
+    rag_pipeline.as_node(namespaced=True),
+    review_pipeline.as_node(namespaced=True),
+    postprocess,
+])
+
+result = await runner.run(outer_namespaced, values={...}, workflow_id="order-123")
+result["rag.embedding"]                   # Namespaced GraphNode output
+result["review.draft"]                    # Namespaced GraphNode output
 ```
 
 ### Nested Graph Pauses
@@ -755,14 +753,9 @@ result = await runner.run(outer, values={...}, workflow_id="order-123")
 
 # Check overall status
 if result.status == RunStatus.PAUSED:
-    # Find which nested graph paused
-    if result["rag"].status == RunStatus.COMPLETED:
-        print("RAG completed")
-
-    if result["review"].status == RunStatus.PAUSED:
-        print(f"Review paused at: {result['review'].pause.node_name}")
-        print(f"Value to show user: {result['review'].pause.value}")
-        print(f"Nested workflow ID: {result['review'].workflow_id}")  # "order-123/review"
+    print(f"Paused at: {result.pause.node_name}")      # "review/approval"
+    print(f"Resume key: {result.pause.response_key}")  # Parent-facing input address
+    print(f"Value to show user: {result.pause.value}")
 
 # The top-level pause info points to the nested interrupt
 print(result.pause.node_name)  # "review/approval" (path to the interrupt)
@@ -778,19 +771,11 @@ print(result.pause.node_name)  # "review/approval" (path to the interrupt)
 To resume a paused nested graph:
 
 ```python
-# Option 1: Resume the outer graph (recommended)
-# response_key uses "." for nested: "review.decision"
+# Resume the outer graph using the parent-facing response key.
 result = await runner.run(
     outer,
     values={result.pause.response_key: user_response},
     workflow_id="order-123",
-)
-
-# Option 2: Resume the nested graph directly (advanced)
-result = await runner.run(
-    review_pipeline,
-    values={"decision": user_response},
-    workflow_id="order-123/review",  # Nested workflow ID uses "/"
 )
 ```
 
@@ -1132,7 +1117,7 @@ if result.pause:
     response = await get_user_response(prompt)
 
     # Resume using same workflow_id (checkpointer auto-detects paused state)
-    # Use response_key for namespaced value access (uses "." separator)
+    # response_key is already the resolved graph-scope key to provide.
     result = await runner.run(
         graph,
         values={result.pause.response_key: response},
@@ -1215,54 +1200,37 @@ Rationale: Each batch item would potentially pause at different points, making t
 
 ## Common Patterns
 
-### Working with Nested Results
+### Working with Projected Values
 
 ```python
-def extract_all_values(result: RunResult, prefix="") -> dict[str, Any]:
-    """Recursively extract all values from nested results."""
-    flat = {}
+def group_namespaced_values(result: RunResult) -> dict[str, dict[str, Any]]:
+    """Group dotted GraphNode outputs for display."""
+    groups: dict[str, dict[str, Any]] = {}
 
     for key, value in result.items():
-        full_key = f"{prefix}{key}" if prefix else key
+        if "." not in key:
+            groups.setdefault("", {})[key] = value
+            continue
 
-        if isinstance(value, RunResult):
-            # Recurse into nested result
-            nested = extract_all_values(value, f"{full_key}/")
-            flat.update(nested)
-        else:
-            flat[full_key] = value
+        prefix, suffix = key.split(".", 1)
+        groups.setdefault(prefix, {})[suffix] = value
 
-    return flat
+    return groups
 
 # Usage
 result = await runner.run(outer_graph, values={...})
-all_values = extract_all_values(result)
-# {"answer": "...", "rag/embedding": [...], "rag/docs": [...]}
+groups = group_namespaced_values(result)
+# {"": {"answer": "..."}, "rag": {"embedding": [...], "docs": [...]}}
 ```
 
-### Finding Paused Nested Graphs
+### Handling Nested Pauses
 
 ```python
-def find_paused_graphs(result: RunResult, path="") -> list[tuple[str, RunResult]]:
-    """Find all paused graphs in a nested result."""
-    paused = []
-
-    if result.status == RunStatus.PAUSED:
-        paused.append((path or "root", result))
-
-    for key, value in result.items():
-        if isinstance(value, RunResult):
-            nested_path = f"{path}/{key}" if path else key
-            paused.extend(find_paused_graphs(value, nested_path))
-
-    return paused
-
-# Usage
 result = await runner.run(outer_graph, values={...})
-for path, paused_result in find_paused_graphs(result):
-    print(f"Paused at: {path}")
-    print(f"  Waiting for: {paused_result.pause.response_param}")
-    print(f"  Value: {paused_result.pause.value}")
+if result.status == RunStatus.PAUSED and result.pause is not None:
+    print(f"Paused at: {result.pause.node_name}")
+    print(f"Waiting for: {result.pause.response_key}")
+    print(f"Value: {result.pause.value}")
 ```
 
 ### Event Filtering and Routing
@@ -1927,7 +1895,7 @@ Observability:
 │  └── history: in-memory execution log                               │
 │                                                                     │
 │  Nested graphs: Each GraphNode has its own GraphState.              │
-│  Parent GraphState stores child's RunResult as a value.             │
+│  Parent GraphState stores child's projected output values.          │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               │ Runner translates to user-facing types
@@ -1936,16 +1904,16 @@ Observability:
 │                     USER-FACING (API layer)                         │
 ├─────────────────────────────────────────────────────────────────────┤
 │  RunResult                                                          │
-│  ├── values: dict[str, Any | RunResult]  ← nested graphs here       │
+│  ├── values: dict[str, Any]  ← projected graph outputs              │
 │  ├── status: RunStatus (COMPLETED, FAILED, PAUSED, STOPPED)         │
 │  ├── pause: PauseInfo | None    ← only when PAUSED                  │
 │  ├── error: str | None          ← only when FAILED                  │
 │  ├── workflow_id: str | None                                        │
 │  └── run_id: str                                                    │
 │                                                                     │
-│  Dict-like access: result["answer"], result["rag"]["docs"]          │
+│  Dict-like access: result["answer"], result["rag.docs"]             │
 │                                                                     │
-│  Nested graphs: RunResult.values["rag"] returns nested RunResult.   │
+│  Nested graphs: GraphNode projects outputs into flat values.        │
 │  Pause/error propagate up: if nested fails/pauses, parent does too. │
 └─────────────────────────────────────────────────────────────────────┘
                               │
@@ -1993,7 +1961,7 @@ Observability:
 │  Later values overwrite earlier ones (same key).                    │
 │                                                                     │
 │  Nested graphs: Child workflow state is computed separately.        │
-│  Parent state includes child's RunResult as a value.                │
+│  Parent state includes child's projected output values.             │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               │ snapshot for forking
@@ -2004,7 +1972,7 @@ Observability:
 │  └── steps: list[StepRecord] ← step history (implicit cursor)       │
 │                                                                     │
 │  Used for: forking, manual resume, testing.                         │
-│  Nested graphs: Checkpoint includes nested RunResults in values.    │
+│  Nested graphs: Checkpoint values use projected output addresses.   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -2013,11 +1981,11 @@ Observability:
 | Layer | How nested graphs appear |
 |-------|-------------------------|
 | Events | Span hierarchy via `parent_span_id` linking child to parent |
-| GraphState | Child has own GraphState; parent stores child RunResult as value |
-| RunResult | `result.values["rag"]` returns nested `RunResult` object |
+| GraphState | Child has own GraphState; parent stores projected child outputs |
+| RunResult | `result.values` contains flat projected output addresses |
 | Workflow | GraphNode step has `child_workflow_id` (e.g., `"order-123/rag"`) |
 | StepRecord | Child workflow has its own independent step records |
-| Checkpoint | Nested RunResults included in `values` dict |
+| Checkpoint | Values use the same projected output addresses as runtime state |
 
 **See also:**
 - [Checkpointer API](checkpointer.md) - Full interface definition and custom implementations

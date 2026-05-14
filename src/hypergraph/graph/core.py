@@ -357,7 +357,6 @@ class Graph:
             self._bound,
             entrypoints=self._entrypoints,
             selected=self._selected,
-            graph_name=self.name,
         )
 
     @functools.cached_property
@@ -949,11 +948,12 @@ class Graph:
     def bind(self, _values: dict[str, Any] | None = None, /, **values: Any) -> Graph:
         """Bind default values. Returns new Graph (immutable).
 
-        Accepts graph input names in the current configured scope. A private
-        subgraph input may be addressed three equivalent ways:
+        Accepts graph input names in the current configured scope. A namespaced
+        GraphNode input may be addressed with either its resolved address or a
+        nested dict:
 
             graph.bind(A={"x": v})       # nested-dict kwarg (recommended)
-            graph.bind({"A.x": v})       # positional dict with dot-path
+            graph.bind({"A.x": v})       # positional dict with resolved address
             inner.bind(x=v)              # bind on the inner Graph itself
 
         Bound values act as pre-filled run() values -- overridable at run time
@@ -1008,7 +1008,7 @@ class Graph:
         """Set default output selection. Returns new Graph (immutable).
 
         Controls which outputs are returned by runner.run() and which outputs
-        are exposed when this graph is used as a nested node via as_node().
+        are visible when this graph is used as a nested node via as_node().
 
         Also narrows ``graph.inputs`` to only parameters needed to produce
         the selected outputs. Nodes that don't contribute are excluded from
@@ -1241,6 +1241,14 @@ class Graph:
                     parts.append(f"when_false={wf if wf is not END else 'END'}")
             if isinstance(node, GraphNode):
                 parts.append(f"nested_struct={node.graph.structural_hash}")
+                parts.append(f"namespaced={node.namespaced}")
+                parts.append("local_inputs=" + ",".join(node.local_inputs))
+                parts.append("local_outputs=" + ",".join(node.local_outputs))
+                parts.append("data_outputs=" + ",".join(node.data_outputs))
+                exposed = getattr(node, "_exposed", {})
+                if exposed:
+                    exposed_str = ",".join(f"{local}->{address}" for local, address in sorted(exposed.items()))
+                    parts.append(f"exposed={exposed_str}")
                 if getattr(node, "_complete_on_stop", False):
                     parts.append("complete_on_stop=True")
                 map_config = node.map_config
@@ -1290,11 +1298,20 @@ class Graph:
                 "  # or Graph(..., entrypoint='<node_name>')"
             )
 
-    def as_node(self, *, name: str | None = None, runner: Any = None, complete_on_stop: bool = False) -> GraphNode:
+    def as_node(
+        self,
+        *,
+        name: str | None = None,
+        namespaced: bool = False,
+        runner: Any = None,
+        complete_on_stop: bool = False,
+    ) -> GraphNode:
         """Wrap graph as node for composition. Returns new GraphNode.
 
         Args:
             name: Optional node name. If not provided, uses graph.name.
+            namespaced: When True, project this graph-node boundary's inputs
+                and outputs under the resolved graph-node name.
             runner: Optional runner to delegate execution to. When set,
                 the parent runner's GraphNode executor uses this runner
                 instead of itself for this subgraph.
@@ -1311,7 +1328,7 @@ class Graph:
         """
         from hypergraph.nodes.graph_node import GraphNode
 
-        node = GraphNode(self, name=name)
+        node = GraphNode(self, name=name, namespaced=namespaced)
         node._complete_on_stop = complete_on_stop
         if runner is not None:
             return node.with_runner(runner)

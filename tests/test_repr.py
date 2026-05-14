@@ -655,7 +655,7 @@ class TestMapResultProgressiveDisclosure:
             graph_name="test",
         )
         html = mr._repr_html_()
-        # Each item drills down to a nested RunResult panel
+        # Each item drills down to its per-item RunResult panel.
         assert "Item 0:" in html
         assert "Item 1:" in html
         assert "RunResult:" in html

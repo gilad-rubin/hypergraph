@@ -334,8 +334,8 @@ class TestInnerLogs:
         """A nested GraphNode step.log returns a single RunLog."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = SyncRunner().run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = SyncRunner().run(outer, {"x": 5})
 
         assert result["doubled"] == 10
         assert result.log is not None
@@ -355,8 +355,8 @@ class TestInnerLogs:
         """A map_over GraphNode step.log returns a MapLog when N inner."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = SyncRunner().run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = SyncRunner().run(outer, {"x": [1, 2, 3]})
 
         step = result.log.steps[0]
 
@@ -386,8 +386,8 @@ class TestInnerLogs:
             name="middle",
         )
         outer = Graph([middle.as_node()])
-        # x is private through middle.innermost GraphNode chain
-        result = SyncRunner().run(outer, {"middle.innermost.x": 5})
+        # x is projected through the middle.innermost GraphNode chain.
+        result = SyncRunner().run(outer, {"x": 5})
 
         assert result["incremented"] == 11
         # Outer step → middle RunLog
@@ -402,8 +402,8 @@ class TestInnerLogs:
         """to_dict() serializes inner_log via .log accessor."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = SyncRunner().run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = SyncRunner().run(outer, {"x": 5})
 
         d = result.log.to_dict()
         step_dict = d["steps"][0]
@@ -421,8 +421,8 @@ class TestInnerLogs:
         """__str__() shows '(N inner)' for steps with inner logs."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = SyncRunner().run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = SyncRunner().run(outer, {"x": 5})
 
         output = str(result.log)
         assert "(1 inner)" in output
@@ -431,8 +431,8 @@ class TestInnerLogs:
         """__str__() footer has .steps[i].log drill-down hint."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = SyncRunner().run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = SyncRunner().run(outer, {"x": 5})
 
         output = str(result.log)
         assert ".steps[0].log" in output
@@ -442,8 +442,8 @@ class TestInnerLogs:
         """Async runner also surfaces inner RunLogs via .log."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node()])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await AsyncRunner().run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await AsyncRunner().run(outer, {"x": 5})
 
         assert result["doubled"] == 10
         step = result.log.steps[0]
@@ -458,8 +458,8 @@ class TestInnerLogs:
         """Async runner step.log returns MapLog for map_over."""
         inner = Graph([_double], name="inner")
         outer = Graph([inner.as_node().map_over("x")])
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await AsyncRunner().run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await AsyncRunner().run(outer, {"x": [1, 2, 3]})
 
         step = result.log.steps[0]
 

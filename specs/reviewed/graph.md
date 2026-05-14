@@ -27,44 +27,29 @@ class Graph:
         self,
         nodes: list[HyperNode],
         *,
+        edges: list[tuple] | None = None,
+        entrypoint: str | HyperNode | list[str | HyperNode] | tuple[str | HyperNode, ...] | None = None,
         name: str | None = None,
         strict_types: bool = False,
-        complete_on_stop: bool = False,
-        hash_depth: int | None = 1,
+        shared: str | list[str] | tuple[str, ...] | None = None,
     ):
         """
         Create a graph from nodes.
 
         Args:
             nodes: List of HyperNode objects
+            edges: Explicit edge declarations. When provided, disables
+                implicit data-edge inference except where shared-state rules
+                intentionally keep ordering separate from data flow.
+            entrypoint: Convenience shortcut for with_entrypoint(...). Required
+                for cyclic graphs.
             name: Optional graph name. Used as default for as_node() when
                   nesting this graph. If not set here, must be provided
                   when calling as_node(name='...')
             strict_types: Validate type annotations between connected nodes (default: False)
-            hash_depth: How deep to follow local imports when computing definition_hash.
-                Controls the trade-off between hash sensitivity and performance.
-
-                - 0: Function source only (fastest, misses helper changes)
-                - 1: Function + direct local imports (default, good balance)
-                - 2+: Recursive up to N levels (thorough, slower)
-                - None: Full transitive closure within package (most thorough)
-
-                Only same-package imports are included; stdlib and pip packages
-                are excluded. See definition_hash property for details.
-
-            complete_on_stop: Behavior when a stop signal is received during execution.
-
-                True:
-                  - Streaming nodes: save partial output, mark step COMPLETED with partial=True
-                  - Regular nodes being stopped: mark step STOPPED (no output possible)
-                  - Continue executing remaining nodes in the graph
-
-                False (default):
-                  - All stopped nodes: mark step STOPPED (no output)
-                  - Stop graph immediately, skip remaining nodes
-
-                This setting can be overridden when using as_node(complete_on_stop=...).
-                See durable-execution.md for patterns and examples.
+            shared: Parameter names that are shared state across the graph.
+                Shared params are excluded from auto-wiring, allow multiple
+                producers, and require explicit ordering via edges or emit/wait_for.
 
         Example:
             # Basic graph
@@ -74,18 +59,18 @@ class Graph:
             rag = Graph(nodes=[embed, retrieve, generate], name="rag_pipeline")
             outer = Graph(nodes=[preprocess, rag.as_node(), postprocess])
 
-            # Graph that saves partial streaming output on stop
-            chat = Graph(
-                nodes=[generate, accumulate],
-                name="chat",
-                complete_on_stop=True,  # Partial responses saved to history
-            )
+            # Cyclic graph with explicit entrypoint
+            chat = Graph(nodes=[wait, add_user, respond], entrypoint="add_user")
         """
-        self._nodes = {n.name: n for n in nodes}
         self.name = name
-        self.complete_on_stop = complete_on_stop
-        self._nx_graph = self._build_graph(nodes)
+        self._strict_types = strict_types
+        self._shared = self._normalize_shared(shared)
         self._bound = {}
+        self._selected = None
+        self._nodes = self._build_nodes_dict(nodes)
+        self._entrypoints = self._normalize_constructor_entrypoints(entrypoint)
+        self._explicit_edges = self._normalize_edges(edges) if edges is not None else None
+        self._nx_graph = self._build_graph(nodes)
         self._validate()  # Build-time validation
 ```
 
@@ -193,7 +178,7 @@ def _compute_definition_hash(self) -> str:
 
 | Node Type | Hash includes |
 |-----------|---------------|
-| `FunctionNode` | Function source + local imports (up to `hash_depth`) |
+| `FunctionNode` | Function source when available, otherwise bytecode/qualified-name fallback |
 | `GraphNode` | Inner graph's `definition_hash` (recursive) |
 | `InterruptNode` | `input_param`, `response_param`, `response_type` |
 | `TypeRouteNode` | `input_param`, routes mapping |
@@ -205,16 +190,15 @@ def _compute_definition_hash(self) -> str:
 
 | Include in hash | Exclude from hash |
 |-----------------|-------------------|
-| Function source code | stdlib (`os`, `sys`, `json`) |
-| Same-package imports (up to `hash_depth`) | pip packages (`pydantic`, `numpy`) |
-| Graph structure (edges) | Runtime env vars |
+| Function source code | Runtime env vars |
+| Graph structure (edges) | Bound runtime values |
 | Node configuration | Dynamically loaded modules |
 
 **Trade-offs:**
 
 - Changing a comment invalidates the hash (aggressive but safe)
-- Updating pip packages does NOT invalidate (intentional - library updates are explicit via requirements.txt)
-- Deep transitive imports only go up to `hash_depth` levels
+- Updating helper code does not invalidate a function hash unless that helper's
+  source is part of the wrapped function body.
 
 ### Detailed Node Lists
 
@@ -416,8 +400,9 @@ def as_node(
     self,
     *,
     name: str | None = None,
-    runner: BaseRunner | None = None,
-    complete_on_stop: bool | None = None,
+    namespaced: bool = False,
+    runner: Any = None,
+    complete_on_stop: bool = False,
 ) -> GraphNode:
     """
     Wrap graph as a node for composition.
@@ -431,29 +416,21 @@ def as_node(
 
     Args:
         name: Override node name (default: use graph.name)
+        namespaced: When True, project inputs and outputs under the resolved
+            GraphNode name (e.g. "rag.query"). Default False keeps the
+            GraphNode flat in the parent graph.
         runner: Runner for nested execution (default: inherit from parent)
-        complete_on_stop: Override graph's complete_on_stop setting.
-            If None (default), inherits from Graph(..., complete_on_stop=).
-            See Graph constructor for behavior details.
+        complete_on_stop: When True, the inner graph finishes all remaining
+            supersteps after a stop signal instead of breaking immediately.
 
     Returns:
-        GraphNode with graph's outputs as default *lifted* outputs.
+        GraphNode whose inputs/outputs are resolved parent-facing port
+        addresses. By default those addresses are flat; with namespaced=True
+        they are prefixed by the resolved GraphNode name. Use .expose(...) on
+        a namespaced GraphNode to replace selected prefixed ports with flat
+        parent-facing addresses.
 
-        Important: there are two “surfaces” for nested graphs:
-        1. **Dataflow / wiring surface (lifted outputs)**:
-           GraphNode.outputs determines which inner values are lifted into
-           the parent graph’s value namespace and can be consumed by other
-           outer nodes via normal parameter names. By default, this is the
-           inner graph’s outputs (all node outputs).
-
-        2. **Return surface (nested RunResult)**:
-           The nested graph’s full outputs remain accessible inside the
-           nested RunResult (e.g. result["rag"]["embedding"]), subject to
-           `select=` filtering. Selecting nested outputs via paths like
-           "rag/embedding" does not imply that "embedding" is lifted into
-           the parent value namespace for wiring.
-
-        Use .with_outputs() to rename lifted output names.
+        Use .with_outputs() to rename local output names before projection.
         Use .map_over() to configure iteration.
 
     Raises:
@@ -466,6 +443,9 @@ def as_node(
         # Override name
         node = graph.as_node(name="custom")
 
+        # Opt into namespaced parent-facing ports
+        node = graph.as_node(namespaced=True)
+
         # Override complete_on_stop for this nested usage
         node = graph.as_node(complete_on_stop=True)
 
@@ -476,7 +456,11 @@ def as_node(
             .map_over("query")
         )
     """
-    return GraphNode(self, name=name, runner=runner, complete_on_stop=complete_on_stop)
+    node = GraphNode(self, name=name, namespaced=namespaced)
+    node._complete_on_stop = complete_on_stop
+    if runner is not None:
+        return node.with_runner(runner)
+    return node
 ```
 
 **Name resolution examples:**
@@ -757,7 +741,7 @@ def _validate_node_names(self):
                     f"The problem:\n"
                     f"  The '.' and '/' characters are reserved as separators:\n"
                     f"  - '.' for nested values: values={{'rag.query': 'hello'}}\n"
-                    f"  - '/' for paths: select=['rag/*'], node_name='review/approval'\n\n"
+                    f"  - '/' for structural paths: workflow_id='run-1/rag', node_name='review/approval'\n\n"
                     f"  If node names contained these, values would be ambiguous:\n\n"
                     f"    values={{'rag.query': 'hello'}} - Is this:\n"
                     f"      • A node named 'rag.query' at top level?\n"
@@ -781,60 +765,28 @@ def _validate_node_names(self):
                     )
 ```
 
-### 7. Namespace Collision Validation
+### 7. GraphNode Names And Port Addresses
 
-```python
-def _validate_no_namespace_collision(self):
-    """Output names cannot match GraphNode names (would create ambiguous paths)."""
-    graphnode_names = {
-        node.name for node in self._nodes.values()
-        if isinstance(node, GraphNode)
-    }
+GraphNode names identify nodes and, when `namespaced=True`, prefix projected port
+addresses. They do not create nested `RunResult` slots in `RunResult.values`.
 
-    for node in self._nodes.values():
-        output_name = getattr(node, 'output_name', node.name)
-        if output_name in graphnode_names and node.name != output_name:
-            raise GraphConfigError(
-                f"Namespace collision: output '{output_name}' matches GraphNode name\n\n"
-                f"  → Node '{node.name}' produces output '{output_name}'\n"
-                f"  → GraphNode '{output_name}' exists in this graph\n\n"
-                f"The problem:\n"
-                f"  RunResult.values stores both regular outputs and nested\n"
-                f"  RunResults from GraphNodes in the same dict:\n\n"
-                f"    result.values = {{\n"
-                f"      'answer': '...',           # Regular output\n"
-                f"      'rag_pipeline': RunResult  # Nested graph\n"
-                f"    }}\n\n"
-                f"  If an output name equals a GraphNode name, result['{output_name}']\n"
-                f"  is ambiguous - is it the output value or the nested RunResult?\n\n"
-                f"How to fix:\n"
-                f"  Rename one to avoid the collision:\n"
-                f"  • Change the output name: @node(output_name='...')\n"
-                f"  • Change the GraphNode name: graph.as_node(name='...')"
-            )
-```
-
-**Example error:**
+An output may therefore have the same string as a sibling GraphNode name:
 
 ```python
 @node(output_name="summary")
 def summarize(text: str) -> str:
     return text[:100]
 
-# Nested graph also named "summary"
 inner = Graph(nodes=[...], name="summary")
-
-# ❌ Error at Graph() construction time
 outer = Graph(nodes=[summarize, inner.as_node()])
-# → GraphConfigError: Namespace collision: output 'summary' matches GraphNode name
-#
-#   → Node 'summarize' produces output 'summary'
-#   → GraphNode 'summary' exists in this graph
-#
-#   The problem:
-#     RunResult.values stores both regular outputs and nested
-#     RunResults from GraphNodes in the same dict...
+
+result = runner.run(outer, values={...})
+result["summary"]  # the output value named "summary"
 ```
+
+Ordinary graph rules still apply to port addresses. Duplicate output addresses
+from multiple producers must be ordered, mutex, or otherwise rejected by the
+duplicate-output validator.
 
 ---
 
@@ -887,154 +839,45 @@ outer = Graph(nodes=[
 
 ---
 
-## Nested Graph Results
+## GraphNode Result Surface
 
-### Graph Names Are Mandatory for Nesting
+When a graph is used as a `GraphNode`, the parent result contains the child
+graph's projected output port addresses. There is no nested `RunResult` value
+under the GraphNode name.
 
-When nesting graphs, the nested graph **must** have a name to be addressable in results. You can provide the name either:
+Graph names are still useful because `as_node()` needs a resolved node name:
 
-1. **When constructing the Graph** (recommended):
 ```python
 rag = Graph(nodes=[...], name="rag_pipeline")
 outer = Graph(nodes=[preprocess, rag.as_node(), postprocess])
+
+also_ok = Graph(nodes=[preprocess, Graph(nodes=[...]).as_node(name="rag_pipeline")])
 ```
 
-2. **When calling .as_node()**:
-```python
-rag = Graph(nodes=[...])
-outer = Graph(nodes=[preprocess, rag.as_node(name="rag_pipeline"), postprocess])
-```
-
-**If you provide both, `.as_node(name=...)` overrides `Graph(..., name=...)`.**
-
-### Result Structure
-
-Results from nested graphs are returned as nested `RunResult` objects. This preserves the full execution context (status, pause info) for each subgraph:
+`Graph.select(...)` controls which outputs a graph makes visible before the
+GraphNode boundary projects those local output names:
 
 ```python
-result = await runner.run(outer_graph, values={...})
+rag = Graph([embed, retrieve, generate], name="rag").select("response")
+outer = Graph([rag.as_node(namespaced=True)])
 
-# Direct values
-result["answer"]                      # value
-result["cleaned"]                     # value
-
-# Nested graphs (by name) → RunResult objects
-result["rag_pipeline"]                # RunResult (with its own status, pause, etc.)
-result["rag_pipeline"]["embedding"]   # value inside nested result
-result["rag_pipeline"]["inner"]       # another nested RunResult
+result = runner.run(outer, {"rag.query": "what is RAG?"})
+result.keys()  # dict_keys(["rag.response"])
 ```
 
-Both output values and nested graph names share the same namespace:
-
-```python
-result.values = {
-    "answer": "...",                  # output value
-    "rag_pipeline": RunResult(...),   # nested graph by name
-}
-```
-
-### Why Nested RunResult?
-
-Using `RunResult` (not a simpler value container) for nested graphs enables:
-
-1. **Per-subgraph status:** Know if a subgraph completed, paused, or is running
-2. **Pause propagation:** When a nested graph pauses, you can identify which one
-3. **Consistent access:** Same dict-like API at every level
-
-```python
-# Example: Nested graph paused
-result = await runner.run(outer_graph, values={...})
-
-if result.status == RunStatus.PAUSED:
-    # Find which nested graph paused
-    if result["rag_pipeline"].status == RunStatus.PAUSED:
-        print(f"RAG paused: {result['rag_pipeline'].pause}")
-```
-
-### Filtering with select Parameter
-
-Use the `select` parameter in `.run()` to filter what's included in the result:
-
-```python
-# Default: everything accessible
-result = runner.run(graph, values={...})
-result.keys()  # ["answer", "cleaned", "rag_pipeline", "other_graph"]
-
-# Filtered: specific outputs only
-result = runner.run(graph, values={...}, select=["answer"])
-result.keys()  # ["answer"]
-
-# With patterns
-result = runner.run(
-    graph,
-    values={...},
-    select=["answer", "rag_pipeline/*"]
-)
-```
-
-### Pattern Syntax
-
-| Pattern | Meaning |
-|---------|---------|
-| `"answer"` | Specific output |
-| `"rag_pipeline"` | Nested graph as RunResult |
-| `"rag_pipeline/*"` | All direct outputs from rag_pipeline |
-| `"rag_pipeline/**"` | All outputs recursively |
-| `"**/embedding"` | Any "embedding" at any depth |
-| `"*/docs"` | "docs" from any direct child graph |
-
-### Examples
-
-**Full access (default):**
-
-```python
-result = runner.run(graph, values={...})
-result["rag_pipeline"]["embedding"]  # accessible
-```
-
-**Only top-level values:**
-
-```python
-result = runner.run(graph, values={...}, select=["answer", "cleaned"])
-result["rag_pipeline"]  # KeyError - not selected
-```
-
-**Specific nested outputs:**
-
-```python
-result = runner.run(
-    graph,
-    values={...},
-    select=["answer", "rag_pipeline/embedding"]
-)
-result["rag_pipeline"]["embedding"]  # accessible
-result["rag_pipeline"]["docs"]       # KeyError - not selected
-```
-
-**Everything from a nested graph:**
-
-```python
-result = runner.run(graph, values={...}, select=["rag_pipeline/**"])
-# All outputs from rag_pipeline and its nested graphs
-```
-
-### RunResult for Nested Graphs
-
-Nested graphs return `RunResult` objects, which provide:
-- `values`: Dict of output values (and nested `RunResult` for deeper nesting)
-- `status`: Execution status (`COMPLETED`, `PAUSED`, `STOPPED`, `FAILED`)
-- `pause`: Pause info if the nested graph paused
+Runtime `runner.run(..., select=...)` overrides are not supported; configure
+output scope on the graph with `graph.select(...)`.
 
 ```python
 @dataclass
 class RunResult:
-    values: dict[str, Any | "RunResult"]  # Supports nesting
+    values: dict[str, Any]
     status: RunStatus
     workflow_id: str | None
     run_id: str
     pause: PauseInfo | None = None
 
-    def __getitem__(self, key: str) -> Any | "RunResult":
+    def __getitem__(self, key: str) -> Any:
         return self.values[key]
 ```
 
@@ -1056,10 +899,7 @@ def retrieve(embedding: list[float]) -> list[str]:
 def generate(docs: list[str]) -> str:
     return llm.generate(docs)
 
-rag_pipeline = Graph(
-    nodes=[embed, retrieve, generate],
-    name="rag_pipeline"  # Name required for nesting
-)
+rag_pipeline = Graph(nodes=[embed, retrieve, generate], name="rag_pipeline")
 
 # Outer pipeline
 @node(output_name="cleaned")
@@ -1068,7 +908,7 @@ def clean(query: str) -> str:
 
 outer = Graph(nodes=[
     clean,
-    rag_pipeline.as_node(name="rag"),  # Nested
+    rag_pipeline.as_node(name="rag"),
 ])
 
 # Execute
@@ -1077,33 +917,29 @@ result = await runner.run(outer, values={"query": "  What is RAG?  "})
 # Access results
 result["cleaned"]                  # "what is rag?"
 result["response"]                 # Final answer
-result["rag"]                      # RunResult from nested pipeline
-result["rag"]["embedding"]         # Embedding from nested
-result["rag"]["docs"]              # Retrieved docs from nested
-result["rag"]["response"]          # Same as result["response"]
-result["rag"].status               # RunStatus.COMPLETED
 
-# Filtered execution
+selected = Graph(nodes=[
+    clean,
+    rag_pipeline.select("response").as_node(name="rag", namespaced=True),
+])
+
 result = await runner.run(
-    outer,
-    values={"query": "  What is RAG?  "},
-    select=["response", "rag/embedding"]  # Only these
+    selected,
+    values={"rag.query": "  What is RAG?  "},
 )
-result["response"]          # Available
-result["rag"]["embedding"]  # Available
-result["rag"]["docs"]       # KeyError - not selected
+result["rag.response"]              # Final answer from selected nested graph
 ```
 
-### Nested Graph Values
+### Namespaced GraphNode Values
 
-Provide values directly to nested graphs using **dot notation** in the `values` parameter:
+Provide values to namespaced GraphNode ports using their resolved parent-facing addresses:
 
 ```python
 result = await runner.run(outer, values={
-    "query": "hello",              # Top-level value
-    "rag.top_k": 5,                # Value for nested "rag" graph
-    "rag.model": "gpt-4",          # Another nested value
-    "rag.inner.threshold": 0.8,    # Deeply nested (rag → inner)
+    "query": "hello",              # Flat parent value
+    "rag.top_k": 5,                # Namespaced GraphNode value
+    "rag.model": "gpt-4",          # Another namespaced value
+    "rag.inner.threshold": 0.8,    # Multi-level namespaced value
 })
 ```
 
@@ -1111,15 +947,10 @@ result = await runner.run(outer, values={
 
 | Pattern | Example | Purpose |
 |---------|---------|---------|
-| Configure nested graph | `{"rag.top_k": 5}` | Override defaults |
-| Skip nested node | `{"rag.embedding": [...]}` | Provide output directly |
-| Resume nested interrupt | `{"review.decision": "approve"}` | Response for nested InterruptNode |
+| Configure namespaced GraphNode | `{"rag.top_k": 5}` | Override defaults |
+| Resume namespaced interrupt | `{"review.decision": "approve"}` | Response for interrupt inside namespaced GraphNode |
 
-**Routing behavior:**
-When the runner sees `"rag.query"` in values:
-1. Split on first `.` → `("rag", "query")`
-2. Find GraphNode named `"rag"`
-3. Pass `{"query": ...}` to the nested graph's values
+Flat GraphNodes use flat keys. Use `as_node(namespaced=True)` when you want the `rag.*` surface.
 
 **Deeply nested:**
 ```python
@@ -1128,33 +959,15 @@ values={"middle.inner.param": "value"}
 # Routes to: middle graph → inner graph → param
 ```
 
-### Separator Conventions
-
-hypergraph uses different separators for different contexts:
-
-| Context | Accepted Formats | Canonical | Rationale |
-|---------|------------------|-----------|-----------|
-| **`values=` parameter** | `.`, `/`, nested dict | nested dict | Flexible input, user's choice |
-| **All other paths** | `/` only | `/` | File system mental model |
-
-#### Values Parameter: Flexible Input
-
-The `values=` parameter in `.run()`, `.map()`, `.iter()` accepts three equivalent formats:
+#### Values Parameter
 
 ```python
-# All three are equivalent - use whichever you prefer:
-
-# 1. Nested dict (recommended - most Pythonic)
+# Namespaced GraphNode values can use nested-dict sugar:
 graph.run(values={"rag": {"query": "hello", "top_k": 5}})
 
-# 2. Dot notation (convenience)
+# Equivalent resolved-address form:
 graph.run(values={"rag.query": "hello", "rag.top_k": 5})
-
-# 3. Slash notation (convenience)
-graph.run(values={"rag/query": "hello", "rag/top_k": 5})
 ```
-
-**Why flexible?** The `values=` parameter is the most common user touchpoint. Users from different backgrounds prefer different styles (Python uses dicts, JS uses dots, file systems use slashes). All map unambiguously to the same thing.
 
 **Error: Conflicting formats in same call:**
 
@@ -1188,7 +1001,7 @@ Everything else uses `/` consistently:
 |-------|---------|
 | `node_name` in pause info | `"review/approval"` |
 | `workflow_id` for nested graphs | `"order-123/rag"` |
-| `select=` patterns | `["rag/*", "**/embedding"]` |
+| Graph output scope | `graph.select("answer")` |
 
 **The mental model:**
 - `values=` = "provide data" → flexible formats accepted
@@ -1224,7 +1037,7 @@ Graph (structure definition)
     └── Used by runners, not user-facing
 
 RunResult (user-facing result)
-├── values: dict[str, Any | RunResult]  # Nested graphs → nested RunResult
+├── values: dict[str, Any]  # Output port address → value
 ├── status: RunStatus
 ├── pause: PauseInfo | None
 └── workflow_id, run_id
@@ -1232,7 +1045,7 @@ RunResult (user-facing result)
 
 **See [Execution Types](execution-types.md)** for complete type definitions including:
 - `RunStatus`, `PauseReason` enums
-- `RunResult` with nested support and pause handling
+- `RunResult` status and pause handling
 - `Workflow`, `StepRecord`, `Checkpoint` for persistence
 - `GraphState` (internal runtime state)
 

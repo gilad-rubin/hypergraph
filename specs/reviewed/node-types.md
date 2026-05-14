@@ -1216,8 +1216,8 @@ class GraphNode(HyperNode):
         self,
         graph: Graph,
         name: str | None = None,
-        runner: BaseRunner | None = None,
-        complete_on_stop: bool | None = None,
+        *,
+        namespaced: bool = False,
     ):
         """
         Wrap a graph as a node.
@@ -1225,28 +1225,18 @@ class GraphNode(HyperNode):
         Args:
             graph: The graph to wrap (reference, not copy)
             name: Node name (default: use graph.name if set)
-            runner: Runner for nested execution (default: inherit from parent)
-            complete_on_stop: Override graph's complete_on_stop setting.
-                If None (default), inherits from Graph(..., complete_on_stop=).
-
-                When True: run remaining nodes even when a streaming
-                node is stopped by the user. Streaming nodes save partial
-                output (marked partial=True). Ensures cleanup nodes execute.
-
-                When False: stop propagates immediately, skip remaining nodes.
+            namespaced: When True, project local ports under the resolved
+                GraphNode name at the parent boundary.
 
         Raises:
             ValueError: If name not provided and graph has no name.
-            ValueError: If complete_on_stop=True but any nested GraphNode has
-                complete_on_stop=False (inconsistent guarantees).
+            ValueError: If name contains reserved characters ('.' or '/').
 
         Note:
-            Use .with_outputs() to override output names (default: graph.outputs).
+            Use .with_outputs() to rename local output names before projection.
+            Use .expose() on namespaced GraphNodes to replace selected
+            namespaced addresses with flat parent-facing addresses.
             Use .map_over() to configure iteration.
-
-        See Also:
-            graph.md for Graph(..., complete_on_stop=) documentation.
-            durable-execution.md for stop handling patterns and examples.
         """
         resolved_name = name or graph.name
         if resolved_name is None:
@@ -1255,40 +1245,43 @@ class GraphNode(HyperNode):
                 "or pass name to GraphNode(graph, name='x')"
             )
 
-        # Resolve complete_on_stop: explicit override > graph default
-        resolved_complete_on_stop = (
-            complete_on_stop if complete_on_stop is not None
-            else graph.complete_on_stop
-        )
-
-        # Validate nested GraphNode consistency
-        if resolved_complete_on_stop:
-            for node in graph.nodes:
-                if isinstance(node, GraphNode) and not node.complete_on_stop:
-                    raise ValueError(
-                        f"complete_on_stop=True requires all nested GraphNodes "
-                        f"to also have complete_on_stop=True. "
-                        f"Node '{node.name}' has complete_on_stop=False."
-                    )
+        for char in self._RESERVED_CHARS:
+            if char in resolved_name:
+                raise ValueError(...)
 
         self._graph = graph
-        self._runner = runner
-        self._complete_on_stop = resolved_complete_on_stop
+        self._rename_history: list[RenameEntry] = []
+        self._namespaced = namespaced
+        self._exposed: dict[str, str] = {}
         self._map_over: list[str] | None = None
         self._map_mode: Literal["zip", "product"] = "zip"
-        self._rename_history: list[RenameEntry] = []
+        self._runner_override: Any = None
+        self._complete_on_stop: bool = False
 
         # Core HyperNode attributes
         self.name = resolved_name
-        self.inputs = graph.inputs.all  # Extract tuple from InputSpec
-        # Lifted outputs: the only inner values that become available to the
-        # *parent graph’s wiring/value resolution* under normal names.
-        #
-        # Note: this does not limit what the nested RunResult can contain.
-        # All inner outputs remain available under result[self.name][...]
-        # (subject to select= filtering), but only these lifted outputs can be
-        # consumed by other outer nodes without path syntax.
-        self.outputs = graph.outputs  # Use .with_outputs() to rename
+        self._local_inputs = graph.inputs.all
+        self._local_outputs = self._derive_outputs(graph)
+        self._local_data_outputs = self._derive_data_outputs(graph, self._local_outputs)
+        self._refresh_projected_ports()
+
+    def _refresh_projected_ports(self) -> None:
+        """Recompute parent-facing input/output addresses and boundary maps."""
+        self.inputs = tuple(self._project_address(name) for name in self._local_inputs)
+        self.outputs = tuple(self._project_address(name) for name in self._local_outputs)
+
+    def _project_address(self, local_name: str) -> str:
+        if self._namespaced:
+            return self._exposed.get(local_name, f"{self.name}.{local_name}")
+        return local_name
+```
+
+`Graph.as_node(..., runner=..., complete_on_stop=...)` creates the wrapper above, then applies execution options:
+
+```python
+node = GraphNode(graph, name=name, namespaced=namespaced)
+node._complete_on_stop = complete_on_stop
+return node.with_runner(runner) if runner is not None else node
 ```
 
 ### GraphNode-Specific Properties
@@ -1301,36 +1294,46 @@ def graph(self) -> Graph:
     """The wrapped graph (read-only reference)."""
 
 @property
-def complete_on_stop(self) -> bool:
-    """Whether to run remaining nodes when a streaming node is stopped.
+def namespaced(self) -> bool:
+    """Whether this boundary prefixes unexposed ports with the GraphNode name."""
 
-    When True: If a streaming node receives a stop signal, the graph
-    continues executing remaining nodes before returning STOPPED status.
-    This ensures cleanup/accumulation nodes run with partial output.
+@property
+def local_inputs(self) -> tuple[str, ...]:
+    """Current local input names before boundary projection."""
 
-    When False (default): Stop signal propagates immediately, skipping
-    remaining nodes in this graph.
+@property
+def local_outputs(self) -> tuple[str, ...]:
+    """Current local output names before boundary projection."""
 
-    See durable-execution.md for patterns and examples.
-    """
+@property
+def data_outputs(self) -> tuple[str, ...]:
+    """Projected data-carrying output addresses."""
+
+@property
+def runner_override(self) -> Any:
+    """Runner to delegate execution to, or None to inherit from parent."""
+
+@property
+def is_async(self) -> bool:
+    """Whether the wrapped graph contains async nodes."""
 ```
 
-**Note:** GraphNode intentionally has no `cache`, `is_async`, or `is_generator` properties:
-- **No `cache`**: Caching happens at individual node level inside the graph. Graph-level caching would override inner nodes' cache decisions and skip side effects.
-- **No `is_async`/`is_generator`**: The runner discovers these properties recursively when executing inner nodes.
+**Note:** GraphNode does not expose graph-level cache or generator controls:
+- **`cache` remains `False`**: Caching happens at individual node level inside the graph. Graph-level caching would override inner nodes' cache decisions and skip side effects.
+- **`is_async` delegates to the wrapped graph** so runner selection can see async work through composition.
+- **`is_generator` remains `False`**: streaming/generator behavior belongs to inner nodes.
 
-**GraphNode does have `definition_hash`** - it delegates to the inner graph:
+**GraphNode does have `definition_hash`** - it includes the inner graph and the configured boundary surface:
 
 ```python
 @property
 def definition_hash(self) -> str:
-    """Hash of the nested graph (delegates to inner graph)."""
-    return self.graph.definition_hash
+    """Hash of the nested graph plus namespacing, exposes, renames, and map config."""
 ```
 
-This ensures changes inside nested graphs bubble up to the parent graph's hash (Merkle tree).
+This ensures changes inside nested graphs and changes to the parent-facing GraphNode contract both bubble up to the parent graph's hash.
 
-GraphNode is a pure structural wrapper with no execution semantics of its own.
+GraphNode is primarily a structural boundary. Runners still give it execution behavior by delegating into the wrapped graph, optionally via `runner_override`.
 
 ### Methods
 
@@ -1343,7 +1346,7 @@ def map_over(
     """
     Configure this GraphNode for iteration (config setter, not execution).
 
-    The params must be current public input names at the time of calling.
+    The params must be current local input names at the time of calling.
     If you later call with_inputs() to rename a mapped param, the _map_over
     list is updated automatically to use the new name.
 

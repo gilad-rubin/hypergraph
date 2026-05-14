@@ -125,11 +125,10 @@ class FunctionNode(CallableMixin, HyperNode):
             rename_inputs: Mapping to rename inputs {old: new}
             cache: Whether to cache results (default: False)
             hide: Whether to hide from visualization (default: False)
-            emit: Ordering-only output name(s). Auto-produced with sentinel value
+            emit: Ordering-only local output name(s). Auto-produced with sentinel value
                   when node runs. Participates in edge inference like output_name.
-            wait_for: Ordering-only input name(s). Node won't run until these
-                      values exist and are fresh. Participates in edge inference
-                      like function parameters.
+            wait_for: Ordering-only graph-scope output/emit address(es). Node
+                      won't run until these values exist and are fresh.
             batch: If True, DaftRunner uses vectorized batch UDF execution
                    (receives ``daft.Series`` instead of scalars).
 
@@ -202,7 +201,7 @@ class FunctionNode(CallableMixin, HyperNode):
 
     @property
     def wait_for(self) -> tuple[str, ...]:
-        """Ordering-only inputs this node waits for."""
+        """Ordering-only graph-scope addresses this node waits for."""
         return self._wait_for
 
     @property
@@ -327,10 +326,10 @@ def node(
         rename_inputs: Mapping to rename inputs {old: new}
         cache: Whether to cache results (default: False)
         hide: Whether to hide from visualization (default: False)
-        emit: Ordering-only output name(s). Auto-produced with sentinel value
+        emit: Ordering-only local output name(s). Auto-produced with sentinel value
               when node runs. Participates in edge inference like output_name.
-        wait_for: Ordering-only input name(s). Node won't run until these
-                  values exist and are fresh.
+        wait_for: Ordering-only graph-scope output/emit address(es). Node
+                  won't run until these values exist and are fresh.
         batch: If True, DaftRunner uses vectorized batch UDF execution
                (receives ``daft.Series`` instead of scalars).
 

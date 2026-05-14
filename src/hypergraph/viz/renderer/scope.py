@@ -14,7 +14,7 @@ from hypergraph.viz._common import (
     get_parent,
     is_descendant_of,
     is_node_visible,
-    resolve_dot_path_consumers,
+    resolve_port_address_consumers,
 )
 
 if TYPE_CHECKING:
@@ -28,12 +28,12 @@ def get_deepest_consumers(param: str, flat_graph: nx.DiGraph) -> list[str]:
     as an input, we return only the internal nodes - they are the "actual"
     consumers.
 
-    Dot-pathed external-input names (e.g. ``"middle.inner.x"``) are
+    Namespaced external-input addresses (e.g. ``"middle.inner.x"``) are
     resolved through the GraphNode chain — see
-    :func:`resolve_dot_path_consumers`.
+    :func:`resolve_port_address_consumers`.
     """
     if "." in param:
-        all_consumers = resolve_dot_path_consumers(param, flat_graph)
+        all_consumers = resolve_port_address_consumers(param, flat_graph)
     else:
         all_consumers = [node_id for node_id, attrs in flat_graph.nodes(data=True) if param in attrs.get("inputs", ())]
 

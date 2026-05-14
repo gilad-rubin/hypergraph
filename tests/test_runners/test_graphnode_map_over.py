@@ -165,8 +165,8 @@ class TestMapOverRenameExecution:
         inner = Graph(nodes=[process_item], name="inner")
         mapped_node = inner.as_node(name="process_all").with_inputs(item="items").map_over("items")
 
-        # multiplier is private to mapped_node (process_all) → bind via dot-path
-        outer = Graph(nodes=[produce_items, mapped_node]).bind(**{"process_all.multiplier": 2})
+        # multiplier is a parent-facing input address on mapped_node.
+        outer = Graph(nodes=[produce_items, mapped_node]).bind(**{"multiplier": 2})
         runner = SyncRunner()
 
         result = runner.run(outer, {"count": 3})
@@ -270,8 +270,8 @@ class TestMapOverRenameExecution:
         outer = Graph(nodes=[produce, mapped_node])
         runner = SyncRunner()
 
-        # factor is private to mapped GraphNode (multiplier) → addressed via dot-path
-        result = runner.run(outer, {"multiplier.factor": 10})
+        # factor is owned by mapped GraphNode (multiplier) → addressed by its parent-facing key
+        result = runner.run(outer, {"factor": 10})
 
         assert result.status == RunStatus.COMPLETED
         assert result["result"] == [10, 20, 30]
@@ -351,8 +351,8 @@ class TestMapOverExecution:
         outer = Graph([inner.as_node().map_over("x")])
         runner = SyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
@@ -363,8 +363,8 @@ class TestMapOverExecution:
         outer = Graph([inner.as_node().map_over("a", "b", mode="zip")])
         runner = SyncRunner()
 
-        # a, b are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.a": [1, 2, 3], "inner.b": [10, 20, 30]})
+        # a, b are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"a": [1, 2, 3], "b": [10, 20, 30]})
 
         assert result["sum"] == [11, 22, 33]
 
@@ -374,8 +374,8 @@ class TestMapOverExecution:
         outer = Graph([inner.as_node().map_over("a", "b", mode="product")])
         runner = SyncRunner()
 
-        # a, b are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.a": [1, 2], "inner.b": [10, 20]})
+        # a, b are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"a": [1, 2], "b": [10, 20]})
 
         # 2 * 2 = 4 results
         assert len(result["sum"]) == 4
@@ -396,8 +396,8 @@ class TestMapOverExecution:
         # This test documents current behavior — may succeed or raise
         # depending on how the downstream node handles list input
         try:
-            # x is private to inner GraphNode; b is declared at outer (consumed by add)
-            result = runner.run(outer, {"inner.x": [1, 2], "b": 0})
+            # x is owned by inner GraphNode; b is declared at outer (consumed by add)
+            result = runner.run(outer, {"x": [1, 2], "b": 0})
             assert result.status == RunStatus.COMPLETED
         except Exception:
             pass  # Also acceptable — type mismatch in downstream node
@@ -408,8 +408,8 @@ class TestMapOverExecution:
         outer = Graph([inner.as_node().map_over("x")])
         runner = AsyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
@@ -420,8 +420,8 @@ class TestMapOverExecution:
         outer = Graph([inner.as_node().map_over("x")])
         runner = SyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": []})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": []})
 
         assert result["doubled"] == []
 
@@ -431,8 +431,8 @@ class TestMapOverExecution:
         outer = Graph([inner.as_node().map_over("a")])
         runner = SyncRunner()
 
-        # a, b are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.a": [1, 2, 3], "inner.b": 10})
+        # a, b are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"a": [1, 2, 3], "b": 10})
 
         assert result["sum"] == [11, 12, 13]
 
@@ -456,8 +456,8 @@ class TestConcurrentNestedMaps:
         outer = Graph([middle.as_node(), collect])
         runner = SyncRunner()
 
-        # x is private through middle.inner GraphNode chain
-        result = runner.run(outer, {"middle.inner.x": [1, 2, 3]})
+        # x is projected through the middle.inner GraphNode chain.
+        result = runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
@@ -478,8 +478,8 @@ class TestConcurrentNestedMaps:
         runner = AsyncRunner()
 
         # Multiple items should process concurrently
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["value"] == [2, 4, 6, 8, 10]
@@ -501,9 +501,9 @@ class TestConcurrentNestedMaps:
 
         # With max_concurrency=1 on outer, nested map should still work (no deadlock)
         # Nested executions don't inherit outer concurrency limits
-        # x is private to inner GraphNode → addressed via dot-path
+        # x is owned by inner GraphNode → addressed by its parent-facing key
         start = time.time()
-        result = await runner.run(outer, {"inner.x": [1, 2, 3]}, max_concurrency=1)
+        result = await runner.run(outer, {"x": [1, 2, 3]}, max_concurrency=1)
         elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
@@ -527,9 +527,9 @@ class TestConcurrentNestedMaps:
         runner = AsyncRunner()
 
         # With default concurrency (unlimited), should run in parallel
-        # x is private to inner GraphNode → addressed via dot-path
+        # x is owned by inner GraphNode → addressed by its parent-facing key
         start = time.time()
-        result = await runner.run(outer, {"inner.x": [1, 2, 3, 4, 5]})
+        result = await runner.run(outer, {"x": [1, 2, 3, 4, 5]})
         elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
@@ -548,8 +548,8 @@ class TestConcurrentNestedMaps:
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = AsyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["value"] == [2, 4, 6]
@@ -569,8 +569,8 @@ class TestConcurrentNestedMaps:
         outer = Graph([inner.as_node().map_over("x")])
 
         runner = AsyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         # (1+1)*2=4, (2+1)*2=6, (3+1)*2=8
@@ -588,8 +588,8 @@ class TestConcurrentNestedMaps:
         outer = Graph([middle.as_node()])
 
         runner = SyncRunner()
-        # x is private through middle.innermost GraphNode chain
-        result = runner.run(outer, {"middle.innermost.x": [1, 2, 3]})
+        # x is projected through the middle.innermost GraphNode chain.
+        result = runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["doubled"] == [2, 4, 6]
@@ -623,8 +623,8 @@ class TestConcurrentNestedMaps:
         )
 
         runner = SyncRunner()
-        # vals_a private to inner_a, vals_b private to inner_b → dot-paths
-        result = runner.run(outer, {"inner_a.vals_a": [1, 2], "inner_b.vals_b": [10, 20]})
+        # vals_a and vals_b are parent-facing input addresses on their GraphNodes.
+        result = runner.run(outer, {"vals_a": [1, 2], "vals_b": [10, 20]})
 
         assert result.status == RunStatus.COMPLETED
         assert result["a"] == [2, 4]
@@ -807,11 +807,11 @@ class TestMaxConcurrency:
 
         # With max_concurrency=1 on outer, the two GraphNodes run sequentially
         # But their inner maps run concurrently (nested execution is independent)
-        # x private to inner_a, y private to inner_b → dot-paths
+        # x and y are parent-facing input addresses on their GraphNodes.
         start = time.time()
         result = await runner.run(
             outer,
-            {"inner_a.x": [1, 2], "inner_b.y": [10, 20]},
+            {"x": [1, 2], "y": [10, 20]},
             max_concurrency=1,
         )
         elapsed = time.time() - start
@@ -835,16 +835,16 @@ class TestMaxConcurrency:
         # Three levels of nesting
         level1 = Graph([async_double], name="level1")
         level2 = Graph([level1.as_node()], name="level2")
-        # level2 exposes its inner private input as "level1.x"; map_over uses that name.
-        level3 = Graph([level2.as_node().map_over("level1.x")])
+        # level2 projects its inner input as "x"; map_over uses that name.
+        level3 = Graph([level2.as_node().map_over("x")])
 
         runner = AsyncRunner()
 
         # Should work even with max_concurrency=1
-        # x is private through level2.level1 GraphNode chain at level3 scope
+        # x is projected through the level2.level1 GraphNode chain at level3 scope.
         result = await runner.run(
             level3,
-            {"level2.level1.x": [1, 2, 3]},
+            {"x": [1, 2, 3]},
             max_concurrency=1,
         )
 
@@ -867,9 +867,9 @@ class TestMaxConcurrency:
         runner = AsyncRunner()
 
         # Product of [1,2] x [10,20] = 4 combinations
-        # a, b are private to inner GraphNode → addressed via dot-path
+        # a, b are owned by inner GraphNode → addressed by its parent-facing key
         start = time.time()
-        result = await runner.run(outer, {"inner.a": [1, 2], "inner.b": [10, 20]})
+        result = await runner.run(outer, {"a": [1, 2], "b": [10, 20]})
         elapsed = time.time() - start
 
         assert result.status == RunStatus.COMPLETED
@@ -893,10 +893,10 @@ class TestMaxConcurrency:
         runner = AsyncRunner()
 
         with pytest.raises(ValueError, match="x cannot be 2"):
-            # x is private to inner GraphNode → addressed via dot-path
+            # x is owned by inner GraphNode → addressed by its parent-facing key
             await runner.run(
                 outer,
-                {"inner.x": [1, 2, 3]},
+                {"x": [1, 2, 3]},
                 max_concurrency=1,
             )
 
@@ -912,10 +912,10 @@ class TestMaxConcurrency:
 
         runner = AsyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
+        # x is owned by inner GraphNode → addressed by its parent-facing key
         result = await runner.run(
             outer,
-            {"inner.x": []},
+            {"x": []},
             max_concurrency=1,
         )
 
@@ -936,10 +936,10 @@ class TestMaxConcurrency:
 
         runner = AsyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
+        # x is owned by inner GraphNode → addressed by its parent-facing key
         result = await runner.run(
             outer,
-            {"inner.x": [42]},
+            {"x": [42]},
             max_concurrency=1,
         )
 
@@ -1009,8 +1009,8 @@ class TestCloneExecution:
         runner = SyncRunner()
 
         config = {"key": "value"}
-        # x and config are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3], "inner.config": config})
+        # x and config are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3], "config": config})
 
         assert result.status == RunStatus.COMPLETED
         # All iterations should see the same object
@@ -1029,8 +1029,8 @@ class TestCloneExecution:
         runner = SyncRunner()
 
         config = {"key": "value"}
-        # x and config are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3], "inner.config": config})
+        # x and config are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3], "config": config})
 
         assert result.status == RunStatus.COMPLETED
         ids = result["item_id"]
@@ -1048,8 +1048,8 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("x", clone=["config"])])
         runner = SyncRunner()
 
-        # x, config, factor are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3], "inner.config": {"k": "v"}, "inner.factor": 10})
+        # x, config, factor are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3], "config": {"k": "v"}, "factor": 10})
 
         assert result.status == RunStatus.COMPLETED
         # config should be cloned (different ids)
@@ -1073,8 +1073,8 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("x", clone=True)])
         runner = SyncRunner()
 
-        # x and config are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3], "inner.config": {"count": 0}})
+        # x and config are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3], "config": {"count": 0}})
 
         assert result.status == RunStatus.COMPLETED
         # With clone=True, each iteration gets a fresh copy with count=0
@@ -1096,8 +1096,8 @@ class TestCloneExecution:
         runner = SyncRunner()
 
         with pytest.raises(GraphConfigError, match="cannot be deep-copied for clone"):
-            # x and lock are private to inner GraphNode → addressed via dot-path
-            runner.run(outer, {"inner.x": [1, 2], "inner.lock": threading.Lock()})
+            # x and lock are owned by inner GraphNode → addressed by its parent-facing key
+            runner.run(outer, {"x": [1, 2], "lock": threading.Lock()})
 
     async def test_clone_with_async_runner(self):
         """Clone works with AsyncRunner."""
@@ -1111,8 +1111,8 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("x", clone=True)])
         runner = AsyncRunner()
 
-        # x and config are private to inner GraphNode → addressed via dot-path
-        result = await runner.run(outer, {"inner.x": [1, 2, 3], "inner.config": {"count": 0}})
+        # x and config are owned by inner GraphNode → addressed by its parent-facing key
+        result = await runner.run(outer, {"x": [1, 2, 3], "config": {"count": 0}})
 
         assert result.status == RunStatus.COMPLETED
         # Each iteration sees a fresh config with count=0
@@ -1130,8 +1130,8 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("a", "b", mode="product", clone=True)])
         runner = SyncRunner()
 
-        # a, b, state are private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.a": [1, 2], "inner.b": [10, 20], "inner.state": {}})
+        # a, b, state are owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"a": [1, 2], "b": [10, 20], "state": {}})
 
         assert result.status == RunStatus.COMPLETED
         # Product: (1,10), (1,20), (2,10), (2,20) → sums: 11, 21, 12, 22
@@ -1150,8 +1150,8 @@ class TestCloneExecution:
         outer = Graph([inner.as_node().map_over("x", clone=True)])
         runner = SyncRunner()
 
-        # x is private to inner GraphNode → addressed via dot-path
-        result = runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = runner.run(outer, {"x": [1, 2, 3]})
 
         assert result.status == RunStatus.COMPLETED
         # Inner-bound config is resolved inside each inner run, not through clone
@@ -1174,8 +1174,8 @@ class TestCloneExecution:
         outer = Graph([mapped_node])
         runner = SyncRunner()
 
-        # x and config (renamed from cfg) are private to inner GraphNode → dot-paths
-        result = runner.run(outer, {"inner.x": [1, 2, 3], "inner.config": {"count": 0}})
+        # x and config (renamed from cfg) are parent-facing input addresses.
+        result = runner.run(outer, {"x": [1, 2, 3], "config": {"count": 0}})
 
         assert result.status == RunStatus.COMPLETED
         # Each iteration sees fresh config
@@ -1193,10 +1193,10 @@ class TestCloneExecution:
 
         inner = Graph([use_lock], name="inner")
         # Outer bind — values DO pass through generate_map_inputs
-        # lock is private to inner GraphNode → bind via dot-path key
-        outer = Graph([inner.as_node().map_over("x", clone=True)]).bind(**{"inner.lock": threading.Lock()})
+        # lock is a parent-facing input address on the inner GraphNode.
+        outer = Graph([inner.as_node().map_over("x", clone=True)]).bind(**{"lock": threading.Lock()})
         runner = SyncRunner()
 
         with pytest.raises(GraphConfigError, match="cannot be deep-copied for clone"):
-            # x is private to inner GraphNode → addressed via dot-path
-            runner.run(outer, {"inner.x": [1, 2]})
+            # x is owned by inner GraphNode → addressed by its parent-facing key
+            runner.run(outer, {"x": [1, 2]})

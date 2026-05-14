@@ -106,8 +106,8 @@ class TestDelegationExecution:
         outer = Graph([gn])
 
         parent_runner = SyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path (use dict form)
-        result = parent_runner.run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key (use dict form)
+        result = parent_runner.run(outer, {"x": 5})
         assert result.values["doubled"] == 10
 
     def test_sync_delegation_with_map_over(self):
@@ -118,8 +118,8 @@ class TestDelegationExecution:
         outer = Graph([mapped])
 
         parent_runner = SyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path
-        result = parent_runner.run(outer, {"inner.x": [1, 2, 3]})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = parent_runner.run(outer, {"x": [1, 2, 3]})
         assert result.values["doubled"] == [2, 4, 6]
 
     @pytest.mark.asyncio
@@ -131,8 +131,8 @@ class TestDelegationExecution:
         outer = Graph([gn])
 
         parent_runner = AsyncRunner()
-        # x is private to inner GraphNode → addressed via dot-path
-        result = await parent_runner.run(outer, {"inner.x": 5})
+        # x is owned by inner GraphNode → addressed by its parent-facing key
+        result = await parent_runner.run(outer, {"x": 5})
         assert result.values["doubled"] == 10
 
     def test_delegation_with_renamed_inputs(self):
@@ -141,8 +141,8 @@ class TestDelegationExecution:
         gn = inner.as_node(runner=SyncRunner()).with_inputs(x="val")
         outer = Graph([gn])
 
-        # val (renamed from x) is private to inner GraphNode → dot-path
-        result = SyncRunner().run(outer, {"inner.val": 7})
+        # val (renamed from x) is the parent-facing input address.
+        result = SyncRunner().run(outer, {"val": 7})
         assert result.values["doubled"] == 14
 
     def test_delegation_in_multi_node_graph(self):
@@ -151,7 +151,7 @@ class TestDelegationExecution:
         gn = inner.as_node(runner=SyncRunner())
         outer = Graph([gn, add.with_inputs(a="doubled")])
 
-        # x is private to inner GraphNode; b is declared at outer (consumed by add)
-        result = SyncRunner().run(outer, {"inner.x": 3, "b": 10})
+        # x is owned by inner GraphNode; b is declared at outer (consumed by add)
+        result = SyncRunner().run(outer, {"x": 3, "b": 10})
         assert result.values["doubled"] == 6
         assert result.values["sum"] == 16

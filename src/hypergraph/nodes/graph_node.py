@@ -1,9 +1,10 @@
 """GraphNode - wrapper for using graphs as nodes."""
 
 import functools
+import hashlib
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
-from hypergraph.nodes._rename import build_reverse_rename_map
+from hypergraph.nodes._rename import RenameError, build_reverse_rename_map, get_next_batch_id
 from hypergraph.nodes.base import HyperNode, RenameEntry, _invalidate_cached_properties
 
 # TypeVar for self-referential return types (Python 3.10 compatible)
@@ -31,8 +32,8 @@ class GraphNode(HyperNode):
 
     Attributes:
         name: Node name (from graph.name or explicit override)
-        inputs: All graph inputs (required + optional + entry point params)
-        outputs: All graph outputs
+        inputs: Parent-facing input addresses after boundary projection
+        outputs: Parent-facing output addresses after boundary projection
         graph: The wrapped Graph instance
 
     Properties:
@@ -52,14 +53,16 @@ class GraphNode(HyperNode):
         ('y',)
     """
 
-    # Reserved characters that cannot appear in GraphNode names
-    # These are used as path separators in nested graph output access
+    # Reserved characters that cannot appear in GraphNode names.
+    # "." separates projected port addresses; "/" separates workflow paths.
     _RESERVED_CHARS = frozenset("./")
 
     def __init__(
         self,
         graph: "Graph",
         name: str | None = None,
+        *,
+        namespaced: bool = False,
     ):
         """Wrap a graph as a node.
 
@@ -82,6 +85,8 @@ class GraphNode(HyperNode):
 
         self._graph = graph
         self._rename_history: list[RenameEntry] = []
+        self._namespaced = namespaced
+        self._exposed: dict[str, str] = {}
 
         # map_over configuration (None = no mapping)
         self._map_over: list[str] | None = None
@@ -98,8 +103,10 @@ class GraphNode(HyperNode):
 
         # Core HyperNode attributes
         self.name = resolved_name
-        self.inputs = graph.inputs.all
-        self.outputs = self._derive_outputs(graph)
+        self._local_inputs = graph.inputs.all
+        self._local_outputs = self._derive_outputs(graph)
+        self._local_data_outputs = self._derive_data_outputs(graph, self._local_outputs)
+        self._refresh_projected_ports()
 
     @property
     def graph(self) -> "Graph":
@@ -108,8 +115,22 @@ class GraphNode(HyperNode):
 
     @property
     def definition_hash(self) -> str:
-        """Hash of the nested graph."""
-        return self._graph.definition_hash
+        """Hash of the nested graph plus this boundary's projected surface."""
+        content = repr(
+            (
+                self._graph.definition_hash,
+                self.name,
+                self._namespaced,
+                tuple(sorted(self._exposed.items())),
+                self._local_inputs,
+                self._local_outputs,
+                self._local_data_outputs,
+                self.inputs,
+                self.outputs,
+                self._data_outputs,
+            )
+        )
+        return hashlib.sha256(content.encode()).hexdigest()
 
     @property
     def is_async(self) -> bool:
@@ -130,6 +151,26 @@ class GraphNode(HyperNode):
         return self._runner_override
 
     @property
+    def namespaced(self) -> bool:
+        """Whether this graph-node boundary projects local ports with a prefix."""
+        return self._namespaced
+
+    @property
+    def local_inputs(self) -> tuple[str, ...]:
+        """Current local input names before boundary projection."""
+        return self._local_inputs
+
+    @property
+    def local_outputs(self) -> tuple[str, ...]:
+        """Current local output names before boundary projection."""
+        return self._local_outputs
+
+    @property
+    def data_outputs(self) -> tuple[str, ...]:
+        """Projected data-carrying output addresses."""
+        return self._data_outputs
+
+    @property
     def nested_graph(self) -> "Graph":
         """Returns the nested Graph."""
         return self._graph
@@ -139,7 +180,80 @@ class GraphNode(HyperNode):
         """Flattened attributes enriched with collapsed-view output metadata."""
         attrs = super().nx_attrs
         attrs["collapsed_outputs"] = self._derive_collapsed_outputs()
+        attrs["local_inputs"] = self._local_inputs
+        attrs["local_outputs"] = self._local_outputs
+        attrs["namespaced"] = self._namespaced
         return attrs
+
+    def _refresh_projected_ports(self) -> None:
+        """Recompute parent-facing addresses and boundary maps."""
+        input_address_to_local: dict[str, list[str]] = {}
+        projected_inputs: list[str] = []
+        for local in self._local_inputs:
+            address = self._project_address(local)
+            input_address_to_local.setdefault(address, []).append(local)
+            if address not in projected_inputs:
+                projected_inputs.append(address)
+
+        output_local_to_address: dict[str, str] = {}
+        projected_outputs: list[str] = []
+        for local in self._local_outputs:
+            address = self._project_address(local)
+            if address in projected_outputs:
+                raise ValueError(f"GraphNode '{self.name}' projects multiple outputs to {address!r}")
+            input_locals = input_address_to_local.get(address, ())
+            if input_locals and local not in input_locals:
+                raise ValueError(
+                    f"GraphNode '{self.name}' projects input(s) {input_locals!r} and output {local!r} "
+                    f"to the same address {address!r}. Use the same local name for cyclic seed/update "
+                    f"ports, or choose distinct aliases."
+                )
+            output_local_to_address[local] = address
+            projected_outputs.append(address)
+
+        self._input_address_to_local = {key: tuple(values) for key, values in input_address_to_local.items()}
+        self._output_local_to_address = output_local_to_address
+        self._output_address_to_local = {address: local for local, address in output_local_to_address.items()}
+        self.inputs = tuple(projected_inputs)
+        self.outputs = tuple(projected_outputs)
+        self._data_outputs = tuple(self._project_address(local) for local in self._local_data_outputs if local in output_local_to_address)
+
+    def _project_address(self, local_name: str) -> str:
+        if self._namespaced:
+            if local_name in self._exposed:
+                return self._exposed[local_name]
+            return f"{self.name}.{local_name}"
+        return local_name
+
+    def _local_inputs_for_address(self, address: str) -> tuple[str, ...]:
+        return self._input_address_to_local.get(address, (address,))
+
+    def _local_output_for_address(self, address: str) -> str:
+        return self._output_address_to_local.get(address, address)
+
+    def replacement_for_stale_input_address(self, address: str) -> str | None:
+        """Return the current parent-facing input address for a stale namespaced one."""
+        prefixes = [self.name, *(entry.old for entry in self._rename_history if entry.kind == "name")]
+        prefix = next((f"{name}." for name in prefixes if address.startswith(f"{name}.")), None)
+        if prefix is None:
+            return None
+        local_name = address[len(prefix) :]
+        if local_name not in self._local_inputs:
+            for current in self._local_inputs:
+                if self._resolve_original_input_name(current) == local_name:
+                    local_name = current
+                    break
+            else:
+                if local_name in self.inputs:
+                    return local_name
+                return None
+        current = self._project_address(local_name)
+        return current if current != address else None
+
+    def _validate_local_port_name(self, name: str, *, role: str) -> None:
+        for char in self._RESERVED_CHARS:
+            if char in name:
+                raise ValueError(f"{role} cannot contain '{char}': {name!r}. Reserved characters: {set(self._RESERVED_CHARS)}")
 
     def with_runner(self: _GN, runner: Any) -> _GN:
         """Return a new GraphNode that delegates execution to the given runner.
@@ -204,13 +318,15 @@ class GraphNode(HyperNode):
 
         # For each output of this GraphNode, get type from source node
         for output_name in self.outputs:
-            source_node = output_to_node.get(output_name)
+            local_output = self._local_output_for_address(output_name)
+            original_output = self.resolve_original_output_name(local_output)
+            source_node = output_to_node.get(original_output)
             if source_node is None:
                 result[output_name] = self._wrap_type_for_map_over(None)
                 continue
 
             # Use universal get_output_type method
-            output_type = source_node.get_output_type(output_name)
+            output_type = source_node.get_output_type(original_output)
             result[output_name] = self._wrap_type_for_map_over(output_type)
 
         return result
@@ -254,13 +370,12 @@ class GraphNode(HyperNode):
         Returns:
             The type annotation, or None if not annotated.
         """
-        # Resolve param back to original name if renamed
-        original_param = self._resolve_original_input_name(param)
-
-        # Find which node in inner graph has this as an input
-        for inner_node in self._graph.iter_nodes():
-            if original_param in inner_node.inputs:
-                return inner_node.get_input_type(original_param)
+        for local_param in self._local_inputs_for_address(param):
+            original_param = self._resolve_original_input_name(local_param)
+            # Find which node in inner graph has this as an input
+            for inner_node in self._graph.iter_nodes():
+                if original_param in inner_node.inputs:
+                    return inner_node.get_input_type(original_param)
         return None
 
     def _resolve_original_input_name(self, param: str) -> str:
@@ -296,10 +411,11 @@ class GraphNode(HyperNode):
             Dict with original inner graph parameter names as keys
         """
         reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return inputs
-
-        return {reverse_map.get(key, key): value for key, value in inputs.items()}
+        mapped: dict[str, Any] = {}
+        for address, value in inputs.items():
+            for local_name in self._local_inputs_for_address(address):
+                mapped[reverse_map.get(local_name, local_name)] = value
+        return mapped
 
     def _original_map_params(self) -> list[str] | None:
         """Get map_over params translated to original inner graph names.
@@ -347,42 +463,52 @@ class GraphNode(HyperNode):
         Returns:
             Dict with renamed (external) output names as keys
         """
-        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
-        if not reverse_map:
-            return outputs
+        from hypergraph.nodes.base import _EMIT_SENTINEL
 
-        # Build forward map (original -> renamed) by inverting reverse map
+        reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
         forward_map = {v: k for k, v in reverse_map.items()}
-        return {forward_map.get(key, key): value for key, value in outputs.items()}
+        mapped = {self._output_local_to_address.get(forward_map.get(key, key), forward_map.get(key, key)): value for key, value in outputs.items()}
+        for local_output in self._local_outputs:
+            if local_output in self._local_data_outputs:
+                continue
+            address = self._output_local_to_address.get(local_output)
+            if address is not None and address not in mapped:
+                mapped[address] = _EMIT_SENTINEL
+        return mapped
 
     def map_output_name_from_original(self, output_name: str) -> str:
         """Map a single inner output name to its external renamed name."""
         reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
-        if not reverse_map:
-            return output_name
         forward_map = {v: k for k, v in reverse_map.items()}
-        return forward_map.get(output_name, output_name)
+        local_name = forward_map.get(output_name, output_name)
+        return self._output_local_to_address.get(local_name, local_name)
 
     def resolve_original_output_name(self, output_name: str) -> str:
         """Resolve an external output name back to the inner graph's name."""
         reverse_map = build_reverse_rename_map(self._rename_history, "outputs")
-        return reverse_map.get(output_name, output_name)
+        local_name = self._local_output_for_address(output_name)
+        return reverse_map.get(local_name, local_name)
 
     def map_input_name_from_original(self, input_name: str) -> str:
         """Map a single inner input name to its external renamed name."""
         reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
-        if not reverse_map:
-            return input_name
         forward_map = {v: k for k, v in reverse_map.items()}
-        return forward_map.get(input_name, input_name)
+        local_name = forward_map.get(input_name, input_name)
+        return self._project_address(local_name)
 
     def map_resume_key_from_original(self, resume_key: str) -> str:
         """Map a nested resume key from inner names to external names.
+
+        If the key is on this graph-node's current local output surface, map
+        the whole key. This matters when a child namespaced GraphNode has
+        already produced a local output address such as ``inner.decision``.
 
         Only the first path component can be renamed by the GraphNode boundary.
         For example, ``decision`` may become ``verdict`` while
         ``review.decision`` remains unchanged because ``review`` is internal.
         """
+        if resume_key in self._local_outputs:
+            return self.map_output_name_from_original(resume_key)
         head, sep, tail = resume_key.partition(".")
         mapped_head = self.map_output_name_from_original(head)
         if not sep:
@@ -416,17 +542,16 @@ class GraphNode(HyperNode):
         if param not in self.inputs:
             return False
 
-        # Resolve to original name for inner graph lookup
-        original_param = self._resolve_original_input_name(param)
-
-        # Check if bound anywhere in the visible inner graph scope
-        if original_param in self._graph.inputs.bound:
-            return True
-        # Check if any inner node has a default
-        inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
-        if not inner_nodes_with_param:
-            return False
-        return all(inner_node.has_default_for(original_param) for inner_node in inner_nodes_with_param)
+        for local_param in self._local_inputs_for_address(param):
+            original_param = self._resolve_original_input_name(local_param)
+            if original_param in self._graph.inputs.bound:
+                continue
+            inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
+            if not inner_nodes_with_param:
+                return False
+            if not all(inner_node.has_default_for(original_param) for inner_node in inner_nodes_with_param):
+                return False
+        return True
 
     def get_default_for(self, param: str) -> Any:
         """Get the default or bound value for a parameter from the inner graph.
@@ -443,8 +568,8 @@ class GraphNode(HyperNode):
         Raises:
             KeyError: If no default or bound value exists for this parameter.
         """
-        # Resolve to original name for inner graph lookup
-        original_param = self._resolve_original_input_name(param)
+        local_param = self._local_inputs_for_address(param)[0]
+        original_param = self._resolve_original_input_name(local_param)
 
         # Check if bound in inner graph first
         if original_param in self._graph.inputs.bound:
@@ -471,20 +596,16 @@ class GraphNode(HyperNode):
         if param not in self.inputs:
             return False
 
-        # Resolve to original name for inner graph lookup
-        original_param = self._resolve_original_input_name(param)
-
-        # Bound parameters don't have signature defaults (they're configuration)
-        if original_param in self._graph.inputs.bound:
-            return False
-
-        # Check if ALL inner nodes using this param have signature defaults
-        inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
-
-        if not inner_nodes_with_param:
-            return False
-
-        return all(n.has_signature_default_for(original_param) for n in inner_nodes_with_param)
+        for local_param in self._local_inputs_for_address(param):
+            original_param = self._resolve_original_input_name(local_param)
+            if original_param in self._graph.inputs.bound:
+                return False
+            inner_nodes_with_param = [n for n in self._graph.iter_nodes() if original_param in n.inputs]
+            if not inner_nodes_with_param:
+                return False
+            if not all(n.has_signature_default_for(original_param) for n in inner_nodes_with_param):
+                return False
+        return True
 
     def get_signature_default_for(self, param: str) -> Any:
         """Get the signature default value for a parameter.
@@ -501,8 +622,8 @@ class GraphNode(HyperNode):
         Raises:
             KeyError: If no signature default exists (bound values don't count).
         """
-        # Resolve to original name for inner graph lookup
-        original_param = self._resolve_original_input_name(param)
+        local_param = self._local_inputs_for_address(param)[0]
+        original_param = self._resolve_original_input_name(local_param)
 
         # Bound parameters don't have signature defaults
         if original_param in self._graph.inputs.bound:
@@ -602,13 +723,13 @@ class GraphNode(HyperNode):
         if not params:
             raise ValueError("map_over requires at least one parameter")
 
-        # Validate all params exist in inputs
+        # Validate all params exist in local inputs
         for param in params:
-            if param not in self.inputs:
-                raise ValueError(f"Parameter '{param}' is not an input of this GraphNode. Available inputs: {self.inputs}")
+            if param not in self._local_inputs:
+                raise ValueError(f"Parameter '{param}' is not an input of this GraphNode. Available local inputs: {self._local_inputs}")
 
         # Validate clone parameter
-        _validate_clone(clone, params, self.inputs)
+        _validate_clone(clone, params, self._local_inputs)
 
         # Create copy with map_over configuration
         new = self._copy()
@@ -624,6 +745,10 @@ class GraphNode(HyperNode):
 
         new = copy.copy(self)
         new._rename_history = list(self._rename_history)
+        new._exposed = dict(self._exposed)
+        new._local_inputs = tuple(self._local_inputs)
+        new._local_outputs = tuple(self._local_outputs)
+        new._local_data_outputs = tuple(self._local_data_outputs)
         # Preserve map_over as a new list if set
         if self._map_over is not None:
             new._map_over = list(self._map_over)
@@ -632,6 +757,18 @@ class GraphNode(HyperNode):
             new._clone = list(self._clone)
         # runner_override is preserved as-is (runner instances are shared)
         _invalidate_cached_properties(new)
+        return new
+
+    def with_name(self: _GN, name: str) -> _GN:
+        """Return new node with a different graph-node name."""
+        for char in self._RESERVED_CHARS:
+            if char in name:
+                raise ValueError(f"GraphNode name cannot contain '{char}': {name!r}. Reserved characters: {set(self._RESERVED_CHARS)}")
+        new = self._copy()
+        if new.name != name:
+            new._rename_history.append(RenameEntry("name", new.name, name, get_next_batch_id()))
+            new.name = name
+            new._refresh_projected_ports()
         return new
 
     def with_inputs(
@@ -648,8 +785,19 @@ class GraphNode(HyperNode):
         if not combined:
             return self._copy()
 
-        # Call base class rename
-        renamed = self._with_renamed("inputs", combined)
+        renamed = self._copy()
+        batch_id = get_next_batch_id()
+        current = renamed._local_inputs
+        for old, new_name in combined.items():
+            if old not in current:
+                raise renamed._make_rename_error(old, "inputs")
+            if old in renamed._exposed:
+                raise RenameError(f"Cannot rename exposed local input {old!r}; its parent-facing address is finalized.")
+            renamed._validate_local_port_name(new_name, role="Input name")
+            renamed._rename_history.append(RenameEntry("inputs", old, new_name, batch_id))
+        renamed._local_inputs = tuple(combined.get(value, value) for value in current)
+        if len(renamed._local_inputs) != len(set(renamed._local_inputs)):
+            raise RenameError("Rename produces duplicate inputs. Each name must be unique.")
 
         # Update map_over if any mapped params were renamed
         if renamed._map_over is not None:
@@ -659,7 +807,65 @@ class GraphNode(HyperNode):
         if isinstance(renamed._clone, list):
             renamed._clone = [combined.get(p, p) for p in renamed._clone]
 
+        renamed._refresh_projected_ports()
         return renamed
+
+    def with_outputs(
+        self: _GN,
+        mapping: dict[str, str] | None = None,
+        /,
+        **kwargs: str,
+    ) -> _GN:
+        """Return new node with renamed local outputs."""
+        combined = {**(mapping or {}), **kwargs}
+        if not combined:
+            return self._copy()
+
+        renamed = self._copy()
+        batch_id = get_next_batch_id()
+        current = renamed._local_outputs
+        for old, new_name in combined.items():
+            if old not in current:
+                raise renamed._make_rename_error(old, "outputs")
+            if old in renamed._exposed:
+                raise RenameError(f"Cannot rename exposed local output {old!r}; its parent-facing address is finalized.")
+            renamed._validate_local_port_name(new_name, role="Output name")
+            renamed._rename_history.append(RenameEntry("outputs", old, new_name, batch_id))
+        renamed._local_outputs = tuple(combined.get(value, value) for value in current)
+        renamed._local_data_outputs = tuple(combined.get(value, value) for value in renamed._local_data_outputs)
+        if len(renamed._local_outputs) != len(set(renamed._local_outputs)):
+            raise RenameError("Rename produces duplicate outputs. Each name must be unique.")
+
+        renamed._refresh_projected_ports()
+        return renamed
+
+    def expose(self: _GN, *names: str, **aliases: str) -> _GN:
+        """Expose local ports from a namespaced GraphNode as flat parent addresses."""
+        if not self._namespaced:
+            raise ValueError("expose(...) is only valid on namespaced GraphNodes")
+        if not names and not aliases:
+            return self._copy()
+
+        exposed = self._copy()
+        for name in names:
+            exposed._add_exposed_port(name, name)
+        for local_name, alias in aliases.items():
+            exposed._add_exposed_port(local_name, alias)
+        exposed._refresh_projected_ports()
+        return exposed
+
+    def _add_exposed_port(self, local_name: str, alias: str) -> None:
+        if any(char in local_name for char in self._RESERVED_CHARS):
+            raise ValueError(f"expose(...) targets Local port names, not projected addresses: {local_name!r}")
+        self._validate_local_port_name(local_name, role="Expose target")
+        self._validate_local_port_name(alias, role="Expose alias")
+        if local_name not in self._local_inputs and local_name not in self._local_outputs:
+            raise ValueError(
+                f"Cannot expose {local_name!r}: not on GraphNode surface. Available inputs: {self._local_inputs}; outputs: {self._local_outputs}"
+            )
+        if alias in self._exposed.values() and self._exposed.get(local_name) != alias:
+            raise ValueError(f"expose(...) alias {alias!r} is already used by another local port on GraphNode '{self.name}'")
+        self._exposed[local_name] = alias
 
     @staticmethod
     def _derive_outputs(graph: "Graph") -> tuple[str, ...]:
@@ -679,6 +885,12 @@ class GraphNode(HyperNode):
             selected=None,
         )
         return tuple(dict.fromkeys(output for node in active_nodes.values() for output in node.outputs))
+
+    @staticmethod
+    def _derive_data_outputs(graph: "Graph", outputs: tuple[str, ...]) -> tuple[str, ...]:
+        """Resolve data-carrying local outputs for the current graph scope."""
+        emit_only_outputs = graph._get_emit_only_outputs()
+        return tuple(output for output in outputs if output not in emit_only_outputs)
 
     def _derive_collapsed_outputs(self) -> tuple[str, ...]:
         """Resolve outputs a collapsed GraphNode should advertise.
