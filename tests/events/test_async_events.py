@@ -549,8 +549,8 @@ class TestNoProcessors:
         outer = Graph(
             [
                 produce,
-                graph_a.as_node().with_inputs(x="val"),
-                graph_b.as_node().with_inputs(y="val"),
+                graph_a.as_node().rename_inputs(x="val"),
+                graph_b.as_node().rename_inputs(y="val"),
             ],
             name="outer",
         )

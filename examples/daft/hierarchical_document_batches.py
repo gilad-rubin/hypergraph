@@ -45,7 +45,7 @@ sentence_graph = Graph(
     name="sentence_graph",
 )
 
-analyze_sentences = sentence_graph.as_node(name="analyze_sentences").with_inputs(text="sentences").map_over("sentences")
+analyze_sentences = sentence_graph.as_node(name="analyze_sentences").rename_inputs(text="sentences").map_over("sentences")
 
 
 @node(output_name="report")

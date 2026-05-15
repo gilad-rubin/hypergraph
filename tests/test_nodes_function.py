@@ -313,7 +313,7 @@ class TestFunctionNodeRepr:
         fn = FunctionNode(foo)
         assert repr(fn) == "FunctionNode(foo, outputs=())"
 
-    def test_with_outputs(self):
+    def test_rename_outputs(self):
         """Repr shows outputs."""
 
         def foo():

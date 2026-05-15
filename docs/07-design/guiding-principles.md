@@ -220,7 +220,7 @@ Nodes and graphs behave like values. Transformations produce new instances.
 
 ### Explicit signals
 
-- `with_*`, `bind`, `select` are documented as immutable transformations.
+- `rename_*`, `with_*`, `bind`, and `select` are documented as immutable transformations.
 
 ### Implicit invariants
 
@@ -248,7 +248,7 @@ Be explicit about outputs, renames, and control flow intent.
 ### Explicit signals
 
 - Output names are declared.
-- Renames are deliberate (`with_inputs`, `with_outputs`, `with_name`).
+- Renames are deliberate (`rename_inputs`, `rename_outputs`, `with_name`).
 
 ### Implicit invariants
 
@@ -261,7 +261,7 @@ Be explicit about outputs, renames, and control flow intent.
 @node(output_name="embedding")
 def embed(text: str) -> list[float]: ...
 
-adapted = embed.with_inputs(text="document")
+adapted = embed.rename_inputs(text="document")
 ```
 
 ### Break example

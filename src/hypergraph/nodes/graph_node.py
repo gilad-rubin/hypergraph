@@ -400,7 +400,7 @@ class GraphNode(HyperNode):
     def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Map renamed input names back to original inner graph parameter names.
 
-        When a GraphNode's inputs are renamed (via with_inputs), this method
+        When a GraphNode's inputs are renamed (via rename_inputs), this method
         maps the current/renamed names back to the original parameter names
         expected by the inner graph.
 
@@ -421,7 +421,7 @@ class GraphNode(HyperNode):
         """Get map_over params translated to original inner graph names.
 
         Uses build_reverse_rename_map() to handle parallel renames correctly
-        (e.g., with_inputs(x='y', y='x')), matching the semantics of
+        (e.g., rename_inputs(x='y', y='x')), matching the semantics of
         map_inputs_to_params().
 
         Returns:
@@ -453,7 +453,7 @@ class GraphNode(HyperNode):
     def map_outputs_from_original(self, outputs: dict[str, Any]) -> dict[str, Any]:
         """Map original inner graph output names to renamed external names.
 
-        When a GraphNode's outputs are renamed (via with_outputs), this method
+        When a GraphNode's outputs are renamed (via rename_outputs), this method
         maps the original names produced by the inner graph to the renamed names
         expected by the outer graph.
 
@@ -789,7 +789,7 @@ class GraphNode(HyperNode):
             new._refresh_projected_ports()
         return new
 
-    def with_inputs(
+    def rename_inputs(
         self: _GN,
         mapping: dict[str, str] | None = None,
         /,
@@ -828,7 +828,16 @@ class GraphNode(HyperNode):
         renamed._refresh_projected_ports()
         return renamed
 
-    def with_outputs(
+    def with_inputs(
+        self: _GN,
+        mapping: dict[str, str] | None = None,
+        /,
+        **kwargs: str,
+    ) -> _GN:
+        """Compatibility alias for rename_inputs()."""
+        return self.rename_inputs(mapping, **kwargs)
+
+    def rename_outputs(
         self: _GN,
         mapping: dict[str, str] | None = None,
         /,
@@ -856,6 +865,15 @@ class GraphNode(HyperNode):
 
         renamed._refresh_projected_ports()
         return renamed
+
+    def with_outputs(
+        self: _GN,
+        mapping: dict[str, str] | None = None,
+        /,
+        **kwargs: str,
+    ) -> _GN:
+        """Compatibility alias for rename_outputs()."""
+        return self.rename_outputs(mapping, **kwargs)
 
     def expose(self: _GN, *names: str, **aliases: str) -> _GN:
         """Expose local ports from a namespaced GraphNode as flat parent addresses."""

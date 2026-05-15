@@ -8,17 +8,17 @@ The same logic often applies in different contexts with different naming convent
 
 ```python
 # Same embedding function, different contexts
-embed_query = embed.with_inputs(text="query")
-embed_document = embed.with_inputs(text="document")
+embed_query = embed.rename_inputs(text="query")
+embed_document = embed.rename_inputs(text="document")
 
 # Same validation, different pipelines
-validate_order = validate.with_outputs(result="order_valid")
-validate_user = validate.with_outputs(result="user_valid")
+validate_order = validate.rename_outputs(result="order_valid")
+validate_user = validate.rename_outputs(result="user_valid")
 ```
 
 ## Renaming Inputs
 
-Use `.with_inputs()` to rename input parameters:
+Use `.rename_inputs()` to rename input parameters:
 
 ```python
 from hypergraph import node
@@ -31,19 +31,19 @@ def embed(text: str) -> list[float]:
 print(embed.inputs)  # ('text',)
 
 # Adapted to take "query"
-query_embed = embed.with_inputs(text="query")
+query_embed = embed.rename_inputs(text="query")
 print(query_embed.inputs)  # ('query',)
 
 # Adapted to take "document"
-doc_embed = embed.with_inputs(text="document")
+doc_embed = embed.rename_inputs(text="document")
 print(doc_embed.inputs)  # ('document',)
 ```
 
-**Important**: The original node is unchanged. `.with_inputs()` returns a new node.
+**Important**: The original node is unchanged. `.rename_inputs()` returns a new node.
 
 ## Renaming Outputs
 
-Use `.with_outputs()` to rename output names:
+Use `.rename_outputs()` to rename output names:
 
 ```python
 @node(output_name="result")
@@ -54,7 +54,7 @@ def process(data: str) -> str:
 print(process.outputs)  # ('result',)
 
 # Adapted to produce "processed_text"
-text_processor = process.with_outputs(result="processed_text")
+text_processor = process.rename_outputs(result="processed_text")
 print(text_processor.outputs)  # ('processed_text',)
 ```
 
@@ -85,8 +85,8 @@ def embed(text: str) -> list[float]:
 query_embed = (
     embed
     .with_name("embed_query")
-    .with_inputs(text="query")
-    .with_outputs(embedding="query_embedding")
+    .rename_inputs(text="query")
+    .rename_outputs(embedding="query_embedding")
 )
 
 print(query_embed.name)     # 'embed_query'
@@ -105,11 +105,11 @@ def statistics(data: list, weights: list) -> tuple[float, float]:
     return mean_val, std_val
 
 # Rename both inputs
-adapted = statistics.with_inputs(data="values", weights="importance")
+adapted = statistics.rename_inputs(data="values", weights="importance")
 print(adapted.inputs)  # ('values', 'importance')
 
 # Rename both outputs
-adapted = statistics.with_outputs(mean="average", std="deviation")
+adapted = statistics.rename_outputs(mean="average", std="deviation")
 print(adapted.outputs)  # ('average', 'deviation')
 ```
 
@@ -126,15 +126,15 @@ def embed(text: str) -> list[float]:
 embed_query = (
     embed
     .with_name("embed_query")
-    .with_inputs(text="query")
-    .with_outputs(embedding="query_vec")
+    .rename_inputs(text="query")
+    .rename_outputs(embedding="query_vec")
 )
 
 embed_doc = (
     embed
     .with_name("embed_doc")
-    .with_inputs(text="document")
-    .with_outputs(embedding="doc_vec")
+    .rename_inputs(text="document")
+    .rename_outputs(embedding="doc_vec")
 )
 
 @node(output_name="similarity")
@@ -159,14 +159,14 @@ print(rag.inputs.required)  # ('text', 'query')
 search_rag = (
     rag.as_node()
     .with_name("search_rag")
-    .with_inputs(text="search_query", query="search_query")
+    .rename_inputs(text="search_query", query="search_query")
 )
 
 # Adapt for chat context
 chat_rag = (
     rag.as_node()
     .with_name("chat_rag")
-    .with_inputs(text="user_message", query="user_message")
+    .rename_inputs(text="user_message", query="user_message")
 )
 ```
 
@@ -180,15 +180,15 @@ def process(x: int) -> int:
     return x * 2
 
 # Try to rename non-existent input
-process.with_inputs(y="new_name")
+process.rename_inputs(y="new_name")
 # RenameError: 'y' not found. Current inputs: ('x',)
 ```
 
 If you renamed and try to use the old name:
 
 ```python
-renamed = process.with_inputs(x="input")
-renamed.with_inputs(x="different")
+renamed = process.rename_inputs(x="input")
+renamed.rename_inputs(x="different")
 # RenameError: 'x' was renamed to 'input'. Current inputs: ('input',)
 ```
 
@@ -201,7 +201,7 @@ The underlying function is the same:
 def double(x: int) -> int:
     return x * 2
 
-renamed = double.with_inputs(x="value").with_outputs(result="doubled")
+renamed = double.rename_inputs(x="value").rename_outputs(result="doubled")
 
 # Both call the same function
 assert double.func(5) == 10

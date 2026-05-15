@@ -125,52 +125,52 @@ class TestHyperNode:
         assert renamed.name == "bar"
         assert original is not renamed
 
-    def test_with_inputs_kwargs(self):
-        """with_inputs with kwargs renames inputs."""
+    def test_rename_inputs_kwargs(self):
+        """rename_inputs with kwargs renames inputs."""
         from hypergraph.nodes.function import FunctionNode
 
         def foo(a, b):
             pass
 
         node = FunctionNode(foo, output_name="result")
-        renamed = node.with_inputs(a="x")
+        renamed = node.rename_inputs(a="x")
 
         assert node.inputs == ("a", "b")
         assert renamed.inputs == ("x", "b")
 
-    def test_with_inputs_dict(self):
-        """with_inputs with dict renames inputs."""
+    def test_rename_inputs_dict(self):
+        """rename_inputs with dict renames inputs."""
         from hypergraph.nodes.function import FunctionNode
 
         def foo(a, b):
             pass
 
         node = FunctionNode(foo, output_name="result")
-        renamed = node.with_inputs({"a": "x"})
+        renamed = node.rename_inputs({"a": "x"})
 
         assert renamed.inputs == ("x", "b")
 
-    def test_with_inputs_combined(self):
-        """with_inputs with dict and kwargs combines them."""
+    def test_rename_inputs_combined(self):
+        """rename_inputs with dict and kwargs combines them."""
         from hypergraph.nodes.function import FunctionNode
 
         def foo(a, b):
             pass
 
         node = FunctionNode(foo, output_name="result")
-        renamed = node.with_inputs({"a": "x"}, b="y")
+        renamed = node.rename_inputs({"a": "x"}, b="y")
 
         assert renamed.inputs == ("x", "y")
 
-    def test_with_outputs_same_patterns(self):
-        """with_outputs follows same patterns as with_inputs."""
+    def test_rename_outputs_same_patterns(self):
+        """rename_outputs follows same patterns as rename_inputs."""
         from hypergraph.nodes.function import FunctionNode
 
         def foo(x):
             pass
 
         node = FunctionNode(foo, output_name=("a", "b"))
-        renamed = node.with_outputs(a="x")
+        renamed = node.rename_outputs(a="x")
 
         assert node.outputs == ("a", "b")
         assert renamed.outputs == ("x", "b")
@@ -184,7 +184,7 @@ class TestHyperNode:
 
         node = FunctionNode(foo, output_name="result")
         with pytest.raises(RenameError, match="'nonexistent' not found"):
-            node.with_inputs(nonexistent="x")
+            node.rename_inputs(nonexistent="x")
 
     def test_error_shows_history(self):
         """Error message shows rename history when applicable."""
@@ -194,11 +194,11 @@ class TestHyperNode:
             pass
 
         node = FunctionNode(foo, output_name="result")
-        renamed = node.with_inputs(a="x")
+        renamed = node.rename_inputs(a="x")
 
         # Now try to rename 'a' again (it was renamed to 'x')
         with pytest.raises(RenameError, match="'a' was renamed: a→x"):
-            renamed.with_inputs(a="y")
+            renamed.rename_inputs(a="y")
 
     def test_chained_renames_track_history(self):
         """Chained renames accumulate in history."""
@@ -208,8 +208,8 @@ class TestHyperNode:
             pass
 
         node = FunctionNode(foo, output_name="result")
-        step1 = node.with_inputs(a="x")
-        step2 = step1.with_inputs(b="y")
+        step1 = node.rename_inputs(a="x")
+        step2 = step1.rename_inputs(b="y")
 
         assert len(step2._rename_history) == 2
         # Check entries by kind/old/new (batch_id varies per call)
@@ -225,38 +225,64 @@ class TestHyperNode:
             pass
 
         node = FunctionNode(foo, output_name="result")
-        renamed = node.with_inputs(a="x")
+        renamed = node.rename_inputs(a="x")
 
         # Original history should be empty
         assert len(node._rename_history) == 0
         # Renamed history should have the entry
         assert len(renamed._rename_history) == 1
 
-    def test_with_inputs_empty_returns_copy(self):
-        """with_inputs with no arguments returns a copy."""
+    def test_rename_inputs_empty_returns_copy(self):
+        """rename_inputs with no arguments returns a copy."""
         from hypergraph.nodes.function import FunctionNode
 
         def foo(a):
             pass
 
         node = FunctionNode(foo, output_name="result")
-        copy_node = node.with_inputs()
+        copy_node = node.rename_inputs()
 
         assert node is not copy_node
         assert node.inputs == copy_node.inputs
 
-    def test_with_outputs_empty_returns_copy(self):
-        """with_outputs with no arguments returns a copy."""
+    def test_with_inputs_compat_alias(self):
+        """with_inputs remains as a compatibility alias for rename_inputs."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a, b):
+            pass
+
+        node = FunctionNode(foo, output_name="result")
+        renamed = node.with_inputs(a="x")
+
+        assert renamed.inputs == ("x", "b")
+        assert node.inputs == ("a", "b")
+
+    def test_rename_outputs_empty_returns_copy(self):
+        """rename_outputs with no arguments returns a copy."""
         from hypergraph.nodes.function import FunctionNode
 
         def foo(a):
             pass
 
         node = FunctionNode(foo, output_name="result")
-        copy_node = node.with_outputs()
+        copy_node = node.rename_outputs()
 
         assert node is not copy_node
         assert node.outputs == copy_node.outputs
+
+    def test_with_outputs_compat_alias(self):
+        """with_outputs remains as a compatibility alias for rename_outputs."""
+        from hypergraph.nodes.function import FunctionNode
+
+        def foo(a):
+            pass
+
+        node = FunctionNode(foo, output_name="result")
+        renamed = node.with_outputs(result="value")
+
+        assert renamed.outputs == ("value",)
+        assert node.outputs == ("result",)
 
 
 class TestHyperNodeUniversalCapabilities:

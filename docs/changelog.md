@@ -48,7 +48,7 @@
 
 - **Bind precedence is parent-first at a projected address** — If an inner graph bind and an outer graph bind project to the same parent-facing address, the outer bind wins and emits a warning when the effective bound inputs are computed. If sibling inner graph binds project different values to the same flat address, graph construction errors instead of choosing one silently. Runtime values can still override the effective bind and emit the warning above.
 
-- **`with_inputs(...)` and `with_outputs(...)` target local names** — GraphNode renames operate on the current local port names before boundary projection. `map_over(...)` and `clone` accept either current local names or projected parent-facing input addresses, then normalize to local names internally. Changing the GraphNode name recomputes namespaced addresses; exposed aliases stay flat.
+- **`rename_inputs(...)` and `rename_outputs(...)` target local names** — GraphNode renames operate on the current local port names before boundary projection. `map_over(...)` and `clone` accept either current local names or projected parent-facing input addresses, then normalize to local names internally. Changing the GraphNode name recomputes namespaced addresses; exposed aliases stay flat.
 
 - **GraphNode boundary hashes include the projected surface** — `definition_hash` / `structural_hash` now include boundary namespacing, exposed-port mappings, projected inputs/outputs, and local renames. Existing checkpoint compatibility and cache keys may change after upgrading graphs that use nested composition.
 

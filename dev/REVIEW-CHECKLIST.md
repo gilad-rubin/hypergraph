@@ -112,7 +112,7 @@ Before pushing or creating a PR:
 - [ ] **New public API** added to `__init__.py` `__all__`?
 - [ ] **New public event/callback** mirrored in package-root exports, API docs, and example code?
 - [ ] **Error messages** include "How to fix:" guidance?
-- [ ] **Immutability preserved** — `with_*` returns new instance, no in-place mutation?
+- [ ] **Immutability preserved** — rename/configuration methods return new instances, no in-place mutation?
 - [ ] **Internal modules** prefixed with `_`?
 - [ ] **Capability matrix updated** if adding new node type or runner feature?
 - [ ] **Conventional commit** message with scope? (`feat(graph): add X`)
@@ -136,7 +136,7 @@ When reviewing code changes:
 - [ ] No unnecessary state mutation?
 - [ ] Composition used instead of configuration flags?
 - [ ] Active-set enforcement: does `with_entrypoint` / `select` properly scope both validation AND execution? (Not just one or the other)
-- [ ] Nested graph boundaries preserve the configured public interface? (`with_inputs`/`with_outputs`, scoped outputs, and bound values don't leak across sibling GraphNodes)
+- [ ] Nested graph boundaries preserve the configured public interface? (`rename_inputs`/`rename_outputs`, scoped outputs, and bound values don't leak across sibling GraphNodes)
 - [ ] Checkpointed nested execution can re-run safely? (Repeated GraphNode execution, especially inside cycles, must not collide with child workflow IDs)
 
 ### Code Quality

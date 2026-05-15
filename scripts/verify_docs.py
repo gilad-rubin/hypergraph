@@ -17,8 +17,8 @@ EXTERNAL_DEP_MARKERS = [
 
 # Examples that intentionally raise errors (test differently)
 ERROR_EXAMPLES = [
-    "process.with_inputs(y=",  # RenameError
-    'renamed.with_inputs(x="different")',  # RenameError
+    "process.rename_inputs(y=",  # RenameError
+    'renamed.rename_inputs(x="different")',  # RenameError
 ]
 
 

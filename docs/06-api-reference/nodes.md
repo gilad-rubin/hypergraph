@@ -53,7 +53,7 @@ print(process.name)     # "process" (original unchanged)
 
 **Raises:** None (always succeeds)
 
-### `with_inputs(mapping=None, /, **kwargs) -> HyperNode`
+### `rename_inputs(mapping=None, /, **kwargs) -> HyperNode`
 
 Return a new node with renamed inputs.
 
@@ -63,11 +63,11 @@ def process(text: str, config: dict) -> str:
     return text.upper()
 
 # Using keyword args
-adapted = process.with_inputs(text="raw_input", config="settings")
+adapted = process.rename_inputs(text="raw_input", config="settings")
 print(adapted.inputs)  # ("raw_input", "settings")
 
 # Using dict (for reserved keywords or dynamic renames)
-adapted = process.with_inputs({"text": "raw_input", "class": "category"})
+adapted = process.rename_inputs({"text": "raw_input", "class": "category"})
 ```
 
 **Args:**
@@ -80,7 +80,9 @@ adapted = process.with_inputs({"text": "raw_input", "class": "category"})
 - `RenameError` - If any old name not found in current inputs
 - `RenameError` - Includes helpful history if name was already renamed
 
-### `with_outputs(mapping=None, /, **kwargs) -> HyperNode`
+**Compatibility:** `with_inputs(...)` remains available as an alias.
+
+### `rename_outputs(mapping=None, /, **kwargs) -> HyperNode`
 
 Return a new node with renamed outputs.
 
@@ -90,11 +92,11 @@ def process(x: int) -> int:
     return x * 2
 
 # Using keyword args
-adapted = process.with_outputs(result="doubled")
+adapted = process.rename_outputs(result="doubled")
 print(adapted.outputs)  # ("doubled",)
 
 # Using dict
-adapted = process.with_outputs({"result": "doubled"})
+adapted = process.rename_outputs({"result": "doubled"})
 ```
 
 **Args:**
@@ -107,15 +109,17 @@ adapted = process.with_outputs({"result": "doubled"})
 - `RenameError` - If any old name not found in current outputs
 - `RenameError` - Includes helpful history if name was already renamed
 
+**Compatibility:** `with_outputs(...)` remains available as an alias.
+
 ### Immutability Pattern
 
-All `with_*` methods return new instances. The original is never modified:
+All rename/configuration methods return new instances. The original is never modified:
 
 ```python
 original = process
 v1 = original.with_name("v1")
 v2 = original.with_name("v2")
-v3 = v1.with_inputs(x="input")
+v3 = v1.rename_inputs(x="input")
 
 print(original.name)  # "process" (unchanged)
 print(v1.name)        # "v1"
@@ -258,7 +262,7 @@ def add(x: int, y: int) -> int:
 
 print(add.inputs)  # ("x", "y")
 
-adapted = add.with_inputs(x="a", y="b")
+adapted = add.rename_inputs(x="a", y="b")
 print(adapted.inputs)  # ("a", "b")
 ```
 
@@ -569,7 +573,7 @@ def process(x: int) -> int:
     return x * 2
 
 try:
-    process.with_inputs(y="renamed")  # 'y' doesn't exist
+    process.rename_inputs(y="renamed")  # 'y' doesn't exist
 except RenameError as e:
     print(e)
     # 'y' not found. Current inputs: ('x',)
@@ -585,11 +589,11 @@ def process(x: int) -> int:
     return x * 2
 
 # Rename x to input
-renamed = process.with_inputs(x="input")
+renamed = process.rename_inputs(x="input")
 
 # Try to use old name
 try:
-    renamed.with_inputs(x="something_else")
+    renamed.rename_inputs(x="something_else")
 except RenameError as e:
     print(e)
     # 'x' was renamed to 'input'. Current inputs: ('input',)
@@ -692,8 +696,8 @@ print(node_instance.is_generator)   # False
 adapted = (
     node_instance
     .with_name("math_ops")
-    .with_inputs(first="a", second="b")
-    .with_outputs(sum="total", product="multiply")
+    .rename_inputs(first="a", second="b")
+    .rename_outputs(sum="total", product="multiply")
 )
 
 print(adapted.name)     # "math_ops"
@@ -881,11 +885,11 @@ GraphNode supports the same rename methods as other nodes:
 gn = inner.as_node()
 
 # Rename inputs
-adapted = gn.with_inputs(x="input_value")
+adapted = gn.rename_inputs(x="input_value")
 print(adapted.inputs)  # ('input_value',)
 
 # Rename outputs
-adapted = gn.with_outputs(doubled="result")
+adapted = gn.rename_outputs(doubled="result")
 print(adapted.outputs)  # ('result',)
 
 # Rename the node itself
@@ -893,7 +897,7 @@ adapted = gn.with_name("my_processor")
 print(adapted.name)  # "my_processor"
 ```
 
-For namespaced GraphNodes, `with_inputs(...)` and `with_outputs(...)` names target the current local port names before namespace projection. `map_over(...)` and `clone` accept either current local names or projected parent-facing input addresses, then normalize to local names internally.
+For namespaced GraphNodes, `rename_inputs(...)` and `rename_outputs(...)` names target the current local port names before namespace projection. `map_over(...)` and `clone` accept either current local names or projected parent-facing input addresses, then normalize to local names internally.
 
 ### expose()
 
@@ -1031,7 +1035,7 @@ When you rename inputs, map_over configuration updates automatically:
 
 ```python
 gn = inner.as_node().map_over("x")
-renamed = gn.with_inputs(x="input_value")
+renamed = gn.rename_inputs(x="input_value")
 
 # map_over now references "input_value"
 print(renamed.inputs)  # ('input_value',)
@@ -1221,7 +1225,7 @@ approval = InterruptNode(
 
 ### Methods
 
-#### Inherited: `with_name()`, `with_inputs()`, `with_outputs()`
+#### Inherited: `with_name()`, `rename_inputs()`, `rename_outputs()`
 
 All HyperNode rename methods work as expected.
 

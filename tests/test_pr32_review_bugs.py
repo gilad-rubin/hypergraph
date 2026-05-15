@@ -87,7 +87,7 @@ class TestCollectAsListsLengthConsistency:
     def test_renamed_multi_output_map_over_lengths_match(self):
         """Renamed outputs should still produce equal-length lists."""
         inner = Graph([produce_a, produce_b], name="inner")
-        gn = inner.as_node().map_over("x").with_outputs(a="alpha", b="beta")
+        gn = inner.as_node().map_over("x").rename_outputs(a="alpha", b="beta")
 
         @node(output_name="result")
         def use_renamed(alpha: list, beta: list) -> dict:

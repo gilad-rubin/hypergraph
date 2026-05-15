@@ -392,7 +392,7 @@ sentence_graph = Graph([clean_sentence], name="sentence_graph")
 workflow = Graph(
     [
         split_sentences,
-        sentence_graph.as_node(name="analyze").with_inputs(text="sentences").map_over("sentences"),
+        sentence_graph.as_node(name="analyze").rename_inputs(text="sentences").map_over("sentences"),
     ]
 )
 
