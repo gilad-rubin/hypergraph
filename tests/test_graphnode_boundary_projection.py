@@ -174,7 +174,7 @@ def test_stale_namespaced_input_address_after_rename_suggests_current_address():
     def agent(query: str) -> str:
         return query
 
-    graph_node = Graph([agent], name="retrieval").as_node(namespaced=True).with_inputs(query="user_query")
+    graph_node = Graph([agent], name="retrieval").as_node(namespaced=True).rename_inputs(query="user_query")
     outer = Graph([graph_node])
 
     with pytest.raises(ValueError, match="Use 'retrieval.user_query'"):
@@ -212,10 +212,10 @@ def test_renaming_exposed_local_port_is_rejected():
     graph_node = Graph([agent], name="retrieval").as_node(namespaced=True).expose("query", "answer")
 
     with pytest.raises(RenameError, match="Cannot rename exposed local input"):
-        graph_node.with_inputs(query="user_query")
+        graph_node.rename_inputs(query="user_query")
 
     with pytest.raises(RenameError, match="Cannot rename exposed local output"):
-        graph_node.with_outputs(answer="final_answer")
+        graph_node.rename_outputs(answer="final_answer")
 
 
 def test_nested_dict_addressing_is_valid_for_namespaced_inputs():
@@ -276,12 +276,12 @@ def test_inner_bind_values_project_through_namespaced_and_exposed_boundary():
     assert exposed.inputs.bound == {"model": "gpt"}
 
 
-def test_with_inputs_renames_local_name_before_projection():
+def test_rename_inputs_renames_local_name_before_projection():
     @node(output_name="answer")
     def agent(query: str) -> str:
         return f"answer:{query}"
 
-    graph_node = Graph([agent], name="retrieval").as_node(namespaced=True).with_inputs(query="user_query")
+    graph_node = Graph([agent], name="retrieval").as_node(namespaced=True).rename_inputs(query="user_query")
     outer = Graph([graph_node])
 
     assert graph_node.local_inputs == ("user_query",)

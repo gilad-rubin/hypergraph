@@ -60,7 +60,7 @@ def process(text: str) -> str:
 
 
 print("\n=== Example 5: Renaming ===")
-adapted = process.with_inputs(text="raw_input").with_outputs(result="processed")
+adapted = process.rename_inputs(text="raw_input").rename_outputs(result="processed")
 print(f"adapted.inputs = {adapted.inputs}")  # ("raw_input",)
 print(f"adapted.outputs = {adapted.outputs}")  # ("processed",)
 print(f"process.inputs = {process.inputs}")  # ("text",) - unchanged

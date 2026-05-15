@@ -84,8 +84,8 @@ class Renaming(Enum):
     """Whether nodes/inputs/outputs are renamed."""
 
     NONE = auto()  # No renaming applied
-    INPUTS = auto()  # with_inputs() applied
-    OUTPUTS = auto()  # with_outputs() applied
+    INPUTS = auto()  # rename_inputs() applied
+    OUTPUTS = auto()  # rename_outputs() applied
     NODE_NAME = auto()  # with_name() applied
 
 

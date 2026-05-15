@@ -101,7 +101,7 @@ def select_best_model(evaluated_model_type: list[str], accuracy: list[float], tr
 
 
 def build_ml_model_selection_graph() -> Graph:
-    mapped_trials = trial_graph.as_node(name="trial").with_inputs(model_type="model_types").map_over("model_types")
+    mapped_trials = trial_graph.as_node(name="trial").rename_inputs(model_type="model_types").map_over("model_types")
     return Graph(
         [
             load_rows,

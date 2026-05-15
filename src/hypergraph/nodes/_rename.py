@@ -17,7 +17,7 @@ class RenameEntry:
         kind: Which attribute was renamed ("name", "inputs", or "outputs")
         old: Original value before rename
         new: New value after rename
-        batch_id: Groups entries from the same with_inputs/with_outputs call
+        batch_id: Groups entries from the same rename_inputs/rename_outputs call
                   (entries in the same batch should be treated as parallel transforms)
     """
 

@@ -162,36 +162,36 @@ class TestInterruptNodeRename:
         assert renamed.name == "review_step"
         assert n.name == "approval"  # original unchanged
 
-    def test_with_inputs(self):
+    def test_rename_inputs(self):
         def approval(draft: str) -> str:
             return "ok"
 
         n = InterruptNode(approval, output_name="decision")
-        renamed = n.with_inputs(draft="document")
+        renamed = n.rename_inputs(draft="document")
         assert renamed.inputs == ("document",)
 
-    def test_with_outputs(self):
+    def test_rename_outputs(self):
         def approval(draft: str) -> str:
             return "ok"
 
         n = InterruptNode(approval, output_name="decision")
-        renamed = n.with_outputs(decision="verdict")
+        renamed = n.rename_outputs(decision="verdict")
         assert renamed.outputs == ("verdict",)
 
-    def test_with_inputs_multi(self):
+    def test_rename_inputs_multi(self):
         def review(a: str, b: str) -> str:
             return "ok"
 
         n = InterruptNode(review, output_name="out")
-        renamed = n.with_inputs(a="c", b="d")
+        renamed = n.rename_inputs(a="c", b="d")
         assert renamed.inputs == ("c", "d")
 
-    def test_with_outputs_multi(self):
+    def test_rename_outputs_multi(self):
         def review(inp: str) -> tuple[str, str]:
             return ("a", "b")
 
         n = InterruptNode(review, output_name=("a", "b"))
-        renamed = n.with_outputs(a="c", b="d")
+        renamed = n.rename_outputs(a="c", b="d")
         assert renamed.outputs == ("c", "d")
 
 
@@ -937,7 +937,7 @@ class TestInterruptDecorator:
         assert approval.get_default_for("threshold") == 0.8
         assert approval.has_default_for("draft") is False
 
-    def test_rename_inputs(self):
+    def test_decorator_rename_inputs(self):
         @interrupt(output_name="decision", rename_inputs={"draft": "document"})
         def approval(draft: str) -> str:
             return "ok"
@@ -953,18 +953,18 @@ class TestInterruptDecorator:
         assert renamed.name == "review_step"
         assert approval.name == "approval"  # original unchanged
 
-    def test_with_inputs(self):
+    def test_rename_inputs(self):
         @interrupt(output_name="decision")
         def approval(draft: str) -> str: ...
 
-        renamed = approval.with_inputs(draft="document")
+        renamed = approval.rename_inputs(draft="document")
         assert renamed.inputs == ("document",)
 
-    def test_with_outputs(self):
+    def test_rename_outputs(self):
         @interrupt(output_name="decision")
         def approval(draft: str) -> str: ...
 
-        renamed = approval.with_outputs(decision="verdict")
+        renamed = approval.rename_outputs(decision="verdict")
         assert renamed.outputs == ("verdict",)
 
     def test_definition_hash_changes_with_code(self):
@@ -1264,7 +1264,7 @@ class TestInterruptDecoratorExecution:
         def consume(verdict: str) -> str:
             return f"got: {verdict}"
 
-        outer = Graph([produce, inner.as_node().with_outputs(decision="verdict"), consume])
+        outer = Graph([produce, inner.as_node().rename_outputs(decision="verdict"), consume])
         runner = AsyncRunner()
 
         paused = await runner.run(outer, {"query": "hello"})

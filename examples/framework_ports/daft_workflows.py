@@ -71,7 +71,7 @@ def build_daft_llm_dataset_graph() -> Graph:
     chunk_graph = Graph([score_chunk], name="chunk_ranker")
     return Graph(
         [
-            chunk_graph.as_node(name="score_chunks").with_inputs(chunk="chunks").map_over("chunks"),
+            chunk_graph.as_node(name="score_chunks").rename_inputs(chunk="chunks").map_over("chunks"),
             select_top_chunk,
             summarize_bundle,
         ],
@@ -129,7 +129,7 @@ def build_daft_image_query_graph() -> Graph:
     patch_graph = Graph([compute_patch_brightness, label_patch], name="patch_classifier")
     return Graph(
         [
-            patch_graph.as_node(name="classify_patches").with_inputs(patch="patches").map_over("patches"),
+            patch_graph.as_node(name="classify_patches").rename_inputs(patch="patches").map_over("patches"),
             summarize_asset,
         ],
         name="daft_image_query_port",

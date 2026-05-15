@@ -82,7 +82,7 @@ single_item = Graph([embed], name="single_item")
 # Many items
 batch = Graph([
     load_texts,
-    single_item.as_node().with_inputs(text="texts").map_over("texts"),
+    single_item.as_node().rename_inputs(text="texts").map_over("texts"),
     summarize_embeddings,
 ])
 ```

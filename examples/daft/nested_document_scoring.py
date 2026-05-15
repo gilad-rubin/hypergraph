@@ -37,7 +37,7 @@ def split_document(document: str) -> list[str]:
 document_graph = Graph(
     [
         split_document,
-        sentence_graph.as_node(name="analyze").with_inputs(text="sentences").map_over("sentences"),
+        sentence_graph.as_node(name="analyze").rename_inputs(text="sentences").map_over("sentences"),
     ],
     name="document_pipeline",
 )

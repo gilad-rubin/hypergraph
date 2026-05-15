@@ -382,7 +382,7 @@ class TestInnerLogs:
         """Inner logs propagate through multiple nesting levels via .log."""
         innermost = Graph([_double], name="innermost")
         middle = Graph(
-            [innermost.as_node(), _increment.with_inputs(doubled="doubled")],
+            [innermost.as_node(), _increment.rename_inputs(doubled="doubled")],
             name="middle",
         )
         outer = Graph([middle.as_node()])

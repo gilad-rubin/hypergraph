@@ -235,7 +235,7 @@ def find_internal_producer_for_output(
 ) -> str | None:
     """Find the internal node that produces the data that becomes `output_name`.
 
-    Handles the `with_outputs` rename case: when a container exposes
+    Handles the `rename_outputs` rename case: when a container exposes
     `retrieval_eval_results` but internally `compute_recall` produces
     `retrieval_eval_result`, we need to find `compute_recall`.
     """
@@ -273,7 +273,7 @@ def find_internal_producer_for_output(
             if is_node_visible(producer, flat_graph, expansion_state):
                 return producer
 
-    # Fuzzy fallback: with_outputs renames can differ slightly (e.g. pluralization).
+    # Fuzzy fallback: rename_outputs renames can differ slightly (e.g. pluralization).
     # Substring matching is intentionally loose to maximize recall in visualization.
     for internal_out, producers in terminal_outputs.items():
         if internal_out in output_name or output_name in internal_out:

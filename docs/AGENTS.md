@@ -19,7 +19,7 @@ Instructions for writing and maintaining hypergraph documentation.
 ### Task-Based Organization
 
 - Organize guides by **user task** ("How do I..."), not framework feature
-- Bad: "The with_inputs() method"
+- Bad: "The rename_inputs() method"
 - Good: "How do I rename inputs to fit my naming convention?"
 
 ## Hypergraph's Key Differentiators

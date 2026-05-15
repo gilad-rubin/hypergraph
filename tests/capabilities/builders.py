@@ -33,7 +33,7 @@ def _make_sync_func(name: str, input_name: str, output_name: str) -> FunctionNod
         return val * 2 if isinstance(val, int) else 0
 
     # Rename to match expected interface
-    return sync_node.with_name(name).with_inputs(**{list(sync_node.inputs)[0]: input_name})
+    return sync_node.with_name(name).rename_inputs(**{list(sync_node.inputs)[0]: input_name})
 
 
 def _make_async_func(name: str, input_name: str, output_name: str) -> FunctionNode:
@@ -44,7 +44,7 @@ def _make_async_func(name: str, input_name: str, output_name: str) -> FunctionNo
         val = kwargs.get(input_name, 0)
         return val * 2 if isinstance(val, int) else 0
 
-    return async_node.with_name(name).with_inputs(**{list(async_node.inputs)[0]: input_name})
+    return async_node.with_name(name).rename_inputs(**{list(async_node.inputs)[0]: input_name})
 
 
 def _make_sync_generator(name: str, input_name: str, output_name: str) -> FunctionNode:
@@ -57,7 +57,7 @@ def _make_sync_generator(name: str, input_name: str, output_name: str) -> Functi
             yield val
             yield val * 2
 
-    return sync_gen.with_name(name).with_inputs(**{list(sync_gen.inputs)[0]: input_name})
+    return sync_gen.with_name(name).rename_inputs(**{list(sync_gen.inputs)[0]: input_name})
 
 
 def _make_async_generator(name: str, input_name: str, output_name: str) -> FunctionNode:
@@ -70,7 +70,7 @@ def _make_async_generator(name: str, input_name: str, output_name: str) -> Funct
             yield val
             yield val * 2
 
-    return async_gen.with_name(name).with_inputs(**{list(async_gen.inputs)[0]: input_name})
+    return async_gen.with_name(name).rename_inputs(**{list(async_gen.inputs)[0]: input_name})
 
 
 def _make_node(node_type: NodeType, name: str, input_name: str, output_name: str) -> FunctionNode:
@@ -168,10 +168,10 @@ def _build_branching(prefer_async: bool = False) -> Graph:
     """Build A -> B1, A -> B2 (fan-out) graph."""
     if prefer_async:
         return Graph(
-            [async_double_a, async_branch1.with_inputs(a="a"), async_branch2.with_inputs(a="a")],
+            [async_double_a, async_branch1.rename_inputs(a="a"), async_branch2.rename_inputs(a="a")],
             name="branching",
         )
-    return Graph([double_a, branch1.with_inputs(a="a"), branch2.with_inputs(a="a")], name="branching")
+    return Graph([double_a, branch1.rename_inputs(a="a"), branch2.rename_inputs(a="a")], name="branching")
 
 
 def _build_converging(prefer_async: bool = False) -> Graph:
@@ -213,13 +213,13 @@ def _build_diamond(prefer_async: bool = False) -> Graph:
         return Graph(
             [
                 async_double_a,
-                async_branch1.with_inputs(a="a"),
-                async_branch2.with_inputs(a="a"),
+                async_branch1.rename_inputs(a="a"),
+                async_branch2.rename_inputs(a="a"),
                 async_merge,
             ],
             name="diamond",
         )
-    return Graph([double_a, branch1.with_inputs(a="a"), branch2.with_inputs(a="a"), merge], name="diamond")
+    return Graph([double_a, branch1.rename_inputs(a="a"), branch2.rename_inputs(a="a"), merge], name="diamond")
 
 
 def _build_cyclic(prefer_async: bool = False) -> Graph:
@@ -317,7 +317,7 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
         if target_node.inputs:
             old_input = target_node.inputs[0]
             new_input = f"{old_input}_renamed"
-            renamed = target_node.with_inputs({old_input: new_input})
+            renamed = target_node.rename_inputs({old_input: new_input})
             new_nodes[0] = renamed
 
     elif renaming == Renaming.OUTPUTS:
@@ -328,7 +328,7 @@ def _apply_renaming(graph: Graph, renaming: Renaming) -> Graph:
             idx, target_node = leaf_nodes[0]
             old_output = target_node.outputs[0]
             new_output = f"{old_output}_renamed"
-            renamed = target_node.with_outputs({old_output: new_output})
+            renamed = target_node.rename_outputs({old_output: new_output})
             new_nodes[idx] = renamed
 
     entrypoint = graph.entrypoints_config

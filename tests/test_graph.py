@@ -1166,7 +1166,7 @@ class TestGraphNodeOutputAnnotation:
         # Original is unaffected
         assert gn.output_annotation == {"x": str}
 
-    def test_with_inputs_copy_does_not_inherit_stale_cache(self):
+    def test_rename_inputs_copy_does_not_inherit_stale_cache(self):
         """Renamed copy recomputes output_annotation independently of original."""
 
         @node(output_name="result")
@@ -1178,8 +1178,8 @@ class TestGraphNodeOutputAnnotation:
         # Populate cache on original
         assert gn.output_annotation == {"result": float}
 
-        # Copy via with_inputs rename — cache must be cleared
-        renamed = gn.with_inputs(_a="value")
+        # Copy via rename_inputs rename — cache must be cleared
+        renamed = gn.rename_inputs(_a="value")
         # output_annotation should still be correct (rename doesn't change output types)
         assert renamed.output_annotation == {"result": float}
         # But it must be a freshly computed object, not shared with original
@@ -1465,7 +1465,7 @@ class TestStrictTypesValidation:
 
 
 class TestGraphNodeRename:
-    """Test GraphNode rename operations (with_name, with_inputs, with_outputs)."""
+    """Test GraphNode rename operations (with_name, rename_inputs, rename_outputs)."""
 
     def test_with_name_returns_new_instance(self):
         """with_name returns new GraphNode with different name."""
@@ -1496,8 +1496,8 @@ class TestGraphNodeRename:
         assert renamed.graph is original.graph
         assert renamed.definition_hash != original.definition_hash
 
-    def test_with_inputs_renames_inputs(self):
-        """with_inputs renames inputs in returned GraphNode."""
+    def test_rename_inputs_renames_inputs(self):
+        """rename_inputs renames inputs in returned GraphNode."""
 
         @node(output_name="result")
         def foo(a: int, b: int) -> int:
@@ -1505,13 +1505,13 @@ class TestGraphNodeRename:
 
         g = Graph([foo], name="my_graph")
         original = g.as_node()
-        renamed = original.with_inputs(a="x")
+        renamed = original.rename_inputs(a="x")
 
         assert original.inputs == ("a", "b")
         assert renamed.inputs == ("x", "b")
 
-    def test_with_outputs_renames_outputs(self):
-        """with_outputs renames outputs in returned GraphNode."""
+    def test_rename_outputs_renames_outputs(self):
+        """rename_outputs renames outputs in returned GraphNode."""
 
         @node(output_name="result")
         def foo(x: int) -> int:
@@ -1519,9 +1519,25 @@ class TestGraphNodeRename:
 
         g = Graph([foo], name="my_graph")
         original = g.as_node()
-        renamed = original.with_outputs(result="output")
+        renamed = original.rename_outputs(result="output")
 
         assert original.outputs == ("result",)
+        assert renamed.outputs == ("output",)
+
+    def test_with_rename_compat_aliases(self):
+        """with_inputs and with_outputs remain compatibility aliases."""
+
+        @node(output_name="result")
+        def foo(a: int) -> int:
+            return a * 2
+
+        g = Graph([foo], name="my_graph")
+        original = g.as_node()
+        renamed = original.with_inputs(a="x").with_outputs(result="output")
+
+        assert original.inputs == ("a",)
+        assert original.outputs == ("result",)
+        assert renamed.inputs == ("x",)
         assert renamed.outputs == ("output",)
 
     def test_rename_preserves_inputs_outputs_types(self):
@@ -1532,12 +1548,12 @@ class TestGraphNodeRename:
             return a + b
 
         g = Graph([foo], name="my_graph")
-        gn = g.as_node().with_inputs(a="x")
+        gn = g.as_node().rename_inputs(a="x")
 
         assert isinstance(gn.inputs, tuple)
         assert isinstance(gn.outputs, tuple)
 
-    def test_with_inputs_nonexistent_raises(self):
+    def test_rename_inputs_nonexistent_raises(self):
         """Renaming non-existent input raises RenameError."""
         from hypergraph.nodes._rename import RenameError
 
@@ -1549,9 +1565,9 @@ class TestGraphNodeRename:
         gn = g.as_node()
 
         with pytest.raises(RenameError, match="'nonexistent' not found"):
-            gn.with_inputs(nonexistent="y")
+            gn.rename_inputs(nonexistent="y")
 
-    def test_with_outputs_nonexistent_raises(self):
+    def test_rename_outputs_nonexistent_raises(self):
         """Renaming non-existent output raises RenameError."""
         from hypergraph.nodes._rename import RenameError
 
@@ -1563,7 +1579,7 @@ class TestGraphNodeRename:
         gn = g.as_node()
 
         with pytest.raises(RenameError, match="'nonexistent' not found"):
-            gn.with_outputs(nonexistent="y")
+            gn.rename_outputs(nonexistent="y")
 
     def test_rename_history_tracked(self):
         """Rename history is tracked for error messages."""
@@ -1575,11 +1591,11 @@ class TestGraphNodeRename:
 
         g = Graph([foo], name="my_graph")
         gn = g.as_node()
-        renamed = gn.with_inputs(a="x")
+        renamed = gn.rename_inputs(a="x")
 
         # Try to rename 'a' again - should show history
         with pytest.raises(RenameError, match="'a' was renamed: a→x"):
-            renamed.with_inputs(a="y")
+            renamed.rename_inputs(a="y")
 
     def test_original_unchanged_after_rename(self):
         """Original GraphNode is not mutated by rename operations."""
@@ -1596,8 +1612,8 @@ class TestGraphNodeRename:
 
         # Do multiple renames
         original.with_name("new_name")
-        original.with_inputs(a="x", b="y")
-        original.with_outputs(result="out")
+        original.rename_inputs(a="x", b="y")
+        original.rename_outputs(result="out")
 
         # Original unchanged
         assert original.name == original_name
@@ -1870,7 +1886,7 @@ class TestStrictTypesWithNestedGraphNode:
             return a
 
         inner_graph = Graph([inner_consumer], name="inner")
-        inner_gn = inner_graph.as_node().with_inputs(a="x")
+        inner_gn = inner_graph.as_node().rename_inputs(a="x")
 
         with pytest.raises(GraphConfigError) as exc_info:
             Graph([producer, inner_gn], strict_types=True)
