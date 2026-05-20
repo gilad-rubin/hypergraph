@@ -47,7 +47,7 @@ class TestCachePropertyConfiguration:
         assert with_cache.cache is True
 
     def test_cache_preserved_through_rename(self):
-        """Cache flag preserved through with_name and with_inputs."""
+        """Cache flag preserved through with_name and rename_inputs."""
 
         @node(output_name="result", cache=True)
         def cached_node(x: int) -> int:
@@ -56,17 +56,17 @@ class TestCachePropertyConfiguration:
         renamed = cached_node.with_name("renamed")
         assert renamed.cache is True
 
-        with_renamed_inputs = cached_node.with_inputs(x="y")
+        with_renamed_inputs = cached_node.rename_inputs(x="y")
         assert with_renamed_inputs.cache is True
 
-    def test_cache_preserved_through_with_outputs(self):
-        """Cache flag preserved through with_outputs."""
+    def test_cache_preserved_through_rename_outputs(self):
+        """Cache flag preserved through rename_outputs."""
 
         @node(output_name="result", cache=True)
         def cached_node(x: int) -> int:
             return x * 2
 
-        with_renamed_outputs = cached_node.with_outputs(result="output")
+        with_renamed_outputs = cached_node.rename_outputs(result="output")
         assert with_renamed_outputs.cache is True
 
 

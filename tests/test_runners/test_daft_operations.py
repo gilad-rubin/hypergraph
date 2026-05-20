@@ -201,7 +201,7 @@ class TestGraphNodeOperation:
             return x * 2
 
         inner = Graph([double], name="inner")
-        gn = inner.as_node(name="mapper").with_inputs(x="items").map_over("items")
+        gn = inner.as_node(name="mapper").rename_inputs(x="items").map_over("items")
         outer = Graph([gn], name="outer")
         op = create_operation(gn, outer, bound_values={})
         df = daft.from_pydict({"items": [[1, 2, 3]]})

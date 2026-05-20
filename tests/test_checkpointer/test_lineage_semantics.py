@@ -231,7 +231,7 @@ class TestLineageSemantics:
             return f"Final: {verdict}"
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([make_draft, inner.as_node().with_outputs(decision="verdict"), finalize])
+        graph = Graph([make_draft, inner.as_node().rename_outputs(decision="verdict"), finalize])
 
         paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-renamed-nested-paused")
         assert paused.status == RunStatus.PAUSED
@@ -264,7 +264,7 @@ class TestLineageSemantics:
             return f"Final: {verdict}"
 
         runner = AsyncRunner(checkpointer=checkpointer)
-        graph = Graph([make_draft, inner.as_node().with_outputs(decision_a="verdict"), finalize])
+        graph = Graph([make_draft, inner.as_node().rename_outputs(decision_a="verdict"), finalize])
 
         paused = await runner.run(graph, {"query": "hello"}, workflow_id="wf-inactive-interrupt")
         assert paused.status == RunStatus.PAUSED

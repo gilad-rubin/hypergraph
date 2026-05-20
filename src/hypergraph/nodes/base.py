@@ -71,7 +71,7 @@ class HyperNode(ABC):
     - outputs: Parent-facing output names or addresses
     - _rename_history: Tracks renames for error messages
 
-    All with_* methods return new instances (immutable pattern).
+    Rename/configuration methods return new instances (immutable pattern).
 
     Universal capabilities (with sensible defaults):
     - definition_hash: Structural hash for caching/change detection
@@ -265,7 +265,7 @@ class HyperNode(ABC):
     def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Map renamed input names to original function parameter names.
 
-        When a node's inputs are renamed (via with_inputs or rename_inputs),
+        When a node's inputs are renamed (via rename_inputs or with_inputs),
         this method maps the current/renamed names back to the original
         parameter names expected by the underlying function.
 
@@ -331,7 +331,7 @@ class HyperNode(ABC):
         """
         return self._with_renamed("name", {self.name: name})
 
-    def with_inputs(
+    def rename_inputs(
         self: _T,
         mapping: dict[str, str] | None = None,
         /,
@@ -358,7 +358,16 @@ class HyperNode(ABC):
             return self._copy()
         return self._with_renamed("inputs", combined)
 
-    def with_outputs(
+    def with_inputs(
+        self: _T,
+        mapping: dict[str, str] | None = None,
+        /,
+        **kwargs: str,
+    ) -> _T:
+        """Compatibility alias for rename_inputs()."""
+        return self.rename_inputs(mapping, **kwargs)
+
+    def rename_outputs(
         self: _T,
         mapping: dict[str, str] | None = None,
         /,
@@ -380,6 +389,15 @@ class HyperNode(ABC):
         if not combined:
             return self._copy()
         return self._with_renamed("outputs", combined)
+
+    def with_outputs(
+        self: _T,
+        mapping: dict[str, str] | None = None,
+        /,
+        **kwargs: str,
+    ) -> _T:
+        """Compatibility alias for rename_outputs()."""
+        return self.rename_outputs(mapping, **kwargs)
 
     # === Internal Helpers ===
 

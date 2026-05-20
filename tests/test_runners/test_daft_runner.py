@@ -44,7 +44,7 @@ def test_daft_runner_supports_product_mode():
 
 def test_daft_runner_run_nested_graphnode_with_map_over():
     inner = Graph([double], name="inner")
-    outer = Graph([inner.as_node(name="mapper").with_inputs(x="items").map_over("items")], name="outer")
+    outer = Graph([inner.as_node(name="mapper").rename_inputs(x="items").map_over("items")], name="outer")
 
     runner = DaftRunner()
     # `items` is owned by the `mapper` GraphNode at outer scope.
@@ -59,7 +59,7 @@ def test_daft_runner_handles_bound_inputs_inside_nested_map_over():
         return len(text) * multiplier
 
     scorer = Graph([score], name="scorer").bind(multiplier=3)
-    batch_graph = Graph([scorer.as_node(name="score_many").with_inputs(text="texts").map_over("texts")], name="batch_graph")
+    batch_graph = Graph([scorer.as_node(name="score_many").rename_inputs(text="texts").map_over("texts")], name="batch_graph")
 
     # `texts` is owned by the `score_many` GraphNode at batch_graph scope.
     result = DaftRunner().run(batch_graph, {"texts": ["a", "tool", "hypergraph"]})
@@ -110,7 +110,7 @@ def test_daft_runner_rejects_nested_graph_with_async_nodes():
         return x + 1
 
     inner = Graph([async_step], name="async_inner")
-    outer = Graph([inner.as_node(name="sub").with_inputs(x="val")], name="outer")
+    outer = Graph([inner.as_node(name="sub").rename_inputs(x="val")], name="outer")
 
     with pytest.raises(IncompatibleRunnerError, match="async nodes"):
         DaftRunner().run(outer, {"val": 1})

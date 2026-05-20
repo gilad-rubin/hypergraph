@@ -74,8 +74,8 @@ def build_triple_nested_graph():
 
     batch_recall = (
         retrieval_recall_graph.as_node(name="batch_recall")
-        .with_inputs(eval_pair="eval_pairs")
-        .with_outputs(retrieval_eval_result="retrieval_eval_results")
+        .rename_inputs(eval_pair="eval_pairs")
+        .rename_outputs(retrieval_eval_result="retrieval_eval_results")
         .map_over("eval_pairs")
     )
 

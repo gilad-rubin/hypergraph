@@ -176,8 +176,8 @@ def make_batch_recommendations_graph() -> Graph:
 
     mapped = (
         single.as_node(name="map_recommendations")
-        .with_inputs(result="results", feedback="feedbacks")
-        .with_outputs(
+        .rename_inputs(result="results", feedback="feedbacks")
+        .rename_outputs(
             recommendation="per_query_recommendations",
             chat_messages="single_chat_messages",
         )
@@ -261,7 +261,9 @@ def make_batch_recall_graph() -> Graph:
         name="recall",
     )
 
-    mapped = recall.as_node(name="batch_recall").with_inputs(eval_pair="eval_pairs").with_outputs(recall_score="recall_scores").map_over("eval_pairs")
+    mapped = (
+        recall.as_node(name="batch_recall").rename_inputs(eval_pair="eval_pairs").rename_outputs(recall_score="recall_scores").map_over("eval_pairs")
+    )
 
     return Graph(
         nodes=[batch_build_pairs, mapped, batch_aggregate_scores],

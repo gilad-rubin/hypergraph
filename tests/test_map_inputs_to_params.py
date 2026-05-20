@@ -73,8 +73,8 @@ class TestFunctionNodeMapInputsToParams:
             return a + b
 
         fn = FunctionNode(foo, output_name="result")
-        renamed_once = fn.with_inputs(a="x")
-        renamed_twice = renamed_once.with_inputs(x="z")
+        renamed_once = fn.rename_inputs(a="x")
+        renamed_twice = renamed_once.rename_inputs(x="z")
 
         inputs = {"z": 100, "b": 200}
 
@@ -85,7 +85,7 @@ class TestFunctionNodeMapInputsToParams:
     def test_parallel_renames_same_batch(self):
         """Parallel renames in same call don't chain incorrectly.
 
-        If we rename x->y and y->z in the same with_inputs call,
+        If we rename x->y and y->z in the same rename_inputs call,
         they should NOT chain (x shouldn't map to z).
         """
 
@@ -94,7 +94,7 @@ class TestFunctionNodeMapInputsToParams:
 
         fn = FunctionNode(foo, output_name="result")
         # Rename both in same call: x->a, y->b
-        renamed = fn.with_inputs(x="a", y="b")
+        renamed = fn.rename_inputs(x="a", y="b")
 
         inputs = {"a": 10, "b": 20}
 
@@ -114,7 +114,7 @@ class TestFunctionNodeMapInputsToParams:
 
         fn = FunctionNode(foo, output_name="result")
         # Swap: x->y, y->x in same call
-        renamed = fn.with_inputs(x="y", y="x")
+        renamed = fn.rename_inputs(x="y", y="x")
 
         inputs = {"y": 10, "x": 20}  # Note: reversed from original
 
@@ -184,15 +184,15 @@ class TestRouteNodeMapInputsToParams:
 
         assert result == {"a": 10, "b": 5}
 
-    def test_chained_renames_via_with_inputs(self):
+    def test_chained_renames_via_rename_inputs(self):
         """Chained renames work for RouteNode too."""
 
         def decide(a):
             return "target_a"
 
         rn = RouteNode(decide, targets=["target_a"])
-        renamed_once = rn.with_inputs(a="x")
-        renamed_twice = renamed_once.with_inputs(x="z")
+        renamed_once = rn.rename_inputs(a="x")
+        renamed_twice = renamed_once.rename_inputs(x="z")
 
         inputs = {"z": 100}
 
@@ -277,7 +277,7 @@ class TestMapInputsToParamsIntegration:
 
         fn = FunctionNode(add, output_name="sum")
         # Chain: a -> x -> z
-        renamed = fn.with_inputs(a="x").with_inputs(x="z")
+        renamed = fn.rename_inputs(a="x").rename_inputs(x="z")
 
         graph = Graph([renamed])
         runner = SyncRunner()

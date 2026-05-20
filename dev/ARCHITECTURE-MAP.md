@@ -142,7 +142,7 @@ That means the graph layer owns more than "validation". It also owns the definit
 - **active scope**: the nodes and outputs still relevant after entrypoint and select slicing
 - **shared params**: parameters intentionally excluded from auto-wiring
 - **seed**: a value needed to start a cycle
-- **rename history**: the mapping chain created by `with_inputs()` / `with_outputs()`
+- **rename history**: the mapping chain created by `rename_inputs()` / `rename_outputs()`
 - **runner delegation**: using a specific runner for a nested graph node
 
 ## Zone 2: Execution Kernel

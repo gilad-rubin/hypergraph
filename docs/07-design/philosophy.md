@@ -124,7 +124,7 @@ Nodes are pure functions. They take inputs, produce outputs, and have no side ef
 Output names must be declared explicitly. Rename operations are explicit. No magic defaults or surprise behavior.
 
 ### Immutability
-Nodes are immutable - `with_*` methods return new instances. Outputs flow forward. No retroactive state modifications.
+Nodes are immutable - rename/configuration methods return new instances. Outputs flow forward. No retroactive state modifications.
 
 ### Build-Time Validation
 Graphs are validated when constructed. Missing inputs, invalid routes, and type mismatches are caught before execution.

@@ -111,7 +111,7 @@ class TestMapOverRenameIntegration:
         gn = inner.as_node()
 
         mapped = gn.map_over("x")
-        renamed = mapped.with_inputs(x="input_x")
+        renamed = mapped.rename_inputs(x="input_x")
 
         assert renamed._map_over == ["input_x"]
         assert "input_x" in renamed.inputs
@@ -121,7 +121,7 @@ class TestMapOverRenameIntegration:
         inner = Graph([double], name="inner")
         gn = inner.as_node()
 
-        renamed = gn.with_inputs(x="input_x")
+        renamed = gn.rename_inputs(x="input_x")
         mapped = renamed.map_over("input_x")
 
         assert mapped._map_over == ["input_x"]
@@ -132,7 +132,7 @@ class TestMapOverRenameIntegration:
         gn = inner.as_node()
 
         mapped = gn.map_over("a")
-        renamed = mapped.with_inputs(b="input_b")
+        renamed = mapped.rename_inputs(b="input_b")
 
         assert renamed._map_over == ["a"]
 
@@ -150,7 +150,7 @@ class TestMapOverRenameExecution:
         This is a regression test for the bug where:
         - Producer outputs "items" (a list)
         - Inner graph expects "item" (singular)
-        - with_inputs(item="items") renames to match producer
+        - rename_inputs(item="items") renames to match producer
         - map_over("items") iterates over the list
         """
 
@@ -163,7 +163,7 @@ class TestMapOverRenameExecution:
             return {"id": item["id"], "result": item["value"] * multiplier}
 
         inner = Graph(nodes=[process_item], name="inner")
-        mapped_node = inner.as_node(name="process_all").with_inputs(item="items").map_over("items")
+        mapped_node = inner.as_node(name="process_all").rename_inputs(item="items").map_over("items")
 
         # multiplier is a parent-facing input address on mapped_node.
         outer = Graph(nodes=[produce_items, mapped_node]).bind(**{"multiplier": 2})
@@ -195,7 +195,7 @@ class TestMapOverRenameExecution:
             return x * 2
 
         inner = Graph(nodes=[process], name="inner")
-        mapped_node = inner.as_node(name="mapper").with_inputs(x="items").with_outputs(doubled="results").map_over("items")
+        mapped_node = inner.as_node(name="mapper").rename_inputs(x="items").rename_outputs(doubled="results").map_over("items")
 
         outer = Graph(nodes=[produce, mapped_node])
         runner = SyncRunner()
@@ -217,7 +217,7 @@ class TestMapOverRenameExecution:
             return value + 1
 
         inner = Graph(nodes=[process], name="inner")
-        mapped_node = inner.as_node(name="mapper").with_inputs(value="items").map_over("items")
+        mapped_node = inner.as_node(name="mapper").rename_inputs(value="items").map_over("items")
 
         outer = Graph(nodes=[produce, mapped_node])
         runner = AsyncRunner()
@@ -243,7 +243,7 @@ class TestMapOverRenameExecution:
             return a + b
 
         inner = Graph(nodes=[add_nums], name="inner")
-        mapped_node = inner.as_node(name="adder").with_inputs(a="xs", b="ys").map_over("xs", "ys", mode="zip")
+        mapped_node = inner.as_node(name="adder").rename_inputs(a="xs", b="ys").map_over("xs", "ys", mode="zip")
 
         outer = Graph(nodes=[produce_xs, produce_ys, mapped_node])
         runner = SyncRunner()
@@ -265,7 +265,7 @@ class TestMapOverRenameExecution:
             return value * factor
 
         inner = Graph(nodes=[multiply], name="inner")
-        mapped_node = inner.as_node(name="multiplier").with_inputs(value="items").map_over("items")
+        mapped_node = inner.as_node(name="multiplier").rename_inputs(value="items").map_over("items")
 
         outer = Graph(nodes=[produce, mapped_node])
         runner = SyncRunner()
@@ -290,8 +290,8 @@ class TestMapOverRenameExecution:
         inner = Graph(nodes=[process], name="inner")
         mapped_node = (
             inner.as_node(name="processor")
-            .with_inputs(x="temp")  # x -> temp
-            .with_inputs(temp="data")  # temp -> data
+            .rename_inputs(x="temp")  # x -> temp
+            .rename_inputs(temp="data")  # temp -> data
             .map_over("data")
         )
 
@@ -306,7 +306,7 @@ class TestMapOverRenameExecution:
     def test_parallel_renames_with_map_over(self):
         """Parallel renames (same batch) work correctly with map_over.
 
-        Regression test for handling parallel renames like with_inputs(a='b', b='a')
+        Regression test for handling parallel renames like rename_inputs(a='b', b='a')
         which require special handling via build_reverse_rename_map.
         """
 
@@ -326,8 +326,8 @@ class TestMapOverRenameExecution:
         # Swap parameter names in a single call (parallel renames)
         mapped_node = (
             inner.as_node(name="adder")
-            .with_inputs({"a": "temp_a", "b": "temp_b"})  # Parallel batch 1
-            .with_inputs({"temp_a": "ys", "temp_b": "xs"})  # Parallel batch 2
+            .rename_inputs({"a": "temp_a", "b": "temp_b"})  # Parallel batch 1
+            .rename_inputs({"temp_a": "ys", "temp_b": "xs"})  # Parallel batch 2
             .map_over("xs", "ys", mode="zip")
         )
 
@@ -387,7 +387,7 @@ class TestMapOverExecution:
         outer = Graph(
             [
                 inner.as_node().map_over("x"),
-                add.with_inputs(a="doubled"),  # "doubled" is now a list
+                add.rename_inputs(a="doubled"),  # "doubled" is now a list
             ]
         )
         runner = SyncRunner()
@@ -1158,7 +1158,7 @@ class TestCloneExecution:
         assert result["result"] == ["1-value", "2-value", "3-value"]
 
     def test_clone_with_renamed_input(self):
-        """with_inputs() updates clone list correctly."""
+        """rename_inputs() updates clone list correctly."""
 
         @node(output_name="result")
         def process(x: int, cfg: dict) -> int:
@@ -1166,7 +1166,7 @@ class TestCloneExecution:
             return cfg["count"]
 
         inner = Graph([process], name="inner")
-        mapped_node = inner.as_node().map_over("x", clone=["cfg"]).with_inputs(cfg="config")
+        mapped_node = inner.as_node().map_over("x", clone=["cfg"]).rename_inputs(cfg="config")
 
         # Verify _clone was updated
         assert mapped_node._clone == ["config"]

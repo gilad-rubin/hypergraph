@@ -100,7 +100,7 @@ class TestGetReadyNodes:
     def test_node_ready_when_inputs_satisfied(self):
         """Node becomes ready when inputs are available."""
         # double needs x, add needs a and b
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         state = initialize_state(graph, {"x": 5, "b": 10})
 
         # Initially only double is ready
@@ -123,7 +123,7 @@ class TestGetReadyNodes:
     def test_multiple_ready_nodes_returned(self):
         """Multiple independent nodes can be ready simultaneously."""
         # Two independent nodes both need x
-        double.with_name("double2").with_outputs(doubled="tripled")
+        double.with_name("double2").rename_outputs(doubled="tripled")
 
         @node(output_name="tripled")
         def triple(x: int) -> int:
@@ -139,7 +139,7 @@ class TestGetReadyNodes:
 
     def test_fan_in_waits_for_all_inputs(self):
         """Node with multiple inputs waits for all."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         state = initialize_state(graph, {"x": 5})  # Missing b
 
         # Only double is ready, add needs both doubled and b
@@ -362,7 +362,7 @@ class TestCollectInputsForNode:
 
     def test_edge_value_takes_priority(self):
         """State values (from edges) take precedence."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         state = initialize_state(graph, {"x": 5, "b": 100})
         state.update_value("doubled", 10)  # Edge value
 
@@ -429,12 +429,12 @@ class TestSyncFunctionNodeExecutor:
         self.state = GraphState()
         self.ctx = ExecutionContext()
 
-    def test_executes_function_with_inputs(self):
+    def test_executes_function_rename_inputs(self):
         """Function is called with provided inputs."""
         outputs = self.executor(double, self.state, {"x": 5}, self.ctx)
         assert outputs == {"doubled": 10}
 
-    def test_returns_dict_with_outputs(self):
+    def test_returns_dict_rename_outputs(self):
         """Returns dict mapping output names to values."""
         outputs = self.executor(add, self.state, {"a": 3, "b": 4}, self.ctx)
         assert outputs == {"sum": 7}
@@ -819,7 +819,7 @@ class TestFilterOutputs:
 
     def test_select_filters_outputs(self):
         """Select filters to specified outputs only."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         state = GraphState(values={"doubled": 10, "sum": 15, "x": 5, "b": 5})
 
         result = filter_outputs(state, graph, select=["sum"])
@@ -844,7 +844,7 @@ class TestFilterOutputs:
 
     def test_single_string_select(self):
         """select="name" (single string) works as shorthand for select=["name"]."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         state = GraphState(values={"doubled": 10, "sum": 15, "x": 5, "b": 5})
 
         result = filter_outputs(state, graph, select="sum")

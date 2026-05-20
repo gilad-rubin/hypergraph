@@ -316,7 +316,7 @@ def test_nested_bound_values_use_graphnode_public_input_names():
         return f"{x}:{cfg}"
 
     inner = Graph([inner_func], name="inner").bind(cfg="inner-cfg")
-    nested = inner.as_node().with_inputs(cfg="public_cfg")
+    nested = inner.as_node().rename_inputs(cfg="public_cfg")
     outer = Graph([nested], name="outer")
 
     # public_cfg is projected to outer as flat parent-facing "public_cfg".

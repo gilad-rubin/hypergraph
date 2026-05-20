@@ -99,7 +99,7 @@ class TestAsyncRunnerRun:
 
     async def test_linear_dag(self):
         """Execute linear graph."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"x": 5, "b": 3})
@@ -179,12 +179,12 @@ class TestAsyncRunnerRun:
 
     async def test_fan_in_graph(self):
         """Node consumes outputs from multiple nodes."""
-        double2 = double.with_name("double2").with_outputs(doubled="doubled2")
+        double2 = double.with_name("double2").rename_outputs(doubled="doubled2")
         graph = Graph(
             [
                 double,
                 double2,
-                add.with_inputs(a="doubled", b="doubled2"),
+                add.rename_inputs(a="doubled", b="doubled2"),
             ]
         )
         runner = AsyncRunner()
@@ -195,13 +195,13 @@ class TestAsyncRunnerRun:
 
     async def test_diamond_graph(self):
         """Diamond-shaped graph."""
-        double2 = double.with_name("double2").with_outputs(doubled="other")
+        double2 = double.with_name("double2").rename_outputs(doubled="other")
         graph = Graph(
             [
                 increment,
-                double.with_inputs(x="incremented"),
-                double2.with_inputs(x="incremented"),
-                add.with_inputs(a="doubled", b="other"),
+                double.rename_inputs(x="incremented"),
+                double2.rename_inputs(x="incremented"),
+                add.rename_inputs(a="doubled", b="other"),
             ]
         )
         runner = AsyncRunner()
@@ -223,7 +223,7 @@ class TestAsyncRunnerRun:
 
     async def test_mixed_sync_async_nodes(self):
         """Graph with both sync and async nodes."""
-        graph = Graph([double, async_add.with_inputs(a="doubled")])
+        graph = Graph([double, async_add.rename_inputs(a="doubled")])
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"x": 5, "b": 3})
@@ -272,8 +272,8 @@ class TestAsyncRunnerRun:
 
     async def test_max_concurrency_limits_parallelism(self):
         """max_concurrency limits parallel execution."""
-        slow1 = slow_node.with_name("slow1").with_outputs(result="r1")
-        slow2 = slow_node.with_name("slow2").with_outputs(result="r2")
+        slow1 = slow_node.with_name("slow1").rename_outputs(result="r1")
+        slow2 = slow_node.with_name("slow2").rename_outputs(result="r2")
 
         graph = Graph([slow1, slow2])
         runner = AsyncRunner()
@@ -328,7 +328,7 @@ class TestAsyncRunnerRun:
 
     async def test_select_filters_outputs(self):
         """Graph-level select filters outputs."""
-        graph = Graph([double, add.with_inputs(a="doubled")]).select("sum")
+        graph = Graph([double, add.rename_inputs(a="doubled")]).select("sum")
         runner = AsyncRunner()
 
         result = await runner.run(graph, {"x": 5, "b": 3})
@@ -416,7 +416,7 @@ class TestAsyncRunnerRun:
     async def test_nested_sync_graph_in_async(self):
         """Sync inner graph works in async runner."""
         inner = Graph([double], name="inner")
-        outer = Graph([inner.as_node(), async_add.with_inputs(a="doubled")])
+        outer = Graph([inner.as_node(), async_add.rename_inputs(a="doubled")])
         runner = AsyncRunner()
 
         result = await runner.run(outer, {"x": 5, "b": 3})
@@ -1128,7 +1128,7 @@ class TestGlobalConcurrencyLimit:
             return x
 
         # 4 independent nodes
-        nodes = [tracked_node.with_name(f"n{i}").with_inputs(x=f"x{i}").with_outputs(result=f"r{i}") for i in range(4)]
+        nodes = [tracked_node.with_name(f"n{i}").rename_inputs(x=f"x{i}").rename_outputs(result=f"r{i}") for i in range(4)]
         graph = Graph(nodes)
 
         runner = AsyncRunner()
@@ -1165,10 +1165,10 @@ class TestGlobalConcurrencyLimit:
             return y + 1
 
         # Two sync nodes and two async nodes (all independent)
-        sync1 = sync_node.with_name("sync1").with_inputs(x="x1").with_outputs(sync_result="s1")
-        sync2 = sync_node.with_name("sync2").with_inputs(x="x2").with_outputs(sync_result="s2")
-        async1 = async_tracked.with_name("async1").with_inputs(y="y1").with_outputs(async_result="a1")
-        async2 = async_tracked.with_name("async2").with_inputs(y="y2").with_outputs(async_result="a2")
+        sync1 = sync_node.with_name("sync1").rename_inputs(x="x1").rename_outputs(sync_result="s1")
+        sync2 = sync_node.with_name("sync2").rename_inputs(x="x2").rename_outputs(sync_result="s2")
+        async1 = async_tracked.with_name("async1").rename_inputs(y="y1").rename_outputs(async_result="a1")
+        async2 = async_tracked.with_name("async2").rename_inputs(y="y2").rename_outputs(async_result="a2")
 
         graph = Graph([sync1, sync2, async1, async2])
         runner = AsyncRunner()

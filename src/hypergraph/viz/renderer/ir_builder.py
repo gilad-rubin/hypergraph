@@ -286,7 +286,7 @@ def _first_container_entrypoint(container_id: str, flat_graph: nx.DiGraph) -> st
 def _find_deepest_internal_producer(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str | None:
     """Walk down the container tree, find the deepest descendant that
     produces value_name as an output. Falls back to fuzzy substring
-    matching to handle the ``with_outputs`` rename case (e.g. container
+    matching to handle the ``rename_outputs`` rename case (e.g. container
     exposes ``recall_scores`` but the internal node produces
     ``recall_score``)."""
     descendants = [(node_id, attrs) for node_id, attrs in flat_graph.nodes(data=True) if _is_descendant(node_id, container_id, flat_graph)]
@@ -319,7 +319,7 @@ def _find_deepest_internal_consumer(container_id: str, value_name: str, flat_gra
     """Mirror of :func:`_find_deepest_internal_producer` for inputs.
 
     Falls back to fuzzy substring matching to handle the
-    ``map_over`` / ``with_inputs`` rename case (e.g. the outer edge
+    ``map_over`` / ``rename_inputs`` rename case (e.g. the outer edge
     carries ``eval_pairs`` but the per-item internal node consumes
     ``eval_pair``)."""
     descendants = [

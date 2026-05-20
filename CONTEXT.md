@@ -53,7 +53,7 @@ _Avoid_: Start node, root node
 - `GraphNode.inputs` and `GraphNode.outputs` are resolved parent-facing **Port addresses** after boundary projection, not raw child **Local port names**.
 - The same **Port address** may appear in both `GraphNode.inputs` and `GraphNode.outputs`; cyclic values such as `messages` need both an input seed and a produced output.
 - A **Selected output** controls which outputs a graph makes available to callers or parent graphs before graph-node boundary transforms are applied.
-- `with_inputs(...)` and `with_outputs(...)` rename **Local port names** only; they do not connect values and do not rename exposed parent-facing addresses.
+- `rename_inputs(...)` and `rename_outputs(...)` rename **Local port names** only; they do not connect values and do not rename exposed parent-facing addresses.
 - An **Exposed port** replaces the child port's namespaced parent-facing address for both inputs and outputs; callers use the exposed flat name, not both names.
 - An `expose(...)` alias is the final flat parent-facing **Port address** at that graph-node boundary, not a renamed **Local port name** that is later namespaced.
 - An **Exposed port** defines the final parent-facing flat address for that port; rename the **Local port name** before exposing it, or expose directly with an alias.
@@ -79,7 +79,7 @@ _Avoid_: Start node, root node
 > **Dev:** "If `chat.messages` is both an input and output, does exposing `messages` only expose the input?"
 > **Domain expert:** "No. An **Exposed port** opens the matching child port into the parent flat flow; if the child has both input and output ports named `messages`, both are exposed."
 >
-> **Dev:** "Can I expose `response` as `research_answer` and then use `with_outputs(research_answer='answer')`?"
+> **Dev:** "Can I expose `response` as `research_answer` and then use `rename_outputs(research_answer='answer')`?"
 > **Domain expert:** "No. `research_answer` is the parent-facing **Port address**, not a **Local port name**. Rename the local name first, or choose the final exposed name in `expose(...)`."
 >
 > **Dev:** "After `namespaced=True`, does `GraphNode.outputs` contain `response` or `researcher.response`?"
@@ -91,6 +91,6 @@ _Avoid_: Start node, root node
 - "shared input" and "shared output" were used for cyclic state, but **Shared parameter** is the canonical term because the value is stateful rather than an ordinary one-way port.
 - "expose" was considered as adding an extra alias, but **Exposed port** is now resolved as a parent-facing rename: the exposed flat name replaces the namespaced address at that boundary.
 - Existing docs sometimes say `select()` controls which outputs are "exposed" when nested; use **Selected output** for that concept to avoid confusing it with `.expose(...)`.
-- `with_inputs(...)` and `with_outputs(...)` were sometimes used as wiring language, but they are canonical **Local port name** renames only.
+- `rename_inputs(...)` and `rename_outputs(...)` were sometimes used as wiring language, but they are canonical **Local port name** renames only.
 - `link_inputs` was considered for shared input fan-out, but the MVP keeps **Exposed port** as the single boundary-flattening concept; `link_inputs` may be added later as direct-child input-only sugar.
 - Direction-specific expose was considered, but the MVP keeps **Exposed port** name-based across matching input and output directions.

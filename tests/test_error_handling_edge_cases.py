@@ -296,7 +296,7 @@ class TestMapOverWithRenamedOutputs:
 
     def test_sync_renamed_outputs_continue(self):
         inner = Graph([double_fail_on_odd], name="inner")
-        gn = inner.as_node().with_outputs(doubled="processed").map_over("x", error_handling="continue")
+        gn = inner.as_node().rename_outputs(doubled="processed").map_over("x", error_handling="continue")
 
         @node(output_name="final")
         def consume(processed: list) -> list:

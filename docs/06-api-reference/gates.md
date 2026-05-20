@@ -171,7 +171,7 @@ Get default value for a parameter. Raises `KeyError` if no default.
 
 Return a new node with a different name.
 
-#### `with_inputs(mapping=None, /, **kwargs) -> IfElseNode`
+#### `rename_inputs(mapping=None, /, **kwargs) -> IfElseNode`
 
 Return a new node with renamed inputs.
 
@@ -464,12 +464,12 @@ print(renamed.name)  # "router"
 print(decide.name)   # "decide" (unchanged)
 ```
 
-#### `with_inputs(mapping=None, /, **kwargs) -> RouteNode`
+#### `rename_inputs(mapping=None, /, **kwargs) -> RouteNode`
 
 Return a new node with renamed inputs.
 
 ```python
-adapted = decide.with_inputs(x="value", threshold="cutoff")
+adapted = decide.rename_inputs(x="value", threshold="cutoff")
 print(adapted.inputs)  # ("value", "cutoff")
 ```
 

@@ -338,7 +338,7 @@ graph_node = my_graph.as_node()
 graph_node = my_graph.as_node(name="custom_name")
 
 # With input/output renaming
-graph_node = my_graph.as_node().with_inputs(old="new")
+graph_node = my_graph.as_node().rename_inputs(old="new")
 
 # With map_over for fan-out
 graph_node = my_graph.as_node().map_over("items")

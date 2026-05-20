@@ -226,7 +226,7 @@ class TestRenameCollision:
             return x, x + 1
 
         with pytest.raises(RenameError, match="duplicate"):
-            split.with_outputs(left="dup", right="dup")
+            split.rename_outputs(left="dup", right="dup")
 
     def test_duplicate_input_rename_raises(self):
         """Renaming two inputs to the same name must raise."""
@@ -236,7 +236,7 @@ class TestRenameCollision:
             return a + b
 
         with pytest.raises(RenameError, match="duplicate"):
-            add.with_inputs(a="same", b="same")
+            add.rename_inputs(a="same", b="same")
 
     def test_non_colliding_rename_works(self):
         """Non-colliding renames still work fine."""
@@ -245,7 +245,7 @@ class TestRenameCollision:
         def split(x: int) -> tuple[int, int]:
             return x, x + 1
 
-        renamed = split.with_outputs(left="a", right="b")
+        renamed = split.rename_outputs(left="a", right="b")
         assert renamed.outputs == ("a", "b")
 
     def test_mutex_graphnode_in_outer_graph(self):
@@ -281,7 +281,7 @@ class TestRenameCollision:
         assert "summary" in pipeline.outputs
 
     def test_mutex_graphnode_rename(self):
-        """GraphNode with mutex outputs can be renamed via with_outputs."""
+        """GraphNode with mutex outputs can be renamed via rename_outputs."""
 
         @node(output_name="index_results")
         def skip_document(reason: str) -> dict:
@@ -301,7 +301,7 @@ class TestRenameCollision:
         )
         graph_node = inner.as_node()
 
-        renamed = graph_node.with_outputs(index_results="all_results")
+        renamed = graph_node.rename_outputs(index_results="all_results")
         assert "all_results" in renamed.outputs
 
 
@@ -331,15 +331,15 @@ class TestControlOnlyCycles:
 
 
 class TestOutputRenamePropagation:
-    def test_graphnode_with_outputs_propagates(self):
-        """with_outputs() on a GraphNode must translate output names."""
+    def test_graphnode_rename_outputs_propagates(self):
+        """rename_outputs() on a GraphNode must translate output names."""
 
         @node(output_name="inner_out")
         def inner_step(x: int) -> int:
             return x * 2
 
         inner_graph = Graph(nodes=[inner_step], name="inner")
-        graph_node = inner_graph.as_node().with_outputs(inner_out="renamed_out")
+        graph_node = inner_graph.as_node().rename_outputs(inner_out="renamed_out")
 
         @node(output_name="final")
         def outer_step(renamed_out: int) -> int:

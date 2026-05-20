@@ -114,7 +114,7 @@ The return value must be a tuple matching the number of output names. Unpacking 
 
 ### Renaming Inputs and Outputs
 
-Use `with_inputs()` and `with_outputs()` to rename without creating new functions:
+Use `rename_inputs()` and `rename_outputs()` to rename without creating new functions:
 
 ```python
 @node(output_name="result")
@@ -122,7 +122,7 @@ def process(text: str) -> str:
     return text.upper()
 
 # Rename to fit your graph's naming convention
-adapted = process.with_inputs(text="raw_input").with_outputs(result="processed")
+adapted = process.rename_inputs(text="raw_input").rename_outputs(result="processed")
 
 print(adapted.inputs)   # ("raw_input",)
 print(adapted.outputs)  # ("processed",)
@@ -147,8 +147,8 @@ All rename methods return new instances:
 custom = (
     process
     .with_name("preprocessor")
-    .with_inputs(text="raw")
-    .with_outputs(result="cleaned")
+    .rename_inputs(text="raw")
+    .rename_outputs(result="cleaned")
 )
 
 print(custom.name)     # "preprocessor"
@@ -503,15 +503,15 @@ When you try to rename a name that doesn't exist, you get a helpful error:
 def process(x: int) -> int: pass
 
 # Try to rename non-existent input
-process.with_inputs(y="renamed")
+process.rename_inputs(y="renamed")
 # RenameError: 'y' not found. Current inputs: ('x',)
 ```
 
 If you renamed and then try to use the old name:
 
 ```python
-renamed = process.with_inputs(x="input")
-renamed.with_inputs(x="different")  # ERROR - x was already renamed to "input"
+renamed = process.rename_inputs(x="input")
+renamed.rename_inputs(x="different")  # ERROR - x was already renamed to "input"
 
 # Error message shows history:
 # RenameError: 'x' was renamed to 'input'. Current inputs: ('input',)

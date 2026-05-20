@@ -21,7 +21,7 @@ class TestEndToEndWorkflow:
         assert double.outputs == ("doubled",)
 
         # Rename input
-        renamed = double.with_inputs(x="value")
+        renamed = double.rename_inputs(x="value")
         assert renamed.inputs == ("value",)
         assert renamed.outputs == ("doubled",)
 
@@ -29,7 +29,7 @@ class TestEndToEndWorkflow:
         assert renamed(5) == 10
 
     def test_chain_multiple_renames(self):
-        """Chain with_inputs, with_outputs, and with_name."""
+        """Chain rename_inputs, rename_outputs, and with_name."""
 
         @node(output_name=("mean", "std"))
         def stats(data: list) -> tuple:
@@ -38,7 +38,7 @@ class TestEndToEndWorkflow:
             return mean, std
 
         # Chain renames
-        renamed = stats.with_inputs(data="input_data").with_outputs(mean="average", std="standard_deviation").with_name("compute_statistics")
+        renamed = stats.rename_inputs(data="input_data").rename_outputs(mean="average", std="standard_deviation").with_name("compute_statistics")
 
         assert renamed.name == "compute_statistics"
         assert renamed.inputs == ("input_data",)
@@ -57,11 +57,11 @@ class TestEndToEndWorkflow:
             return input_a + input_b
 
         # Rename input_a to x
-        renamed = process.with_inputs(input_a="x")
+        renamed = process.rename_inputs(input_a="x")
 
         # Try to rename input_a again (should fail with helpful message)
         with pytest.raises(RenameError) as exc_info:
-            renamed.with_inputs(input_a="y")
+            renamed.rename_inputs(input_a="y")
 
         error_msg = str(exc_info.value)
         assert "'input_a' was renamed: input_a→x" in error_msg
@@ -211,28 +211,28 @@ class TestImmutabilityPattern:
         assert foo.name == original_name
         assert renamed.name == "bar"
 
-    def test_with_inputs_does_not_mutate(self):
-        """with_inputs returns new instance, original unchanged."""
+    def test_rename_inputs_does_not_mutate(self):
+        """rename_inputs returns new instance, original unchanged."""
 
         @node(output_name="result")
         def foo(a, b):
             return a + b
 
         original_inputs = foo.inputs
-        renamed = foo.with_inputs(a="x")
+        renamed = foo.rename_inputs(a="x")
 
         assert foo.inputs == original_inputs
         assert renamed.inputs == ("x", "b")
 
-    def test_with_outputs_does_not_mutate(self):
-        """with_outputs returns new instance, original unchanged."""
+    def test_rename_outputs_does_not_mutate(self):
+        """rename_outputs returns new instance, original unchanged."""
 
         @node(output_name=("a", "b"))
         def foo():
             return 1, 2
 
         original_outputs = foo.outputs
-        renamed = foo.with_outputs(a="x")
+        renamed = foo.rename_outputs(a="x")
 
         assert foo.outputs == original_outputs
         assert renamed.outputs == ("x", "b")
@@ -261,7 +261,7 @@ class TestDefinitionHashConsistency:
             return x * 2
 
         original_hash = foo.definition_hash
-        renamed = foo.with_name("bar").with_inputs(x="value")
+        renamed = foo.with_name("bar").rename_inputs(x="value")
 
         assert renamed.definition_hash == original_hash
 

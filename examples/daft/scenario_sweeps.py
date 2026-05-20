@@ -46,8 +46,8 @@ def build_scenario_sweep_graph() -> Graph:
     candidate_graph = Graph([normalize_candidate, score_candidate, build_candidate_report], name="candidate_graph")
     mapped_candidates = (
         candidate_graph.as_node(name="evaluate_candidates")
-        .with_inputs(candidate="candidates")
-        .with_outputs(candidate_report="candidate_reports")
+        .rename_inputs(candidate="candidates")
+        .rename_outputs(candidate_report="candidate_reports")
         .map_over("candidates")
     )
     return Graph([mapped_candidates, choose_best], name="scenario_sweep")

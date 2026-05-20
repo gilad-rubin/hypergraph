@@ -195,7 +195,7 @@ class TestRecursiveValidation:
             name="cyclic_inner",
             entrypoint="increment",
         )
-        outer = Graph([inner.as_node(name="nested").with_inputs(count="x")], name="outer")
+        outer = Graph([inner.as_node(name="nested").rename_inputs(count="x")], name="outer")
 
         cap = RunnerCapabilities(supports_cycles=False, supports_gates=False)
         # Should fail on either cycles or gates in the nested graph

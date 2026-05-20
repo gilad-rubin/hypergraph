@@ -288,7 +288,7 @@ class TestValidateMapCompatible:
 
     def test_dag_graph_passes(self):
         """DAG graphs are map-compatible."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         # Should not raise
         validate_map_compatible(graph)
 

@@ -28,7 +28,7 @@ Node types and decorators. Each node is a value object wrapping a callable.
 | `_callable.py` | Internal: callable introspection (signatures, type hints) |
 | `_rename.py` | Internal: copy-on-rename machinery, batch ID tracking |
 
-**Rule**: Node objects are immutable values. `with_*` methods return new instances. Never mutate a node in place.
+**Rule**: Node objects are immutable values. Rename/configuration methods return new instances. Never mutate a node in place.
 
 ### graph/
 

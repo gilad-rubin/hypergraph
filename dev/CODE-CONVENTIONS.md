@@ -22,7 +22,7 @@ raise GraphConfigError(
 
 ## Immutability Pattern
 
-All `with_*` methods follow this pattern:
+All node configuration methods follow this pattern:
 
 ```python
 def with_name(self, name: str) -> Self:
@@ -34,7 +34,7 @@ def with_name(self, name: str) -> Self:
 
 - `_copy()` → modify → `_invalidate_cached_properties()` → return
 - Rename history tracked with batch IDs (see `_rename.py`)
-- Never mutate `self` in a `with_*` method
+- Never mutate `self` in a rename/configuration method
 
 ## Type Hints
 

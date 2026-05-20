@@ -271,14 +271,14 @@ class TestRouteNodeConstruction:
         assert renamed.name == "new_name"
         assert decide.name == "decide"  # Original unchanged
 
-    def test_with_inputs_returns_new_instance(self):
-        """with_inputs should return a new instance."""
+    def test_rename_inputs_returns_new_instance(self):
+        """rename_inputs should return a new instance."""
 
         @route(targets=["a"])
         def decide(x):
             return "a"
 
-        renamed = decide.with_inputs(x="value")
+        renamed = decide.rename_inputs(x="value")
         assert renamed.inputs == ("value",)
         assert decide.inputs == ("x",)  # Original unchanged
 

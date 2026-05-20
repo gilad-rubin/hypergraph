@@ -475,7 +475,7 @@ def make_batch_eval_graph() -> Graph:
     - compute_metrics consumes eval_results
     """
     batch_eval = Graph(nodes=[run_single_eval], name="batch_eval")
-    mapped_eval = batch_eval.as_node().with_inputs(eval_pair="eval_pairs").with_outputs(eval_result="eval_results").map_over("eval_pairs")
+    mapped_eval = batch_eval.as_node().rename_inputs(eval_pair="eval_pairs").rename_outputs(eval_result="eval_results").map_over("eval_pairs")
 
     return Graph(
         nodes=[build_pairs, mapped_eval, compute_metrics],

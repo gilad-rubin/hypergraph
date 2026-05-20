@@ -51,8 +51,8 @@ class TestPython310Compatibility:
 
         assert isinstance(mapped, GraphNode)
 
-    def test_graphnode_with_inputs_returns_graphnode(self):
-        """GraphNode.with_inputs() should return a GraphNode instance."""
+    def test_graphnode_rename_inputs_returns_graphnode(self):
+        """GraphNode.rename_inputs() should return a GraphNode instance."""
 
         @node(output_name="y")
         def double(x: int) -> int:
@@ -60,7 +60,7 @@ class TestPython310Compatibility:
 
         inner = Graph([double], name="inner")
         gn = inner.as_node()
-        renamed = gn.with_inputs(x="z")
+        renamed = gn.rename_inputs(x="z")
 
         from hypergraph.nodes.graph_node import GraphNode
 
@@ -104,8 +104,8 @@ class TestAsyncSuperstepStateSafety:
 class TestRenameChaining:
     """Bug 3: Rename chaining breaks execution.
 
-    Multiple with_inputs() calls don't compose correctly:
-    node.with_inputs(a="x").with_inputs(x="z") should map z -> a
+    Multiple rename_inputs() calls don't compose correctly:
+    node.rename_inputs(a="x").rename_inputs(x="z") should map z -> a
     but it maps z -> x instead.
     """
 
@@ -117,7 +117,7 @@ class TestRenameChaining:
             return a + 1
 
         # Chain renames: a -> x -> z
-        chained = add_one.with_inputs(a="x").with_inputs(x="z")
+        chained = add_one.rename_inputs(a="x").rename_inputs(x="z")
 
         # Should have input "z" that maps to original "a"
         assert chained.inputs == ("z",)
@@ -138,7 +138,7 @@ class TestRenameChaining:
             return x * 2
 
         # Chain: x -> a -> b -> c
-        tripled = double.with_inputs(x="a").with_inputs(a="b").with_inputs(b="c")
+        tripled = double.rename_inputs(x="a").rename_inputs(a="b").rename_inputs(b="c")
 
         assert tripled.inputs == ("c",)
 
@@ -189,14 +189,14 @@ class TestFunctionNodeDefaultsWithRenames:
         # Should get default using renamed name
         assert func_with_default.get_default_for("my_param") == 42
 
-    def test_defaults_after_with_inputs(self):
-        """defaults should reflect names after with_inputs() chaining."""
+    def test_defaults_after_rename_inputs(self):
+        """defaults should reflect names after rename_inputs() chaining."""
 
         @node(output_name="result")
         def func_with_default(x: int = 5) -> int:
             return x
 
-        renamed = func_with_default.with_inputs(x="z")
+        renamed = func_with_default.rename_inputs(x="z")
 
         # z should have the default, not x
         assert renamed.has_default_for("z") is True
@@ -374,10 +374,10 @@ class TestRenameErrorMessages:
         def func(x: int) -> int:
             return x
 
-        renamed = func.with_inputs(x="y")
+        renamed = func.rename_inputs(x="y")
 
         with pytest.raises(RenameError) as exc_info:
-            renamed.with_inputs(x="z")  # x doesn't exist anymore
+            renamed.rename_inputs(x="z")  # x doesn't exist anymore
 
         error_msg = str(exc_info.value)
         assert "x" in error_msg
@@ -393,10 +393,10 @@ class TestRenameErrorMessages:
             return a
 
         # Chain: a -> x -> z
-        chained = func.with_inputs(a="x").with_inputs(x="z")
+        chained = func.rename_inputs(a="x").rename_inputs(x="z")
 
         with pytest.raises(RenameError) as exc_info:
-            chained.with_inputs(a="w")  # a doesn't exist anymore
+            chained.rename_inputs(a="w")  # a doesn't exist anymore
 
         error_msg = str(exc_info.value)
         # Should show full chain a→x→z

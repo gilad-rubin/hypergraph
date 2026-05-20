@@ -548,8 +548,8 @@ InterruptNode(my_func, name="review", output_name="decision",
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `with_name(name)` | `InterruptNode` | New instance with a different name |
-| `with_inputs(**kwargs)` | `InterruptNode` | New instance with renamed inputs |
-| `with_outputs(**kwargs)` | `InterruptNode` | New instance with renamed outputs |
+| `rename_inputs(**kwargs)` | `InterruptNode` | New instance with renamed inputs |
+| `rename_outputs(**kwargs)` | `InterruptNode` | New instance with renamed outputs |
 
 ### PauseInfo
 

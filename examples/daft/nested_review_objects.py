@@ -45,7 +45,7 @@ review_graph = Graph(
     name="review_graph",
 )
 
-assess_reviews = review_graph.as_node(name="assess_reviews").with_inputs(review="reviews").map_over("reviews")
+assess_reviews = review_graph.as_node(name="assess_reviews").rename_inputs(review="reviews").map_over("reviews")
 
 
 @node(output_name="summary")

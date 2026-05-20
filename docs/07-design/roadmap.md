@@ -12,7 +12,7 @@ Core features are working and stable. API may still change before 1.0.
 - `@node` decorator for wrapping functions (sync, async, generators)
 - `Graph` construction with automatic edge inference
 - `InputSpec` categorization (required, optional, bound, internal)
-- Rename API (`.with_inputs()`, `.with_outputs()`, `.with_name()`)
+- Rename API (`.rename_inputs()`, `.rename_outputs()`, `.with_name()`)
 - Build-time validation with helpful error messages
 
 ### Composition

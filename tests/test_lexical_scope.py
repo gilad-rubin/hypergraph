@@ -133,15 +133,15 @@ def test_run_value_overriding_projected_bind_emits_warning():
     assert result["inner.out"] == 99
 
 
-def test_with_inputs_renames_local_name_then_boundary_projects_it():
+def test_rename_inputs_renames_local_name_then_boundary_projects_it():
     @node(output_name="inner_out")
     def consume_x(x: int) -> int:
         return x
 
     inner_graph = Graph([consume_x], name="inner")
 
-    flat = Graph([inner_graph.as_node().with_inputs(x="inner_x")], name="flat")
-    namespaced = Graph([inner_graph.as_node(namespaced=True).with_inputs(x="inner_x")], name="namespaced")
+    flat = Graph([inner_graph.as_node().rename_inputs(x="inner_x")], name="flat")
+    namespaced = Graph([inner_graph.as_node(namespaced=True).rename_inputs(x="inner_x")], name="namespaced")
 
     assert flat.inputs.required == ("inner_x",)
     assert namespaced.inputs.required == ("inner.inner_x",)

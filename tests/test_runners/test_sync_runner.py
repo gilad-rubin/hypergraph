@@ -102,7 +102,7 @@ class TestSyncRunnerRun:
 
     def test_linear_dag_two_nodes(self):
         """Execute linear graph with two nodes."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         runner = SyncRunner()
 
         result = runner.run(graph, {"x": 5, "b": 3})
@@ -113,8 +113,8 @@ class TestSyncRunnerRun:
 
     def test_linear_dag_three_nodes(self):
         """Execute linear graph with three nodes."""
-        incr = increment.with_inputs(x="sum").with_outputs(incremented="final")
-        graph = Graph([double, add.with_inputs(a="doubled"), incr])
+        incr = increment.rename_inputs(x="sum").rename_outputs(incremented="final")
+        graph = Graph([double, add.rename_inputs(a="doubled"), incr])
         runner = SyncRunner()
 
         result = runner.run(graph, {"x": 5, "b": 3})
@@ -139,12 +139,12 @@ class TestSyncRunnerRun:
 
     def test_fan_in_graph(self):
         """Node consumes outputs from multiple nodes."""
-        double2 = double.with_name("double2").with_outputs(doubled="doubled2")
+        double2 = double.with_name("double2").rename_outputs(doubled="doubled2")
         graph = Graph(
             [
                 double,
                 double2,
-                add.with_inputs(a="doubled", b="doubled2"),
+                add.rename_inputs(a="doubled", b="doubled2"),
             ]
         )
         runner = SyncRunner()
@@ -155,13 +155,13 @@ class TestSyncRunnerRun:
 
     def test_diamond_graph(self):
         """Diamond-shaped graph with fan-out then fan-in."""
-        double2 = double.with_name("double2").with_outputs(doubled="other")
+        double2 = double.with_name("double2").rename_outputs(doubled="other")
         graph = Graph(
             [
                 increment,  # x -> incremented (6)
-                double.with_inputs(x="incremented"),  # -> doubled (12)
-                double2.with_inputs(x="incremented"),  # -> other (12)
-                add.with_inputs(a="doubled", b="other"),  # -> sum (24)
+                double.rename_inputs(x="incremented"),  # -> doubled (12)
+                double2.rename_inputs(x="incremented"),  # -> other (12)
+                add.rename_inputs(a="doubled", b="other"),  # -> sum (24)
             ]
         )
         runner = SyncRunner()
@@ -316,7 +316,7 @@ class TestSyncRunnerRun:
 
     def test_result_contains_all_outputs(self):
         """Result contains all graph outputs by default."""
-        graph = Graph([double, add.with_inputs(a="doubled")])
+        graph = Graph([double, add.rename_inputs(a="doubled")])
         runner = SyncRunner()
 
         result = runner.run(graph, {"x": 5, "b": 3})
@@ -326,7 +326,7 @@ class TestSyncRunnerRun:
 
     def test_select_filters_outputs(self):
         """Graph-level select filters which outputs to return."""
-        graph = Graph([double, add.with_inputs(a="doubled")]).select("sum")
+        graph = Graph([double, add.rename_inputs(a="doubled")]).select("sum")
         runner = SyncRunner()
 
         result = runner.run(graph, {"x": 5, "b": 3})
@@ -408,7 +408,7 @@ class TestSyncRunnerRun:
         outer = Graph(
             [
                 inner.as_node(),
-                add.with_inputs(a="doubled"),
+                add.rename_inputs(a="doubled"),
             ]
         )
         runner = SyncRunner()
@@ -420,7 +420,7 @@ class TestSyncRunnerRun:
     def test_deeply_nested_graph(self):
         """Multiple levels of nesting work."""
         innermost = Graph([double], name="innermost")
-        middle = Graph([innermost.as_node(), increment.with_inputs(x="doubled")], name="middle")
+        middle = Graph([innermost.as_node(), increment.rename_inputs(x="doubled")], name="middle")
         outer = Graph([middle.as_node()])
         runner = SyncRunner()
 
@@ -720,7 +720,7 @@ class TestSyncRunnerMap:
 
     def test_map_select(self):
         """Map respects graph-level selected outputs."""
-        graph = Graph([double, add.with_inputs(a="doubled")]).select("sum")
+        graph = Graph([double, add.rename_inputs(a="doubled")]).select("sum")
         runner = SyncRunner()
 
         results = runner.map(

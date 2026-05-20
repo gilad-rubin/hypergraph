@@ -371,25 +371,25 @@ class TestEdgeCases:
         assert "done" in fn.outputs
         assert fn.wait_for == ("signal",)
 
-    def test_with_outputs_preserves_emit(self):
+    def test_rename_outputs_preserves_emit(self):
         """Renaming data outputs doesn't affect emit outputs."""
 
         @node(output_name="result", emit="done")
         def producer(x: int) -> int:
             return x
 
-        renamed = producer.with_outputs(result="renamed_result")
+        renamed = producer.rename_outputs(result="renamed_result")
         assert renamed.outputs == ("renamed_result", "done")
         assert renamed.data_outputs == ("renamed_result",)
 
-    def test_with_outputs_can_rename_emit(self):
-        """Emit outputs can also be renamed via with_outputs."""
+    def test_rename_outputs_can_rename_emit(self):
+        """Emit outputs can also be renamed via rename_outputs."""
 
         @node(output_name="result", emit="done")
         def producer(x: int) -> int:
             return x
 
-        renamed = producer.with_outputs(done="finished")
+        renamed = producer.rename_outputs(done="finished")
         assert "finished" in renamed.outputs
         assert renamed.data_outputs == ("result",)
 

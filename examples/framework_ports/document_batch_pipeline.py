@@ -69,8 +69,8 @@ def build_ingestion_report(doc_stats: list[dict]) -> dict:
 def build_document_batch_graph() -> Graph:
     mapped_documents = (
         document_graph.as_node(name="process_document")
-        .with_inputs(document="documents")
-        .with_outputs(summary="document_summaries")
+        .rename_inputs(document="documents")
+        .rename_outputs(summary="document_summaries")
         .map_over("documents")
     )
     return Graph(

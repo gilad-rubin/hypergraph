@@ -84,8 +84,8 @@ class TestSameInnerGraphTwice:
     def test_same_graph_different_renames(self):
         inner = Graph(nodes=[double], name="inner")
 
-        node_a = inner.as_node(name="inner_a").with_inputs(x="a").with_outputs(doubled="res_a")
-        node_b = inner.as_node(name="inner_b").with_inputs(x="b").with_outputs(doubled="res_b")
+        node_a = inner.as_node(name="inner_a").rename_inputs(x="a").rename_outputs(doubled="res_a")
+        node_b = inner.as_node(name="inner_b").rename_inputs(x="b").rename_outputs(doubled="res_b")
 
         outer = Graph(nodes=[node_a, node_b])
         runner = SyncRunner()

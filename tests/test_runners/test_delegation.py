@@ -76,7 +76,7 @@ class TestWithRunnerAPI:
 
     def test_with_runner_preserves_rename(self):
         inner = Graph([double], name="inner")
-        renamed = inner.as_node().with_inputs(x="input_val")
+        renamed = inner.as_node().rename_inputs(x="input_val")
         delegated = renamed.with_runner(SyncRunner())
 
         assert "input_val" in delegated.inputs
@@ -138,7 +138,7 @@ class TestDelegationExecution:
     def test_delegation_with_renamed_inputs(self):
         """Delegated runner respects input renaming."""
         inner = Graph([double], name="inner")
-        gn = inner.as_node(runner=SyncRunner()).with_inputs(x="val")
+        gn = inner.as_node(runner=SyncRunner()).rename_inputs(x="val")
         outer = Graph([gn])
 
         # val (renamed from x) is the parent-facing input address.
@@ -149,7 +149,7 @@ class TestDelegationExecution:
         """Only the GraphNode with runner_override is delegated."""
         inner = Graph([double], name="inner")
         gn = inner.as_node(runner=SyncRunner())
-        outer = Graph([gn, add.with_inputs(a="doubled")])
+        outer = Graph([gn, add.rename_inputs(a="doubled")])
 
         # x is owned by inner GraphNode; b is declared at outer (consumed by add)
         result = SyncRunner().run(outer, {"x": 3, "b": 10})

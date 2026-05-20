@@ -51,8 +51,8 @@ def build_document_processing_graph() -> Graph:
 
     mapped_documents = (
         single_document_graph.as_node(name="process_documents")
-        .with_inputs(document="documents")
-        .with_outputs(
+        .rename_inputs(document="documents")
+        .rename_outputs(
             document_report="document_reports",
             document_label="document_labels",
             sentence_count="sentence_counts",

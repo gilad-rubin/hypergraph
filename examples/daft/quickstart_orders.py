@@ -60,8 +60,8 @@ def build_quickstart_orders_graph() -> Graph:
     )
     mapped_orders = (
         order_graph.as_node(name="process_orders")
-        .with_inputs(order="orders")
-        .with_outputs(
+        .rename_inputs(order="orders")
+        .rename_outputs(
             fulfillment_record="fulfillment_records",
             review_queue="review_queues",
             order_total="order_totals",
