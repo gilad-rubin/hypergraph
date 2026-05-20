@@ -67,7 +67,7 @@ adapted = process.rename_inputs(text="raw_input", config="settings")
 print(adapted.inputs)  # ("raw_input", "settings")
 
 # Using dict (for reserved keywords or dynamic renames)
-adapted = process.rename_inputs({"text": "raw_input", "class": "category"})
+adapted = process.rename_inputs({"text": "raw_input", "config": "class"})
 ```
 
 **Args:**
