@@ -96,6 +96,31 @@ Load deeper docs only when relevant:
 Convention:
 - Any directory with `AGENTS.md` should also expose `CLAUDE.md -> AGENTS.md` symlink for tool compatibility.
 
+## Maintaining Agent Context
+
+Treat `AGENTS.md` files as canonical instructions for how agents should operate
+in the current codebase. Do not use them for plans, historical notes, or
+speculation.
+
+When adding or updating agent guidance:
+- Put instructions in the most specific directory that fully owns them. Move
+  guidance up only when it genuinely applies across multiple subtrees.
+- Write operational directives, not directory descriptions. Prefer rules that
+  change agent behavior over facts an agent can infer from filenames.
+- Keep every line default-no: if most tasks in that directory would not benefit
+  from seeing it, leave it out or put it in a skill/dev doc instead.
+- Avoid copying the same rule into several AGENTS files. If guidance spans
+  distant areas, prefer a referenced skill or a single higher-level rule.
+- Use resilient references: describe owned modules or concepts more than exact
+  paths unless the path is the stable interface being named.
+- Keep content text-only and search-friendly. No diagrams, binary content, or
+  formatting that makes grep/parsing harder.
+- Encode only generalizable lessons from reviews. Do not record PR-specific
+  anecdotes unless they reveal a durable invariant.
+- When creating a subfolder `AGENTS.md`, also create `CLAUDE.md -> AGENTS.md`
+  in that same directory. Before finishing, verify every `AGENTS.md` has the
+  sibling symlink and that each symlink points exactly to `AGENTS.md`.
+
 ## Guardrails
 
 - Do not merge to `master` without PR review + passing CI.
