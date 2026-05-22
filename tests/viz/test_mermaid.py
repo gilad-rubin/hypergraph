@@ -432,6 +432,7 @@ class TestIdSanitization:
         assert _sanitize_id("end") == "n_end"
         assert _sanitize_id("subgraph") == "n_subgraph"
         assert _sanitize_id("style") == "n_style"
+        assert _sanitize_id("classDef") == "n_classDef"
 
     def test_digit_leading_id_prefixed(self):
         """IDs starting with digits get n_ prefix."""

@@ -695,6 +695,33 @@ class TestRetentionPolicyBehavior:
         if cp._sync_conn:
             cp._sync_conn.close()
 
+    def test_sync_retention_delete_batches_under_sqlite_parameter_limit(self, tmp_path):
+        """Large retention compactions should not exceed SQLite's bind limit."""
+        cp = SqliteCheckpointer(
+            str(tmp_path / "sync-retention-limit.db"),
+            policy=CheckpointPolicy(durability="sync", retention="latest"),
+        )
+        assert [len(batch) for batch in cp._delete_step_id_batches(list(range(1201)))] == [500, 500, 201]
+        cp.create_run_sync("wf-sync-limit")
+
+        for index in range(700):
+            cp.save_step_sync(
+                _make_step(
+                    run_id="wf-sync-limit",
+                    superstep=index,
+                    node_name=f"node_{index % 2}",
+                    index=index,
+                    values={f"value_{index}": index},
+                )
+            )
+
+        cp.policy = CheckpointPolicy(durability="sync", retention="windowed", window=1)
+        cp.save_step_sync(_make_step(run_id="wf-sync-limit", superstep=700, node_name="final", index=700, values={"final": True}))
+
+        assert cp.state("wf-sync-limit")["final"] is True
+        if cp._sync_conn:
+            cp._sync_conn.close()
+
 
 class TestSearch:
     async def test_search_by_node_name(self, checkpointer):

@@ -416,10 +416,11 @@ def _container_entrypoints(
     children: list[str],
     node_by_id: dict[str, Any],
 ) -> list[str]:
-    sibling_outputs = {output["name"] for child_id in children for output in node_by_id[child_id].outputs if "name" in output}
-
     entrypoints = []
     for child_id in children:
+        sibling_outputs = {
+            output["name"] for other_id in children if other_id != child_id for output in node_by_id[other_id].outputs if "name" in output
+        }
         child_inputs = {input_["name"] for input_ in node_by_id[child_id].inputs if "name" in input_}
         if not child_inputs & sibling_outputs:
             entrypoints.append(child_id)

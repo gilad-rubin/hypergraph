@@ -289,6 +289,8 @@ async def run_superstep_async(
         error = first_error if isinstance(first_error, ExecutionError) else ExecutionError(first_error, new_state)
         error._attempted_node_names = tuple(node.name for node in ready_nodes)  # type: ignore[attr-defined]
         error._node_errors = node_errors  # type: ignore[attr-defined]
+        if error is first_error:
+            raise error
         raise error from first_error
 
     return new_state

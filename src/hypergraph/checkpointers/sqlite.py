@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -38,6 +39,7 @@ _STEP_TIME_ORDER_DESC_WITH_ALIAS = "COALESCE(s.completed_at, s.created_at) DESC,
 _RETENTION_BASELINE_NODE_NAME = "__retained_state__"
 _RETENTION_BASELINE_NODE_TYPE = "RetentionBaseline"
 _RETENTION_ROW_COLS = "id, step_index, superstep, node_name, values_data, created_at, completed_at"
+_DELETE_BATCH_SIZE = 500
 
 # Sentinel for "parameter not provided" — distinct from None (which means "top-level only")
 _UNSET = object()
@@ -1103,6 +1105,11 @@ class SqliteCheckpointer(Checkpointer):
         return f"DELETE FROM steps WHERE id IN ({placeholders})"
 
     @staticmethod
+    def _delete_step_id_batches(ids: list[int]) -> Iterator[list[int]]:
+        for start in range(0, len(ids), _DELETE_BATCH_SIZE):
+            yield ids[start : start + _DELETE_BATCH_SIZE]
+
+    @staticmethod
     def _retention_baseline_insert_sql() -> str:
         return """
             INSERT INTO steps (
@@ -1154,7 +1161,8 @@ class SqliteCheckpointer(Checkpointer):
             baseline_superstep=baseline_superstep,
         )
         ids = [int(row[0]) for row in dropped_rows]
-        await self._db.execute(self._delete_steps_sql(ids), ids)
+        for batch in self._delete_step_id_batches(ids):
+            await self._db.execute(self._delete_steps_sql(batch), batch)
         if baseline_params is not None:
             await self._db.execute(self._retention_baseline_insert_sql(), baseline_params)
 
@@ -1177,7 +1185,8 @@ class SqliteCheckpointer(Checkpointer):
         )
         ids = [int(row[0]) for row in dropped_rows]
         db = self._sync_db()
-        db.execute(self._delete_steps_sql(ids), ids)
+        for batch in self._delete_step_id_batches(ids):
+            db.execute(self._delete_steps_sql(batch), batch)
         if baseline_params is not None:
             db.execute(self._retention_baseline_insert_sql(), baseline_params)
 

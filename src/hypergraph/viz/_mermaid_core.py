@@ -10,7 +10,8 @@ _UNSAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 # Mermaid reserved words that cannot be used as bare node IDs
 _RESERVED_WORDS = frozenset(
-    {
+    word.lower()
+    for word in {
         "end",
         "subgraph",
         "direction",

@@ -22,6 +22,8 @@ from hypergraph.exceptions import (
     WorkflowAlreadyCompletedError,
     WorkflowForkError,
 )
+from hypergraph.runners._shared.helpers import get_ready_nodes
+from hypergraph.runners._shared.types import GraphState
 
 aiosqlite = pytest.importorskip("aiosqlite")
 
@@ -310,6 +312,19 @@ class TestLineageSemantics:
                 {"decision_b": "wrong"},
                 workflow_id="wf-inactive-interrupt",
             )
+
+    def test_graphnode_output_value_alone_does_not_satisfy_missing_input(self):
+        @interrupt(output_name="decision")
+        def approval(draft: str) -> str: ...
+
+        inner = Graph([approval], name="inner")
+        graph_node = inner.as_node().rename_outputs(decision="verdict")
+        graph = Graph([graph_node])
+        state = GraphState(values={"verdict": "approved"})
+
+        ready_names = {node.name for node in get_ready_nodes(graph, state)}
+
+        assert graph_node.name not in ready_names
 
     async def test_fork_metadata_is_persisted(self, checkpointer):
         runner = AsyncRunner(checkpointer=checkpointer)

@@ -41,9 +41,15 @@ def payload_length(payload: str) -> int:
     return len(payload)
 
 
+@node(output_name="greeting")
+def greet(name: str = "Ada") -> str:
+    return f"Hello, {name}"
+
+
 test_graph = Graph([double, triple])
 pair_graph = Graph([add_pair])
 payload_graph = Graph([payload_length])
+default_graph = Graph([greet])
 
 runner_cli = CliRunner()
 
@@ -54,6 +60,7 @@ runner_cli = CliRunner()
 MODULE_PATH = f"{__name__}:test_graph"
 PAIR_MODULE_PATH = f"{__name__}:pair_graph"
 PAYLOAD_MODULE_PATH = f"{__name__}:payload_graph"
+DEFAULT_MODULE_PATH = f"{__name__}:default_graph"
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +251,13 @@ class TestGraphInspect:
         assert data["command"] == "graph.inspect"
         assert data["data"]["required_inputs"] == ["x"]
         assert data["data"]["optional_inputs"] == []
+
+    def test_inspect_human_shows_optional_input_defaults(self):
+        app = create_app()
+        result = runner_cli.invoke(app, ["graph", "inspect", DEFAULT_MODULE_PATH])
+
+        assert result.exit_code == 0
+        assert "Optional inputs: name (default: 'Ada')" in result.output
 
 
 # ---------------------------------------------------------------------------

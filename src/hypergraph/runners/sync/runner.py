@@ -259,7 +259,7 @@ class SyncRunner(SyncRunnerTemplate):
                     node_errors = getattr(e, "_node_errors", None)
                 except Exception as e:
                     superstep_error = ExecutionError(e, state)
-                    attempted_node_names = tuple(ready_node_names)
+                    attempted_node_names = ()
                     node_errors = {}
 
                 # Save step records for executed nodes (even on failure)

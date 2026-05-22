@@ -87,3 +87,14 @@ def test_split_viz_modules_attach_expected_globals() -> None:
     proc = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=10)
 
     assert proc.returncode == 0, proc.stderr
+
+
+def test_tooltip_button_exposes_accessible_name_and_keyboard_handlers() -> None:
+    controls_source = (ASSETS / "viz_controls.js").read_text()
+
+    assert "aria-label" in controls_source
+    assert 'role="tooltip"' in controls_source
+    assert "onFocus" in controls_source
+    assert "onBlur" in controls_source
+    assert "onKeyDown" in controls_source
+    assert "Escape" in controls_source

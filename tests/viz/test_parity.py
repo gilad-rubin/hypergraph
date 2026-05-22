@@ -69,7 +69,7 @@ def _semantic_node_data(data: dict) -> tuple:
             data.get("isBound"),
             data.get("ownerContainer"),
             data.get("deepestOwnerContainer"),
-            tuple(data.get("actualTargets") or ()),
+            tuple(sorted(data.get("actualTargets") or ())),
         )
     if node_type == "INPUT_GROUP":
         return (
@@ -78,7 +78,7 @@ def _semantic_node_data(data: dict) -> tuple:
             data.get("isBound"),
             data.get("ownerContainer"),
             data.get("deepestOwnerContainer"),
-            tuple(data.get("actualTargets") or ()),
+            tuple(sorted(data.get("actualTargets") or ())),
         )
     return ()
 

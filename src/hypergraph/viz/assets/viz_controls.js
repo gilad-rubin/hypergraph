@@ -28,10 +28,15 @@
       (isLight ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900' : 'bg-slate-900 border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-100');
     var active = isLight ? 'bg-slate-100 text-indigo-600' : 'bg-slate-800 text-indigo-400';
     var tip = isLight ? 'bg-slate-800 text-white' : 'bg-white text-slate-800';
+    var show = function() { showTooltip[1](true); };
+    var hide = function() { showTooltip[1](false); };
+    var hideOnEscape = function(event) {
+      if (event.key === 'Escape') hide();
+    };
     return html`
-      <div className="relative" onMouseEnter=${function() { showTooltip[1](true); }} onMouseLeave=${function() { showTooltip[1](false); }}>
-        <button className=${btn + ' ' + (props.isActive ? active : '')} onClick=${props.onClick}>${props.children}</button>
-        ${showTooltip[0] && html`<div className=${'absolute right-full mr-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs font-medium rounded shadow-lg whitespace-nowrap pointer-events-none z-50 ' + tip}>
+      <div className="relative" onMouseEnter=${show} onMouseLeave=${hide} onFocus=${show} onBlur=${hide}>
+        <button className=${btn + ' ' + (props.isActive ? active : '')} aria-label=${props.ariaLabel || props.tooltip} onClick=${props.onClick} onKeyDown=${hideOnEscape}>${props.children}</button>
+        ${showTooltip[0] && html`<div role="tooltip" aria-hidden=${!showTooltip[0]} className=${'absolute right-full mr-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs font-medium rounded shadow-lg whitespace-nowrap pointer-events-none z-50 ' + tip}>
           ${props.tooltip}
           <div className=${'absolute left-full top-1/2 -translate-y-1/2 border-4 border-transparent ' + (isLight ? 'border-l-slate-800' : 'border-l-white')}></div>
         </div>`}

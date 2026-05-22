@@ -263,6 +263,58 @@ class TestRunnerCheckpointIntegration:
         assert [(s.node_name, s.status) for s in steps] == [("fail_first", StepStatus.FAILED)]
         assert "first failed" in steps[0].error
 
+    def test_sync_pre_executor_error_does_not_mark_ready_siblings_failed(self, checkpointer, monkeypatch):
+        """Input-collection failures should preserve the actual attempted-node boundary."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="first_out")
+        def first(x: int) -> int:
+            return x + 1
+
+        @node(output_name="second_out")
+        def second(x: int) -> int:
+            return x + 2
+
+        from hypergraph.runners.sync import superstep as sync_superstep
+
+        original_collect = sync_superstep.collect_inputs_for_node
+
+        def fail_before_executor(node, graph, state, provided_values):
+            if node.name == "first":
+                raise KeyError("synthetic missing input")
+            return original_collect(node, graph, state, provided_values)
+
+        monkeypatch.setattr(sync_superstep, "collect_inputs_for_node", fail_before_executor)
+
+        runner = SyncRunner(checkpointer=checkpointer)
+        result = runner.run(Graph([first, second]), {"x": 1}, workflow_id="wf-sync-pre-exec", error_handling="continue")
+
+        assert result.status.value == "failed"
+        steps = checkpointer.steps("wf-sync-pre-exec")
+        assert [(s.node_name, s.status) for s in steps] == [("first", StepStatus.FAILED)]
+        assert "synthetic missing input" in steps[0].error
+
+    def test_sync_unattributed_superstep_error_does_not_mark_ready_nodes_failed(self, checkpointer, monkeypatch):
+        """Unexpected scheduler failures should not invent per-node failures."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="out")
+        def first(x: int) -> int:
+            return x + 1
+
+        from hypergraph.runners.sync import runner as sync_runner
+
+        def fail_without_node_attribution(*args, **kwargs):
+            raise RuntimeError("scheduler failed")
+
+        monkeypatch.setattr(sync_runner, "run_superstep_sync", fail_without_node_attribution)
+
+        runner = SyncRunner(checkpointer=checkpointer)
+        result = runner.run(Graph([first]), {"x": 1}, workflow_id="wf-sync-unattributed", error_handling="continue")
+
+        assert result.status.value == "failed"
+        assert checkpointer.steps("wf-sync-unattributed") == []
+
     async def test_async_map_partial_persists_parent_status(self, checkpointer):
         """Parent map runs persist PARTIAL when child items have mixed outcomes."""
         checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")

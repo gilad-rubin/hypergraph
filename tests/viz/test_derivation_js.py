@@ -155,6 +155,37 @@ def test_expanded_container_entrypoints_picks_dependency_entrypoint():
     assert result == {"outer": ["outer/upstream"]}
 
 
+def test_expanded_container_entrypoints_ignore_self_outputs_and_keep_multiple_entrypoints():
+    result = _run("""
+        const ir = {nodes: [
+            {id: 'outer', node_type: 'GRAPH', parent: null},
+            {
+                id: 'outer/selfish',
+                node_type: 'FUNCTION',
+                parent: 'outer',
+                inputs: [{name: 'loop'}],
+                outputs: [{name: 'loop'}],
+            },
+            {
+                id: 'outer/independent',
+                node_type: 'FUNCTION',
+                parent: 'outer',
+                inputs: [{name: 'x'}],
+                outputs: [{name: 'y'}],
+            },
+            {
+                id: 'outer/downstream',
+                node_type: 'FUNCTION',
+                parent: 'outer',
+                inputs: [{name: 'y'}],
+                outputs: [{name: 'z'}],
+            },
+        ]};
+        return D.expandedContainerEntrypoints(ir, {outer: true});
+    """)
+    assert result == {"outer": ["outer/selfish", "outer/independent"]}
+
+
 def test_routes_to_end_handles_all_branch_shapes():
     result = _run("""
         return {

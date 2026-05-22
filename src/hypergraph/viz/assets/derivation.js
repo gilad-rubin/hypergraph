@@ -99,10 +99,15 @@
   function containerEntrypoints(children, nodeById) {
     var siblingOutputs = {};
     for (var i = 0; i < children.length; i++) {
-      var outputNode = nodeById[children[i]] || {};
+      var childId = children[i];
+      var outputNode = nodeById[childId] || {};
       var outputs = outputNode.outputs || [];
       for (var o = 0; o < outputs.length; o++) {
-        if (outputs[o] && outputs[o].name !== undefined) siblingOutputs[outputs[o].name] = true;
+        if (outputs[o] && outputs[o].name !== undefined) {
+          var name = outputs[o].name;
+          if (!siblingOutputs[name]) siblingOutputs[name] = {};
+          siblingOutputs[name][childId] = true;
+        }
       }
     }
 
@@ -113,7 +118,8 @@
       var inputs = inputNode.inputs || [];
       var dependsOnSibling = false;
       for (var p = 0; p < inputs.length; p++) {
-        if (inputs[p] && siblingOutputs[inputs[p].name]) {
+        var owners = inputs[p] && siblingOutputs[inputs[p].name];
+        if (owners && Object.keys(owners).some(function(ownerId) { return ownerId !== childId; })) {
           dependsOnSibling = true;
           break;
         }

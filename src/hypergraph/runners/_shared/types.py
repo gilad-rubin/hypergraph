@@ -760,6 +760,7 @@ class GraphState:
     versions: dict[str, int] = field(default_factory=dict)
     node_executions: dict[str, NodeExecution] = field(default_factory=dict)
     routing_decisions: dict[str, Any] = field(default_factory=dict)
+    resume_values: frozenset[str] = frozenset()
 
     def update_value(self, name: str, value: Any) -> None:
         """Update a value and increment its version if value changed.
@@ -821,6 +822,7 @@ class GraphState:
                 for k, v in self.node_executions.items()
             },
             routing_decisions=dict(self.routing_decisions),
+            resume_values=frozenset(self.resume_values),
         )
 
 

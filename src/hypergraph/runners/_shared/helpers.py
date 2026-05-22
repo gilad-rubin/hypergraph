@@ -895,15 +895,19 @@ def _graphnode_has_resume_values(node: HyperNode, state: GraphState) -> bool:
     if not isinstance(node, GraphNode):
         return False
 
+    resume_values = state.resume_values
+    if not resume_values:
+        return False
+
     node_input_set = set(node.inputs)
-    if any(key in state.values for key in node.outputs if key not in node_input_set):
+    if any(key in resume_values for key in node.outputs if key not in node_input_set):
         return True
 
     if node.namespaced:
         return False
 
     prefix = f"{node.name}."
-    return any(key.startswith(prefix) and key[len(prefix) :] not in node_input_set for key in state.values)
+    return any(key.startswith(prefix) and key[len(prefix) :] not in node_input_set for key in resume_values)
 
 
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
@@ -1325,6 +1329,7 @@ def initialize_state_with_checkpoint(
 
     for name, value in runtime_values.items():
         state.update_value(name, value)
+    state.resume_values = frozenset(runtime_values) if is_interrupt_resume_payload(graph, runtime_values) else frozenset()
 
     # Reconstruct per-step output versions so staleness checks can attribute
     # changes to explicit upstream producers after checkpoint restore.
