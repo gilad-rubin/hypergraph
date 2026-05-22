@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import networkx as nx
@@ -28,41 +27,26 @@ from hypergraph.viz._common import (
     is_descendant_of,
     is_node_visible,
 )
+from hypergraph.viz._mermaid_core import MermaidDiagram, _MermaidIdAllocator, _sanitize_id
 from hypergraph.viz.renderer._format import format_type
 from hypergraph.viz.renderer.nodes import (
     build_input_groups,
     get_start_targets,
     has_end_routing,
+    is_internal_gate_output,
 )
 from hypergraph.viz.renderer.scope import (
     find_container_entrypoints,
     find_internal_producer_for_output,
 )
 
+__all__ = ["MermaidDiagram", "to_mermaid", "_MermaidIdAllocator", "_sanitize_id"]
+
 # =============================================================================
 # Constants
 # =============================================================================
 
 _VALID_DIRECTIONS = {"TD", "TB", "BT", "LR", "RL"}
-
-# Characters unsafe in Mermaid IDs (anything not alphanumeric or underscore)
-_UNSAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_]")
-
-# Mermaid reserved words that cannot be used as bare node IDs
-_RESERVED_WORDS = frozenset(
-    {
-        "end",
-        "subgraph",
-        "direction",
-        "click",
-        "style",
-        "classDef",
-        "class",
-        "linkStyle",
-        "graph",
-        "flowchart",
-    }
-)
 
 DEFAULT_COLORS: dict[str, dict[str, str]] = {
     "function": {
@@ -120,74 +104,6 @@ _NODE_TYPE_TO_CLASS = {
     "START": "start",
     "END": "end",
 }
-
-# =============================================================================
-# MermaidDiagram (notebook-renderable result)
-# =============================================================================
-
-
-class MermaidDiagram:
-    """A Mermaid diagram that renders in Jupyter notebooks.
-
-    Rendering:
-
-    - **JupyterLab 4.1+ / Notebook 7.1+**: native ``text/vnd.mermaid`` MIME
-      type — fully local, zero network requests.
-    - **Terminal / plain**: raw Mermaid source via ``text/plain``.
-
-    Example:
-        >>> diagram = graph.to_mermaid()
-        >>> diagram                  # renders in notebook
-        >>> print(diagram)           # prints raw Mermaid source
-        >>> diagram.source           # raw string
-    """
-
-    def __init__(self, source: str) -> None:
-        self.source = source
-
-    def __str__(self) -> str:
-        return self.source
-
-    def __repr__(self) -> str:
-        lines = self.source.split("\n")
-        preview = lines[0] if lines else ""
-        return f"MermaidDiagram({preview!r}, {len(lines)} lines)"
-
-    def __contains__(self, item: str) -> bool:
-        return item in self.source
-
-    def startswith(self, prefix: str) -> bool:
-        """Delegate to source string."""
-        return self.source.startswith(prefix)
-
-    def _repr_mimebundle_(self, **kwargs: Any) -> dict[str, str]:
-        """Provide MIME types for notebook rendering.
-
-        JupyterLab 4.1+ uses text/vnd.mermaid for native rendering.
-        """
-        return {
-            "text/vnd.mermaid": self.source,
-            "text/plain": str(self),
-        }
-
-
-# =============================================================================
-# ID Sanitization
-# =============================================================================
-
-
-def _sanitize_id(node_id: str) -> str:
-    """Convert a node ID to a Mermaid-safe identifier.
-
-    Replaces '/' with '__', strips unsafe chars, and prefixes with 'n_'
-    to avoid collisions with Mermaid reserved words or digit-leading IDs.
-    """
-    safe = node_id.replace("/", "__")
-    safe = _UNSAFE_ID_RE.sub("_", safe)
-    if safe and (safe.lower() in _RESERVED_WORDS or safe[0:1].isdigit()):
-        safe = f"n_{safe}"
-    return safe or "n_empty"
-
 
 # =============================================================================
 # Label Construction
@@ -301,6 +217,7 @@ def _render_merged_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     exclusive_data_edges: set[tuple[str, str, str]],
+    id_allocator: _MermaidIdAllocator,
 ) -> list[tuple[str, str]]:
     """Render edges in merged output mode (no DATA intermediaries).
 
@@ -336,22 +253,22 @@ def _render_merged_edges(
             if actual_target is None:
                 continue
             label = _get_control_label(source, target, flat_graph)
-            edge_key = (_sanitize_id(source), _sanitize_id(actual_target), label or "")
+            edge_key = (id_allocator.get(source), id_allocator.get(actual_target), label or "")
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            out.append((_format_control_edge(source, actual_target, label), "control"))
+            out.append((_format_control_edge(source, actual_target, label, id_allocator), "control"))
             continue
 
         if edge_type == "ordering":
             if not is_node_visible(target, flat_graph, expansion_state):
                 continue
             value_name = value_names[0] if value_names else ""
-            edge_key = (_sanitize_id(source), _sanitize_id(target), f"ord_{value_name}")
+            edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
-            out.append((_format_ordering_edge(source, target, value_name), "ordering"))
+            out.append((_format_ordering_edge(source, target, value_name, id_allocator), "ordering"))
             continue
 
         # Data edges
@@ -375,12 +292,12 @@ def _render_merged_edges(
                 continue
             if actual_source == actual_target:
                 continue
-            edge_key = (_sanitize_id(actual_source), _sanitize_id(actual_target), value_name)
+            edge_key = (id_allocator.get(actual_source), id_allocator.get(actual_target), value_name)
             if edge_key in seen_edges:
                 continue
             seen_edges.add(edge_key)
             is_exclusive = (source, target, value_name) in exclusive_data_edges
-            out.append((_format_edge(actual_source, actual_target, None, exclusive=is_exclusive), "data"))
+            out.append((_format_edge(actual_source, actual_target, None, exclusive=is_exclusive, id_allocator=id_allocator), "data"))
 
     return out
 
@@ -389,6 +306,7 @@ def _render_separate_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
     exclusive_data_edges: set[tuple[str, str, str]],
+    id_allocator: _MermaidIdAllocator,
 ) -> list[tuple[str, str]]:
     """Render edges in separate output mode (with DATA intermediaries).
 
@@ -410,11 +328,13 @@ def _render_separate_edges(
         if attrs.get("node_type") == "GRAPH" and expansion_state.get(node_id, False):
             continue
         for output_name in attrs.get("outputs", ()):
+            if is_internal_gate_output(node_id, output_name, attrs):
+                continue
             data_id = f"data_{node_id}_{output_name}"
-            edge_key = (_sanitize_id(node_id), _sanitize_id(data_id))
+            edge_key = (id_allocator.get(node_id), id_allocator.get(data_id))
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                out.append((_format_edge(node_id, data_id, None), "data"))
+                out.append((_format_edge(node_id, data_id, None, id_allocator=id_allocator), "data"))
 
     # DATA → consumer edges + control/ordering edges
     for source, target, edge_data in flat_graph.edges(data=True):
@@ -440,19 +360,22 @@ def _render_separate_edges(
                 )
                 if actual_source is None:
                     continue
+                source_attrs = flat_graph.nodes.get(actual_source, {})
+                if is_internal_gate_output(actual_source, value_name, source_attrs):
+                    continue
                 data_id = f"data_{actual_source}_{value_name}"
-                edge_key = (_sanitize_id(data_id), _sanitize_id(target))
+                edge_key = (id_allocator.get(data_id), id_allocator.get(target))
                 if edge_key not in seen_edges:
                     seen_edges.add(edge_key)
                     is_exclusive = (source, target, value_name) in exclusive_data_edges
-                    out.append((_format_edge(data_id, target, value_name, exclusive=is_exclusive), "data"))
+                    out.append((_format_edge(data_id, target, value_name, exclusive=is_exclusive, id_allocator=id_allocator), "data"))
 
         elif edge_type == "ordering":
             value_name = value_names[0] if value_names else ""
-            edge_key = (_sanitize_id(source), _sanitize_id(target), f"ord_{value_name}")
+            edge_key = (id_allocator.get(source), id_allocator.get(target), f"ord_{value_name}")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                out.append((_format_ordering_edge(source, target, value_name), "ordering"))
+                out.append((_format_ordering_edge(source, target, value_name, id_allocator), "ordering"))
 
         elif edge_type == "control":
             actual_target = _resolve_control_target(
@@ -464,10 +387,10 @@ def _render_separate_edges(
             if actual_target is None:
                 continue
             label = _get_control_label(source, target, flat_graph)
-            edge_key = (_sanitize_id(source), _sanitize_id(actual_target), label or "")
+            edge_key = (id_allocator.get(source), id_allocator.get(actual_target), label or "")
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
-                out.append((_format_control_edge(source, actual_target, label), "control"))
+                out.append((_format_control_edge(source, actual_target, label, id_allocator), "control"))
 
     return out
 
@@ -482,18 +405,25 @@ def _format_edge(
     target: str,
     label: str | None,
     exclusive: bool = False,
+    *,
+    id_allocator: _MermaidIdAllocator,
 ) -> str:
     """Format a Mermaid data edge; dashed when fed by mutex producers."""
-    s, t = _sanitize_id(source), _sanitize_id(target)
+    s, t = id_allocator.get(source), id_allocator.get(target)
     arrow = "-.->" if exclusive else "-->"
     if label:
         return f"    {s} {arrow}|{label}| {t}"
     return f"    {s} {arrow} {t}"
 
 
-def _format_ordering_edge(source: str, target: str, label: str) -> str:
+def _format_ordering_edge(
+    source: str,
+    target: str,
+    label: str,
+    id_allocator: _MermaidIdAllocator,
+) -> str:
     """Format a dotted-arrow Mermaid edge (for ordering/emit edges)."""
-    s, t = _sanitize_id(source), _sanitize_id(target)
+    s, t = id_allocator.get(source), id_allocator.get(target)
     if label:
         return f"    {s} -.->|{label}| {t}"
     return f"    {s} -.-> {t}"
@@ -503,9 +433,10 @@ def _format_control_edge(
     source: str,
     target: str,
     label: str | None,
+    id_allocator: _MermaidIdAllocator,
 ) -> str:
     """Format a dotted-arrow Mermaid control edge (for gate-origin edges)."""
-    s, t = _sanitize_id(source), _sanitize_id(target)
+    s, t = id_allocator.get(source), id_allocator.get(target)
     if label:
         return f"    {s} -.->|{label}| {t}"
     return f"    {s} -.-> {t}"
@@ -586,16 +517,32 @@ def _get_control_label(
     target: str,
     flat_graph: nx.DiGraph,
 ) -> str | None:
-    """Get True/False label for ifelse control edges."""
+    """Get the user-facing label for a control edge."""
     source_attrs = flat_graph.nodes.get(source, {})
     branch_data = source_attrs.get("branch_data", {})
     if not branch_data:
         return None
+    local_target = target.rsplit("/", 1)[-1]
     if "when_true" in branch_data:
-        if target == branch_data["when_true"]:
+        if local_target == branch_data["when_true"]:
             return "True"
-        if target == branch_data["when_false"]:
+        if local_target == branch_data["when_false"]:
             return "False"
+    targets = branch_data.get("targets")
+    if isinstance(targets, dict):
+        for label, route_target in targets.items():
+            if route_target in {target, local_target}:
+                return str(label)
+    return None
+
+
+def _get_end_control_label(branch_data: dict[str, Any]) -> str | None:
+    """Get the user-facing label for a control edge to END."""
+    targets = branch_data.get("targets")
+    if isinstance(targets, dict):
+        for label, route_target in targets.items():
+            if route_target == "END":
+                return str(label)
     return None
 
 
@@ -611,11 +558,12 @@ def _render_subgraph_block(
     show_types: bool,
     separate_outputs: bool,
     node_class_map: dict[str, str],
+    id_allocator: _MermaidIdAllocator,
     indent: int = 1,
 ) -> list[str]:
     """Render a subgraph block for an expanded GRAPH node."""
     attrs = flat_graph.nodes[container_id]
-    safe_id = _sanitize_id(container_id)
+    safe_id = id_allocator.get(container_id)
     label = _escape_label(attrs.get("label", container_id))
     prefix = "    " * indent
 
@@ -639,6 +587,7 @@ def _render_subgraph_block(
                     show_types,
                     separate_outputs,
                     node_class_map,
+                    id_allocator,
                     indent=indent + 1,
                 )
             )
@@ -648,7 +597,7 @@ def _render_subgraph_block(
             lines.append(
                 "    " * (indent + 1)
                 + _format_node(
-                    _sanitize_id(child_id),
+                    id_allocator.get(child_id),
                     child_label,
                     mermaid_type,
                 ).strip()
@@ -668,6 +617,7 @@ def _build_style_section(
     colors: dict[str, dict[str, str]] | None,
     node_class_map: dict[str, str],
     ordering_edge_indices: list[int],
+    id_allocator: _MermaidIdAllocator,
 ) -> list[str]:
     """Build classDef, class assignments, and linkStyle lines."""
     effective = {cls: props.copy() for cls, props in DEFAULT_COLORS.items()}
@@ -688,7 +638,7 @@ def _build_style_section(
     # class assignments — group node IDs by class
     class_to_ids: dict[str, list[str]] = {}
     for node_id, cls in node_class_map.items():
-        class_to_ids.setdefault(cls, []).append(_sanitize_id(node_id))
+        class_to_ids.setdefault(cls, []).append(id_allocator.get(node_id))
 
     for cls_name, ids in sorted(class_to_ids.items()):
         lines.append(f"    class {','.join(ids)} {cls_name}")
@@ -748,6 +698,7 @@ def to_mermaid(
 
     lines: list[str] = [f"flowchart {direction}"]
     node_class_map: dict[str, str] = {}
+    id_allocator = _MermaidIdAllocator()
 
     # --- Shared state annotation ---
     shared_params = flat_graph.graph.get("shared", [])
@@ -760,7 +711,7 @@ def to_mermaid(
     if start_targets:
         start_id = "__start__"
         lines.append("    %% Start")
-        lines.append(_format_node(_sanitize_id(start_id), "Start", "START"))
+        lines.append(_format_node(id_allocator.get(start_id), "Start", "START"))
         node_class_map[start_id] = "start"
 
     # --- Input nodes ---
@@ -790,7 +741,7 @@ def to_mermaid(
             node_id = f"input_group_{'_'.join(id_segs)}"
             node_type = "INPUT_GROUP"
 
-        lines.append(_format_node(_sanitize_id(node_id), label, node_type))
+        lines.append(_format_node(id_allocator.get(node_id), label, node_type))
         node_class_map[node_id] = "input"
 
     # --- Function / Graph / Branch nodes ---
@@ -822,12 +773,13 @@ def to_mermaid(
                     show_types,
                     separate_outputs,
                     node_class_map,
+                    id_allocator,
                 )
             )
             continue
 
         label = _build_label(attrs, show_types, separate_outputs)
-        lines.append(_format_node(_sanitize_id(node_id), label, node_type))
+        lines.append(_format_node(id_allocator.get(node_id), label, node_type))
         node_class_map[node_id] = _NODE_TYPE_TO_CLASS.get(node_type, "function")
 
     # --- DATA nodes (separate_outputs mode only) ---
@@ -841,25 +793,27 @@ def to_mermaid(
                 continue
             output_types = attrs.get("output_types", {})
             for output_name in attrs.get("outputs", ()):
+                if is_internal_gate_output(node_id, output_name, attrs):
+                    continue
                 data_id = f"data_{node_id}_{output_name}"
                 data_label = _build_data_label(
                     output_name,
                     format_type(output_types.get(output_name)),
                     show_types,
                 )
-                lines.append(_format_node(_sanitize_id(data_id), data_label, "DATA"))
+                lines.append(_format_node(id_allocator.get(data_id), data_label, "DATA"))
                 node_class_map[data_id] = "data"
 
     # --- END node ---
     if has_end_routing(flat_graph, expansion_state):
         end_id = "__end__"
-        lines.append(_format_node(_sanitize_id(end_id), "End", "END"))
+        lines.append(_format_node(id_allocator.get(end_id), "End", "END"))
         node_class_map[end_id] = "end"
 
     # --- Edge collection (kind-tagged so linkStyle can target ordering only) ---
     lines.append("    %% Edges")
     edge_pairs: list[tuple[str, str]] = []
-    edge_pairs.extend((line, "start") for line in _render_start_edges(start_targets))
+    edge_pairs.extend((line, "start") for line in _render_start_edges(start_targets, id_allocator))
 
     for group in input_groups:
         params = group["params"]
@@ -871,15 +825,15 @@ def to_mermaid(
 
         targets = _get_input_targets(params, flat_graph, param_to_consumers, expansion_state)
         for tgt in targets:
-            edge_pairs.append((_format_edge(input_node_id, tgt, None), "input"))
+            edge_pairs.append((_format_edge(input_node_id, tgt, None, id_allocator=id_allocator), "input"))
 
     exclusive_data_edges = compute_exclusive_data_edges(flat_graph)
     if separate_outputs:
-        edge_pairs.extend(_render_separate_edges(flat_graph, expansion_state, exclusive_data_edges))
+        edge_pairs.extend(_render_separate_edges(flat_graph, expansion_state, exclusive_data_edges, id_allocator))
     else:
-        edge_pairs.extend(_render_merged_edges(flat_graph, expansion_state, exclusive_data_edges))
+        edge_pairs.extend(_render_merged_edges(flat_graph, expansion_state, exclusive_data_edges, id_allocator))
 
-    edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state))
+    edge_pairs.extend((line, "end") for line in _render_end_edges(flat_graph, expansion_state, id_allocator))
 
     ordering_indices = [i for i, (_, kind) in enumerate(edge_pairs) if kind == "ordering"]
     lines.extend(line for line, _ in edge_pairs)
@@ -887,7 +841,7 @@ def to_mermaid(
     # --- Styling ---
     lines.append("")
     lines.append("    %% Styling")
-    lines.extend(_build_style_section(colors, node_class_map, ordering_indices))
+    lines.extend(_build_style_section(colors, node_class_map, ordering_indices, id_allocator))
 
     return MermaidDiagram("\n".join(lines))
 
@@ -963,6 +917,7 @@ def _get_input_targets(
 def _render_end_edges(
     flat_graph: nx.DiGraph,
     expansion_state: dict[str, bool],
+    id_allocator: _MermaidIdAllocator,
 ) -> list[str]:
     """Render edges from gate nodes to the END node."""
     if not has_end_routing(flat_graph, expansion_state):
@@ -978,20 +933,20 @@ def _render_end_edges(
 
         emitted = False
         if branch_data.get("when_true") == "END":
-            lines.append(_format_control_edge(node_id, "__end__", "True"))
+            lines.append(_format_control_edge(node_id, "__end__", "True", id_allocator))
             emitted = True
         if branch_data.get("when_false") == "END":
-            lines.append(_format_control_edge(node_id, "__end__", "False"))
+            lines.append(_format_control_edge(node_id, "__end__", "False", id_allocator))
             emitted = True
         if not emitted and "targets" in branch_data:
             targets = branch_data["targets"]
             target_values = targets.values() if isinstance(targets, dict) else targets
             if "END" in target_values:
-                lines.append(_format_control_edge(node_id, "__end__", None))
+                lines.append(_format_control_edge(node_id, "__end__", _get_end_control_label(branch_data), id_allocator))
 
     return lines
 
 
-def _render_start_edges(start_targets: list[str]) -> list[str]:
+def _render_start_edges(start_targets: list[str], id_allocator: _MermaidIdAllocator) -> list[str]:
     """Render edges from START to explicitly configured entrypoints."""
-    return [_format_edge("__start__", target, None) for target in start_targets]
+    return [_format_edge("__start__", target, None, id_allocator=id_allocator) for target in start_targets]

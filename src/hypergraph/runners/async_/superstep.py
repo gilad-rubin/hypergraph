@@ -262,10 +262,12 @@ async def run_superstep_async(
 
     # Separate successes from failures, applying successful outputs first
     first_error: BaseException | None = None
-    for result in results:
+    node_errors: dict[str, BaseException] = {}
+    for node, result in zip(ready_nodes, results, strict=True):
         if isinstance(result, BaseException):
             if first_error is None:
                 first_error = result
+            node_errors[node.name] = result
             continue
         node, outputs, input_versions, wait_for_versions, duration_ms, cached = result
         apply_node_result(
@@ -282,10 +284,13 @@ async def run_superstep_async(
     if first_error is not None:
         # PauseExecution (BaseException) must propagate unwrapped for the
         # runner's except PauseExecution handler to work
-        if isinstance(first_error, ExecutionError):
-            raise first_error
         if not isinstance(first_error, Exception):
             raise first_error
-        raise ExecutionError(first_error, new_state) from first_error
+        error = first_error if isinstance(first_error, ExecutionError) else ExecutionError(first_error, new_state)
+        error._attempted_node_names = tuple(node.name for node in ready_nodes)  # type: ignore[attr-defined]
+        error._node_errors = node_errors  # type: ignore[attr-defined]
+        if error is first_error:
+            raise error
+        raise error from first_error
 
     return new_state

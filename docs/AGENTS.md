@@ -129,6 +129,14 @@ A good doc page should enable:
 - User finds "how do I X" by task, not by feature hunting
 - Clear progression from simple example → production deployment
 
+## Contract Checks
+
+When changing public API signatures, runner status semantics, or runnable docs
+examples, update `tests/test_docs_contract.py` alongside the docs. The contract
+suite intentionally checks a small set of high-drift surfaces such as
+`Graph.visualize()`, `Graph.as_node()`, `DaftRunner.map_dataframe()`,
+`RunStatus`, events, and cyclic example entrypoints.
+
 ## Sources
 
 These guidelines are derived from analysis of documentation strategies in:

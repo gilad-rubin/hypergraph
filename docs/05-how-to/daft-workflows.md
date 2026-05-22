@@ -284,7 +284,7 @@ See `examples/daft/batch_normalization.py` for a complete example.
 
 ## Current Limitations
 
-- **DAGs only** - Cycles, gates, and interrupts are not supported. Use `SyncRunner` or `AsyncRunner` for those.
+- **DAGs only** - Cycles and gates are not supported; use `SyncRunner` or `AsyncRunner` for those. Interrupts require `AsyncRunner`.
 - **No checkpointing** - `DaftRunner` does not support `workflow_id`, resume, or fork semantics.
 - **No event processors** - Event processors are accepted but ignored with a warning.
 - **No runner delegation** - `with_runner()` on nested GraphNodes is rejected. DaftRunner translates the entire graph to Daft UDFs.

@@ -18,7 +18,7 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
+from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, graphnode_child_workflow_id, initialize_state
 from hypergraph.runners._shared.protocols import AsyncNodeExecutor
 from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_async import AsyncRunnerTemplate
@@ -239,6 +239,10 @@ class AsyncRunner(AsyncRunnerTemplate):
                 if not ready_nodes:
                     continue
 
+                interrupts = [node for node in ready_nodes if node.is_interrupt]
+                if interrupts:
+                    ready_nodes = [interrupts[0]]
+
                 if dispatcher.active:
                     from hypergraph.events.types import SuperstepStartEvent, _generate_span_id
 
@@ -260,8 +264,15 @@ class AsyncRunner(AsyncRunnerTemplate):
                 prev_input_versions = {
                     name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
                 }
+                child_run_ids = {
+                    name: graphnode_child_workflow_id(workflow_id, name, state)
+                    for name in ready_node_names
+                    if isinstance(graph._nodes.get(name), GraphNode)
+                }
 
                 superstep_error: BaseException | None = None
+                attempted_node_names: tuple[str, ...] | None = None
+                node_errors: dict[str, BaseException] | None = None
                 try:
                     # Execute all ready nodes concurrently
                     # Concurrency controlled by shared semaphore in ContextVar
@@ -298,13 +309,18 @@ class AsyncRunner(AsyncRunnerTemplate):
                             superstep_error=None,
                             is_pause=True,
                             stopped=signal.is_set,
+                            child_run_ids=child_run_ids,
                         )
                     raise
                 except ExecutionError as e:
                     superstep_error = e
                     state = e.partial_state  # type: ignore[assignment]
+                    attempted_node_names = getattr(e, "_attempted_node_names", None)
+                    node_errors = getattr(e, "_node_errors", None)
                 except Exception as e:
                     superstep_error = ExecutionError(e, state)
+                    attempted_node_names = ()
+                    node_errors = {}
 
                 # Save step records for executed nodes (even on failure)
                 if has_checkpointer:
@@ -322,6 +338,9 @@ class AsyncRunner(AsyncRunnerTemplate):
                         graph,
                         superstep_error,
                         stopped=signal.is_set,
+                        child_run_ids=child_run_ids,
+                        attempted_node_names=attempted_node_names,
+                        node_errors=node_errors,
                     )
 
                 if superstep_error is not None:
@@ -381,6 +400,9 @@ class AsyncRunner(AsyncRunnerTemplate):
         superstep_error: BaseException | None = None,
         is_pause: bool = False,
         stopped: bool = False,
+        child_run_ids: dict[str, str | None] | None = None,
+        attempted_node_names: tuple[str, ...] | set[str] | None = None,
+        node_errors: dict[str, BaseException] | None = None,
     ) -> int:
         """Build StepRecords and dispatch to the appropriate durability mode."""
         from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
@@ -397,6 +419,9 @@ class AsyncRunner(AsyncRunnerTemplate):
             superstep_error=superstep_error,
             is_pause=is_pause,
             stopped=stopped,
+            child_run_ids=child_run_ids,
+            attempted_node_names=attempted_node_names,
+            node_errors=node_errors,
         )
 
         durability = checkpointer.policy.durability

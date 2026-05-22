@@ -2,6 +2,7 @@
 
 import functools
 import hashlib
+import keyword
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from hypergraph.nodes._rename import RenameError, build_reverse_rename_map, get_next_batch_id
@@ -254,6 +255,15 @@ class GraphNode(HyperNode):
         for char in self._RESERVED_CHARS:
             if char in name:
                 raise ValueError(f"{role} cannot contain '{char}': {name!r}. Reserved characters: {set(self._RESERVED_CHARS)}")
+
+    def _validate_public_output_alias(self, name: str, *, role: str) -> None:
+        self._validate_local_port_name(name, role=role)
+        if not name.isidentifier():
+            raise ValueError(f"{role} must be a valid Python identifier: {name!r}")
+        if keyword.iskeyword(name):
+            raise ValueError(f"{role} cannot be a Python keyword: {name!r}")
+        if name.startswith("_"):
+            raise ValueError(f"{role} cannot start with '_': {name!r}. Leading underscores are reserved for internal outputs")
 
     def with_runner(self: _GN, runner: Any) -> _GN:
         """Return a new GraphNode that delegates execution to the given runner.
@@ -856,7 +866,7 @@ class GraphNode(HyperNode):
                 raise renamed._make_rename_error(old, "outputs")
             if old in renamed._exposed:
                 raise RenameError(f"Cannot rename exposed local output {old!r}; its parent-facing address is finalized.")
-            renamed._validate_local_port_name(new_name, role="Output name")
+            renamed._validate_public_output_alias(new_name, role="Output alias")
             renamed._rename_history.append(RenameEntry("outputs", old, new_name, batch_id))
         renamed._local_outputs = tuple(combined.get(value, value) for value in current)
         renamed._local_data_outputs = tuple(combined.get(value, value) for value in renamed._local_data_outputs)
@@ -894,11 +904,14 @@ class GraphNode(HyperNode):
         if any(char in local_name for char in self._RESERVED_CHARS):
             raise ValueError(f"expose(...) targets Local port names, not projected addresses: {local_name!r}")
         self._validate_local_port_name(local_name, role="Expose target")
-        self._validate_local_port_name(alias, role="Expose alias")
         if local_name not in self._local_inputs and local_name not in self._local_outputs:
             raise ValueError(
                 f"Cannot expose {local_name!r}: not on GraphNode surface. Available inputs: {self._local_inputs}; outputs: {self._local_outputs}"
             )
+        if local_name in self._local_outputs:
+            self._validate_public_output_alias(alias, role="Expose alias")
+        else:
+            self._validate_local_port_name(alias, role="Expose alias")
         if alias in self._exposed.values() and self._exposed.get(local_name) != alias:
             raise ValueError(f"expose(...) alias {alias!r} is already used by another local port on GraphNode '{self.name}'")
         self._exposed[local_name] = alias

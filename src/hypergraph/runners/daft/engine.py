@@ -31,9 +31,20 @@ def build_execution_plan(
     """
     import networkx as nx
 
+    from hypergraph.graph.input_spec import _compute_active_scope
     from hypergraph.runners.daft.operations import create_operation
 
-    topo_order = list(nx.topological_sort(graph._nx_graph))
+    if graph.entrypoints_config is None and graph.selected is None:
+        active_graph = graph._nx_graph
+    else:
+        _, active_graph = _compute_active_scope(
+            graph._nodes,
+            graph._nx_graph,
+            entrypoints=graph.entrypoints_config,
+            selected=graph.selected,
+        )
+
+    topo_order = list(nx.topological_sort(active_graph))
     operations = []
     for node_name in topo_order:
         node = graph._nodes[node_name]

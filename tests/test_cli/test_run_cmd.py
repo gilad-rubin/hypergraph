@@ -31,7 +31,25 @@ def triple(doubled: int) -> int:
     return doubled * 3
 
 
+@node(output_name="total")
+def add_pair(x: int, y: int) -> int:
+    return x + y
+
+
+@node(output_name="length")
+def payload_length(payload: str) -> int:
+    return len(payload)
+
+
+@node(output_name="greeting")
+def greet(name: str = "Ada") -> str:
+    return f"Hello, {name}"
+
+
 test_graph = Graph([double, triple])
+pair_graph = Graph([add_pair])
+payload_graph = Graph([payload_length])
+default_graph = Graph([greet])
 
 runner_cli = CliRunner()
 
@@ -40,6 +58,9 @@ runner_cli = CliRunner()
 # Module path for the test graph (used by CLI commands)
 # ---------------------------------------------------------------------------
 MODULE_PATH = f"{__name__}:test_graph"
+PAIR_MODULE_PATH = f"{__name__}:pair_graph"
+PAYLOAD_MODULE_PATH = f"{__name__}:payload_graph"
+DEFAULT_MODULE_PATH = f"{__name__}:default_graph"
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +233,33 @@ class TestGraphLs:
         assert data["data"]["graphs"] == {"pipeline": "my_module:graph"}
 
 
+class TestGraphInspect:
+    def test_inspect_human_uses_graph_inputs(self):
+        app = create_app()
+        result = runner_cli.invoke(app, ["graph", "inspect", MODULE_PATH])
+
+        assert result.exit_code == 0
+        assert "Graph:" in result.output
+        assert "Required inputs: x" in result.output
+
+    def test_inspect_json_uses_graph_inputs(self):
+        app = create_app()
+        result = runner_cli.invoke(app, ["graph", "inspect", MODULE_PATH, "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["command"] == "graph.inspect"
+        assert data["data"]["required_inputs"] == ["x"]
+        assert data["data"]["optional_inputs"] == []
+
+    def test_inspect_human_shows_optional_input_defaults(self):
+        app = create_app()
+        result = runner_cli.invoke(app, ["graph", "inspect", DEFAULT_MODULE_PATH])
+
+        assert result.exit_code == 0
+        assert "Optional inputs: name (default: 'Ada')" in result.output
+
+
 # ---------------------------------------------------------------------------
 # Run command tests
 # ---------------------------------------------------------------------------
@@ -243,6 +291,17 @@ class TestRunCmd:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["data"]["values"]["doubled"] == 14
+
+    def test_run_with_long_inline_json_values(self):
+        app = create_app()
+        payload = "x" * 500
+        inline_json = json.dumps({"payload": payload})
+
+        result = runner_cli.invoke(app, ["run", PAYLOAD_MODULE_PATH, "--values", inline_json, "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"]["values"]["length"] == len(payload)
 
     def test_run_values_file(self, tmp_path):
         f = tmp_path / "params.json"
@@ -325,6 +384,35 @@ class TestMapCmd:
         assert len(data["data"]["results"]) == 3
         assert data["data"]["results"][0]["values"]["doubled"] == 2
         assert data["data"]["results"][1]["values"]["doubled"] == 4
+
+    def test_map_over_trims_comma_separated_names(self):
+        app = create_app()
+        result = runner_cli.invoke(
+            app,
+            [
+                "map",
+                PAIR_MODULE_PATH,
+                "--map-over",
+                "x, y",
+                "--values",
+                '{"x": [1, 2], "y": [10, 20]}',
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["data"]["map_over"] == ["x", "y"]
+        assert data["data"]["results"][0]["values"]["total"] == 11
+        assert data["data"]["results"][1]["values"]["total"] == 22
+
+    def test_map_over_rejects_empty_names(self):
+        app = create_app()
+        result = runner_cli.invoke(
+            app,
+            ["map", MODULE_PATH, "--map-over", "x,", "--values", '{"x": [1, 2]}'],
+        )
+        assert result.exit_code != 0
+        assert "Error: --map-over contains an empty name" in result.output
 
     def test_map_kv_args(self):
         app = create_app()

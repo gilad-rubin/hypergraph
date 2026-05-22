@@ -16,7 +16,7 @@ from hypergraph.runners._shared.event_metadata import (
     RunContext,
     RunLineage,
 )
-from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, initialize_state
+from hypergraph.runners._shared.helpers import ExecutionFrontier, compute_execution_scope, graphnode_child_workflow_id, initialize_state
 from hypergraph.runners._shared.protocols import NodeExecutor
 from hypergraph.runners._shared.stop import StopSignal, get_stop_signal, reset_stop_signal, set_stop_signal
 from hypergraph.runners._shared.template_sync import SyncRunnerTemplate
@@ -228,8 +228,15 @@ class SyncRunner(SyncRunnerTemplate):
                 prev_input_versions = {
                     name: dict(state.node_executions[name].input_versions) for name in ready_node_names if name in state.node_executions
                 }
+                child_run_ids = {
+                    name: graphnode_child_workflow_id(workflow_id, name, state)
+                    for name in ready_node_names
+                    if isinstance(graph._nodes.get(name), GraphNode)
+                }
 
                 superstep_error: BaseException | None = None
+                attempted_node_names: tuple[str, ...] | None = None
+                node_errors: dict[str, BaseException] | None = None
                 try:
                     # Execute all ready nodes
                     state = run_superstep_sync(
@@ -248,8 +255,12 @@ class SyncRunner(SyncRunnerTemplate):
                 except ExecutionError as e:
                     superstep_error = e
                     state = e.partial_state  # type: ignore[assignment]
+                    attempted_node_names = getattr(e, "_attempted_node_names", None)
+                    node_errors = getattr(e, "_node_errors", None)
                 except Exception as e:
                     superstep_error = ExecutionError(e, state)
+                    attempted_node_names = ()
+                    node_errors = {}
 
                 # Save step records for executed nodes (even on failure)
                 if sync_cp:
@@ -266,6 +277,9 @@ class SyncRunner(SyncRunnerTemplate):
                         graph,
                         superstep_error,
                         stopped=signal.is_set,
+                        child_run_ids=child_run_ids,
+                        attempted_node_names=attempted_node_names,
+                        node_errors=node_errors,
                     )
 
                 if superstep_error is not None:
@@ -365,6 +379,9 @@ def _save_superstep_sync(
     graph: Any,
     superstep_error: BaseException | None,
     stopped: bool = False,
+    child_run_ids: dict[str, str | None] | None = None,
+    attempted_node_names: tuple[str, ...] | set[str] | None = None,
+    node_errors: dict[str, BaseException] | None = None,
 ) -> int:
     """Build StepRecords and dispatch to sync durability mode."""
     from hypergraph.runners._shared.checkpoint_helpers import build_superstep_records
@@ -380,6 +397,9 @@ def _save_superstep_sync(
         graph=graph,
         superstep_error=superstep_error,
         stopped=stopped,
+        child_run_ids=child_run_ids,
+        attempted_node_names=attempted_node_names,
+        node_errors=node_errors,
     )
 
     # SyncRunner durability: "sync" and "async" both write immediately (no event loop).

@@ -54,6 +54,21 @@ InterruptNode execution has three paths:
 
 The `is_resuming` flag prevents false auto-resolve on fresh runs when provided_values happen to match interrupt output names.
 
+## Resume Payload State
+
+`GraphState.values` can contain restored checkpoint state and current-run
+inputs. Do not infer "this is an interrupt resume" from the presence of a
+GraphNode or InterruptNode output name in `state.values`; normal persisted
+outputs can have the same shape. Use explicit runtime resume metadata, and
+carry new `GraphState` fields through `copy()` and checkpoint initialization.
+
+## Aggregate Status
+
+Shared status helpers in this package define public runner semantics. When
+touching `RunStatus`, `MapResult`, or batch summaries, update every consumer
+that derives the same status and add tests for mixed outcomes such as
+completed+failed, completed+stopped, paused+failed, and empty batches.
+
 ## GraphNode Boundary Addressing (`address_for_node_input`)
 
 A `GraphNode`'s inputs are already projected to the parent-facing address:

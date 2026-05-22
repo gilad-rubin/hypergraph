@@ -318,8 +318,15 @@ class RouteNode(GateNode):
     @property
     def branch_data(self) -> dict[str, Any]:
         """Branch-specific data for visualization."""
+        if self.descriptions:
+            targets: dict[str, str] | list[str] = {
+                str(self.descriptions.get(target, "END" if target is END else target)): "END" if target is END else target for target in self.targets
+            }
+        else:
+            targets = ["END" if t is END else t for t in self.targets]
+
         return {
-            "targets": ["END" if t is END else t for t in self.targets],
+            "targets": targets,
             "multi_target": self.multi_target,
         }
 

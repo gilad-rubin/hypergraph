@@ -46,12 +46,14 @@ class SyncRunner:
         self,
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
+        show_progress: bool = False,
     ) -> None: ...
 ```
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`. Supports `InMemoryCache`, `DiskCache`, or any `CacheBackend` implementation.
 - `checkpointer` — Optional [checkpointer](../05-how-to/batch-processing.md#checkpointing-with-map) for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `SyncCheckpointerProtocol` implementation.
+- `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls. Per-call `show_progress` overrides this default.
 
 ### run()
 
@@ -61,7 +63,7 @@ def run(
     graph: Graph,
     values: dict[str, Any] | None = None,
     *,
-    select: str | list[str] = "**",
+    select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     max_iterations: int | None = None,
     error_handling: Literal["raise", "continue"] = "raise",
@@ -173,7 +175,7 @@ def map(
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     clone: bool | list[str] = False,
-    select: str | list[str] = "**",
+    select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -299,7 +301,7 @@ def run(
     graph: Graph,
     values: dict[str, Any] | None = None,
     *,
-    select: str | list[str] = "**",
+    select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
@@ -349,7 +351,7 @@ def map(
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     clone: bool | list[str] = False,
-    select: str | list[str] = "**",
+    select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     error_handling: Literal["raise", "continue"] = "raise",
     event_processors: list[EventProcessor] | None = None,
@@ -416,28 +418,25 @@ def map_dataframe(
     *,
     columns: str | Iterable[str] | None = None,
     values: dict[str, Any] | None = None,
-    select: str | list[str] = "**",
-    on_missing: Literal["ignore", "warn", "error"] = "ignore",
-    error_handling: Literal["raise", "continue"] = "raise",
     clone: bool | list[str] = False,
     **input_values: Any,
-) -> MapResult: ...
+) -> DataFrame: ...
 ```
 
-Execute one graph run per Daft DataFrame row.
+Apply a DAG graph to a Daft DataFrame and return a new Daft DataFrame.
 
 Use this when your dataset already lives in a Daft DataFrame. Each row
-becomes one graph execution.
+provides graph inputs from columns, while graph outputs are added as new
+DataFrame columns without materializing rows back into Python.
 
 **Args:**
 - `graph` - The graph to execute (must be a DAG)
 - `dataframe` - Daft DataFrame supplying row-wise inputs
 - `columns` - Optional subset of DataFrame columns to use as graph inputs. Defaults to all columns.
 - `values` / `**input_values` - Additional broadcast inputs merged into every row. Must not overlap with DataFrame column names.
-- `select` - Runtime select overrides are not supported
-- `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
-- `error_handling` - Same contract as `map()`: `"raise"` re-raises the first failed row, `"continue"` falls back to per-item execution
 - `clone` - Deep-copy mutable broadcast values for each row
+
+**Returns:** Daft DataFrame with original input columns plus graph output columns.
 
 **Example:**
 
@@ -579,12 +578,14 @@ class AsyncRunner:
         self,
         cache: CacheBackend | None = None,
         checkpointer: Checkpointer | None = None,
+        show_progress: bool = False,
     ) -> None: ...
 ```
 
 **Args:**
 - `cache` — Optional [cache backend](../03-patterns/08-caching.md) for node result caching. Nodes opt in with `@node(..., cache=True)`.
 - `checkpointer` — Optional checkpointer for persistent run history. For `run()`, enables strict lineage semantics (resume/fork) and auto-generates `workflow_id` when omitted. For `map()`, persistence is enabled when `workflow_id` is provided. Requires `SqliteCheckpointer` or any `Checkpointer` implementation.
+- `show_progress` — If `True`, automatically attaches a Rich progress processor to `run()` and `map()` calls. Per-call `show_progress` overrides this default.
 
 ### run()
 
@@ -594,7 +595,7 @@ async def run(
     graph: Graph,
     values: dict[str, Any] | None = None,
     *,
-    select: str | list[str] = "**",
+    select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_iterations: int | None = None,
@@ -686,7 +687,7 @@ async def map(
     map_over: str | list[str],
     map_mode: Literal["zip", "product"] = "zip",
     clone: bool | list[str] = False,
-    select: str | list[str] = "**",
+    select: str | list[str] = _UNSET_SELECT,
     on_missing: Literal["ignore", "warn", "error"] = "ignore",
     entrypoint: str | None = None,
     max_concurrency: int | None = None,
@@ -791,7 +792,7 @@ else:
 @dataclass
 class RunResult:
     values: dict[str, Any]      # Output values
-    status: RunStatus           # COMPLETED, FAILED, or PAUSED
+    status: RunStatus           # COMPLETED, FAILED, PAUSED, or STOPPED
     run_id: str                 # Unique identifier (auto-generated)
     workflow_id: str | None     # Optional workflow tracking
     error: BaseException | None # Exception if FAILED
@@ -869,9 +870,11 @@ results["doubled"]           # [2, 4, 6]
 results.get("doubled", 0)   # [2, 4, 6] (with default for missing)
 
 # Aggregate status
-results.status       # RunStatus.COMPLETED (or FAILED if any failed)
+results.status       # RunStatus.COMPLETED, PARTIAL, FAILED, PAUSED, or STOPPED
 results.completed    # True if all completed
 results.failed       # True if any failed
+results.partial      # True if some items completed and some failed
+results.stopped      # True if any item stopped and none failed/paused
 results.failures     # List of failed RunResult items
 
 # Progressive disclosure
@@ -894,7 +897,13 @@ class MapResult:
 
 ### Status Precedence
 
-`FAILED > PAUSED > COMPLETED`. If any item failed, the batch status is FAILED. Empty batch → COMPLETED.
+Empty batch -> `COMPLETED`.
+
+- `FAILED` when at least one item failed and none completed.
+- `PARTIAL` when some items completed and some failed.
+- `PAUSED` if any item paused and no item failed.
+- `STOPPED` if any item stopped and no item failed or paused.
+- `COMPLETED` when all items completed.
 
 ---
 
@@ -909,6 +918,8 @@ class RunStatus(Enum):
     COMPLETED = "completed"  # Success
     FAILED = "failed"        # Error occurred
     PAUSED = "paused"        # Waiting for human input (InterruptNode)
+    PARTIAL = "partial"      # Batch had mixed completed and failed items
+    STOPPED = "stopped"      # Run stopped cooperatively
 ```
 
 **Usage:**
@@ -924,9 +935,11 @@ match result.status:
         print(result.pause.value)  # Value from InterruptNode
     case RunStatus.FAILED:
         raise result.error  # Re-raise manually if needed
+    case RunStatus.STOPPED:
+        return result.values
 ```
 
-With the default `error_handling="raise"`, node failures raise before returning a `RunResult`, so the status will be `COMPLETED` or `PAUSED`.
+With the default `error_handling="raise"`, node failures raise before returning a `RunResult`, so a single run normally returns `COMPLETED`, `PAUSED`, or `STOPPED`. `PARTIAL` is a batch aggregate status exposed by `MapResult`.
 
 ---
 
@@ -1053,7 +1066,7 @@ Layer 2: [finalize]
 When collecting inputs for a node, values are resolved in this order:
 
 1. **Edge value** - Output from upstream node
-2. **Input value** - Provided via `values`/kwargs. On resume/fork, checkpoint state is restored first, then runtime inputs apply (runtime values win). See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
+2. **Input value** - Provided via `values`/kwargs for fresh runs and explicit fork/retry runs.
 3. **Bound value** - From `graph.bind()`
 4. **Function default** - From function signature
 
@@ -1070,7 +1083,12 @@ graph = Graph([process]).bind(x=5)  # bound=5
 # Then default: (if no bind) runner.run(graph, {}) → x=10
 ```
 
-> **Note:** Fork/resume restoration rehydrates execution state from checkpoint snapshot data (including prior computed values) and uses staleness checks to decide which nodes re-execute.
+Checkpoint lineage has two different input rules:
+
+- **Strict resume**: using an existing `workflow_id` resumes persisted state and rejects fresh runtime inputs, because new inputs would silently rewrite history. Interrupt response payloads are the exception; pass the paused response key/value to resolve the pending interrupt.
+- **Fork/retry**: `fork_from` and `retry_from` create a new lineage from a checkpoint, so runtime inputs may override restored values for the new run.
+
+See [Run Lineage](../05-how-to/batch-processing.md#run-lineage-resume-vs-fork).
 
 ### Cyclic Graphs
 
@@ -1094,7 +1112,7 @@ The runner:
 
 ## Nested Graphs
 
-GraphNodes (nested graphs) are executed by the same runner:
+Each GraphNode inherits the parent runner by default:
 
 ```python
 inner = Graph([double], name="inner")
@@ -1109,3 +1127,20 @@ The runner automatically:
 - Shares concurrency limits (AsyncRunner)
 - Propagates the cache backend to nested graphs
 - Propagates errors
+
+Override the runner only when a subgraph has a different compatible execution strategy:
+
+```python
+from hypergraph import DaftRunner
+
+inner = Graph([normalize], name="columnar_step")
+outer = Graph([inner.as_node(runner=DaftRunner()), summarize])
+
+# Equivalent immutable form
+outer = Graph([inner.as_node().with_runner(DaftRunner()), summarize])
+```
+
+Compatibility is checked at execution time. A delegated runner must support the
+inner graph's features (cycles, gates, interrupts, async nodes, and events as
+needed). `DaftRunner` supports DAG-style `FunctionNode` and `GraphNode` plans,
+but does not support runner overrides inside a Daft plan.

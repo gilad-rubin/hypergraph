@@ -64,11 +64,19 @@ def run_superstep_sync(
     """
     new_state = state.copy()
     active = dispatcher is not None and dispatcher.active
+    attempted_node_names: list[str] = []
 
     for node in ready_nodes:
+        attempted_node_names.append(node.name)
         # Use original state snapshot for input collection to ensure all nodes
         # in this superstep see the same values (deterministic execution order)
-        inputs = collect_inputs_for_node(node, graph, state, provided_values)
+        try:
+            inputs = collect_inputs_for_node(node, graph, state, provided_values)
+        except Exception as e:
+            error = ExecutionError(e, new_state)
+            error._attempted_node_names = tuple(attempted_node_names)  # type: ignore[attr-defined]
+            error._node_errors = {node.name: e}  # type: ignore[attr-defined]
+            raise error from e
 
         # Record input versions under the same parent-facing key the staleness
         # check reads.
@@ -222,7 +230,10 @@ def run_superstep_sync(
                     raise
                 # Wrap only Exception subclasses
                 if isinstance(e, Exception):
-                    raise ExecutionError(e, new_state) from e
+                    error = ExecutionError(e, new_state)
+                    error._attempted_node_names = tuple(attempted_node_names)  # type: ignore[attr-defined]
+                    error._node_errors = {node.name: e}  # type: ignore[attr-defined]
+                    raise error from e
                 # Re-raise other BaseExceptions (KeyboardInterrupt, SystemExit, etc.)
                 raise
 

@@ -3,7 +3,7 @@
 import pytest
 import pytest_asyncio
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, node
+from hypergraph import AsyncRunner, Graph, SyncRunner, interrupt, node
 from hypergraph.checkpointers import (
     CheckpointPolicy,
     SqliteCheckpointer,
@@ -76,6 +76,29 @@ class TestRunnerCheckpointIntegration:
         # Steps should be persisted (background tasks gathered in finally block)
         steps = checkpointer.steps("wf-async")
         assert len(steps) == 2
+
+    async def test_interrupt_pause_checkpoints_only_executed_interrupt(self, checkpointer):
+        """Interrupt isolation should not mark skipped ready siblings as paused."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @interrupt(output_name="answer")
+        def ask() -> str | None:
+            return None
+
+        @node(output_name="side")
+        def ready_sibling() -> str:
+            return "not yet"
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([ask, ready_sibling])
+
+        result = await runner.run(graph, workflow_id="wf-interrupt-sibling")
+
+        assert result.paused
+        steps = checkpointer.steps("wf-interrupt-sibling")
+        assert [(step.node_name, step.status) for step in steps] == [
+            ("ask", StepStatus.PAUSED),
+        ]
 
     async def test_state_reconstruction(self, checkpointer):
         """get_state folds all step values into a dict."""
@@ -194,6 +217,103 @@ class TestRunnerCheckpointIntegration:
         # succeed_a should be COMPLETED, fail_b should be FAILED
         assert statuses["succeed_a"] == StepStatus.COMPLETED
         assert statuses["fail_b"] == StepStatus.FAILED
+
+    async def test_async_parallel_failures_preserve_per_node_errors(self, checkpointer):
+        """Each attempted failing async sibling should keep its own error string."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="a_out")
+        def fail_a(x: int) -> int:
+            raise RuntimeError("a failed")
+
+        @node(output_name="b_out")
+        def fail_b(x: int) -> int:
+            raise RuntimeError("b failed")
+
+        runner = AsyncRunner(checkpointer=checkpointer)
+        graph = Graph([fail_a, fail_b])
+
+        result = await runner.run(graph, {"x": 1}, workflow_id="wf-parallel-failures", error_handling="continue")
+        assert result.status.value == "failed"
+
+        steps = checkpointer.steps("wf-parallel-failures")
+        errors = {s.node_name: s.error for s in steps}
+        assert "a failed" in errors["fail_a"]
+        assert "b failed" in errors["fail_b"]
+
+    def test_sync_unattempted_ready_sibling_not_recorded_as_failed(self, checkpointer):
+        """Sync failure should not invent a failed step for an unattempted sibling."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="first_out")
+        def fail_first(x: int) -> int:
+            raise RuntimeError("first failed")
+
+        @node(output_name="second_out")
+        def unattempted_second(x: int) -> int:
+            return x + 1
+
+        runner = SyncRunner(checkpointer=checkpointer)
+        graph = Graph([fail_first, unattempted_second])
+
+        result = runner.run(graph, {"x": 1}, workflow_id="wf-sync-unattempted", error_handling="continue")
+        assert result.status.value == "failed"
+
+        steps = checkpointer.steps("wf-sync-unattempted")
+        assert [(s.node_name, s.status) for s in steps] == [("fail_first", StepStatus.FAILED)]
+        assert "first failed" in steps[0].error
+
+    def test_sync_pre_executor_error_does_not_mark_ready_siblings_failed(self, checkpointer, monkeypatch):
+        """Input-collection failures should preserve the actual attempted-node boundary."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="first_out")
+        def first(x: int) -> int:
+            return x + 1
+
+        @node(output_name="second_out")
+        def second(x: int) -> int:
+            return x + 2
+
+        from hypergraph.runners.sync import superstep as sync_superstep
+
+        original_collect = sync_superstep.collect_inputs_for_node
+
+        def fail_before_executor(node, graph, state, provided_values):
+            if node.name == "first":
+                raise KeyError("synthetic missing input")
+            return original_collect(node, graph, state, provided_values)
+
+        monkeypatch.setattr(sync_superstep, "collect_inputs_for_node", fail_before_executor)
+
+        runner = SyncRunner(checkpointer=checkpointer)
+        result = runner.run(Graph([first, second]), {"x": 1}, workflow_id="wf-sync-pre-exec", error_handling="continue")
+
+        assert result.status.value == "failed"
+        steps = checkpointer.steps("wf-sync-pre-exec")
+        assert [(s.node_name, s.status) for s in steps] == [("first", StepStatus.FAILED)]
+        assert "synthetic missing input" in steps[0].error
+
+    def test_sync_unattributed_superstep_error_does_not_mark_ready_nodes_failed(self, checkpointer, monkeypatch):
+        """Unexpected scheduler failures should not invent per-node failures."""
+        checkpointer.policy = CheckpointPolicy(durability="sync", retention="full")
+
+        @node(output_name="out")
+        def first(x: int) -> int:
+            return x + 1
+
+        from hypergraph.runners.sync import runner as sync_runner
+
+        def fail_without_node_attribution(*args, **kwargs):
+            raise RuntimeError("scheduler failed")
+
+        monkeypatch.setattr(sync_runner, "run_superstep_sync", fail_without_node_attribution)
+
+        runner = SyncRunner(checkpointer=checkpointer)
+        result = runner.run(Graph([first]), {"x": 1}, workflow_id="wf-sync-unattributed", error_handling="continue")
+
+        assert result.status.value == "failed"
+        assert checkpointer.steps("wf-sync-unattributed") == []
 
     async def test_async_map_partial_persists_parent_status(self, checkpointer):
         """Parent map runs persist PARTIAL when child items have mixed outcomes."""

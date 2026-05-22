@@ -331,6 +331,26 @@ class TestGraphConstruction:
         with pytest.raises(GraphConfigError, match="Multiple nodes produce 'result'"):
             Graph([node_a, node_b])
 
+    def test_single_node_duplicate_output_names_raise(self):
+        """A node cannot declare the same data output twice."""
+        with pytest.raises(GraphConfigError, match="Duplicate output name 'result'"):
+
+            @node(output_name=("result", "result"))
+            def bad_node(x: int) -> tuple[int, int]:
+                return x, x + 1
+
+            Graph([bad_node])
+
+    def test_single_node_duplicate_emit_names_raise(self):
+        """A node cannot declare the same emit signal twice."""
+        with pytest.raises(GraphConfigError, match="Duplicate output name 'ready'"):
+
+            @node(output_name="result", emit=("ready", "ready"))
+            def bad_node(x: int) -> int:
+                return x
+
+            Graph([bad_node])
+
     def test_nodes_property_returns_dict_copy(self):
         """Test that nodes property returns a copy (prevents mutation)."""
 
@@ -1540,6 +1560,44 @@ class TestGraphNodeRename:
         assert renamed.inputs == ("x",)
         assert renamed.outputs == ("output",)
 
+    @pytest.mark.parametrize("alias", ["bad-name", "class", "_reserved"])
+    def test_with_outputs_rejects_invalid_public_aliases(self, alias: str):
+        """Flat GraphNode output aliases must follow public output-name rules."""
+
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="my_graph")
+
+        with pytest.raises(ValueError, match="Output alias"):
+            g.as_node().with_outputs(result=alias)
+
+    @pytest.mark.parametrize("alias", ["bad-name", "class", "_reserved"])
+    def test_expose_rejects_invalid_public_output_aliases(self, alias: str):
+        """Exposed GraphNode output aliases must follow public output-name rules."""
+
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="inner")
+
+        with pytest.raises(ValueError, match="Expose alias"):
+            g.as_node(namespaced=True).expose(result=alias)
+
+    def test_namespaced_output_addresses_remain_valid(self):
+        """Namespaced GraphNode addresses are internal projections, not aliases."""
+
+        @node(output_name="result")
+        def foo(x: int) -> int:
+            return x * 2
+
+        g = Graph([foo], name="inner")
+        gn = g.as_node(namespaced=True)
+
+        assert gn.outputs == ("inner.result",)
+
     def test_rename_preserves_inputs_outputs_types(self):
         """Renamed GraphNode has same tuple types for inputs/outputs."""
 
@@ -2518,6 +2576,30 @@ class TestSharedParams:
 
         with pytest.raises(GraphConfigError, match="shared params"):
             Graph([step], shared=["nonexistent"])
+
+    def test_shared_emit_only_param_rejected(self):
+        """Shared params must refer to data outputs, not emit-only signals."""
+
+        @node(output_name="x", emit="ready")
+        def step(seed: int) -> int:
+            return seed
+
+        with pytest.raises(GraphConfigError, match="shared params.*data output"):
+            Graph([step], shared="ready")
+
+    def test_shared_rejects_mixed_data_and_emit_producers(self):
+        """Shared params cannot be emit-only on any producer."""
+
+        @node(output_name="ready")
+        def data_ready(x: int) -> int:
+            return x
+
+        @node(emit="ready")
+        def signal_ready(y: int) -> None:
+            return None
+
+        with pytest.raises(GraphConfigError, match="shared params.*emit-only signal"):
+            Graph([data_ready, signal_ready], shared="ready")
 
     def test_shared_required_at_run_time(self):
         """Shared params appear in required inputs."""

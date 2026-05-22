@@ -753,6 +753,20 @@ print(gn.inputs)   # ('x',)
 print(gn.outputs)  # ('result',)
 ```
 
+GraphNodes also inherit the parent runner by default. Use
+`as_node(runner=...)` or `.with_runner(...)` only when a nested graph should
+delegate to a different compatible runner:
+
+```python
+from hypergraph import DaftRunner
+
+gn = inner.as_node(runner=DaftRunner())
+gn = inner.as_node().with_runner(DaftRunner())  # equivalent
+```
+
+Runner overrides are execution configuration, not graph structure. `DaftRunner`
+does not support nested runner overrides inside a Daft plan.
+
 ### Overriding the Name
 
 You can override the name when calling `as_node()`:

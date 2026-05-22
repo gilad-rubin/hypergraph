@@ -312,6 +312,11 @@ class TestEntrypointValidation:
         assert via_method.entrypoints_config == ("merge_node",)
         assert set(via_method.inputs.required) == set(via_name.inputs.required)
 
+    def test_with_entrypoint_empty_rejected(self):
+        graph = Graph([root1])
+        with pytest.raises(GraphConfigError, match="entrypoint cannot be empty"):
+            graph.with_entrypoint()
+
 
 class TestConstructorEntrypointShortcut:
     """Validation and parity for Graph(..., entrypoint=...)."""

@@ -303,12 +303,13 @@ class GraphNodeOperation(DaftOperation):
                 if multi_output:
                     return collected
                 # Single output mapped: return the list directly
-                return next(iter(collected.values()))
+                return collected[output_col]
             else:
                 result = runner.run(inner_graph, inner_inputs)
+                mapped_values = node.map_outputs_from_original(result.values)
                 if multi_output:
-                    return result.values
-                return next(iter(result.values.values()))
+                    return mapped_values
+                return mapped_values[output_col]
 
         col_refs = [df[c] for c in col_names_for_df]
         df = df.with_column(output_col, execute_graph(*col_refs))

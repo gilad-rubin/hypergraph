@@ -54,11 +54,15 @@ class LayoutEstimator:
         *,
         separate_outputs: bool = False,
         show_types: bool = False,
+        show_inputs: bool = True,
+        show_bounded_inputs: bool = False,
         depth: int = 0,
     ):
         self.graph = graph
         self.separate_outputs = separate_outputs
         self.show_types = show_types
+        self.show_inputs = show_inputs
+        self.show_bounded_inputs = show_bounded_inputs
         self.depth = depth
 
         # Use appropriate spacing based on mode
@@ -128,7 +132,9 @@ class LayoutEstimator:
 
         # Count input groups (they form their own layer at top)
         input_spec = self.graph.inputs
-        external_inputs = list(input_spec.required) + list(input_spec.optional)
+        external_inputs = list(input_spec.required) + list(input_spec.optional) if self.show_inputs else []
+        if external_inputs and not self.show_bounded_inputs:
+            external_inputs = [name for name in external_inputs if name not in input_spec.bound]
         has_inputs = bool(external_inputs)
 
         # Count DATA nodes if separate_outputs
@@ -268,6 +274,8 @@ def estimate_layout(
     *,
     separate_outputs: bool = False,
     show_types: bool = False,
+    show_inputs: bool = True,
+    show_bounded_inputs: bool = False,
     depth: int = 0,
 ) -> tuple[int, int]:
     """Convenience function to estimate layout dimensions.
@@ -276,6 +284,8 @@ def estimate_layout(
         graph: The hypergraph Graph to estimate
         separate_outputs: Whether outputs are rendered as separate DATA nodes
         show_types: Whether type annotations are shown
+        show_inputs: Whether external inputs are rendered
+        show_bounded_inputs: Whether bound external inputs are rendered
         depth: Depth of nested graph expansion
 
     Returns:
@@ -285,6 +295,8 @@ def estimate_layout(
         graph,
         separate_outputs=separate_outputs,
         show_types=show_types,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         depth=depth,
     )
     return estimator.estimate()

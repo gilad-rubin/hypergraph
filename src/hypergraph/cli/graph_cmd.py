@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -112,7 +112,7 @@ def graph_inspect(
                 }
             )
 
-        input_spec = graph.input_spec
+        input_spec = graph.inputs
         data = {
             "name": graph.name,
             "nodes": nodes_data,
@@ -150,12 +150,23 @@ def graph_inspect(
     lines = print_table(headers, rows)
     print_lines(lines)
 
-    input_spec = graph.input_spec
+    input_spec = graph.inputs
     if input_spec.required:
         print(f"\n  Required inputs: {', '.join(input_spec.required)}")
     if input_spec.optional:
-        print(f"  Optional inputs: {', '.join(f'{k} (default: {v})' for k, v in input_spec.optional.items())}")
+        optional = ", ".join(_format_optional_input(name, graph) for name in input_spec.optional)
+        print(f"  Optional inputs: {optional}")
     if input_spec.entrypoints:
         print(f"  Entrypoints: {', '.join(input_spec.entrypoints)}")
 
     print(f"\n  For JSON: hypergraph graph inspect {target} --json")
+
+
+def _format_optional_input(name: str, graph: Any) -> str:
+    """Format optional graph inputs with the default value when available."""
+    if name in graph.inputs.bound:
+        return f"{name} (default: {graph.inputs.bound[name]!r})"
+    for node in graph._nodes.values():
+        if name in node.inputs and node.has_signature_default_for(name):
+            return f"{name} (default: {node.get_signature_default_for(name)!r})"
+    return name

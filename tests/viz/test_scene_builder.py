@@ -6,6 +6,7 @@ semantically equivalent scenes for the same IR.
 """
 
 from hypergraph import Graph, node
+from hypergraph.viz.ir_schema import GraphIR, IRNode
 from hypergraph.viz.renderer import render_graph
 from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
@@ -229,6 +230,62 @@ def test_branch_to_end_edge_carries_label_for_when_false():
     end_edges = [e for e in scene["edges"] if e["target"] == "__end__"]
     assert end_edges, "branch→__end__ edge missing from scene"
     assert end_edges[0]["data"].get("label") == "False", f"Expected branch→__end__ edge label 'False'; got {end_edges[0]['data'].get('label')!r}"
+
+
+def test_start_edge_to_expanded_container_targets_real_entrypoint():
+    """Expanded START routing should follow dependency entrypoints, not child order."""
+
+    @node(output_name="done")
+    def downstream(started: int) -> int:
+        return started + 1
+
+    @node(output_name="started")
+    def upstream(x: int) -> int:
+        return x
+
+    inner = Graph(nodes=[downstream, upstream], name="inner")
+    outer = Graph(nodes=[inner.as_node()], entrypoint="inner")
+
+    ir = build_graph_ir(outer.to_flat_graph())
+    scene = build_initial_scene(ir, expansion_state={"inner": True})
+
+    start_edges = [e for e in scene["edges"] if e["source"] == "__start__"]
+    assert [(e["source"], e["target"]) for e in start_edges] == [("__start__", "inner/upstream")]
+
+
+def test_expanded_container_entrypoints_ignore_self_outputs_and_keep_multiple_entrypoints():
+    ir = GraphIR(
+        nodes=[
+            IRNode(id="outer", node_type="GRAPH"),
+            IRNode(
+                id="outer/selfish",
+                node_type="FUNCTION",
+                parent="outer",
+                inputs=({"name": "loop"},),
+                outputs=({"name": "loop"},),
+            ),
+            IRNode(
+                id="outer/independent",
+                node_type="FUNCTION",
+                parent="outer",
+                inputs=({"name": "x"},),
+                outputs=({"name": "y"},),
+            ),
+            IRNode(
+                id="outer/downstream",
+                node_type="FUNCTION",
+                parent="outer",
+                inputs=({"name": "y"},),
+                outputs=({"name": "z"},),
+            ),
+        ],
+        configured_entrypoints=("outer",),
+    )
+
+    scene = build_initial_scene(ir, expansion_state={"outer": True})
+
+    start_targets = {edge["target"] for edge in scene["edges"] if edge["source"] == "__start__"}
+    assert start_targets == {"outer/selfish", "outer/independent"}
 
 
 def test_expanded_graph_container_data_nodes_are_hidden_in_separate_mode():

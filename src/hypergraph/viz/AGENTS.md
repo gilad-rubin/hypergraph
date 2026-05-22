@@ -37,6 +37,29 @@ scene client-side without a kernel round-trip.
 interactive viz aligned on resolved port addresses even though the rendering
 pipelines differ.
 
+## Cross-Language Invariants
+
+- Scene derivation changes usually have Python and JavaScript twins. Update
+  `scene_builder.py`, `assets/scene_builder.js`, and derivation helpers
+  together unless the difference is intentionally documented in a test.
+- Container entrypoint detection must compare a child only with outputs owned
+  by other children. A child's own output name must not make it depend on
+  itself, and multiple valid entrypoints should be preserved when the IR says
+  they are independent.
+- Treat unordered semantic fields as unordered in parity tests. Sort or
+  normalize fields such as target sets before comparing Python and JS output.
+
+## Offline Assets and Controls
+
+- Interactive visualization must remain fully offline. When adding or splitting
+  first-party JavaScript assets, embed them through the asset manifest and
+  update `FIRST_PARTY_ASSET_NAMES` plus module smoke tests.
+- Icon-only controls need accessible names and keyboard behavior. Use tooltip
+  text or an explicit aria label, expose tooltips to focus as well as hover, and
+  let Escape hide transient tooltip UI.
+- Mermaid id sanitization should normalize before reserved-word lookup, and
+  tests should cover mixed-case reserved words when the reserved set changes.
+
 ## Viz.js Architecture
 
 `assets/viz.js` is organized in 7 sections:

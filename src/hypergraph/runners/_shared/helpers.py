@@ -566,6 +566,8 @@ def find_missing_resume_seed_inputs(
             continue
 
         for param in node.inputs:
+            if _graphnode_has_resume_values(node, state):
+                continue
             if param in graph_inputs and not _has_input(param, node, graph, state):
                 missing.add(param)
 
@@ -881,7 +883,31 @@ def _defer_wait_for_nodes(
 
 def _has_all_inputs(node: HyperNode, graph: Graph, state: GraphState) -> bool:
     """Check if all inputs for a node are available."""
+    if _graphnode_has_resume_values(node, state):
+        return True
     return all(_has_input(param, node, graph, state) for param in node.inputs)
+
+
+def _graphnode_has_resume_values(node: HyperNode, state: GraphState) -> bool:
+    """Return whether state carries a GraphNode interrupt resume payload."""
+    from hypergraph.nodes.graph_node import GraphNode
+
+    if not isinstance(node, GraphNode):
+        return False
+
+    resume_values = state.resume_values
+    if not resume_values:
+        return False
+
+    node_input_set = set(node.inputs)
+    if any(key in resume_values for key in node.outputs if key not in node_input_set):
+        return True
+
+    if node.namespaced:
+        return False
+
+    prefix = f"{node.name}."
+    return any(key.startswith(prefix) and key[len(prefix) :] not in node_input_set for key in resume_values)
 
 
 def _has_input(param: str, node: HyperNode, graph: Graph, state: GraphState) -> bool:
@@ -1101,8 +1127,14 @@ def collect_inputs_for_node(
         Dict mapping input names to their values
     """
     inputs = {}
+    graphnode_resume = _graphnode_has_resume_values(node, state)
     for param in node.inputs:
-        inputs[param] = _resolve_input(param, node, graph, state, provided_values)
+        try:
+            inputs[param] = _resolve_input(param, node, graph, state, provided_values)
+        except KeyError:
+            if graphnode_resume:
+                continue
+            raise
     return inputs
 
 
@@ -1297,6 +1329,7 @@ def initialize_state_with_checkpoint(
 
     for name, value in runtime_values.items():
         state.update_value(name, value)
+    state.resume_values = frozenset(runtime_values) if is_interrupt_resume_payload(graph, runtime_values) else frozenset()
 
     # Reconstruct per-step output versions so staleness checks can attribute
     # changes to explicit upstream producers after checkpoint restore.

@@ -120,6 +120,7 @@
       // edges) are skipped entirely, not just hidden.
       if (!showInputs) continue;
       var hidden = inputHidden(ext.deepest_owner, parentMap, expansionState);
+      var ownerContainer = visibleOwner(ext.deepest_owner, parentMap, expansionState);
       var params = ext.params || [];
       var typeHints = ext.type_hints || [];
       var isGroup = params.length > 1;
@@ -134,6 +135,7 @@
             params: params.slice(),
             paramTypes: typeHints.slice(),
             isBound: !!ext.is_bound,
+            ownerContainer: ownerContainer,
             deepestOwnerContainer: ext.deepest_owner,
             actualTargets: (ext.consumers || []).slice(),
           }
@@ -142,6 +144,7 @@
             label: params[0],
             typeHint: typeHints[0] || null,
             isBound: !!ext.is_bound,
+            ownerContainer: ownerContainer,
             deepestOwnerContainer: ext.deepest_owner,
             actualTargets: (ext.consumers || []).slice(),
           };
@@ -332,11 +335,14 @@
     var seenStart = {};
     for (var i = 0; i < configured.length; i++) {
       var entry = configured[i];
-      var target = overrides[entry] || entry;
-      var resolved = resolveToVisible(target, parentMap, visibleIds);
-      if (resolved && !seenStart[resolved]) {
-        seenStart[resolved] = true;
-        startTargets.push(resolved);
+      var targets = resolveExpandedEntrypoints(entry, overrides);
+      for (var t = 0; t < targets.length; t++) {
+        var target = targets[t];
+        var resolved = resolveToVisible(target, parentMap, visibleIds);
+        if (resolved && !seenStart[resolved]) {
+          seenStart[resolved] = true;
+          startTargets.push(resolved);
+        }
       }
     }
     if (startTargets.length > 0) {
@@ -376,6 +382,30 @@
           hidden: false,
         });
       }
+    }
+  }
+
+  function resolveExpandedEntrypoints(entry, overrides) {
+    var targets = [entry];
+    var seen = {};
+
+    while (true) {
+      var nextTargets = [];
+      var changed = false;
+      for (var i = 0; i < targets.length; i++) {
+        var target = targets[i];
+        if (seen[target]) continue;
+        seen[target] = true;
+        var replacement = overrides[target];
+        if (replacement && replacement.length > 0) {
+          for (var r = 0; r < replacement.length; r++) nextTargets.push(replacement[r]);
+          changed = true;
+        } else {
+          nextTargets.push(target);
+        }
+      }
+      if (!changed) return nextTargets;
+      targets = nextTargets;
     }
   }
 

@@ -40,6 +40,7 @@ def validate_graph(
     _validate_graph_name(graph_name)
     _validate_reserved_names(nodes)
     _validate_valid_identifiers(nodes)
+    _validate_no_duplicate_node_outputs(nodes)
     _validate_consistent_defaults(nodes)
     _validate_gate_targets(nodes)
     _validate_no_gate_self_loop(nodes)
@@ -109,6 +110,16 @@ def _validate_valid_identifiers(nodes: dict[str, HyperNode]) -> None:
                         f"How to fix:\n"
                         f"  Remove the leading underscore (e.g., '{output.lstrip('_')}')"
                     )
+
+
+def _validate_no_duplicate_node_outputs(nodes: dict[str, HyperNode]) -> None:
+    """A single node cannot expose the same output name more than once."""
+    for node in nodes.values():
+        seen: set[str] = set()
+        for output in node.outputs:
+            if output in seen:
+                raise GraphConfigError(f"Duplicate output name '{output}' on node '{node.name}'")
+            seen.add(output)
 
 
 def _validate_consistent_defaults(nodes: dict[str, HyperNode]) -> None:

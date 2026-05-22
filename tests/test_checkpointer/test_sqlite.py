@@ -621,7 +621,7 @@ class TestSyncReads:
 
 class TestRetentionPolicyBehavior:
     async def test_latest_retention_keeps_latest_per_node(self, checkpointer):
-        """latest retention should prune older executions of the same node."""
+        """latest retention should compact older executions of the same node."""
         checkpointer.policy = CheckpointPolicy(retention="latest")
         await checkpointer.create_run("wf-latest")
         await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=0, node_name="a", index=0, values={"x": 1}))
@@ -629,12 +629,32 @@ class TestRetentionPolicyBehavior:
         await checkpointer.save_step(_make_step(run_id="wf-latest", superstep=1, node_name="a", index=2, values={"x": 3}))
 
         steps = checkpointer.steps("wf-latest")
-        assert len(steps) == 2
-        assert {(s.node_name, s.superstep) for s in steps} == {("a", 1), ("b", 0)}
+        live_steps = [s for s in steps if s.node_type != "RetentionBaseline"]
+        assert {(s.node_name, s.superstep) for s in live_steps} == {("a", 1), ("b", 0)}
         assert checkpointer.state("wf-latest") == {"x": 3, "y": 2}
 
+    @pytest.mark.parametrize("latest_status", [StepStatus.FAILED, StepStatus.PAUSED])
+    async def test_latest_retention_preserves_prior_values_when_latest_same_node_has_none(self, checkpointer, latest_status):
+        checkpointer.policy = CheckpointPolicy(retention="latest")
+        await checkpointer.create_run("wf-latest-state")
+        await checkpointer.save_step(_make_step(run_id="wf-latest-state", superstep=0, node_name="a", index=0, values={"x": 1}))
+        await checkpointer.save_step(
+            _make_step(
+                run_id="wf-latest-state",
+                superstep=1,
+                node_name="a",
+                index=1,
+                status=latest_status,
+                values=None,
+                error="boom" if latest_status is StepStatus.FAILED else None,
+            )
+        )
+
+        assert checkpointer.state("wf-latest-state") == {"x": 1}
+        assert checkpointer.checkpoint("wf-latest-state").values == {"x": 1}
+
     async def test_windowed_retention_keeps_recent_supersteps(self, checkpointer):
-        """windowed retention should keep only the latest N supersteps."""
+        """windowed retention should compact values before the latest N supersteps."""
         checkpointer.policy = CheckpointPolicy(retention="windowed", window=2)
         await checkpointer.create_run("wf-windowed")
         await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=0, node_name="a", index=0, values={"x": 1}))
@@ -642,8 +662,20 @@ class TestRetentionPolicyBehavior:
         await checkpointer.save_step(_make_step(run_id="wf-windowed", superstep=2, node_name="c", index=2, values={"z": 3}))
 
         steps = checkpointer.steps("wf-windowed")
-        assert {s.superstep for s in steps} == {1, 2}
-        assert checkpointer.state("wf-windowed") == {"y": 2, "z": 3}
+        live_steps = [s for s in steps if s.node_type != "RetentionBaseline"]
+        assert {s.superstep for s in live_steps} == {1, 2}
+        assert {s.node_name for s in live_steps} == {"b", "c"}
+        assert checkpointer.state("wf-windowed") == {"x": 1, "y": 2, "z": 3}
+
+    async def test_windowed_retention_preserves_folded_state_across_pruned_supersteps(self, checkpointer):
+        checkpointer.policy = CheckpointPolicy(retention="windowed", window=1)
+        await checkpointer.create_run("wf-windowed-state")
+        await checkpointer.save_step(_make_step(run_id="wf-windowed-state", superstep=0, node_name="a", index=0, values={"x": 1}))
+        await checkpointer.save_step(_make_step(run_id="wf-windowed-state", superstep=1, node_name="b", index=1, values={"y": 2}))
+        await checkpointer.save_step(_make_step(run_id="wf-windowed-state", superstep=2, node_name="c", index=2, values={"z": 3}))
+
+        assert checkpointer.state("wf-windowed-state") == {"x": 1, "y": 2, "z": 3}
+        assert checkpointer.checkpoint("wf-windowed-state").values == {"x": 1, "y": 2, "z": 3}
 
     def test_sync_save_step_applies_retention(self, tmp_path):
         """Sync write path should apply windowed retention as well."""
@@ -656,9 +688,37 @@ class TestRetentionPolicyBehavior:
         cp.save_step_sync(_make_step(run_id="wf-sync", superstep=1, node_name="b", index=1, values={"y": 2}))
 
         steps = cp.steps("wf-sync")
-        assert len(steps) == 1
-        assert steps[0].superstep == 1
-        assert cp.state("wf-sync") == {"y": 2}
+        live_steps = [s for s in steps if s.node_type != "RetentionBaseline"]
+        assert len(live_steps) == 1
+        assert live_steps[0].superstep == 1
+        assert cp.state("wf-sync") == {"x": 1, "y": 2}
+        if cp._sync_conn:
+            cp._sync_conn.close()
+
+    def test_sync_retention_delete_batches_under_sqlite_parameter_limit(self, tmp_path):
+        """Large retention compactions should not exceed SQLite's bind limit."""
+        cp = SqliteCheckpointer(
+            str(tmp_path / "sync-retention-limit.db"),
+            policy=CheckpointPolicy(durability="sync", retention="latest"),
+        )
+        assert [len(batch) for batch in cp._delete_step_id_batches(list(range(1201)))] == [500, 500, 201]
+        cp.create_run_sync("wf-sync-limit")
+
+        for index in range(700):
+            cp.save_step_sync(
+                _make_step(
+                    run_id="wf-sync-limit",
+                    superstep=index,
+                    node_name=f"node_{index % 2}",
+                    index=index,
+                    values={f"value_{index}": index},
+                )
+            )
+
+        cp.policy = CheckpointPolicy(durability="sync", retention="windowed", window=1)
+        cp.save_step_sync(_make_step(run_id="wf-sync-limit", superstep=700, node_name="final", index=700, values={"final": True}))
+
+        assert cp.state("wf-sync-limit")["final"] is True
         if cp._sync_conn:
             cp._sync_conn.close()
 

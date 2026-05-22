@@ -10,6 +10,7 @@ from hypergraph.runners import (
     RunResult,
     RunStatus,
 )
+from hypergraph.runners._shared.event_metadata import BatchSummary
 
 
 class TestRunStatus:
@@ -310,6 +311,55 @@ class TestGraphState:
 
 
 class TestMapResult:
+    def test_batch_summary_uses_map_result_status_precedence(self):
+        cases = [
+            ((), RunStatus.COMPLETED),
+            ((RunStatus.COMPLETED, RunStatus.FAILED), RunStatus.PARTIAL),
+            ((RunStatus.FAILED, RunStatus.FAILED), RunStatus.FAILED),
+            ((RunStatus.FAILED, RunStatus.PAUSED), RunStatus.FAILED),
+            ((RunStatus.FAILED, RunStatus.STOPPED), RunStatus.FAILED),
+            ((RunStatus.COMPLETED, RunStatus.PAUSED), RunStatus.PAUSED),
+            ((RunStatus.PAUSED, RunStatus.STOPPED), RunStatus.PAUSED),
+            ((RunStatus.COMPLETED, RunStatus.STOPPED), RunStatus.STOPPED),
+        ]
+
+        for statuses, expected in cases:
+            results = tuple(
+                RunResult(
+                    values={},
+                    status=status,
+                    error=ValueError("boom") if status == RunStatus.FAILED else None,
+                )
+                for status in statuses
+            )
+            map_result = MapResult(
+                results=results,
+                run_id="map-1",
+                total_duration_ms=12.0,
+                map_over=("x",),
+                map_mode="zip",
+                graph_name="g",
+            )
+            batch_summary = BatchSummary.from_results(results)
+
+            assert map_result.status == expected
+            assert batch_summary.outcome == expected.value
+            assert batch_summary.workflow_status_value == expected.value
+
+    def test_status_is_stopped_when_any_item_stopped(self):
+        completed = RunResult(values={"x": 1}, status=RunStatus.COMPLETED)
+        stopped = RunResult(values={"x": 2}, status=RunStatus.STOPPED)
+        result = MapResult(
+            results=(completed, stopped),
+            run_id="map-1",
+            total_duration_ms=12.0,
+            map_over=("x",),
+            map_mode="zip",
+            graph_name="g",
+        )
+
+        assert result.status == RunStatus.STOPPED
+
     def test_log_includes_placeholder_for_items_missing_run_log(self):
         """MapResult.log should include one per-item log entry even without RunResult.log."""
         completed = RunResult(values={"x": 1}, status=RunStatus.COMPLETED, log=None)
