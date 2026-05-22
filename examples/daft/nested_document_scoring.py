@@ -11,7 +11,8 @@ This is the core Hypergraph pattern:
 3. Scale over many documents with DaftRunner.map()
 """
 
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 
 # Inner pipeline: process ONE sentence

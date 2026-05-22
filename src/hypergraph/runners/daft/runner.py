@@ -52,7 +52,8 @@ class DaftRunner(BaseRunner):
 
     Each node becomes a Daft UDF chained via ``df.with_column()``.
     Supports sync nodes, async nodes (Daft handles natively),
-    stateful UDFs (``@stateful``), batch UDFs (``batch=True``),
+    stateful UDFs (``@stateful``), integration batch UDFs
+    (``hypergraph.integrations.daft.node(..., batch=True)``),
     and nested GraphNodes.
 
     Does NOT support cycles, gates, interrupts, or runner delegation
@@ -306,7 +307,8 @@ class DaftRunner(BaseRunner):
             validate_item_inputs(ctx, validation_values)
 
         plan = build_execution_plan(graph, all_bound, self._cache, clone)
-        return execute_plan(dataframe.select(*column_names), plan)
+        _check_output_column_collision(list(dataframe.column_names), plan)
+        return execute_plan(dataframe, plan)
 
     # ------------------------------------------------------------------
     # Internal: columnar execution
@@ -486,4 +488,42 @@ def _check_column_overlap(
             f"Input keys provided by both the Daft DataFrame and broadcast "
             f"values: {overlap_str}.\n\n"
             f"How to fix: Rename one side or drop the duplicate."
+        )
+
+
+def _check_output_column_collision(
+    column_names: list[str],
+    plan: list[Any],
+) -> None:
+    """Reject graph outputs that would overwrite input DataFrame columns."""
+    output_columns = set()
+    internal_columns = set()
+    for op in plan:
+        output_columns.update(op.output_columns)
+        if len(op.output_columns) > 1:
+            internal_columns.add(f"_pack_{op.node.name}")
+
+    input_columns = set(column_names)
+    output_overlap = sorted(input_columns & output_columns)
+    if output_overlap:
+        from hypergraph.graph.validation import GraphConfigError
+
+        overlap_str = ", ".join(repr(name) for name in output_overlap)
+        raise GraphConfigError(
+            f"Daft graph output column would overwrite existing DataFrame column: "
+            f"{overlap_str}.\n\n"
+            f"How to fix: Rename the node output or drop/rename the existing "
+            f"DataFrame column before calling map_dataframe."
+        )
+
+    internal_overlap = sorted(input_columns & internal_columns)
+    if internal_overlap:
+        from hypergraph.graph.validation import GraphConfigError
+
+        overlap_str = ", ".join(repr(name) for name in internal_overlap)
+        raise GraphConfigError(
+            f"Daft graph internal scratch column would overwrite existing "
+            f"DataFrame column: {overlap_str}.\n\n"
+            f"How to fix: Drop or rename the existing DataFrame column before "
+            f"calling map_dataframe."
         )

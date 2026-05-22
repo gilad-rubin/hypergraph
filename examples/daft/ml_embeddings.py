@@ -8,11 +8,11 @@ Demonstrates:
 Inspired by Daft's stateful UDF tutorial.
 """
 
-from hypergraph import DaftRunner, Graph, node
-from hypergraph.runners.daft import stateful
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner, stateful
 
 
-@stateful
+@stateful(max_concurrency=2)
 class MockEmbedder:
     """Simulates a heavy ML model loaded once per worker.
 

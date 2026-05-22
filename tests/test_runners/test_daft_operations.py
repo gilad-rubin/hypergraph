@@ -9,12 +9,13 @@ pytest.importorskip("daft")
 import daft
 
 from hypergraph import Graph, node
+from hypergraph.integrations.daft import node as daft_node
+from hypergraph.integrations.daft import stateful
 from hypergraph.runners.daft.operations import (
     DaftStateful,
     create_operation,
     has_stateful_values,
     is_batch,
-    stateful,
 )
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ class TestDaftStatefulProtocol:
 
 class TestBatchDetection:
     def test_batch_true_detected(self):
-        @node(output_name="out", batch=True)
+        @daft_node(output_name="out", batch=True, return_dtype=daft.DataType.int64())
         def batch_node(x: int) -> int:
             return x
 
@@ -134,7 +135,7 @@ class TestCreateOperation:
     def test_routes_batch_node(self):
         from hypergraph.runners.daft.operations import BatchNodeOperation
 
-        @node(output_name="out", batch=True)
+        @daft_node(output_name="out", batch=True, return_dtype=daft.DataType.int64())
         def batch_fn(x: int) -> int:
             return x
 
@@ -261,7 +262,7 @@ class TestStatefulNodeOperation:
 
 class TestBatchNodeOperation:
     def test_apply_receives_series(self):
-        @node(output_name="doubled", batch=True)
+        @daft_node(output_name="doubled", batch=True, return_dtype=daft.DataType.int64())
         def batch_double(x: daft.Series) -> daft.Series:
             values = x.to_pylist()
             return daft.Series.from_pylist([v * 2 for v in values])
@@ -274,25 +275,25 @@ class TestBatchNodeOperation:
 
 
 # ---------------------------------------------------------------------------
-# Validation: stateful + async rejection
+# Validation: stateful + async support
 # ---------------------------------------------------------------------------
 
 
-class TestStatefulAsyncRejection:
-    def test_stateful_async_node_rejected(self):
-        from hypergraph.runners._shared.validation import IncompatibleRunnerError
+class TestStatefulAsyncSupport:
+    def test_stateful_async_node_routes(self):
+        from hypergraph.runners.daft.operations import StatefulNodeOperation
 
         @node(output_name="out")
         async def async_stateful(x: int, model: MockModel) -> int:
             return x + model.value
 
         graph = Graph([async_stateful], name="test")
-        with pytest.raises(IncompatibleRunnerError, match="async"):
-            create_operation(
-                async_stateful,
-                graph,
-                bound_values={"model": MockModel()},
-            )
+        op = create_operation(
+            async_stateful,
+            graph,
+            bound_values={"model": MockModel()},
+        )
+        assert isinstance(op, StatefulNodeOperation)
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +305,7 @@ class TestBatchMultiOutputRejection:
     def test_batch_multi_output_rejected(self):
         from hypergraph.runners._shared.validation import IncompatibleRunnerError
 
-        @node(output_name=("a", "b"), batch=True)
+        @daft_node(output_name=("a", "b"), batch=True, return_dtype=daft.DataType.python())
         def bad_batch(x: int) -> tuple[int, int]:
             return (x, x)
 

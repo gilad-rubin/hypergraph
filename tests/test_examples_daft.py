@@ -18,6 +18,7 @@ EXAMPLE_PATHS = [
     Path("examples/daft/async_api_calls.py"),
     Path("examples/daft/ml_embeddings.py"),
     Path("examples/daft/batch_normalization.py"),
+    Path("examples/daft/advanced_udf_patterns.py"),
     Path("examples/daft/nested_document_scoring.py"),
 ]
 

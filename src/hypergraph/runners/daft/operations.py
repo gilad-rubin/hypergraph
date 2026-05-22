@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+from hypergraph.runners.daft._options import DEFAULT_OPTIONS, Options, get_node_options
+from hypergraph.runners.daft._stateful import DaftStateful, get_stateful_options, has_stateful_values, is_stateful
 
 if TYPE_CHECKING:
     import daft
@@ -14,62 +19,14 @@ if TYPE_CHECKING:
     from hypergraph.nodes.base import HyperNode
 
 
-@runtime_checkable
-class DaftStateful(Protocol):
-    """Protocol for objects loaded once per Daft worker.
-
-    Mark a class with ``@stateful`` so DaftRunner wraps it with ``@daft.cls``
-    instead of ``@daft.func``.  This is useful for heavy resources
-    (ML models, DB connections) that should be initialized once per
-    worker process rather than once per row.
-
-    Example::
-
-        @stateful
-        class MyModel:
-            def __init__(self):
-                self.model = load_heavy_model()
-
-        graph = Graph([embed]).bind(model=MyModel())
-        DaftRunner().map(graph, {"text": texts}, map_over="text")
-    """
-
-    __daft_stateful__: ClassVar[bool]
-
-
-def stateful(cls: type) -> type:
-    """Mark a class for per-worker initialization in DaftRunner.
-
-    Stateful objects are re-created once per Daft worker process via
-    ``@daft.cls``, so heavy resources (models, DB connections) aren't
-    serialized per row.
-
-    Example::
-
-        @stateful
-        class MyModel:
-            def __init__(self):
-                self.model = load_heavy_model()
-
-        graph = Graph([embed]).bind(model=MyModel())
-    """
-    cls.__daft_stateful__ = True
-    return cls
-
-
 def is_batch(node: HyperNode) -> bool:
     """Check if a node is marked for batch (vectorized) execution."""
-    return getattr(node, "batch", False) is True
+    return get_options(node).batch is True
 
 
-def _is_stateful(v: Any) -> bool:
-    """Check if a value is DaftStateful (attribute exists AND is truthy)."""
-    return getattr(type(v), "__daft_stateful__", False) is True
-
-
-def has_stateful_values(bound_values: dict[str, Any]) -> bool:
-    """Check if any bound values implement DaftStateful protocol."""
-    return any(_is_stateful(v) for v in bound_values.values())
+def get_options(node: HyperNode) -> Options:
+    """Return Daft lowering options for a node."""
+    return get_node_options(node)
 
 
 # ---------------------------------------------------------------------------
@@ -137,9 +94,9 @@ class FunctionNodeOperation(DaftOperation):
                 kwargs = {**bound, **dict(zip(col_names, args, strict=True))}
                 return await func(**kwargs)
 
-            udf = daft_mod.func(return_dtype=daft_mod.DataType.python())(async_wrapper)
+            udf = daft_mod.func(**_func_options(node, daft_mod))(async_wrapper)
         else:
-            udf = daft_mod.func(return_dtype=daft_mod.DataType.python())(wrapper)
+            udf = daft_mod.func(**_func_options(node, daft_mod))(wrapper)
 
         col_refs = [df[c] for c in input_cols]
         df = df.with_column(output_col, udf(*col_refs))
@@ -169,24 +126,41 @@ class StatefulNodeOperation(DaftOperation):
         col_names = input_cols  # capture for closure
 
         # Separate stateful from plain bound values
-        stateful_vals = {k: v for k, v in bound.items() if _is_stateful(v)}
-        plain_vals = {k: v for k, v in bound.items() if not _is_stateful(v)}
+        stateful_vals = {k: v for k, v in bound.items() if is_stateful(v)}
+        stateful_types = {k: type(v) for k, v in stateful_vals.items()}
+        plain_vals = {k: v for k, v in bound.items() if not is_stateful(v)}
 
-        @daft_mod.cls
+        class_options = _stateful_options(stateful_vals)
+
+        @daft_mod.cls(**class_options.for_cls())
         class StatefulWrapper:
             def __init__(self):
-                # Each stateful object is re-created once per worker
-                self._stateful = {k: type(v)() for k, v in stateful_vals.items()}
+                self._stateful: dict[str, Any] | None = None
                 self._plain = plain_vals
 
-            @daft_mod.method(return_dtype=daft_mod.DataType.python())
-            def __call__(self, *args: Any) -> Any:
-                kwargs = {
-                    **self._stateful,
+            def _stateful_values(self) -> dict[str, Any]:
+                if self._stateful is None:
+                    self._stateful = {k: cls() for k, cls in stateful_types.items()}
+                return self._stateful
+
+            def _call_kwargs(self, *args: Any) -> dict[str, Any]:
+                return {
+                    **self._stateful_values(),
                     **self._plain,
                     **dict(zip(col_names, args, strict=True)),
                 }
-                return func(**kwargs)
+
+            if asyncio.iscoroutinefunction(func):
+
+                @_stateful_method_decorator(daft_mod, node)
+                async def __call__(self, *args: Any) -> Any:
+                    return await func(**self._call_kwargs(*args))
+
+            else:
+
+                @_stateful_method_decorator(daft_mod, node)
+                def __call__(self, *args: Any) -> Any:
+                    return func(**self._call_kwargs(*args))
 
         col_refs = [df[c] for c in input_cols]
         df = df.with_column(output_col, StatefulWrapper()(*col_refs))
@@ -218,7 +192,7 @@ class BatchNodeOperation(DaftOperation):
             kwargs = {**bound, **dict(zip(col_names, series_args, strict=True))}
             return func(**kwargs)
 
-        udf = daft_mod.func.batch(return_dtype=daft_mod.DataType.python())(batch_wrapper)
+        udf = daft_mod.func.batch(**_batch_func_options(node, daft_mod))(batch_wrapper)
 
         col_refs = [df[c] for c in input_cols]
         return df.with_column(output_col, udf(*col_refs))
@@ -370,15 +344,11 @@ def create_operation(
         )
 
     if isinstance(node, FunctionNode):
+        _validate_common_options(node)
+        if is_batch(node):
+            _validate_batch_options(node, output_cols)
         if has_stateful_values(node_bound):
             _validate_stateful_constructable(node_bound)
-            if asyncio.iscoroutinefunction(node.func):
-                from hypergraph.runners._shared.validation import IncompatibleRunnerError
-
-                raise IncompatibleRunnerError(
-                    f"Stateful UDFs with async node functions are not supported (node {node.name!r}).",
-                    capability="node_types",
-                )
             return StatefulNodeOperation(
                 node=node,
                 input_columns=input_cols,
@@ -386,14 +356,8 @@ def create_operation(
                 bound_values=node_bound,
                 clone=clone,
             )
+        _validate_stateless_options(node)
         if is_batch(node):
-            if len(output_cols) > 1:
-                from hypergraph.runners._shared.validation import IncompatibleRunnerError
-
-                raise IncompatibleRunnerError(
-                    f"Batch UDFs with multiple outputs are not supported (node {node.name!r} has {output_cols}).",
-                    capability="node_types",
-                )
             return BatchNodeOperation(
                 node=node,
                 input_columns=input_cols,
@@ -428,13 +392,98 @@ def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:
         if not isinstance(v, DaftStateful):
             continue
         try:
-            type(v)()
+            inspect.signature(type(v)).bind()
         except TypeError as e:
             raise TypeError(
                 f"DaftStateful object {k!r} ({type(v).__name__}) must support "
                 f"zero-arg construction for per-worker re-initialization. Got: {e}\n\n"
                 f"How to fix: Ensure {type(v).__name__}.__init__() works with no arguments."
             ) from e
+
+
+def _validate_batch_options(node: HyperNode, output_cols: list[str]) -> None:
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    if len(output_cols) > 1:
+        raise IncompatibleRunnerError(
+            f"Batch UDFs with multiple outputs are not supported (node {node.name!r} has {output_cols}).",
+            capability="node_types",
+        )
+    if get_options(node).return_dtype is None:
+        raise IncompatibleRunnerError(
+            f"Batch UDF node {node.name!r} requires return_dtype. Pass return_dtype=... to hypergraph.integrations.daft.node(..., batch=True).",
+            capability="node_types",
+        )
+
+
+def _validate_common_options(node: HyperNode) -> None:
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    options = get_options(node)
+    if options.batch_size is not None and not is_batch(node):
+        raise IncompatibleRunnerError(
+            f"Daft option batch_size is only supported for batch UDF nodes (node {node.name!r} is not batch=True).",
+            capability="node_types",
+        )
+
+
+def _validate_stateless_options(node: HyperNode) -> None:
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    options = get_options(node)
+    if options.max_concurrency is not None and not asyncio.iscoroutinefunction(node.func):
+        raise IncompatibleRunnerError(
+            f"Daft option max_concurrency is only supported for async stateless UDF nodes "
+            f"(node {node.name!r} is synchronous). Use @stateful(max_concurrency=...) "
+            f"for actor-pool concurrency.",
+            capability="node_types",
+        )
+
+
+def _func_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
+    options = get_options(node)
+    kwargs = options.for_func()
+    kwargs.setdefault("return_dtype", daft_mod.DataType.python())
+    return kwargs
+
+
+def _batch_func_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
+    options = get_options(node)
+    kwargs = options.for_batch_func()
+    kwargs.setdefault("return_dtype", daft_mod.DataType.python())
+    return kwargs
+
+
+def _method_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
+    options = get_options(node)
+    kwargs = options.for_method()
+    kwargs.setdefault("return_dtype", daft_mod.DataType.python())
+    return kwargs
+
+
+def _stateful_options(stateful_vals: dict[str, Any]) -> Options:
+    options_by_name = {name: get_stateful_options(value) for name, value in stateful_vals.items()}
+    unique: list[Options] = []
+    for options in options_by_name.values():
+        if options not in unique:
+            unique.append(options)
+    if len(unique) > 1:
+        details = ", ".join(f"{name}={options!r}" for name, options in sorted(options_by_name.items()))
+        raise ValueError(f"Stateful Daft resources in one node must use identical class options. Got: {details}")
+    return unique[0] if unique else DEFAULT_OPTIONS
+
+
+def _stateful_method_decorator(daft_mod: Any, node: HyperNode) -> Callable[[Callable], Callable]:
+    if is_batch(node):
+        return daft_mod.method.batch(**_batch_method_options(node, daft_mod))
+    return daft_mod.method(**_method_options(node, daft_mod))
+
+
+def _batch_method_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
+    options = get_options(node)
+    kwargs = options.for_batch_method()
+    kwargs.setdefault("return_dtype", daft_mod.DataType.python())
+    return kwargs
 
 
 def _unpack_multi_output(

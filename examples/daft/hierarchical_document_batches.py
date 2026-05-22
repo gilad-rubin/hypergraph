@@ -7,7 +7,8 @@ chunks and then over multiple documents.
 
 from __future__ import annotations
 
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 
 @node(output_name="sentences")

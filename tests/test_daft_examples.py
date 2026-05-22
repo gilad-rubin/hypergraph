@@ -7,7 +7,7 @@ pytest.importorskip("daft")
 from examples.daft.document_processing import build_document_processing_graph
 from examples.daft.quickstart_orders import build_quickstart_orders_graph
 from examples.daft.scenario_sweeps import build_scenario_sweep_graph
-from hypergraph import DaftRunner
+from hypergraph.integrations.daft import DaftRunner
 
 
 def test_quickstart_orders_example():
