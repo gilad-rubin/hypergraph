@@ -70,13 +70,16 @@
 
   // ── Expansion-aware routing ────────────────────────────────────────────
 
-  // For each currently-expanded GRAPH, return the inner child that should
-  // receive START / control edges that would otherwise attach to the
-  // container hull. The chosen child is the first declared descendant.
+  // For each currently-expanded GRAPH, return the inner child(ren) that
+  // should receive START / control edges that would otherwise attach to
+  // the container hull. Entrypoints are direct children whose inputs are
+  // not produced by a sibling. Cyclic containers fall back to first child.
   function expandedContainerEntrypoints(ir, expansionState) {
     var childrenByParent = {};
+    var nodeById = {};
     for (var i = 0; i < ir.nodes.length; i++) {
       var n = ir.nodes[i];
+      nodeById[n.id] = n;
       if (n.parent) {
         if (!childrenByParent[n.parent]) childrenByParent[n.parent] = [];
         childrenByParent[n.parent].push(n.id);
@@ -88,9 +91,37 @@
       if (node.node_type !== 'GRAPH') continue;
       if (!expansionState[node.id]) continue;
       var kids = childrenByParent[node.id] || [];
-      if (kids.length > 0) overrides[node.id] = kids[0];
+      if (kids.length > 0) overrides[node.id] = containerEntrypoints(kids, nodeById);
     }
     return overrides;
+  }
+
+  function containerEntrypoints(children, nodeById) {
+    var siblingOutputs = {};
+    for (var i = 0; i < children.length; i++) {
+      var outputNode = nodeById[children[i]] || {};
+      var outputs = outputNode.outputs || [];
+      for (var o = 0; o < outputs.length; o++) {
+        if (outputs[o] && outputs[o].name !== undefined) siblingOutputs[outputs[o].name] = true;
+      }
+    }
+
+    var entrypoints = [];
+    for (var c = 0; c < children.length; c++) {
+      var childId = children[c];
+      var inputNode = nodeById[childId] || {};
+      var inputs = inputNode.inputs || [];
+      var dependsOnSibling = false;
+      for (var p = 0; p < inputs.length; p++) {
+        if (inputs[p] && siblingOutputs[inputs[p].name]) {
+          dependsOnSibling = true;
+          break;
+        }
+      }
+      if (!dependsOnSibling) entrypoints.push(childId);
+    }
+
+    return entrypoints.length > 0 ? entrypoints : [children[0]];
   }
 
   // ── Branch / END routing ────────────────────────────────────────────────

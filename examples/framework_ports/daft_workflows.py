@@ -43,8 +43,8 @@ def demo_quickstart() -> list[dict[str, object]]:
     )
     runner = DaftRunner()
     graph = build_daft_quickstart_graph()
-    results = runner.map_dataframe(graph, frame)
-    return [result.values for result in results]
+    result_df = runner.map_dataframe(graph, frame)
+    return result_df.collect().to_pylist()
 
 
 @node(output_name="chunk_score")
@@ -101,8 +101,8 @@ def demo_llm_dataset() -> list[dict[str, object]]:
     )
     runner = DaftRunner()
     graph = build_daft_llm_dataset_graph()
-    results = runner.map_dataframe(graph, frame)
-    return [result.values for result in results]
+    result_df = runner.map_dataframe(graph, frame)
+    return result_df.collect().to_pylist()
 
 
 @node(output_name="patch_brightness")
@@ -155,8 +155,8 @@ def demo_image_query() -> list[dict[str, object]]:
     )
     runner = DaftRunner()
     graph = build_daft_image_query_graph()
-    results = runner.map_dataframe(graph, frame, threshold=180)
-    return [result.values for result in results]
+    result_df = runner.map_dataframe(graph, frame, threshold=180)
+    return result_df.collect().to_pylist()
 
 
 if __name__ == "__main__":

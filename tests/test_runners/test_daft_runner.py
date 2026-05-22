@@ -128,6 +128,30 @@ def test_daft_runner_rejects_with_runner_override():
         DaftRunner().run(outer, {"x": 1})
 
 
+def test_daft_runner_select_uses_active_scope():
+    @node(output_name="boom")
+    def explode(doubled: int) -> int:
+        raise RuntimeError("should not run")
+
+    graph = Graph([double, explode], name="selected_scope").select("doubled")
+
+    result = DaftRunner().run(graph, {"x": 2})
+
+    assert result.values == {"doubled": 4}
+
+
+def test_daft_runner_with_entrypoint_uses_active_scope():
+    @node(output_name="result")
+    def add_one(doubled: int) -> int:
+        return doubled + 1
+
+    graph = Graph([double, add_one], name="entry_scope").with_entrypoint("add_one")
+
+    result = DaftRunner().run(graph, {"doubled": 4})
+
+    assert result.values == {"doubled": 4, "result": 5}
+
+
 def test_daft_runner_map_dataframe_returns_dataframe():
     """map_dataframe should return a Daft DataFrame, not MapResult."""
     import daft
@@ -157,6 +181,35 @@ def test_daft_runner_map_dataframe_with_broadcast_values():
     result_df = DaftRunner().map_dataframe(graph, df, prefix="Hi")
     collected = result_df.collect().to_pydict()
     assert collected["greeting"] == ["Hi, Alice!", "Hi, Bob!"]
+
+
+def test_daft_runner_map_dataframe_renamed_graphnode_multi_outputs():
+    """Renamed GraphNode outputs should unpack under parent-facing names."""
+    import daft
+
+    @node(output_name=("lo", "hi"))
+    def bounds(x: int) -> tuple[int, int]:
+        return x - 1, x + 1
+
+    inner = Graph([bounds], name="inner_bounds")
+    outer = Graph(
+        [
+            inner.as_node(name="nested_bounds").with_outputs(
+                lo="public_lo",
+                hi="public_hi",
+            )
+        ],
+        name="outer_bounds",
+    )
+    df = daft.from_pydict({"x": [5, 10]})
+
+    result_df = DaftRunner().map_dataframe(outer, df)
+
+    collected = result_df.collect().to_pydict()
+    assert collected["public_lo"] == [4, 9]
+    assert collected["public_hi"] == [6, 11]
+    assert "lo" not in collected
+    assert "hi" not in collected
 
 
 def test_daft_runner_map_dataframe_columns_filter():

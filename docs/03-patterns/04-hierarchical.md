@@ -91,7 +91,7 @@ conversation = Graph([
     rag_pipeline.as_node(),  # The DAG becomes a single node
     accumulate,
     should_continue,
-], name="conversation")
+], name="conversation", entrypoint="rag")
 ```
 
 **The structure:**
@@ -222,19 +222,19 @@ def test_variants(variants: list[str], test_queries: list[str]) -> list[dict]:
 def select_best(results: list[dict]) -> str:
     return max(results, key=lambda r: r["avg_score"])["prompt"]
 
-@route(targets=["generate_variants", END])
+@route(targets=["generate_prompt_variants", END])
 def optimization_gate(best_prompt: str, target_score: float, results: list) -> str:
     best_score = max(r["avg_score"] for r in results)
     if best_score >= target_score:
         return END
-    return "generate_variants"  # Keep optimizing
+    return "generate_prompt_variants"  # Keep optimizing
 
 variant_tester = Graph([
     generate_prompt_variants,
     test_variants,
     select_best,
     optimization_gate,
-], name="variant_tester")
+], name="variant_tester", entrypoint="generate_prompt_variants")
 
 # ─────────────────────────────────────────────────────────────
 # Human-in-the-loop wrapper (cyclic) — gets human feedback
@@ -256,7 +256,7 @@ optimization_loop = Graph([
     variant_tester.as_node(),  # Cyclic graph as a node
     get_human_feedback,
     human_gate,
-], name="optimization")
+], name="optimization", entrypoint="variant_tester")
 ```
 
 **Three levels of nesting:**
@@ -342,12 +342,16 @@ graph_node = my_graph.as_node().rename_inputs(old="new")
 
 # With map_over for fan-out
 graph_node = my_graph.as_node().map_over("items")
+
+# With an explicit runner for this subgraph
+graph_node = my_graph.as_node(runner=DaftRunner())
 ```
 
 **Key properties:**
 - The nested graph runs to completion before the outer graph continues
 - Inputs and outputs are determined by the nested graph's `InputSpec`
 - Type annotations flow through for `strict_types` validation
+- By default the nested graph inherits the parent runner; pass `runner=...` or call `.with_runner(...)` only when a subgraph must use a different compatible runner
 
 ---
 

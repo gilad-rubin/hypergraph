@@ -297,7 +297,7 @@ class DaftRunner(BaseRunner):
         all_bound = {**bound, **normalized}
         validation_values = {name: None for name in column_names}
         validation_values.update(all_bound)
-        ctx = precompute_input_validation(graph, entrypoint=None, selected=None)
+        ctx = precompute_input_validation(graph, entrypoint=None, selected=graph.selected)
         # DataFrames often carry passthrough columns that are not graph inputs.
         # Keep stale-address and missing-input validation, but do not warn for
         # extra columns that Daft will preserve untouched.

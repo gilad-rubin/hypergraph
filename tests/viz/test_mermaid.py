@@ -187,6 +187,29 @@ class TestBasicMermaid:
         )
         assert not emoji_pattern.search(str(mermaid))
 
+    def test_sanitized_node_id_collisions_are_made_unique(self):
+        """Distinct graph nodes that sanitize to the same Mermaid ID stay distinct."""
+
+        @node(output_name="left")
+        def inner_step(x: int) -> int:
+            return x
+
+        @node(output_name="right")
+        def foo_bar(x: int) -> int:
+            return x
+
+        inner = Graph(nodes=[inner_step], name="foo-bar")
+        graph = Graph(nodes=[inner.as_node(), foo_bar])
+
+        mermaid = str(graph.to_mermaid())
+
+        assert 'foo_bar[["foo-bar' in mermaid
+        assert 'foo_bar_2["foo_bar' in mermaid
+        assert "input_x --> foo_bar" in mermaid
+        assert "input_x --> foo_bar_2" in mermaid
+        assert "class foo_bar container" in mermaid
+        assert "class foo_bar_2 function" in mermaid
+
 
 # =============================================================================
 # Type Annotations
@@ -321,6 +344,28 @@ class TestEdgeTypes:
 
         assert "should_continue -.-> retrieve" in mermaid
 
+    def test_route_dict_edges_use_branch_labels_including_end(self):
+        """Route dict descriptions label Mermaid edges to targets and END."""
+
+        @route(
+            targets={
+                "approved": "approve",
+                END: "reject",
+            }
+        )
+        def choose(x: int) -> str:
+            return "approved" if x > 0 else END
+
+        @node(output_name="result")
+        def approved(x: int) -> int:
+            return x
+
+        graph = Graph(nodes=[choose, approved])
+        mermaid = graph.to_mermaid()
+
+        assert "choose -.->|approve| approved" in mermaid
+        assert "choose -.->|reject| __end__" in mermaid
+
     def test_both_ifelse_branches_to_end(self):
         """Both True and False END edges emitted when both branches route to END.
 
@@ -329,14 +374,14 @@ class TestEdgeTypes:
         """
         import networkx as nx
 
-        from hypergraph.viz.mermaid import _render_end_edges
+        from hypergraph.viz.mermaid import _MermaidIdAllocator, _render_end_edges
 
         fg = nx.DiGraph()
         fg.add_node(
             "gate",
             branch_data={"when_true": "END", "when_false": "END"},
         )
-        lines = _render_end_edges(fg, expansion_state={})
+        lines = _render_end_edges(fg, expansion_state={}, id_allocator=_MermaidIdAllocator())
 
         true_edges = [line for line in lines if "True" in line]
         false_edges = [line for line in lines if "False" in line]
@@ -462,6 +507,33 @@ class TestSeparateOutputs:
         mermaid = graph.to_mermaid(separate_outputs=False)
 
         assert "data_double_doubled" not in mermaid
+
+    def test_gate_internal_outputs_hidden_in_separate_mode(self):
+        """Gate routing signals stay hidden while explicit emits still render."""
+
+        @node(output_name="value")
+        def source(seed: int) -> int:
+            return seed
+
+        @ifelse(when_true="accept", when_false="reject", emit="decision_made")
+        def gate_decision(value: int) -> bool:
+            return value > 0
+
+        @node(output_name="accepted")
+        def accept(value: int) -> int:
+            return value
+
+        @node(output_name="rejected")
+        def reject(value: int) -> int:
+            return value
+
+        graph = Graph(nodes=[source, gate_decision, accept, reject])
+        mermaid = str(graph.to_mermaid(separate_outputs=True))
+
+        assert "data_gate_decision__gate_decision" not in mermaid
+        assert '[/"_gate_decision' not in mermaid
+        assert "data_gate_decision_decision_made" in mermaid
+        assert "data_source_value" in mermaid
 
 
 # =============================================================================

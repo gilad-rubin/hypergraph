@@ -607,7 +607,7 @@ result = runner.run(g2, {"embedding": [0.1, 0.2], "query": "hello"})
 # Only retrieve and generate execute
 ```
 
-### `as_node(*, name=None, namespaced=False) -> GraphNode`
+### `as_node(*, name=None, namespaced=False, runner=None, complete_on_stop=False) -> GraphNode`
 
 Wrap graph as a node for composition. Returns a new GraphNode.
 
@@ -622,6 +622,8 @@ outer = Graph([gn, add_one])
 **Args:**
 - `name` (str | None): Node name. If not provided, uses `graph.name`.
 - `namespaced` (bool): When `False` (default), the GraphNode's inputs and outputs stay flat in the parent graph. When `True`, inputs and outputs are projected under the resolved GraphNode name, e.g. `retrieval.query` and `retrieval.docs`.
+- `runner` (Runner | None): Optional runner instance used only for this nested graph. When omitted, the GraphNode inherits the parent runner.
+- `complete_on_stop` (bool): When `True`, a stopped inner graph finishes remaining ready work before returning, so partial inner outputs can flow to downstream parent nodes. Default: False.
 
 **Returns:** GraphNode wrapping this graph
 
@@ -900,7 +902,7 @@ How to fix:
 
 Shared params are omitted from the interactive input lane and from INPUT/INPUT_GROUP rendering, and are rendered as a `%% shared state: messages` comment in Mermaid output.
 
-### `visualize(*, depth=0, theme="auto", show_types=False, separate_outputs=False, show_inputs=True, show_bounded_inputs=False, filepath=None)`
+### `visualize(*, depth=0, theme="auto", show_types=True, separate_outputs=False, show_inputs=None, show_bounded_inputs=False, show_external_inputs=None, filepath=None)`
 
 Render an interactive visualization of the graph.
 
@@ -913,10 +915,11 @@ graph.visualize(filepath="graph.html")     # Save standalone HTML
 **Args:**
 - `depth` (int): How many levels of nested graphs to expand. Default: 0 (all collapsed).
 - `theme` (str): `"dark"`, `"light"`, or `"auto"` (detects from notebook environment). Default: `"auto"`.
-- `show_types` (bool): Display type annotations on nodes. Default: False.
+- `show_types` (bool): Display type annotations on nodes. Default: True.
 - `separate_outputs` (bool): Render outputs as separate DATA nodes instead of direct edges. Default: False.
-- `show_inputs` (bool): Show INPUT/INPUT_GROUP nodes. Default: True.
+- `show_inputs` (bool | None): Show INPUT/INPUT_GROUP nodes. `None` uses the renderer default.
 - `show_bounded_inputs` (bool): Include bound INPUT/INPUT_GROUP nodes when `show_inputs=True`. If `show_inputs=False`, the input lane stays hidden. Default: False.
+- `show_external_inputs` (bool | None): Deprecated alias for `show_inputs`.
 - `filepath` (str | None): Save to HTML file instead of displaying inline. Default: None.
 
 **Returns:** `ScrollablePipelineWidget` if `filepath=None`, otherwise `None` (saves to file).

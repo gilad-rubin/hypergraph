@@ -27,7 +27,7 @@ This renders an interactive graph diagram inline. Nodes are connected automatica
 graph.visualize(
     depth=0,                   # How many nested graph levels to expand
     theme="auto",              # "dark", "light", or "auto"
-    show_types=False,          # Show type annotations on nodes
+    show_types=True,           # Show type annotations on nodes
     separate_outputs=False,    # Render outputs as separate DATA nodes
     show_inputs=True,          # Show INPUT/INPUT_GROUP nodes
     show_bounded_inputs=False, # Include bound inputs when INPUT nodes are shown
@@ -124,4 +124,4 @@ When nested graphs are expanded, cross-boundary edges remap to the visible inter
 
 ## Works Offline
 
-All JavaScript dependencies (React, React Flow, Kiwi constraint solver) are bundled with hypergraph. No CDN calls, no internet required.
+All JavaScript dependencies (React, React Flow, Dagre layout) are bundled with hypergraph. No CDN calls, no internet required.

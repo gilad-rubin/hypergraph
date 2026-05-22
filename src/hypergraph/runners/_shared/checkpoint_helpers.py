@@ -29,6 +29,9 @@ def build_superstep_records(
     superstep_error: BaseException | None = None,
     is_pause: bool = False,
     stopped: bool = False,
+    child_run_ids: dict[str, str | None] | None = None,
+    attempted_node_names: tuple[str, ...] | set[str] | None = None,
+    node_errors: dict[str, BaseException] | None = None,
 ) -> tuple[list[StepRecord], int]:
     """Build StepRecords for nodes scheduled in a completed superstep.
 
@@ -38,6 +41,10 @@ def build_superstep_records(
 
     Returns (records, updated_step_counter).
     """
+    if superstep_error is not None and attempted_node_names is not None:
+        attempted = set(attempted_node_names)
+        ready_node_names = [name for name in ready_node_names if name in attempted]
+
     sorted_names = sorted(ready_node_names, key=lambda name: node_order.get(name, 0))
     records: list[StepRecord] = []
 
@@ -45,13 +52,16 @@ def build_superstep_records(
         execution = state.node_executions.get(name)
         now = _utcnow()
         node_type = type(graph._nodes[name]).__name__ if name in graph._nodes else None
-        child_run_id = _compute_child_run_id(
-            workflow_id,
-            name,
-            graph,
-            state,
-            had_previous_execution=name in prev_input_versions,
-        )
+        if child_run_ids is not None and name in child_run_ids:
+            child_run_id = child_run_ids[name]
+        else:
+            child_run_id = _compute_child_run_id(
+                workflow_id,
+                name,
+                graph,
+                state,
+                had_previous_execution=name in prev_input_versions,
+            )
 
         if is_pause and (execution is None or not _is_fresh(name, execution, prev_input_versions)):
             # Interrupt node raised PauseExecution before producing outputs.
@@ -95,7 +105,7 @@ def build_superstep_records(
                     index=step_counter,
                     status=StepStatus.FAILED,
                     input_versions=execution.input_versions,
-                    error=_extract_error_message(superstep_error),
+                    error=_extract_error_message(_error_for_node(name, node_errors, superstep_error)),
                     node_type=node_type,
                     created_at=now,
                     child_run_id=child_run_id,
@@ -110,7 +120,7 @@ def build_superstep_records(
                 index=step_counter,
                 status=StepStatus.FAILED,
                 input_versions={},
-                error=_extract_error_message(superstep_error),
+                error=_extract_error_message(_error_for_node(name, node_errors, superstep_error)),
                 node_type=node_type,
                 created_at=now,
                 child_run_id=child_run_id,
@@ -152,6 +162,16 @@ def _extract_error_message(error: BaseException) -> str:
     """Extract a human-readable error message from a (possibly wrapped) exception."""
     cause = error.__cause__ if error.__cause__ is not None else error
     return str(cause)
+
+
+def _error_for_node(
+    node_name: str,
+    node_errors: dict[str, BaseException] | None,
+    superstep_error: BaseException,
+) -> BaseException:
+    if node_errors is None:
+        return superstep_error
+    return node_errors.get(node_name, superstep_error)
 
 
 def checkpoint_offsets(checkpoint: Any | None) -> tuple[int, int]:

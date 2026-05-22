@@ -48,7 +48,7 @@ class BatchSummary:
     @classmethod
     def from_results(cls, results: Sequence[RunResult]) -> BatchSummary:
         """Build a summary from mapped child run results."""
-        from hypergraph.runners._shared.types import RunStatus
+        from hypergraph.runners._shared.types import RunStatus, aggregate_run_status
 
         total_items = len(results)
         completed_items = sum(1 for result in results if result.status == RunStatus.COMPLETED)
@@ -61,13 +61,7 @@ class BatchSummary:
             failed_items=failed_items,
             paused_items=paused_items,
             stopped_items=stopped_items,
-            outcome=_batch_outcome(
-                total_items=total_items,
-                completed_items=completed_items,
-                failed_items=failed_items,
-                paused_items=paused_items,
-                stopped_items=stopped_items,
-            ),
+            outcome=aggregate_run_status(results).value,
         )
 
     @property
@@ -87,25 +81,3 @@ class BatchSummary:
         if self.outcome == "stopped":
             return "stopped"
         return "completed"
-
-
-def _batch_outcome(
-    *,
-    total_items: int,
-    completed_items: int,
-    failed_items: int,
-    paused_items: int,
-    stopped_items: int,
-) -> str:
-    """Summarize mapped child outcomes for export-oriented observability."""
-    if total_items == 0:
-        return "completed"
-    if failed_items == total_items:
-        return "failed"
-    if failed_items > 0:
-        return "partial"
-    if paused_items > 0:
-        return "paused"
-    if stopped_items > 0:
-        return "stopped"
-    return "completed"

@@ -63,9 +63,11 @@ class AsyncEventProcessor(EventProcessor):
 
     async def on_event_async(self, event: Event) -> None:
         """Async version of on_event. Override in subclasses."""
+        self.on_event(event)
 
     async def shutdown_async(self) -> None:
         """Async version of shutdown. Override to flush buffers."""
+        self.shutdown()
 
 
 class TypedEventProcessor(EventProcessor):

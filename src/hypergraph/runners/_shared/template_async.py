@@ -36,7 +36,6 @@ from hypergraph.runners._shared.helpers import (
     find_missing_resume_seed_inputs,
     generate_map_inputs,
     generate_workflow_id,
-    get_ready_nodes,
     initialize_state,
     is_interrupt_resume_payload,
     warn_on_bind_overrides,
@@ -316,31 +315,24 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
         if resume_checkpoint is not None and skip_missing_input_validation:
             resume_state = initialize_state(graph, normalized_values, checkpoint=resume_checkpoint)
             scope = compute_execution_scope(graph)
-            ready_nodes = get_ready_nodes(
-                graph,
-                resume_state,
-                active_nodes=scope.active_nodes,
-                startup_predecessors=scope.startup_predecessors,
-            )
-            if not ready_nodes:
-                missing_seed_inputs = sorted(
-                    find_missing_resume_seed_inputs(
-                        graph,
-                        resume_state,
-                        active_nodes=scope.active_nodes,
-                        startup_predecessors=scope.startup_predecessors,
-                    )
+            missing_seed_inputs = sorted(
+                find_missing_resume_seed_inputs(
+                    graph,
+                    resume_state,
+                    active_nodes=scope.active_nodes,
+                    startup_predecessors=scope.startup_predecessors,
                 )
-                if missing_seed_inputs:
-                    raise MissingInputError(
-                        missing=missing_seed_inputs,
-                        provided=sorted(normalized_values),
-                        message=(
-                            "Checkpoint resume is missing required seed inputs: "
-                            + ", ".join(repr(name) for name in missing_seed_inputs)
-                            + ". The restored checkpoint state does not make any pending nodes runnable."
-                        ),
-                    )
+            )
+            if missing_seed_inputs:
+                raise MissingInputError(
+                    missing=missing_seed_inputs,
+                    provided=sorted(normalized_values),
+                    message=(
+                        "Checkpoint resume is missing required seed inputs: "
+                        + ", ".join(repr(name) for name in missing_seed_inputs)
+                        + ". The restored checkpoint state leaves at least one active branch unrunnable."
+                    ),
+                )
 
         max_iter = max_iterations or self.default_max_iterations
         effective_show_progress = show_progress if show_progress is not None else getattr(self, "_show_progress", False)

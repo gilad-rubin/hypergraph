@@ -112,7 +112,7 @@ def graph_inspect(
                 }
             )
 
-        input_spec = graph.input_spec
+        input_spec = graph.inputs
         data = {
             "name": graph.name,
             "nodes": nodes_data,
@@ -150,11 +150,11 @@ def graph_inspect(
     lines = print_table(headers, rows)
     print_lines(lines)
 
-    input_spec = graph.input_spec
+    input_spec = graph.inputs
     if input_spec.required:
         print(f"\n  Required inputs: {', '.join(input_spec.required)}")
     if input_spec.optional:
-        print(f"  Optional inputs: {', '.join(f'{k} (default: {v})' for k, v in input_spec.optional.items())}")
+        print(f"  Optional inputs: {', '.join(input_spec.optional)}")
     if input_spec.entrypoints:
         print(f"  Entrypoints: {', '.join(input_spec.entrypoints)}")
 

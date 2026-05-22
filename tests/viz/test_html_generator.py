@@ -1,6 +1,10 @@
 """Tests for the HTML generator."""
 
+import pytest
+
+from hypergraph.viz.assets import FIRST_PARTY_ASSET_NAMES
 from hypergraph.viz.html import generate_widget_html
+from hypergraph.viz.html import generator as html_generator
 
 # Sample graph data for testing
 SAMPLE_GRAPH_DATA = {
@@ -52,7 +56,13 @@ class TestGenerateHtml:
         assert "ReactDOM" in html
         # ReactFlow
         assert "ReactFlow" in html
-        # HypergraphViz (single visualization module)
+        # HypergraphViz and split visualization modules
+        assert "HypergraphVizRuntime" in html
+        assert "HypergraphVizLayout" in html
+        assert "HypergraphVizEdges" in html
+        assert "HypergraphVizNodes" in html
+        assert "HypergraphVizControls" in html
+        assert "HypergraphVizDebug" in html
         assert "HypergraphViz" in html
 
     def test_no_external_scripts(self):
@@ -100,6 +110,44 @@ class TestGenerateHtml:
         html = generate_widget_html(SAMPLE_GRAPH_DATA)
 
         assert "DOMContentLoaded" in html
+
+    def test_bootstrap_checks_viz_init_hook(self):
+        """A namespace object is not enough; the app bootstrap hook must exist."""
+        html = generate_widget_html(SAMPLE_GRAPH_DATA)
+
+        assert "typeof window.HypergraphViz.init !== 'function'" in html
+
+    @pytest.mark.parametrize(
+        "asset_name",
+        FIRST_PARTY_ASSET_NAMES,
+    )
+    def test_missing_first_party_scene_asset_raises_clear_error(self, monkeypatch, asset_name):
+        """Missing bundled scene assets should fail before returning broken HTML."""
+        real_files = html_generator.files
+
+        class MissingResource:
+            def read_text(self, *args, **kwargs):
+                raise FileNotFoundError(f"missing {asset_name}")
+
+        class AssetPackageProxy:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+
+            def __truediv__(self, name):
+                if name == asset_name:
+                    return MissingResource()
+                return self._wrapped / name
+
+        def fake_files(package):
+            wrapped = real_files(package)
+            if package == "hypergraph.viz.assets":
+                return AssetPackageProxy(wrapped)
+            return wrapped
+
+        monkeypatch.setattr(html_generator, "files", fake_files)
+
+        with pytest.raises(RuntimeError, match=asset_name):
+            generate_widget_html(SAMPLE_GRAPH_DATA)
 
 
 class TestHtmlStructure:

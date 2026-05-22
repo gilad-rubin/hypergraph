@@ -235,11 +235,23 @@ class Graph:
         if not self._shared:
             return
         all_outputs: set[str] = set()
+        data_outputs: set[str] = set()
         for node in self._nodes.values():
             all_outputs.update(node.outputs)
+            data_outputs.update(node.data_outputs)
         unknown = sorted(self._shared - all_outputs)
         if unknown:
             raise GraphConfigError(f"shared params {unknown} are not produced by any node.\nAvailable outputs: {sorted(all_outputs)}")
+        emit_only = sorted(
+            name
+            for name in self._shared
+            if name not in data_outputs or any(name in node.outputs and name not in node.data_outputs for node in self._nodes.values())
+        )
+        if emit_only:
+            raise GraphConfigError(
+                f"shared params {emit_only} must be produced by data outputs only, not by an emit-only signal.\n"
+                f"Available data outputs: {sorted(data_outputs)}"
+            )
 
     def _validate_shared_connectivity(self, G: nx.DiGraph, nodes: list[HyperNode]) -> None:
         """Validate that shared params don't leave the graph disconnected.
@@ -1117,6 +1129,9 @@ class Graph:
             >>> g2 = g.with_entrypoint("process")
             >>> g2.inputs.required  # only process's unproduced inputs
         """
+        if not node_names:
+            raise GraphConfigError("entrypoint cannot be empty")
+
         normalized_names = tuple(name.name if isinstance(name, HyperNode) else name for name in node_names)
         self._validate_entrypoint_names(normalized_names)
 
@@ -1523,7 +1538,7 @@ class Graph:
     ) -> Any:
         """Create an interactive visualization of this graph.
 
-        Renders the graph using React Flow with Kiwi constraint-based layout
+        Renders the graph using React Flow with Dagre layout
         in a Jupyter/VSCode notebook. Works offline with all assets bundled.
 
         Args:

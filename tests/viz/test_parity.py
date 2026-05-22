@@ -56,7 +56,31 @@ def _node_signature(node: dict) -> tuple:
         data.get("nodeType"),
         bool(node.get("hidden")),
         node.get("parentNode"),
+        _semantic_node_data(data),
     )
+
+
+def _semantic_node_data(data: dict) -> tuple:
+    node_type = data.get("nodeType")
+    if node_type == "INPUT":
+        return (
+            data.get("label"),
+            data.get("typeHint"),
+            data.get("isBound"),
+            data.get("ownerContainer"),
+            data.get("deepestOwnerContainer"),
+            tuple(data.get("actualTargets") or ()),
+        )
+    if node_type == "INPUT_GROUP":
+        return (
+            tuple(data.get("params") or ()),
+            tuple(data.get("paramTypes") or ()),
+            data.get("isBound"),
+            data.get("ownerContainer"),
+            data.get("deepestOwnerContainer"),
+            tuple(data.get("actualTargets") or ()),
+        )
+    return ()
 
 
 def _edge_signature(edge: dict) -> tuple:
@@ -78,6 +102,28 @@ def _project(scene: dict) -> tuple[set, set]:
     nodes = {_node_signature(n) for n in scene["nodes"]}
     edges = {_edge_signature(e) for e in scene["edges"]}
     return nodes, edges
+
+
+def test_python_js_external_input_owner_container_matches() -> None:
+    graph = make_workflow()
+    ir = build_graph_ir(graph.to_flat_graph())
+    expansion_state = {"preprocess": True}
+
+    py_scene = build_initial_scene(ir, expansion_state=expansion_state)
+    js_scene = _node_scene(
+        asdict(ir),
+        {
+            "expansionState": expansion_state,
+            "separateOutputs": False,
+            "showInputs": True,
+            "showBoundedInputs": False,
+        },
+    )
+
+    py_input = next(n for n in py_scene["nodes"] if n["id"] == "input_text")
+    js_input = next(n for n in js_scene["nodes"] if n["id"] == "input_text")
+
+    assert js_input["data"].get("ownerContainer") == py_input["data"]["ownerContainer"] == "preprocess"
 
 
 def _all_expansion_states(ir_dict: dict) -> list[dict]:
@@ -113,12 +159,29 @@ def make_bound_graph():
     return Graph(nodes=[scale, report]).bind(factor=10)
 
 
+def make_unordered_nested_entrypoint_graph():
+    """Nested entrypoint fixture whose real source is not first in child order."""
+    from hypergraph import Graph, node
+
+    @node(output_name="done")
+    def downstream(started: int) -> int:
+        return started + 1
+
+    @node(output_name="started")
+    def upstream(x: int) -> int:
+        return x
+
+    inner = Graph(nodes=[downstream, upstream], name="inner")
+    return Graph(nodes=[inner.as_node()], entrypoint="inner")
+
+
 FIXTURES = {
     "simple": make_simple_graph,
     "chain": make_chain_graph,
     "workflow": make_workflow,
     "outer": make_outer,
     "bound": make_bound_graph,
+    "unordered_entrypoint": make_unordered_nested_entrypoint_graph,
 }
 
 

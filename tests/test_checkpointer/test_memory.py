@@ -181,3 +181,45 @@ class TestMemoryCheckpointer:
 
         state = await checkpointer.get_state("wf-retained")
         assert state == {"x": 3, "y": 2}
+
+    @pytest.mark.parametrize("latest_status", [StepStatus.FAILED, StepStatus.PAUSED])
+    async def test_latest_retention_refolds_existing_baseline(self, checkpointer, latest_status):
+        checkpointer.policy = CheckpointPolicy(retention="latest")
+        await checkpointer.create_run("wf-retained-baseline")
+        await checkpointer.save_step(
+            StepRecord(
+                run_id="wf-retained-baseline",
+                superstep=0,
+                node_name="a",
+                index=0,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+                values={"x": 1},
+            )
+        )
+        await checkpointer.save_step(
+            StepRecord(
+                run_id="wf-retained-baseline",
+                superstep=1,
+                node_name="a",
+                index=1,
+                status=latest_status,
+                input_versions={},
+                values=None,
+                error="boom" if latest_status is StepStatus.FAILED else None,
+            )
+        )
+        await checkpointer.save_step(
+            StepRecord(
+                run_id="wf-retained-baseline",
+                superstep=2,
+                node_name="b",
+                index=2,
+                status=StepStatus.COMPLETED,
+                input_versions={},
+                values={"y": 2},
+            )
+        )
+
+        state = await checkpointer.get_state("wf-retained-baseline")
+        assert state == {"x": 1, "y": 2}

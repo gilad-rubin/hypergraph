@@ -20,6 +20,7 @@ from hypergraph.events.types import (
     RunEndEvent,
     RunStartEvent,
     StopRequestedEvent,
+    SuperstepStartEvent,
 )
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ class TestEventImmutability:
             NodeEndEvent,
             NodeErrorEvent,
             RouteDecisionEvent,
+            SuperstepStartEvent,
             InterruptEvent,
             StopRequestedEvent,
             InnerCacheEvent,
@@ -86,6 +88,9 @@ class _Recorder(TypedEventProcessor):
     def on_route_decision(self, event):
         self.calls.append(("on_route_decision", event))
 
+    def on_superstep_start(self, event):
+        self.calls.append(("on_superstep_start", event))
+
     def on_interrupt(self, event):
         self.calls.append(("on_interrupt", event))
 
@@ -113,15 +118,17 @@ class TestTypedEventProcessor:
             NodeEndEvent(run_id="r1"),
             NodeErrorEvent(run_id="r1"),
             RouteDecisionEvent(run_id="r1"),
+            SuperstepStartEvent(run_id="r1"),
             InterruptEvent(run_id="r1"),
             StopRequestedEvent(run_id="r1"),
             InnerCacheEvent(run_id="r1"),
         ]
         for ev in events:
             rec.on_event(ev)
-        assert len(rec.calls) == 9
+        assert len(rec.calls) == 10
         method_names = [c[0] for c in rec.calls]
         assert "on_run_start" in method_names
+        assert "on_superstep_start" in method_names
         assert "on_stop_requested" in method_names
         assert "on_inner_cache" in method_names
 
@@ -233,6 +240,14 @@ class _AsyncListProcessor(AsyncEventProcessor):
         self.shutdown_called = True
 
 
+class _SyncOnlyAsyncProcessor(AsyncEventProcessor):
+    def __init__(self):
+        self.events: list[object] = []
+
+    def on_event(self, event):
+        self.events.append(event)
+
+
 class TestAsyncDispatcher:
     async def test_emit_async(self):
         sync_p = _ListProcessor()
@@ -242,6 +257,15 @@ class TestAsyncDispatcher:
         await d.emit_async(ev)
         assert sync_p.events == [ev]
         assert async_p.events == [ev]
+
+    async def test_emit_async_falls_back_to_sync_hook(self):
+        processor = _SyncOnlyAsyncProcessor()
+        dispatcher = EventDispatcher([processor])
+        event = RunStartEvent(run_id="r1")
+
+        await dispatcher.emit_async(event)
+
+        assert processor.events == [event]
 
     async def test_shutdown_async(self):
         sync_p = _ListProcessor()

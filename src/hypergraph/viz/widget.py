@@ -102,6 +102,8 @@ def visualize(
         graph,
         separate_outputs=separate_outputs,
         show_types=show_types,
+        show_inputs=show_inputs,
+        show_bounded_inputs=show_bounded_inputs,
         depth=depth,
     )
     final_width = max(400, est_width)

@@ -41,6 +41,21 @@ class RunStatus(Enum):
     STOPPED = "stopped"
 
 
+def aggregate_run_status(results: Sequence[RunResult]) -> RunStatus:
+    """Return the batch-level status for a sequence of run results."""
+    has_failed = any(result.status == RunStatus.FAILED for result in results)
+    has_completed = any(result.status == RunStatus.COMPLETED for result in results)
+    if has_failed and has_completed:
+        return RunStatus.PARTIAL
+    if has_failed:
+        return RunStatus.FAILED
+    if any(result.status == RunStatus.PAUSED for result in results):
+        return RunStatus.PAUSED
+    if any(result.status == RunStatus.STOPPED for result in results):
+        return RunStatus.STOPPED
+    return RunStatus.COMPLETED
+
+
 def _generate_run_id() -> str:
     """Generate a unique run ID."""
     return f"run-{uuid.uuid4().hex[:12]}"
@@ -160,7 +175,7 @@ class RunResult:
 
     Attributes:
         values: Dict of all output values produced
-        status: Run status (COMPLETED, FAILED, or PAUSED)
+        status: Run status (COMPLETED, FAILED, PAUSED, or STOPPED)
         run_id: Unique identifier for this run
         workflow_id: Optional workflow identifier for tracking related runs
         error: Exception if status is FAILED, else None
@@ -352,17 +367,9 @@ class MapResult:
 
         PARTIAL when some items completed and some failed — the common case
         for large batches where a few items hit transient errors.
-        FAILED only when every item failed. Empty → COMPLETED.
+        FAILED when at least one item failed and none completed. Empty → COMPLETED.
         """
-        has_failed = any(r.status == RunStatus.FAILED for r in self.results)
-        has_completed = any(r.status == RunStatus.COMPLETED for r in self.results)
-        if has_failed and has_completed:
-            return RunStatus.PARTIAL
-        if has_failed:
-            return RunStatus.FAILED
-        if any(r.status == RunStatus.PAUSED for r in self.results):
-            return RunStatus.PAUSED
-        return RunStatus.COMPLETED
+        return aggregate_run_status(self.results)
 
     @property
     def completed(self) -> bool:
@@ -373,6 +380,11 @@ class MapResult:
     def paused(self) -> bool:
         """True if any item is paused (and none failed)."""
         return self.status == RunStatus.PAUSED
+
+    @property
+    def stopped(self) -> bool:
+        """True if any item stopped (and none failed or paused)."""
+        return self.status == RunStatus.STOPPED
 
     @property
     def failed(self) -> bool:
@@ -411,6 +423,7 @@ class MapResult:
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
         n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
+        n_stopped = sum(1 for r in self.results if r.status == RunStatus.STOPPED)
         parts = [plural(n, "item")]
         status_parts = []
         if n_completed:
@@ -419,6 +432,8 @@ class MapResult:
             status_parts.append(f"{n_failed} failed")
         if n_paused:
             status_parts.append(f"{n_paused} paused")
+        if n_stopped:
+            status_parts.append(f"{n_stopped} stopped")
         if status_parts:
             parts.append(", ".join(status_parts))
         if n_completed > 0:
@@ -448,14 +463,17 @@ class MapResult:
         n = len(self.results)
         n_completed = sum(1 for r in self.results if r.status == RunStatus.COMPLETED)
         n_failed = sum(1 for r in self.results if r.status == RunStatus.FAILED)
+        n_paused = sum(1 for r in self.results if r.status == RunStatus.PAUSED)
+        n_stopped = sum(1 for r in self.results if r.status == RunStatus.STOPPED)
         parts = []
         if n_completed:
             parts.append(f"{n_completed} completed")
         if n_failed:
             parts.append(f"{n_failed} failed")
-        n_paused = n - n_completed - n_failed
         if n_paused:
             parts.append(f"{n_paused} paused")
+        if n_stopped:
+            parts.append(f"{n_stopped} stopped")
         status = ", ".join(parts) if parts else "empty"
         avg_part = ""
         if n_completed > 0:

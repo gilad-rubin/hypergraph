@@ -44,8 +44,15 @@ def _parse_kv_args(args: list[str]) -> dict[str, Any]:
 
 def _load_values_source(source: str) -> dict[str, Any]:
     """Load values from a JSON string or file path."""
-    path = Path(source)
-    if path.is_file():
+    stripped = source.lstrip()
+    if stripped.startswith(("{", "[")):
+        try:
+            data = json.loads(source)
+        except json.JSONDecodeError:
+            print(f"Error: '{source}' is not valid JSON and not a file path")
+            raise typer.Exit(1) from None
+    elif Path(source).is_file():
+        path = Path(source)
         with open(path) as f:
             data = json.load(f)
     else:
@@ -75,10 +82,14 @@ def _resolve_values(values_option: str | None, extra_args: list[str]) -> dict[st
 
 def _parse_csv_names(option_name: str, raw: str) -> list[str]:
     """Parse a comma-separated option into a non-empty list of names."""
-    names = [name.strip() for name in raw.split(",") if name.strip()]
-    if not names:
+    parts = [name.strip() for name in raw.split(",")]
+    if not any(parts):
         print(f"Error: {option_name} requires at least one name")
         raise typer.Exit(1)
+    if any(not name for name in parts):
+        print(f"Error: {option_name} contains an empty name")
+        raise typer.Exit(1)
+    names = parts
     return names
 
 
@@ -282,7 +293,7 @@ def register_commands(app: typer.Typer) -> None:
         runner, is_async = _create_runner(graph, runner_type, db)
 
         map_kwargs: dict[str, Any] = {
-            "map_over": map_over.split(","),
+            "map_over": _parse_csv_names("--map-over", map_over),
             "map_mode": map_mode,
             "error_handling": error_handling,
         }

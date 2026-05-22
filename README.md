@@ -132,7 +132,10 @@ def should_continue(messages: list) -> str:
         return END
     return "retrieve"
 
-graph = Graph(nodes=[retrieve, generate, accumulate, should_continue])
+graph = Graph(
+    nodes=[retrieve, generate, accumulate, should_continue],
+    entrypoint="retrieve",
+)
 ```
 
 The graph loops back to `retrieve` until `should_continue` returns `END`.

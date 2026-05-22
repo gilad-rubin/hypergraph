@@ -231,6 +231,27 @@ def test_branch_to_end_edge_carries_label_for_when_false():
     assert end_edges[0]["data"].get("label") == "False", f"Expected branch→__end__ edge label 'False'; got {end_edges[0]['data'].get('label')!r}"
 
 
+def test_start_edge_to_expanded_container_targets_real_entrypoint():
+    """Expanded START routing should follow dependency entrypoints, not child order."""
+
+    @node(output_name="done")
+    def downstream(started: int) -> int:
+        return started + 1
+
+    @node(output_name="started")
+    def upstream(x: int) -> int:
+        return x
+
+    inner = Graph(nodes=[downstream, upstream], name="inner")
+    outer = Graph(nodes=[inner.as_node()], entrypoint="inner")
+
+    ir = build_graph_ir(outer.to_flat_graph())
+    scene = build_initial_scene(ir, expansion_state={"inner": True})
+
+    start_edges = [e for e in scene["edges"] if e["source"] == "__start__"]
+    assert [(e["source"], e["target"]) for e in start_edges] == [("__start__", "inner/upstream")]
+
+
 def test_expanded_graph_container_data_nodes_are_hidden_in_separate_mode():
     """When a GRAPH container is expanded in separate_outputs mode, the
     data edge is re-routed to the internal producer's DATA node, leaving

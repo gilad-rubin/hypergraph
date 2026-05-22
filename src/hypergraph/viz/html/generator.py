@@ -9,6 +9,8 @@ import json
 from importlib.resources import files
 from typing import Any
 
+from hypergraph.viz.assets import FIRST_PARTY_ASSET_NAMES
+
 
 def _escape_json_for_html(json_str: str) -> str:
     """Escape JSON for safe embedding in HTML script tags.
@@ -90,10 +92,9 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
     tailwind_css = _read_asset("tailwind.min.css", "css", _vendor)
     custom_css = _read_asset("custom.css", "css") or ""
 
-    # Load derivation primitives + scene_builder + viz module (in that order)
-    derivation_js = _read_asset("derivation.js", "js") or ""
-    scene_builder_js = _read_asset("scene_builder.js", "js") or ""
-    viz_js = _read_asset("viz.js", "js")
+    # Load first-party modules in dependency order. Keep these as classic
+    # scripts (not ES modules) so notebook and VSCode iframe hosts work offline.
+    first_party_assets = [(name, _read_asset(name, "js")) for name in FIRST_PARTY_ASSET_NAMES]
 
     # Check that all required assets are available
     required_library_assets = [react_js, react_dom_js, htm_js, dagre_js, rf_js, rf_css, tailwind_css]
@@ -110,12 +111,14 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
             "Try reinstalling with: pip install --force-reinstall hypergraph"
         )
 
-    if not viz_js:
+    missing_first_party = [name for name, asset in first_party_assets if not asset]
+    if missing_first_party:
         raise RuntimeError(
-            "Missing bundled visualization module: viz.js. "
+            f"Missing bundled visualization module(s): {missing_first_party}. "
             "The hypergraph package may be incorrectly installed. "
             "Try reinstalling with: pip install --force-reinstall hypergraph"
         )
+    first_party_scripts = "\n    ".join(asset for _, asset in first_party_assets if asset)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -157,11 +160,8 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
     {htm_js}
     {dagre_js}
     {rf_js}
-    <!-- Hypergraph IR -> scene derivation (load order: derivation -> scene_builder -> viz) -->
-    {derivation_js}
-    {scene_builder_js}
-    <!-- Hypergraph visualization module -->
-    {viz_js}
+    <!-- Hypergraph visualization modules (classic scripts, dependency order) -->
+    {first_party_scripts}
 </head>
 <body>
   <div id="root">
@@ -190,9 +190,16 @@ def generate_widget_html(graph_data: dict[str, Any]) -> str:
 
       // Check all required modules are loaded
       var requiredModules = [
-        'React', 'ReactDOM', 'ReactFlow', 'htm', 'dagre', 'HypergraphViz'
+        'React', 'ReactDOM', 'ReactFlow', 'htm', 'dagre',
+        'HypergraphDerivation', 'HypergraphSceneBuilder',
+        'HypergraphVizRuntime', 'HypergraphVizLayout', 'HypergraphVizEdges',
+        'HypergraphVizNodes', 'HypergraphVizControls', 'HypergraphVizDebug',
+        'HypergraphViz'
       ];
       var missing = requiredModules.filter(function(m) {{ return !window[m]; }});
+      if (missing.length === 0 && typeof window.HypergraphViz.init !== 'function') {{
+        missing.push('HypergraphViz.init');
+      }}
 
       if (missing.length > 0) {{
         var el = document.getElementById("boot-message");

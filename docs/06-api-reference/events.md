@@ -137,6 +137,18 @@ class RouteDecisionEvent(BaseEvent):
     superstep: int | None        # Zero-indexed superstep, if known
 ```
 
+### SuperstepStartEvent
+
+Emitted at the start of each superstep, before the ready node batch for that
+round is executed.
+
+```python
+@dataclass(frozen=True)
+class SuperstepStartEvent(BaseEvent):
+    graph_name: str              # Graph containing the superstep
+    superstep: int               # Zero-indexed superstep number
+```
+
 ### InterruptEvent
 
 Emitted when execution pauses for human-in-the-loop input.
@@ -201,8 +213,9 @@ class InnerCacheEvent(BaseEvent):
 ```python
 Event = (
     RunStartEvent | RunEndEvent | NodeStartEvent | NodeEndEvent
-    | NodeErrorEvent | RouteDecisionEvent | InterruptEvent | StopRequestedEvent
-    | CacheHitEvent | StreamingChunkEvent | InnerCacheEvent
+    | NodeErrorEvent | RouteDecisionEvent | SuperstepStartEvent
+    | InterruptEvent | StopRequestedEvent | CacheHitEvent
+    | StreamingChunkEvent | InnerCacheEvent
 )
 ```
 
@@ -258,6 +271,7 @@ class TypedEventProcessor(EventProcessor):
     def on_node_end(self, event: NodeEndEvent) -> None: ...
     def on_node_error(self, event: NodeErrorEvent) -> None: ...
     def on_route_decision(self, event: RouteDecisionEvent) -> None: ...
+    def on_superstep_start(self, event: SuperstepStartEvent) -> None: ...
     def on_interrupt(self, event: InterruptEvent) -> None: ...
     def on_stop_requested(self, event: StopRequestedEvent) -> None: ...
     def on_cache_hit(self, event: CacheHitEvent) -> None: ...

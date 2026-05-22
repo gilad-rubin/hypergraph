@@ -157,7 +157,7 @@ class MemoryCheckpointer(Checkpointer):
                     continue
                 latest_by_node[record.node_name] = record
             kept = list(latest_by_node.values())
-            dropped = [record for record in ordered if record.node_name != _BASELINE_NODE_NAME and record not in kept]
+            dropped = [record for record in ordered if record not in kept]
             baseline = _make_baseline_record(
                 run_id,
                 dropped,
@@ -169,12 +169,15 @@ class MemoryCheckpointer(Checkpointer):
 
         if retention == "windowed" and self.policy.window is not None:
             ordered = sorted(run_steps.values(), key=_step_sort_key)
-            max_superstep = max(record.superstep for record in ordered)
+            non_baseline = [record for record in ordered if record.node_name != _BASELINE_NODE_NAME]
+            if not non_baseline:
+                return
+            max_superstep = max(record.superstep for record in non_baseline)
             cutoff = max_superstep - self.policy.window + 1
             if cutoff <= 0:
                 return
             kept = [record for record in ordered if record.superstep >= cutoff and record.node_name != _BASELINE_NODE_NAME]
-            dropped = [record for record in ordered if record.superstep < cutoff and record.node_name != _BASELINE_NODE_NAME]
+            dropped = [record for record in ordered if record.node_name == _BASELINE_NODE_NAME or record.superstep < cutoff]
             baseline = _make_baseline_record(run_id, dropped, baseline_superstep=cutoff - 1)
             retained = [*([baseline] if baseline is not None else []), *kept]
             self._steps[run_id] = {(record.superstep, record.node_name): record for record in retained}
