@@ -49,6 +49,7 @@ This matches what CI runs: all warnings as errors, except GC-triggered unraisabl
 Change validation expectations:
 - Run focused tests for touched modules first, then broader suites as needed.
 - Before PR, run the CI-equivalent command above — `uv run pytest` alone does NOT catch warning-as-error failures that CI enforces.
+- When CI fails, inspect the exact job log before changing code. Matrix-only failures often come from Python-version differences; if you use a stdlib/test helper, check Python 3.10 compatibility or run the focused case with `uv run --python 3.10 ...`.
 - Auto-format/lint hook runs after Python edits (`ruff check --fix` + `ruff format`), so avoid redundant manual formatting loops.
 - For async tests that allocate long-lived resources (for example `SqliteCheckpointer` / `aiosqlite`), make teardown explicit. Prefer async fixtures that `await ...close()` rather than relying on event-loop shutdown to clean up worker threads.
 
@@ -58,6 +59,7 @@ Change validation expectations:
 - Preserve sync/async behavioral parity when modifying runners.
 - Keep nested-graph behavior consistent with flat-graph behavior.
 - If public API changes, update tests and relevant docs in the same task.
+- Separate transparent fixes from maintainer decisions. Fix clear implementation/test/doc drift autonomously; surface behavior or public-shape decisions (status semantics, exported metadata shape, API tightening) instead of quietly choosing policy.
 - Use conventional commits with scopes, e.g. `feat(graph): ...`, `fix(runners): ...`.
 - Run structural sweeps from `dev/REVIEW-CHECKLIST.md` before sending code for review.
   Key sweeps: mirror (grep old values in docs/docstrings/README), parity (diff sync vs async),
