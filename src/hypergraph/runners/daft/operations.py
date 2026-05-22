@@ -192,7 +192,7 @@ class BatchNodeOperation(DaftOperation):
             kwargs = {**bound, **dict(zip(col_names, series_args, strict=True))}
             return func(**kwargs)
 
-        udf = daft_mod.func.batch(**_batch_func_options(node, daft_mod))(batch_wrapper)
+        udf = daft_mod.func.batch(**_batch_func_options(node))(batch_wrapper)
 
         col_refs = [df[c] for c in input_cols]
         return df.with_column(output_col, udf(*col_refs))
@@ -349,6 +349,7 @@ def create_operation(
             _validate_batch_options(node, output_cols)
         if has_stateful_values(node_bound):
             _validate_stateful_constructable(node_bound)
+            _validate_stateful_node_options(node)
             return StatefulNodeOperation(
                 node=node,
                 input_columns=input_cols,
@@ -404,6 +405,11 @@ def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:
 def _validate_batch_options(node: HyperNode, output_cols: list[str]) -> None:
     from hypergraph.runners._shared.validation import IncompatibleRunnerError
 
+    if asyncio.iscoroutinefunction(node.func):
+        raise IncompatibleRunnerError(
+            f"Async batch UDF node {node.name!r} is not supported until Daft batch lowering supports awaiting coroutine results.",
+            capability="node_types",
+        )
     if len(output_cols) > 1:
         raise IncompatibleRunnerError(
             f"Batch UDFs with multiple outputs are not supported (node {node.name!r} has {output_cols}).",
@@ -412,6 +418,19 @@ def _validate_batch_options(node: HyperNode, output_cols: list[str]) -> None:
     if get_options(node).return_dtype is None:
         raise IncompatibleRunnerError(
             f"Batch UDF node {node.name!r} requires return_dtype. Pass return_dtype=... to hypergraph.integrations.daft.node(..., batch=True).",
+            capability="node_types",
+        )
+
+
+def _validate_stateful_node_options(node: HyperNode) -> None:
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    options = get_options(node)
+    unsupported = [name for name in ("cpus", "gpus", "use_process", "max_concurrency", "ray_options") if getattr(options, name) is not None]
+    if unsupported:
+        names = ", ".join(unsupported)
+        raise IncompatibleRunnerError(
+            f"Daft resource option(s) {names} on stateful node {node.name!r} must be set on @stateful(...), not daft_node(...).",
             capability="node_types",
         )
 
@@ -447,11 +466,8 @@ def _func_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
     return kwargs
 
 
-def _batch_func_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
-    options = get_options(node)
-    kwargs = options.for_batch_func()
-    kwargs.setdefault("return_dtype", daft_mod.DataType.python())
-    return kwargs
+def _batch_func_options(node: HyperNode) -> dict[str, Any]:
+    return get_options(node).for_batch_func()
 
 
 def _method_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
@@ -475,15 +491,12 @@ def _stateful_options(stateful_vals: dict[str, Any]) -> Options:
 
 def _stateful_method_decorator(daft_mod: Any, node: HyperNode) -> Callable[[Callable], Callable]:
     if is_batch(node):
-        return daft_mod.method.batch(**_batch_method_options(node, daft_mod))
+        return daft_mod.method.batch(**_batch_method_options(node))
     return daft_mod.method(**_method_options(node, daft_mod))
 
 
-def _batch_method_options(node: HyperNode, daft_mod: Any) -> dict[str, Any]:
-    options = get_options(node)
-    kwargs = options.for_batch_method()
-    kwargs.setdefault("return_dtype", daft_mod.DataType.python())
-    return kwargs
+def _batch_method_options(node: HyperNode) -> dict[str, Any]:
+    return get_options(node).for_batch_method()
 
 
 def _unpack_multi_output(

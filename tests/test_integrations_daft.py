@@ -213,6 +213,20 @@ def test_batch_node_requires_explicit_return_dtype() -> None:
         DaftRunner().map(graph, {"text": ["one fish"]}, map_over="text")
 
 
+def test_async_batch_node_is_rejected_before_execution() -> None:
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    @daft_node(output_name="word_count", batch=True, return_dtype=daft.DataType.int64())
+    async def count_words(text: daft.Series) -> list[int]:
+        await asyncio.sleep(0)
+        return [len(value.split()) for value in text.to_pylist()]
+
+    graph = Graph([count_words], name="async_batch")
+
+    with pytest.raises(IncompatibleRunnerError, match="Async batch"):
+        DaftRunner().map(graph, {"text": ["one fish"]}, map_over="text")
+
+
 def test_batch_size_without_batch_is_rejected_before_execution() -> None:
     from hypergraph.runners._shared.validation import IncompatibleRunnerError
 
@@ -239,6 +253,24 @@ def test_sync_stateless_max_concurrency_is_rejected_before_execution() -> None:
         DaftRunner().map(graph, {"text": ["one fish"]}, map_over="text")
 
 
+def test_stateful_node_rejects_node_level_resource_options() -> None:
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    @stateful
+    class Resource:
+        def transform(self, value: int) -> int:
+            return value + 1
+
+    @daft_node(output_name="y", max_concurrency=2)
+    def transform(x: int, resource: Resource) -> int:
+        return resource.transform(x)
+
+    graph = Graph([transform], name="bad_stateful_options").bind(resource=Resource())
+
+    with pytest.raises(IncompatibleRunnerError, match="max_concurrency.*@stateful"):
+        DaftRunner().map(graph, {"x": [1]}, map_over="x")
+
+
 def test_ray_resource_options_are_rejected_at_definition_time() -> None:
     with pytest.raises(ValueError, match="num_cpus"):
 
@@ -256,6 +288,18 @@ def test_options_validate_current_daft_resource_rules_at_definition_time() -> No
 
     with pytest.raises(ValueError, match="max_concurrency"):
         Options(max_concurrency=0)
+
+    with pytest.raises(ValueError, match="max_concurrency"):
+        Options(max_concurrency=1.5)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="max_retries"):
+        Options(max_retries=-1)
+
+    with pytest.raises(ValueError, match="batch_size"):
+        Options(batch_size=0)
+
+    with pytest.raises(ValueError, match="batch_size"):
+        Options(batch_size=1.5)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="gpus"):
         Options(gpus=1.5)

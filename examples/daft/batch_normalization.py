@@ -19,8 +19,8 @@ from hypergraph.integrations.daft import node as daft_node
 def normalize(values: daft.Series) -> list[float]:
     """Z-score normalize a column of values.
 
-    This is a batch UDF: it receives and returns daft.Series,
-    processing all rows at once instead of one-by-one.
+    This is a batch UDF: it receives a daft.Series and returns a list
+    aligned to the batch rows.
     """
     arr = values.to_pylist()
     mean = sum(arr) / len(arr)

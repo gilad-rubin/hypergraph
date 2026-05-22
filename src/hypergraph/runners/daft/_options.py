@@ -27,8 +27,9 @@ class Options:
     def __post_init__(self) -> None:
         if self.on_error not in (None, "raise", "log", "ignore"):
             raise ValueError("on_error must be one of 'raise', 'log', or 'ignore'")
-        if self.max_concurrency is not None and self.max_concurrency < 1:
-            raise ValueError("max_concurrency must be a positive integer")
+        _validate_int("max_concurrency", self.max_concurrency, minimum=1)
+        _validate_int("max_retries", self.max_retries, minimum=0)
+        _validate_int("batch_size", self.batch_size, minimum=1)
         if self.cpus is not None and self.cpus < 0:
             raise ValueError(f"cpus must be non-negative, got {self.cpus}")
         if self.gpus is not None:
@@ -126,6 +127,14 @@ class Options:
                 "on_error": self.on_error,
             }
         )
+
+
+def _validate_int(name: str, value: int | None, *, minimum: int) -> None:
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        qualifier = "positive" if minimum == 1 else "non-negative"
+        raise ValueError(f"{name} must be a {qualifier} integer")
 
 
 DEFAULT_OPTIONS = Options()
