@@ -262,7 +262,7 @@ caps.supports_interrupts   # False
 Translation runner: converts DAGs into chained Daft `df.with_column()` UDF calls.
 
 ```python
-from hypergraph import DaftRunner
+from hypergraph.integrations.daft import DaftRunner
 ```
 
 `DaftRunner` translates each node into a Daft UDF and chains them via
@@ -327,7 +327,8 @@ Execute a graph once via a 1-row Daft plan.
 **Example:**
 
 ```python
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 @node(output_name="doubled")
 def double(x: int) -> int:
@@ -380,7 +381,8 @@ entrypoint when your data is a Python collection.
 **Example:**
 
 ```python
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 @node(output_name="sentences")
 def split_sentences(document: str) -> list[str]:
@@ -438,11 +440,16 @@ DataFrame columns without materializing rows back into Python.
 
 **Returns:** Daft DataFrame with original input columns plus graph output columns.
 
+Output columns are added to the original DataFrame; passthrough columns are
+preserved. If a graph output would overwrite an existing DataFrame column,
+`map_dataframe` raises a graph configuration error instead of replacing data.
+
 **Example:**
 
 ```python
 import daft
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 @node(output_name="cleaned_text")
 def clean(text: str) -> str:
@@ -502,10 +509,10 @@ stateful objects with `@daft.cls` instead of `@daft.func`, so heavy resources
 once per row.
 
 ```python
-from hypergraph import DaftRunner, Graph, node
-from hypergraph.runners.daft import stateful
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner, stateful
 
-@stateful
+@stateful(max_concurrency=2)
 class Embedder:
     def __init__(self):
         self.model = load_heavy_model()
@@ -525,29 +532,65 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 The class must support zero-argument construction (`__init__()` with no
 required args) so Daft can re-create it on each worker.
 
-### batch=True
+### daft_node(..., batch=True)
 
-Use `batch=True` on the `@node` decorator for vectorized `@daft.func.batch`
-execution. Batch UDFs receive `daft.Series` instead of scalar values, useful
-for NumPy/Arrow operations.
+Use `hypergraph.integrations.daft.node` for vectorized `@daft.func.batch`
+execution. Batch UDFs receive `daft.Series` instead of scalar values and must
+declare an explicit Daft `return_dtype`.
 
 ```python
 import daft
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph
+from hypergraph.integrations.daft import DaftRunner
+from hypergraph.integrations.daft import node as daft_node
 
-@node(output_name="normalized", batch=True)
-def normalize(values: daft.Series) -> daft.Series:
+@daft_node(output_name="normalized", batch=True, return_dtype=daft.DataType.float64())
+def normalize(values: daft.Series) -> list[float]:
     arr = values.to_pylist()
     mean = sum(arr) / len(arr)
     std = (sum((x - mean) ** 2 for x in arr) / len(arr)) ** 0.5
     if std == 0:
-        return daft.Series.from_pylist([0.0] * len(arr))
-    return daft.Series.from_pylist([round((x - mean) / std, 4) for x in arr])
+        return [0.0] * len(arr)
+    return [round((x - mean) / std, 4) for x in arr]
 
 graph = Graph([normalize], name="batch_norm")
 runner = DaftRunner()
 results = runner.map(graph, {"values": [10.0, 20.0, 30.0]}, map_over="values")
 ```
+
+### Options
+
+Typed Daft lowering options can be passed directly to `daft_node` or reused via
+`Options`:
+
+```python
+import daft
+from hypergraph.integrations.daft import Options
+from hypergraph.integrations.daft import node as daft_node
+
+batch_options = Options(
+    return_dtype=daft.DataType.int64(),
+    batch=True,
+    batch_size=128,
+    max_retries=2,
+    on_error="log",
+)
+
+@daft_node(output_name="token_count", options=batch_options)
+def count_tokens(text: daft.Series) -> list[int | None]:
+    return [len(value.split()) for value in text.to_pylist()]
+```
+
+Use `@stateful(cpus=..., gpus=..., max_concurrency=...)` for class-level
+`@daft.cls` controls. `stateful(options=...)` accepts only class resource,
+retry, and error-handling settings; dtype, batch, and unnest settings belong on
+`daft_node(...)`.
+
+### Dashboard and Extensions
+
+`DaftRunner` does not add a Hypergraph-specific dashboard or extension API.
+Start Daft's dashboard and set `DAFT_DASHBOARD_URL` before running, or call
+`daft.load_extension(...)` before constructing/executing the Daft plan.
 
 ---
 
@@ -1131,7 +1174,7 @@ The runner automatically:
 Override the runner only when a subgraph has a different compatible execution strategy:
 
 ```python
-from hypergraph import DaftRunner
+from hypergraph.integrations.daft import DaftRunner
 
 inner = Graph([normalize], name="columnar_step")
 outer = Graph([inner.as_node(runner=DaftRunner()), summarize])

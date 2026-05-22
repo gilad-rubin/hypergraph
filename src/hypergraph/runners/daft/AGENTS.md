@@ -11,6 +11,16 @@ DataFrame plan is built.
 - Add tests for `select(...)`, configured entrypoints, and mapped inputs when
   changing plan construction.
 
+## Integration Boundary
+
+- Document user-facing Daft APIs through `hypergraph.integrations.daft`, not
+  `hypergraph.runners.daft`.
+- Keep typed Daft metadata in focused private modules such as `_options.py` and
+  `_stateful.py`; do not let `operations.py` accumulate public decorators or
+  option-merging policy.
+- When adding a Daft lowering option, update the typed option model, operation
+  validation, docs/examples, and at least one runtime test together.
+
 ## GraphNode Outputs
 
 - Never rely on dictionary iteration to pick GraphNode outputs. Use explicit

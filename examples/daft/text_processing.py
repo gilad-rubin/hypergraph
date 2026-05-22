@@ -8,7 +8,8 @@ Demonstrates:
 Inspired by Daft's quickstart UDF tutorial.
 """
 
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 
 @node(output_name="cleaned")

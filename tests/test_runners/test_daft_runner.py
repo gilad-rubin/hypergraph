@@ -213,7 +213,7 @@ def test_daft_runner_map_dataframe_renamed_graphnode_multi_outputs():
 
 
 def test_daft_runner_map_dataframe_columns_filter():
-    """columns= parameter should select a subset of DataFrame columns."""
+    """columns= selects graph inputs while preserving passthrough columns."""
     import daft
 
     graph = Graph([double], name="col_filter")
@@ -223,8 +223,7 @@ def test_daft_runner_map_dataframe_columns_filter():
     collected = result_df.collect().to_pydict()
     assert collected["doubled"] == [2, 4]
     assert collected["x"] == [1, 2]
-    # extra column should NOT appear — it was filtered out
-    assert "extra" not in collected
+    assert collected["extra"] == ["a", "b"]
 
 
 def test_daft_runner_map_dataframe_missing_column_raises():

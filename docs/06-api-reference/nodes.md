@@ -758,7 +758,7 @@ GraphNodes also inherit the parent runner by default. Use
 delegate to a different compatible runner:
 
 ```python
-from hypergraph import DaftRunner
+from hypergraph.integrations.daft import DaftRunner
 
 gn = inner.as_node(runner=DaftRunner())
 gn = inner.as_node().with_runner(DaftRunner())  # equivalent

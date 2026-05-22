@@ -6,7 +6,8 @@ Inspired by Daft's tabular quickstart examples, but expressed in Hypergraph's
 
 from __future__ import annotations
 
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 
 @node(output_name="full_name")

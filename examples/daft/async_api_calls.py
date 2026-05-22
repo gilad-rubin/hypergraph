@@ -10,7 +10,8 @@ Inspired by Daft's async UDF documentation.
 
 import asyncio
 
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 
 # Mock async API calls

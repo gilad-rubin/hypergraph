@@ -18,13 +18,20 @@ workflow model:
 uv sync --extra daft
 ```
 
+Hypergraph's Daft extra requires `daft>=0.7.14`. The integration targets
+Daft's current UDF APIs (`daft.func`, `daft.func.batch`, `daft.cls`,
+`daft.method`, and `daft.method.batch`) and their typed resource/retry
+options.
+
 ## The Mental Model
 
 `DaftRunner` translates your graph into a Daft query plan:
 
-1. Each node becomes a Daft UDF (via `@daft.func`, `@daft.cls`, or `@daft.func.batch`).
-2. Nodes are chained in topological order via `df.with_column()`.
-3. Nested `GraphNode`s run their inner graph via `SyncRunner` inside a single UDF.
+1. Plain `@node` functions become `@daft.func` UDFs.
+2. `hypergraph.integrations.daft.node(..., batch=True)` becomes `@daft.func.batch`.
+3. Bound `@stateful` resources become `@daft.cls` wrappers with `@daft.method` or `@daft.method.batch`.
+4. Nodes are chained in topological order via `df.with_column()`.
+5. Nested `GraphNode`s run their inner graph via `SyncRunner` inside a single UDF.
 
 An item can still contain lists, and those lists can still be processed with a
 nested `GraphNode.map_over(...)`.
@@ -34,6 +41,14 @@ Pick the entrypoint that matches your data:
 - Use `runner.map(...)` when your outer dataset is a Python collection — returns `MapResult`.
 - Use `runner.map_dataframe(...)` when your dataset is a Daft DataFrame — returns a Daft DataFrame (no Python conversion).
 
+Use the integration namespace only when you want Daft-specific execution
+controls. Plain `@node` stays backend-neutral and still auto-lowers under
+`DaftRunner`; `daft_node` is for Daft-only dtype, batch, retry, resource, and
+concurrency settings.
+
+Migration note: older examples that used `@node(..., batch=True)` should use
+`@daft_node(..., batch=True, return_dtype=...)` instead.
+
 ## Standalone Examples
 
 These checked-in scripts are the clearest place to start:
@@ -41,7 +56,8 @@ These checked-in scripts are the clearest place to start:
 - `examples/daft/text_processing.py` - linear DAG with sync nodes, single run + batch
 - `examples/daft/async_api_calls.py` - async nodes in a diamond DAG (Daft handles the event loop)
 - `examples/daft/ml_embeddings.py` - `@stateful` decorator for once-per-worker model loading
-- `examples/daft/batch_normalization.py` - vectorized batch UDFs with `batch=True`
+- `examples/daft/batch_normalization.py` - vectorized batch UDFs with `daft_node(..., batch=True)`
+- `examples/daft/advanced_udf_patterns.py` - stateful + batch UDF patterns inspired by Daft docs
 - `examples/daft/nested_document_scoring.py` - `GraphNode` with `map_over` inside DaftRunner
 - `examples/daft/quickstart_customer_enrichment.py` - quickstart-style tabular enrichment
 - `examples/daft/hierarchical_document_batches.py` - nested `GraphNode.map_over(...)` inside a batch
@@ -54,7 +70,8 @@ This mirrors the spirit of Daft's quickstart tabular transforms, but with
 Hypergraph's "think singular, then map it" pattern.
 
 ```python
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 @node(output_name="full_name")
 def full_name(first_name: str, last_name: str) -> str:
@@ -92,7 +109,8 @@ This is where Hypergraph adds something useful to Daft-style pipelines:
 reusable inner workflows.
 
 ```python
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 @node(output_name="sentences")
 def split_sentences(document: str) -> list[str]:
@@ -139,7 +157,8 @@ everything in Daft's columnar format — no roundtrip through Python dicts.
 
 ```python
 import daft
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 @node(output_name="doubled")
 def double(x: int) -> int:
@@ -163,11 +182,21 @@ def greet(name: str, prefix: str) -> str:
     return f"{prefix}, {name}!"
 
 graph = Graph([greet], name="greeter")
-df = daft.from_pydict({"name": ["Alice", "Bob"]})
+df = daft.from_pydict(
+    {
+        "name": ["Alice", "Bob"],
+        "source": ["crm", "csv"],
+    }
+)
 
 result_df = DaftRunner().map_dataframe(graph, df, prefix="Hi")
 # Each row gets prefix="Hi" via the UDF closure
+# The source passthrough column is preserved in result_df
 ```
+
+`map_dataframe` preserves passthrough columns by default. Graph outputs must
+not collide with existing DataFrame columns; rename the node output or drop the
+existing column before calling `map_dataframe`.
 
 ## Async Nodes
 
@@ -176,7 +205,8 @@ configuration:
 
 ```python
 import asyncio
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 async def _mock_embed(text: str) -> list[float]:
     await asyncio.sleep(0.01)
@@ -216,7 +246,7 @@ Use it when:
 - you want columnar batch execution or distributed fan-out via Daft
 - the item workflow benefits from nested graphs, graph reuse, or internal `map_over(...)`
 - you have stateful resources (ML models) that should load once per worker (`@stateful`)
-- you need vectorized batch operations (`batch=True`)
+- you need vectorized batch operations (`daft_node(..., batch=True)`)
 
 Prefer `SyncRunner` or `AsyncRunner` when:
 
@@ -232,10 +262,10 @@ worker instead of once per row. Use the `@stateful` decorator and bind the
 instance to the graph:
 
 ```python
-from hypergraph import DaftRunner, Graph, node
-from hypergraph.runners.daft import stateful
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner, stateful
 
-@stateful
+@stateful(max_concurrency=2)
 class Embedder:
     def __init__(self):
         self.model = load_heavy_model()
@@ -253,27 +283,32 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 ```
 
 DaftRunner wraps stateful objects with `@daft.cls` so `__init__` runs once per
-worker process. The class must support zero-argument construction.
+worker process. The class must support zero-argument construction. Hypergraph
+validates that contract by signature during plan build, then constructs the
+resource inside the Daft worker on first use so expensive model/client setup is
+not accidentally triggered while building a lazy plan.
 See `examples/daft/ml_embeddings.py` for a complete example.
 
 ## Vectorized Batch UDFs
 
 For operations that benefit from processing all rows at once (NumPy, Arrow),
-use `batch=True` on the `@node` decorator to get `daft.Series` inputs instead
-of scalars:
+use `hypergraph.integrations.daft.node` to opt into Daft batch execution.
+Batch nodes receive `daft.Series` inputs instead of scalars:
 
 ```python
 import daft
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph
+from hypergraph.integrations.daft import DaftRunner
+from hypergraph.integrations.daft import node as daft_node
 
-@node(output_name="normalized", batch=True)
-def normalize(values: daft.Series) -> daft.Series:
+@daft_node(output_name="normalized", batch=True, return_dtype=daft.DataType.float64())
+def normalize(values: daft.Series) -> list[float]:
     arr = values.to_pylist()
     mean = sum(arr) / len(arr)
     std = (sum((x - mean) ** 2 for x in arr) / len(arr)) ** 0.5
     if std == 0:
-        return daft.Series.from_pylist([0.0] * len(arr))
-    return daft.Series.from_pylist([round((x - mean) / std, 4) for x in arr])
+        return [0.0] * len(arr)
+    return [round((x - mean) / std, 4) for x in arr]
 
 graph = Graph([normalize], name="batch_norm")
 runner = DaftRunner()
@@ -281,6 +316,59 @@ results = runner.map(graph, {"values": [10.0, 20.0, 30.0, 40.0, 50.0]}, map_over
 ```
 
 See `examples/daft/batch_normalization.py` for a complete example.
+
+## Daft Options
+
+Pass common Daft UDF controls directly to `daft_node`, or reuse a typed
+`Options` value when several nodes share the same settings:
+
+```python
+import daft
+from hypergraph.integrations.daft import Options
+from hypergraph.integrations.daft import node as daft_node
+
+embedding_options = Options(
+    return_dtype=daft.DataType.list(daft.DataType.float64()),
+    batch=True,
+    batch_size=64,
+    max_retries=2,
+    on_error="log",
+)
+
+@daft_node(output_name="embedding", options=embedding_options)
+def embed_batch(text: daft.Series) -> list[list[float] | None]:
+    return embed_many(text.to_pylist())
+```
+
+`Options` validates Daft's current public rules early: `on_error` is one of
+`"raise"`, `"log"`, or `"ignore"`; `max_concurrency` must be positive; `gpus`
+above `1.0` must be whole numbers; and `ray_options` cannot include
+`"num_cpus"`, `"num_gpus"`, or `"memory"`. Put class-level resource controls on
+`@stateful(...)`; put dtype, batch, and unnest settings on `daft_node(...)`.
+
+## Dashboard and Extensions
+
+Hypergraph does not wrap Daft's dashboard or native extension APIs. Configure
+them the same way you would for a direct Daft script:
+
+```bash
+daft dashboard start
+DAFT_DASHBOARD_URL=http://localhost:3238 python my_workflow.py
+```
+
+Native extensions should be loaded before running the graph:
+
+```python
+import daft
+import hello_extension
+
+daft.load_extension(hello_extension)
+
+result_df = DaftRunner().map_dataframe(graph, frame)
+```
+
+The Daft dashboard protocol and native extension ABI are still evolving
+upstream, so this integration keeps those as Daft-owned setup concerns.
 
 ## Current Limitations
 

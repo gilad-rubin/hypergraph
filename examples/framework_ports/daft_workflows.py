@@ -12,7 +12,8 @@ from collections import Counter
 
 import daft
 
-from hypergraph import DaftRunner, Graph, node
+from hypergraph import Graph, node
+from hypergraph.integrations.daft import DaftRunner
 
 
 @node(output_name="cleaned_text")

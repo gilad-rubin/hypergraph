@@ -1,12 +1,7 @@
-"""Compatibility re-export for the public Daft runner.
+"""Public Daft integration surface."""
 
-Prefer:
+from hypergraph.integrations.daft.decorators import node, stateful
+from hypergraph.integrations.daft.options import Options
+from hypergraph.runners.daft.runner import DaftRunner
 
-    from hypergraph import DaftRunner
-
-This module remains as a stable import path for older examples and notebooks.
-"""
-
-from hypergraph.runners.daft import DaftRunner
-
-__all__ = ["DaftRunner"]
+__all__ = ["DaftRunner", "Options", "node", "stateful"]
