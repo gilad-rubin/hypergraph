@@ -148,6 +148,25 @@ class TestAsyncRunnerRun:
 
         assert result["top_k"] == 5
 
+    async def test_run_bound_input_outside_active_scope_allowed_as_kwarg(self):
+        """Bound input names stay valid kwargs even when inactive after select()."""
+
+        @node(output_name="b_out")
+        def make_b(seed: int) -> int:
+            return seed + 1
+
+        @node(output_name="c_out")
+        def make_c(other: int) -> int:
+            return other * 3
+
+        graph = Graph([make_b, make_c]).bind(seed=5).select("c_out")
+        runner = AsyncRunner()
+
+        with pytest.warns(UserWarning, match="seed"):
+            result = await runner.run(graph, other=2, seed=10)
+
+        assert result["c_out"] == 6
+
     async def test_run_input_named_select_requires_values_dict(self):
         """Input names matching options are only accepted via values dict."""
 

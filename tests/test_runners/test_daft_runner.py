@@ -199,6 +199,16 @@ def test_daft_runner_map_dataframe_rejects_map_option_kwarg():
         DaftRunner().map_dataframe(graph, df, map_over="x")
 
 
+def test_daft_runner_map_dataframe_rejects_run_option_kwarg():
+    import daft
+
+    graph = Graph([double], name="df_run_reserved")
+    df = daft.from_pydict({"x": [1]})
+
+    with pytest.raises(ValueError, match="runner\\.map_dataframe\\(\\) does not accept max_iterations=.*runner\\.run"):
+        DaftRunner().map_dataframe(graph, df, max_iterations=10)
+
+
 def test_daft_runner_map_dataframe_with_broadcast_values():
     """Broadcast values should be captured in UDF closures."""
     import daft

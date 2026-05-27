@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from hypergraph.graph.core import Graph
+    from hypergraph.runners._shared.validation import _InputValidationContext
 
 _NON_OPTION_PARAMETER_NAMES = frozenset({"dataframe", "graph", "self", "values"})
 
 
 def runner_option_names(method: Any) -> frozenset[str]:
     """Return explicit runner control kwargs from a runner method signature."""
+    return _runner_option_names(getattr(method, "__func__", method))
+
+
+@cache
+def _runner_option_names(method: Any) -> frozenset[str]:
+    """Cached implementation for runner_option_names()."""
     return frozenset(
         name
         for name, param in inspect.signature(method).parameters.items()
@@ -39,8 +48,10 @@ def normalize_inputs(
     reserved_option_names: frozenset[str] | None = None,
     other_option_names: frozenset[str] | None = None,
     other_call_name: str | None = None,
+    other_option_call_names: Mapping[str, str] | None = None,
     call_name: str | None = None,
     graph: Graph | None = None,
+    validation_ctx: _InputValidationContext | None = None,
 ) -> dict[str, Any]:
     """Normalize inputs from values dict + kwargs shorthand.
 
@@ -55,12 +66,21 @@ def normalize_inputs(
     if reserved_option_names:
         conflicts = sorted(set(input_kwargs) & reserved_option_names)
         if conflicts:
-            raise ValueError(_reserved_input_error(conflicts, call_name, other_option_names, other_call_name))
+            raise ValueError(
+                _reserved_input_error(
+                    conflicts,
+                    call_name,
+                    other_option_names,
+                    other_call_name,
+                    other_option_call_names,
+                )
+            )
 
     if graph is not None and input_kwargs:
-        unexpected = _unexpected_input_kwargs(input_kwargs, graph)
+        runtime_input_names = _valid_runtime_input_names(graph, validation_ctx)
+        unexpected = _unexpected_input_kwargs(input_kwargs, runtime_input_names)
         if unexpected:
-            raise ValueError(_unexpected_input_kwarg_error(unexpected, graph, call_name))
+            raise ValueError(_unexpected_input_kwarg_error(unexpected, runtime_input_names, call_name))
 
     merged = base_values if not input_kwargs else merge_with_duplicate_check(base_values, input_kwargs)
 
@@ -76,17 +96,23 @@ def _reserved_input_error(
     call_name: str | None,
     other_option_names: frozenset[str] | None,
     other_call_name: str | None,
+    other_option_call_names: Mapping[str, str] | None,
 ) -> str:
     """Create a specific error for kwargs that collide with runner controls."""
     location = call_name or "this runner method"
     if len(conflicts) == 1:
         name = conflicts[0]
         literal = f"{name!r}"
-        if other_option_names and other_call_name and name in other_option_names:
-            other_call = other_call_name.removesuffix("()")
+        resolved_other_call_name = None
+        if other_option_call_names is not None:
+            resolved_other_call_name = other_option_call_names.get(name)
+        elif other_option_names and other_call_name and name in other_option_names:
+            resolved_other_call_name = other_call_name
+        if resolved_other_call_name is not None:
+            other_call = resolved_other_call_name.removesuffix("()")
             return (
                 f"{location} does not accept {name}=. {name}= is only for "
-                f"{other_call_name}. Use {other_call}(..., {name}=...) "
+                f"{resolved_other_call_name}. Use {other_call}(..., {name}=...) "
                 f"if that is what you meant. If your graph input is named {literal}, "
                 f"pass it through values={{{literal}: ...}}."
             )
@@ -104,29 +130,32 @@ def _reserved_input_error(
     )
 
 
-def _unexpected_input_kwargs(input_kwargs: dict[str, Any], graph: Graph) -> list[str]:
+def _unexpected_input_kwargs(input_kwargs: dict[str, Any], runtime_input_names: set[str]) -> list[str]:
     """Return kwargs that are not flat graph input names."""
-    flat_input_names = {name for name in _valid_runtime_input_names(graph) if "." not in name}
+    flat_input_names = {name for name in runtime_input_names if "." not in name}
     return sorted(name for name in input_kwargs if name not in flat_input_names)
 
 
-def _valid_runtime_input_names(graph: Graph) -> set[str]:
-    """Return graph boundary inputs plus interrupt resume keys."""
-    from hypergraph.runners._shared.validation import precompute_input_validation
+def _valid_runtime_input_names(
+    graph: Graph,
+    validation_ctx: _InputValidationContext | None = None,
+) -> set[str]:
+    """Return graph boundary inputs, bound keys, and interrupt resume keys."""
+    if validation_ctx is None:
+        from hypergraph.runners._shared.validation import precompute_input_validation
 
-    ctx = precompute_input_validation(graph)
-    return set(graph.inputs.all) | ctx.interrupt_outputs
+        validation_ctx = precompute_input_validation(graph)
+    return set(validation_ctx.input_spec.all) | set(validation_ctx.input_spec.bound) | validation_ctx.interrupt_outputs
 
 
-def _unexpected_input_kwarg_error(unexpected: list[str], graph: Graph, call_name: str | None) -> str:
+def _unexpected_input_kwarg_error(unexpected: list[str], runtime_input_names: set[str], call_name: str | None) -> str:
     """Create a helpful error for kwargs outside the flat graph input surface."""
     location = call_name or "this runner method"
-    all_inputs = _valid_runtime_input_names(graph)
-    flat_inputs = sorted(name for name in all_inputs if "." not in name)
+    flat_inputs = sorted(name for name in runtime_input_names if "." not in name)
 
     if len(unexpected) == 1:
         name = unexpected[0]
-        if "." in name and name in all_inputs:
+        if "." in name and name in runtime_input_names:
             head, leaf = name.split(".", 1)
             return (
                 f"Dotted input address {name!r} cannot be passed as a keyword argument to {location}. "

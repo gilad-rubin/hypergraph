@@ -49,7 +49,6 @@ from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
     validate_delegated_runners,
-    validate_inputs,
     validate_item_inputs,
     validate_map_compatible,
     validate_node_types,
@@ -206,6 +205,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         """Execute a graph once."""
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
+        validation_ctx = _validation_ctx
+        if validation_ctx is None:
+            _validate_on_missing(on_missing)
+            _validate_error_handling(error_handling)
+            _validate_workflow_id(workflow_id, _parent_run_id)
+            effective_selected = resolve_runtime_selected(select, graph)
+            validation_ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
         normalized_values = normalize_inputs(
             values,
             input_values,
@@ -214,6 +220,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             other_call_name="runner.map()",
             call_name="runner.run()",
             graph=graph,
+            validation_ctx=validation_ctx,
         )
         # Only fire override warning at the user-initiated outer run; nested
         # GraphNode delegations propagate the same value and would re-warn.
@@ -225,9 +232,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             validate_runner_compatibility(graph, self.capabilities)
             validate_node_types(graph, self.supported_node_types)
             validate_delegated_runners(graph, self.capabilities)
-            _validate_on_missing(on_missing)
-            _validate_error_handling(error_handling)
-            _validate_workflow_id(workflow_id, _parent_run_id)
 
         if self._checkpointer is not None and _validation_ctx is None and workflow_id is None:
             workflow_id = generate_workflow_id()
@@ -298,16 +302,13 @@ class SyncRunnerTemplate(BaseRunner, ABC):
 
         # Value validation (after merge so checkpoint-provided params are visible)
         if _validation_ctx is None:
-            effective_selected = resolve_runtime_selected(select, graph)
-            validate_inputs(
-                graph,
+            validate_item_inputs(
+                validation_ctx,
                 validation_values,
-                entrypoint=entrypoint,
-                selected=effective_selected,
                 skip_missing_required=skip_missing_input_validation,
             )
         else:
-            validate_item_inputs(_validation_ctx, validation_values)
+            validate_item_inputs(validation_ctx, validation_values)
 
         if resume_checkpoint is not None and skip_missing_input_validation:
             resume_state = initialize_state(graph, normalized_values, checkpoint=resume_checkpoint)
@@ -559,6 +560,11 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         """Execute a graph multiple times with different inputs."""
         run_option_names = runner_option_names(self.run)
         map_option_names = runner_option_names(self.map)
+        _validate_error_handling(error_handling)
+        _validate_workflow_id(workflow_id, _parent_run_id)
+        _validate_on_missing(on_missing)
+        effective_selected = resolve_runtime_selected(select, graph)
+        ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
         normalized_values = normalize_inputs(
             values,
             input_values,
@@ -567,6 +573,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
             other_call_name="runner.run()",
             call_name="runner.map()",
             graph=graph,
+            validation_ctx=ctx,
         )
         # Same parity as run(): only fire override warning at the user-initiated
         # outer call; nested delegations would re-warn for the propagated value.
@@ -585,11 +592,6 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         validate_node_types(graph, self.supported_node_types)
         validate_delegated_runners(graph, self.capabilities)
         validate_map_compatible(graph)
-        _validate_error_handling(error_handling)
-        _validate_workflow_id(workflow_id, _parent_run_id)
-        effective_selected = resolve_runtime_selected(select, graph)
-        _validate_on_missing(on_missing)
-        ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
         input_variations = list(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))

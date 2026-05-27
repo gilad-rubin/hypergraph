@@ -229,6 +229,30 @@ class TestSyncRunnerRun:
         with pytest.raises(ValueError, match="runner\\.run\\(\\) got unexpected input keyword 'typo'"):
             runner.run(graph, x=1, typo=2)
 
+    def test_run_kwargs_reuses_precomputed_input_validation(self, monkeypatch):
+        """Kwarg validation and value validation share one graph traversal."""
+        from hypergraph.runners._shared import template_sync as template_sync_module
+        from hypergraph.runners._shared import validation as validation_module
+
+        calls = 0
+        real_precompute = template_sync_module.precompute_input_validation
+
+        def spy_precompute(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return real_precompute(*args, **kwargs)
+
+        def fail_precompute(*args, **kwargs):  # pragma: no cover - assertion helper
+            pytest.fail("normalize_inputs recomputed input validation instead of reusing the runner context")
+
+        monkeypatch.setattr(template_sync_module, "precompute_input_validation", spy_precompute)
+        monkeypatch.setattr(validation_module, "precompute_input_validation", fail_precompute)
+
+        result = SyncRunner().run(Graph([double]), x=1)
+
+        assert result["doubled"] == 2
+        assert calls == 1
+
     def test_run_dotted_kwarg_input_raises(self):
         """Dotted input addresses must go through values, not kwargs."""
         inner = Graph([double], name="inner")
@@ -237,6 +261,25 @@ class TestSyncRunnerRun:
 
         with pytest.raises(ValueError, match="Dotted input address 'inner\\.x'.*values=\\{'inner\\.x':"):
             runner.run(outer, **{"inner.x": 1})
+
+    def test_run_bound_input_outside_active_scope_allowed_as_kwarg(self):
+        """Bound input names stay valid kwargs even when inactive after select()."""
+
+        @node(output_name="b_out")
+        def make_b(seed: int) -> int:
+            return seed + 1
+
+        @node(output_name="c_out")
+        def make_c(other: int) -> int:
+            return other * 3
+
+        graph = Graph([make_b, make_c]).bind(seed=5).select("c_out")
+        runner = SyncRunner()
+
+        with pytest.warns(UserWarning, match="seed"):
+            result = runner.run(graph, other=2, seed=10)
+
+        assert result["c_out"] == 6
 
     def test_run_input_named_select_requires_values_dict(self):
         """Input names matching options are only accepted via values dict."""
