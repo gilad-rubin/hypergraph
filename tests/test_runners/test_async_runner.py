@@ -162,6 +162,28 @@ class TestAsyncRunnerRun:
 
         assert result["result"] == "fast"
 
+    async def test_run_input_named_map_over_requires_values_dict(self):
+        """A map_over input is accepted through values, not kwargs."""
+
+        @node(output_name="result")
+        def echo_map_over(map_over: str) -> str:
+            return map_over
+
+        graph = Graph([echo_map_over])
+        runner = AsyncRunner()
+
+        result = await runner.run(graph, values={"map_over": "items"})
+
+        assert result["result"] == "items"
+
+    async def test_run_rejects_map_over_kwarg(self):
+        """run() treats map_over as reserved for runner.map()."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="runner\\.run\\(\\) does not accept map_over=.*runner\\.map"):
+            await runner.run(graph, x=1, map_over="x")
+
     async def test_fan_out_graph(self):
         """Multiple nodes consume same input."""
 
@@ -358,11 +380,11 @@ class TestAsyncRunnerRun:
             await runner.run(graph, {"left": 100, "right": 200})
 
     async def test_removed_internal_override_argument_is_rejected(self):
-        """run() treats on_internal_override as a reserved runner option."""
+        """run() rejects removed runner options as unexpected kwargs."""
         graph = Graph([double])
         runner = AsyncRunner()
 
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="runner\\.run\\(\\) got unexpected input keyword 'on_internal_override'"):
             await runner.run(graph, {"x": 1}, on_internal_override="warn")  # type: ignore[call-arg]
 
     # Cycles
@@ -471,6 +493,23 @@ class TestAsyncRunnerMap:
 
         assert [r["doubled"] for r in results] == [2, 4, 6]
 
+    async def test_map_unknown_kwarg_input_raises(self):
+        """map kwargs shorthand only accepts flat graph input names."""
+        graph = Graph([double])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="runner\\.map\\(\\) got unexpected input keyword 'typo'"):
+            await runner.map(graph, map_over="x", x=[1], typo=2)
+
+    async def test_map_dotted_kwarg_input_raises(self):
+        """Dotted input addresses in map() must go through values."""
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(namespaced=True)])
+        runner = AsyncRunner()
+
+        with pytest.raises(ValueError, match="Dotted input address 'inner\\.x'.*values=\\{'inner\\.x':"):
+            await runner.map(outer, map_over="inner.x", **{"inner.x": [1]})
+
     async def test_map_merges_values_and_kwargs(self):
         """map merges values dict with kwargs when keys are disjoint."""
         graph = Graph([add])
@@ -511,6 +550,24 @@ class TestAsyncRunnerMap:
 
         assert [r["sum"] for r in results] == [11, 12]
 
+    async def test_map_input_named_max_iterations_requires_values_dict(self):
+        """Run-only option names remain valid map inputs through values."""
+
+        @node(output_name="sum")
+        def add_with_reserved_name(x: int, max_iterations: int) -> int:
+            return x + max_iterations
+
+        graph = Graph([add_with_reserved_name])
+        runner = AsyncRunner()
+
+        results = await runner.map(
+            graph,
+            values={"x": [1, 2], "max_iterations": 10},
+            map_over="x",
+        )
+
+        assert [r["sum"] for r in results] == [11, 12]
+
     async def test_map_rejects_internal_edge_produced_overrides(self):
         """Internal edge-produced overrides are rejected in map()."""
 
@@ -537,11 +594,11 @@ class TestAsyncRunnerMap:
             )
 
     async def test_map_removed_internal_override_argument_is_rejected(self):
-        """map() treats on_internal_override as a reserved runner option."""
+        """map() rejects removed runner options as unexpected kwargs."""
         graph = Graph([double])
         runner = AsyncRunner()
 
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="runner\\.map\\(\\) got unexpected input keyword 'on_internal_override'"):
             await runner.map(graph, {"x": [1]}, map_over="x", on_internal_override="warn")  # type: ignore[call-arg]
 
     async def test_map_runs_concurrently(self):

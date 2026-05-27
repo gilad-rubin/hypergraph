@@ -10,12 +10,9 @@ from hypergraph.runners._shared.helpers import (
     wrap_outputs,
 )
 from hypergraph.runners._shared.input_normalization import (
-    ASYNC_MAP_RESERVED_OPTION_NAMES,
-    ASYNC_RUN_RESERVED_OPTION_NAMES,
-    MAP_RESERVED_OPTION_NAMES,
-    RUN_RESERVED_OPTION_NAMES,
     merge_with_duplicate_check,
     normalize_inputs,
+    runner_option_names,
 )
 from hypergraph.runners._shared.protocols import (
     AsyncNodeExecutor,
@@ -63,10 +60,7 @@ __all__ = [
     "validate_map_compatible",
     "validate_node_types",
     # Input normalization
-    "RUN_RESERVED_OPTION_NAMES",
-    "ASYNC_RUN_RESERVED_OPTION_NAMES",
-    "MAP_RESERVED_OPTION_NAMES",
-    "ASYNC_MAP_RESERVED_OPTION_NAMES",
     "merge_with_duplicate_check",
     "normalize_inputs",
+    "runner_option_names",
 ]

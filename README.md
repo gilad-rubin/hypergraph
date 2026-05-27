@@ -90,8 +90,9 @@ runner.run(graph, query="hello", llm=llm)
 Rules:
 - `values` + kwargs are merged.
 - Duplicate keys across both raise `ValueError`.
+- Kwargs shorthand only accepts flat graph inputs, such as `query=...`.
+- Use `values={...}` for dotted or nested graph inputs, such as `{"inner.x": 1}`.
 - Runner option names (`select`, `map_over`, `max_concurrency`, etc.) stay reserved.
-- Passing reserved runner option names via kwargs raises `ValueError`.
 - If an input name matches an option name, pass it in `values={...}`.
 
 ## Examples

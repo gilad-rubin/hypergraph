@@ -19,9 +19,8 @@ from hypergraph.runners._shared.helpers import (
     generate_map_inputs,
 )
 from hypergraph.runners._shared.input_normalization import (
-    MAP_RESERVED_OPTION_NAMES,
-    RUN_RESERVED_OPTION_NAMES,
     normalize_inputs,
+    runner_option_names,
 )
 from hypergraph.runners._shared.types import (
     GraphState,
@@ -113,10 +112,16 @@ class DaftRunner(BaseRunner):
         **input_values: Any,
     ) -> RunResult:
         """Execute graph once via a 1-row Daft plan."""
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
         normalized = normalize_inputs(
             values,
             input_values,
-            reserved_option_names=RUN_RESERVED_OPTION_NAMES,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=map_option_names - run_option_names,
+            other_call_name="runner.map()",
+            call_name="runner.run()",
+            graph=graph,
         )
         self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
 
@@ -175,10 +180,16 @@ class DaftRunner(BaseRunner):
         **input_values: Any,
     ) -> MapResult:
         """Execute graph for each item via Daft columnar execution."""
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
         normalized = normalize_inputs(
             values,
             input_values,
-            reserved_option_names=MAP_RESERVED_OPTION_NAMES,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=run_option_names - map_option_names,
+            other_call_name="runner.run()",
+            call_name="runner.map()",
+            graph=graph,
         )
         self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
 
@@ -273,7 +284,8 @@ class DaftRunner(BaseRunner):
                     UDF closures, not added as DataFrame columns).
             clone: Deep-copy strategy (generally not needed — Daft provides
                    row isolation).
-            **input_values: Additional broadcast values (merged with ``values``).
+            **input_values: Additional broadcast values for flat graph input names.
+                Use values for dotted/nested inputs or names that match runner options.
 
         Returns:
             Daft DataFrame with original input columns plus output columns
@@ -281,10 +293,17 @@ class DaftRunner(BaseRunner):
         """
         from hypergraph.runners.daft.engine import build_execution_plan, execute_plan
 
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
+        map_dataframe_option_names = runner_option_names(self.map_dataframe)
         normalized = normalize_inputs(
             values,
             input_values,
-            reserved_option_names=MAP_RESERVED_OPTION_NAMES,
+            reserved_option_names=run_option_names | map_option_names | map_dataframe_option_names,
+            other_option_names=map_option_names - map_dataframe_option_names,
+            other_call_name="runner.map()",
+            call_name="runner.map_dataframe()",
+            graph=graph,
         )
 
         validate_runner_compatibility(graph, self.capabilities)

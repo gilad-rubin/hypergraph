@@ -40,9 +40,8 @@ from hypergraph.runners._shared.helpers import (
     warn_on_bind_overrides,
 )
 from hypergraph.runners._shared.input_normalization import (
-    ASYNC_MAP_RESERVED_OPTION_NAMES,
-    ASYNC_RUN_RESERVED_OPTION_NAMES,
     normalize_inputs,
+    runner_option_names,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
 from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus
@@ -205,10 +204,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> RunResult:
         """Execute a graph once."""
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
         normalized_values = normalize_inputs(
             values,
             input_values,
-            reserved_option_names=ASYNC_RUN_RESERVED_OPTION_NAMES,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=map_option_names - run_option_names,
+            other_call_name="runner.map()",
+            call_name="runner.run()",
             graph=graph,
         )
         # Only fire override warning at the user-initiated outer run; nested
@@ -553,10 +557,15 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         **input_values: Any,
     ) -> MapResult:
         """Execute a graph multiple times with different inputs."""
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
         normalized_values = normalize_inputs(
             values,
             input_values,
-            reserved_option_names=ASYNC_MAP_RESERVED_OPTION_NAMES,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=run_option_names - map_option_names,
+            other_call_name="runner.run()",
+            call_name="runner.map()",
             graph=graph,
         )
         # Same parity as run(): only fire override warning at the user-initiated

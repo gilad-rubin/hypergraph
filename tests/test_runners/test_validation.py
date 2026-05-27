@@ -215,7 +215,7 @@ class TestNormalizeInputs:
 
     def test_reserved_option_names_raise(self):
         """Reserved option names in kwargs raise ValueError."""
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="Hypergraph runner option"):
             normalize_inputs(
                 {"x": 1},
                 {"select": "bad"},

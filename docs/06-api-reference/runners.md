@@ -87,7 +87,6 @@ Execute a graph once.
   - `"ignore"` (default): silently omit missing outputs
   - `"warn"`: warn about missing outputs, return what's available
   - `"error"`: raise error if any selected output is missing
-- `on_internal_override` - Reserved for compatibility. Internal produced values are rejected deterministically.
 - `max_iterations` - Max local iterations per cyclic execution region (SCC) (default: 1000)
 - `error_handling` - How to handle node execution errors:
   - `"raise"` (default): Re-raise the original exception (e.g., `ValueError`). Clean traceback, no wrapper.
@@ -102,7 +101,7 @@ Execute a graph once.
 - `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
 - `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
 - Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
-- `**input_values` - Input shorthand (merged with `values`)
+- `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Returns:** `RunResult` with outputs and status
 
@@ -199,7 +198,7 @@ Execute a graph multiple times with different inputs.
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates a parent batch run with per-item child runs (`{workflow_id}/0`, `{workflow_id}/1`, ...). On re-run, completed items are skipped. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
-- `**input_values` - Input shorthand (merged with `values`)
+- `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Returns:** [`MapResult`](#mapresult) wrapping per-iteration RunResults with batch metadata
 
@@ -322,7 +321,7 @@ Execute a graph once via a 1-row Daft plan.
 - `max_iterations` - Accepted for API compatibility but not used (DaftRunner does not support cycles)
 - `error_handling` - `"raise"` re-raises the original exception; `"continue"` returns a failed `RunResult`
 - `event_processors` - Accepted but ignored with a warning (DaftRunner does not support events)
-- `**input_values` - Input shorthand (merged with `values`)
+- `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Example:**
 
@@ -376,7 +375,7 @@ entrypoint when your data is a Python collection.
 - `on_missing` - How to handle missing selected outputs (`"ignore"`, `"warn"`, or `"error"`)
 - `error_handling` - `"raise"` re-raises the first failed item's original exception; `"continue"` falls back to per-item execution and preserves failures inside `MapResult`
 - `event_processors` - Accepted but ignored with a warning
-- `**input_values` - Input shorthand (merged with `values`)
+- `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Example:**
 
@@ -435,7 +434,7 @@ DataFrame columns without materializing rows back into Python.
 - `graph` - The graph to execute (must be a DAG)
 - `dataframe` - Daft DataFrame supplying row-wise inputs
 - `columns` - Optional subset of DataFrame columns to use as graph inputs. Defaults to all columns.
-- `values` / `**input_values` - Additional broadcast inputs merged into every row. Must not overlap with DataFrame column names.
+- `values` / `**input_values` - Additional broadcast inputs merged into every row. `**input_values` only accepts flat graph input names; use `values` for dotted/nested inputs or names that match runner options. Must not overlap with DataFrame column names.
 - `clone` - Deep-copy mutable broadcast values for each row
 
 **Returns:** Daft DataFrame with original input columns plus graph output columns.
@@ -677,7 +676,7 @@ Execute a graph asynchronously.
 - `fork_from` - Workflow ID to fork from directly (no manual checkpoint plumbing). Requires a checkpointer.
 - `retry_from` - Workflow ID to retry from directly (records retry lineage metadata). Requires a checkpointer.
 - Lineage hashing: checkpoint compatibility uses a structural hash; a separate code hash is recorded for observability/caching workflows.
-- `**input_values` - Input shorthand (merged with `values`)
+- `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Returns:** `RunResult` with outputs and status
 
@@ -758,7 +757,7 @@ Execute graph multiple times concurrently.
   - `"continue"`: Collect all results, including failures as `RunResult` with `status=FAILED`
 - `event_processors` - Optional list of [event processors](events.md) to observe execution
 - `workflow_id` - Optional workflow identifier for checkpoint persistence and resume. Creates per-item child runs that can be skipped on re-run. See [Resuming Batches](../05-how-to/batch-processing.md#resuming-batches).
-- `**input_values` - Input shorthand (merged with `values`)
+- `**input_values` - Input shorthand for flat graph input names. Use `values` for dotted/nested inputs or names that match runner options.
 
 **Example:**
 
@@ -1062,13 +1061,17 @@ runner.run(graph, query="hello", llm=llm)
 Rules:
 - `values` + kwargs are merged
 - duplicate keys raise `ValueError`
+- kwargs shorthand only accepts flat graph inputs, such as `query=...`
+- use `values={...}` for dotted or nested graph inputs, such as `{"inner.x": 1}`
 - option names like `select`, `map_over`, `max_concurrency` are reserved for runner options
-- reserved option names in kwargs raise `ValueError`
 - if an input name matches an option name, pass that input through `values={...}`
 
 ```python
 # input named "select" must go through values
 runner.run(graph, values={"select": "fast"})
+
+# namespaced inputs must also go through values
+runner.run(outer, values={"inner.x": 5})
 ```
 
 ### Execution Model

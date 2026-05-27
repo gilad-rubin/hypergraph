@@ -65,7 +65,8 @@ class BaseRunner(ABC):
             event_processors: Optional list of event processors to receive execution events
             show_progress: Override runner-level show_progress for this call.
                 None = use runner default, True/False = explicit override.
-            **input_values: Input values shorthand (merged with values)
+            **input_values: Input values shorthand for flat graph input names.
+                Use values for dotted/nested inputs or names that match runner options.
 
         Returns:
             RunResult with output values and status
@@ -103,7 +104,8 @@ class BaseRunner(ABC):
             event_processors: Optional list of event processors to receive execution events
             show_progress: Override runner-level show_progress for this call.
                 None = use runner default, True/False = explicit override.
-            **input_values: Input values shorthand (merged with values)
+            **input_values: Input values shorthand for flat graph input names.
+                Use values for dotted/nested inputs or names that match runner options.
 
         Returns:
             MapResult wrapping per-iteration RunResults with batch metadata
