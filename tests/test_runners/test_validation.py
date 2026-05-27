@@ -215,12 +215,36 @@ class TestNormalizeInputs:
 
     def test_reserved_option_names_raise(self):
         """Reserved option names in kwargs raise ValueError."""
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="Hypergraph runner option"):
             normalize_inputs(
                 {"x": 1},
                 {"select": "bad"},
                 reserved_option_names=frozenset({"select"}),
             )
+
+    def test_runner_option_names_memoizes_signature_inspection(self, monkeypatch):
+        """runner_option_names should not inspect the same method repeatedly."""
+        from hypergraph.runners import SyncRunner
+        from hypergraph.runners._shared import input_normalization as input_norm
+
+        input_norm._runner_option_names.cache_clear()
+        real_signature = input_norm.inspect.signature
+        calls = 0
+
+        def spy_signature(method):
+            nonlocal calls
+            calls += 1
+            return real_signature(method)
+
+        monkeypatch.setattr(input_norm.inspect, "signature", spy_signature)
+        runner = SyncRunner()
+
+        try:
+            assert "max_iterations" in input_norm.runner_option_names(runner.run)
+            assert "max_iterations" in input_norm.runner_option_names(runner.run)
+            assert calls == 1
+        finally:
+            input_norm._runner_option_names.cache_clear()
 
 
 class TestValidateRunnerCompatibility:

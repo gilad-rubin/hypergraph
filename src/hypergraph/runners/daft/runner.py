@@ -19,9 +19,8 @@ from hypergraph.runners._shared.helpers import (
     generate_map_inputs,
 )
 from hypergraph.runners._shared.input_normalization import (
-    MAP_RESERVED_OPTION_NAMES,
-    RUN_RESERVED_OPTION_NAMES,
     normalize_inputs,
+    runner_option_names,
 )
 from hypergraph.runners._shared.types import (
     GraphState,
@@ -113,23 +112,30 @@ class DaftRunner(BaseRunner):
         **input_values: Any,
     ) -> RunResult:
         """Execute graph once via a 1-row Daft plan."""
-        normalized = normalize_inputs(
-            values,
-            input_values,
-            reserved_option_names=RUN_RESERVED_OPTION_NAMES,
-        )
-        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
-
-        validate_runner_compatibility(graph, self.capabilities)
-        _validate_no_runner_overrides(graph)
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
         _validate_error_handling(error_handling)
-        effective_selected = resolve_runtime_selected(select, graph)
         _validate_on_missing(on_missing)
+        effective_selected = resolve_runtime_selected(select, graph)
         ctx = precompute_input_validation(
             graph,
             entrypoint=entrypoint,
             selected=effective_selected,
         )
+        normalized = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=map_option_names - run_option_names,
+            other_call_name="runner.map()",
+            call_name="runner.run()",
+            graph=graph,
+            validation_ctx=ctx,
+        )
+        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
+
+        validate_runner_compatibility(graph, self.capabilities)
+        _validate_no_runner_overrides(graph)
         validate_item_inputs(ctx, normalized)
 
         try:
@@ -175,23 +181,30 @@ class DaftRunner(BaseRunner):
         **input_values: Any,
     ) -> MapResult:
         """Execute graph for each item via Daft columnar execution."""
-        normalized = normalize_inputs(
-            values,
-            input_values,
-            reserved_option_names=MAP_RESERVED_OPTION_NAMES,
-        )
-        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
-
-        validate_runner_compatibility(graph, self.capabilities)
-        _validate_no_runner_overrides(graph)
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
         _validate_error_handling(error_handling)
-        effective_selected = resolve_runtime_selected(select, graph)
         _validate_on_missing(on_missing)
+        effective_selected = resolve_runtime_selected(select, graph)
         ctx = precompute_input_validation(
             graph,
             entrypoint=None,
             selected=effective_selected,
         )
+        normalized = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=run_option_names - map_option_names,
+            other_call_name="runner.run()",
+            call_name="runner.map()",
+            graph=graph,
+            validation_ctx=ctx,
+        )
+        self._warn_ignored(event_processors=event_processors, show_progress=show_progress)
+
+        validate_runner_compatibility(graph, self.capabilities)
+        _validate_no_runner_overrides(graph)
         validate_item_inputs(ctx, normalized)
 
         map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
@@ -273,7 +286,8 @@ class DaftRunner(BaseRunner):
                     UDF closures, not added as DataFrame columns).
             clone: Deep-copy strategy (generally not needed — Daft provides
                    row isolation).
-            **input_values: Additional broadcast values (merged with ``values``).
+            **input_values: Additional broadcast values for flat graph input names.
+                Use values for dotted/nested inputs or names that match runner options.
 
         Returns:
             Daft DataFrame with original input columns plus output columns
@@ -281,10 +295,24 @@ class DaftRunner(BaseRunner):
         """
         from hypergraph.runners.daft.engine import build_execution_plan, execute_plan
 
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
+        map_dataframe_option_names = runner_option_names(self.map_dataframe)
+        ctx = precompute_input_validation(graph, entrypoint=None, selected=graph.selected)
+        run_only_options = run_option_names - map_option_names - map_dataframe_option_names
+        map_only_options = map_option_names - run_option_names - map_dataframe_option_names
+        other_option_call_names = {
+            **dict.fromkeys(run_only_options, "runner.run()"),
+            **dict.fromkeys(map_only_options, "runner.map()"),
+        }
         normalized = normalize_inputs(
             values,
             input_values,
-            reserved_option_names=MAP_RESERVED_OPTION_NAMES,
+            reserved_option_names=run_option_names | map_option_names | map_dataframe_option_names,
+            other_option_call_names=other_option_call_names,
+            call_name="runner.map_dataframe()",
+            graph=graph,
+            validation_ctx=ctx,
         )
 
         validate_runner_compatibility(graph, self.capabilities)
@@ -298,7 +326,6 @@ class DaftRunner(BaseRunner):
         all_bound = {**bound, **normalized}
         validation_values = {name: None for name in column_names}
         validation_values.update(all_bound)
-        ctx = precompute_input_validation(graph, entrypoint=None, selected=graph.selected)
         # DataFrames often carry passthrough columns that are not graph inputs.
         # Keep stale-address and missing-input validation, but do not warn for
         # extra columns that Daft will preserve untouched.

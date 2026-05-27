@@ -221,6 +221,66 @@ class TestSyncRunnerRun:
 
         assert result["top_k"] == 5
 
+    def test_run_unknown_kwarg_input_raises(self):
+        """kwargs shorthand only accepts flat graph input names."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="runner\\.run\\(\\) got unexpected input keyword 'typo'"):
+            runner.run(graph, x=1, typo=2)
+
+    def test_run_kwargs_reuses_precomputed_input_validation(self, monkeypatch):
+        """Kwarg validation and value validation share one graph traversal."""
+        from hypergraph.runners._shared import template_sync as template_sync_module
+        from hypergraph.runners._shared import validation as validation_module
+
+        calls = 0
+        real_precompute = template_sync_module.precompute_input_validation
+
+        def spy_precompute(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return real_precompute(*args, **kwargs)
+
+        def fail_precompute(*args, **kwargs):  # pragma: no cover - assertion helper
+            pytest.fail("normalize_inputs recomputed input validation instead of reusing the runner context")
+
+        monkeypatch.setattr(template_sync_module, "precompute_input_validation", spy_precompute)
+        monkeypatch.setattr(validation_module, "precompute_input_validation", fail_precompute)
+
+        result = SyncRunner().run(Graph([double]), x=1)
+
+        assert result["doubled"] == 2
+        assert calls == 1
+
+    def test_run_dotted_kwarg_input_raises(self):
+        """Dotted input addresses must go through values, not kwargs."""
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(namespaced=True)])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="Dotted input address 'inner\\.x'.*values=\\{'inner\\.x':"):
+            runner.run(outer, **{"inner.x": 1})
+
+    def test_run_bound_input_outside_active_scope_allowed_as_kwarg(self):
+        """Bound input names stay valid kwargs even when inactive after select()."""
+
+        @node(output_name="b_out")
+        def make_b(seed: int) -> int:
+            return seed + 1
+
+        @node(output_name="c_out")
+        def make_c(other: int) -> int:
+            return other * 3
+
+        graph = Graph([make_b, make_c]).bind(seed=5).select("c_out")
+        runner = SyncRunner()
+
+        with pytest.warns(UserWarning, match="seed"):
+            result = runner.run(graph, other=2, seed=10)
+
+        assert result["c_out"] == 6
+
     def test_run_input_named_select_requires_values_dict(self):
         """Input names matching options are only accepted via values dict."""
 
@@ -235,13 +295,44 @@ class TestSyncRunnerRun:
 
         assert result["result"] == "fast"
 
+    def test_run_input_named_map_over_requires_values_dict(self):
+        """A map_over input is accepted through values, not kwargs."""
+
+        @node(output_name="result")
+        def echo_map_over(map_over: str) -> str:
+            return map_over
+
+        graph = Graph([echo_map_over])
+        runner = SyncRunner()
+
+        result = runner.run(graph, values={"map_over": "items"})
+
+        assert result["result"] == "items"
+
     def test_run_reserved_option_name_in_kwargs_raises(self):
         """Reserved option names cannot be passed via kwargs shorthand."""
         graph = Graph([double])
         runner = SyncRunner()
 
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="runner\\.run\\(\\) got unexpected input keyword 'max_concurrency'"):
             runner.run(graph, x=1, max_concurrency=1)
+
+    def test_run_rejects_map_over_kwarg(self):
+        """run() treats map_over as reserved for runner.map()."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="runner\\.run\\(\\) does not accept map_over=.*runner\\.map"):
+            runner.run(graph, x=1, map_over="x")
+
+    @pytest.mark.parametrize("option_name", ["map_mode", "clone"])
+    def test_run_rejects_map_only_option_kwargs(self, option_name: str):
+        """run() rejects map-only option names instead of ignoring them."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match=f"runner\\.run\\(\\) does not accept {option_name}="):
+            runner.run(graph, {"x": 1}, **{option_name: "bad"})
 
     def test_uses_bound_values(self):
         """Bound values are used when input not provided."""
@@ -283,11 +374,11 @@ class TestSyncRunnerRun:
             runner.run(graph, {"left": 100, "right": 200})
 
     def test_removed_internal_override_argument_is_rejected(self):
-        """run() treats on_internal_override as a reserved runner option."""
+        """run() rejects removed runner options as unexpected kwargs."""
         graph = Graph([double])
         runner = SyncRunner()
 
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="runner\\.run\\(\\) got unexpected input keyword 'on_internal_override'"):
             runner.run(graph, {"x": 1}, on_internal_override="warn")  # type: ignore[call-arg]
 
     def test_input_overrides_bound(self):
@@ -522,6 +613,23 @@ class TestSyncRunnerMap:
 
         assert [r["doubled"] for r in results] == [2, 4, 6]
 
+    def test_map_unknown_kwarg_input_raises(self):
+        """map kwargs shorthand only accepts flat graph input names."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="runner\\.map\\(\\) got unexpected input keyword 'typo'"):
+            runner.map(graph, map_over="x", x=[1], typo=2)
+
+    def test_map_dotted_kwarg_input_raises(self):
+        """Dotted input addresses in map() must go through values."""
+        inner = Graph([double], name="inner")
+        outer = Graph([inner.as_node(namespaced=True)])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match="Dotted input address 'inner\\.x'.*values=\\{'inner\\.x':"):
+            runner.map(outer, map_over="inner.x", **{"inner.x": [1]})
+
     def test_map_merges_values_and_kwargs(self):
         """map merges values dict with kwargs when keys are disjoint."""
         graph = Graph([add])
@@ -562,12 +670,30 @@ class TestSyncRunnerMap:
 
         assert [r["sum"] for r in results] == [11, 12]
 
+    def test_map_input_named_max_iterations_requires_values_dict(self):
+        """Run-only option names remain valid map inputs through values."""
+
+        @node(output_name="sum")
+        def add_with_reserved_name(x: int, max_iterations: int) -> int:
+            return x + max_iterations
+
+        graph = Graph([add_with_reserved_name])
+        runner = SyncRunner()
+
+        results = runner.map(
+            graph,
+            values={"x": [1, 2], "max_iterations": 10},
+            map_over="x",
+        )
+
+        assert [r["sum"] for r in results] == [11, 12]
+
     def test_map_reserved_option_name_in_kwargs_raises(self):
         """Reserved map option names cannot be passed via kwargs shorthand."""
         graph = Graph([double])
         runner = SyncRunner()
 
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="runner\\.map\\(\\) got unexpected input keyword 'max_concurrency'"):
             runner.map(graph, map_over="x", x=[1, 2], max_concurrency=1)
 
     def test_map_rejects_internal_edge_produced_overrides(self):
@@ -596,12 +722,24 @@ class TestSyncRunnerMap:
             )
 
     def test_map_removed_internal_override_argument_is_rejected(self):
-        """map() treats on_internal_override as a reserved runner option."""
+        """map() rejects removed runner options as unexpected kwargs."""
         graph = Graph([double])
         runner = SyncRunner()
 
-        with pytest.raises(ValueError, match="reserved runner options"):
+        with pytest.raises(ValueError, match="runner\\.map\\(\\) got unexpected input keyword 'on_internal_override'"):
             runner.map(graph, {"x": [1]}, map_over="x", on_internal_override="warn")  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize(
+        "option_name",
+        ["max_iterations", "checkpoint", "override_workflow", "fork_from", "retry_from"],
+    )
+    def test_map_rejects_run_only_option_kwargs(self, option_name: str):
+        """map() rejects run-only option names instead of ignoring them."""
+        graph = Graph([double])
+        runner = SyncRunner()
+
+        with pytest.raises(ValueError, match=f"runner\\.map\\(\\) does not accept {option_name}="):
+            runner.map(graph, {"x": [1]}, map_over="x", **{option_name: "bad"})
 
     def test_map_over_returns_list_of_results(self):
         """Map returns list of RunResult."""

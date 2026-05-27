@@ -29,6 +29,28 @@ def test_daft_runner_map_matches_sync_runner_for_basic_batches():
     assert daft_results.status == RunStatus.COMPLETED
 
 
+def test_daft_runner_run_rejects_map_only_option_kwarg():
+    graph = Graph([double], name="run_reserved")
+
+    with pytest.raises(ValueError, match="runner\\.run\\(\\) does not accept map_over=.*runner\\.map"):
+        DaftRunner().run(graph, x=1, map_over="x")
+
+
+def test_daft_runner_run_dotted_kwarg_input_raises():
+    inner = Graph([double], name="inner")
+    outer = Graph([inner.as_node(namespaced=True)], name="outer")
+
+    with pytest.raises(ValueError, match="Dotted input address 'inner\\.x'.*values=\\{'inner\\.x':"):
+        DaftRunner().run(outer, **{"inner.x": 1})
+
+
+def test_daft_runner_map_rejects_run_only_option_kwarg():
+    graph = Graph([double], name="map_reserved")
+
+    with pytest.raises(ValueError, match="runner\\.map\\(\\) does not accept max_iterations=.*runner\\.run"):
+        DaftRunner().map(graph, {"x": [1]}, map_over="x", max_iterations=10)
+
+
 def test_daft_runner_supports_product_mode():
     graph = Graph([combine], name="product_batch")
 
@@ -165,6 +187,26 @@ def test_daft_runner_map_dataframe_returns_dataframe():
     collected = result_df.collect().to_pydict()
     assert collected["doubled"] == [2, 4, 6]
     assert collected["x"] == [1, 2, 3]
+
+
+def test_daft_runner_map_dataframe_rejects_map_option_kwarg():
+    import daft
+
+    graph = Graph([double], name="df_reserved")
+    df = daft.from_pydict({"x": [1]})
+
+    with pytest.raises(ValueError, match="runner\\.map_dataframe\\(\\) does not accept map_over=.*runner\\.map"):
+        DaftRunner().map_dataframe(graph, df, map_over="x")
+
+
+def test_daft_runner_map_dataframe_rejects_run_option_kwarg():
+    import daft
+
+    graph = Graph([double], name="df_run_reserved")
+    df = daft.from_pydict({"x": [1]})
+
+    with pytest.raises(ValueError, match="runner\\.map_dataframe\\(\\) does not accept max_iterations=.*runner\\.run"):
+        DaftRunner().map_dataframe(graph, df, max_iterations=10)
 
 
 def test_daft_runner_map_dataframe_with_broadcast_values():
