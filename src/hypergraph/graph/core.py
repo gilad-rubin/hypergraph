@@ -19,6 +19,7 @@ from hypergraph.nodes.base import HyperNode
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from hypergraph.graph.resources import GraphResourceScope
     from hypergraph.nodes.graph_node import GraphNode
     from hypergraph.viz.debug import VizDebugger
 
@@ -1010,7 +1011,7 @@ class Graph:
         new_graph._bound = {**self._bound, **canonical}
         return new_graph
 
-    def resources(self):
+    def resources(self) -> GraphResourceScope:
         """Open a resource scope for lazy stateful bound values."""
         from hypergraph.graph.resources import GraphResourceScope
 

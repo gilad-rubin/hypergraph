@@ -72,7 +72,7 @@ def stateful(
 
 def is_stateful(value: Any) -> bool:
     """Return whether ``value`` is marked as a Daft stateful resource."""
-    return _is_stateful(value)
+    return _is_stateful(value) or getattr(type(value), STATEFUL_ATTR, False) is True
 
 
 def has_stateful_values(bound_values: dict[str, Any]) -> bool:

@@ -140,7 +140,7 @@ class StatefulNodeOperation(DaftOperation):
 
             def _stateful_values(self) -> dict[str, Any]:
                 if self._stateful is None:
-                    self._stateful = {k: _materialize_stateful(v) for k, v in stateful_vals.items()}
+                    self._stateful = _materialize_stateful_values(stateful_vals)
                 return self._stateful
 
             def _call_kwargs(self, *args: Any) -> dict[str, Any]:
@@ -408,6 +408,19 @@ def _materialize_stateful(value: Any) -> Any:
     if isinstance(value, StatefulHandle):
         return value.materialize()
     return type(value)()
+
+
+def _materialize_stateful_values(stateful_vals: dict[str, Any]) -> dict[str, Any]:
+    materialized_handles: dict[StatefulHandle, Any] = {}
+    materialized: dict[str, Any] = {}
+    for name, value in stateful_vals.items():
+        if isinstance(value, StatefulHandle):
+            if value not in materialized_handles:
+                materialized_handles[value] = value.materialize()
+            materialized[name] = materialized_handles[value]
+        else:
+            materialized[name] = _materialize_stateful(value)
+    return materialized
 
 
 def _validate_batch_options(node: HyperNode, output_cols: list[str]) -> None:

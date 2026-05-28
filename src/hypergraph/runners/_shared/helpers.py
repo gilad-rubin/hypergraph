@@ -335,6 +335,25 @@ def warn_on_bind_overrides(graph: Graph, provided_values: dict[str, Any]) -> Non
         warnings.warn(msg, UserWarning, stacklevel=4)
 
 
+def validate_no_unmaterialized_stateful_handles(graph: Graph, provided_values: dict[str, Any]) -> None:
+    """Reject bound lazy handles before SyncRunner/AsyncRunner execution."""
+    from hypergraph.stateful import is_stateful_handle
+
+    for name, value in graph.inputs.bound.items():
+        if name in provided_values or not is_stateful_handle(value):
+            continue
+        raise GraphConfigError(
+            f"Bound input {name!r} is a lazy stateful handle and has not been materialized.\n\n"
+            f"How to fix:\n"
+            f"  Open a graph resource scope before running:\n"
+            f"    with graph.resources() as ready_graph:\n"
+            f"        runner.run(ready_graph, ...)\n"
+            f"  or, for async resources:\n"
+            f"    async with graph.resources() as ready_graph:\n"
+            f"        await runner.run(ready_graph, ...)"
+        )
+
+
 def _safe_deepcopy(value: Any, param_name: str = "<unknown>") -> Any:
     """Deep-copy a value, falling back gracefully for non-copyable objects.
 

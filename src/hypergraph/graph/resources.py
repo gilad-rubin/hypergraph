@@ -23,6 +23,10 @@ class GraphResourceScope:
         self._astack: AsyncExitStack | None = None
 
     def __enter__(self) -> Graph:
+        if self._stack is not None or self._astack is not None:
+            raise RuntimeError("GraphResourceScope is already active")
+        self._instances = {}
+        self._astack = None
         handles = list(_iter_stateful_handles(self._graph))
         _validate_sync_scope(handles)
         self._stack = ExitStack()
@@ -35,9 +39,17 @@ class GraphResourceScope:
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
         if self._stack is None:
             return None
-        return self._stack.__exit__(exc_type, exc, tb)
+        try:
+            return self._stack.__exit__(exc_type, exc, tb)
+        finally:
+            self._instances = {}
+            self._stack = None
 
     async def __aenter__(self) -> Graph:
+        if self._stack is not None or self._astack is not None:
+            raise RuntimeError("GraphResourceScope is already active")
+        self._instances = {}
+        self._stack = None
         self._astack = AsyncExitStack()
         try:
             return self._materialize_graph(async_scope=True)
@@ -48,7 +60,11 @@ class GraphResourceScope:
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
         if self._astack is None:
             return None
-        return await self._astack.__aexit__(exc_type, exc, tb)
+        try:
+            return await self._astack.__aexit__(exc_type, exc, tb)
+        finally:
+            self._instances = {}
+            self._astack = None
 
     def _materialize_graph(self, graph: Graph | None = None, *, async_scope: bool) -> Graph:
         from hypergraph.nodes.graph_node import GraphNode
@@ -135,3 +151,5 @@ async def _call_async_cleanup(instance: Any, method_name: str) -> None:
     result = getattr(instance, method_name)()
     if inspect.isawaitable(result):
         await result
+        return
+    raise TypeError(f"{type(instance).__name__}.{method_name} returned a non-awaitable value during async cleanup")

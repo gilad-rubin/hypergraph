@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import pickle
+
 import pytest
 
-from hypergraph import AsyncRunner, Graph, SyncRunner, node, stateful
+from hypergraph import AsyncRunner, Graph, GraphConfigError, SyncRunner, node, stateful
+
+
+@stateful(resource=True)
+class PickleResource:
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def close(self) -> None:
+        pass
 
 
 def test_sync_resource_scope_materializes_bound_stateful_resource() -> None:
@@ -260,3 +271,83 @@ def test_different_stateful_handles_are_not_deduplicated_by_constructor_args() -
         "close:same",
         "close:same",
     ]
+
+
+def test_materialized_resource_is_instance_of_decorated_class() -> None:
+    @stateful(resource=True)
+    class Resource:
+        def close(self) -> None:
+            pass
+
+    @node(output_name="is_resource")
+    def check_resource(resource: Resource) -> bool:
+        return isinstance(resource, Resource)
+
+    graph = Graph([check_resource]).bind(resource=Resource())
+
+    with graph.resources() as ready_graph:
+        result = SyncRunner().run(ready_graph)
+
+    assert result.values["is_resource"] is True
+
+
+def test_resource_scope_can_be_reentered_with_fresh_instances() -> None:
+    events: list[str] = []
+
+    @stateful(resource=True)
+    class Resource:
+        def __init__(self) -> None:
+            events.append("init")
+
+        def close(self) -> None:
+            events.append("close")
+
+    @node(output_name="ok")
+    def use_resource(resource: Resource) -> bool:
+        return isinstance(resource, Resource)
+
+    graph = Graph([use_resource]).bind(resource=Resource())
+    scope = graph.resources()
+
+    with scope as ready_graph:
+        assert SyncRunner().run(ready_graph).values["ok"] is True
+
+    with scope as ready_graph:
+        assert SyncRunner().run(ready_graph).values["ok"] is True
+
+    assert events == ["init", "close", "init", "close"]
+
+
+def test_runner_explains_stateful_handle_needs_resource_scope() -> None:
+    @stateful(resource=True)
+    class Resource:
+        def close(self) -> None:
+            pass
+
+        def value(self) -> str:
+            return "ok"
+
+    @node(output_name="value")
+    def use_resource(resource: Resource) -> str:
+        return resource.value()
+
+    graph = Graph([use_resource]).bind(resource=Resource())
+
+    with pytest.raises(GraphConfigError, match=r"graph\.resources\(\)"):
+        SyncRunner().run(graph)
+
+
+def test_stateful_handle_round_trips_with_standard_pickle() -> None:
+    handle = PickleResource("ok")
+    restored = pickle.loads(pickle.dumps(handle))
+
+    @node(output_name="value")
+    def use_resource(resource: PickleResource) -> str:
+        return resource.value
+
+    graph = Graph([use_resource]).bind(resource=restored)
+
+    with graph.resources() as ready_graph:
+        result = SyncRunner().run(ready_graph)
+
+    assert result.values["value"] == "ok"

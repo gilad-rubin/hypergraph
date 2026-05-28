@@ -38,6 +38,7 @@ from hypergraph.runners._shared.helpers import (
     generate_workflow_id,
     initialize_state,
     is_interrupt_resume_payload,
+    validate_no_unmaterialized_stateful_handles,
     warn_on_bind_overrides,
 )
 from hypergraph.runners._shared.input_normalization import (
@@ -228,6 +229,7 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
             graph=graph,
             validation_ctx=validation_ctx,
         )
+        validate_no_unmaterialized_stateful_handles(graph, normalized_values)
         # Only fire override warning at the user-initiated outer run; nested
         # GraphNode delegations propagate the same value and would re-warn.
         if _parent_span_id is None and _parent_run_id is None:

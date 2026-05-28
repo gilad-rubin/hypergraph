@@ -90,6 +90,14 @@ class TestDaftStatefulProtocol:
 
         assert not has_stateful_values({"obj": NotStateful()})
 
+    def test_manual_daft_stateful_attribute_detected(self):
+        """Legacy objects marked with __daft_stateful__ are still supported."""
+
+        class LegacyStateful:
+            __daft_stateful__ = True
+
+        assert has_stateful_values({"obj": LegacyStateful()})
+
 
 # ---------------------------------------------------------------------------
 # Batch detection
@@ -253,6 +261,22 @@ class TestStatefulNodeOperation:
         df = daft.from_pydict({"text": ["hi", "hello"]})
         result = op.apply(df).collect().to_pydict()
         assert result["score"] == [2 * 42, 5 * 42]
+
+    def test_repeated_stateful_handle_materializes_once(self):
+        @node(output_name="same")
+        def compare_models(x: int, left: MockModel, right: MockModel) -> bool:
+            return left is right
+
+        handle = MockModel()
+        graph = Graph([compare_models], name="test")
+        op = create_operation(
+            compare_models,
+            graph,
+            bound_values={"left": handle, "right": handle},
+        )
+        df = daft.from_pydict({"x": [1, 2]})
+        result = op.apply(df).collect().to_pydict()
+        assert result["same"] == [True, True]
 
 
 # ---------------------------------------------------------------------------

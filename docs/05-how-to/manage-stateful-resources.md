@@ -45,6 +45,9 @@ async with graph.resources() as ready_graph:
 `LLM(...)` creates a lazy handle. The real `LLM` object is constructed when the
 resource scope opens, not when the graph is defined.
 
+Runners do not auto-open resource scopes. Run the graph returned by
+`graph.resources()`, not the original graph with lazy handles still bound.
+
 ## Cleanup Rules
 
 `graph.resources()` follows the cleanup method that matches the scope:

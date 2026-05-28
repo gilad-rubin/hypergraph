@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,10 @@ DAFT_STATEFUL_ATTR = "__daft_stateful__"
 DAFT_OPTIONS_ATTR = "__daft_options__"
 
 _INFER = object()
+_MATERIALIZING_CLASSES: ContextVar[frozenset[type]] = ContextVar(
+    "_MATERIALIZING_CLASSES",
+    default=frozenset(),
+)
 
 
 @dataclass(frozen=True)
@@ -47,10 +52,12 @@ class StatefulHandle:
         metadata: StatefulMetadata,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        stateful_cls: type | None = None,
     ) -> None:
         self.metadata = metadata
         self.args = args
         self.kwargs = dict(kwargs)
+        self.stateful_cls = stateful_cls
         self.__daft_options__ = metadata.daft_options
 
     @property
@@ -63,10 +70,29 @@ class StatefulHandle:
 
     def materialize(self) -> Any:
         """Construct the wrapped object."""
+        if self.stateful_cls is not None:
+            return self.stateful_cls.__hypergraph_materialize__(*self.args, **self.kwargs)
         return self.cls(*self.args, **self.kwargs)
+
+    def __reduce__(self) -> Any:
+        if self.stateful_cls is None:
+            return (_rebuild_legacy_stateful_handle, (self.metadata, self.args, self.kwargs))
+        return (_rebuild_stateful_handle, (self.stateful_cls, self.args, self.kwargs))
 
     def __repr__(self) -> str:
         return f"StatefulHandle({self.cls.__name__})"
+
+
+def _rebuild_stateful_handle(stateful_cls: type, args: tuple[Any, ...], kwargs: dict[str, Any]) -> StatefulHandle:
+    return stateful_cls(*args, **kwargs)
+
+
+def _rebuild_legacy_stateful_handle(
+    metadata: StatefulMetadata,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> StatefulHandle:
+    return StatefulHandle(metadata, args, kwargs)
 
 
 def stateful(
@@ -90,10 +116,19 @@ def stateful(
             __daft_stateful__ = True
             __daft_options__ = _daft_options
 
-            def __new__(proxy_cls, *args: Any, **kwargs: Any) -> StatefulHandle:  # noqa: N804
-                if proxy_cls is StatefulClass:
-                    return StatefulHandle(metadata, args, kwargs)
+            def __new__(proxy_cls, *args: Any, **kwargs: Any) -> Any:  # noqa: N804
+                if proxy_cls is StatefulClass and StatefulClass not in _MATERIALIZING_CLASSES.get():
+                    return StatefulHandle(metadata, args, kwargs, StatefulClass)
                 return super().__new__(proxy_cls)
+
+            @classmethod
+            def __hypergraph_materialize__(stateful_cls, *args: Any, **kwargs: Any) -> Any:
+                materializing = _MATERIALIZING_CLASSES.get()
+                token = _MATERIALIZING_CLASSES.set(materializing | {stateful_cls})
+                try:
+                    return stateful_cls(*args, **kwargs)
+                finally:
+                    _MATERIALIZING_CLASSES.reset(token)
 
         StatefulClass.__name__ = class_.__name__
         StatefulClass.__qualname__ = class_.__qualname__
