@@ -196,7 +196,7 @@ def test_map_dataframe_stateful_plan_build_does_not_eagerly_construct_resource()
 
     result = DaftRunner().map_dataframe(graph, frame)
 
-    assert LazyResource.constructions == 1
+    assert LazyResource.constructions == 0
     assert result.collect().to_pydict()["y"] == [2, 3]
 
 

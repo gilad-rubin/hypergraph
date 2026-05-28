@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,10 +12,6 @@ DAFT_STATEFUL_ATTR = "__daft_stateful__"
 DAFT_OPTIONS_ATTR = "__daft_options__"
 
 _INFER = object()
-_MATERIALIZING_CLASSES: ContextVar[frozenset[type]] = ContextVar(
-    "_MATERIALIZING_CLASSES",
-    default=frozenset(),
-)
 
 
 @dataclass(frozen=True)
@@ -117,18 +112,13 @@ def stateful(
             __daft_options__ = _daft_options
 
             def __new__(proxy_cls, *args: Any, **kwargs: Any) -> Any:  # noqa: N804
-                if proxy_cls is StatefulClass and StatefulClass not in _MATERIALIZING_CLASSES.get():
+                if proxy_cls is StatefulClass:
                     return StatefulHandle(metadata, args, kwargs, StatefulClass)
                 return super().__new__(proxy_cls)
 
             @classmethod
             def __hypergraph_materialize__(stateful_cls, *args: Any, **kwargs: Any) -> Any:
-                materializing = _MATERIALIZING_CLASSES.get()
-                token = _MATERIALIZING_CLASSES.set(materializing | {stateful_cls})
-                try:
-                    return stateful_cls(*args, **kwargs)
-                finally:
-                    _MATERIALIZING_CLASSES.reset(token)
+                return _construct_stateful_instance(class_, stateful_cls, args, kwargs)
 
         StatefulClass.__name__ = class_.__name__
         StatefulClass.__qualname__ = class_.__qualname__
@@ -139,6 +129,21 @@ def stateful(
     if cls is not None:
         return decorate(cls)
     return decorate
+
+
+def _construct_stateful_instance(
+    original_cls: type,
+    stateful_cls: type,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Construct the proxy instance without producing another lazy handle."""
+    new = original_cls.__new__
+    instance = object.__new__(stateful_cls) if new is object.__new__ else new(stateful_cls, *args, **kwargs)
+
+    if isinstance(instance, stateful_cls):
+        original_cls.__init__(instance, *args, **kwargs)
+    return instance
 
 
 def is_stateful(value: Any) -> bool:
