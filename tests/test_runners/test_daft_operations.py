@@ -315,25 +315,28 @@ class TestBatchMultiOutputRejection:
 
 
 # ---------------------------------------------------------------------------
-# Validation: _validate_stateful_constructable
+# Validation: stateful constructor capture
 # ---------------------------------------------------------------------------
 
 
 class TestStatefulConstructable:
-    def test_non_constructable_stateful_rejected(self):
+    def test_stateful_constructor_args_are_captured(self):
         @stateful
         class NeedsArgs:
             def __init__(self, required_arg: str):
                 self.value = required_arg
 
         @node(output_name="out")
-        def use_it(x: int, model: NeedsArgs) -> int:
-            return x
+        def use_it(x: int, model: NeedsArgs) -> str:
+            return f"{model.value}:{x}"
 
         graph = Graph([use_it], name="test")
-        with pytest.raises(TypeError, match="zero-arg construction"):
-            create_operation(
-                use_it,
-                graph,
-                bound_values={"model": NeedsArgs("hello")},
-            )
+        op = create_operation(
+            use_it,
+            graph,
+            bound_values={"model": NeedsArgs("hello")},
+        )
+
+        df = daft.from_pydict({"x": [1]})
+        result = op.apply(df).collect().to_pydict()
+        assert result["out"] == ["hello:1"]

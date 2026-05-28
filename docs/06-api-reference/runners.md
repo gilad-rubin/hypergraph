@@ -502,10 +502,10 @@ caps.supports_checkpointing   # False
 
 ### @stateful
 
-Decorator to mark a class for once-per-worker initialization. DaftRunner wraps
-stateful objects with `@daft.cls` instead of `@daft.func`, so heavy resources
-(ML models, DB connections) are created once per worker process rather than
-once per row.
+Decorator to mark a class for lazy construction. With DaftRunner, stateful
+handles are wrapped with `@daft.cls` instead of `@daft.func`, so heavy
+resources (ML models, DB connections) are created once per worker process
+rather than once per row.
 
 ```python
 from hypergraph import Graph, node
@@ -513,8 +513,8 @@ from hypergraph.integrations.daft import DaftRunner, stateful
 
 @stateful(max_concurrency=2)
 class Embedder:
-    def __init__(self):
-        self.model = load_heavy_model()
+    def __init__(self, model_name: str):
+        self.model = load_heavy_model(model_name)
 
     def embed(self, text: str) -> list[float]:
         return self.model.encode(text)
@@ -523,13 +523,23 @@ class Embedder:
 def embed(text: str, embedder: Embedder) -> list[float]:
     return embedder.embed(text)
 
-graph = Graph([embed]).bind(embedder=Embedder())
+graph = Graph([embed]).bind(embedder=Embedder("all-MiniLM-L6-v2"))
 runner = DaftRunner()
 results = runner.map(graph, {"text": texts}, map_over="text")
 ```
 
-The class must support zero-argument construction (`__init__()` with no
-required args) so Daft can re-create it on each worker.
+The constructor is captured by the lazy handle. Daft workers construct the
+resource from the captured arguments when execution runs.
+
+Use `resource=True` when the same stateful class should also be managed by
+`graph.resources()` in SyncRunner or AsyncRunner workflows:
+
+```python
+@stateful(resource=True)
+class Client:
+    async def aclose(self) -> None:
+        ...
+```
 
 ### daft_node(..., batch=True)
 

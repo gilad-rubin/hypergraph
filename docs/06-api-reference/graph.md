@@ -434,6 +434,53 @@ runner.run(graph, {"query": "test"})
 
 The error message explains why copying is needed for signature defaults and suggests using `.bind()` for shared state.
 
+### `resources()`
+
+Open a resource scope for lazy stateful values bound with `.bind()`.
+
+```python
+from hypergraph import Graph, SyncRunner, node, stateful
+
+@stateful(resource=True)
+class Client:
+    def __init__(self, endpoint: str):
+        self.endpoint = endpoint
+
+    def close(self) -> None:
+        ...
+
+@node(output_name="answer")
+def answer(query: str, client: Client) -> str:
+    ...
+
+graph = Graph([answer]).bind(client=Client(endpoint="https://api.example"))
+
+with graph.resources() as ready_graph:
+    result = SyncRunner().run(ready_graph, {"query": "hello"})
+```
+
+`Client(...)` returns a lazy handle. The real `Client` is constructed when the
+scope opens and is closed when the scope exits.
+
+Use an async scope for async resources:
+
+```python
+async with graph.resources() as ready_graph:
+    result = await AsyncRunner().run(ready_graph, {"query": "hello"})
+```
+
+Cleanup follows these rules:
+
+| Resource class | Sync scope | Async scope |
+| --- | --- | --- |
+| `close()` only | calls `close()` | calls `close()` |
+| `aclose()` only | raises before opening | awaits `aclose()` |
+| both | calls `close()` | awaits `aclose()` |
+| neither | invalid with `resource=True` | invalid with `resource=True` |
+
+The same lazy handle bound in multiple places materializes once per scope.
+Different handles are not deduplicated by constructor arguments.
+
 ### `unbind(*names) -> Graph`
 
 Remove specific bindings. Returns a new Graph.

@@ -318,6 +318,11 @@ def safe_generate(prompt: str, max_retries: int = 3) -> str:
 
 **Best practice**: Use `.bind()` to provide shared LLM clients at the graph level instead of global variables or function defaults.
 
+When the client should be opened lazily and closed by Hypergraph, decorate the
+client class with `@stateful(resource=True)` and run the graph inside
+`graph.resources()`. See [Manage Stateful Resources](manage-stateful-resources.md)
+for lifecycle and FastAPI examples.
+
 ```python
 from anthropic import Anthropic
 

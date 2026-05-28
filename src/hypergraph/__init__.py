@@ -69,6 +69,7 @@ from hypergraph.runners import (
     SyncRunner,
 )
 from hypergraph.runners._shared.node_context import NodeContext
+from hypergraph.stateful import StatefulHandle, stateful
 
 __all__ = [
     # Decorators and node types
@@ -135,6 +136,8 @@ __all__ = [
     "RichProgressProcessor",
     # Context
     "NodeContext",
+    "stateful",
+    "StatefulHandle",
     # Cache
     "CacheBackend",
     "InMemoryCache",

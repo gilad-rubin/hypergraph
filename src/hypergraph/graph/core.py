@@ -1010,6 +1010,12 @@ class Graph:
         new_graph._bound = {**self._bound, **canonical}
         return new_graph
 
+    def resources(self):
+        """Open a resource scope for lazy stateful bound values."""
+        from hypergraph.graph.resources import GraphResourceScope
+
+        return GraphResourceScope(self)
+
     def unbind(self, *keys: str) -> Graph:
         """Remove specific bindings. Returns new Graph."""
         new_graph = self._shallow_copy()

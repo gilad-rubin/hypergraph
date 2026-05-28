@@ -258,8 +258,8 @@ Prefer `SyncRunner` or `AsyncRunner` when:
 ## Stateful UDFs
 
 Heavy resources (ML models, DB connections) can be initialized once per Daft
-worker instead of once per row. Use the `@stateful` decorator and bind the
-instance to the graph:
+worker instead of once per row. Use the `@stateful` decorator and bind the lazy
+handle to the graph:
 
 ```python
 from hypergraph import Graph, node
@@ -267,8 +267,8 @@ from hypergraph.integrations.daft import DaftRunner, stateful
 
 @stateful(max_concurrency=2)
 class Embedder:
-    def __init__(self):
-        self.model = load_heavy_model()
+    def __init__(self, model_name: str):
+        self.model = load_heavy_model(model_name)
 
     def embed(self, text: str) -> list[float]:
         return self.model.encode(text)
@@ -277,16 +277,15 @@ class Embedder:
 def embed(text: str, embedder: Embedder) -> list[float]:
     return embedder.embed(text)
 
-graph = Graph([embed]).bind(embedder=Embedder())
+graph = Graph([embed]).bind(embedder=Embedder("all-MiniLM-L6-v2"))
 runner = DaftRunner()
 results = runner.map(graph, {"text": texts}, map_over="text")
 ```
 
 DaftRunner wraps stateful objects with `@daft.cls` so `__init__` runs once per
-worker process. The class must support zero-argument construction. Hypergraph
-validates that contract by signature during plan build, then constructs the
-resource inside the Daft worker on first use so expensive model/client setup is
-not accidentally triggered while building a lazy plan.
+worker process. The constructor arguments are captured by the lazy handle and
+used inside the Daft worker, so expensive model/client setup is not accidentally
+triggered while defining the graph or building a lazy plan.
 See `examples/daft/ml_embeddings.py` for a complete example.
 
 ## Vectorized Batch UDFs

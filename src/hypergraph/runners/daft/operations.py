@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners.daft._options import DEFAULT_OPTIONS, Options, get_node_options
 from hypergraph.runners.daft._stateful import DaftStateful, get_stateful_options, has_stateful_values, is_stateful
+from hypergraph.stateful import StatefulHandle
 
 if TYPE_CHECKING:
     import daft
@@ -127,7 +128,6 @@ class StatefulNodeOperation(DaftOperation):
 
         # Separate stateful from plain bound values
         stateful_vals = {k: v for k, v in bound.items() if is_stateful(v)}
-        stateful_types = {k: type(v) for k, v in stateful_vals.items()}
         plain_vals = {k: v for k, v in bound.items() if not is_stateful(v)}
 
         class_options = _stateful_options(stateful_vals)
@@ -140,7 +140,7 @@ class StatefulNodeOperation(DaftOperation):
 
             def _stateful_values(self) -> dict[str, Any]:
                 if self._stateful is None:
-                    self._stateful = {k: cls() for k, cls in stateful_types.items()}
+                    self._stateful = {k: _materialize_stateful(v) for k, v in stateful_vals.items()}
                 return self._stateful
 
             def _call_kwargs(self, *args: Any) -> dict[str, Any]:
@@ -390,6 +390,8 @@ def create_operation(
 def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:
     """Validate that DaftStateful objects support zero-arg construction."""
     for k, v in bound_values.items():
+        if isinstance(v, StatefulHandle):
+            continue
         if not isinstance(v, DaftStateful):
             continue
         try:
@@ -400,6 +402,12 @@ def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:
                 f"zero-arg construction for per-worker re-initialization. Got: {e}\n\n"
                 f"How to fix: Ensure {type(v).__name__}.__init__() works with no arguments."
             ) from e
+
+
+def _materialize_stateful(value: Any) -> Any:
+    if isinstance(value, StatefulHandle):
+        return value.materialize()
+    return type(value)()
 
 
 def _validate_batch_options(node: HyperNode, output_cols: list[str]) -> None:

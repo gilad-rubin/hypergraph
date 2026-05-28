@@ -38,6 +38,7 @@
 * [Batch Processing](05-how-to/batch-processing.md)
 * [Rename and Adapt](05-how-to/rename-and-adapt.md)
 * [Integrate with LLMs](05-how-to/integrate-with-llms.md)
+* [Manage Stateful Resources](05-how-to/manage-stateful-resources.md)
 * [Test Without Framework](05-how-to/test-without-framework.md)
 * [Observe Execution](05-how-to/observe-execution.md)
 * [Visualize Graphs](05-how-to/visualize-graphs.md)

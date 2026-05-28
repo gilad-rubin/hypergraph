@@ -6,9 +6,20 @@ from collections.abc import Callable
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from hypergraph.runners.daft._options import DEFAULT_OPTIONS, Options
+from hypergraph.stateful import (
+    _INFER,
+    DAFT_OPTIONS_ATTR,
+    StatefulHandle,
+)
+from hypergraph.stateful import (
+    is_stateful as _is_stateful,
+)
+from hypergraph.stateful import (
+    stateful as _core_stateful,
+)
 
 STATEFUL_ATTR = "__daft_stateful__"
-STATEFUL_OPTIONS_ATTR = "__daft_options__"
+STATEFUL_OPTIONS_ATTR = DAFT_OPTIONS_ATTR
 
 
 @runtime_checkable
@@ -21,6 +32,9 @@ class DaftStateful(Protocol):
 def stateful(
     cls: type | None = None,
     *,
+    resource: bool = False,
+    close: str | None | object = _INFER,
+    aclose: str | None | object = _INFER,
     options: Options | None = None,
     cpus: float | None = None,
     gpus: float | None = None,
@@ -43,9 +57,13 @@ def stateful(
     )
 
     def decorate(class_: type) -> type:
-        setattr(class_, STATEFUL_ATTR, True)
-        setattr(class_, STATEFUL_OPTIONS_ATTR, daft_options)
-        return class_
+        return _core_stateful(
+            class_,
+            resource=resource,
+            close=close,
+            aclose=aclose,
+            _daft_options=daft_options,
+        )
 
     if cls is not None:
         return decorate(cls)
@@ -54,7 +72,7 @@ def stateful(
 
 def is_stateful(value: Any) -> bool:
     """Return whether ``value`` is marked as a Daft stateful resource."""
-    return getattr(type(value), STATEFUL_ATTR, False) is True
+    return _is_stateful(value)
 
 
 def has_stateful_values(bound_values: dict[str, Any]) -> bool:
@@ -64,6 +82,8 @@ def has_stateful_values(bound_values: dict[str, Any]) -> bool:
 
 def get_stateful_options(value: Any) -> Options:
     """Return Daft class options attached to a stateful resource."""
+    if isinstance(value, StatefulHandle):
+        return value.metadata.daft_options or DEFAULT_OPTIONS
     return getattr(type(value), STATEFUL_OPTIONS_ATTR, DEFAULT_OPTIONS)
 
 
