@@ -20,6 +20,11 @@ DataFrame plan is built.
   option-merging policy.
 - When adding a Daft lowering option, update the typed option model, operation
   validation, docs/examples, and at least one runtime test together.
+- `daft.stateful`/`daft_node` expose only `daft.cls`/`daft.func` placement
+  controls as flat kwargs (no public `Options` object). Resource lifecycle
+  (`resource`/`close`/`aclose`) stays on core `@stateful` + Sync/Async; Daft has
+  no deterministic teardown hook, so DaftRunner rejects any `resource=True`
+  stateful. Do not re-add lifecycle args to the Daft decorators.
 
 ## GraphNode Outputs
 

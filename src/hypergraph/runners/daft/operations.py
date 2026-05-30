@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from hypergraph.runners.daft._options import DEFAULT_OPTIONS, Options, get_node_options
-from hypergraph.runners.daft._stateful import DaftStateful, get_stateful_options, has_stateful_values, is_stateful
+from hypergraph.runners.daft._stateful import DaftStateful, get_stateful_options, has_stateful_values, is_resource_stateful, is_stateful
 from hypergraph.stateful import StatefulHandle
 
 if TYPE_CHECKING:
@@ -348,6 +348,7 @@ def create_operation(
         if is_batch(node):
             _validate_batch_options(node, output_cols)
         if has_stateful_values(node_bound):
+            _validate_stateful_no_resource(node_bound)
             _validate_stateful_constructable(node_bound)
             _validate_stateful_node_options(node)
             return StatefulNodeOperation(
@@ -385,6 +386,23 @@ def create_operation(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_stateful_no_resource(bound_values: dict[str, Any]) -> None:
+    """Reject ``resource=True`` stateful values, which Daft cannot deterministically close."""
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    for name, value in bound_values.items():
+        if not is_stateful(value) or not is_resource_stateful(value):
+            continue
+        cls_name = value.cls.__name__ if isinstance(value, StatefulHandle) else type(value).__name__
+        raise IncompatibleRunnerError(
+            f"@stateful(resource=True) ({cls_name}, bound as {name!r}) cannot run on DaftRunner: "
+            f"Daft constructs resources per worker and has no deterministic teardown hook, so "
+            f"close()/aclose() would never be called. Use resource=False for worker-local state, "
+            f"or run resource scopes with SyncRunner/AsyncRunner via graph.resources().",
+            capability="node_types",
+        )
 
 
 def _validate_stateful_constructable(bound_values: dict[str, Any]) -> None:

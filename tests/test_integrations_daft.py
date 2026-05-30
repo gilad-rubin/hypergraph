@@ -11,9 +11,8 @@ pytest.importorskip("daft")
 import daft
 
 from hypergraph import Graph, node
-from hypergraph.integrations.daft import DaftRunner, Options, stateful
+from hypergraph.integrations.daft import DaftRunner, stateful
 from hypergraph.integrations.daft import node as daft_node
-from hypergraph.integrations.daft.options import Options as ReExportedOptions
 from hypergraph.runners.daft._options import Options as InternalOptions
 
 
@@ -284,35 +283,75 @@ def test_ray_resource_options_are_rejected_at_definition_time() -> None:
 
 def test_options_validate_current_daft_resource_rules_at_definition_time() -> None:
     with pytest.raises(ValueError, match="on_error"):
-        Options(on_error="skip")  # type: ignore[arg-type]
+        InternalOptions(on_error="skip")  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="max_concurrency"):
-        Options(max_concurrency=0)
+        InternalOptions(max_concurrency=0)
 
     with pytest.raises(ValueError, match="max_concurrency"):
-        Options(max_concurrency=1.5)  # type: ignore[arg-type]
+        InternalOptions(max_concurrency=1.5)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="max_retries"):
-        Options(max_retries=-1)
+        InternalOptions(max_retries=-1)
 
     with pytest.raises(ValueError, match="batch_size"):
-        Options(batch_size=0)
+        InternalOptions(batch_size=0)
 
     with pytest.raises(ValueError, match="batch_size"):
-        Options(batch_size=1.5)  # type: ignore[arg-type]
+        InternalOptions(batch_size=1.5)  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="gpus"):
-        Options(gpus=1.5)
+        InternalOptions(gpus=1.5)
 
 
-def test_options_reexports_use_one_class_identity() -> None:
-    assert Options is InternalOptions is ReExportedOptions
+def test_options_is_not_part_of_public_integration_surface() -> None:
+    import hypergraph.integrations.daft as daft_integration
+
+    assert not hasattr(daft_integration, "Options")
+
+    with pytest.raises(ImportError):
+        from hypergraph.integrations.daft import Options  # noqa: F401
+
+    with pytest.raises(ModuleNotFoundError):
+        import hypergraph.integrations.daft.options  # noqa: F401
 
 
-def test_stateful_rejects_node_only_options() -> None:
-    with pytest.raises(ValueError, match="stateful.*return_dtype"):
+def test_daft_stateful_does_not_own_resource_lifecycle() -> None:
+    # Lifecycle (resource/close/aclose) is a core @stateful + Sync/Async concept.
+    # Daft has no deterministic teardown hook, so daft.stateful must not advertise it.
+    for kwargs in ({"resource": True}, {"close": "shutdown"}, {"aclose": "aclose"}):
+        with pytest.raises(TypeError):
+            stateful(**kwargs)
 
-        @stateful(options=Options(return_dtype=daft.DataType.int64()))
-        class Resource:
-            def __init__(self) -> None:
-                pass
+
+def test_daft_decorators_reject_options_keyword() -> None:
+    # Flat kwargs only; the typed Options model is an internal detail now.
+    with pytest.raises(TypeError):
+        daft_node(options=InternalOptions())
+    with pytest.raises(TypeError):
+        stateful(options=InternalOptions())
+
+
+def test_daft_runner_rejects_resource_true_stateful() -> None:
+    from hypergraph import stateful as core_stateful
+    from hypergraph.runners._shared.validation import IncompatibleRunnerError
+
+    @core_stateful(resource=True)
+    class Client:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def transform(self, x: int) -> int:
+            return x + 1
+
+        def close(self) -> None:
+            self.closed = True
+
+    @node(output_name="y")
+    def transform(x: int, client: Client) -> int:
+        return client.transform(x)
+
+    graph = Graph([transform], name="resource_on_daft").bind(client=Client())
+
+    with pytest.raises(IncompatibleRunnerError, match="resource=True"):
+        DaftRunner().map(graph, {"x": [1, 2]}, map_over="x")

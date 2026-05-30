@@ -318,32 +318,30 @@ See `examples/daft/batch_normalization.py` for a complete example.
 
 ## Daft Options
 
-Pass common Daft UDF controls directly to `daft_node`, or reuse a typed
-`Options` value when several nodes share the same settings:
+Pass Daft UDF controls directly to `daft_node` as keyword arguments:
 
 ```python
 import daft
-from hypergraph.integrations.daft import Options
 from hypergraph.integrations.daft import node as daft_node
 
-embedding_options = Options(
+@daft_node(
+    output_name="embedding",
     return_dtype=daft.DataType.list(daft.DataType.float64()),
     batch=True,
     batch_size=64,
     max_retries=2,
     on_error="log",
 )
-
-@daft_node(output_name="embedding", options=embedding_options)
 def embed_batch(text: daft.Series) -> list[list[float] | None]:
     return embed_many(text.to_pylist())
 ```
 
-`Options` validates Daft's current public rules early: `on_error` is one of
-`"raise"`, `"log"`, or `"ignore"`; `max_concurrency` must be positive; `gpus`
-above `1.0` must be whole numbers; and `ray_options` cannot include
-`"num_cpus"`, `"num_gpus"`, or `"memory"`. Put class-level resource controls on
-`@stateful(...)`; put dtype, batch, and unnest settings on `daft_node(...)`.
+These options are validated against Daft's current public rules at definition
+time: `on_error` is one of `"raise"`, `"log"`, or `"ignore"`; `max_concurrency`
+must be positive; `gpus` above `1.0` must be whole numbers; and `ray_options`
+cannot include `"num_cpus"`, `"num_gpus"`, or `"memory"`. Put class-level
+resource controls (`cpus`, `gpus`, `max_concurrency`, ...) on `@stateful(...)`;
+put dtype, batch, and unnest settings on `daft_node(...)`.
 
 ## Dashboard and Extensions
 

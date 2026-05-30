@@ -43,21 +43,6 @@ class Options:
                 names = ", ".join(repr(name) for name in unsupported)
                 raise ValueError(f"ray_options cannot include {names}; use cpus/gpus instead")
 
-    def validate_stateful_class_options(self) -> None:
-        """Reject node/method-only settings when options are used for ``stateful``."""
-        unsupported = []
-        if self.return_dtype is not None:
-            unsupported.append("return_dtype")
-        if self.batch:
-            unsupported.append("batch")
-        if self.batch_size is not None:
-            unsupported.append("batch_size")
-        if self.unnest is not None:
-            unsupported.append("unnest")
-        if unsupported:
-            names = ", ".join(unsupported)
-            raise ValueError(f"stateful Options cannot include {names}; put node/method options on daft_node(...)")
-
     def for_func(self) -> dict[str, Any]:
         """Keyword arguments accepted by ``daft.func``."""
         return _drop_none(

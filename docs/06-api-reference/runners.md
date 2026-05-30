@@ -531,10 +531,16 @@ results = runner.map(graph, {"text": texts}, map_over="text")
 The constructor is captured by the lazy handle. Daft workers construct the
 resource from the captured arguments when execution runs.
 
-Use `resource=True` when the same stateful class should also be managed by
-`graph.resources()` in SyncRunner or AsyncRunner workflows:
+Resource lifecycle (`resource=True` with `close`/`aclose`) is **not** part of
+`hypergraph.integrations.daft.stateful`. Daft constructs resources per worker
+and has no deterministic teardown hook, so a `resource=True` stateful is
+rejected by `DaftRunner`. Declare lifecycle-managed resources with the core
+`hypergraph.stateful` and run them under `SyncRunner`/`AsyncRunner` via
+`graph.resources()`:
 
 ```python
+from hypergraph import stateful
+
 @stateful(resource=True)
 class Client:
     async def aclose(self) -> None:
@@ -567,33 +573,29 @@ runner = DaftRunner()
 results = runner.map(graph, {"values": [10.0, 20.0, 30.0]}, map_over="values")
 ```
 
-### Options
+### Daft lowering options
 
-Typed Daft lowering options can be passed directly to `daft_node` or reused via
-`Options`:
+Daft lowering options are passed directly to `daft_node` as keyword arguments:
 
 ```python
 import daft
-from hypergraph.integrations.daft import Options
 from hypergraph.integrations.daft import node as daft_node
 
-batch_options = Options(
+@daft_node(
+    output_name="token_count",
     return_dtype=daft.DataType.int64(),
     batch=True,
     batch_size=128,
     max_retries=2,
     on_error="log",
 )
-
-@daft_node(output_name="token_count", options=batch_options)
 def count_tokens(text: daft.Series) -> list[int | None]:
     return [len(value.split()) for value in text.to_pylist()]
 ```
 
 Use `@stateful(cpus=..., gpus=..., max_concurrency=...)` for class-level
-`@daft.cls` controls. `stateful(options=...)` accepts only class resource,
-retry, and error-handling settings; dtype, batch, and unnest settings belong on
-`daft_node(...)`.
+`@daft.cls` controls (worker placement and actor-pool concurrency). Dtype,
+batch, and unnest settings belong on `daft_node(...)`.
 
 ### Dashboard and Extensions
 

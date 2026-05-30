@@ -7,8 +7,8 @@ from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from hypergraph.runners.daft._options import DEFAULT_OPTIONS, Options
 from hypergraph.stateful import (
-    _INFER,
     DAFT_OPTIONS_ATTR,
+    STATEFUL_METADATA_ATTR,
     StatefulHandle,
 )
 from hypergraph.stateful import (
@@ -32,10 +32,6 @@ class DaftStateful(Protocol):
 def stateful(
     cls: type | None = None,
     *,
-    resource: bool = False,
-    close: str | None | object = _INFER,
-    aclose: str | None | object = _INFER,
-    options: Options | None = None,
     cpus: float | None = None,
     gpus: float | None = None,
     use_process: bool | None = None,
@@ -44,9 +40,14 @@ def stateful(
     on_error: Literal["raise", "log", "ignore"] | None = None,
     ray_options: dict[str, Any] | None = None,
 ) -> type | Callable[[type], type]:
-    """Mark a class for per-worker initialization in DaftRunner."""
-    daft_options = _merge_stateful_options(
-        options,
+    """Mark a class for per-worker construction in DaftRunner.
+
+    Accepts only ``daft.cls`` placement controls. Resource lifecycle
+    (``resource``/``close``/``aclose``) is a core ``@stateful`` + Sync/Async
+    concern: Daft constructs resources per worker and exposes no deterministic
+    teardown hook, so this decorator intentionally does not own that lifecycle.
+    """
+    daft_options = Options(
         cpus=cpus,
         gpus=gpus,
         use_process=use_process,
@@ -57,13 +58,7 @@ def stateful(
     )
 
     def decorate(class_: type) -> type:
-        return _core_stateful(
-            class_,
-            resource=resource,
-            close=close,
-            aclose=aclose,
-            _daft_options=daft_options,
-        )
+        return _core_stateful(class_, _daft_options=daft_options)
 
     if cls is not None:
         return decorate(cls)
@@ -73,6 +68,14 @@ def stateful(
 def is_stateful(value: Any) -> bool:
     """Return whether ``value`` is marked as a Daft stateful resource."""
     return _is_stateful(value) or getattr(type(value), STATEFUL_ATTR, False) is True
+
+
+def is_resource_stateful(value: Any) -> bool:
+    """Return whether a stateful value declares ``resource=True`` lifecycle."""
+    if isinstance(value, StatefulHandle):
+        return value.policy.resource
+    metadata = getattr(type(value), STATEFUL_METADATA_ATTR, None)
+    return bool(metadata is not None and metadata.policy.resource)
 
 
 def has_stateful_values(bound_values: dict[str, Any]) -> bool:
@@ -85,33 +88,3 @@ def get_stateful_options(value: Any) -> Options:
     if isinstance(value, StatefulHandle):
         return value.metadata.daft_options or DEFAULT_OPTIONS
     return getattr(type(value), STATEFUL_OPTIONS_ATTR, DEFAULT_OPTIONS)
-
-
-def _merge_stateful_options(
-    options: Options | None,
-    *,
-    cpus: float | None,
-    gpus: float | None,
-    use_process: bool | None,
-    max_concurrency: int | None,
-    max_retries: int | None,
-    on_error: Literal["raise", "log", "ignore"] | None,
-    ray_options: dict[str, Any] | None,
-) -> Options:
-    direct_values = (cpus, gpus, use_process, max_concurrency, max_retries, on_error, ray_options)
-    if options is not None and any(value is not None for value in direct_values):
-        raise TypeError("Pass either options=Options(...) or direct Daft option keywords, not both")
-
-    if options is not None:
-        options.validate_stateful_class_options()
-        return options
-
-    return Options(
-        cpus=cpus,
-        gpus=gpus,
-        use_process=use_process,
-        max_concurrency=max_concurrency,
-        max_retries=max_retries,
-        on_error=on_error,
-        ray_options=ray_options,
-    )
