@@ -58,6 +58,59 @@ def test_exposed_shared_input_renders_once_at_parent_boundary():
     assert {edge["target"] for edge in input_edges} == {"retrieval/retrieve", "generation/generate"}
 
 
+def test_exposed_shared_input_routes_to_collapsed_graph_boundaries():
+    @node(output_name="docs")
+    def retrieve(query: str) -> str:
+        return f"docs:{query}"
+
+    @node(output_name="answer")
+    def generate(query: str) -> str:
+        return f"answer:{query}"
+
+    graph = Graph(
+        [
+            Graph([retrieve], name="retrieval").as_node(namespaced=True).expose("query"),
+            Graph([generate], name="generation").as_node(namespaced=True).expose("query"),
+        ]
+    )
+    ir = build_graph_ir(graph.to_flat_graph())
+
+    scene = build_initial_scene(ir, expansion_state={})
+    input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
+
+    assert {edge["target"] for edge in input_edges} == {"retrieval", "generation"}
+
+
+def test_exposed_shared_input_routes_to_visible_mixed_expansion_boundaries():
+    @node(output_name="docs")
+    def retrieve(query: str) -> str:
+        return f"docs:{query}"
+
+    @node(output_name="prompt")
+    def make_prompt(query: str) -> str:
+        return f"prompt:{query}"
+
+    @node(output_name="answer")
+    def answer(query: str, prompt: str) -> str:
+        return f"answer:{query}:{prompt}"
+
+    graph = Graph(
+        [
+            Graph([retrieve], name="retrieval").as_node(namespaced=True).expose("query"),
+            Graph([make_prompt, answer], name="generation").as_node(namespaced=True).expose("query"),
+        ]
+    )
+    ir = build_graph_ir(graph.to_flat_graph())
+
+    scene = build_initial_scene(ir, expansion_state={"retrieval": True})
+    input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
+
+    assert [(edge["source"], edge["target"]) for edge in input_edges] == [
+        ("input_query", "retrieval/retrieve"),
+        ("input_query", "generation"),
+    ]
+
+
 def test_mermaid_namespaced_input_label_uses_resolved_port_address():
     @node(output_name="docs")
     def retrieve(query: str) -> str:

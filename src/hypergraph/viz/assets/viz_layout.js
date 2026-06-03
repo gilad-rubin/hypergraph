@@ -247,7 +247,16 @@
       var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
       var edgeLabel = {};
       if (!sourceParent && targetParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
-        edgeLabel = { minlen: 4, weight: 10 };
+        var targetPrefix = targetParent + '/';
+        var hasExternalIncoming = layoutEdges.some(function(other) {
+          if (other.id === e.id) return false;
+          if (!(other.target === targetParent || other.target.indexOf(targetPrefix) === 0)) return false;
+          if (other.source === targetParent || other.source.indexOf(targetPrefix) === 0) return false;
+          var otherSource = visibleNodeById.get(other.source);
+          var otherSourceType = (otherSource && otherSource.data && otherSource.data.nodeType) || 'FUNCTION';
+          return otherSourceType !== 'INPUT' && otherSourceType !== 'INPUT_GROUP';
+        });
+        edgeLabel = { minlen: hasExternalIncoming ? 4 : 1, weight: 10 };
       }
       g.setEdge(e.source, e.target, edgeLabel, e.id);
     });

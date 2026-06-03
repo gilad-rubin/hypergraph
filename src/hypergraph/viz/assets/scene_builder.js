@@ -299,14 +299,18 @@
         ? 'input_group_' + ext2Ids.join('_')
         : 'input_' + ext2Ids[0];
       var consumers = ext2.consumers || [];
+      var seenTargets = {};
       for (var r = 0; r < consumers.length; r++) {
         var consumer = consumers[r];
+        var target = resolveToVisible(consumer, parentMap, visibleIds);
+        if (!target || seenTargets[target]) continue;
+        seenTargets[target] = true;
         sceneEdges.push({
-          id: inputNodeId + '__' + consumer,
+          id: inputNodeId + '__' + target,
           source: inputNodeId,
-          target: consumer,
+          target: target,
           data: { edgeType: 'input' },
-          hidden: !visibleIds[inputNodeId] || !visibleIds[consumer],
+          hidden: !visibleIds[inputNodeId] || !visibleIds[target],
         });
       }
     }

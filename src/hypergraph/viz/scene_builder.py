@@ -254,14 +254,19 @@ def build_initial_scene(
         if not show_inputs:
             continue
         input_node_id = ext.synthetic_id
+        seen_targets: set[str] = set()
         for consumer in ext.consumers:
+            target = _resolve_to_visible(consumer, parent_map, expansion_state, visible_ids)
+            if target is None or target in seen_targets:
+                continue
+            seen_targets.add(target)
             scene_edges.append(
                 {
-                    "id": f"{input_node_id}__{consumer}",
+                    "id": f"{input_node_id}__{target}",
                     "source": input_node_id,
-                    "target": consumer,
+                    "target": target,
                     "data": {"edgeType": "input"},
-                    "hidden": input_node_id not in visible_ids or consumer not in visible_ids,
+                    "hidden": input_node_id not in visible_ids or target not in visible_ids,
                 }
             )
 
