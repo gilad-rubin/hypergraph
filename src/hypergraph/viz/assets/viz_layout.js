@@ -24,6 +24,9 @@
   var FEEDBACK_EDGE_GUTTER = R.FEEDBACK_EDGE_GUTTER;
   var FEEDBACK_EDGE_HEADROOM = R.FEEDBACK_EDGE_HEADROOM;
   var FEEDBACK_EDGE_STEM = R.FEEDBACK_EDGE_STEM;
+  var ROOT_INPUT_TO_CONTAINER_MINLEN = 1;
+  var ROOT_INPUT_WITH_ROOT_NON_PIPELINE_TARGET_MINLEN = 4;
+  var ROOT_INPUT_TO_CONTAINER_WEIGHT = 10;
 
   // ╔═══════════════════════════════════════════════════════════╗
   // ║  Section 3: Dagre Layout Engine                          ║
@@ -240,7 +243,9 @@
       .filter(function(e) { return !feedbackEdgeKeys.has(e.id); })
       .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-    var rootInputsWithRootFunctionTargets = new Set();
+    // Collapsed peer pipelines are still containers for this spacing heuristic,
+    // even though their handles render function-like.
+    var rootInputsWithRootNonPipelineTargets = new Set();
     layoutEdges.forEach(function(e) {
       if (displayParentById.get(e.source) || displayParentById.get(e.target)) return;
       var sourceNode = visibleNodeById.get(e.source);
@@ -248,7 +253,7 @@
       if (sourceType !== 'INPUT' && sourceType !== 'INPUT_GROUP') return;
       var targetNode = visibleNodeById.get(e.target);
       var targetType = (targetNode && targetNode.data && targetNode.data.nodeType) || 'FUNCTION';
-      if (targetType !== 'PIPELINE') rootInputsWithRootFunctionTargets.add(e.source);
+      if (targetType !== 'PIPELINE') rootInputsWithRootNonPipelineTargets.add(e.source);
     });
 
     layoutEdges.forEach(function(e) {
@@ -258,7 +263,12 @@
       var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
       var edgeLabel = {};
       if (!sourceParent && targetParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
-        edgeLabel = { minlen: rootInputsWithRootFunctionTargets.has(e.source) ? 4 : 1, weight: 10 };
+        edgeLabel = {
+          minlen: rootInputsWithRootNonPipelineTargets.has(e.source)
+            ? ROOT_INPUT_WITH_ROOT_NON_PIPELINE_TARGET_MINLEN
+            : ROOT_INPUT_TO_CONTAINER_MINLEN,
+          weight: ROOT_INPUT_TO_CONTAINER_WEIGHT,
+        };
       }
       g.setEdge(e.source, e.target, edgeLabel, e.id);
     });
