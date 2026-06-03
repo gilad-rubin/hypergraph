@@ -299,12 +299,12 @@
         ? 'input_group_' + ext2Ids.join('_')
         : 'input_' + ext2Ids[0];
       var consumers = ext2.consumers || [];
-      var seenTargets = {};
+      var seenTargets = new Set();
       for (var r = 0; r < consumers.length; r++) {
         var consumer = consumers[r];
         var target = resolveToVisible(consumer, parentMap, visibleIds);
-        if (!target || seenTargets[target]) continue;
-        seenTargets[target] = true;
+        if (!target || seenTargets.has(target)) continue;
+        seenTargets.add(target);
         sceneEdges.push({
           id: inputNodeId + '__' + target,
           source: inputNodeId,

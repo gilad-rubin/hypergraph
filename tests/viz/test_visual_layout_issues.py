@@ -246,8 +246,8 @@ class TestInputNodePosition:
         if "error" in result:
             pytest.fail(f"Setup error: {result}")
 
-        assert result["gap"] <= 180, (
-            "Question input is too far from the expanded retrieval entrypoint.\n"
+        assert 0 <= result["gap"] <= 180, (
+            "Question input should not overlap or sit too far from the expanded retrieval entrypoint.\n"
             f"Gap: {result['gap']:.1f}px\n"
             f"Question: {result['question']}\n"
             f"rewrite_question: {result['rewrite']}"

@@ -240,6 +240,27 @@
       .filter(function(e) { return !feedbackEdgeKeys.has(e.id); })
       .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
+    var containersWithNonInputExternalIncoming = new Set();
+    layoutEdges.forEach(function(other) {
+      var otherSource = visibleNodeById.get(other.source);
+      var otherSourceType = (otherSource && otherSource.data && otherSource.data.nodeType) || 'FUNCTION';
+      if (otherSourceType === 'INPUT' || otherSourceType === 'INPUT_GROUP') return;
+
+      var targetAncestor = other.target;
+      while (targetAncestor) {
+        var targetAncestorNode = visibleNodeById.get(targetAncestor);
+        if (targetAncestorNode && targetAncestorNode.data && targetAncestorNode.data.nodeType === 'PIPELINE') {
+          var targetAncestorPrefix = targetAncestor + '/';
+          if (other.source !== targetAncestor && other.source.indexOf(targetAncestorPrefix) !== 0) {
+            containersWithNonInputExternalIncoming.add(targetAncestor);
+          }
+        }
+        var slashIndex = targetAncestor.lastIndexOf('/');
+        if (slashIndex < 0) break;
+        targetAncestor = targetAncestor.slice(0, slashIndex);
+      }
+    });
+
     layoutEdges.forEach(function(e) {
       var sourceParent = displayParentById.get(e.source);
       var targetParent = displayParentById.get(e.target);
@@ -247,15 +268,7 @@
       var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
       var edgeLabel = {};
       if (!sourceParent && targetParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
-        var targetPrefix = targetParent + '/';
-        var hasExternalIncoming = layoutEdges.some(function(other) {
-          if (other.id === e.id) return false;
-          if (!(other.target === targetParent || other.target.indexOf(targetPrefix) === 0)) return false;
-          if (other.source === targetParent || other.source.indexOf(targetPrefix) === 0) return false;
-          var otherSource = visibleNodeById.get(other.source);
-          var otherSourceType = (otherSource && otherSource.data && otherSource.data.nodeType) || 'FUNCTION';
-          return otherSourceType !== 'INPUT' && otherSourceType !== 'INPUT_GROUP';
-        });
+        var hasExternalIncoming = containersWithNonInputExternalIncoming.has(targetParent);
         edgeLabel = { minlen: hasExternalIncoming ? 4 : 1, weight: 10 };
       }
       g.setEdge(e.source, e.target, edgeLabel, e.id);

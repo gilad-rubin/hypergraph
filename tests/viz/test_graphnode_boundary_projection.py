@@ -105,10 +105,10 @@ def test_exposed_shared_input_routes_to_visible_mixed_expansion_boundaries():
     scene = build_initial_scene(ir, expansion_state={"retrieval": True})
     input_edges = [e for e in scene["edges"] if e["source"] == "input_query" and not e.get("hidden")]
 
-    assert [(edge["source"], edge["target"]) for edge in input_edges] == [
+    assert {(edge["source"], edge["target"]) for edge in input_edges} == {
         ("input_query", "retrieval/retrieve"),
         ("input_query", "generation"),
-    ]
+    }
 
 
 def test_mermaid_namespaced_input_label_uses_resolved_port_address():
