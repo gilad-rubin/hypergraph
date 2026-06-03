@@ -24,6 +24,9 @@
   var FEEDBACK_EDGE_GUTTER = R.FEEDBACK_EDGE_GUTTER;
   var FEEDBACK_EDGE_HEADROOM = R.FEEDBACK_EDGE_HEADROOM;
   var FEEDBACK_EDGE_STEM = R.FEEDBACK_EDGE_STEM;
+  var ROOT_INPUT_TO_CONTAINER_MINLEN = 1;
+  var ROOT_INPUT_WITH_ROOT_NON_PIPELINE_TARGET_MINLEN = 4;
+  var ROOT_INPUT_TO_CONTAINER_WEIGHT = 10;
 
   // ╔═══════════════════════════════════════════════════════════╗
   // ║  Section 3: Dagre Layout Engine                          ║
@@ -240,25 +243,17 @@
       .filter(function(e) { return !feedbackEdgeKeys.has(e.id); })
       .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-    var containersWithNonInputExternalIncoming = new Set();
-    layoutEdges.forEach(function(other) {
-      var otherSource = visibleNodeById.get(other.source);
-      var otherSourceType = (otherSource && otherSource.data && otherSource.data.nodeType) || 'FUNCTION';
-      if (otherSourceType === 'INPUT' || otherSourceType === 'INPUT_GROUP') return;
-
-      var targetAncestor = other.target;
-      while (targetAncestor) {
-        var targetAncestorNode = visibleNodeById.get(targetAncestor);
-        if (targetAncestorNode && targetAncestorNode.data && targetAncestorNode.data.nodeType === 'PIPELINE') {
-          var targetAncestorPrefix = targetAncestor + '/';
-          if (other.source !== targetAncestor && other.source.indexOf(targetAncestorPrefix) !== 0) {
-            containersWithNonInputExternalIncoming.add(targetAncestor);
-          }
-        }
-        var slashIndex = targetAncestor.lastIndexOf('/');
-        if (slashIndex < 0) break;
-        targetAncestor = targetAncestor.slice(0, slashIndex);
-      }
+    // Collapsed peer pipelines are still containers for this spacing heuristic,
+    // even though their handles render function-like.
+    var rootInputsWithRootNonPipelineTargets = new Set();
+    layoutEdges.forEach(function(e) {
+      if (displayParentById.get(e.source) || displayParentById.get(e.target)) return;
+      var sourceNode = visibleNodeById.get(e.source);
+      var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
+      if (sourceType !== 'INPUT' && sourceType !== 'INPUT_GROUP') return;
+      var targetNode = visibleNodeById.get(e.target);
+      var targetType = (targetNode && targetNode.data && targetNode.data.nodeType) || 'FUNCTION';
+      if (targetType !== 'PIPELINE') rootInputsWithRootNonPipelineTargets.add(e.source);
     });
 
     layoutEdges.forEach(function(e) {
@@ -268,8 +263,12 @@
       var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
       var edgeLabel = {};
       if (!sourceParent && targetParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
-        var hasExternalIncoming = containersWithNonInputExternalIncoming.has(targetParent);
-        edgeLabel = { minlen: hasExternalIncoming ? 4 : 1, weight: 10 };
+        edgeLabel = {
+          minlen: rootInputsWithRootNonPipelineTargets.has(e.source)
+            ? ROOT_INPUT_WITH_ROOT_NON_PIPELINE_TARGET_MINLEN
+            : ROOT_INPUT_TO_CONTAINER_MINLEN,
+          weight: ROOT_INPUT_TO_CONTAINER_WEIGHT,
+        };
       }
       g.setEdge(e.source, e.target, edgeLabel, e.id);
     });

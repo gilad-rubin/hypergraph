@@ -109,6 +109,103 @@ def make_superposition_rag_graph() -> Graph:
     ).select("answer", "response", "sources")
 
 
+@node(output_name="query_plan")
+def variant_plan_query(question: str) -> str:
+    return question.strip()
+
+
+@node(output_name="source_query")
+def variant_build_source_query(query_plan: str) -> str:
+    return query_plan.lower()
+
+
+@node(output_name="source_bundle")
+def variant_fetch_sources(question: str, source_query: str) -> list[str]:
+    return [question, source_query]
+
+
+@node(output_name="draft_answer")
+def variant_draft_answer(question: str, source_bundle: list[str]) -> str:
+    return f"{question}: {source_bundle}"
+
+
+@node(output_name="final_answer")
+def variant_finalize_answer(question: str, draft_answer: str) -> str:
+    return f"{question}: {draft_answer}"
+
+
+def make_three_subgraph_shared_question_graph() -> Graph:
+    planning = Graph([variant_plan_query, variant_build_source_query], name="planning_graph").select("source_query")
+    retrieval = Graph([variant_fetch_sources], name="retrieval_graph").select("source_bundle")
+    generation = Graph([variant_draft_answer, variant_finalize_answer], name="generation_graph").select("final_answer")
+
+    return Graph(
+        [
+            planning.as_node(name="planning", namespaced=True).expose("question", source_query="source_query"),
+            retrieval.as_node(name="retrieval", namespaced=True).expose(
+                "question",
+                "source_query",
+                source_bundle="source_bundle",
+            ),
+            generation.as_node(name="generation", namespaced=True).expose(
+                "question",
+                "source_bundle",
+                final_answer="final_answer",
+            ),
+        ],
+        name="three_stage_rag",
+    ).select("final_answer", "source_bundle")
+
+
+@node(output_name="analysis_notes")
+def variant_analyze_question(question: str) -> str:
+    return f"notes:{question}"
+
+
+@node(output_name="retrieval_terms")
+def variant_pick_terms(question: str, analysis_notes: str) -> str:
+    return f"{question}:{analysis_notes}"
+
+
+@node(output_name="evidence")
+def variant_collect_evidence(retrieval_terms: str) -> list[str]:
+    return [retrieval_terms]
+
+
+@node(output_name="summary")
+def variant_summarize_evidence(question: str, evidence: list[str]) -> str:
+    return f"{question}: {evidence}"
+
+
+@node(output_name=("answer", "metadata"))
+def variant_package_answer(question: str, summary: str) -> tuple[str, dict]:
+    return summary, {"question": question}
+
+
+def make_fanout_shared_question_graph() -> Graph:
+    analysis = Graph([variant_analyze_question], name="analysis_graph").select("analysis_notes")
+    retrieval = Graph([variant_pick_terms, variant_collect_evidence], name="retrieval_graph").select("evidence")
+    generation = Graph([variant_summarize_evidence, variant_package_answer], name="generation_graph").select("answer", "metadata")
+
+    return Graph(
+        [
+            analysis.as_node(name="analysis", namespaced=True).expose("question", analysis_notes="analysis_notes"),
+            retrieval.as_node(name="retrieval", namespaced=True).expose(
+                "question",
+                "analysis_notes",
+                evidence="evidence",
+            ),
+            generation.as_node(name="generation", namespaced=True).expose(
+                "question",
+                "evidence",
+                answer="answer",
+                metadata="metadata",
+            ),
+        ],
+        name="fanout_rag",
+    ).select("answer", "metadata", "evidence")
+
+
 # =============================================================================
 # Test: Input nodes should be ABOVE their targets (edges flow downward)
 # =============================================================================
@@ -251,6 +348,116 @@ class TestInputNodePosition:
             f"Gap: {result['gap']:.1f}px\n"
             f"Question: {result['question']}\n"
             f"rewrite_question: {result['rewrite']}"
+        )
+
+    def test_superposition_rag_question_stays_close_to_expanded_generation(self, page, temp_html_file):
+        """The shared question input should stay close when only generation is expanded."""
+        graph = make_superposition_rag_graph()
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True)
+
+        click_to_expand_container(page, "generation")
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const question = debug.nodes.find(n => n.id === 'input_question');
+            const buildPrompt = debug.nodes.find(n => n.id === 'generation/superposition_build_prompt');
+            const inputEdge = debug.edges.find(e =>
+                e.source === 'input_question' && e.target === 'generation/superposition_build_prompt'
+            );
+
+            if (!question || !buildPrompt || !inputEdge) {
+                return {
+                    error: 'Expected nodes or edge not found',
+                    nodes: debug.nodes.map(n => n.id),
+                    edges: debug.edges.map(e => [e.source, e.target]),
+                };
+            }
+
+            return {
+                gap: buildPrompt.y - (question.y + question.height),
+                question: { y: question.y, height: question.height },
+                buildPrompt: { y: buildPrompt.y, height: buildPrompt.height },
+            };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert 0 <= result["gap"] <= 360, (
+            "Question input should stay visibly attached to the generation entrypoint when only generation is expanded.\n"
+            f"Gap: {result['gap']:.1f}px\n"
+            f"Question: {result['question']}\n"
+            f"build_prompt: {result['buildPrompt']}"
+        )
+
+    @pytest.mark.parametrize(
+        "graph_factory",
+        [
+            pytest.param(make_three_subgraph_shared_question_graph, id="three-subgraph-rag"),
+            pytest.param(make_fanout_shared_question_graph, id="fanout-rag"),
+        ],
+    )
+    @pytest.mark.parametrize("depth", [0, 1, 2, 3])
+    def test_shared_question_subgraph_variants_stay_connected_across_depths(self, page, temp_html_file, graph_factory, depth):
+        """RAG-shaped nested graphs should keep the shared question input visibly connected."""
+        graph = graph_factory()
+        render_to_page(page, graph, depth=depth, temp_path=temp_html_file, show_inputs=True)
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const nodesById = new Map((debug.nodes || []).map(n => [n.id, n]));
+            const question = nodesById.get('input_question');
+
+            if (!question) {
+                return {
+                    error: 'input_question not found',
+                    nodes: Array.from(nodesById.keys()),
+                    edges: (debug.edges || []).map(e => [e.source, e.target]),
+                };
+            }
+
+            const inputEdges = (debug.edges || [])
+                .filter(e => e.source === 'input_question')
+                .filter(e => nodesById.has(e.target));
+
+            if (inputEdges.length === 0) {
+                return {
+                    error: 'input_question has no visible edges',
+                    nodes: Array.from(nodesById.keys()),
+                    edges: (debug.edges || []).map(e => [e.source, e.target]),
+                };
+            }
+
+            const questionBottom = question.y + question.height;
+            const reports = inputEdges.map(e => {
+                const target = nodesById.get(e.target);
+                return {
+                    target: e.target,
+                    gap: target.y - questionBottom,
+                    questionY: question.y,
+                    targetY: target.y,
+                };
+            });
+            const downwardReports = reports.filter(r => r.gap >= -2);
+            const nearestGap = Math.min(...downwardReports.map(r => r.gap));
+
+            return {
+                edgeCount: inputEdges.length,
+                nearestGap: nearestGap,
+                reports: reports,
+                summary: debug.summary || {},
+            };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error at depth={depth}: {result}")
+
+        assert result["edgeCount"] > 0
+        assert result["summary"].get("edgeIssues", 0) == 0, result
+        assert 0 <= result["nearestGap"] <= 220, (
+            f"Shared question input should have a nearby visible consumer at depth={depth}.\n"
+            f"Nearest gap: {result['nearestGap']:.1f}px\n"
+            f"Edges: {result['reports']}"
         )
 
 
