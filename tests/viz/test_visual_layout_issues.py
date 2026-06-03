@@ -55,6 +55,60 @@ def make_branch_anchor_graph() -> Graph:
     )
 
 
+@node(output_name="retrieval_query")
+def superposition_rewrite_question(question: str) -> str:
+    return question.strip()
+
+
+@node(output_name="sources")
+def superposition_retrieve_sources(
+    retrieval_query: str,
+    vector_store: object,
+    top_k: int,
+) -> list[str]:
+    return [f"{retrieval_query}:{top_k}:{vector_store!r}"]
+
+
+@node(output_name="prompt_text")
+def superposition_build_prompt(question: str, sources: list[str], prompt: str) -> str:
+    return f"{prompt}:{question}:{sources}"
+
+
+@node(output_name=("answer", "response"))
+def superposition_generate_answer(
+    question: str,
+    sources: list[str],
+    prompt_text: str,
+    answerer: object,
+) -> tuple[str, dict]:
+    return prompt_text, {"question": question, "sources": sources, "answerer": repr(answerer)}
+
+
+def make_superposition_rag_graph() -> Graph:
+    retrieval = (
+        Graph([superposition_rewrite_question, superposition_retrieve_sources], name="retrieval_graph")
+        .bind(vector_store="store", top_k=2)
+        .select("sources")
+    )
+    generation = (
+        Graph([superposition_build_prompt, superposition_generate_answer], name="generation_graph")
+        .bind(prompt="grounded", answerer="answerer")
+        .select("answer", "response")
+    )
+    return Graph(
+        [
+            retrieval.as_node(name="retrieval", namespaced=True).expose("question", sources="sources"),
+            generation.as_node(name="generation", namespaced=True).expose(
+                "question",
+                "sources",
+                answer="answer",
+                response="response",
+            ),
+        ],
+        name="rag_graph",
+    ).select("answer", "response", "sources")
+
+
 # =============================================================================
 # Test: Input nodes should be ABOVE their targets (edges flow downward)
 # =============================================================================
@@ -157,6 +211,46 @@ class TestInputNodePosition:
             f"Input bottom: {result['inputBottom']}px\n"
             f"clean_text top: {result['cleanTextTop']}px\n"
             f"Vertical distance: {result['verticalDistance']}px"
+        )
+
+    def test_superposition_rag_question_stays_close_to_expanded_retrieval(self, page, temp_html_file):
+        """Root shared input should not be separated from an expanded subgraph by multiple ranks."""
+        graph = make_superposition_rag_graph()
+        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True)
+
+        click_to_expand_container(page, "retrieval")
+
+        result = page.evaluate("""() => {
+            const debug = window.__hypergraphVizDebug;
+            const question = debug.nodes.find(n => n.id === 'input_question');
+            const rewrite = debug.nodes.find(n => n.id === 'retrieval/superposition_rewrite_question');
+            const inputEdge = debug.edges.find(e =>
+                e.source === 'input_question' && e.target === 'retrieval/superposition_rewrite_question'
+            );
+
+            if (!question || !rewrite || !inputEdge) {
+                return {
+                    error: 'Expected nodes or edge not found',
+                    nodes: debug.nodes.map(n => n.id),
+                    edges: debug.edges.map(e => [e.source, e.target]),
+                };
+            }
+
+            return {
+                gap: rewrite.y - (question.y + question.height),
+                question: { y: question.y, height: question.height },
+                rewrite: { y: rewrite.y, height: rewrite.height },
+            };
+        }""")
+
+        if "error" in result:
+            pytest.fail(f"Setup error: {result}")
+
+        assert 0 <= result["gap"] <= 180, (
+            "Question input should not overlap or sit too far from the expanded retrieval entrypoint.\n"
+            f"Gap: {result['gap']:.1f}px\n"
+            f"Question: {result['question']}\n"
+            f"rewrite_question: {result['rewrite']}"
         )
 
 
