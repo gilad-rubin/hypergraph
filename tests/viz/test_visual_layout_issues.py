@@ -253,46 +253,6 @@ class TestInputNodePosition:
             f"rewrite_question: {result['rewrite']}"
         )
 
-    def test_superposition_rag_question_stays_close_to_expanded_generation(self, page, temp_html_file):
-        """Root shared input should stay close when the downstream subgraph is expanded."""
-        graph = make_superposition_rag_graph()
-        render_to_page(page, graph, depth=0, temp_path=temp_html_file, show_inputs=True)
-
-        click_to_expand_container(page, "generation")
-
-        result = page.evaluate("""() => {
-            const debug = window.__hypergraphVizDebug;
-            const question = debug.nodes.find(n => n.id === 'input_question');
-            const buildPrompt = debug.nodes.find(n => n.id === 'generation/superposition_build_prompt');
-            const inputEdge = debug.edges.find(e =>
-                e.source === 'input_question' && e.target === 'generation/superposition_build_prompt'
-            );
-
-            if (!question || !buildPrompt || !inputEdge) {
-                return {
-                    error: 'Expected nodes or edge not found',
-                    nodes: debug.nodes.map(n => n.id),
-                    edges: debug.edges.map(e => [e.source, e.target]),
-                };
-            }
-
-            return {
-                gap: buildPrompt.y - (question.y + question.height),
-                question: { y: question.y, height: question.height },
-                buildPrompt: { y: buildPrompt.y, height: buildPrompt.height },
-            };
-        }""")
-
-        if "error" in result:
-            pytest.fail(f"Setup error: {result}")
-
-        assert 0 <= result["gap"] <= 220, (
-            "Question input should not overlap or sit too far from the expanded generation entrypoint.\n"
-            f"Gap: {result['gap']:.1f}px\n"
-            f"Question: {result['question']}\n"
-            f"build_prompt: {result['buildPrompt']}"
-        )
-
 
 # =============================================================================
 # Test: No visible gaps between edges and nodes

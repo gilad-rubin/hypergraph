@@ -240,20 +240,24 @@
       .filter(function(e) { return !feedbackEdgeKeys.has(e.id); })
       .map(function(e) { return { id: e.id, source: e.source, target: e.target, _original: e }; });
 
-    var visibleInputEdgeCountBySource = new Map();
-    var targetParentsByRootInput = new Map();
-    layoutEdges.forEach(function(e) {
-      var sourceNode = visibleNodeById.get(e.source);
-      var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
-      if (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP') {
-        visibleInputEdgeCountBySource.set(e.source, (visibleInputEdgeCountBySource.get(e.source) || 0) + 1);
-        if (!displayParentById.get(e.source)) {
-          var targetParent = displayParentById.get(e.target);
-          if (targetParent) {
-            if (!targetParentsByRootInput.has(e.source)) targetParentsByRootInput.set(e.source, new Set());
-            targetParentsByRootInput.get(e.source).add(targetParent);
+    var containersWithNonInputExternalIncoming = new Set();
+    layoutEdges.forEach(function(other) {
+      var otherSource = visibleNodeById.get(other.source);
+      var otherSourceType = (otherSource && otherSource.data && otherSource.data.nodeType) || 'FUNCTION';
+      if (otherSourceType === 'INPUT' || otherSourceType === 'INPUT_GROUP') return;
+
+      var targetAncestor = other.target;
+      while (targetAncestor) {
+        var targetAncestorNode = visibleNodeById.get(targetAncestor);
+        if (targetAncestorNode && targetAncestorNode.data && targetAncestorNode.data.nodeType === 'PIPELINE') {
+          var targetAncestorPrefix = targetAncestor + '/';
+          if (other.source !== targetAncestor && other.source.indexOf(targetAncestorPrefix) !== 0) {
+            containersWithNonInputExternalIncoming.add(targetAncestor);
           }
         }
+        var slashIndex = targetAncestor.lastIndexOf('/');
+        if (slashIndex < 0) break;
+        targetAncestor = targetAncestor.slice(0, slashIndex);
       }
     });
 
@@ -263,17 +267,9 @@
       var sourceNode = visibleNodeById.get(e.source);
       var sourceType = (sourceNode && sourceNode.data && sourceNode.data.nodeType) || 'FUNCTION';
       var edgeLabel = {};
-      if (!sourceParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
-        var hasSharedVisibleConsumers = (visibleInputEdgeCountBySource.get(e.source) || 0) > 1;
-        var targetNode = visibleNodeById.get(e.target);
-        var targetType = (targetNode && targetNode.data && targetNode.data.nodeType) || 'FUNCTION';
-        var targetIsCollapsedPipeline = targetType === 'PIPELINE' && !(targetNode.data && targetNode.data.isExpanded);
-        var sharedContainerPort = hasSharedVisibleConsumers && (targetParent || targetIsCollapsedPipeline);
-        edgeLabel = { minlen: sharedContainerPort ? 0 : 1, weight: 10 };
-      } else if (!sourceParent && targetParent) {
-        // The expanded compound container already creates visual separation
-        // before its children. Avoid adding a second full rank at the boundary.
-        edgeLabel = { minlen: 0 };
+      if (!sourceParent && targetParent && (sourceType === 'INPUT' || sourceType === 'INPUT_GROUP')) {
+        var hasExternalIncoming = containersWithNonInputExternalIncoming.has(targetParent);
+        edgeLabel = { minlen: hasExternalIncoming ? 4 : 1, weight: 10 };
       }
       g.setEdge(e.source, e.target, edgeLabel, e.id);
     });
@@ -289,26 +285,6 @@
         n.height = pos.height || n.height;
       }
       nodeById.set(n.id, n);
-    });
-
-    layoutNodes.forEach(function(n) {
-      var nodeType = (n.data && n.data.nodeType) || 'FUNCTION';
-      if (displayParentById.has(n.id) || (nodeType !== 'INPUT' && nodeType !== 'INPUT_GROUP')) return;
-
-      var minContainerTop = Infinity;
-      var targetParents = targetParentsByRootInput.get(n.id);
-      if (!targetParents) return;
-      targetParents.forEach(function(targetParent) {
-        var containerNode = nodeById.get(targetParent);
-        if (!containerNode) return;
-        minContainerTop = Math.min(minContainerTop, containerNode.y - containerNode.height * 0.5);
-      });
-
-      if (minContainerTop === Infinity) return;
-      var desiredBottom = minContainerTop - 24;
-      if (n.y + n.height * 0.5 > desiredBottom) {
-        n.y = desiredBottom - n.height * 0.5;
-      }
     });
 
     layoutEdges.forEach(function(e) {
