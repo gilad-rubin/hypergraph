@@ -226,11 +226,11 @@
       if (expansionState[tgt] && irEdge.target_when_expanded) tgt = irEdge.target_when_expanded;
 
       // A data edge can carry multiple value_names (one NetworkX edge per
-      // (src,tgt) merges them). Emit one scene edge per value to mirror
-      // the legacy renderer; in separate_outputs mode each routes through
-      // its own data_<producer>_<value> node.
+      // (src,tgt) merges them). Merged-output mode should still render one
+      // visible edge per node pair; separateOutputs mode fans out through
+      // one DATA node per value.
       var valueNames = irEdge.value_names || [];
-      var valuesToEmit = (irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
+      var valuesToEmit = (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
 
       for (var bs = 0; bs < baseSources.length; bs++) {
         var baseSrc = baseSources[bs];

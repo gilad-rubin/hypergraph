@@ -191,18 +191,18 @@ def _make_multi_value_graph() -> Graph:
     return Graph(nodes=[split, merge])
 
 
-def test_multi_value_edge_emits_one_scene_edge_per_value_merged_mode():
-    """A data edge with value_names=("a","b") must produce two scene
-    edges so each value renders as a labeled connection. Mirrors the
-    legacy renderer (one edge per value)."""
+def test_multi_value_edge_emits_single_scene_edge_in_merged_mode():
+    """Merged-output mode should render one visible edge per producer/consumer
+    pair even when that edge carries multiple values."""
     flat_graph = _make_multi_value_graph().to_flat_graph()
     ir = build_graph_ir(flat_graph)
 
     scene = build_initial_scene(ir, separate_outputs=False)
 
     split_to_merge = [e for e in scene["edges"] if e["source"] == "split" and e["target"] == "merge"]
-    value_names = {e["data"]["valueName"] for e in split_to_merge}
-    assert value_names == {"a", "b"}, f"Expected one edge per value name; got {value_names}"
+    assert len(split_to_merge) == 1
+    assert split_to_merge[0]["id"] == "split__merge"
+    assert split_to_merge[0]["data"]["valueName"] is None
 
 
 def test_branch_to_end_edge_carries_label_for_when_false():
