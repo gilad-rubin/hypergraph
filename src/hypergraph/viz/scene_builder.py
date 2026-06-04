@@ -195,11 +195,11 @@ def build_initial_scene(
             target = ir_edge.target_when_expanded
 
         # A data edge can carry multiple value_names (one NetworkX edge per
-        # (src,tgt) merges them). Emit one scene edge per value to mirror
-        # the legacy renderer; in separate_outputs mode each routes through
-        # its own data_<producer>_<value> node.
+        # (src,tgt) merges them). Merged-output mode should still render one
+        # visible edge per node pair; separate_outputs mode fans out through
+        # one DATA node per value.
         for base_source in base_sources:
-            if ir_edge.edge_type == "data" and ir_edge.value_names:
+            if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
                 edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
             else:
                 edges_to_emit = [(None, base_source)]
