@@ -170,3 +170,94 @@ class TestHashDefinition:
         result = hash_definition(fn)
         assert len(result) == 64
         assert all(c in "0123456789abcdef" for c in result)
+
+
+class _Summarizer:
+    """Configurable component used by bound-method hashing tests."""
+
+    def __init__(self, model: str):
+        self.model = model
+
+    def summarize(self, text: str) -> str:
+        return f"{self.model}: {text}"
+
+
+class TestHashDefinitionBoundMethods:
+    """Bound methods mix instance state into the hash.
+
+    The fingerprint is captured when the hash is computed (node construction),
+    so post-construction mutation of instance state is not tracked.
+    """
+
+    def test_differently_configured_instances_different_hash(self):
+        """Same method, different instance state → different hash."""
+        a = _Summarizer(model="gpt-4")
+        b = _Summarizer(model="haiku")
+
+        assert hash_definition(a.summarize) != hash_definition(b.summarize)
+
+    def test_same_instance_stable_hash(self):
+        """Same instance, same method → stable hash across calls."""
+        obj = _Summarizer(model="gpt-4")
+
+        assert hash_definition(obj.summarize) == hash_definition(obj.summarize)
+
+    def test_identically_configured_instances_same_hash(self):
+        """Two instances with identical state hash the same."""
+        a = _Summarizer(model="gpt-4")
+        b = _Summarizer(model="gpt-4")
+
+        assert hash_definition(a.summarize) == hash_definition(b.summarize)
+
+    def test_cache_key_method_takes_precedence(self):
+        """A callable cache_key() defines the fingerprint (hypercache convention)."""
+
+        class Component:
+            def __init__(self, model: str, client: object):
+                self.model = model
+                self.client = client  # not part of identity
+
+            def cache_key(self) -> dict:
+                return {"model": self.model}
+
+            def run(self, x: int) -> int:
+                return x
+
+        a = Component("gpt-4", client=object())
+        b = Component("gpt-4", client=object())  # different client, same key
+        c = Component("haiku", client=object())
+
+        assert hash_definition(a.run) == hash_definition(b.run)
+        assert hash_definition(a.run) != hash_definition(c.run)
+
+    def test_slots_instance_falls_back_to_code_hash(self):
+        """Instances without __dict__ fall back to code-only hashing."""
+
+        class Slotted:
+            __slots__ = ("model",)
+
+            def __init__(self, model: str):
+                self.model = model
+
+            def run(self, x: int) -> int:
+                return x
+
+        a = Slotted("gpt-4")
+        b = Slotted("haiku")
+
+        result = hash_definition(a.run)
+        assert len(result) == 64
+        # No accessible state — same as pre-fix behavior
+        assert result == hash_definition(b.run)
+
+    def test_classmethod_keeps_code_only_hash(self):
+        """Classmethods are not fingerprinted (class dicts are not stable)."""
+
+        class WithClassmethod:
+            @classmethod
+            def run(cls, x: int) -> int:
+                return x
+
+        result = hash_definition(WithClassmethod.run)
+        assert len(result) == 64
+        assert result == hash_definition(WithClassmethod.run)
