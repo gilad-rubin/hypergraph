@@ -23,6 +23,11 @@ from hypergraph.runners._shared.event_helpers import (
     build_route_decision_event,
 )
 from hypergraph.runners._shared.helpers import address_for_node_input, apply_node_result, collect_inputs_for_node
+from hypergraph.runners._shared.observability import (
+    NodeSpanRef,
+    reset_current_node_span,
+    set_current_node_span,
+)
 from hypergraph.runners._shared.types import ExecutionContext, GraphState, PauseExecution
 
 if TYPE_CHECKING:
@@ -197,8 +202,14 @@ async def run_superstep_async(
                 on_inner_log=inner_logs.append,
             )
 
-            # Pass new_state so routing decisions are stored in the updated state
-            outputs = await executor(node, new_state, inputs, ctx)
+            # Publish the node span so in-node telemetry (LLM clients, stores)
+            # can attribute itself to this exact span even under concurrency.
+            span_token = set_current_node_span(NodeSpanRef(run_id=run_id, span_id=node_span_id, node_name=node.name, graph_name=graph.name))
+            try:
+                # Pass new_state so routing decisions are stored in the updated state
+                outputs = await executor(node, new_state, inputs, ctx)
+            finally:
+                reset_current_node_span(span_token)
 
             duration_ms = (time.time() - node_start) * 1000
 

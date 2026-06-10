@@ -69,6 +69,7 @@ from hypergraph.runners import (
     SyncRunner,
 )
 from hypergraph.runners._shared.node_context import NodeContext
+from hypergraph.runners._shared.observability import NodeSpanRef, current_node_span
 
 __all__ = [
     # Decorators and node types
@@ -135,6 +136,9 @@ __all__ = [
     "RichProgressProcessor",
     # Context
     "NodeContext",
+    # Observability
+    "NodeSpanRef",
+    "current_node_span",
     # Cache
     "CacheBackend",
     "InMemoryCache",
