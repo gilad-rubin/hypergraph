@@ -10,6 +10,8 @@ Control graph topology directly instead of relying on name matching. Hypergraph 
 | Explicit | `Graph([...], edges=[...])` | Your declared edges only — auto-inference is disabled |
 | Additive | `Graph([...], edges=[...], shared=[...])` | Auto-inference for non-shared params, plus your declared edges on top |
 
+> **The mode is chosen implicitly.** There is no `mode=` parameter: passing `edges=` alone means *replace* auto-wiring, while passing `edges=` together with `shared=` means *add to* auto-wiring. The same `edges=` list changes meaning depending on whether `shared=` is present. If your explicit-mode graph later gains a `shared=` param, auto-inference silently turns back on for everything else — re-check your edge list when you add `shared=`.
+
 In **all three modes**, two kinds of edges are always auto-wired:
 
 - **Control edges** from gate nodes (`@route`, `@ifelse`) to their targets

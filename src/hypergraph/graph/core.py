@@ -159,7 +159,12 @@ class Graph:
                 edge. If omitted on a 2-tuple, values are auto-detected from
                 the intersection of source outputs and target inputs. Edges
                 with no matching values become ordering-only edges.
-                When ``edges`` is provided, auto-inference is disabled.
+                When ``edges`` is provided WITHOUT ``shared``, auto-inference
+                is disabled and the declared edges are the only data edges
+                (explicit mode). When ``shared`` is also provided, auto-inference
+                still runs for non-shared params and the declared edges are
+                added on top, typically as ordering-only edges (additive mode).
+                See :doc:`/05-how-to/declare-edges-explicitly`.
             entrypoint: Convenience shortcut for ``with_entrypoint(...)``.
                 Accepts a node name/object or a list/tuple of node names/objects
                 and applies the same validation and semantics as
