@@ -182,6 +182,43 @@ def classify_query(query: str) -> str:
 
 On cache hit, the runner replays the cached routing decision without calling the function again. Downstream routing still works correctly — the cached decision is restored into the graph state.
 
+## Caching in Batch Runs
+
+Caching works per item inside mapped subgraphs. Each iteration of a `map_over` (or `runner.map()`) runs the inner graph with that item's inputs, so a `cache=True` node inside it gets a cache key derived from the per-item input values:
+
+```python
+from hypergraph import Graph, node, SyncRunner, InMemoryCache
+
+@node(output_name="embedding", cache=True)
+def embed(text: str) -> list[float]:
+    return model.embed(text)  # expensive — cached per text
+
+@node(output_name="answer")
+def generate(embedding: list[float], temperature: float) -> str:
+    return llm.generate(embedding, temperature=temperature)
+
+inner = Graph([embed, generate], name="pipeline")
+outer = Graph([inner.as_node().map_over("text")])
+
+runner = SyncRunner(cache=InMemoryCache())
+
+# First batch: embed runs once per unique text
+runner.run(outer, {"text": ["a", "b", "c"], "temperature": 0.0})
+
+# Change a downstream parameter and re-run the batch:
+# all three embed calls hit the cache, only generate re-executes
+runner.run(outer, {"text": ["a", "b", "c"], "temperature": 1.0})
+
+# Add one new item: only "d" is embedded, "a"/"b"/"c" come from cache
+runner.run(outer, {"text": ["a", "b", "c", "d"], "temperature": 1.0})
+```
+
+The cache backend lives on the runner and is shared by all nested per-item runs, so hits carry across batches, across runs, and (with `DiskCache`) across processes.
+
+This is what makes eval loops cheap: re-running a batch after changing one parameter recomputes only the nodes downstream of that parameter — every cached upstream result is reused per item. A 500-item eval where you only tweaked the generation prompt pays for 500 generations, not 500 embeddings plus 500 retrievals plus 500 generations.
+
+Broadcast (non-mapped) inputs participate in the cache key like any other input: if a cached node consumes a broadcast value and you change it, every item recomputes that node — which is exactly right, since its inputs changed.
+
 ## Restrictions
 
 These node types reject `cache=True` at build time:
