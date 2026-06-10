@@ -36,6 +36,7 @@
 ## How-To Guides
 
 * [Batch Processing](05-how-to/batch-processing.md)
+* [Declare Edges Explicitly](05-how-to/declare-edges-explicitly.md)
 * [Rename and Adapt](05-how-to/rename-and-adapt.md)
 * [Integrate with LLMs](05-how-to/integrate-with-llms.md)
 * [Test Without Framework](05-how-to/test-without-framework.md)
