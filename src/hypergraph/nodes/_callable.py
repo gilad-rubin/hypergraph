@@ -99,10 +99,12 @@ class CallableMixin:
         Returns:
             dict mapping parameter names (using current/renamed input names) to their
             type annotations. Only includes parameters that have annotations.
+            ``Annotated`` metadata (e.g. port metadata consumed by external
+            tools) is preserved; type checks already unwrap it.
             Returns empty dict if get_type_hints fails (e.g., forward references).
         """
         try:
-            hints = get_type_hints(self.func)
+            hints = get_type_hints(self.func, include_extras=True)
         except Exception:
             return {}
 

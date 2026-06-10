@@ -6,7 +6,7 @@ import functools
 import hashlib
 import types
 import warnings
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
 
 import networkx as nx
 
@@ -77,6 +77,9 @@ def _format_type_hint(type_hint: Any) -> str:
     """Format a type annotation for human-readable summaries."""
     if type_hint is type(None):
         return "None"
+
+    if get_origin(type_hint) is Annotated:
+        return _format_type_hint(get_args(type_hint)[0])
 
     origin = get_origin(type_hint)
     if origin in (types.UnionType, Union):
