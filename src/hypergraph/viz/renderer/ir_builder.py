@@ -151,12 +151,16 @@ def _build_ir_edge(
     value_names = tuple(attrs.get("value_names", ()))
 
     src_attrs = flat_graph.nodes.get(src, {})
+    value_names_when_expanded: tuple[str, ...] | None = None
     if src_attrs.get("node_type") == "GRAPH":
         for value_name in value_names:
             internal = _find_deepest_internal_producers(src, value_name, flat_graph)
             if internal:
                 source_when_expanded = internal[0] if len(internal) == 1 else internal
                 break
+        translated = tuple(_inner_output_name(src, value_name, flat_graph) for value_name in value_names)
+        if translated != value_names:
+            value_names_when_expanded = translated
 
     tgt_attrs = flat_graph.nodes.get(tgt, {})
     if tgt_attrs.get("node_type") == "GRAPH":
@@ -188,6 +192,7 @@ def _build_ir_edge(
         source_when_expanded=source_when_expanded,
         target_when_expanded=target_when_expanded,
         value_names=value_names,
+        value_names_when_expanded=value_names_when_expanded,
         label=label,
         exclusive=exclusive,
         is_back_edge=(src, tgt) in back_edges,

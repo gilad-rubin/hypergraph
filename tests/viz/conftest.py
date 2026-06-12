@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 
-from hypergraph import Graph, node
+from hypergraph import Graph, ifelse, node
 from hypergraph.viz._common import get_expandable_nodes
 from hypergraph.viz.html import generate_widget_html
 from hypergraph.viz.renderer import render_graph
@@ -169,6 +169,52 @@ def make_outer() -> Graph:
     inner = Graph(nodes=[step1, step2], name="inner")
     middle = Graph(nodes=[inner.as_node(), validate], name="middle")
     return Graph(nodes=[middle.as_node(), log_result])
+
+
+# --- Mapped GraphNode with renamed boundary (gate + map_over) ---
+@node(output_name="exist")
+def check(store, n: int) -> bool:
+    return False
+
+
+@ifelse(when_true="create_items", when_false="load_items")
+def gate(exist: bool) -> bool:
+    return exist
+
+
+@node(output_name="items")
+def load_items(store) -> list[str]:
+    return []
+
+
+@node(output_name="item_out")
+def process(worker, page: str) -> str:
+    return page
+
+
+@node(output_name="items")
+def save(store, generated: list[str]) -> list[str]:
+    return generated
+
+
+def make_mapped_gate_graph() -> Graph:
+    """Gate routing into a mapped GraphNode whose boundary renames params.
+
+    The map boundary renames both directions: outer ``pages`` (list) vs
+    inner per-item ``page``, and inner ``item_out`` vs outer ``generated``
+    via ``with_outputs``. Exercises boundary-rename edge rewriting.
+    """
+    create = (
+        Graph(nodes=[process], name="process")
+        .as_node(name="create_items")
+        .with_inputs(page="pages")
+        .with_outputs(item_out="generated")
+        .map_over("pages")
+    )
+    return Graph(
+        nodes=[check, gate, load_items, create, save],
+        name="ensure_items",
+    ).bind(store=object(), worker=object())
 
 
 # =============================================================================

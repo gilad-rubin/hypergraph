@@ -22,6 +22,7 @@ from hypergraph.viz.renderer.ir_builder import build_graph_ir
 from hypergraph.viz.scene_builder import build_initial_scene
 from tests.viz.conftest import (
     make_chain_graph,
+    make_mapped_gate_graph,
     make_outer,
     make_simple_graph,
     make_workflow,
@@ -182,6 +183,7 @@ FIXTURES = {
     "outer": make_outer,
     "bound": make_bound_graph,
     "unordered_entrypoint": make_unordered_nested_entrypoint_graph,
+    "mapped_gate": make_mapped_gate_graph,
 }
 
 
