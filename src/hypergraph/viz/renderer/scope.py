@@ -26,7 +26,10 @@ def get_deepest_consumers(param: str, flat_graph: nx.DiGraph) -> list[str]:
 
     When a container (GRAPH node) and its internal nodes both list a parameter
     as an input, we return only the internal nodes - they are the "actual"
-    consumers.
+    consumers. Containers that rename the parameter at their boundary
+    (``rename_inputs`` / ``map_over``) are descended through via the exact
+    ``input_name_map`` recorded on the GRAPH node, since the inner consumers
+    list a different name.
 
     Namespaced external-input addresses (e.g. ``"middle.inner.x"``) are
     resolved through the GraphNode chain — see
@@ -36,6 +39,13 @@ def get_deepest_consumers(param: str, flat_graph: nx.DiGraph) -> list[str]:
         all_consumers = resolve_port_address_consumers(param, flat_graph)
     else:
         all_consumers = [node_id for node_id, attrs in flat_graph.nodes(data=True) if param in attrs.get("inputs", ())]
+
+    descended: list[str] = []
+    for consumer in all_consumers:
+        for deep_consumer in _descend_through_renames(consumer, param, flat_graph):
+            if deep_consumer not in descended:
+                descended.append(deep_consumer)
+    all_consumers = descended
 
     if len(all_consumers) <= 1:
         return all_consumers
@@ -53,6 +63,29 @@ def get_deepest_consumers(param: str, flat_graph: nx.DiGraph) -> list[str]:
             filtered.append(consumer)
 
     return filtered
+
+
+def _descend_through_renames(consumer: str, param: str, flat_graph: nx.DiGraph) -> list[str]:
+    """Resolve a GRAPH consumer that renames ``param`` at its boundary to the
+    inner consumers of the renamed parameter (recursively, for nested
+    boundaries). Non-GRAPH consumers and un-renamed boundaries are returned
+    as-is — for those, the exact-name scan already sees the inner nodes."""
+    attrs = flat_graph.nodes.get(consumer, {})
+    if attrs.get("node_type") != "GRAPH":
+        return [consumer]
+    inner_names = [name for name in (attrs.get("input_name_map") or {}).get(param, ()) if name != param]
+    if not inner_names:
+        return [consumer]
+
+    inner_consumers: list[str] = []
+    for node_id, node_attrs in flat_graph.nodes(data=True):
+        if not is_descendant_of(node_id, consumer, flat_graph):
+            continue
+        for inner_name in inner_names:
+            if inner_name in node_attrs.get("inputs", ()):
+                inner_consumers.extend(_descend_through_renames(node_id, inner_name, flat_graph))
+                break
+    return inner_consumers or [consumer]
 
 
 def get_ancestor_chain(node_id: str, flat_graph: nx.DiGraph) -> list[str]:

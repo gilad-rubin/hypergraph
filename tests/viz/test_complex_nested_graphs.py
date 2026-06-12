@@ -190,7 +190,11 @@ def make_batch_recommendations_graph() -> Graph:
     )
 
 
-def test_batch_recommendations_input_group_routes_to_container() -> None:
+def test_batch_recommendations_input_group_routes_to_internal_consumers() -> None:
+    """Renamed map_over boundary inputs (results -> result, feedbacks ->
+    feedback) must route to the inner consumers when the container is
+    expanded. Routing to the expanded container hull would make the edge
+    incident to a dagre compound parent, which crashes layout."""
     graph = make_batch_recommendations_graph()
     edges = _expanded_edges(graph)
 
@@ -198,7 +202,10 @@ def test_batch_recommendations_input_group_routes_to_container() -> None:
 
     assert group_edges, "Expected grouped input edges for results/feedbacks"
     targets = {edge["target"] for edge in group_edges}
-    assert targets == {"map_recommendations"}
+    assert targets == {
+        "map_recommendations/rec_build_recommendation",
+        "map_recommendations/rec_build_chat_messages",
+    }
 
 
 def test_batch_recommendations_outputs_route_from_internal_nodes() -> None:

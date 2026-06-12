@@ -172,6 +172,7 @@ Generates a scrollable gallery of all notebook visualizations with DialKit contr
 | Symptom | Likely Cause | Fix Location |
 | --- | --- | --- |
 | Edge points to container when expanded | `target_when_expanded` not populated in IR | `renderer/ir_builder.py` |
+| Dagre "setting 'rank'" crash, blank canvas | edge incident to an *expanded* container (dagre compound parent) — usually a renamed boundary param (`map_over`/`rename_inputs`/`rename_outputs`) not translated via the GRAPH node's `input_name_map`/`output_name_map` | `renderer/ir_builder.py` + `renderer/scope.py:get_deepest_consumers` |
 | Input appears outside expanded container | `ownerContainer` not derived from `deepest_owner` | `scene_builder.py` (Python + JS) |
 | Edge starts/ends with visible gap | wrong node-type offset | viz.js Section 1 |
 | Incoming edges overlap unexpectedly | dagre route or endpoint padding needs inspection | `assets/viz.js` |

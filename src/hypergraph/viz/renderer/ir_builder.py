@@ -283,19 +283,35 @@ def _first_container_entrypoint(container_id: str, flat_graph: nx.DiGraph) -> st
     return direct_children[0]
 
 
+def _inner_output_name(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str:
+    """Translate a container-level output name to the original inner name
+    via the exact ``output_name_map`` recorded on the GRAPH node."""
+    name_map = flat_graph.nodes.get(container_id, {}).get("output_name_map") or {}
+    return name_map.get(value_name, value_name)
+
+
+def _inner_input_names(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
+    """Translate a container-level input name to the original inner names
+    via the exact ``input_name_map`` recorded on the GRAPH node."""
+    name_map = flat_graph.nodes.get(container_id, {}).get("input_name_map") or {}
+    return name_map.get(value_name) or (value_name,)
+
+
 def _find_deepest_internal_producer(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str | None:
     """Walk down the container tree, find the deepest descendant that
-    produces value_name as an output. Falls back to fuzzy substring
-    matching to handle the ``rename_outputs`` rename case (e.g. container
-    exposes ``recall_scores`` but the internal node produces
-    ``recall_score``)."""
+    produces value_name as an output. The exact rename recorded on the
+    GRAPH node is applied first (e.g. ``with_outputs(item_out="generated")``);
+    fuzzy substring matching remains as a fallback for renames that cross
+    several boundaries (e.g. container exposes ``recall_scores`` but the
+    internal node produces ``recall_score``)."""
+    inner_name = _inner_output_name(container_id, value_name, flat_graph)
     descendants = [(node_id, attrs) for node_id, attrs in flat_graph.nodes(data=True) if _is_descendant(node_id, container_id, flat_graph)]
 
-    candidates = [node_id for node_id, attrs in descendants if value_name in attrs.get("outputs", ())]
+    candidates = [node_id for node_id, attrs in descendants if inner_name in attrs.get("outputs", ())]
     if candidates:
         return max(candidates, key=lambda c: _depth_below(c, container_id, flat_graph))
 
-    fuzzy = [node_id for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in value_name or value_name in out]
+    fuzzy = [node_id for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in inner_name or inner_name in out]
     if fuzzy:
         return max(fuzzy, key=lambda c: _depth_below(c, container_id, flat_graph))
     return None
@@ -303,11 +319,12 @@ def _find_deepest_internal_producer(container_id: str, value_name: str, flat_gra
 
 def _find_deepest_internal_producers(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> tuple[str, ...]:
     """Return all deepest internal producers for a container output."""
+    inner_name = _inner_output_name(container_id, value_name, flat_graph)
     descendants = [(node_id, attrs) for node_id, attrs in flat_graph.nodes(data=True) if _is_descendant(node_id, container_id, flat_graph)]
 
-    candidates = [node_id for node_id, attrs in descendants if value_name in attrs.get("outputs", ())]
+    candidates = [node_id for node_id, attrs in descendants if inner_name in attrs.get("outputs", ())]
     if not candidates:
-        candidates = [node_id for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in value_name or value_name in out]
+        candidates = [node_id for node_id, attrs in descendants for out in attrs.get("outputs", ()) if out in inner_name or inner_name in out]
     if not candidates:
         return ()
 
@@ -318,21 +335,22 @@ def _find_deepest_internal_producers(container_id: str, value_name: str, flat_gr
 def _find_deepest_internal_consumer(container_id: str, value_name: str, flat_graph: nx.DiGraph) -> str | None:
     """Mirror of :func:`_find_deepest_internal_producer` for inputs.
 
-    Falls back to fuzzy substring matching to handle the
-    ``map_over`` / ``rename_inputs`` rename case (e.g. the outer edge
-    carries ``eval_pairs`` but the per-item internal node consumes
-    ``eval_pair``)."""
+    Applies the exact ``input_name_map`` rename first (the
+    ``map_over`` / ``rename_inputs`` case, e.g. the outer edge carries
+    ``eval_pairs`` but the per-item internal node consumes ``eval_pair``),
+    then falls back to fuzzy substring matching."""
+    inner_names = _inner_input_names(container_id, value_name, flat_graph)
     descendants = [
         (node_id, attrs)
         for node_id, attrs in flat_graph.nodes(data=True)
         if _is_descendant(node_id, container_id, flat_graph) and attrs.get("node_type") != "GRAPH"
     ]
 
-    candidates = [node_id for node_id, attrs in descendants if value_name in attrs.get("inputs", ())]
+    candidates = [node_id for node_id, attrs in descendants if any(inner in attrs.get("inputs", ()) for inner in inner_names)]
     if candidates:
         return max(candidates, key=lambda c: _depth_below(c, container_id, flat_graph))
 
-    fuzzy = [node_id for node_id, attrs in descendants for inp in attrs.get("inputs", ()) if inp in value_name or value_name in inp]
+    fuzzy = [node_id for node_id, attrs in descendants for inp in attrs.get("inputs", ()) for inner in inner_names if inp in inner or inner in inp]
     if fuzzy:
         return max(fuzzy, key=lambda c: _depth_below(c, container_id, flat_graph))
     return None
