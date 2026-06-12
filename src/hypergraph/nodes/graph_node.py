@@ -399,7 +399,10 @@ class GraphNode(HyperNode):
         """Resolve a possibly-renamed input name back to the original.
 
         Traces back through rename history to find what the input was
-        originally called in the inner graph.
+        originally called in the inner graph. Batch-aware: parallel renames
+        from one ``rename_inputs`` call (e.g. ``rename_inputs(x="y", y="x")``)
+        are treated as simultaneous transforms, matching the semantics of
+        :func:`build_reverse_rename_map` used by ``map_inputs_to_params``.
 
         Args:
             param: Current input parameter name
@@ -407,12 +410,8 @@ class GraphNode(HyperNode):
         Returns:
             Original name used in the inner graph.
         """
-        current = param
-        # Walk rename history in reverse to find original
-        for entry in reversed(self._rename_history):
-            if entry.kind == "inputs" and entry.new == current:
-                current = entry.old
-        return current
+        reverse_map = build_reverse_rename_map(self._rename_history, "inputs")
+        return reverse_map.get(param, param)
 
     def map_inputs_to_params(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Map renamed input names back to original inner graph parameter names.

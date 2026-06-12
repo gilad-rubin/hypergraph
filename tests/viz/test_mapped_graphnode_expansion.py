@@ -126,8 +126,40 @@ def test_mapped_output_edge_routes_from_inner_producer_when_expanded():
     assert not edges_by_id["create_items/process__save"]["hidden"]
 
 
-def test_mapped_input_edge_attaches_to_collapsed_container():
-    """Collapsed view keeps the boundary edge on the container hull."""
+def test_mapped_output_edge_attaches_to_collapsed_container():
+    """Collapsed view keeps the output boundary edge on the container hull."""
     scene = scene_for_state(make_mapped_gate_graph(), expansion_state={})
     edge_pairs = {(e["source"], e["target"]) for e in scene["edges"]}
     assert ("create_items", "save") in edge_pairs
+
+
+@node(output_name="out_a")
+def consume_x(x: int) -> int:
+    return x
+
+
+@node(output_name="out_b")
+def consume_y(y: int) -> int:
+    return y
+
+
+def test_swapped_input_renames_route_to_correct_inner_consumers():
+    """Parallel rename batches must resolve as simultaneous transforms.
+
+    ``rename_inputs(x="y", y="x")`` swaps the boundary names in one batch:
+    outer ``x`` is the inner ``y`` and vice versa. A batch-unaware resolver
+    chains through both entries and wires the outer name back to the
+    same-named inner param — the wrong consumer."""
+    swapped = Graph(nodes=[consume_x, consume_y], name="inner").as_node().rename_inputs(x="y", y="x")
+    graph = Graph(nodes=[swapped])
+
+    name_map = graph.to_flat_graph().nodes["inner"]["input_name_map"]
+    assert name_map == {"x": ("y",), "y": ("x",)}
+
+    scene = scene_for_state(graph, expansion_state={"inner": True})
+    visible_edges = {(e["source"], e["target"]) for e in scene["edges"] if not e["hidden"]}
+    assert ("input_x", "inner/consume_y") in visible_edges
+    assert ("input_y", "inner/consume_x") in visible_edges
+    assert ("input_x", "inner/consume_x") not in visible_edges
+    assert ("input_y", "inner/consume_y") not in visible_edges
+    assert_scene_layoutable(scene)
