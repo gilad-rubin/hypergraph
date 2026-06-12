@@ -16,48 +16,8 @@ edges, dereferencing a label-less endpoint.
 
 import pytest
 
-from hypergraph import Graph, ifelse, node
-from tests.viz.conftest import scene_for_state
-
-
-@node(output_name="exist")
-def check(store, n: int) -> bool:
-    return False
-
-
-@ifelse(when_true="create_items", when_false="load_items")
-def gate(exist: bool) -> bool:
-    return exist
-
-
-@node(output_name="items")
-def load_items(store) -> list[str]:
-    return []
-
-
-@node(output_name="item_out")
-def process(worker, page: str) -> str:
-    return page
-
-
-@node(output_name="items")
-def save(store, generated: list[str]) -> list[str]:
-    return generated
-
-
-def make_mapped_gate_graph() -> Graph:
-    """Gate routing into a mapped GraphNode whose boundary renames params."""
-    create = (
-        Graph(nodes=[process], name="process")
-        .as_node(name="create_items")
-        .with_inputs(page="pages")
-        .with_outputs(item_out="generated")
-        .map_over("pages")
-    )
-    return Graph(
-        nodes=[check, gate, load_items, create, save],
-        name="ensure_items",
-    ).bind(store=object(), worker=object())
+from hypergraph import Graph, node
+from tests.viz.conftest import make_mapped_gate_graph, scene_for_state
 
 
 def assert_scene_layoutable(scene: dict) -> None:
@@ -163,3 +123,34 @@ def test_swapped_input_renames_route_to_correct_inner_consumers():
     assert ("input_x", "inner/consume_x") not in visible_edges
     assert ("input_y", "inner/consume_y") not in visible_edges
     assert_scene_layoutable(scene)
+
+
+def test_separate_outputs_renamed_data_edge_uses_inner_output_name():
+    """separate_outputs + expanded container: the DATA edge to the consumer
+    must use the producer's local output name (item_out), not the renamed
+    container-level name (generated) — otherwise the edge references a
+    nonexistent DATA node id and the visible scene loses the connection."""
+    scene = scene_for_state(
+        make_mapped_gate_graph(),
+        expansion_state={"create_items": True},
+        separate_outputs=True,
+    )
+    visible_edges = {(e["source"], e["target"]) for e in scene["edges"] if not e["hidden"]}
+    assert ("data_create_items/process_item_out", "save") in visible_edges
+    assert ("create_items/process", "data_create_items/process_item_out") in visible_edges
+
+    node_ids = {n["id"] for n in scene["nodes"]}
+    for edge in scene["edges"]:
+        if edge["hidden"]:
+            continue
+        assert edge["source"] in node_ids, f"edge {edge['id']} has dangling source"
+        assert edge["target"] in node_ids, f"edge {edge['id']} has dangling target"
+
+
+def test_separate_outputs_collapsed_data_edge_keeps_container_name():
+    """Collapsed view still flows through the container-level DATA node
+    under the renamed (outer) value name."""
+    scene = scene_for_state(make_mapped_gate_graph(), expansion_state={}, separate_outputs=True)
+    visible_edges = {(e["source"], e["target"]) for e in scene["edges"] if not e["hidden"]}
+    assert ("data_create_items_generated", "save") in visible_edges
+    assert ("create_items", "data_create_items_generated") in visible_edges

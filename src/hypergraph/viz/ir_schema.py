@@ -39,6 +39,14 @@ class IREdge:
     # the data flow goes producer -> data_node -> consumer instead of
     # producer -> consumer directly).
     value_names: tuple[str, ...] = ()
+    # Local value names at the rewritten producer: when the source container
+    # is expanded and renames an output at its boundary (rename_outputs /
+    # with_outputs), separate_outputs DATA ids must use the producer's own
+    # output name (e.g. container exposes "generated" but the inner node
+    # produces "item_out"). Aligned index-wise with value_names; None when
+    # no boundary rename applies. Optional and ignorable — old scene
+    # builders fall back to value_names, so no schema_version bump.
+    value_names_when_expanded: tuple[str, ...] | None = None
     # Branch label for control edges originating from a gate (e.g. "True"
     # / "False" for an ifelse, or the route key for a route).
     label: str | None = None

@@ -217,7 +217,9 @@
     for (var p = 0; p < ir.edges.length; p++) {
       var irEdge = ir.edges[p];
       var baseSources = [irEdge.source];
+      var sourceRewritten = false;
       if (expansionState[irEdge.source] && irEdge.source_when_expanded) {
+        sourceRewritten = true;
         baseSources = Array.isArray(irEdge.source_when_expanded)
           ? irEdge.source_when_expanded.slice()
           : [irEdge.source_when_expanded];
@@ -228,9 +230,13 @@
       // A data edge can carry multiple value_names (one NetworkX edge per
       // (src,tgt) merges them). Merged-output mode should still render one
       // visible edge per node pair; separateOutputs mode fans out through
-      // one DATA node per value.
+      // one DATA node per value. When the source rewrite fired, DATA ids
+      // must use the producer's local output names (boundary renames).
       var valueNames = irEdge.value_names || [];
-      var valuesToEmit = (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) ? valueNames : [null];
+      var emitNames = (sourceRewritten && irEdge.value_names_when_expanded && irEdge.value_names_when_expanded.length > 0)
+        ? irEdge.value_names_when_expanded
+        : valueNames;
+      var valuesToEmit = (separateOutputs && irEdge.edge_type === 'data' && valueNames.length > 0) ? emitNames : [null];
 
       for (var bs = 0; bs < baseSources.length; bs++) {
         var baseSrc = baseSources[bs];

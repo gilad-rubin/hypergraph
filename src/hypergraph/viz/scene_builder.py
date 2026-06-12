@@ -187,7 +187,9 @@ def build_initial_scene(
         # expanded, route the edge to the deepest internal producer/consumer
         # instead of the container hull.
         base_sources = [ir_edge.source]
+        source_rewritten = False
         if expansion_state.get(ir_edge.source) and ir_edge.source_when_expanded:
+            source_rewritten = True
             expanded_sources = ir_edge.source_when_expanded
             base_sources = list(expanded_sources) if isinstance(expanded_sources, tuple) else [expanded_sources]
         target = ir_edge.target
@@ -197,10 +199,14 @@ def build_initial_scene(
         # A data edge can carry multiple value_names (one NetworkX edge per
         # (src,tgt) merges them). Merged-output mode should still render one
         # visible edge per node pair; separate_outputs mode fans out through
-        # one DATA node per value.
+        # one DATA node per value. When the source rewrite fired, DATA ids
+        # must use the producer's local output names (boundary renames).
+        emit_value_names = ir_edge.value_names
+        if source_rewritten and ir_edge.value_names_when_expanded:
+            emit_value_names = ir_edge.value_names_when_expanded
         for base_source in base_sources:
             if separate_outputs and ir_edge.edge_type == "data" and ir_edge.value_names:
-                edges_to_emit = [(value_name, base_source) for value_name in ir_edge.value_names]
+                edges_to_emit = [(value_name, base_source) for value_name in emit_value_names]
             else:
                 edges_to_emit = [(None, base_source)]
 
