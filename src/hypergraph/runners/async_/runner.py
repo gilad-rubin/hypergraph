@@ -135,7 +135,7 @@ class AsyncRunner(AsyncRunnerTemplate):
         return RunnerCapabilities(
             supports_cycles=True,
             supports_async_nodes=True,
-            supports_streaming=False,  # Phase 2
+            supports_streaming=True,
             returns_coroutine=True,
             supports_interrupts=True,
             supports_checkpointing=self._checkpointer_instance is not None,
