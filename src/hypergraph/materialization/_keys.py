@@ -61,12 +61,33 @@ def compute_schema_fingerprint(cls: type) -> str:
 
 
 def compute_definition_hash(fn: Any) -> str:
-    """Hash the source code of a derive function (or Graph)."""
+    """Hash the source code of a derive function."""
     try:
         source = inspect.getsource(fn)
     except (OSError, TypeError):
         source = repr(fn)
     return hashlib.sha256(source.encode()).hexdigest()
+
+
+def compute_graph_definition_hash(graph: Any) -> str:
+    """Definition hash for a Graph derive: node code + topology + selection + bindings.
+
+    ``inspect.getsource`` on a Graph would fall back to ``repr()``; instead capture
+    the graph's own code hash, structural hash, output selection, and pre-bound
+    config, so changing any of them invalidates the content key.
+    """
+    bound = {str(k): str(v) for k, v in sorted(graph.inputs.bound.items())}
+    payload = json.dumps(
+        {
+            "code": getattr(graph, "code_hash", ""),
+            "structural": getattr(graph, "structural_hash", ""),
+            "selected": list(graph.selected) if graph.selected else None,
+            "bound": bound,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def extract_markers_lenient(cls: type) -> MarkerInfo:

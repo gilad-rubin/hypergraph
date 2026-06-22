@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import inspect
 import threading
-import typing
 from typing import Any, TypeVar
 
 import pyarrow as pa
 
+from hypergraph import FunctionNode, Graph, RunStatus
 from hypergraph.materialization._keys import (
     compute_content_key,
     compute_definition_hash,
+    compute_graph_definition_hash,
     compute_schema_fingerprint,
     extract_markers_lenient,
 )
+from hypergraph.materialization._sink import LanceSink
 from hypergraph.materialization._store import LanceStore, get_store
 from hypergraph.materialization._types import (
     ChainedTableError,
@@ -22,31 +26,13 @@ from hypergraph.materialization._types import (
     ErrorRow,
     SyncResult,
 )
+from hypergraph.runners import SyncRunner
 
 T = TypeVar("T")
 
 
 def _escape(val: Any) -> str:
     return str(val).replace("'", "''")
-
-
-def _get_field_type_raw(cls: type, field_name: str) -> type:
-    hints = typing.get_type_hints(cls)
-    return hints.get(field_name, str)
-
-
-def _default_for_type(tp: type) -> Any:
-    if tp is str:
-        return ""
-    if tp is int:
-        return 0
-    if tp is float:
-        return 0.0
-    if tp is bool:
-        return False
-    if hasattr(tp, "__origin__") and tp.__origin__ is list:
-        return []
-    return ""
 
 
 class _SnapshotView:
@@ -100,6 +86,7 @@ class DerivedTable:
         derive: Any,
         components: dict[str, Any] | None = None,
         store: str | LanceStore | None = None,
+        runner: Any = None,
     ):
         components = components or {}
 
@@ -126,7 +113,7 @@ class DerivedTable:
         self._components = components
         self._markers = extract_markers_lenient(self._source_cls)
         self._schema_fingerprint = compute_schema_fingerprint(output)
-        self._definition_hash = compute_definition_hash(derive)
+        self._definition_hash = compute_graph_definition_hash(derive) if isinstance(derive, Graph) else compute_definition_hash(derive)
         self._dependents: list[DerivedTable] = []
         self._lock = threading.RLock()
 
@@ -141,9 +128,88 @@ class DerivedTable:
 
         self._store.ensure_table(output, self._source_cls, self._is_root)
 
+        # Engine: set on the root, inherited by chained tables, so a chain shares
+        # one engine and execution color (ADR 0001).
+        if self._is_root:
+            self._runner = runner if runner is not None else SyncRunner()
+        else:
+            self._runner = self._parent._runner
+
+        caps = self._runner.capabilities
+        if not caps.supports_streaming or caps.returns_coroutine:
+            raise TypeError(
+                f"{type(self._runner).__name__} is not a synchronous streaming runner; "
+                f"DerivedTable needs a sync streaming runner such as SyncRunner "
+                f"(async runners will be supported by AsyncDerivedTable)."
+            )
+
+        # Compile the derive + build its sink BEFORE linking to the parent, so a
+        # bad derive raises without leaving a half-initialized child registered
+        # for cascade.
+        self._build_runtime()
+
         if self._parent is not None:
             self._parent._dependents.append(self)
             self._store.register_dependent(self._parent._output_cls, output)
+
+    def _compile_derive(self) -> tuple[Any, str, str, list[str]]:
+        """Turn the derive into a bound graph plus its source input port and row
+        output port. A plain function becomes a one-node graph; a Graph derive is
+        used directly. Components are bound; the single remaining input is the
+        source port to map over.
+        """
+        output_port = "derived_output"
+        if isinstance(self._derive, Graph):
+            graph = self._derive.bind(**self._components) if self._components else self._derive
+            source_param = self._detect_graph_source_param(graph)
+            output_port = self._detect_graph_output_port(graph)
+            return graph, source_param, output_port, list(graph.outputs)
+
+        sig = inspect.signature(self._derive)
+        required = [name for name, p in sig.parameters.items() if name not in self._components and p.default is inspect.Parameter.empty]
+        if len(required) != 1:
+            raise ValueError(
+                f"derive function must take exactly one required source parameter besides its "
+                f"components; got required params {required} (components: {sorted(self._components)})"
+            )
+        node = FunctionNode(self._derive, name="derive", output_name=output_port)
+        graph = Graph([node], name=f"{self._output_cls.__name__.lower()}_derive")
+        graph = graph.bind(**self._components) if self._components else graph
+        return graph, required[0], output_port, [output_port]
+
+    def _detect_graph_source_param(self, graph: Any) -> str:
+        # After binding components, they live in InputSpec.bound; the remaining
+        # required input is the source to map over.
+        candidates = [name for name in graph.inputs.required if name not in self._components]
+        if len(candidates) != 1:
+            raise ValueError(f"derive graph must have exactly one unbound source input; got {candidates}")
+        return candidates[0]
+
+    def _detect_graph_output_port(self, graph: Any) -> str:
+        # Respect an explicit graph.select(...); otherwise use the sole output.
+        names = list(graph.selected) if graph.selected else list(graph.outputs)
+        if len(names) == 1:
+            return names[0]
+        if not names:
+            raise ValueError("derive graph produces no outputs")
+        raise ValueError(
+            f"derive graph produces multiple outputs {sorted(names)}; narrow it to the row output with graph.select(...) before using it as a derive."
+        )
+
+    def _build_runtime(self) -> None:
+        """(Re)compile the derive into a graph + source/output ports and build its
+        sink. Called at construction and whenever components change, so a swapped
+        component is actually run, not just reflected in the content key."""
+        self._graph, self._source_param, self._output_port, output_names = self._compile_derive()
+        self._sink = LanceSink(
+            self._store,
+            self._output_cls,
+            self._source_cls,
+            self._markers,
+            self._is_root,
+            writes=self._output_port,
+        )
+        self._sink.validate_against(output_names)
 
     @property
     def is_root(self) -> bool:
@@ -194,12 +260,6 @@ class DerivedTable:
         except Exception:
             return None
 
-    def _derive_item(self, item: Any) -> Any:
-        kwargs = {name: comp for name, comp in self._components.items()}
-        if kwargs:
-            return self._derive(item, **kwargs)
-        return self._derive(item)
-
     def _arrow_row_to_output(self, table: pa.Table, idx: int) -> Any:
         """Convert an Arrow table row to an output dataclass."""
         row = table.to_pydict()
@@ -218,77 +278,20 @@ class DerivedTable:
             kwargs[name] = row.get(name)
         return self._output_cls(**kwargs)
 
-    def _output_to_row(
-        self,
-        result: Any,
-        source_item: Any,
-        content_key: str,
-        is_error: bool = False,
-        error_type: str = "",
-        error_msg: str = "",
-    ) -> dict:
-        row = {}
-        identity_fields = set(self._markers.identity_fields)
-        for f in dataclasses.fields(self._output_cls):
-            if is_error:
-                if f.name in identity_fields and hasattr(source_item, f.name):
-                    row[f.name] = getattr(source_item, f.name)
-                else:
-                    tp = _get_field_type_raw(self._output_cls, f.name)
-                    row[f.name] = _default_for_type(tp)
-            else:
-                row[f.name] = getattr(result, f.name)
-
-        source_id = self._get_identity_str(source_item)
-        row["_source_id"] = source_id
-        row["_content_key"] = content_key
-        row["_error"] = is_error
-        row["_error_type"] = error_type or ""
-        row["_error_msg"] = error_msg or ""
-        row["_version"] = 0
-
-        if self._is_root:
-            for f in dataclasses.fields(self._source_cls):
-                row[f"_src_{f.name}"] = getattr(source_item, f.name)
-
-        return row
-
-    def _write_rows(self, rows: list[dict]):
-        if not rows:
-            return
-        tbl = self._get_lance_table()
-        if tbl is None:
-            return
-        tbl.add(pa.Table.from_pylist(rows, schema=tbl.schema))
-
     def _delete_by_identity(self, identity_values: dict[str, Any]):
         tbl = self._get_lance_table()
         if tbl is None:
             return
         predicates = [f"{k} = '{_escape(v)}'" for k, v in identity_values.items()]
-        try:
+        with contextlib.suppress(Exception):
             tbl.delete(" AND ".join(predicates))
-        except Exception:
-            pass
 
     def _delete_by_source_id(self, source_id: str):
         tbl = self._get_lance_table()
         if tbl is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             tbl.delete(f"_source_id = '{_escape(source_id)}'")
-        except Exception:
-            pass
-
-    def _delete_old_rows(self, source_id: str, new_content_key: str):
-        """Delete rows for a source_id that don't match the new content key."""
-        tbl = self._get_lance_table()
-        if tbl is None:
-            return
-        try:
-            tbl.delete(f"_source_id = '{_escape(source_id)}' AND _content_key != '{_escape(new_content_key)}'")
-        except Exception:
-            pass
 
     def _get_child_identity_strings(self, source_id: str) -> list[str]:
         """Get identity strings of rows that have _source_id == source_id."""
@@ -328,52 +331,61 @@ class DerivedTable:
         A crash between write and delete leaves recoverable duplicates,
         not data loss.
         """
-        succeeded = []
-        failed = []
-        cascade_results = []
-
+        # De-dup within the batch by identity (last occurrence wins), matching the
+        # old sequential upsert: a repeated identity in one call collapses to one
+        # row, not two.
+        by_identity: dict[tuple, Any] = {}
         for item in source_items:
+            id_key = tuple(sorted(self._get_identity_values(item).items()))
+            by_identity[id_key] = item
+
+        # Incrementality stays here: only compute items whose content changed or
+        # previously errored.
+        pending: list[tuple] = []
+        for item in by_identity.values():
             identity = self._get_identity_values(item)
             content_key = self._compute_key(item)
             source_id = self._get_identity_str(item)
-
             existing = self._find_existing_row(identity)
             if existing and existing.get("_content_key") == content_key and not existing.get("_error", False):
                 continue
+            pending.append((item, identity, content_key, source_id, existing))
 
-            try:
-                result = self._derive_item(item)
-            except Exception as e:
-                if on_error == "ignore":
-                    error_row = self._output_to_row(
-                        None,
-                        item,
-                        content_key,
-                        is_error=True,
-                        error_type=type(e).__name__,
-                        error_msg=str(e),
-                    )
-                    self._write_rows([error_row])
-                    if existing:
-                        self._cascade_delete([source_id])
-                        self._delete_old_rows(source_id, content_key)
-                    failed.append(identity)
-                else:
-                    failed.append(identity)
-                continue
+        succeeded: list[dict] = []
+        failed: list[dict] = []
+        cascade_results: list[Any] = []
 
-            results = result if isinstance(result, list) else [result]
+        if pending:
+            self._sink.start()
+            items_only = [p[0] for p in pending]
+            # The runner streams the derive over the pending items; the sink
+            # persists each result write-new-then-delete-old as it arrives.
+            for index, run_result in self._runner.map_iter(
+                self._graph,
+                {self._source_param: items_only},
+                map_over=self._source_param,
+                error_handling="continue",
+            ):
+                item, identity, content_key, source_id, existing = pending[index]
 
-            item_rows = [self._output_to_row(r, item, content_key) for r in results]
+                if run_result.status == RunStatus.FAILED:
+                    if on_error == "ignore":
+                        self._sink.write_error(source_item=item, content_key=content_key, error=run_result.error)
+                        if existing:
+                            self._cascade_delete([source_id])
+                            self._sink.delete_superseded(source_id, content_key)
+                        failed.append(identity)
+                    else:
+                        failed.append(identity)
+                    continue
 
-            self._write_rows(item_rows)
-
-            if existing:
-                self._cascade_delete([source_id])
-                self._delete_old_rows(source_id, content_key)
-
-            cascade_results.extend(results)
-            succeeded.append(identity)
+                outputs = self._sink.write(run_result, source_item=item, content_key=content_key)
+                if existing:
+                    self._cascade_delete([source_id])
+                    self._sink.delete_superseded(source_id, content_key)
+                cascade_results.extend(outputs)
+                succeeded.append(identity)
+            self._sink.finalize()
 
         if cascade_results:
             self._cascade_insert(cascade_results, on_error=on_error)
@@ -521,6 +533,9 @@ class DerivedTable:
         if components:
             for name, comp in components.items():
                 self._components[name] = comp
+            # Rebind the graph so the swapped component is actually run, not just
+            # reflected in the content key.
+            self._build_runtime()
 
         with self._lock:
             tbl = self._get_lance_table()
@@ -560,7 +575,7 @@ class DerivedTable:
                     else:
                         parts = source_id.split(":")
                         if len(parts) == len(id_fields):
-                            parent_item = self._parent.get(**dict(zip(sorted(id_fields), parts)))
+                            parent_item = self._parent.get(**dict(zip(sorted(id_fields), parts, strict=False)))
                         else:
                             continue
                     if parent_item is not None:
