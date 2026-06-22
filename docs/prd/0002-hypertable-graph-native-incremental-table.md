@@ -348,6 +348,11 @@ inserts instead of dataclasses (since HyperTable infers schema from the graph).
   to v2 pending design.
 - **AsyncHyperTable** — async execution support is deferred. HyperTable starts sync-only
   (SyncRunner). AsyncRunner support is a follow-up once the sync API is stable.
+- **Arrow-native bulk reads (`scan()`)** — `get()` returns a Python dict (fine for
+  single rows), but bulk access should stay Arrow-native: `table.scan()` returns
+  `pa.Table` directly, zero-copy into Daft/Polars/DuckDB. Avoids the current
+  Arrow → pandas → dict → (caller converts back to) Arrow triple-copy path.
+  Prerequisite for efficient DaftRunner integration.
 - **DaftRunner integration** — DaftRunner's `map_dataframe` already implements the
   graph-to-table translation, but wiring it into HyperTable is deferred.
 - **Progress/tracing during materialization** — the `event_processors` gap. SyncRunner
