@@ -94,3 +94,55 @@ _Avoid_: Start node, root node
 - `rename_inputs(...)` and `rename_outputs(...)` were sometimes used as wiring language, but they are canonical **Local port name** renames only.
 - `link_inputs` was considered for shared input fan-out, but the MVP keeps **Exposed port** as the single boundary-flattening concept; `link_inputs` may be added later as direct-child input-only sugar.
 - Direction-specific expose was considered, but the MVP keeps **Exposed port** name-based across matching input and output directions.
+
+## Materialization
+
+Vocabulary for `hypergraph.materialization` — incremental, declarative tables derived from a source. See [ADR 0001](docs/adr/0001-sync-and-async-derived-table-classes.md) and [ADR 0002](docs/adr/0002-stream-materialization-through-runner-with-sinks.md).
+
+**DerivedTable**:
+A table whose rows are derived from a source and kept in sync with it incrementally, persisted in a store. Sync and async are separate classes (`DerivedTable`, `AsyncDerivedTable`).
+_Avoid_: Materialized view, computed table, cache
+
+**Derive**:
+The function or Graph that turns one source item into one or more output rows.
+_Avoid_: Transform, compute, UDF, mapper
+
+**Source**:
+What a DerivedTable derives from — either an entity type (root) or another DerivedTable (chained).
+_Avoid_: Parent, upstream, input
+
+**Root table**:
+A DerivedTable whose source is a type; the only kind that accepts external mutations, and the table that holds the runner for its whole chain.
+_Avoid_: Base table, source table
+
+**Chained table**:
+A DerivedTable whose source is another DerivedTable; populated only via cascade, never mutated externally.
+_Avoid_: Dependent table, child table
+
+**Cascade**:
+The always-on propagation of a source change to every dependent DerivedTable, one level at a time.
+_Avoid_: Trigger, refresh
+
+**Identity**:
+The marker on the source field(s) that stably identify an item and its derived rows.
+_Avoid_: Primary key, id field
+
+**Content key**:
+The hash of all invalidation-relevant state — ContentKey-marked fields, component configs, derive definition, and output schema — used to skip rows whose inputs are unchanged.
+_Avoid_: Cache key, fingerprint, etag
+
+**Explosion**:
+A one-to-many derive — one source item yields a list of output rows.
+_Avoid_: Fan-out, expansion, flatmap
+
+**Sink**:
+A consumer that persists selected run outputs to a store as results stream from the runner, declaring which output ports it writes.
+_Avoid_: Writer, output node, exporter
+
+**Streaming map**:
+Runner execution (the `.iter()` capability) that yields each item's result as it completes, with backpressure, instead of buffering all results into one `MapResult`.
+_Avoid_: Batch map (that is the buffered `MapResult` form)
+
+**Sync (the reconcile operation)**:
+The root-table operation that makes the table exactly match a given set of source items — inserting new, re-deriving changed, deleting missing. Named identically on both the sync and async classes; do not read it as "synchronous."
+_Avoid_: Refresh, merge
