@@ -1,5 +1,6 @@
-"""Declarative incremental materialization with DerivedTable."""
+"""Declarative incremental materialization with DerivedTable and HyperTable."""
 
+from hypergraph.materialization._hypertable import HyperTable
 from hypergraph.materialization._markers import ContentKey, Identity
 from hypergraph.materialization._table import DerivedTable
 from hypergraph.materialization._types import (
@@ -13,6 +14,7 @@ __all__ = [
     "Identity",
     "ContentKey",
     "DerivedTable",
+    "HyperTable",
     "ErrorRow",
     "SyncResult",
     "DerivationError",
