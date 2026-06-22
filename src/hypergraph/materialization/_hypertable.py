@@ -193,11 +193,12 @@ class HyperTable:
         ]
 
         if inner_graph:
+            component_names = set(self._components.keys())
             inner_required = (
                 set(inner_graph.inputs.required) if isinstance(inner_graph.inputs.required, tuple) else set(inner_graph.inputs.required.keys())
             )
             for inp_name in sorted(inner_required):
-                if inp_name != identity:
+                if inp_name != identity and inp_name not in component_names:
                     child_columns.append(ColumnSpec(inp_name, role="source", content_key=True))
             nodes_dict = inner_graph.nodes if isinstance(inner_graph.nodes, dict) else {}
             for _name, n in nodes_dict.items():
@@ -381,10 +382,16 @@ class HyperTable:
 
         new_meta_cols = [k for k in metadata if k not in [f.name for f in tbl.schema]]
         if new_meta_cols:
+            existing_data = tbl.to_arrow()
             new_fields = list(tbl.schema) + [pa.field(k, pa.utf8()) for k in new_meta_cols]
             new_schema = pa.schema(new_fields)
             self._db.drop_table(self._spec.name)
             tbl = self._db.create_table(self._spec.name, schema=new_schema)
+            if len(existing_data) > 0:
+                null_cols = {k: pa.array([None] * len(existing_data), type=pa.utf8()) for k in new_meta_cols}
+                for col_name, col_arr in null_cols.items():
+                    existing_data = existing_data.append_column(col_name, col_arr)
+                tbl.add(existing_data)
             self._tables[self._spec.name] = tbl
 
         schema = tbl.schema
