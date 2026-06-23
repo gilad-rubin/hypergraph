@@ -523,13 +523,12 @@ class TestVersioning:
 class TestRecompute:
     def test_recompute_with_new_component(self, table, embedder):
         table.insert([Utterance("u1", "hello", "alice")])
-        old_vector = table.get(utt_id="u1").vector
 
         new_embedder = Embedder("large-model")
         table.recompute(components={"embedder": new_embedder})
 
-        new_vector = table.get(utt_id="u1").vector
-        assert old_vector == new_vector or True  # vectors from same text, different model name changes config
+        recomputed = table.get(utt_id="u1")
+        assert recomputed.vector is not None
 
     def test_recompute_errors_only(self, store_path, embedder):
         call_tracker = {"count": 0}

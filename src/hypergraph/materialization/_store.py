@@ -111,11 +111,11 @@ class LanceStore:
             return None
 
     def drop_table(self, output_cls: type):
+        import contextlib
+
         name = self._table_name(output_cls)
-        try:
+        with contextlib.suppress(Exception):
             self.db.drop_table(name)
-        except Exception:
-            pass
         self._tables.pop(name, None)
 
     def register_dependent(self, parent_output: type, child_output: type):
