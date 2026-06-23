@@ -39,12 +39,38 @@ def _dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any
     return list(best.values())
 
 
+def _dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
+    """Keep only the highest _write_gen per parent+child identity."""
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        id_val = str(row.get(identity, ""))
+        parent_val = str(row.get("_parent_id", ""))
+        key = (parent_val, id_val)
+        existing = best.get(key)
+        if existing is None or row.get("_write_gen", 0) > existing.get("_write_gen", 0):
+            best[key] = row
+    return list(best.values())
+
+
+def _public_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: _normalize_value(v) for k, v in row.items() if not _is_internal(k)}
+
+
+def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
+    if where is None:
+        return []
+    if isinstance(where, dict):
+        return [(key, "eq", value) for key, value in where.items()]
+    return list(where)
+
+
 @dataclass(frozen=True)
 class ColumnSpec:
     name: str
     role: str  # identity, source, derived, parent_link, internal
     produced_by: Any = None
     content_key: bool = False
+    arrow_type: Any = None
 
 
 @dataclass(frozen=True)
@@ -125,19 +151,73 @@ class HyperTable:
             if root_binds:
                 self._graph = self._graph.bind(**root_binds)
 
+    def _python_type_to_arrow(self, tp: Any) -> Any:
+        import pyarrow as pa
+
+        if tp is str:
+            return pa.utf8()
+        if tp is int:
+            return pa.int64()
+        if tp is float:
+            return pa.float64()
+        if tp is bool:
+            return pa.bool_()
+        if tp is bytes:
+            return pa.large_binary()
+
+        origin = typing.get_origin(tp)
+        args = typing.get_args(tp)
+        if origin is list:
+            if args and args[0] is float:
+                return pa.list_(pa.float32())
+            if args and args[0] is str:
+                return pa.list_(pa.utf8())
+            if args and args[0] is int:
+                return pa.list_(pa.int64())
+            return pa.list_(pa.utf8())
+        return pa.utf8()
+
+    def _column(self, name: str, *, role: str, produced_by: Any = None, content_key: bool = False, python_type: Any = str) -> ColumnSpec:
+        return ColumnSpec(
+            name,
+            role=role,
+            produced_by=produced_by,
+            content_key=content_key,
+            arrow_type=self._python_type_to_arrow(python_type),
+        )
+
+    def _input_types(self, graph: Graph) -> dict[str, Any]:
+        input_types: dict[str, Any] = {}
+        nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}
+        for _name, node_obj in nodes_dict.items():
+            func = getattr(node_obj, "func", None) or getattr(node_obj, "_func", None)
+            if func is None:
+                continue
+            for name, hint in typing.get_type_hints(func).items():
+                if name != "return":
+                    input_types.setdefault(name, hint)
+        return input_types
+
+    def _return_type(self, node_obj: Any) -> Any:
+        func = getattr(node_obj, "func", None) or getattr(node_obj, "_func", None)
+        if func is None:
+            return str
+        return typing.get_type_hints(func).get("return", str)
+
     def _analyze_graph(self):
         graph = self._graph
         root_columns = []
         child_specs = []
 
-        root_columns.append(ColumnSpec(self._identity, role="identity"))
+        input_types = self._input_types(graph)
+        root_columns.append(self._column(self._identity, role="identity"))
 
         required = set(graph.inputs.required) if isinstance(graph.inputs.required, tuple) else set(graph.inputs.required.keys())
 
         for inp_name in sorted(required):
             if inp_name == self._identity:
                 continue
-            root_columns.append(ColumnSpec(inp_name, role="source", content_key=True))
+            root_columns.append(self._column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
 
         for map_node in getattr(self, "_map_over_nodes", []):
             child_spec = self._analyze_map_over(map_node)
@@ -150,11 +230,16 @@ class HyperTable:
         for _name, n in nodes_dict.items():
             for out_name in n.data_outputs if hasattr(n, "data_outputs") else ():
                 if out_name not in child_map_inputs:
-                    root_columns.append(ColumnSpec(out_name, role="derived", produced_by=n))
+                    root_columns.append(self._column(out_name, role="derived", produced_by=n, python_type=self._return_type(n)))
 
         derived_cols = [c for c in root_columns if c.role == "derived"]
-        prov_cols = [ColumnSpec(f"_provenance_{c.name}", role="internal") for c in derived_cols]
-        final_columns = root_columns + [ColumnSpec("_row_fingerprint", role="internal")] + prov_cols + [ColumnSpec("_write_gen", role="internal")]
+        prov_cols = [self._column(f"_provenance_{c.name}", role="internal") for c in derived_cols]
+        final_columns = (
+            root_columns
+            + [self._column("_row_fingerprint", role="internal")]
+            + prov_cols
+            + [self._column("_write_gen", role="internal", python_type=int)]
+        )
 
         self._spec = TableSpec(
             name=self._identity.replace("_id", ""),
@@ -171,25 +256,26 @@ class HyperTable:
         map_input = raw_map_over[0] if isinstance(raw_map_over, list) and raw_map_over else config.get("map_over")
 
         child_columns = [
-            ColumnSpec(identity, role="identity"),
-            ColumnSpec("_parent_id", role="parent_link"),
+            self._column(identity, role="identity"),
+            self._column("_parent_id", role="parent_link"),
         ]
 
         if inner_graph:
+            input_types = self._input_types(inner_graph)
             component_names = set(self._components.keys())
             inner_required = (
                 set(inner_graph.inputs.required) if isinstance(inner_graph.inputs.required, tuple) else set(inner_graph.inputs.required.keys())
             )
             for inp_name in sorted(inner_required):
                 if inp_name != identity and inp_name not in component_names:
-                    child_columns.append(ColumnSpec(inp_name, role="source", content_key=True))
+                    child_columns.append(self._column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
             nodes_dict = inner_graph.nodes if isinstance(inner_graph.nodes, dict) else {}
             for _name, n in nodes_dict.items():
                 for out_name in n.data_outputs if hasattr(n, "data_outputs") else []:
-                    child_columns.append(ColumnSpec(out_name, role="derived", produced_by=n))
+                    child_columns.append(self._column(out_name, role="derived", produced_by=n, python_type=self._return_type(n)))
 
-        child_columns.append(ColumnSpec("_row_fingerprint", role="internal"))
-        child_columns.append(ColumnSpec("_write_gen", role="internal"))
+        child_columns.append(self._column("_row_fingerprint", role="internal"))
+        child_columns.append(self._column("_write_gen", role="internal", python_type=int))
 
         table_name = identity.replace("_id", "")
         return TableSpec(
@@ -212,6 +298,11 @@ class HyperTable:
     def _require_runner(self):
         if self._runner is None:
             raise RuntimeError("No runner set. Call .with_runner(SyncRunner()) before write operations.")
+
+    def _is_async_runner(self) -> bool:
+        from hypergraph.runners import AsyncRunner
+
+        return isinstance(self._runner, AsyncRunner)
 
     # --- Shared helpers ---
 
@@ -260,7 +351,7 @@ class HyperTable:
         store = self._store
         sample = store.read_rows(self._spec.name, limit=1)
         known_cols = set(sample[0].keys()) if sample else {c.name for c in self._spec.columns}
-        new_meta = {k: str for k in item if k not in known_cols and k != self._identity}
+        new_meta = {k: (type(v) if v is not None else str) for k, v in item.items() if k not in known_cols and k != self._identity}
         if new_meta:
             store.evolve_schema(self._spec.name, new_meta)
 
@@ -297,16 +388,16 @@ class HyperTable:
         if child_table:
             for child in self._spec.children:
                 if child.name == child_table:
-                    return self._store.count(child.name)
+                    return len(_dedup_child_rows(self._store.read_rows(child.name), child.identity))
             return 0
-        return self._store.count(self._spec.name)
+        return len(_dedup_rows(self._store.read_rows(self._spec.name), self._identity))
 
     def get(self, identity_value: str) -> dict[str, Any] | None:
         self._ensure_analyzed()
         row = self._store.read_one(self._spec.name, self._identity, identity_value)
         if row is None:
             return None
-        return {k: _normalize_value(v) for k, v in row.items() if not _is_internal(k)}
+        return _public_row(row)
 
     def children(self, parent_id: str) -> list[dict[str, Any]]:
         self._ensure_analyzed()
@@ -314,23 +405,82 @@ class HyperTable:
             return []
         child_spec = self._spec.children[0]
         rows = self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)])
-        return [{k: _normalize_value(v) for k, v in row.items() if not _is_internal(k)} for row in rows]
+        rows = _dedup_child_rows(rows, child_spec.identity)
+        return [_public_row(row) for row in rows]
 
-    def insert(self, *args, **kwargs) -> None:
+    def filter(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return public rows matching a store predicate."""
+        self._ensure_analyzed()
+        rows = self._store.read_rows(self._spec.name, _where_predicate(where), limit=limit)
+        rows = _dedup_rows(rows, self._identity)
+        return [_public_row(row) for row in rows]
+
+    def set(self, where: Any, **fields: Any) -> Any:
+        """Bulk metadata update for all rows matching a predicate."""
+        self._ensure_analyzed()
+        if self._is_async_runner():
+            return self._set_async(where, **fields)
+        return self._set_sync(where, **fields)
+
+    def _set_sync(self, where: Any, **fields: Any) -> int:
+        content_key_fields = {c.name for c in self._spec.columns if c.content_key}
+        blocked = sorted(content_key_fields.intersection(fields))
+        if blocked:
+            raise ValueError(f"set() cannot update content-key fields: {', '.join(blocked)}")
+
+        rows = _dedup_rows(self._store.read_rows(self._spec.name, _where_predicate(where)), self._identity)
+        if not rows:
+            return 0
+
+        self._evolve_for_metadata({self._identity: rows[0][self._identity], **fields})
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        updated_rows: list[dict[str, Any]] = []
+        for row in rows:
+            new_row = {k: _normalize_value(v) for k, v in row.items()}
+            new_row.update(fields)
+            new_row["_write_gen"] = write_gen
+            updated_rows.append(new_row)
+
+        self._store.write_rows(self._spec.name, updated_rows)
+        for row in rows:
+            self._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._identity, "eq", row[self._identity]),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+        return len(updated_rows)
+
+    async def _set_async(self, where: Any, **fields: Any) -> int:
+        return self._set_sync(where, **fields)
+
+    def _insert_items(self, *args, **kwargs) -> list[dict[str, Any]]:
+        if args and isinstance(args[0], list):
+            return args[0]
+        if kwargs:
+            return [kwargs]
+        raise ValueError("insert() requires kwargs or a list of dicts")
+
+    def insert(self, *args, **kwargs) -> Any:
         self._require_runner()
         self._ensure_analyzed()
+        items = self._insert_items(*args, **kwargs)
+        if self._is_async_runner():
+            return self._insert_async(items)
+        return self._insert_sync(items)
 
-        if args and isinstance(args[0], list):
-            items = args[0]
-        elif kwargs:
-            items = [kwargs]
-        else:
-            raise ValueError("insert() requires kwargs or a list of dicts")
-
+    def _insert_sync(self, items: list[dict[str, Any]]) -> None:
         write_gen = self._store.max_write_gen(self._spec.name) + 1
 
         for item in items:
             self._insert_one(item, write_gen)
+
+    async def _insert_async(self, items: list[dict[str, Any]]) -> None:
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+
+        for item in items:
+            await self._insert_one_async(item, write_gen)
 
     def _insert_one(self, item: dict[str, Any], write_gen: int) -> str:
         """Insert or upsert a single row. Returns 'inserted', 'updated', or 'skipped'."""
@@ -355,6 +505,9 @@ class HyperTable:
         row = self._build_row(item, graph_inputs, outputs, write_gen)
         self._store.write_rows(self._spec.name, [row])
 
+        for child_spec in self._spec.children:
+            self._insert_children(identity_value, outputs, child_spec, write_gen)
+
         # Delete old version if exists
         if existing is not None:
             self._store.delete_rows(
@@ -366,11 +519,54 @@ class HyperTable:
             )
             # Delete old children
             for child_spec in self._spec.children:
-                self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", write_gen),
+                    ],
+                )
 
-        # Insert children
+        return "updated" if existing is not None else "inserted"
+
+    async def _insert_one_async(self, item: dict[str, Any], write_gen: int) -> str:
+        """Async insert/upsert for AsyncRunner-bound tables."""
+        identity_value = item[self._identity]
+        graph_inputs = self._extract_graph_inputs(item)
+
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if existing is not None:
+            new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
+            if existing.get("_row_fingerprint") == new_fingerprint:
+                return "skipped"
+
+        result = await self._runner.run(self._graph, **graph_inputs)
+        outputs = self._extract_outputs(result)
+
+        self._evolve_for_metadata(item)
+
+        row = self._build_row(item, graph_inputs, outputs, write_gen)
+        self._store.write_rows(self._spec.name, [row])
+
         for child_spec in self._spec.children:
-            self._insert_children(identity_value, outputs, child_spec, write_gen)
+            await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
+
+        if existing is not None:
+            self._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._identity, "eq", identity_value),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+            for child_spec in self._spec.children:
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", write_gen),
+                    ],
+                )
 
         return "updated" if existing is not None else "inserted"
 
@@ -417,33 +613,80 @@ class HyperTable:
 
             self._store.write_rows(child_spec.name, [child_row])
 
-    def update(self, identity_value: str, **changes: Any) -> None:
+    async def _insert_children_async(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
+        child_graph = child_spec.child_graph
+        if not child_graph:
+            return
+
+        child_items = outputs.get(child_spec.map_input)
+        if not child_items or not isinstance(child_items, list):
+            return
+
+        for child_item in child_items:
+            child_identity = child_item.get(child_spec.identity, "")
+            child_inputs = {}
+            for col in child_spec.columns:
+                if col.role == "source" and col.content_key and col.name in child_item:
+                    child_inputs[col.name] = child_item[col.name]
+
+            bound_graph = child_graph.bind(**self._components) if self._components else child_graph
+
+            child_result = await self._runner.run(bound_graph, **child_inputs)
+
+            if hasattr(child_result, "values") and isinstance(child_result.values, dict):
+                child_outputs = child_result.values
+            elif isinstance(child_result, dict):
+                child_outputs = child_result
+            else:
+                child_outputs = {}
+
+            child_row = {
+                child_spec.identity: child_identity,
+                "_parent_id": parent_id,
+                "_write_gen": write_gen,
+                "_row_fingerprint": "",
+            }
+
+            for k, v in child_item.items():
+                if k != child_spec.identity and k != "_parent_id":
+                    child_row[k] = v
+
+            for k, v in child_outputs.items():
+                child_row[k] = v
+
+            self._store.write_rows(child_spec.name, [child_row])
+
+    def update(self, identity_value: str, **changes: Any) -> Any:
         """Update a row. Re-derives downstream if source columns changed."""
         self._require_runner()
         self._ensure_analyzed()
+        if self._is_async_runner():
+            return self._update_async(identity_value, **changes)
+        return self._update_sync(identity_value, **changes)
 
+    def _prepare_update(self, identity_value: str, changes: dict[str, Any]) -> tuple[dict[str, Any], bool, int]:
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             raise KeyError(identity_value)
 
-        # Reconstruct full item with changes applied
         item: dict[str, Any] = {self._identity: identity_value}
         for c in self._spec.columns:
             if c.role == "source" and c.name in existing:
                 item[c.name] = _normalize_value(existing[c.name])
-        # Metadata from existing row
         spec_col_names = {c.name for c in self._spec.columns}
         for k, v in existing.items():
             if k not in spec_col_names and not _is_internal(k):
                 item[k] = _normalize_value(v)
-        # Apply changes
         item.update(changes)
 
         source_names = {c.name for c in self._spec.columns if c.role == "source"}
         needs_rederive = any(k in source_names for k in changes)
 
         write_gen = self._store.max_write_gen(self._spec.name) + 1
+        return item, needs_rederive, write_gen
 
+    def _update_sync(self, identity_value: str, **changes: Any) -> None:
+        item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
         if needs_rederive:
             graph_inputs = self._extract_graph_inputs(item)
             result = self._runner.run(self._graph, **graph_inputs)
@@ -451,6 +694,7 @@ class HyperTable:
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen)
         else:
+            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
             row = {k: _normalize_value(v) for k, v in existing.items()}
             row.update(changes)
             row["_write_gen"] = write_gen
@@ -478,10 +722,50 @@ class HyperTable:
             ],
         )
 
-    def delete(self, identity_value: str) -> None:
+    async def _update_async(self, identity_value: str, **changes: Any) -> None:
+        item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
+        if needs_rederive:
+            graph_inputs = self._extract_graph_inputs(item)
+            result = await self._runner.run(self._graph, **graph_inputs)
+            outputs = self._extract_outputs(result)
+            self._evolve_for_metadata(item)
+            row = self._build_row(item, graph_inputs, outputs, write_gen)
+        else:
+            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+            row = {k: _normalize_value(v) for k, v in existing.items()}
+            row.update(changes)
+            row["_write_gen"] = write_gen
+
+        self._store.write_rows(self._spec.name, [row])
+
+        if needs_rederive:
+            for child_spec in self._spec.children:
+                await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
+            for child_spec in self._spec.children:
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", write_gen),
+                    ],
+                )
+
+        self._store.delete_rows(
+            self._spec.name,
+            [
+                (self._identity, "eq", identity_value),
+                ("_write_gen", "lt", write_gen),
+            ],
+        )
+
+    def delete(self, identity_value: str) -> Any:
         """Delete a row and cascade-delete its children."""
         self._ensure_analyzed()
+        if self._is_async_runner():
+            return self._delete_async(identity_value)
+        return self._delete_sync(identity_value)
 
+    def _delete_sync(self, identity_value: str) -> None:
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
         if existing is None:
             return
@@ -490,12 +774,19 @@ class HyperTable:
             self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
         self._store.delete_rows(self._spec.name, [(self._identity, "eq", identity_value)])
 
+    async def _delete_async(self, identity_value: str) -> None:
+        self._delete_sync(identity_value)
+
     def sync(self, items: list[dict[str, Any]]) -> Any:
         """Reconcile: insert new, update changed, delete missing, skip unchanged."""
-        from hypergraph.materialization._types import SyncResult
-
         self._require_runner()
         self._ensure_analyzed()
+        if self._is_async_runner():
+            return self._sync_async(items)
+        return self._sync_sync(items)
+
+    def _sync_sync(self, items: list[dict[str, Any]]) -> Any:
+        from hypergraph.materialization._types import SyncResult
 
         existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
         existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
@@ -529,6 +820,45 @@ class HyperTable:
         for id_val in existing_by_id:
             if id_val not in incoming_ids:
                 self.delete(id_val)
+                deleted += 1
+
+        return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=0)
+
+    async def _sync_async(self, items: list[dict[str, Any]]) -> Any:
+        from hypergraph.materialization._types import SyncResult
+
+        existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+        existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
+
+        incoming_ids: set[str] = set()
+        inserted = 0
+        updated = 0
+        skipped = 0
+
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+
+        for item in items:
+            id_val = str(item[self._identity])
+            incoming_ids.add(id_val)
+
+            existing = existing_by_id.get(id_val)
+            if existing is None:
+                await self._insert_one_async(item, write_gen)
+                inserted += 1
+            else:
+                graph_inputs = self._extract_graph_inputs(item)
+                new_fp = self._compute_row_fingerprint(item, graph_inputs)
+                if existing.get("_row_fingerprint") == new_fp:
+                    skipped += 1
+                else:
+                    changes = {k: v for k, v in item.items() if k != self._identity}
+                    await self._update_async(id_val, **changes)
+                    updated += 1
+
+        deleted = 0
+        for id_val in existing_by_id:
+            if id_val not in incoming_ids:
+                await self._delete_async(id_val)
                 deleted += 1
 
         return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=0)

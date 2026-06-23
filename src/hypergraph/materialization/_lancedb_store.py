@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import typing
 from typing import Any
 
 import lancedb
@@ -10,7 +9,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from hypergraph.materialization._hypertable import TableSpec
-from hypergraph.materialization._table_store import RowPredicate
+from hypergraph.materialization._table_store import RowPredicate, TableStore
 
 
 def _python_type_to_arrow(tp: type) -> pa.DataType:
@@ -86,7 +85,7 @@ def _build_lance_filter(where: RowPredicate) -> str:
     return " AND ".join(clauses)
 
 
-class LanceDBStore:
+class LanceDBStore(TableStore):
     """LanceDB-backed TableStore implementation."""
 
     def __init__(self, path: str):
@@ -195,8 +194,11 @@ class LanceDBStore:
         self._db.drop_table(table_name)
         tbl = self._db.create_table(table_name, schema=new_schema)
         if len(existing_data) > 0:
-            for col_name in new_columns:
-                existing_data = existing_data.append_column(col_name, pa.array([None] * len(existing_data), type=pa.utf8()))
+            for col_name, col_type in new_columns.items():
+                existing_data = existing_data.append_column(
+                    col_name,
+                    pa.array([None] * len(existing_data), type=_python_type_to_arrow(col_type)),
+                )
             tbl.add(existing_data)
         self._tables[table_name] = tbl
         return [f.name for f in new_schema]
@@ -216,20 +218,11 @@ class LanceDBStore:
         for col in spec.columns:
             if col.role == "internal":
                 if col.name == "_write_gen":
-                    fields.append(pa.field(col.name, pa.int64()))
+                    fields.append(pa.field(col.name, col.arrow_type or pa.int64()))
                 else:
-                    fields.append(pa.field(col.name, pa.utf8()))
-            elif col.role in ("identity", "parent_link", "source"):
-                fields.append(pa.field(col.name, pa.utf8()))
-            elif col.role == "derived":
-                node_obj = col.produced_by
-                func = getattr(node_obj, "func", None) or getattr(node_obj, "_func", None)
-                if func:
-                    hints = typing.get_type_hints(func)
-                    ret_type = hints.get("return", str)
-                    fields.append(pa.field(col.name, _python_type_to_arrow(ret_type)))
-                else:
-                    fields.append(pa.field(col.name, pa.utf8()))
+                    fields.append(pa.field(col.name, col.arrow_type or pa.utf8()))
+            elif col.role in ("identity", "parent_link", "source") or col.role == "derived":
+                fields.append(pa.field(col.name, col.arrow_type or pa.utf8()))
         return pa.schema(fields)
 
     def _detect_and_fix_vectors(self, table_name: str, row: dict[str, Any]) -> None:

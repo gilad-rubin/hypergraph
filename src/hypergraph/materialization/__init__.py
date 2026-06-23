@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from hypergraph.materialization._hypertable import HyperTable
 from hypergraph.materialization._markers import ContentKey, Identity
-from hypergraph.materialization._table_store import TableStore
+from hypergraph.materialization._table_store import TableStore, validate_store
 from hypergraph.materialization._types import (
     ChainedTableError,
     DerivationError,
@@ -24,6 +24,7 @@ __all__ = [
     "DerivedTable",
     "HyperTable",
     "TableStore",
+    "validate_store",
     "ErrorRow",
     "SyncResult",
     "DerivationError",
