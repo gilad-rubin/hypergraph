@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass as dc
 from typing import TypedDict
 
 import pytest
+from pydantic import BaseModel
 
 from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
@@ -251,6 +253,87 @@ class TestGrainBoundaryE2E:
         assert len(children_v2) > 0
         assert all(c["_parent_id"] == "v1" for c in children_v1)
         assert all(c["_parent_id"] == "v2" for c in children_v2)
+
+
+# ---------------------------------------------------------------------------
+# Typed mapped items: Pydantic models and dataclasses in map_over
+# ---------------------------------------------------------------------------
+
+
+class PydanticItem(BaseModel):
+    item_id: str
+    text: str
+    speaker: str = "unknown"
+
+
+@dc
+class DataclassItem:
+    item_id: str
+    text: str
+    speaker: str = "unknown"
+
+
+@node(output_name="items")
+def split_into_pydantic_items(transcript: str) -> list[PydanticItem]:
+    words = transcript.split()
+    return [PydanticItem(item_id=f"i{i}", text=w) for i, w in enumerate(words)]
+
+
+@node(output_name="items")
+def split_into_dc_items(transcript: str) -> list[DataclassItem]:
+    words = transcript.split()
+    return [DataclassItem(item_id=f"i{i}", text=w) for i, w in enumerate(words)]
+
+
+class TestTypedMappedItems:
+    """map_over should accept Pydantic models and dataclasses, not just dicts/TypedDicts."""
+
+    def test_pydantic_model_mapped_items(self, store, store_path, embedder):
+        """A node returning list[PydanticModel] should work in map_over."""
+        from hypergraph.materialization import HyperTable
+
+        child_graph = Graph([clean, embed_text], name="process_item")
+
+        table = (
+            HyperTable(
+                [transcribe, split_into_pydantic_items, child_graph.as_node().map_over("items", identity="item_id")],
+                identity="doc_id",
+                store=store,
+            )
+            .bind(embedder=embedder)
+            .with_runner(SyncRunner())
+        )
+
+        table.insert(doc_id="d1", audio_path="test.wav")
+
+        children = table.children("d1")
+        assert len(children) > 0
+        assert all("clean_text" in c for c in children)
+        assert all("vector" in c for c in children)
+        assert all("text" in c for c in children)
+
+    def test_dataclass_mapped_items(self, store, store_path, embedder):
+        """A node returning list[dataclass] should work in map_over."""
+        from hypergraph.materialization import HyperTable
+
+        child_graph = Graph([clean, embed_text], name="process_dc_item")
+
+        table = (
+            HyperTable(
+                [transcribe, split_into_dc_items, child_graph.as_node().map_over("items", identity="item_id")],
+                identity="doc_id",
+                store=store,
+            )
+            .bind(embedder=embedder)
+            .with_runner(SyncRunner())
+        )
+
+        table.insert(doc_id="d1", audio_path="test.wav")
+
+        children = table.children("d1")
+        assert len(children) > 0
+        assert all("clean_text" in c for c in children)
+        assert all("text" in c for c in children)
 
 
 # ---------------------------------------------------------------------------

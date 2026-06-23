@@ -13,6 +13,19 @@ from hypergraph import Graph
 from hypergraph.materialization._keys import compute_definition_hash
 
 
+def _normalize_to_dict(item: Any) -> dict[str, Any]:
+    """Convert a mapped child item to a plain dict if it isn't one already."""
+    if isinstance(item, dict):
+        return item
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="python")
+    if hasattr(item, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        return asdict(item)
+    return dict(item)
+
+
 def _normalize_value(v: Any) -> Any:
     """Convert numpy/arrow types back to Python-native for the public API."""
     import numpy as np
@@ -266,7 +279,11 @@ class HyperTable:
             inner_required = (
                 set(inner_graph.inputs.required) if isinstance(inner_graph.inputs.required, tuple) else set(inner_graph.inputs.required.keys())
             )
-            for inp_name in sorted(inner_required):
+            inner_optional = (
+                set(inner_graph.inputs.optional) if isinstance(inner_graph.inputs.optional, tuple) else set(inner_graph.inputs.optional.keys())
+            )
+            inner_all = inner_required | inner_optional
+            for inp_name in sorted(inner_all):
                 if inp_name != identity and inp_name not in component_names:
                     child_columns.append(self._column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
             nodes_dict = inner_graph.nodes if isinstance(inner_graph.nodes, dict) else {}
@@ -346,14 +363,16 @@ class HyperTable:
 
         return row
 
-    def _evolve_for_metadata(self, item: dict[str, Any]) -> None:
+    def _evolve_for_metadata(self, item: dict[str, Any], *, table_name: str | None = None, identity: str | None = None) -> None:
         """Add schema columns for metadata keys the store hasn't seen."""
         store = self._store
-        sample = store.read_rows(self._spec.name, limit=1)
+        target = table_name or self._spec.name
+        id_col = identity or self._identity
+        sample = store.read_rows(target, limit=1)
         known_cols = set(sample[0].keys()) if sample else {c.name for c in self._spec.columns}
-        new_meta = {k: (type(v) if v is not None else str) for k, v in item.items() if k not in known_cols and k != self._identity}
+        new_meta = {k: (type(v) if v is not None else str) for k, v in item.items() if k not in known_cols and k != id_col}
         if new_meta:
-            store.evolve_schema(self._spec.name, new_meta)
+            store.evolve_schema(target, new_meta)
 
     def _get_derived_column_type(self, column_name: str) -> type:
         for c in self._spec.columns:
@@ -414,6 +433,58 @@ class HyperTable:
         rows = self._store.read_rows(self._spec.name, _where_predicate(where), limit=limit)
         rows = _dedup_rows(rows, self._identity)
         return [_public_row(row) for row in rows]
+
+    def delete_children(self, where: Any = None) -> int:
+        """Delete child rows matching a predicate. Returns count deleted."""
+        self._ensure_analyzed()
+        if not self._spec.children:
+            return 0
+        child_spec = self._spec.children[0]
+        return self._store.delete_rows(child_spec.name, _where_predicate(where))
+
+    def filter_children(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return child rows matching a store predicate."""
+        self._ensure_analyzed()
+        if not self._spec.children:
+            return []
+        child_spec = self._spec.children[0]
+        rows = self._store.read_rows(child_spec.name, _where_predicate(where), limit=limit)
+        rows = _dedup_child_rows(rows, child_spec.identity)
+        return [_public_row(row) for row in rows]
+
+    def set_children(self, where: Any = None, **fields: Any) -> int:
+        """Bulk metadata update for child rows matching a predicate."""
+        self._ensure_analyzed()
+        if not self._spec.children:
+            return 0
+        child_spec = self._spec.children[0]
+        table_name = child_spec.name
+        identity = child_spec.identity
+        rows = _dedup_child_rows(
+            self._store.read_rows(table_name, _where_predicate(where)),
+            identity,
+        )
+        if not rows:
+            return 0
+        self._evolve_for_metadata(
+            {identity: rows[0][identity], **fields},
+            table_name=table_name,
+            identity=identity,
+        )
+        write_gen = self._store.max_write_gen(table_name) + 1
+        updated: list[dict[str, Any]] = []
+        for row in rows:
+            new_row = {k: _normalize_value(v) for k, v in row.items()}
+            new_row.update(fields)
+            new_row["_write_gen"] = write_gen
+            updated.append(new_row)
+        self._store.write_rows(table_name, updated)
+        for row in rows:
+            self._store.delete_rows(
+                table_name,
+                [(identity, "eq", row[identity]), ("_write_gen", "lt", write_gen)],
+            )
+        return len(updated)
 
     def set(self, where: Any, **fields: Any) -> Any:
         """Bulk metadata update for all rows matching a predicate."""
@@ -580,6 +651,7 @@ class HyperTable:
             return
 
         for child_item in child_items:
+            child_item = _normalize_to_dict(child_item)
             child_identity = child_item.get(child_spec.identity, "")
             child_inputs = {}
             for col in child_spec.columns:
@@ -630,6 +702,7 @@ class HyperTable:
             return
 
         for child_item in child_items:
+            child_item = _normalize_to_dict(child_item)
             child_identity = child_item.get(child_spec.identity, "")
             child_inputs = {}
             for col in child_spec.columns:
