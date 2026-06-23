@@ -35,6 +35,14 @@ class Embedder:
         return [float(ord(c)) for c in text[:3]]
 
 
+class Converter:
+    def convert(self, source: str) -> list[Utterance]:
+        return [
+            Utterance(utterance_id="u0", text=f"{source} one", speaker="Alice", start=0.0, end=1.0),
+            Utterance(utterance_id="u1", text=f"{source} two", speaker="Bob", start=1.0, end=2.0),
+        ]
+
+
 @node(output_name="audio_path")
 def extract_audio(path: str) -> str:
     return f"/tmp/{path.split('/')[-1]}.wav"
@@ -61,6 +69,11 @@ def split_utterances(transcript: str) -> list[Utterance]:
         Utterance(utterance_id="u0", text="hello", speaker="Alice", start=0.0, end=1.0),
         Utterance(utterance_id="u1", text="world", speaker="Bob", start=1.0, end=2.0),
     ]
+
+
+@node(output_name="utterances")
+def convert_source(source: str, converter: Converter) -> list[Utterance]:
+    return converter.convert(source)
 
 
 # Subgraph for processing one utterance
@@ -186,6 +199,26 @@ class TestConstruction:
         )
 
         assert table is not None
+
+    def test_child_graph_receives_only_its_component_binds(self, store, embedder):
+        """Root-only components should not be bound into mapped child graphs."""
+        from hypergraph.materialization import HyperTable
+
+        table = (
+            HyperTable(
+                [convert_source, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+                identity="doc_id",
+                store=store,
+            )
+            .bind(converter=Converter(), embedder=embedder)
+            .with_runner(SyncRunner())
+        )
+
+        table.insert(doc_id="d1", source="Alpha")
+        children = table.children("d1")
+
+        assert [child["clean_text"] for child in children] == ["alpha one", "alpha two"]
+        assert all("vector" in child for child in children)
 
 
 class TestBasicInsert:

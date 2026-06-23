@@ -586,7 +586,7 @@ class HyperTable:
                 if col.role == "source" and col.content_key and col.name in child_item:
                     child_inputs[col.name] = child_item[col.name]
 
-            bound_graph = child_graph.bind(**self._components) if self._components else child_graph
+            bound_graph = self._bind_child_components(child_graph)
 
             child_result = self._runner.run(bound_graph, **child_inputs)
 
@@ -613,6 +613,13 @@ class HyperTable:
 
             self._store.write_rows(child_spec.name, [child_row])
 
+    def _bind_child_components(self, child_graph: Any) -> Any:
+        if not self._components:
+            return child_graph
+        valid_inputs = set(child_graph.inputs.all)
+        binds = {key: value for key, value in self._components.items() if key in valid_inputs}
+        return child_graph.bind(**binds) if binds else child_graph
+
     async def _insert_children_async(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
         child_graph = child_spec.child_graph
         if not child_graph:
@@ -629,7 +636,7 @@ class HyperTable:
                 if col.role == "source" and col.content_key and col.name in child_item:
                     child_inputs[col.name] = child_item[col.name]
 
-            bound_graph = child_graph.bind(**self._components) if self._components else child_graph
+            bound_graph = self._bind_child_components(child_graph)
 
             child_result = await self._runner.run(bound_graph, **child_inputs)
 
