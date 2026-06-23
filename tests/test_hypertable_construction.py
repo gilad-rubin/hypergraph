@@ -7,6 +7,7 @@ from typing import TypedDict
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._store import clear_store_cache
 from hypergraph.runners import SyncRunner
 
@@ -79,8 +80,8 @@ def _clear_stores():
 
 
 @pytest.fixture
-def store_path(tmp_path):
-    return str(tmp_path / "test_store")
+def store(tmp_path):
+    return LanceDBStore(str(tmp_path / "test_store"))
 
 
 @pytest.fixture
@@ -96,19 +97,19 @@ def embedder():
 class TestConstruction:
     """HyperTable construction: graph analysis, schema inference."""
 
-    def test_basic_construction(self, store_path, embedder):
+    def test_basic_construction(self, store, embedder):
         """Simple linear graph → single-grain table with source + derived columns."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         ).with_runner(SyncRunner())
 
         assert table is not None
 
-    def test_bind_components(self, store_path, embedder):
+    def test_bind_components(self, store, embedder):
         """Components via .bind() are not stored as columns."""
         from hypergraph.materialization import HyperTable
 
@@ -116,7 +117,7 @@ class TestConstruction:
             HyperTable(
                 [clean, embed_text],
                 identity="text_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -124,53 +125,53 @@ class TestConstruction:
 
         assert table is not None
 
-    def test_with_runner_returns_new_instance(self, store_path):
+    def test_with_runner_returns_new_instance(self, store):
         """with_runner returns a new immutable instance."""
         from hypergraph.materialization import HyperTable
 
         base = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         )
         with_runner = base.with_runner(SyncRunner())
         assert with_runner is not base
 
-    def test_read_without_runner(self, store_path):
+    def test_read_without_runner(self, store):
         """Read operations work without a runner set."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         )
         # count should work without a runner
         assert table.count() == 0
 
-    def test_write_without_runner_errors(self, store_path):
+    def test_write_without_runner_errors(self, store):
         """Write operations error without a runner."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         )
         with pytest.raises(RuntimeError, match="runner"):
             table.insert(video_id="v1", path="/data/test.mp4")
 
-    def test_missing_identity_errors(self, store_path):
+    def test_missing_identity_errors(self, store):
         """Constructor requires identity=."""
         from hypergraph.materialization import HyperTable
 
         with pytest.raises(TypeError):
             HyperTable(
                 [extract_audio, transcribe],
-                store=f"lancedb://{store_path}",
+                store=store,
             )
 
-    def test_grain_boundary_with_map_over(self, store_path, embedder):
+    def test_grain_boundary_with_map_over(self, store, embedder):
         """map_over creates a child table with its own identity."""
         from hypergraph.materialization import HyperTable
 
@@ -178,7 +179,7 @@ class TestConstruction:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -190,27 +191,27 @@ class TestConstruction:
 class TestBasicInsert:
     """Insert operations on a simple single-grain table."""
 
-    def test_insert_single_item(self, store_path):
+    def test_insert_single_item(self, store):
         """Insert via kwargs creates one row."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         ).with_runner(SyncRunner())
 
         table.insert(video_id="v1", path="/data/meeting.mp4")
         assert table.count() == 1
 
-    def test_insert_derives_columns(self, store_path):
+    def test_insert_derives_columns(self, store):
         """Insert runs the graph and stores derived column values."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         ).with_runner(SyncRunner())
 
         table.insert(video_id="v1", path="/data/meeting.mp4")
@@ -218,14 +219,14 @@ class TestBasicInsert:
         assert row["audio_path"] == "/tmp/meeting.mp4.wav"
         assert "transcript" in row["transcript"]
 
-    def test_insert_batch(self, store_path):
+    def test_insert_batch(self, store):
         """Insert a list of dicts creates multiple rows."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         ).with_runner(SyncRunner())
 
         table.insert(
@@ -236,21 +237,21 @@ class TestBasicInsert:
         )
         assert table.count() == 2
 
-    def test_insert_with_metadata(self, store_path):
+    def test_insert_with_metadata(self, store):
         """Extra kwargs not matching graph inputs are stored as metadata."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
             [extract_audio, transcribe],
             identity="video_id",
-            store=f"lancedb://{store_path}",
+            store=store,
         ).with_runner(SyncRunner())
 
         table.insert(video_id="v1", path="/data/meeting.mp4", title="Q3 Planning")
         row = table.get("v1")
         assert row["title"] == "Q3 Planning"
 
-    def test_insert_with_bound_component(self, store_path, embedder):
+    def test_insert_with_bound_component(self, store, embedder):
         """Bound components are used during derivation, not stored."""
         from hypergraph.materialization import HyperTable
 
@@ -258,7 +259,7 @@ class TestBasicInsert:
             HyperTable(
                 [clean, embed_text],
                 identity="text_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -274,7 +275,7 @@ class TestBasicInsert:
 class TestGrainBoundary:
     """Tests for map_over grain boundaries (parent + child tables)."""
 
-    def test_insert_creates_child_rows(self, store_path, embedder):
+    def test_insert_creates_child_rows(self, store, embedder):
         """Insert into parent cascades through map_over, creating child rows."""
         from hypergraph.materialization import HyperTable
 
@@ -282,7 +283,7 @@ class TestGrainBoundary:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -293,7 +294,7 @@ class TestGrainBoundary:
         children = table.children("v1")
         assert len(children) == 2
 
-    def test_child_rows_have_parent_link(self, store_path, embedder):
+    def test_child_rows_have_parent_link(self, store, embedder):
         """Child rows have _parent_id linking back to parent."""
         from hypergraph.materialization import HyperTable
 
@@ -301,7 +302,7 @@ class TestGrainBoundary:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -311,7 +312,7 @@ class TestGrainBoundary:
         children = table.children("v1")
         assert all(c["_parent_id"] == "v1" for c in children)
 
-    def test_child_rows_have_derived_columns(self, store_path, embedder):
+    def test_child_rows_have_derived_columns(self, store, embedder):
         """Child rows have derived columns from the subgraph."""
         from hypergraph.materialization import HyperTable
 
@@ -319,7 +320,7 @@ class TestGrainBoundary:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -331,7 +332,7 @@ class TestGrainBoundary:
         assert "vector" in children[0]
         assert children[0]["clean_text"] == "hello"
 
-    def test_child_count(self, store_path, embedder):
+    def test_child_count(self, store, embedder):
         """Count child table rows."""
         from hypergraph.materialization import HyperTable
 
@@ -339,7 +340,7 @@ class TestGrainBoundary:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())

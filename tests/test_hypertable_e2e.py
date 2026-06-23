@@ -7,6 +7,7 @@ from typing import TypedDict
 import pytest
 
 from hypergraph import Graph, node
+from hypergraph.materialization._lancedb_store import LanceDBStore
 from hypergraph.materialization._store import clear_store_cache
 from hypergraph.runners import SyncRunner
 
@@ -88,6 +89,11 @@ def store_path(tmp_path):
 
 
 @pytest.fixture
+def store(store_path):
+    return LanceDBStore(store_path)
+
+
+@pytest.fixture
 def embedder():
     return Embedder()
 
@@ -100,7 +106,7 @@ def embedder():
 class TestVectorSearchE2E:
     """Full pipeline: insert → derive vectors → search by similarity."""
 
-    def test_insert_and_vector_search(self, store_path, embedder):
+    def test_insert_and_vector_search(self, store, store_path, embedder):
         """Insert documents, then search by vector similarity via LanceDB."""
         import lancedb
 
@@ -110,8 +116,7 @@ class TestVectorSearchE2E:
             HyperTable(
                 [clean, embed_text, count_words],
                 identity="doc_id",
-                store=f"lancedb://{store_path}",
-                vector_columns={"vector": 8},
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -139,7 +144,7 @@ class TestVectorSearchE2E:
         assert len(results) == 2
         assert "d1" in results["doc_id"].values or "d3" in results["doc_id"].values
 
-    def test_multiple_inserts_accumulate(self, store_path, embedder):
+    def test_multiple_inserts_accumulate(self, store, store_path, embedder):
         """Multiple insert calls accumulate rows."""
         from hypergraph.materialization import HyperTable
 
@@ -147,7 +152,7 @@ class TestVectorSearchE2E:
             HyperTable(
                 [clean, embed_text],
                 identity="doc_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -169,7 +174,7 @@ class TestVectorSearchE2E:
 class TestGrainBoundaryE2E:
     """Full grain boundary pipeline with child vector search."""
 
-    def test_parent_child_full_pipeline(self, store_path, embedder):
+    def test_parent_child_full_pipeline(self, store, store_path, embedder):
         """Insert video → transcribe → split → embed each utterance."""
         from hypergraph.materialization import HyperTable
 
@@ -177,7 +182,7 @@ class TestGrainBoundaryE2E:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -196,7 +201,7 @@ class TestGrainBoundaryE2E:
         assert all("vector" in c for c in children)
         assert all(isinstance(c["vector"], list) for c in children)
 
-    def test_child_vector_search(self, store_path, embedder):
+    def test_child_vector_search(self, store, store_path, embedder):
         """Search child table vectors directly via LanceDB."""
         import lancedb
 
@@ -206,8 +211,7 @@ class TestGrainBoundaryE2E:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
-                vector_columns={"vector": 8},
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -223,7 +227,7 @@ class TestGrainBoundaryE2E:
         assert "_parent_id" in results.columns
         assert all(results["_parent_id"] == "v1")
 
-    def test_multiple_parents_children_isolated(self, store_path, embedder):
+    def test_multiple_parents_children_isolated(self, store, store_path, embedder):
         """Children from different parents are correctly linked."""
         from hypergraph.materialization import HyperTable
 
@@ -231,7 +235,7 @@ class TestGrainBoundaryE2E:
             HyperTable(
                 [extract_audio, transcribe, split_utterances, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
                 identity="video_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -257,7 +261,7 @@ class TestGrainBoundaryE2E:
 class TestIncrementality:
     """Content-key provenance checks for skip/recompute decisions."""
 
-    def test_row_fingerprint_stable(self, store_path, embedder):
+    def test_row_fingerprint_stable(self, store, store_path, embedder):
         """Same input → same fingerprint."""
         import lancedb
 
@@ -267,7 +271,7 @@ class TestIncrementality:
             HyperTable(
                 [clean, embed_text],
                 identity="doc_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -281,7 +285,7 @@ class TestIncrementality:
         fp1 = df[df["doc_id"] == "d1"]["_row_fingerprint"].iloc[0]
         assert fp1 and len(fp1) == 64  # sha256 hex
 
-    def test_different_inputs_different_fingerprint(self, store_path, embedder):
+    def test_different_inputs_different_fingerprint(self, store, store_path, embedder):
         """Different source values → different fingerprint."""
         import lancedb
 
@@ -291,7 +295,7 @@ class TestIncrementality:
             HyperTable(
                 [clean, embed_text],
                 identity="doc_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -307,7 +311,7 @@ class TestIncrementality:
         fp2 = df[df["doc_id"] == "d2"]["_row_fingerprint"].iloc[0]
         assert fp1 != fp2
 
-    def test_per_column_provenance_stored(self, store_path, embedder):
+    def test_per_column_provenance_stored(self, store, store_path, embedder):
         """Each derived column has its own provenance hash."""
         import lancedb
 
@@ -317,7 +321,7 @@ class TestIncrementality:
             HyperTable(
                 [clean, embed_text, count_words],
                 identity="doc_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -335,7 +339,7 @@ class TestIncrementality:
         assert row["_provenance_clean_text"] != ""
         assert row["_provenance_vector"] != ""
 
-    def test_write_gen_increments(self, store_path, embedder):
+    def test_write_gen_increments(self, store, store_path, embedder):
         """Each insert call increments _write_gen."""
         import lancedb
 
@@ -345,7 +349,7 @@ class TestIncrementality:
             HyperTable(
                 [clean, embed_text],
                 identity="doc_id",
-                store=f"lancedb://{store_path}",
+                store=store,
             )
             .bind(embedder=embedder)
             .with_runner(SyncRunner())
@@ -381,7 +385,7 @@ class TestComponentSwap:
             HyperTable(
                 [clean, embed_text],
                 identity="doc_id",
-                store=f"lancedb://{store_path}_a",
+                store=LanceDBStore(f"{store_path}_a"),
             )
             .bind(embedder=emb_a)
             .with_runner(SyncRunner())
@@ -391,7 +395,7 @@ class TestComponentSwap:
             HyperTable(
                 [clean, embed_text],
                 identity="doc_id",
-                store=f"lancedb://{store_path}_b",
+                store=LanceDBStore(f"{store_path}_b"),
             )
             .bind(embedder=emb_b)
             .with_runner(SyncRunner())

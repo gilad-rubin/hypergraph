@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import typing
 from dataclasses import dataclass, field
 from typing import Any
-
-import lancedb
-import pyarrow as pa
 
 from hypergraph import Graph
 from hypergraph.materialization._keys import compute_definition_hash
@@ -25,29 +24,19 @@ def _normalize_value(v: Any) -> Any:
     return v
 
 
-def _python_type_to_arrow(tp: type) -> pa.DataType:
-    if tp is str:
-        return pa.utf8()
-    if tp is int:
-        return pa.int64()
-    if tp is float:
-        return pa.float64()
-    if tp is bool:
-        return pa.bool_()
-    if tp is bytes:
-        return pa.large_binary()
-    if hasattr(tp, "__origin__"):
-        origin = tp.__origin__
-        if origin is list:
-            args = getattr(tp, "__args__", ())
-            if args and args[0] is float:
-                return pa.list_(pa.float32())
-            if args and args[0] is str:
-                return pa.list_(pa.utf8())
-            if args and args[0] is int:
-                return pa.list_(pa.int64())
-            return pa.list_(pa.utf8())
-    return pa.utf8()
+def _is_internal(k: str) -> bool:
+    return k in ("_row_fingerprint", "_write_gen") or k.startswith("_provenance_")
+
+
+def _dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
+    """Keep only the highest _write_gen per identity (crash-leftover dedup)."""
+    best: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        id_val = str(row.get(identity, ""))
+        existing = best.get(id_val)
+        if existing is None or row.get("_write_gen", 0) > existing.get("_write_gen", 0):
+            best[id_val] = row
+    return list(best.values())
 
 
 @dataclass(frozen=True)
@@ -77,22 +66,18 @@ class HyperTable:
         nodes: list,
         *,
         identity: str,
-        store: str,
-        vector_columns: dict[str, int] | None = None,
+        store: Any,
         _components: dict[str, Any] | None = None,
         _runner: Any | None = None,
         _graph: Graph | None = None,
     ):
         self._nodes = nodes
         self._identity = identity
-        self._vector_columns = vector_columns or {}
-        self._store_uri = store
+        self._store = store
         self._components = _components or {}
         self._runner = _runner
         self._graph = _graph
         self._spec: TableSpec | None = None
-        self._db: Any = None
-        self._tables: dict[str, Any] = {}
         self._analyzed = False
 
     def bind(self, **components: Any) -> HyperTable:
@@ -100,8 +85,7 @@ class HyperTable:
         return HyperTable(
             self._nodes,
             identity=self._identity,
-            store=self._store_uri,
-            vector_columns=self._vector_columns,
+            store=self._store,
             _components=merged,
             _runner=self._runner,
         )
@@ -110,8 +94,7 @@ class HyperTable:
         return HyperTable(
             self._nodes,
             identity=self._identity,
-            store=self._store_uri,
-            vector_columns=self._vector_columns,
+            store=self._store,
             _components=self._components,
             _runner=runner,
         )
@@ -121,7 +104,7 @@ class HyperTable:
             return
         self._build_graph()
         self._analyze_graph()
-        self._open_store()
+        self._resolve_store()
         self._analyzed = True
 
     def _build_graph(self):
@@ -218,102 +201,122 @@ class HyperTable:
             map_input=map_input,
         )
 
-    def _open_store(self):
-        path = self._store_uri.replace("lancedb://", "")
-        self._db = lancedb.connect(path)
-        self._ensure_physical_table(self._spec)
-        for child in self._spec.children:
-            self._ensure_physical_table(child)
+    def _resolve_store(self):
+        from hypergraph.materialization._table_store import TableStore
 
-    def _build_arrow_schema(self, spec: TableSpec) -> pa.Schema:
-        fields = []
-        for col in spec.columns:
-            if col.role == "internal":
-                if col.name == "_write_gen":
-                    fields.append(pa.field(col.name, pa.int64()))
-                else:
-                    fields.append(pa.field(col.name, pa.utf8()))
-            elif col.role in ("identity", "parent_link", "source"):
-                fields.append(pa.field(col.name, pa.utf8()))
-            elif col.role == "derived":
-                if col.name in self._vector_columns:
-                    dim = self._vector_columns[col.name]
-                    fields.append(pa.field(col.name, pa.list_(pa.float32(), dim)))
-                else:
-                    node_obj = col.produced_by
-                    func = getattr(node_obj, "func", None) or getattr(node_obj, "_func", None)
-                    if func:
-                        import typing
+        if not isinstance(self._store, TableStore):
+            raise TypeError(f"store must be a TableStore instance (e.g. LanceDBStore), got {type(self._store)}")
 
-                        hints = typing.get_type_hints(func)
-                        ret_type = hints.get("return", str)
-                        fields.append(pa.field(col.name, _python_type_to_arrow(ret_type)))
-                    else:
-                        fields.append(pa.field(col.name, pa.utf8()))
-        return pa.schema(fields)
-
-    def _ensure_physical_table(self, spec: TableSpec):
-        try:
-            tbl = self._db.open_table(spec.name)
-        except Exception:
-            schema = self._build_arrow_schema(spec)
-            tbl = self._db.create_table(spec.name, schema=schema)
-        self._tables[spec.name] = tbl
+        self._store.open(self._spec, self._spec.children)
 
     def _require_runner(self):
         if self._runner is None:
             raise RuntimeError("No runner set. Call .with_runner(SyncRunner()) before write operations.")
 
+    # --- Shared helpers ---
+
+    def _graph_required_inputs(self) -> set[str]:
+        required = self._graph.inputs.required
+        return set(required) if isinstance(required, tuple) else set(required.keys())
+
+    def _extract_graph_inputs(self, item: dict[str, Any]) -> dict[str, Any]:
+        required = self._graph_required_inputs()
+        return {k: v for k, v in item.items() if k != self._identity and k in required}
+
+    def _extract_outputs(self, result: Any) -> dict[str, Any]:
+        if hasattr(result, "values") and isinstance(result.values, dict):
+            return result.values
+        if isinstance(result, dict):
+            return result
+        return {}
+
+    def _build_row(
+        self,
+        item: dict[str, Any],
+        graph_inputs: dict[str, Any],
+        outputs: dict[str, Any],
+        write_gen: int,
+    ) -> dict[str, Any]:
+        identity_value = item[self._identity]
+        row: dict[str, Any] = {self._identity: identity_value}
+        row.update({k: v for k, v in item.items() if k != self._identity})
+
+        derived_cols = [c for c in self._spec.columns if c.role == "derived"]
+        for col in derived_cols:
+            if col.name in outputs:
+                row[col.name] = outputs[col.name]
+
+        row["_row_fingerprint"] = self._compute_row_fingerprint(item, graph_inputs)
+        row["_write_gen"] = write_gen
+
+        for col in derived_cols:
+            prov = self._compute_provenance(col.name, graph_inputs, outputs)
+            row[f"_provenance_{col.name}"] = prov
+
+        return row
+
+    def _evolve_for_metadata(self, item: dict[str, Any]) -> None:
+        """Add schema columns for metadata keys the store hasn't seen."""
+        store = self._store
+        sample = store.read_rows(self._spec.name, limit=1)
+        known_cols = set(sample[0].keys()) if sample else {c.name for c in self._spec.columns}
+        new_meta = {k: str for k in item if k not in known_cols and k != self._identity}
+        if new_meta:
+            store.evolve_schema(self._spec.name, new_meta)
+
+    def _get_derived_column_type(self, column_name: str) -> type:
+        for c in self._spec.columns:
+            if c.name == column_name and c.role == "derived" and c.produced_by:
+                func = getattr(c.produced_by, "func", None) or getattr(c.produced_by, "_func", None)
+                if func:
+                    hints = typing.get_type_hints(func)
+                    return hints.get("return", str)
+        return str
+
     # --- Public API ---
+
+    def visualize(self, *, include_children: bool = True, **kwargs) -> Any:
+        self._ensure_analyzed()
+        if not include_children or not self._spec.children:
+            return self._graph.visualize(**kwargs)
+        from hypergraph.graph import Graph as _Graph
+
+        all_nodes = list(self._graph.nodes.values()) if isinstance(self._graph.nodes, dict) else []
+        for map_node in getattr(self, "_map_over_nodes", []):
+            all_nodes.append(map_node)
+        combined = _Graph(all_nodes, name=self._spec.name)
+        if self._components:
+            valid_inputs = set(combined.inputs.all)
+            binds = {k: v for k, v in self._components.items() if k in valid_inputs}
+            if binds:
+                combined = combined.bind(**binds)
+        return combined.visualize(depth=1, **kwargs)
 
     def count(self, child_table: str | None = None) -> int:
         self._ensure_analyzed()
         if child_table:
             for child in self._spec.children:
                 if child.name == child_table:
-                    tbl = self._tables.get(child.name)
-                    if tbl is None:
-                        return 0
-                    return len(tbl.to_pandas())
+                    return self._store.count(child.name)
             return 0
-        tbl = self._tables.get(self._spec.name)
-        if tbl is None:
-            return 0
-        return len(tbl.to_pandas())
+        return self._store.count(self._spec.name)
 
     def get(self, identity_value: str) -> dict[str, Any] | None:
         self._ensure_analyzed()
-        tbl = self._tables[self._spec.name]
-        df = tbl.to_pandas()
-        matches = df[df[self._identity] == identity_value]
-        if matches.empty:
+        row = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if row is None:
             return None
-        row = matches.iloc[0].to_dict()
-        internal_prefixes = ("_row_fingerprint", "_provenance_", "_write_gen")
-        return {k: _normalize_value(v) for k, v in row.items() if not any(k.startswith(p) or k == p for p in internal_prefixes)}
+        return {k: _normalize_value(v) for k, v in row.items() if not _is_internal(k)}
 
     def children(self, parent_id: str) -> list[dict[str, Any]]:
         self._ensure_analyzed()
         if not self._spec.children:
             return []
         child_spec = self._spec.children[0]
-        tbl = self._tables.get(child_spec.name)
-        if tbl is None:
-            return []
-        df = tbl.to_pandas()
-        matches = df[df["_parent_id"] == parent_id]
-        results = []
-        for _, row in matches.iterrows():
-            d = row.to_dict()
-            clean = {}
-            for k, v in d.items():
-                if k.startswith("_provenance_") or k in ("_row_fingerprint", "_write_gen"):
-                    continue
-                clean[k] = _normalize_value(v)
-            results.append(clean)
-        return results
+        rows = self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)])
+        return [{k: _normalize_value(v) for k, v in row.items() if not _is_internal(k)} for row in rows]
 
-    def insert(self, *args, **kwargs):
+    def insert(self, *args, **kwargs) -> None:
         self._require_runner()
         self._ensure_analyzed()
 
@@ -324,100 +327,52 @@ class HyperTable:
         else:
             raise ValueError("insert() requires kwargs or a list of dicts")
 
-        write_gen = self._next_write_gen()
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
 
         for item in items:
             self._insert_one(item, write_gen)
 
-    def _next_write_gen(self) -> int:
-        tbl = self._tables[self._spec.name]
-        df = tbl.to_pandas()
-        if df.empty:
-            return 1
-        return int(df["_write_gen"].max()) + 1
-
-    def _insert_one(self, item: dict[str, Any], write_gen: int):
+    def _insert_one(self, item: dict[str, Any], write_gen: int) -> str:
+        """Insert or upsert a single row. Returns 'inserted', 'updated', or 'skipped'."""
         identity_value = item[self._identity]
+        graph_inputs = self._extract_graph_inputs(item)
 
-        graph = self._graph
-        graph_inputs = {}
-        metadata = {}
+        # Incrementality: check existing fingerprint
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if existing is not None:
+            new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
+            if existing.get("_row_fingerprint") == new_fingerprint:
+                return "skipped"
 
-        required = set(graph.inputs.required) if isinstance(graph.inputs.required, tuple) else set(graph.inputs.required.keys())
+        # Run graph
+        result = self._runner.run(self._graph, **graph_inputs)
+        outputs = self._extract_outputs(result)
 
-        for k, v in item.items():
-            if k == self._identity:
-                continue
-            if k in required:
-                graph_inputs[k] = v
-            else:
-                metadata[k] = v
+        # Schema evolution for metadata
+        self._evolve_for_metadata(item)
 
-        result = self._runner.run(graph, **graph_inputs)
+        # Build and write row
+        row = self._build_row(item, graph_inputs, outputs, write_gen)
+        self._store.write_rows(self._spec.name, [row])
 
-        if hasattr(result, "values") and isinstance(result.values, dict):
-            outputs = result.values
-        elif isinstance(result, dict):
-            outputs = result
-        else:
-            outputs = {}
+        # Delete old version if exists
+        if existing is not None:
+            self._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._identity, "eq", identity_value),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+            # Delete old children
+            for child_spec in self._spec.children:
+                self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
 
-        row = {self._identity: identity_value}
-        row.update({k: v for k, v in item.items() if k != self._identity})
-
-        derived_cols = [c for c in self._spec.columns if c.role == "derived"]
-        for col in derived_cols:
-            if col.name in outputs:
-                row[col.name] = outputs[col.name]
-
-        fingerprint = self._compute_row_fingerprint(item, graph_inputs)
-        row["_row_fingerprint"] = fingerprint
-        row["_write_gen"] = write_gen
-
-        for col in derived_cols:
-            prov = self._compute_provenance(col.name, graph_inputs, outputs)
-            row[f"_provenance_{col.name}"] = prov
-
-        tbl = self._tables[self._spec.name]
-
-        new_meta_cols = [k for k in metadata if k not in [f.name for f in tbl.schema]]
-        if new_meta_cols:
-            existing_data = tbl.to_arrow()
-            new_fields = list(tbl.schema) + [pa.field(k, pa.utf8()) for k in new_meta_cols]
-            new_schema = pa.schema(new_fields)
-            self._db.drop_table(self._spec.name)
-            tbl = self._db.create_table(self._spec.name, schema=new_schema)
-            if len(existing_data) > 0:
-                null_cols = {k: pa.array([None] * len(existing_data), type=pa.utf8()) for k in new_meta_cols}
-                for col_name, col_arr in null_cols.items():
-                    existing_data = existing_data.append_column(col_name, col_arr)
-                tbl.add(existing_data)
-            self._tables[self._spec.name] = tbl
-
-        schema = tbl.schema
-        for field_obj in schema:
-            if field_obj.name not in row:
-                row[field_obj.name] = None
-
-        self._write_row(tbl, row, schema)
-
+        # Insert children
         for child_spec in self._spec.children:
             self._insert_children(identity_value, outputs, child_spec, write_gen)
 
-    def _write_row(self, tbl, row: dict, schema: pa.Schema):
-        arrays = []
-        for field_obj in schema:
-            val = row.get(field_obj.name)
-            if val is None:
-                arrays.append(pa.array([None], type=field_obj.type))
-            elif pa.types.is_list(field_obj.type) and isinstance(val, list):
-                inner_type = field_obj.type.value_type
-                inner_arr = pa.array(val, type=inner_type)
-                arrays.append(pa.array([inner_arr], type=field_obj.type))
-            else:
-                arrays.append(pa.array([val], type=field_obj.type))
-        record_batch = pa.record_batch(arrays, schema=schema)
-        tbl.add(record_batch)
+        return "updated" if existing is not None else "inserted"
 
     def _insert_children(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int):
         child_graph = child_spec.child_graph
@@ -427,8 +382,6 @@ class HyperTable:
         child_items = outputs.get(child_spec.map_input)
         if not child_items or not isinstance(child_items, list):
             return
-
-        child_tbl = self._tables[child_spec.name]
 
         for child_item in child_items:
             child_identity = child_item.get(child_spec.identity, "")
@@ -462,23 +415,222 @@ class HyperTable:
             for k, v in child_outputs.items():
                 child_row[k] = v
 
-            schema = child_tbl.schema
-            for field_obj in schema:
-                if field_obj.name not in child_row:
-                    child_row[field_obj.name] = None
+            self._store.write_rows(child_spec.name, [child_row])
 
-            self._write_row(child_tbl, child_row, schema)
+    def update(self, identity_value: str, **changes: Any) -> None:
+        """Update a row. Re-derives downstream if source columns changed."""
+        self._require_runner()
+        self._ensure_analyzed()
+
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if existing is None:
+            raise KeyError(identity_value)
+
+        # Reconstruct full item with changes applied
+        item: dict[str, Any] = {self._identity: identity_value}
+        for c in self._spec.columns:
+            if c.role == "source" and c.name in existing:
+                item[c.name] = _normalize_value(existing[c.name])
+        # Metadata from existing row
+        spec_col_names = {c.name for c in self._spec.columns}
+        for k, v in existing.items():
+            if k not in spec_col_names and not _is_internal(k):
+                item[k] = _normalize_value(v)
+        # Apply changes
+        item.update(changes)
+
+        source_names = {c.name for c in self._spec.columns if c.role == "source"}
+        needs_rederive = any(k in source_names for k in changes)
+
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+
+        if needs_rederive:
+            graph_inputs = self._extract_graph_inputs(item)
+            result = self._runner.run(self._graph, **graph_inputs)
+            outputs = self._extract_outputs(result)
+            self._evolve_for_metadata(item)
+            row = self._build_row(item, graph_inputs, outputs, write_gen)
+        else:
+            row = {k: _normalize_value(v) for k, v in existing.items()}
+            row.update(changes)
+            row["_write_gen"] = write_gen
+
+        self._store.write_rows(self._spec.name, [row])
+
+        if needs_rederive:
+            # Write new children BEFORE deleting old ones — crash-safe ordering
+            for child_spec in self._spec.children:
+                self._insert_children(identity_value, outputs, child_spec, write_gen)
+            for child_spec in self._spec.children:
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", write_gen),
+                    ],
+                )
+
+        self._store.delete_rows(
+            self._spec.name,
+            [
+                (self._identity, "eq", identity_value),
+                ("_write_gen", "lt", write_gen),
+            ],
+        )
+
+    def delete(self, identity_value: str) -> None:
+        """Delete a row and cascade-delete its children."""
+        self._ensure_analyzed()
+
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if existing is None:
+            return
+
+        for child_spec in self._spec.children:
+            self._store.delete_rows(child_spec.name, [("_parent_id", "eq", identity_value)])
+        self._store.delete_rows(self._spec.name, [(self._identity, "eq", identity_value)])
+
+    def sync(self, items: list[dict[str, Any]]) -> Any:
+        """Reconcile: insert new, update changed, delete missing, skip unchanged."""
+        from hypergraph.materialization._types import SyncResult
+
+        self._require_runner()
+        self._ensure_analyzed()
+
+        existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+        existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
+
+        incoming_ids: set[str] = set()
+        inserted = 0
+        updated = 0
+        skipped = 0
+
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+
+        for item in items:
+            id_val = str(item[self._identity])
+            incoming_ids.add(id_val)
+
+            existing = existing_by_id.get(id_val)
+            if existing is None:
+                self._insert_one(item, write_gen)
+                inserted += 1
+            else:
+                graph_inputs = self._extract_graph_inputs(item)
+                new_fp = self._compute_row_fingerprint(item, graph_inputs)
+                if existing.get("_row_fingerprint") == new_fp:
+                    skipped += 1
+                else:
+                    changes = {k: v for k, v in item.items() if k != self._identity}
+                    self.update(id_val, **changes)
+                    updated += 1
+
+        deleted = 0
+        for id_val in existing_by_id:
+            if id_val not in incoming_ids:
+                self.delete(id_val)
+                deleted += 1
+
+        return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=0)
+
+    def recompute(self, column: str) -> None:
+        """Re-derive one column for all rows using current bound components."""
+        self._require_runner()
+        self._ensure_analyzed()
+
+        rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+
+        for existing in rows:
+            id_val = existing[self._identity]
+
+            graph_inputs = {}
+            for c in self._spec.columns:
+                if c.role == "source" and c.name in existing:
+                    graph_inputs[c.name] = _normalize_value(existing[c.name])
+
+            result = self._runner.run(self._graph, **graph_inputs)
+            outputs = self._extract_outputs(result)
+
+            new_row = {k: _normalize_value(v) for k, v in existing.items()}
+            if column in outputs:
+                new_row[column] = outputs[column]
+            new_row["_write_gen"] = write_gen
+            new_row[f"_provenance_{column}"] = self._compute_provenance(column, graph_inputs, outputs)
+
+            self._store.write_rows(self._spec.name, [new_row])
+            self._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._identity, "eq", id_val),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+
+    def backfill(self, column: str) -> None:
+        """Derive a new column for existing rows that have NULL."""
+        self._require_runner()
+        self._ensure_analyzed()
+
+        # Evolve schema if the column doesn't exist yet
+        sample = self._store.read_rows(self._spec.name, limit=1)
+        if sample and column not in sample[0]:
+            col_type = self._get_derived_column_type(column)
+            self._store.evolve_schema(
+                self._spec.name,
+                {
+                    column: col_type,
+                    f"_provenance_{column}": str,
+                },
+            )
+
+        rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+
+        for existing in rows:
+            val = existing.get(column)
+            if val is not None and not (isinstance(val, float) and math.isnan(val)):
+                continue
+
+            id_val = existing[self._identity]
+
+            graph_inputs = {}
+            for c in self._spec.columns:
+                if c.role == "source" and c.name in existing:
+                    graph_inputs[c.name] = _normalize_value(existing[c.name])
+
+            result = self._runner.run(self._graph, **graph_inputs)
+            outputs = self._extract_outputs(result)
+
+            new_row = {k: _normalize_value(v) for k, v in existing.items()}
+            if column in outputs:
+                new_row[column] = outputs[column]
+            new_row["_write_gen"] = write_gen
+            new_row[f"_provenance_{column}"] = self._compute_provenance(column, graph_inputs, outputs)
+
+            self._store.write_rows(self._spec.name, [new_row])
+            self._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._identity, "eq", id_val),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+
+    # --- Fingerprint and provenance ---
 
     def _compute_row_fingerprint(self, item: dict, graph_inputs: dict) -> str:
         node_hashes = []
-        for n in self._graph.nodes:
-            if hasattr(n, "fn"):
-                node_hashes.append(compute_definition_hash(n.fn))
+        for n in self._graph.iter_nodes():
+            func = getattr(n, "func", None)
+            if func is not None:
+                node_hashes.append(compute_definition_hash(func))
 
         component_hashes = {}
         for name, comp in self._components.items():
-            if hasattr(comp, "_config"):
-                component_hashes[name] = str(comp._config())
+            config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
+            if config is not None:
+                component_hashes[name] = str(config)
 
         payload = json.dumps(
             {

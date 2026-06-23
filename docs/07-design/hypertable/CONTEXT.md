@@ -9,7 +9,7 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 ## Glossary
 
-**HyperTable** — the top-level object. Wraps a Hypergraph graph + a store + an identity declaration. Owns insert/update/delete/sync/search operations. Orchestrates runners and sinks.
+**HyperTable** — the top-level object. Wraps a Hypergraph graph + a store + an identity declaration. Owns materialization operations such as insert/update/delete/sync. Orchestrates runners and sinks.
 
 **Source column** — a column you provide at insert time. Either feeds a node (content key) or doesn't (metadata). Not computed — stored directly.
 
@@ -41,7 +41,7 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 **Schema evolution** — what happens when you change the graph and reopen an existing table. Safe changes (add column, change logic) happen automatically. Destructive changes (drop column, rename, backfill) require an explicit call. The principle: no silent data loss, no unbounded surprise compute.
 
-**Query graph** — a normal Hypergraph graph that reads from a table at query time (e.g., hybrid search with BM25 + vector + reranking). Not a HyperTable concept — it's just a graph that takes the table as a bound component. Can be dynamically attached to the table's `.queries` namespace (`subtext.queries.hybrid = graph; subtext.queries.hybrid(query=...)`).
+**Query graph** — a normal Hypergraph graph that reads from a populated store at query time (e.g., hybrid search with BM25 + vector + reranking). It is agnostic to HyperTable: HyperTable may have produced the stored rows, but query-time retrieval does not bind or call the HyperTable object.
 
 **Ephemeral output** — a node output marked `ephemeral=True`. Flows through graph wiring (downstream nodes can consume it) but is NOT stored as a column. Exists only during execution. Use for intermediate values like raw LLM responses, cost metadata, or large temporary data that only the next node needs.
 
@@ -199,8 +199,8 @@ subtext = subtext.with_runner(SyncRunner())
 subtext.insert(video_id="v1", path="/data/meeting.mp4")
 
 # Read operations never need a runner
-subtext.search("vector", query_vector=q, limit=5)
-subtext.filter(title="Q3")
+subtext.get("v1")
+subtext.count()
 ```
 
 Future runners (AsyncRunner, DaftRunner) will use the same `.with_runner()` pattern but require their own class or ADR to resolve execution color.
@@ -236,24 +236,22 @@ When you change the graph and reopen an existing table, HyperTable detects the d
 
 The principle: if you can lose data or trigger unbounded compute, you say so explicitly. If it's safe and bounded, it happens automatically.
 
-### 11. Query-time graphs — dynamic attachment via `.queries` namespace
+### 11. Query-time graphs read the store directly
 
-A HyperTable exposes search primitives (vector search, BM25, filter). Complex retrieval (hybrid search, reranking) is a separate Hypergraph graph that reads from the table — not a HyperTable feature.
-
-**The general case: the table is a bound component in a normal graph.**
+HyperTable materializes rows into a store. Retrieval is a separate Hypergraph graph that opens or receives the queryable store/table directly. The retrieval graph is not attached to HyperTable and does not call HyperTable methods.
 
 ```python
 @node(output_name="bm25_hits")
-def bm25_search(query: str, table: HyperTable) -> list[dict]:
-    return table.search("text", query=query, mode="bm25", limit=20)
+def bm25_search(query: str, lance_table) -> list[dict]:
+    return lance_table.search(query, query_type="fts").limit(20).to_list()
 
 @node(output_name="query_vector")
 def embed_query(query: str, embedder: Embedder) -> list[float]:
     return embedder.embed(query)
 
 @node(output_name="vector_hits")
-def vector_search(query_vector: list[float], table: HyperTable) -> list[dict]:
-    return table.search("vector", query_vector=query_vector, limit=20)
+def vector_search(query_vector: list[float], lance_table) -> list[dict]:
+    return lance_table.search(query_vector, vector_column_name="vector").limit(20).to_list()
 
 @node(output_name="merged")
 def rrf_merge(bm25_hits: list[dict], vector_hits: list[dict]) -> list[dict]: ...
@@ -263,40 +261,19 @@ def rerank(merged: list[dict], query: str, reranker: CrossEncoder) -> list[dict]
 
 hybrid_search = Graph([embed_query, bm25_search, vector_search, rrf_merge, rerank])
 
-# Just a normal Hypergraph graph. The table is a bound component.
 results = SyncRunner().run(
     hybrid_search,
     query="quarterly revenue",
-    table=subtext,
+    lance_table=db.open_table("documents"),
     embedder=Embedder(),
     reranker=CrossEncoder(),
 )
 ```
 
-**The convenience case: attach a named query graph via `.queries`.**
-
-The `.queries` namespace lets you dynamically attach graphs under any name you choose:
-
-```python
-# You pick the name
-subtext.queries.hybrid = hybrid_search.bind(embedder=Embedder(), reranker=CrossEncoder())
-subtext.queries.simple = simple_vector_graph
-subtext.queries.hybrid_v2 = better_hybrid.bind(...)
-
-# Call like a method — runs the graph with table=self
-results = subtext.queries.hybrid(query="quarterly revenue")
-results = subtext.queries.simple(query="hello")
-```
-
-Under the hood, assigning a graph to `.queries.X` wraps it so that calling `subtext.queries.X(**kwargs)` runs `runner.run(graph, table=self, **kwargs)`. No fixed API — whatever name you assign is the name you call.
-
-The `.queries` namespace avoids collisions with real table methods (`.insert`, `.search`, `.count`, etc.).
-
 **Why this separation matters:**
 - The materialization graph (insert/update) and the query graph are different graphs with different purposes. The materialization graph writes; the query graph reads.
-- You can have multiple query strategies on the same table — name them whatever makes sense.
+- Query graphs work over any LanceDB table with the expected columns, including tables not produced by HyperTable.
 - The query graph is a normal Hypergraph graph — testable, visualizable, composable. Not a special HyperTable concept.
-- The table just exposes `.search()` primitives (vector, BM25, filter). The query graph orchestrates them.
 
 ### 12. Ephemeral outputs — intermediate values that aren't stored
 
