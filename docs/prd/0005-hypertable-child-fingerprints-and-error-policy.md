@@ -1,6 +1,6 @@
 # PRD 0005 — HyperTable child fingerprints and error policy
 
-status: ready-for-agent
+status: done
 
 ## Problem Statement
 
