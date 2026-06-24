@@ -558,28 +558,41 @@ class HyperTable:
         identity_value = item[self._identity]
         graph_inputs = self._extract_graph_inputs(item)
 
-        # Incrementality: check existing fingerprint
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        parent_skipped = False
         if existing is not None:
             new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
             if existing.get("_row_fingerprint") == new_fingerprint:
-                return "skipped"
+                parent_skipped = True
 
-        # Run graph
+        if parent_skipped and not self._spec.children:
+            return "skipped"
+
         result = self._runner.run(self._graph, **graph_inputs)
         outputs = self._extract_outputs(result)
 
-        # Schema evolution for metadata
+        if parent_skipped:
+            # Parent unchanged — reconcile children only (don't rewrite parent)
+            for child_spec in self._spec.children:
+                self._insert_children(identity_value, outputs, child_spec, write_gen)
+            for child_spec in self._spec.children:
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", write_gen),
+                    ],
+                )
+            return "skipped"
+
         self._evolve_for_metadata(item)
 
-        # Build and write row
         row = self._build_row(item, graph_inputs, outputs, write_gen)
         self._store.write_rows(self._spec.name, [row])
 
         for child_spec in self._spec.children:
             self._insert_children(identity_value, outputs, child_spec, write_gen)
 
-        # Delete old version if exists
         if existing is not None:
             self._store.delete_rows(
                 self._spec.name,
@@ -588,7 +601,6 @@ class HyperTable:
                     ("_write_gen", "lt", write_gen),
                 ],
             )
-            # Delete old children
             for child_spec in self._spec.children:
                 self._store.delete_rows(
                     child_spec.name,
@@ -606,13 +618,30 @@ class HyperTable:
         graph_inputs = self._extract_graph_inputs(item)
 
         existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        parent_skipped = False
         if existing is not None:
             new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
             if existing.get("_row_fingerprint") == new_fingerprint:
-                return "skipped"
+                parent_skipped = True
+
+        if parent_skipped and not self._spec.children:
+            return "skipped"
 
         result = await self._runner.run(self._graph, **graph_inputs)
         outputs = self._extract_outputs(result)
+
+        if parent_skipped:
+            for child_spec in self._spec.children:
+                await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
+            for child_spec in self._spec.children:
+                self._store.delete_rows(
+                    child_spec.name,
+                    [
+                        ("_parent_id", "eq", identity_value),
+                        ("_write_gen", "lt", write_gen),
+                    ],
+                )
+            return "skipped"
 
         self._evolve_for_metadata(item)
 
@@ -658,6 +687,24 @@ class HyperTable:
                 if col.role == "source" and col.content_key and col.name in child_item:
                     child_inputs[col.name] = child_item[col.name]
 
+            new_fingerprint = self._compute_child_fingerprint(child_inputs, child_spec)
+
+            # Check existing child via compound predicate
+            existing_children = self._store.read_rows(
+                child_spec.name,
+                [("_parent_id", "eq", parent_id), (child_spec.identity, "eq", child_identity)],
+            )
+            existing_child = max(existing_children, key=lambda r: r.get("_write_gen", 0)) if existing_children else None
+
+            if existing_child is not None and existing_child.get("_row_fingerprint") == new_fingerprint:
+                status = existing_child.get("_status")
+                if status is None or status == "complete":
+                    # Skip — but bump _write_gen so it survives cleanup
+                    bumped = {k: v for k, v in existing_child.items()}
+                    bumped["_write_gen"] = write_gen
+                    self._store.write_rows(child_spec.name, [bumped])
+                    continue
+
             bound_graph = self._bind_child_components(child_graph)
 
             child_result = self._runner.run(bound_graph, **child_inputs)
@@ -673,7 +720,7 @@ class HyperTable:
                 child_spec.identity: child_identity,
                 "_parent_id": parent_id,
                 "_write_gen": write_gen,
-                "_row_fingerprint": "",
+                "_row_fingerprint": new_fingerprint,
             }
 
             for k, v in child_item.items():
@@ -709,6 +756,22 @@ class HyperTable:
                 if col.role == "source" and col.content_key and col.name in child_item:
                     child_inputs[col.name] = child_item[col.name]
 
+            new_fingerprint = self._compute_child_fingerprint(child_inputs, child_spec)
+
+            existing_children = self._store.read_rows(
+                child_spec.name,
+                [("_parent_id", "eq", parent_id), (child_spec.identity, "eq", child_identity)],
+            )
+            existing_child = max(existing_children, key=lambda r: r.get("_write_gen", 0)) if existing_children else None
+
+            if existing_child is not None and existing_child.get("_row_fingerprint") == new_fingerprint:
+                status = existing_child.get("_status")
+                if status is None or status == "complete":
+                    bumped = {k: v for k, v in existing_child.items()}
+                    bumped["_write_gen"] = write_gen
+                    self._store.write_rows(child_spec.name, [bumped])
+                    continue
+
             bound_graph = self._bind_child_components(child_graph)
 
             child_result = await self._runner.run(bound_graph, **child_inputs)
@@ -724,7 +787,7 @@ class HyperTable:
                 child_spec.identity: child_identity,
                 "_parent_id": parent_id,
                 "_write_gen": write_gen,
-                "_row_fingerprint": "",
+                "_row_fingerprint": new_fingerprint,
             }
 
             for k, v in child_item.items():
@@ -1045,6 +1108,34 @@ class HyperTable:
         payload = json.dumps(
             {
                 "inputs": {k: str(v) for k, v in sorted(graph_inputs.items())},
+                "nodes": sorted(node_hashes),
+                "components": component_hashes,
+            },
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def _compute_child_fingerprint(self, child_inputs: dict, child_spec: TableSpec) -> str:
+        child_graph = child_spec.child_graph
+        node_hashes = []
+        if child_graph:
+            for n in child_graph.iter_nodes():
+                func = getattr(n, "func", None)
+                if func is not None:
+                    node_hashes.append(compute_definition_hash(func))
+
+        component_hashes = {}
+        if child_graph:
+            valid_inputs = set(child_graph.inputs.all) if hasattr(child_graph.inputs, "all") else set()
+            for name, comp in self._components.items():
+                if name in valid_inputs:
+                    config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
+                    if config is not None:
+                        component_hashes[name] = str(config)
+
+        payload = json.dumps(
+            {
+                "inputs": {k: str(v) for k, v in sorted(child_inputs.items())},
                 "nodes": sorted(node_hashes),
                 "components": component_hashes,
             },
