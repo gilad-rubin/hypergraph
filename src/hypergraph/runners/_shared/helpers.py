@@ -1265,12 +1265,12 @@ def _extract_model_type(hint: Any) -> type | None:
     Handles: Model, Optional[Model], Model | None, list[Model].
     Returns the concrete model class, or None if not a model type.
     """
+    import types as _types
     from typing import Union, get_args, get_origin
 
     if hint is None:
         return None
 
-    # Plain class — check if it's a model
     if isinstance(hint, type):
         if _is_model_class(hint):
             return hint
@@ -1285,8 +1285,8 @@ def _extract_model_type(hint: Any) -> type | None:
             return hint  # return the full list[Model] hint
         return None
 
-    # Optional[Model] / Union[Model, None]
-    if origin is Union:
+    # Optional[Model] / Union[Model, None] / Model | None (PEP 604)
+    if origin is Union or isinstance(hint, _types.UnionType):
         args = [a for a in get_args(hint) if a is not type(None)]
         if len(args) == 1 and isinstance(args[0], type) and _is_model_class(args[0]):
             return args[0]
@@ -1331,17 +1331,20 @@ def _coerce_value(value: Any, hint: Any) -> Any:
 
 
 def _coerce_single(value: Any, model: type) -> Any:
-    """Coerce a single value to a model type."""
+    """Coerce a single value to a model type. Returns value unchanged on failure."""
     import dataclasses
 
     if isinstance(value, model):
         return value
     if not isinstance(value, dict):
         return value
-    if hasattr(model, "model_validate"):
-        return model.model_validate(value)
-    if dataclasses.is_dataclass(model):
-        return model(**value)
+    try:
+        if hasattr(model, "model_validate"):
+            return model.model_validate(value)
+        if dataclasses.is_dataclass(model):
+            return model(**{k: v for k, v in value.items() if k in {f.name for f in dataclasses.fields(model)}})
+    except Exception:
+        return value
     return value
 
 
@@ -1459,8 +1462,12 @@ def initialize_state_with_checkpoint(
             routed = state.values[gate_out]
             state.routing_decisions[node.name] = _END if routed == "END" else routed
 
-    for name, value in runtime_values.items():
-        state.update_value(name, value)
+    type_map = _build_output_type_map(graph)
+    for name in list(runtime_values):
+        hint = type_map.get(name)
+        if hint is not None:
+            runtime_values[name] = _coerce_value(runtime_values[name], hint)
+        state.update_value(name, runtime_values[name])
     state.resume_values = frozenset(runtime_values) if is_interrupt_resume_payload(graph, runtime_values) else frozenset()
 
     # Reconstruct per-step output versions so staleness checks can attribute
