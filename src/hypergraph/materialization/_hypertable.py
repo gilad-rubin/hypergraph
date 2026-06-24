@@ -293,6 +293,8 @@ class HyperTable:
             + [self._column("_row_fingerprint", role="internal")]
             + prov_cols
             + [self._column("_write_gen", role="internal", python_type=int)]
+            + [self._column("_status", role="internal")]
+            + [self._column("_error", role="internal")]
         )
 
         self._spec = TableSpec(
@@ -334,6 +336,8 @@ class HyperTable:
 
         child_columns.append(self._column("_row_fingerprint", role="internal"))
         child_columns.append(self._column("_write_gen", role="internal", python_type=int))
+        child_columns.append(self._column("_status", role="internal"))
+        child_columns.append(self._column("_error", role="internal"))
 
         table_name = identity.replace("_id", "")
         return TableSpec(
@@ -1115,7 +1119,7 @@ class HyperTable:
         return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=errored, errors=tuple(errors))
 
     async def _sync_async(self, items: list[dict[str, Any]]) -> Any:
-        from hypergraph.materialization._types import SyncResult
+        from hypergraph.materialization._types import ErrorRow, SyncResult
 
         existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
         existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
@@ -1124,6 +1128,8 @@ class HyperTable:
         inserted = 0
         updated = 0
         skipped = 0
+        errored = 0
+        errors: list[ErrorRow] = []
 
         write_gen = self._store.max_write_gen(self._spec.name) + 1
 
@@ -1133,8 +1139,20 @@ class HyperTable:
 
             existing = existing_by_id.get(id_val)
             if existing is None:
-                await self._insert_one_async(item, write_gen)
-                inserted += 1
+                outcome = await self._insert_one_async(item, write_gen)
+                if outcome == "errored":
+                    errored += 1
+                    row = self._store.read_one(self._spec.name, self._identity, id_val)
+                    if row:
+                        errors.append(
+                            ErrorRow(
+                                identity={self._identity: id_val},
+                                error_type=row.get("_error", "").split(":")[0] if row.get("_error") else "Unknown",
+                                error_msg=row.get("_error", ""),
+                            )
+                        )
+                else:
+                    inserted += 1
             else:
                 graph_inputs = self._extract_graph_inputs(item)
                 new_fp = self._compute_row_fingerprint(item, graph_inputs)
@@ -1151,7 +1169,7 @@ class HyperTable:
                 await self._delete_async(id_val)
                 deleted += 1
 
-        return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=0)
+        return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=errored, errors=tuple(errors))
 
     def recompute(self, column: str) -> None:
         """Re-derive one column for all rows using current bound components."""
