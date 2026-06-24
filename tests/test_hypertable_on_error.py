@@ -1,0 +1,292 @@
+"""Tests for on_error policy — error rows and partial success."""
+
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+import pytest
+
+from hypergraph import Graph, node
+from hypergraph.materialization import HyperTable, TableStore
+from hypergraph.runners import SyncRunner
+
+# ---------------------------------------------------------------------------
+# MemoryStore
+# ---------------------------------------------------------------------------
+
+
+class MemoryStore(TableStore):
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict[str, Any]]] = {}
+
+    def open(self, spec, children):
+        self.rows.setdefault(spec.name, [])
+        for child in children:
+            self.rows.setdefault(child.name, [])
+        return {name: list(rows[0].keys()) if rows else [] for name, rows in self.rows.items()}
+
+    def count(self, table_name):
+        return len(self.rows.get(table_name, []))
+
+    def read_rows(self, table_name, where=None, *, limit=None):
+        rows = [row.copy() for row in self.rows.get(table_name, []) if _matches(row, where or [])]
+        return rows[:limit] if limit is not None else rows
+
+    def read_one(self, table_name, identity_column, identity_value):
+        rows = self.read_rows(table_name, [(identity_column, "eq", identity_value)])
+        if not rows:
+            return None
+        return max(rows, key=lambda row: row.get("_write_gen", 0))
+
+    def write_rows(self, table_name, rows):
+        self.rows.setdefault(table_name, []).extend(row.copy() for row in rows)
+
+    def delete_rows(self, table_name, where):
+        existing = self.rows.get(table_name, [])
+        keep = [row for row in existing if not _matches(row, where)]
+        self.rows[table_name] = keep
+        return len(existing) - len(keep)
+
+    def max_write_gen(self, table_name):
+        return max((row.get("_write_gen", 0) for row in self.rows.get(table_name, [])), default=0)
+
+    def evolve_schema(self, table_name, new_columns):
+        return []
+
+
+def _matches(row: dict[str, Any], where) -> bool:
+    for col, op, value in where:
+        current = row.get(col)
+        if op == "eq" and current != value:
+            return False
+        if op == "lt" and not (current is not None and current < value):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Test graphs
+# ---------------------------------------------------------------------------
+
+
+class Utterance(TypedDict):
+    utterance_id: str
+    text: str
+
+
+fail_on_text: set[str] = set()
+
+
+@node(output_name="utterances")
+def split_words(text: str) -> list[Utterance]:
+    return [Utterance(utterance_id=f"u{i}", text=word) for i, word in enumerate(text.split())]
+
+
+@node(output_name="clean_text")
+def clean_maybe_fail(text: str) -> str:
+    if text in fail_on_text:
+        raise ValueError(f"Failed on {text}")
+    return text.upper()
+
+
+process_utterance = Graph([clean_maybe_fail], name="process_utterance")
+
+
+@node(output_name="clean_text")
+def parent_clean(text: str) -> str:
+    if text in fail_on_text:
+        raise ValueError(f"Parent failed on {text}")
+    return text.upper()
+
+
+@pytest.fixture(autouse=True)
+def _reset_fail_set():
+    fail_on_text.clear()
+
+
+# ---------------------------------------------------------------------------
+# on_error="raise" (default) — backward compatibility
+# ---------------------------------------------------------------------------
+
+
+def test_raise_is_default_child_failure_propagates():
+    """Default on_error='raise': child failure raises, no rows stored."""
+    store = MemoryStore()
+    table = HyperTable(
+        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+        identity="doc_id",
+        store=store,
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("world")
+    with pytest.raises(ValueError, match="Failed on world"):
+        table.insert(doc_id="d1", text="hello world")
+
+
+def test_raise_parent_failure_propagates():
+    """Default on_error='raise': parent graph failure raises."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("bad")
+    with pytest.raises(ValueError, match="Parent failed on bad"):
+        table.insert(doc_id="d1", text="bad")
+
+
+# ---------------------------------------------------------------------------
+# on_error="store" — child errors
+# ---------------------------------------------------------------------------
+
+
+def test_store_child_error_writes_error_row():
+    """on_error='store': failed child gets error row, sibling succeeds."""
+    store = MemoryStore()
+    table = HyperTable(
+        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("world")
+    table.insert(doc_id="d1", text="hello world")
+
+    children = table.children("d1", include_status=True)
+    assert len(children) == 2
+
+    by_id = {c["utterance_id"]: c for c in children}
+    assert by_id["u0"]["_status"] == "complete"
+    assert by_id["u0"]["clean_text"] == "HELLO"
+
+    assert by_id["u1"]["_status"] == "error"
+    assert "ValueError" in by_id["u1"]["_error"]
+    assert by_id["u1"].get("clean_text") is None
+
+
+def test_store_error_child_retried_on_reinsert():
+    """on_error='store': error child is retried on next insert, complete child skipped."""
+    store = MemoryStore()
+    table = HyperTable(
+        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("world")
+    table.insert(doc_id="d1", text="hello world")
+
+    # u1 is error, u0 is complete
+    children = table.children("d1", include_status=True)
+    assert any(c["_status"] == "error" for c in children)
+
+    # Fix the failure and re-insert
+    fail_on_text.discard("world")
+    table.insert(doc_id="d1", text="hello world")
+
+    children = table.children("d1", include_status=True)
+    assert all(c["_status"] == "complete" for c in children)
+    by_id = {c["utterance_id"]: c for c in children}
+    assert by_id["u1"]["clean_text"] == "WORLD"
+
+
+# ---------------------------------------------------------------------------
+# on_error="store" — parent errors
+# ---------------------------------------------------------------------------
+
+
+def test_store_parent_error_writes_error_row():
+    """on_error='store': failed parent gets error row with source columns, derived None."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("bad")
+    table.insert(doc_id="d1", text="bad")
+
+    row = table.get("d1", include_status=True)
+    assert row is not None
+    assert row["_status"] == "error"
+    assert "ValueError" in row["_error"]
+    assert row["text"] == "bad"  # source preserved
+    assert row.get("clean_text") is None  # derived is None
+
+
+def test_store_parent_error_retried_on_reinsert():
+    """on_error='store': error parent is retried on next insert."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("bad")
+    table.insert(doc_id="d1", text="bad")
+    assert table.get("d1", include_status=True)["_status"] == "error"
+
+    fail_on_text.discard("bad")
+    table.insert(doc_id="d1", text="bad")
+    row = table.get("d1", include_status=True)
+    assert row["_status"] == "complete"
+    assert row["clean_text"] == "BAD"
+
+
+# ---------------------------------------------------------------------------
+# on_error propagation through bind/with_runner
+# ---------------------------------------------------------------------------
+
+
+def test_on_error_propagates_through_bind_and_with_runner():
+    """on_error policy is preserved through bind() and with_runner()."""
+    store = MemoryStore()
+
+    class FakeEmbedder:
+        def _config(self):
+            return {"model": "test"}
+
+        def embed(self, text: str) -> list[float]:
+            return [0.1]
+
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    )
+    bound = table.bind(embedder=FakeEmbedder())
+    with_runner = bound.with_runner(SyncRunner())
+
+    fail_on_text.add("test")
+    with_runner.insert(doc_id="d1", text="test")
+    row = with_runner.get("d1", include_status=True)
+    assert row["_status"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# include_status on reads
+# ---------------------------------------------------------------------------
+
+
+def test_get_without_include_status_strips_internal():
+    """get() without include_status does not expose _status/_error."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+    ).with_runner(SyncRunner())
+
+    table.insert(doc_id="d1", text="hello")
+    row = table.get("d1")
+    assert "_status" not in row
+    assert "_error" not in row

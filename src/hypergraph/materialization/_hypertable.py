@@ -37,8 +37,11 @@ def _normalize_value(v: Any) -> Any:
     return v
 
 
+_STATUS_FIELDS = {"_status", "_error"}
+
+
 def _is_internal(k: str) -> bool:
-    return k in ("_row_fingerprint", "_write_gen") or k.startswith("_provenance_")
+    return k in ("_row_fingerprint", "_write_gen") or k in _STATUS_FIELDS or k.startswith("_provenance_")
 
 
 def _dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
@@ -65,8 +68,17 @@ def _dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[st
     return list(best.values())
 
 
-def _public_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {k: _normalize_value(v) for k, v in row.items() if not _is_internal(k)}
+def _public_row(row: dict[str, Any], *, include_status: bool = False) -> dict[str, Any]:
+    result = {}
+    for k, v in row.items():
+        if include_status and k in _STATUS_FIELDS:
+            if k == "_status" and v is None:
+                result[k] = "complete"
+            else:
+                result[k] = _normalize_value(v)
+        elif not _is_internal(k):
+            result[k] = _normalize_value(v)
+    return result
 
 
 def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
@@ -106,13 +118,17 @@ class HyperTable:
         *,
         identity: str,
         store: Any,
+        on_error: str = "raise",
         _components: dict[str, Any] | None = None,
         _runner: Any | None = None,
         _graph: Graph | None = None,
     ):
+        if on_error not in ("raise", "store"):
+            raise ValueError(f"on_error must be 'raise' or 'store', got {on_error!r}")
         self._nodes = nodes
         self._identity = identity
         self._store = store
+        self._on_error = on_error
         self._components = _components or {}
         self._runner = _runner
         self._graph = _graph
@@ -125,6 +141,7 @@ class HyperTable:
             self._nodes,
             identity=self._identity,
             store=self._store,
+            on_error=self._on_error,
             _components=merged,
             _runner=self._runner,
         )
@@ -134,6 +151,7 @@ class HyperTable:
             self._nodes,
             identity=self._identity,
             store=self._store,
+            on_error=self._on_error,
             _components=self._components,
             _runner=runner,
         )
@@ -363,6 +381,40 @@ class HyperTable:
 
         return row
 
+    def _write_error_row(
+        self,
+        item: dict[str, Any],
+        graph_inputs: dict[str, Any],
+        write_gen: int,
+        error: Exception,
+        existing: dict[str, Any] | None,
+    ) -> None:
+        identity_value = item[self._identity]
+        self._evolve_for_metadata(item)
+
+        row: dict[str, Any] = {self._identity: identity_value}
+        row.update({k: v for k, v in item.items() if k != self._identity})
+
+        derived_cols = [c for c in self._spec.columns if c.role == "derived"]
+        for col in derived_cols:
+            row[col.name] = None
+
+        row["_row_fingerprint"] = self._compute_row_fingerprint(item, graph_inputs)
+        row["_write_gen"] = write_gen
+        row["_status"] = "error"
+        row["_error"] = f"{type(error).__name__}: {error}"
+
+        self._store.write_rows(self._spec.name, [row])
+
+        if existing is not None:
+            self._store.delete_rows(
+                self._spec.name,
+                [
+                    (self._identity, "eq", identity_value),
+                    ("_write_gen", "lt", write_gen),
+                ],
+            )
+
     def _evolve_for_metadata(self, item: dict[str, Any], *, table_name: str | None = None, identity: str | None = None) -> None:
         """Add schema columns for metadata keys the store hasn't seen."""
         store = self._store
@@ -411,21 +463,21 @@ class HyperTable:
             return 0
         return len(_dedup_rows(self._store.read_rows(self._spec.name), self._identity))
 
-    def get(self, identity_value: str) -> dict[str, Any] | None:
+    def get(self, identity_value: str, *, include_status: bool = False) -> dict[str, Any] | None:
         self._ensure_analyzed()
         row = self._store.read_one(self._spec.name, self._identity, identity_value)
         if row is None:
             return None
-        return _public_row(row)
+        return _public_row(row, include_status=include_status)
 
-    def children(self, parent_id: str) -> list[dict[str, Any]]:
+    def children(self, parent_id: str, *, include_status: bool = False) -> list[dict[str, Any]]:
         self._ensure_analyzed()
         if not self._spec.children:
             return []
         child_spec = self._spec.children[0]
         rows = self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)])
         rows = _dedup_child_rows(rows, child_spec.identity)
-        return [_public_row(row) for row in rows]
+        return [_public_row(row, include_status=include_status) for row in rows]
 
     def filter(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
         """Return public rows matching a store predicate."""
@@ -563,13 +615,21 @@ class HyperTable:
         if existing is not None:
             new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
             if existing.get("_row_fingerprint") == new_fingerprint:
-                parent_skipped = True
+                existing_status = existing.get("_status")
+                if existing_status is None or existing_status == "complete":
+                    parent_skipped = True
 
         if parent_skipped and not self._spec.children:
             return "skipped"
 
-        result = self._runner.run(self._graph, **graph_inputs)
-        outputs = self._extract_outputs(result)
+        try:
+            result = self._runner.run(self._graph, **graph_inputs)
+            outputs = self._extract_outputs(result)
+        except Exception as e:
+            if self._on_error == "raise":
+                raise
+            self._write_error_row(item, graph_inputs, write_gen, e, existing)
+            return "errored"
 
         if parent_skipped:
             # Parent unchanged — reconcile children only (don't rewrite parent)
@@ -588,6 +648,8 @@ class HyperTable:
         self._evolve_for_metadata(item)
 
         row = self._build_row(item, graph_inputs, outputs, write_gen)
+        row["_status"] = "complete"
+        row["_error"] = None
         self._store.write_rows(self._spec.name, [row])
 
         for child_spec in self._spec.children:
@@ -622,13 +684,21 @@ class HyperTable:
         if existing is not None:
             new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
             if existing.get("_row_fingerprint") == new_fingerprint:
-                parent_skipped = True
+                existing_status = existing.get("_status")
+                if existing_status is None or existing_status == "complete":
+                    parent_skipped = True
 
         if parent_skipped and not self._spec.children:
             return "skipped"
 
-        result = await self._runner.run(self._graph, **graph_inputs)
-        outputs = self._extract_outputs(result)
+        try:
+            result = await self._runner.run(self._graph, **graph_inputs)
+            outputs = self._extract_outputs(result)
+        except Exception as e:
+            if self._on_error == "raise":
+                raise
+            self._write_error_row(item, graph_inputs, write_gen, e, existing)
+            return "errored"
 
         if parent_skipped:
             for child_spec in self._spec.children:
@@ -646,6 +716,8 @@ class HyperTable:
         self._evolve_for_metadata(item)
 
         row = self._build_row(item, graph_inputs, outputs, write_gen)
+        row["_status"] = "complete"
+        row["_error"] = None
         self._store.write_rows(self._spec.name, [row])
 
         for child_spec in self._spec.children:
@@ -707,7 +779,24 @@ class HyperTable:
 
             bound_graph = self._bind_child_components(child_graph)
 
-            child_result = self._runner.run(bound_graph, **child_inputs)
+            try:
+                child_result = self._runner.run(bound_graph, **child_inputs)
+            except Exception as e:
+                if self._on_error == "raise":
+                    raise
+                child_row = {
+                    child_spec.identity: child_identity,
+                    "_parent_id": parent_id,
+                    "_write_gen": write_gen,
+                    "_row_fingerprint": new_fingerprint,
+                    "_status": "error",
+                    "_error": f"{type(e).__name__}: {e}",
+                }
+                for k, v in child_item.items():
+                    if k != child_spec.identity and k != "_parent_id":
+                        child_row[k] = v
+                self._store.write_rows(child_spec.name, [child_row])
+                continue
 
             if hasattr(child_result, "values") and isinstance(child_result.values, dict):
                 child_outputs = child_result.values
@@ -721,6 +810,8 @@ class HyperTable:
                 "_parent_id": parent_id,
                 "_write_gen": write_gen,
                 "_row_fingerprint": new_fingerprint,
+                "_status": "complete",
+                "_error": None,
             }
 
             for k, v in child_item.items():
@@ -774,7 +865,24 @@ class HyperTable:
 
             bound_graph = self._bind_child_components(child_graph)
 
-            child_result = await self._runner.run(bound_graph, **child_inputs)
+            try:
+                child_result = await self._runner.run(bound_graph, **child_inputs)
+            except Exception as e:
+                if self._on_error == "raise":
+                    raise
+                child_row = {
+                    child_spec.identity: child_identity,
+                    "_parent_id": parent_id,
+                    "_write_gen": write_gen,
+                    "_row_fingerprint": new_fingerprint,
+                    "_status": "error",
+                    "_error": f"{type(e).__name__}: {e}",
+                }
+                for k, v in child_item.items():
+                    if k != child_spec.identity and k != "_parent_id":
+                        child_row[k] = v
+                self._store.write_rows(child_spec.name, [child_row])
+                continue
 
             if hasattr(child_result, "values") and isinstance(child_result.values, dict):
                 child_outputs = child_result.values
@@ -788,6 +896,8 @@ class HyperTable:
                 "_parent_id": parent_id,
                 "_write_gen": write_gen,
                 "_row_fingerprint": new_fingerprint,
+                "_status": "complete",
+                "_error": None,
             }
 
             for k, v in child_item.items():
