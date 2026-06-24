@@ -235,12 +235,34 @@ class HyperTable:
             return str
         return typing.get_type_hints(func).get("return", str)
 
+    _RESERVED_NAMES = frozenset(
+        {
+            "_status",
+            "_error",
+            "_row_fingerprint",
+            "_write_gen",
+            "_parent_id",
+        }
+    )
+
+    @classmethod
+    def _is_reserved_name(cls, name: str) -> bool:
+        return name in cls._RESERVED_NAMES or name.startswith("_provenance_")
+
+    def _validate_column_name(self, name: str, context: str) -> None:
+        if self._is_reserved_name(name):
+            raise ValueError(
+                f"{context} column name {name!r} is reserved for internal use. "
+                f"Reserved names: {', '.join(sorted(self._RESERVED_NAMES))} and _provenance_*"
+            )
+
     def _analyze_graph(self):
         graph = self._graph
         root_columns = []
         child_specs = []
 
         input_types = self._input_types(graph)
+        self._validate_column_name(self._identity, "identity")
         root_columns.append(self._column(self._identity, role="identity"))
 
         required = set(graph.inputs.required) if isinstance(graph.inputs.required, tuple) else set(graph.inputs.required.keys())
@@ -248,6 +270,7 @@ class HyperTable:
         for inp_name in sorted(required):
             if inp_name == self._identity:
                 continue
+            self._validate_column_name(inp_name, "source")
             root_columns.append(self._column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
 
         for map_node in getattr(self, "_map_over_nodes", []):

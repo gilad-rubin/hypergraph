@@ -290,3 +290,38 @@ def test_get_without_include_status_strips_internal():
     row = table.get("d1")
     assert "_status" not in row
     assert "_error" not in row
+
+
+# ---------------------------------------------------------------------------
+# Reserved name validation (identity/source columns)
+# ---------------------------------------------------------------------------
+
+
+def test_reserved_identity_name_rejected():
+    """Identity column named _write_gen is rejected at analysis time."""
+    store = MemoryStore()
+    table = HyperTable([parent_clean], identity="_write_gen", store=store).with_runner(SyncRunner())
+    with pytest.raises(ValueError, match="_write_gen.*reserved"):
+        table.insert(_write_gen="d1", text="hello")
+
+
+def test_reserved_identity_status_rejected():
+    """Identity column named _status is rejected at analysis time."""
+    store = MemoryStore()
+    table = HyperTable([parent_clean], identity="_status", store=store).with_runner(SyncRunner())
+    with pytest.raises(ValueError, match="_status.*reserved"):
+        table.insert(_status="d1", text="hello")
+
+
+def test_non_reserved_underscore_identity_allowed():
+    """Identity column named _doc_ref is allowed — not a reserved name."""
+
+    @node(output_name="clean_text")
+    def clean_it(text: str) -> str:
+        return text.upper()
+
+    store = MemoryStore()
+    table = HyperTable([clean_it], identity="_doc_ref", store=store).with_runner(SyncRunner())
+    table.insert(_doc_ref="d1", text="hello")
+    row = table.get("d1")
+    assert row["clean_text"] == "HELLO"
