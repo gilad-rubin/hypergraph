@@ -8,7 +8,7 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.materialization import HyperTable, TableStore
-from hypergraph.runners import SyncRunner
+from hypergraph.runners import AsyncRunner, SyncRunner
 
 # ---------------------------------------------------------------------------
 # MemoryStore
@@ -417,3 +417,50 @@ def test_non_reserved_underscore_identity_allowed():
     table.insert(_doc_ref="d1", text="hello")
     row = table.get("d1")
     assert row["clean_text"] == "HELLO"
+
+
+# ---------------------------------------------------------------------------
+# Async parity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_store_child_error_writes_error_row():
+    """Async on_error='store': failed child gets error row, sibling succeeds."""
+    store = MemoryStore()
+    table = HyperTable(
+        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(AsyncRunner())
+
+    fail_on_text.add("world")
+    await table.insert(doc_id="d1", text="hello world")
+
+    children = table.children("d1", include_status=True)
+    assert len(children) == 2
+
+    by_id = {c["utterance_id"]: c for c in children}
+    assert by_id["u0"]["_status"] == "complete"
+    assert by_id["u1"]["_status"] == "error"
+    assert "ValueError" in by_id["u1"]["_error"]
+
+
+@pytest.mark.asyncio
+async def test_async_store_parent_error_writes_error_row():
+    """Async on_error='store': failed parent gets error row."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(AsyncRunner())
+
+    fail_on_text.add("bad")
+    await table.insert(doc_id="d1", text="bad")
+
+    row = table.get("d1", include_status=True)
+    assert row["_status"] == "error"
+    assert "ValueError" in row["_error"]
