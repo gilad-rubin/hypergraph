@@ -561,7 +561,11 @@ class HyperTable:
         for row in rows:
             self._store.delete_rows(
                 table_name,
-                [(identity, "eq", row[identity]), ("_write_gen", "lt", write_gen)],
+                [
+                    (identity, "eq", row[identity]),
+                    ("_parent_id", "eq", row["_parent_id"]),
+                    ("_write_gen", "lt", write_gen),
+                ],
             )
         return len(updated)
 

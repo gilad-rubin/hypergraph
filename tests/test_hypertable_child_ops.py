@@ -185,6 +185,29 @@ class TestSetChildren:
         flat.insert(doc_id="d1", text="hello")
         assert flat.set_children(where=[("doc_id", "eq", "d1")], tag="x") == 0
 
+    def test_set_children_scoped_to_parent(self, table):
+        """set_children for one parent must not delete another parent's children
+        that share the same child identity value."""
+        # Both v1 and v2 have children with utterance_id "u0" and "u1".
+        # Updating v1's children should leave v2's children intact.
+        v2_before = table.filter_children(where=[("_parent_id", "eq", "v2")])
+        assert len(v2_before) == 2
+
+        table.set_children(
+            where=[("_parent_id", "eq", "v1")],
+            reviewed=True,
+        )
+
+        # v2's children must still be present and unmodified
+        v2_after = table.filter_children(where=[("_parent_id", "eq", "v2")])
+        assert len(v2_after) == 2
+        assert all("reviewed" not in r or r.get("reviewed") is not True for r in v2_after)
+
+        # v1's children should have the new metadata
+        v1_after = table.filter_children(where=[("_parent_id", "eq", "v1")])
+        assert len(v1_after) == 2
+        assert all(r["reviewed"] is True for r in v1_after)
+
 
 # ---------------------------------------------------------------------------
 # delete_children
