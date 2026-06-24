@@ -1259,6 +1259,138 @@ def initialize_state(
     )
 
 
+def _extract_model_type(hint: Any) -> type | None:
+    """Extract a Pydantic BaseModel or dataclass type from a type hint.
+
+    Handles: Model, Optional[Model], Model | None, list[Model].
+    Returns the concrete model class, or None if not a model type.
+    """
+    from typing import Union, get_args, get_origin
+
+    if hint is None:
+        return None
+
+    # Plain class — check if it's a model
+    if isinstance(hint, type):
+        if _is_model_class(hint):
+            return hint
+        return None
+
+    origin = get_origin(hint)
+
+    # list[Model] — unwrap and check element type
+    if origin is list:
+        args = get_args(hint)
+        if args and isinstance(args[0], type) and _is_model_class(args[0]):
+            return hint  # return the full list[Model] hint
+        return None
+
+    # Optional[Model] / Union[Model, None]
+    if origin is Union:
+        args = [a for a in get_args(hint) if a is not type(None)]
+        if len(args) == 1 and isinstance(args[0], type) and _is_model_class(args[0]):
+            return args[0]
+        return None
+
+    return None
+
+
+def _is_model_class(cls: type) -> bool:
+    """Check if cls is a Pydantic BaseModel or a dataclass."""
+    import dataclasses
+
+    if hasattr(cls, "model_validate"):
+        return True
+    return bool(dataclasses.is_dataclass(cls))
+
+
+def _coerce_value(value: Any, hint: Any) -> Any:
+    """Reconstruct a typed value from a deserialized dict/list."""
+    from typing import get_args, get_origin
+
+    if value is None:
+        return None
+
+    origin = get_origin(hint)
+
+    # list[Model] — coerce each element
+    if origin is list:
+        if not isinstance(value, list):
+            return value
+        args = get_args(hint)
+        if not args:
+            return value
+        elem_type = args[0]
+        return [_coerce_single(item, elem_type) for item in value]
+
+    # Scalar model
+    if isinstance(hint, type):
+        return _coerce_single(value, hint)
+
+    return value
+
+
+def _coerce_single(value: Any, model: type) -> Any:
+    """Coerce a single value to a model type."""
+    import dataclasses
+
+    if isinstance(value, model):
+        return value
+    if not isinstance(value, dict):
+        return value
+    if hasattr(model, "model_validate"):
+        return model.model_validate(value)
+    if dataclasses.is_dataclass(model):
+        return model(**value)
+    return value
+
+
+def _build_output_type_map(graph: Graph) -> dict[str, Any]:
+    """Build a map from value name to its annotated type hint.
+
+    Checks both output annotations (from producers) and input annotations
+    (from consumers) so that fork/checkpoint-restore works even when the
+    forked graph doesn't contain the original producer node.
+    """
+    type_map: dict[str, Any] = {}
+    for node_obj in graph._nodes.values():
+        # Output types from the producing node
+        for output_name in node_obj.data_outputs:
+            hint = node_obj.get_output_type(output_name)
+            if hint is not None:
+                resolved = _extract_model_type(hint)
+                if resolved is not None:
+                    type_map[output_name] = resolved
+        # Input types from consuming nodes
+        for input_name in node_obj.inputs:
+            if input_name in type_map:
+                continue
+            hint = node_obj.get_input_type(input_name)
+            if hint is not None:
+                resolved = _extract_model_type(hint)
+                if resolved is not None:
+                    type_map[input_name] = resolved
+    return type_map
+
+
+def coerce_checkpoint_values(
+    graph: Graph,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    """Reconstruct typed models from deserialized checkpoint dicts.
+
+    Walks the graph's output type annotations and converts plain dicts
+    back into Pydantic models or dataclasses where the type is known.
+    """
+    type_map = _build_output_type_map(graph)
+    coerced = dict(values)
+    for name, value in coerced.items():
+        hint = type_map.get(name)
+        if hint is not None:
+            coerced[name] = _coerce_value(value, hint)
+    return coerced
+
+
 def initialize_state_with_checkpoint(
     *,
     graph: Graph,
@@ -1275,7 +1407,7 @@ def initialize_state_with_checkpoint(
     from hypergraph.nodes.gate import IfElseNode, RouteNode
 
     state = GraphState()
-    state.values = dict(checkpoint_values)
+    state.values = coerce_checkpoint_values(graph, checkpoint_values)
 
     versions: dict[str, int] = {}
     graph_input_names = set(graph.inputs.all)
