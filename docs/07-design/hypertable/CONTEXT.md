@@ -19,7 +19,9 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 **Column provenance** — per-derived-column state that tracks what produced the current stored value. For each derived column on each row, stored as: `hash(upstream input values + producer node definition hash + relevant component config hashes)`. This enables scoped recompute — swapping an embedder only invalidates columns whose provenance includes that embedder's config, not the whole row. Replaces the single-`_content_key`-per-row model from DerivedTable.
 
-**Row fingerprint** — a row-level hash `hash(all source content-key values + all node definition hashes + all component config hashes)`. Used as a fast path: if unchanged, no per-column provenance checks are needed. Incorporates the full derivation plan — source values, node code, and component configs — so swapping a component invalidates the fingerprint even when source values are unchanged.
+**Row fingerprint** — a row-level hash `hash(all source content-key values + all node definition hashes + all component config hashes)`. Used as a fast path: if unchanged, no per-column provenance checks are needed. Incorporates the full derivation plan — source values, node code, and component configs — so swapping a component invalidates the fingerprint even when source values are unchanged. Parent and child rows each have their own fingerprint scoped to their respective graph.
+
+**Child fingerprint** — a row fingerprint scoped to the child graph, not the parent graph. Computed from the child's source column values (from the child item dict), the child graph's node definition hashes, and component config hashes filtered to the child graph's inputs. This makes child rows skippable on re-insert — if the child's source inputs and graph definition haven't changed, the child is skipped. A `_compute_child_fingerprint` method handles this separately from the parent fingerprint.
 
 **Identity** — the stable, user-facing key for a row. Declared explicitly on the table (`identity="video_id"`) and at each grain boundary (`map_over(..., identity="utterance_id")`). Used for update, delete, sync matching, and parent-child links. Always explicit — no naming-convention magic.
 
@@ -31,7 +33,21 @@ The tagline: **a Hypergraph graph where each node's output is a stored column, a
 
 **Parent link** — auto-stamped on each child row. Records which parent row produced it (e.g., `_parent_id="v1"` on every utterance from video v1). Used for cascade delete and scoped re-derivation. The child table's primary key is the composite `(_parent_id, child_identity)` — child identities are scoped by parent, not globally unique. Two parents can both emit `utterance_id="u0"` without collision.
 
-**Write generation (`_write_gen`)** — a monotonic counter per table, incremented on each mutating operation. Stored as an internal column on every row. Used for crash-safe upserts: new rows are written with the current generation, old rows are deleted by `(logical_key) AND _write_gen < current`. On recovery, duplicates (same logical key, different generation) are resolved by keeping the highest generation.
+**Write generation (`_write_gen`)** — a monotonic counter per table, incremented on each mutating operation. Stored as an internal column on every row. Used for crash-safe upserts: new rows are written with the current generation, old rows are deleted by `(logical_key) AND _write_gen < current`. On recovery, duplicates (same logical key, different generation) are resolved by keeping the highest generation. Skipped children (fingerprint match) get their `_write_gen` bumped to survive cleanup.
+
+**Row status (`_status`)** — an internal column on every row: `"complete"` (derivation succeeded) or `"error"` (derivation failed under `on_error="store"`). Rows with `_status=None` are treated as `"complete"` for migration safety — pre-upgrade rows lack this column and must not be re-processed.
+
+**Error message (`_error`)** — an internal column storing `None` (success) or `"{ExceptionType}: {message}"` (failure). Only populated when `on_error="store"` and derivation fails.
+
+**Error policy (`on_error`)** — a HyperTable constructor parameter controlling failure behavior. `"raise"` (default) propagates exceptions as before. `"store"` writes an error row with source columns preserved, derived columns as `None`, `_status="error"`, and the exception recorded in `_error`. Error rows with matching fingerprints are retried (not skipped) on the next insert/sync. The policy propagates through `bind()` and `with_runner()`.
+
+**Error row** — a row written under `on_error="store"` when derivation fails. Contains: identity column, source columns (preserved from input), derived columns (`None`), `_row_fingerprint` (computed normally), `_status="error"`, `_error` (exception string), `_write_gen` (current), provenance columns (`None`). On retry, the fingerprint matches but `_status="error"` prevents skipping, so the graph re-runs.
+
+**Reserved names** — column names that collide with internal columns are rejected at graph analysis time: `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, and any name starting with `_provenance_`. This applies to identity and source columns. Derived column names with a `_` prefix are already rejected by the Graph layer's output name validation.
+
+**`include_status`** — a parameter on `get()`, `children()`, `filter()`, and `filter_children()` that includes `_status` and `_error` in returned rows. Without it, these fields are stripped for backward compatibility.
+
+**`SyncResult.errors`** — a `tuple[ErrorRow, ...]` field on `SyncResult` populated when `on_error="store"`. Each `ErrorRow` contains `identity` (dict), `error_type` (str), and `error_msg` (str) for programmatic inspection of which items failed during `sync()`.
 
 **Sink** — writes results to the store as they're ready. The `Sink` protocol + `LanceSink` are already built (on `feat/materialization-streaming`). Supports write-as-ready streaming — no buffering the whole batch.
 
@@ -90,6 +106,7 @@ subtext = HyperTable(
      process_utterance.as_node().map_over("utterances", identity="utterance_id")],
     identity="video_id",
     store="lancedb://./data",
+    on_error="store",  # write error rows for failed children instead of raising
 ).bind(model=Whisper(), embedder=Embedder()).with_runner(SyncRunner())
 ```
 
@@ -182,7 +199,7 @@ Type annotation on the node function determines the physical column type at cons
 
 The runner is not part of the constructor. It's set once via `.with_runner()` and can be overridden per-call. Read-only operations (search, filter, count) don't need a runner at all.
 
-**V1 is sync-only.** HyperTable v1 uses `SyncRunner` exclusively. AsyncRunner and DaftRunner support are future work that require a superseding ADR (per ADR 0001's sync/async class split).
+HyperTable supports both `SyncRunner` and `AsyncRunner`. DaftRunner support is future work. With `AsyncRunner`, write operations (`insert`, `sync`, `update`) return coroutines.
 
 ```python
 # Construction — no runner
@@ -201,9 +218,11 @@ subtext.insert(video_id="v1", path="/data/meeting.mp4")
 # Read operations never need a runner
 subtext.get("v1")
 subtext.count()
-```
 
-Future runners (AsyncRunner, DaftRunner) will use the same `.with_runner()` pattern but require their own class or ADR to resolve execution color.
+# Async variant
+subtext_async = subtext.with_runner(AsyncRunner())
+await subtext_async.insert(video_id="v2", path="/data/talk.mp4")
+```
 
 ### 8. Dataclasses are optional, not required
 
@@ -336,11 +355,13 @@ HyperTable only owns: persistent storage, identity tracking, content-key increme
 
 3. **Fan-in at the table level** — a node that takes inputs from two different sources (e.g., utterance text + video metadata). Within a single grain, auto-wiring handles this. Across grains (child needs parent data), the parent link provides the join key, but the execution model needs to support it.
 
-4. **Error rows** — what happens when a node fails for one row? Store an error marker, skip downstream columns for that row, expose in query results.
+4. ~~**Error rows**~~ — Resolved in PRD 0005. `on_error="store"` writes error rows with `_status="error"`, source columns preserved, derived columns `None`. Error rows are retried on next insert/sync. `include_status=True` exposes `_status`/`_error` on read methods. `SyncResult.errors` provides programmatic access. See the error policy and error row glossary entries above.
 
 5. **Progress/tracing during materialization** — the `event_processors` gap from the DerivedTable work. SyncRunner/AsyncRunner support events; DaftRunner does not yet.
 
 6. **Lineage visualization** — rendering the full table DAG (source columns → derived columns → grain boundaries → child tables). The graph's `.visualize()` shows compute; HyperTable needs a storage-aware view.
+
+7. **`on_error` for `update()`** — Currently `update()` always raises on failure. Unlike `insert()`, an update operates on an existing good row — writing an error row would destroy valid derived data. Pixeltable's `update()` is also always-raise (atomic rollback via PostgreSQL). The right semantics may be "leave existing row untouched, report failure" rather than "write error row." Deferred pending a concrete use case.
 
 
 ## Relationship to Existing Work

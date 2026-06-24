@@ -24,6 +24,24 @@ Core features are working and stable. API may still change before 1.0.
 - `AsyncRunner` with concurrency control (`max_concurrency`)
 - Batch processing with `runner.map()` (zip and product modes)
 
+### Checkpointing and Durability
+- `SqliteCheckpointer` for persistent run history
+- Resume from checkpoint after failures
+- Fork and retry with lineage tracking
+- Workflow-id based forking/retrying on `run()`
+
+### Materialization (HyperTable)
+- `HyperTable` — persistent incremental tables backed by Hypergraph graphs
+- Graph-inferred schema (source columns, derived columns, grain boundaries)
+- Content-key incrementality with row fingerprints and column provenance
+- `insert()`, `update()`, `delete()`, `sync()` CRUD operations
+- Child tables via `map_over` grain boundaries with parent links
+- `on_error="store"` for partial-success tolerance with error rows
+- Child fingerprints for resumable inserts after crashes
+- `SyncResult.errors` for programmatic error inspection
+- `TableStore` protocol with `LanceDBStore` implementation
+- Both `SyncRunner` and `AsyncRunner` support
+
 ### Control Flow
 - `@route` for conditional routing with `END` sentinel
 - `@ifelse` for binary boolean routing
@@ -61,15 +79,16 @@ Core features are working and stable. API may still change before 1.0.
 
 ## Coming Soon
 
-### Checkpointing and Durability
-- Save graph state after each node execution
-- Resume from checkpoint after failures
-- Support for various storage backends (local, Redis, S3)
-
 ### Observability Integrations
 - Integration with tracing systems (OpenTelemetry)
 - Structured logging for each node execution
 - Performance metrics (latency, token usage)
+
+### Materialization Enhancements
+- Pin/override semantics for manually setting derived column values
+- Streaming writes via `Sink` protocol (built, not yet integrated with HyperTable)
+- `DaftRunner` support for columnar materialization
+- Lineage visualization (storage-aware view of the table DAG)
 
 ## Future Considerations
 
@@ -82,18 +101,13 @@ Core features are working and stable. API may still change before 1.0.
 - Overlay execution traces on graph visualization
 - Show timing, values, and errors per node
 
-### Persistence
-- State snapshots for long-running workflows
-- Version control for graph definitions
-- Migration utilities
-
 ## Non-Goals
 
 Things we're explicitly not building:
 
 - **Infrastructure orchestration** — Use Prefect, Airflow, or Temporal for job scheduling
 - **Model serving** — Use dedicated serving infrastructure
-- **Data storage** — Hypergraph orchestrates, doesn't store
+- **Storage engine** — HyperTable delegates storage to pluggable `TableStore` backends (LanceDB, etc.). Hypergraph itself is not a database.
 - **UI framework** — We're a library, not a platform
 
 ## Contributing

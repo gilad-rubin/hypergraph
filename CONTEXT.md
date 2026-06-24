@@ -146,3 +146,19 @@ _Avoid_: Batch map (that is the buffered `MapResult` form)
 **Sync (the reconcile operation)**:
 The root-table operation that makes the table exactly match a given set of source items — inserting new, re-deriving changed, deleting missing. Named identically on both the sync and async classes; do not read it as "synchronous."
 _Avoid_: Refresh, merge
+
+**HyperTable**:
+A persistent, incremental table built on a Hypergraph graph. Wraps a graph + a store + an identity declaration. Each node's output is a stored column, and a content-key check decides whether to re-run. Supports child tables via `map_over` grain boundaries. Evolution of `DerivedTable` with graph-native composition.
+_Avoid_: Derived table (that's the earlier abstraction)
+
+**Error policy (`on_error`)**:
+A HyperTable constructor parameter: `"raise"` (default, propagate exceptions) or `"store"` (write error rows, continue processing siblings). Applies to `insert()` and `sync()`, not `update()`.
+_Avoid_: Error mode, failure strategy
+
+**Error row**:
+A row written under `on_error="store"` when derivation fails. Source columns preserved, derived columns `None`, `_status="error"`, `_error` contains the exception string. Retried (not skipped) on the next insert/sync when the fingerprint matches.
+_Avoid_: Failed row, bad row
+
+**Row status (`_status`)**:
+Internal column: `"complete"` or `"error"`. `None` treated as `"complete"` for migration safety.
+_Avoid_: State, health
