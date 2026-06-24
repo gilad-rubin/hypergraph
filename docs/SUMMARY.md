@@ -51,6 +51,14 @@
 * [Events](06-api-reference/events.md)
 * [InputSpec](06-api-reference/inputspec.md)
 
+## HyperTable (Incremental Tables)
+
+* [Overview](08-hypertable/overview.md)
+* [Getting Started](08-hypertable/getting-started.md)
+* [API Reference](08-hypertable/api-reference.md)
+* [Example: Document Processing](08-hypertable/examples/document-processing.md)
+* [Example: Media Knowledge Base](08-hypertable/examples/media-knowledge-base.md)
+
 ## Design
 
 * [Guiding Principles](07-design/guiding-principles.md)
