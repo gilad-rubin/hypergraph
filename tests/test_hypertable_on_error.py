@@ -292,6 +292,48 @@ def test_get_without_include_status_strips_internal():
     assert "_error" not in row
 
 
+def test_filter_children_with_include_status():
+    """filter_children with include_status exposes _status/_error."""
+    store = MemoryStore()
+    table = HyperTable(
+        [split_words, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("world")
+    table.insert(doc_id="d1", text="hello world")
+
+    errors = table.filter_children(
+        where=[("_status", "eq", "error")],
+        include_status=True,
+    )
+    assert len(errors) == 1
+    assert errors[0]["utterance_id"] == "u1"
+    assert errors[0]["_status"] == "error"
+
+
+def test_filter_with_include_status():
+    """filter with include_status exposes _status/_error on parent rows."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("bad")
+    table.insert(doc_id="d1", text="bad")
+    fail_on_text.discard("bad")
+    table.insert(doc_id="d2", text="good")
+
+    errors = table.filter(where=[("_status", "eq", "error")], include_status=True)
+    assert len(errors) == 1
+    assert errors[0]["doc_id"] == "d1"
+
+
 # ---------------------------------------------------------------------------
 # Reserved name validation (identity/source columns)
 # ---------------------------------------------------------------------------

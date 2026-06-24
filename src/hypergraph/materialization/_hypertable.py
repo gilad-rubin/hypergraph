@@ -502,12 +502,12 @@ class HyperTable:
         rows = _dedup_child_rows(rows, child_spec.identity)
         return [_public_row(row, include_status=include_status) for row in rows]
 
-    def filter(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def filter(self, where: Any = None, *, limit: int | None = None, include_status: bool = False) -> list[dict[str, Any]]:
         """Return public rows matching a store predicate."""
         self._ensure_analyzed()
         rows = self._store.read_rows(self._spec.name, _where_predicate(where), limit=limit)
         rows = _dedup_rows(rows, self._identity)
-        return [_public_row(row) for row in rows]
+        return [_public_row(row, include_status=include_status) for row in rows]
 
     def delete_children(self, where: Any = None) -> int:
         """Delete child rows matching a predicate. Returns count deleted."""
@@ -517,7 +517,7 @@ class HyperTable:
         child_spec = self._spec.children[0]
         return self._store.delete_rows(child_spec.name, _where_predicate(where))
 
-    def filter_children(self, where: Any = None, *, limit: int | None = None) -> list[dict[str, Any]]:
+    def filter_children(self, where: Any = None, *, limit: int | None = None, include_status: bool = False) -> list[dict[str, Any]]:
         """Return child rows matching a store predicate."""
         self._ensure_analyzed()
         if not self._spec.children:
@@ -525,7 +525,7 @@ class HyperTable:
         child_spec = self._spec.children[0]
         rows = self._store.read_rows(child_spec.name, _where_predicate(where), limit=limit)
         rows = _dedup_child_rows(rows, child_spec.identity)
-        return [_public_row(row) for row in rows]
+        return [_public_row(row, include_status=include_status) for row in rows]
 
     def set_children(self, where: Any = None, **fields: Any) -> int:
         """Bulk metadata update for child rows matching a predicate."""
