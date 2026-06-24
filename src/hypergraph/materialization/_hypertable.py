@@ -1062,7 +1062,7 @@ class HyperTable:
         return self._sync_sync(items)
 
     def _sync_sync(self, items: list[dict[str, Any]]) -> Any:
-        from hypergraph.materialization._types import SyncResult
+        from hypergraph.materialization._types import ErrorRow, SyncResult
 
         existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
         existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
@@ -1071,6 +1071,8 @@ class HyperTable:
         inserted = 0
         updated = 0
         skipped = 0
+        errored = 0
+        errors: list[ErrorRow] = []
 
         write_gen = self._store.max_write_gen(self._spec.name) + 1
 
@@ -1080,8 +1082,20 @@ class HyperTable:
 
             existing = existing_by_id.get(id_val)
             if existing is None:
-                self._insert_one(item, write_gen)
-                inserted += 1
+                outcome = self._insert_one(item, write_gen)
+                if outcome == "errored":
+                    errored += 1
+                    row = self._store.read_one(self._spec.name, self._identity, id_val)
+                    if row:
+                        errors.append(
+                            ErrorRow(
+                                identity={self._identity: id_val},
+                                error_type=row.get("_error", "").split(":")[0] if row.get("_error") else "Unknown",
+                                error_msg=row.get("_error", ""),
+                            )
+                        )
+                else:
+                    inserted += 1
             else:
                 graph_inputs = self._extract_graph_inputs(item)
                 new_fp = self._compute_row_fingerprint(item, graph_inputs)
@@ -1098,7 +1112,7 @@ class HyperTable:
                 self.delete(id_val)
                 deleted += 1
 
-        return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=0)
+        return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=errored, errors=tuple(errors))
 
     async def _sync_async(self, items: list[dict[str, Any]]) -> Any:
         from hypergraph.materialization._types import SyncResult

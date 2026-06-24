@@ -335,6 +335,56 @@ def test_filter_with_include_status():
 
 
 # ---------------------------------------------------------------------------
+# SyncResult.errors
+# ---------------------------------------------------------------------------
+
+
+def test_sync_with_on_error_store_populates_errors():
+    """sync() with on_error='store' returns SyncResult with errored count and errors tuple."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("bad")
+    result = table.sync(
+        [
+            {"doc_id": "d1", "text": "good"},
+            {"doc_id": "d2", "text": "bad"},
+            {"doc_id": "d3", "text": "also good"},
+        ]
+    )
+
+    assert result.inserted == 2
+    assert result.errored == 1
+    assert len(result.errors) == 1
+    assert result.errors[0].identity == {"doc_id": "d2"}
+    assert "ValueError" in result.errors[0].error_msg
+
+
+def test_sync_with_on_error_raise_propagates():
+    """sync() with default on_error='raise' raises on first failure."""
+    store = MemoryStore()
+    table = HyperTable(
+        [parent_clean],
+        identity="doc_id",
+        store=store,
+    ).with_runner(SyncRunner())
+
+    fail_on_text.add("bad")
+    with pytest.raises(ValueError, match="Parent failed on bad"):
+        table.sync(
+            [
+                {"doc_id": "d1", "text": "good"},
+                {"doc_id": "d2", "text": "bad"},
+            ]
+        )
+
+
+# ---------------------------------------------------------------------------
 # Reserved name validation (identity/source columns)
 # ---------------------------------------------------------------------------
 

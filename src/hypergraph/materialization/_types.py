@@ -23,6 +23,7 @@ class SyncResult:
     deleted: int
     skipped: int
     errored: int
+    errors: tuple[ErrorRow, ...] = ()
 
 
 class DerivationError(Exception):
