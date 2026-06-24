@@ -83,9 +83,9 @@ unless `on_error="store"` is explicitly set.
 11. As a developer, I want the `on_error` policy to work with both `SyncRunner` and
     `AsyncRunner`, so that async pipelines get the same resilience.
 
-12. As a developer, I want column names starting with `_` to be rejected at
-    construction time, so that user columns never collide with internal columns
-    (`_status`, `_error`, `_write_gen`, etc.).
+12. As a developer, I want columns named `_status`, `_error`, `_write_gen`,
+    `_row_fingerprint`, `_parent_id`, or `_provenance_*` to be rejected at
+    construction time, so that user columns never collide with internal columns.
 
 13. As a developer, I want `evolve_schema()` to be idempotent (no-op for existing
     same-type columns), so that reopening a table with new internal columns doesn't
@@ -106,21 +106,56 @@ unless `on_error="store"` is explicitly set.
 
 ### Child fingerprint computation
 
-Child fingerprints use the same algorithm as parent fingerprints: `sha256(source
-inputs + node definition hashes + component config hashes)`. The inputs are the
-child's source column values (from the child item dict), the nodes are from the
-child subgraph, and the components are the same bound components (filtered to
-those the child graph accepts).
+Child fingerprints use the same algorithm as parent fingerprints — `sha256(source
+inputs + node definition hashes + component config hashes)` — but scoped to the
+child graph, not the parent graph. Specifically:
+
+- **Inputs:** the child's source column values (from the child item dict).
+- **Node hashes:** from `child_spec.child_graph.iter_nodes()`, not `self._graph`.
+- **Component hashes:** only components that are valid inputs to the child graph
+  (the same filtering `_bind_child_components` already does).
+
+This requires a `_compute_child_fingerprint(child_item, child_spec)` method
+separate from `_compute_row_fingerprint`, or parameterizing the existing method
+to accept an explicit graph and component scope.
+
+### Parent skip must still reconcile children
+
+When a parent fingerprint matches and `_status` is `"complete"`, the parent's
+graph is skipped — but child reconciliation must still run. The parent graph
+produced the child item list on the previous insert; the child items come from
+the parent's stored outputs (not a fresh graph run). The parent skip path must:
+
+1. Re-derive the child item list from the parent's stored row outputs.
+2. Run the child fingerprint check flow below for each child.
+3. Bump `_write_gen` on skipped children (see below) so they survive cleanup.
+
+This means `_insert_one` cannot return `"skipped"` before reaching children.
+When the parent fingerprint matches and status is complete, the parent row is
+not re-written, but `_insert_children` is still called with the stored outputs.
 
 ### Child fingerprint check flow
 
 Before running a child's subgraph:
-1. Read the existing child row by `(_parent_id, child_identity)`.
+1. Read the existing child row using a compound predicate via `read_rows`:
+   `[("_parent_id", "eq", parent_id), (child_identity_col, "eq", child_id)]`.
+   Do NOT use `read_one()` — child identity is parent-scoped, so two parents
+   can have children with the same identity value.
 2. Compute the new fingerprint from the child's source inputs + child graph.
-3. If existing row has matching fingerprint AND `_status="complete"` → skip.
+3. If existing row has matching fingerprint AND `_status` is `"complete"` (or
+   `None` for pre-upgrade rows) → skip, but bump `_write_gen` (see below).
 4. If existing row has matching fingerprint AND `_status="error"` → re-run
    (same inputs, previous attempt failed).
 5. If no existing row or different fingerprint → run the child subgraph.
+
+### Skipped children must survive write-generation cleanup
+
+After child insertion, `_insert_one` deletes old children with
+`_write_gen < current`. Children that were skipped (fingerprint match) still
+have the old `_write_gen` and would be deleted. Fix: when a child is skipped,
+write a copy of the existing row with the current `_write_gen`. This is a
+metadata-only write (no graph execution) that keeps the row alive through
+cleanup. The fingerprint and all data columns are preserved unchanged.
 
 ### `_status` and `_error` internal columns
 
@@ -134,6 +169,11 @@ Two new internal columns on every table (parent and child):
 These are added alongside existing internal columns (`_write_gen`,
 `_row_fingerprint`, `_provenance_*`) in the table spec generation. For existing
 tables, they are reconciled on open via idempotent `evolve_schema()`.
+
+**Migration invariant:** existing rows will have `_status=None` after schema
+evolution. All code paths must treat `None`/missing `_status` as `"complete"` —
+not just `_public_row`, but also the fingerprint skip logic and any status
+filtering. This prevents upgraded tables from re-processing all existing rows.
 
 ### `on_error` parameter
 
@@ -155,10 +195,16 @@ When `on_error="store"` and derivation fails:
 
 ### Reserved name validation
 
-At graph analysis time (lazy, on first use), reject any column whose name starts
-with `_`. This applies to identity columns, source columns (graph inputs), and
-derived columns (node outputs). The check runs before the store is opened,
-producing a clear `SchemaError`.
+At graph analysis time (lazy, on first use), reject any column whose name
+matches a known internal column name: `_status`, `_error`, `_row_fingerprint`,
+`_write_gen`, `_parent_id`, or any name starting with `_provenance_`. This
+applies to identity columns, source columns (graph inputs), and derived columns
+(node outputs). The check runs before the store is opened, producing a clear
+`SchemaError`.
+
+Note: this is an explicit allowlist of reserved names, not a blanket `_` prefix
+ban. `_parent_id` is intentionally exposed to users on child rows and must
+remain accessible for filtering.
 
 ### Idempotent `evolve_schema()`
 
@@ -196,6 +242,13 @@ class SyncResult:
 and `_error` fields are included in the returned dict. Available on `get()`,
 `children()`, `filter()`, `filter_children()`.
 
+### Child error propagation
+
+`_insert_children` / `_insert_children_async` must return structured outcomes
+so that `_insert_one` and `sync()` can populate `SyncResult.errors`. The return
+value is a list of `ErrorRow` instances (empty when all children succeed or
+when `on_error="raise"`). This replaces the current void return.
+
 ### Async parity
 
 Both `_insert_one` / `_insert_one_async` and `_insert_children` /
@@ -227,6 +280,9 @@ Existing HyperTable test files provide the patterns:
 - Insert parent with children → change one child's source input → only that child re-derives
 - Insert parent with children → change component config → all children re-derive (fingerprint includes component hashes)
 - Insert parent with children → crash mid-insert (simulated) → re-insert → already-stored children skipped, remaining children processed
+- Parent fingerprint matches → children still reconciled (parent skip does not skip children)
+- Skipped children survive write-generation cleanup (their `_write_gen` is bumped)
+- Two parents with same child identity value → correct parent's child is looked up (compound predicate, not `read_one`)
 
 **`on_error="store"` — child level:**
 - Child subgraph fails → error row stored with `_status="error"` and `_error` message
@@ -244,8 +300,13 @@ Existing HyperTable test files provide the patterns:
 
 **Reserved name validation:**
 - Column named `_status` → `SchemaError` at construction
-- Column named `_anything` → `SchemaError` at construction
+- Column named `_write_gen` → `SchemaError` at construction
+- Column named `_custom_thing` → allowed (not a reserved name)
 - Applies to identity, source, and derived columns
+
+**`_status=None` migration:**
+- Existing rows with `_status=None` treated as complete (not re-processed)
+- Fingerprint skip logic treats `None` same as `"complete"`
 
 **Idempotent `evolve_schema()`:**
 - Call with existing same-type column → no-op, returns current columns
