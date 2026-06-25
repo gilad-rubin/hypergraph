@@ -11,6 +11,7 @@ from typing import Any
 
 from hypergraph import Graph
 from hypergraph.materialization._keys import compute_definition_hash
+from hypergraph.materialization._types import ErrorRow, SyncResult
 
 
 def _normalize_to_dict(item: Any) -> dict[str, Any]:
@@ -636,26 +637,50 @@ class HyperTable:
         for item in items:
             await self._insert_one_async(item, write_gen)
 
+    def _plan_insert(self, item: dict[str, Any], graph_inputs: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+        """Read the current row and decide whether the parent can be skipped.
+
+        A parent is skippable when its fingerprint is unchanged and its last write
+        completed. Returns ``(existing_row, parent_skipped)``.
+        """
+        existing = self._store.read_one(self._spec.name, self._identity, item[self._identity])
+        parent_skipped = False
+        if existing is not None and existing.get("_row_fingerprint") == self._compute_row_fingerprint(item, graph_inputs):
+            status = existing.get("_status")
+            parent_skipped = status is None or status == "complete"
+        return existing, parent_skipped
+
+    def _write_parent_row(self, item: dict[str, Any], graph_inputs: dict[str, Any], outputs: dict[str, Any], write_gen: int) -> None:
+        """Persist the parent row for a completed derivation."""
+        self._evolve_for_metadata(item)
+        row = self._build_row(item, graph_inputs, outputs, write_gen)
+        row["_status"] = "complete"
+        row["_error"] = None
+        self._store.write_rows(self._spec.name, [row])
+
+    def _cleanup_old_parent_gens(self, identity_value: Any, write_gen: int) -> None:
+        self._store.delete_rows(
+            self._spec.name,
+            [(self._identity, "eq", identity_value), ("_write_gen", "lt", write_gen)],
+        )
+
+    def _cleanup_old_child_gens(self, identity_value: Any, write_gen: int) -> None:
+        for child_spec in self._spec.children:
+            self._store.delete_rows(
+                child_spec.name,
+                [("_parent_id", "eq", identity_value), ("_write_gen", "lt", write_gen)],
+            )
+
     def _insert_one(self, item: dict[str, Any], write_gen: int) -> str:
-        """Insert or upsert a single row. Returns 'inserted', 'updated', or 'skipped'."""
+        """Insert or upsert a single row. Returns 'inserted', 'updated', 'skipped', or 'errored'."""
         identity_value = item[self._identity]
         graph_inputs = self._extract_graph_inputs(item)
-
-        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-        parent_skipped = False
-        if existing is not None:
-            new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
-            if existing.get("_row_fingerprint") == new_fingerprint:
-                existing_status = existing.get("_status")
-                if existing_status is None or existing_status == "complete":
-                    parent_skipped = True
-
+        existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
             return "skipped"
 
         try:
-            result = self._runner.run(self._graph, **graph_inputs)
-            outputs = self._extract_outputs(result)
+            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
         except Exception as e:
             if self._on_error == "raise":
                 raise
@@ -663,68 +688,30 @@ class HyperTable:
             return "errored"
 
         if parent_skipped:
-            # Parent unchanged — reconcile children only (don't rewrite parent)
+            # Parent unchanged — reconcile children only (don't rewrite parent).
             for child_spec in self._spec.children:
                 self._insert_children(identity_value, outputs, child_spec, write_gen)
-            for child_spec in self._spec.children:
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", write_gen),
-                    ],
-                )
+            self._cleanup_old_child_gens(identity_value, write_gen)
             return "skipped"
 
-        self._evolve_for_metadata(item)
-
-        row = self._build_row(item, graph_inputs, outputs, write_gen)
-        row["_status"] = "complete"
-        row["_error"] = None
-        self._store.write_rows(self._spec.name, [row])
-
+        self._write_parent_row(item, graph_inputs, outputs, write_gen)
         for child_spec in self._spec.children:
             self._insert_children(identity_value, outputs, child_spec, write_gen)
-
         if existing is not None:
-            self._store.delete_rows(
-                self._spec.name,
-                [
-                    (self._identity, "eq", identity_value),
-                    ("_write_gen", "lt", write_gen),
-                ],
-            )
-            for child_spec in self._spec.children:
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", write_gen),
-                    ],
-                )
-
+            self._cleanup_old_parent_gens(identity_value, write_gen)
+            self._cleanup_old_child_gens(identity_value, write_gen)
         return "updated" if existing is not None else "inserted"
 
     async def _insert_one_async(self, item: dict[str, Any], write_gen: int) -> str:
-        """Async insert/upsert for AsyncRunner-bound tables."""
+        """Async twin of ``_insert_one`` — identical except the awaited graph run."""
         identity_value = item[self._identity]
         graph_inputs = self._extract_graph_inputs(item)
-
-        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-        parent_skipped = False
-        if existing is not None:
-            new_fingerprint = self._compute_row_fingerprint(item, graph_inputs)
-            if existing.get("_row_fingerprint") == new_fingerprint:
-                existing_status = existing.get("_status")
-                if existing_status is None or existing_status == "complete":
-                    parent_skipped = True
-
+        existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
             return "skipped"
 
         try:
-            result = await self._runner.run(self._graph, **graph_inputs)
-            outputs = self._extract_outputs(result)
+            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
         except Exception as e:
             if self._on_error == "raise":
                 raise
@@ -734,125 +721,16 @@ class HyperTable:
         if parent_skipped:
             for child_spec in self._spec.children:
                 await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
-            for child_spec in self._spec.children:
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", write_gen),
-                    ],
-                )
+            self._cleanup_old_child_gens(identity_value, write_gen)
             return "skipped"
 
-        self._evolve_for_metadata(item)
-
-        row = self._build_row(item, graph_inputs, outputs, write_gen)
-        row["_status"] = "complete"
-        row["_error"] = None
-        self._store.write_rows(self._spec.name, [row])
-
+        self._write_parent_row(item, graph_inputs, outputs, write_gen)
         for child_spec in self._spec.children:
             await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
-
         if existing is not None:
-            self._store.delete_rows(
-                self._spec.name,
-                [
-                    (self._identity, "eq", identity_value),
-                    ("_write_gen", "lt", write_gen),
-                ],
-            )
-            for child_spec in self._spec.children:
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", write_gen),
-                    ],
-                )
-
+            self._cleanup_old_parent_gens(identity_value, write_gen)
+            self._cleanup_old_child_gens(identity_value, write_gen)
         return "updated" if existing is not None else "inserted"
-
-    def _insert_children(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int):
-        child_graph = child_spec.child_graph
-        if not child_graph:
-            return
-
-        child_items = outputs.get(child_spec.map_input)
-        if not child_items or not isinstance(child_items, list):
-            return
-
-        for child_item in child_items:
-            child_item = _normalize_to_dict(child_item)
-            child_identity = child_item.get(child_spec.identity, "")
-            child_inputs = {}
-            for col in child_spec.columns:
-                if col.role == "source" and col.content_key and col.name in child_item:
-                    child_inputs[col.name] = child_item[col.name]
-
-            new_fingerprint = self._compute_child_fingerprint(child_inputs, child_spec)
-
-            # Check existing child via compound predicate
-            existing_children = self._store.read_rows(
-                child_spec.name,
-                [("_parent_id", "eq", parent_id), (child_spec.identity, "eq", child_identity)],
-            )
-            existing_child = max(existing_children, key=lambda r: r.get("_write_gen", 0)) if existing_children else None
-
-            if existing_child is not None and existing_child.get("_row_fingerprint") == new_fingerprint:
-                status = existing_child.get("_status")
-                if status is None or status == "complete":
-                    # Skip — but bump _write_gen so it survives cleanup
-                    bumped = {k: v for k, v in existing_child.items()}
-                    bumped["_write_gen"] = write_gen
-                    self._store.write_rows(child_spec.name, [bumped])
-                    continue
-
-            bound_graph = self._bind_child_components(child_graph)
-
-            try:
-                child_result = self._runner.run(bound_graph, **child_inputs)
-            except Exception as e:
-                if self._on_error == "raise":
-                    raise
-                child_row = {
-                    child_spec.identity: child_identity,
-                    "_parent_id": parent_id,
-                    "_write_gen": write_gen,
-                    "_row_fingerprint": new_fingerprint,
-                    "_status": "error",
-                    "_error": f"{type(e).__name__}: {e}",
-                }
-                for k, v in child_item.items():
-                    if k != child_spec.identity and k != "_parent_id":
-                        child_row[k] = v
-                self._store.write_rows(child_spec.name, [child_row])
-                continue
-
-            if hasattr(child_result, "values") and isinstance(child_result.values, dict):
-                child_outputs = child_result.values
-            elif isinstance(child_result, dict):
-                child_outputs = child_result
-            else:
-                child_outputs = {}
-
-            child_row = {
-                child_spec.identity: child_identity,
-                "_parent_id": parent_id,
-                "_write_gen": write_gen,
-                "_row_fingerprint": new_fingerprint,
-                "_status": "complete",
-                "_error": None,
-            }
-
-            for k, v in child_item.items():
-                if k != child_spec.identity and k != "_parent_id":
-                    child_row[k] = v
-
-            for k, v in child_outputs.items():
-                child_row[k] = v
-
-            self._store.write_rows(child_spec.name, [child_row])
 
     def _bind_child_components(self, child_graph: Any) -> Any:
         if not self._components:
@@ -861,84 +739,123 @@ class HyperTable:
         binds = {key: value for key, value in self._components.items() if key in valid_inputs}
         return child_graph.bind(**binds) if binds else child_graph
 
-    async def _insert_children_async(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
-        child_graph = child_spec.child_graph
-        if not child_graph:
-            return
-
+    def _child_items(self, outputs: dict, child_spec: TableSpec) -> list | None:
+        """The mapped child items for a child table, or None if there's nothing to process."""
+        if not child_spec.child_graph:
+            return None
         child_items = outputs.get(child_spec.map_input)
         if not child_items or not isinstance(child_items, list):
+            return None
+        return child_items
+
+    def _plan_child(
+        self, child_spec: TableSpec, child_item: dict[str, Any], parent_id: str, write_gen: int
+    ) -> tuple[str, dict[str, Any], str] | None:
+        """Compute ``(child_identity, child_inputs, fingerprint)`` for a child item.
+
+        If the child is unchanged and complete, bump its ``_write_gen`` so it
+        survives cleanup and return None to signal a skip.
+        """
+        child_identity = child_item.get(child_spec.identity, "")
+        child_inputs = {
+            col.name: child_item[col.name] for col in child_spec.columns if col.role == "source" and col.content_key and col.name in child_item
+        }
+        new_fingerprint = self._compute_child_fingerprint(child_inputs, child_spec)
+
+        existing_children = self._store.read_rows(
+            child_spec.name,
+            [("_parent_id", "eq", parent_id), (child_spec.identity, "eq", child_identity)],
+        )
+        existing_child = max(existing_children, key=lambda r: r.get("_write_gen", 0)) if existing_children else None
+        if existing_child is not None and existing_child.get("_row_fingerprint") == new_fingerprint:
+            status = existing_child.get("_status")
+            if status is None or status == "complete":
+                bumped = dict(existing_child)
+                bumped["_write_gen"] = write_gen
+                self._store.write_rows(child_spec.name, [bumped])
+                return None
+        return child_identity, child_inputs, new_fingerprint
+
+    def _child_row(
+        self,
+        child_spec: TableSpec,
+        child_item: dict[str, Any],
+        child_identity: str,
+        parent_id: str,
+        new_fingerprint: str,
+        write_gen: int,
+        *,
+        status: str,
+        error: str | None,
+        outputs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Assemble a child row from its source item plus (on success) its derived outputs."""
+        row = {
+            child_spec.identity: child_identity,
+            "_parent_id": parent_id,
+            "_write_gen": write_gen,
+            "_row_fingerprint": new_fingerprint,
+            "_status": status,
+            "_error": error,
+        }
+        for k, v in child_item.items():
+            if k != child_spec.identity and k != "_parent_id":
+                row[k] = v
+        for k, v in (outputs or {}).items():
+            row[k] = v
+        return row
+
+    def _insert_children(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
+        child_items = self._child_items(outputs, child_spec)
+        if child_items is None:
             return
-
-        for child_item in child_items:
-            child_item = _normalize_to_dict(child_item)
-            child_identity = child_item.get(child_spec.identity, "")
-            child_inputs = {}
-            for col in child_spec.columns:
-                if col.role == "source" and col.content_key and col.name in child_item:
-                    child_inputs[col.name] = child_item[col.name]
-
-            new_fingerprint = self._compute_child_fingerprint(child_inputs, child_spec)
-
-            existing_children = self._store.read_rows(
-                child_spec.name,
-                [("_parent_id", "eq", parent_id), (child_spec.identity, "eq", child_identity)],
-            )
-            existing_child = max(existing_children, key=lambda r: r.get("_write_gen", 0)) if existing_children else None
-
-            if existing_child is not None and existing_child.get("_row_fingerprint") == new_fingerprint:
-                status = existing_child.get("_status")
-                if status is None or status == "complete":
-                    bumped = {k: v for k, v in existing_child.items()}
-                    bumped["_write_gen"] = write_gen
-                    self._store.write_rows(child_spec.name, [bumped])
-                    continue
-
-            bound_graph = self._bind_child_components(child_graph)
-
+        bound_graph = self._bind_child_components(child_spec.child_graph)
+        for raw_item in child_items:
+            child_item = _normalize_to_dict(raw_item)
+            plan = self._plan_child(child_spec, child_item, parent_id, write_gen)
+            if plan is None:
+                continue
+            child_identity, child_inputs, new_fingerprint = plan
             try:
-                child_result = await self._runner.run(bound_graph, **child_inputs)
+                child_outputs = self._extract_outputs(self._runner.run(bound_graph, **child_inputs))
             except Exception as e:
                 if self._on_error == "raise":
                     raise
-                child_row = {
-                    child_spec.identity: child_identity,
-                    "_parent_id": parent_id,
-                    "_write_gen": write_gen,
-                    "_row_fingerprint": new_fingerprint,
-                    "_status": "error",
-                    "_error": f"{type(e).__name__}: {e}",
-                }
-                for k, v in child_item.items():
-                    if k != child_spec.identity and k != "_parent_id":
-                        child_row[k] = v
-                self._store.write_rows(child_spec.name, [child_row])
+                row = self._child_row(
+                    child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="error", error=f"{type(e).__name__}: {e}"
+                )
+                self._store.write_rows(child_spec.name, [row])
                 continue
+            row = self._child_row(
+                child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="complete", error=None, outputs=child_outputs
+            )
+            self._store.write_rows(child_spec.name, [row])
 
-            if hasattr(child_result, "values") and isinstance(child_result.values, dict):
-                child_outputs = child_result.values
-            elif isinstance(child_result, dict):
-                child_outputs = child_result
-            else:
-                child_outputs = {}
-
-            child_row = {
-                child_spec.identity: child_identity,
-                "_parent_id": parent_id,
-                "_write_gen": write_gen,
-                "_row_fingerprint": new_fingerprint,
-                "_status": "complete",
-                "_error": None,
-            }
-
-            for k, v in child_item.items():
-                if k != child_spec.identity and k != "_parent_id":
-                    child_row[k] = v
-
-            for k, v in child_outputs.items():
-                child_row[k] = v
-
-            self._store.write_rows(child_spec.name, [child_row])
+    async def _insert_children_async(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
+        child_items = self._child_items(outputs, child_spec)
+        if child_items is None:
+            return
+        bound_graph = self._bind_child_components(child_spec.child_graph)
+        for raw_item in child_items:
+            child_item = _normalize_to_dict(raw_item)
+            plan = self._plan_child(child_spec, child_item, parent_id, write_gen)
+            if plan is None:
+                continue
+            child_identity, child_inputs, new_fingerprint = plan
+            try:
+                child_outputs = self._extract_outputs(await self._runner.run(bound_graph, **child_inputs))
+            except Exception as e:
+                if self._on_error == "raise":
+                    raise
+                row = self._child_row(
+                    child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="error", error=f"{type(e).__name__}: {e}"
+                )
+                self._store.write_rows(child_spec.name, [row])
+                continue
+            row = self._child_row(
+                child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="complete", error=None, outputs=child_outputs
+            )
+            self._store.write_rows(child_spec.name, [row])
 
     def update(self, identity_value: str, **changes: Any) -> Any:
         """Update a row. Re-derives downstream if source columns changed."""
@@ -969,78 +886,52 @@ class HyperTable:
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         return item, needs_rederive, write_gen
 
+    def _row_with_changes(self, identity_value: str, changes: dict[str, Any], write_gen: int) -> dict[str, Any]:
+        """Next generation of a row with metadata changes applied (no re-derivation)."""
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        row = {k: _normalize_value(v) for k, v in existing.items()}
+        row.update(changes)
+        row["_write_gen"] = write_gen
+        return row
+
     def _update_sync(self, identity_value: str, **changes: Any) -> None:
         item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
         if needs_rederive:
             graph_inputs = self._extract_graph_inputs(item)
-            result = self._runner.run(self._graph, **graph_inputs)
-            outputs = self._extract_outputs(result)
+            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen)
         else:
-            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-            row = {k: _normalize_value(v) for k, v in existing.items()}
-            row.update(changes)
-            row["_write_gen"] = write_gen
+            outputs = None
+            row = self._row_with_changes(identity_value, changes, write_gen)
 
         self._store.write_rows(self._spec.name, [row])
 
         if needs_rederive:
-            # Write new children BEFORE deleting old ones — crash-safe ordering
+            # Write new children BEFORE deleting old ones — crash-safe ordering.
             for child_spec in self._spec.children:
                 self._insert_children(identity_value, outputs, child_spec, write_gen)
-            for child_spec in self._spec.children:
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", write_gen),
-                    ],
-                )
-
-        self._store.delete_rows(
-            self._spec.name,
-            [
-                (self._identity, "eq", identity_value),
-                ("_write_gen", "lt", write_gen),
-            ],
-        )
+            self._cleanup_old_child_gens(identity_value, write_gen)
+        self._cleanup_old_parent_gens(identity_value, write_gen)
 
     async def _update_async(self, identity_value: str, **changes: Any) -> None:
         item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
         if needs_rederive:
             graph_inputs = self._extract_graph_inputs(item)
-            result = await self._runner.run(self._graph, **graph_inputs)
-            outputs = self._extract_outputs(result)
+            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen)
         else:
-            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-            row = {k: _normalize_value(v) for k, v in existing.items()}
-            row.update(changes)
-            row["_write_gen"] = write_gen
+            outputs = None
+            row = self._row_with_changes(identity_value, changes, write_gen)
 
         self._store.write_rows(self._spec.name, [row])
 
         if needs_rederive:
             for child_spec in self._spec.children:
                 await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
-            for child_spec in self._spec.children:
-                self._store.delete_rows(
-                    child_spec.name,
-                    [
-                        ("_parent_id", "eq", identity_value),
-                        ("_write_gen", "lt", write_gen),
-                    ],
-                )
-
-        self._store.delete_rows(
-            self._spec.name,
-            [
-                (self._identity, "eq", identity_value),
-                ("_write_gen", "lt", write_gen),
-            ],
-        )
+            self._cleanup_old_child_gens(identity_value, write_gen)
+        self._cleanup_old_parent_gens(identity_value, write_gen)
 
     def delete(self, identity_value: str) -> Any:
         """Delete a row and cascade-delete its children."""
@@ -1069,50 +960,50 @@ class HyperTable:
             return self._sync_async(items)
         return self._sync_sync(items)
 
+    def _sync_existing_index(self) -> dict[str, dict[str, Any]]:
+        """Map identity -> newest stored row, for reconciliation."""
+        rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+        return {str(row[self._identity]): row for row in rows if row.get(self._identity) is not None}
+
+    def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
+        return existing.get("_row_fingerprint") == self._compute_row_fingerprint(item, self._extract_graph_inputs(item))
+
+    def _error_row_for(self, id_val: str) -> ErrorRow | None:
+        """Build an ErrorRow from the persisted error row for a failed identity."""
+        row = self._store.read_one(self._spec.name, self._identity, id_val)
+        if not row:
+            return None
+        err = row.get("_error", "")
+        return ErrorRow(
+            identity={self._identity: id_val},
+            error_type=err.split(":")[0] if err else "Unknown",
+            error_msg=err,
+        )
+
     def _sync_sync(self, items: list[dict[str, Any]]) -> Any:
-        from hypergraph.materialization._types import ErrorRow, SyncResult
-
-        existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
-        existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
-
+        existing_by_id = self._sync_existing_index()
         incoming_ids: set[str] = set()
-        inserted = 0
-        updated = 0
-        skipped = 0
-        errored = 0
+        inserted = updated = skipped = errored = 0
         errors: list[ErrorRow] = []
-
         write_gen = self._store.max_write_gen(self._spec.name) + 1
 
         for item in items:
             id_val = str(item[self._identity])
             incoming_ids.add(id_val)
-
             existing = existing_by_id.get(id_val)
             if existing is None:
-                outcome = self._insert_one(item, write_gen)
-                if outcome == "errored":
+                if self._insert_one(item, write_gen) == "errored":
                     errored += 1
-                    row = self._store.read_one(self._spec.name, self._identity, id_val)
-                    if row:
-                        errors.append(
-                            ErrorRow(
-                                identity={self._identity: id_val},
-                                error_type=row.get("_error", "").split(":")[0] if row.get("_error") else "Unknown",
-                                error_msg=row.get("_error", ""),
-                            )
-                        )
+                    err = self._error_row_for(id_val)
+                    if err is not None:
+                        errors.append(err)
                 else:
                     inserted += 1
+            elif self._row_unchanged(item, existing):
+                skipped += 1
             else:
-                graph_inputs = self._extract_graph_inputs(item)
-                new_fp = self._compute_row_fingerprint(item, graph_inputs)
-                if existing.get("_row_fingerprint") == new_fp:
-                    skipped += 1
-                else:
-                    changes = {k: v for k, v in item.items() if k != self._identity}
-                    self.update(id_val, **changes)
-                    updated += 1
+                self.update(id_val, **{k: v for k, v in item.items() if k != self._identity})
+                updated += 1
 
         deleted = 0
         for id_val in existing_by_id:
@@ -1123,49 +1014,29 @@ class HyperTable:
         return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=errored, errors=tuple(errors))
 
     async def _sync_async(self, items: list[dict[str, Any]]) -> Any:
-        from hypergraph.materialization._types import ErrorRow, SyncResult
-
-        existing_rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
-        existing_by_id: dict[str, dict] = {str(row[self._identity]): row for row in existing_rows if row.get(self._identity) is not None}
-
+        existing_by_id = self._sync_existing_index()
         incoming_ids: set[str] = set()
-        inserted = 0
-        updated = 0
-        skipped = 0
-        errored = 0
+        inserted = updated = skipped = errored = 0
         errors: list[ErrorRow] = []
-
         write_gen = self._store.max_write_gen(self._spec.name) + 1
 
         for item in items:
             id_val = str(item[self._identity])
             incoming_ids.add(id_val)
-
             existing = existing_by_id.get(id_val)
             if existing is None:
-                outcome = await self._insert_one_async(item, write_gen)
-                if outcome == "errored":
+                if await self._insert_one_async(item, write_gen) == "errored":
                     errored += 1
-                    row = self._store.read_one(self._spec.name, self._identity, id_val)
-                    if row:
-                        errors.append(
-                            ErrorRow(
-                                identity={self._identity: id_val},
-                                error_type=row.get("_error", "").split(":")[0] if row.get("_error") else "Unknown",
-                                error_msg=row.get("_error", ""),
-                            )
-                        )
+                    err = self._error_row_for(id_val)
+                    if err is not None:
+                        errors.append(err)
                 else:
                     inserted += 1
+            elif self._row_unchanged(item, existing):
+                skipped += 1
             else:
-                graph_inputs = self._extract_graph_inputs(item)
-                new_fp = self._compute_row_fingerprint(item, graph_inputs)
-                if existing.get("_row_fingerprint") == new_fp:
-                    skipped += 1
-                else:
-                    changes = {k: v for k, v in item.items() if k != self._identity}
-                    await self._update_async(id_val, **changes)
-                    updated += 1
+                await self._update_async(id_val, **{k: v for k, v in item.items() if k != self._identity})
+                updated += 1
 
         deleted = 0
         for id_val in existing_by_id:
