@@ -1263,17 +1263,17 @@ def _extract_model_type(hint: Any) -> type | None:
     """Extract a Pydantic BaseModel or dataclass type from a type hint.
 
     Handles: Model, Optional[Model], Model | None, list[Model].
-    Returns the concrete model class, or None if not a model type.
+    Returns the concrete model class (or the full list[Model] hint), else None.
+
+    The parameterized-generic branches are checked *before* the bare
+    ``isinstance(hint, type)`` branch on purpose: on Python 3.10
+    ``isinstance(list[X], type)`` is True (it became False in 3.11), so a leading
+    scalar check would misclassify ``list[Model]`` and return None there.
     """
     import types as _types
     from typing import Union, get_args, get_origin
 
     if hint is None:
-        return None
-
-    if isinstance(hint, type):
-        if _is_model_class(hint):
-            return hint
         return None
 
     origin = get_origin(hint)
@@ -1291,6 +1291,11 @@ def _extract_model_type(hint: Any) -> type | None:
         if len(args) == 1 and isinstance(args[0], type) and _is_model_class(args[0]):
             return args[0]
         return None
+
+    # Bare model class — guarded by `origin is None` so parameterized generics
+    # (e.g. list[Model], which is `isinstance(..., type)` on 3.10) never land here.
+    if origin is None and isinstance(hint, type) and _is_model_class(hint):
+        return hint
 
     return None
 
