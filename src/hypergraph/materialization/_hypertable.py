@@ -7,7 +7,15 @@ from typing import Any
 
 from hypergraph import Graph
 from hypergraph.materialization._fingerprint import compute_child_fingerprint, compute_provenance, compute_row_fingerprint
-from hypergraph.materialization._schema import STATUS_COLUMNS, TableSpec, analyze_table, input_names, is_internal_column, return_type
+from hypergraph.materialization._schema import (
+    STATUS_COLUMNS,
+    TableSpec,
+    analyze_table,
+    input_names,
+    is_internal_column,
+    python_type_to_arrow,
+    return_type,
+)
 from hypergraph.materialization._types import ErrorRow, SyncResult
 
 
@@ -254,7 +262,7 @@ class HyperTable:
         id_col = identity or self._identity
         sample = store.read_rows(target, limit=1)
         known_cols = set(sample[0].keys()) if sample else {c.name for c in self._spec.columns}
-        new_meta = {k: (type(v) if v is not None else str) for k, v in item.items() if k not in known_cols and k != id_col}
+        new_meta = {k: python_type_to_arrow(type(v) if v is not None else str) for k, v in item.items() if k not in known_cols and k != id_col}
         if new_meta:
             store.evolve_schema(target, new_meta)
 
@@ -882,7 +890,10 @@ class HyperTable:
         sample = self._store.read_rows(self._spec.name, limit=1)
         if sample and column not in sample[0]:
             col_type = self._get_derived_column_type(column)
-            self._store.evolve_schema(self._spec.name, {column: col_type, f"_provenance_{column}": str})
+            self._store.evolve_schema(
+                self._spec.name,
+                {column: python_type_to_arrow(col_type), f"_provenance_{column}": python_type_to_arrow(str)},
+            )
 
     @staticmethod
     def _column_is_null(value: Any) -> bool:

@@ -11,32 +11,6 @@ import pyarrow.compute as pc
 from hypergraph.materialization._schema import TableSpec
 from hypergraph.materialization._table_store import RowPredicate, TableStore
 
-
-def _python_type_to_arrow(tp: type) -> pa.DataType:
-    if tp is str:
-        return pa.utf8()
-    if tp is int:
-        return pa.int64()
-    if tp is float:
-        return pa.float64()
-    if tp is bool:
-        return pa.bool_()
-    if tp is bytes:
-        return pa.large_binary()
-    if hasattr(tp, "__origin__"):
-        origin = tp.__origin__
-        if origin is list:
-            args = getattr(tp, "__args__", ())
-            if args and args[0] is float:
-                return pa.list_(pa.float32())
-            if args and args[0] is str:
-                return pa.list_(pa.utf8())
-            if args and args[0] is int:
-                return pa.list_(pa.int64())
-            return pa.list_(pa.utf8())
-    return pa.utf8()
-
-
 _PC_OPS = {
     "eq": pc.equal,
     "ne": pc.not_equal,
@@ -186,19 +160,16 @@ class LanceDBStore(TableStore):
             return 0
         return pc.max(at.column("_write_gen")).as_py()
 
-    def evolve_schema(self, table_name: str, new_columns: dict[str, Any]) -> list[str]:
+    def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
         tbl = self._tables[table_name]
         existing_data = tbl.to_arrow()
-        new_fields = list(tbl.schema) + [pa.field(k, _python_type_to_arrow(v) if v is not str else pa.utf8()) for k, v in new_columns.items()]
+        new_fields = list(tbl.schema) + [pa.field(name, arrow_type) for name, arrow_type in new_columns.items()]
         new_schema = pa.schema(new_fields)
         self._db.drop_table(table_name)
         tbl = self._db.create_table(table_name, schema=new_schema)
         if len(existing_data) > 0:
-            for col_name, col_type in new_columns.items():
-                existing_data = existing_data.append_column(
-                    col_name,
-                    pa.array([None] * len(existing_data), type=_python_type_to_arrow(col_type)),
-                )
+            for name, arrow_type in new_columns.items():
+                existing_data = existing_data.append_column(name, pa.array([None] * len(existing_data), type=arrow_type))
             tbl.add(existing_data)
         self._tables[table_name] = tbl
         return [f.name for f in new_schema]

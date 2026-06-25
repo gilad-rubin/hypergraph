@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 RowOperator = Literal["eq", "ne", "lt", "lte", "gt", "gte", "in"]
 RowPredicate = Sequence[tuple[str, RowOperator, Any]]
@@ -42,8 +45,14 @@ class TableStore(ABC):
         """Return the highest write generation currently persisted."""
 
     @abstractmethod
-    def evolve_schema(self, table_name: str, new_columns: dict[str, Any]) -> list[str]:
-        """Add backend-native columns and return the table's column names."""
+    def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
+        """Add columns and return the table's column names.
+
+        ``new_columns`` maps column name to a pyarrow ``DataType``. Arrow is the
+        intermediate type system: stores map Arrow to their native format (or
+        ignore types when schemaless). No store performs Python-to-Arrow
+        conversion — the HyperTable layer does it once before calling here.
+        """
 
     def search(self, table_name: str, *, query: str, query_vector: list[float], **kwargs: Any) -> list[dict[str, Any]]:
         """Search is optional because not every TableStore is a retrieval adapter."""
