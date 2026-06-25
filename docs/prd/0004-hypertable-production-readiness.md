@@ -887,9 +887,13 @@ before it's used in any production-adjacent context:
    values directly into SQL-like strings. Identity values containing quotes can break
    or broaden deletes. Fix: escape literals or use LanceDB's native predicate API.
 
-2. **Non-atomic schema evolution** — `evolve_schema()` drops the table before creating
-   the replacement. A crash between drop and recreate loses data. Fix: create under a
-   temporary name, validate, then swap.
+2. **Non-atomic, O(rows) schema evolution** — both `evolve_schema()` and
+   `_detect_and_fix_vectors()` drop the table and recreate it, re-adding every row, on
+   each additive column or vector-dimension upgrade. A crash between drop and recreate
+   loses the whole table, and the full rewrite is O(rows) per change — costly because
+   metadata columns evolve on inserts (`_evolve_for_metadata`). Fix: use LanceDB's native
+   `add_columns()` / `alter_columns()` for additive evolution, or build under a temporary
+   name, validate, then swap.
 
 These don't affect Panda (which uses S3AzureStore), but they should be addressed for
 correctness of the reference implementation.
@@ -908,6 +912,35 @@ Additionally, three mutation-ordering issues exist in HyperTable itself:
 5. **Metadata-only updates drop new columns** — `update()` metadata-only path writes
    without schema evolution. A new metadata column is silently dropped. Fix: call
    `_evolve_for_metadata()` before both update branches.
+
+> **Update (DerivedTable removal, this session):** the `_store.py` (DerivedTable
+> `LanceStore`) half of the `_python_type_to_arrow` duplication referenced elsewhere in
+> this PRD was deleted with the DerivedTable stack. The remaining duplication is
+> `_schema.py:python_type_to_arrow` (column-spec types) vs
+> `_lancedb_store.py:_python_type_to_arrow` (schema-evolution types) — consolidate those
+> two when this store work lands.
+
+### Public store access (encapsulation gap)
+
+Panda's `KnowledgeBase` reaches through HyperTable into private internals to share the
+underlying store for its own catalog tables:
+
+```python
+self._protocols._ensure_analyzed()
+store = self._protocols._store
+self._protocols._store.delete_rows("protocol_pages", [(...)])
+```
+
+This couples the canonical consumer to leading-underscore internals (`_store`,
+`_ensure_analyzed`, `_identity`), so any rename breaks Panda on upgrade. HyperTable should
+expose the minimum public surface these consumers legitimately need:
+
+- a public `store` property (read-only access to the bound `TableStore`), and
+- a public `ensure_ready()` that realizes the schema (today only `_ensure_analyzed()`
+  does), or have the query methods realize it lazily so callers never call it.
+
+That the canonical consumer breaks encapsulation on day one is the signal the public
+read/admin surface is still incomplete.
 
 ### Correctness fixes (shipped)
 
