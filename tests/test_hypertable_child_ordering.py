@@ -58,7 +58,7 @@ def _matches(row: dict[str, Any], where) -> bool:
         current = row.get(col)
         if op == "eq" and current != value:
             return False
-        if op == "lt" and not (current < value):
+        if op == "lt" and not (current is not None and current < value):
             return False
     return True
 

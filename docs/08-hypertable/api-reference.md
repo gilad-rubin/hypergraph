@@ -200,7 +200,7 @@ print(row["title"])  # "Updated Title"
 print(row["word_count"])  # 4 (unchanged)
 ```
 
-When a parent row with children is updated, children are cascade-rederived from the new parent outputs.
+When a parent row's **source** columns change, its children are cascade-rederived from the new parent outputs. Metadata-only updates don't trigger re-derivation of the row or its children.
 
 **Args:**
 - `identity_value` (str): The identity value of the row to update.
@@ -781,7 +781,7 @@ Child rows have their own fingerprints and incrementality. If a child item is un
 
 ### Reserved Column Names
 
-The following column names are reserved for internal use and cannot be used as identity or source column names:
+The following column names are reserved for internal use and cannot be used as identity, source, or derived (node output) column names:
 
 - `_status` -- Row derivation status (`"complete"` or `"error"`)
 - `_error` -- Error message string when `_status` is `"error"`

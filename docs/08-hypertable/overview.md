@@ -88,6 +88,10 @@ def split(raw_text: str) -> list[Page]:
 def embed_page(text: str, embedder) -> list[float]:
     return embedder.embed(text)
 
+@node(output_name="raw_text")
+def extract_text(content: str) -> str:
+    return content  # your real extractor: PDF/HTML/etc. -> text
+
 page_graph = Graph([embed_page], name="process_page")
 
 docs = HyperTable(
@@ -128,7 +132,7 @@ docs.insert(doc_id="d1", text="...")
 
 ## How It Fits Together
 
-```
+```text
                     HyperTable
                    ┌───────────────────────────────┐
  insert()/sync()   │  Graph         TableStore      │

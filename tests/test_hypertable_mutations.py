@@ -182,8 +182,8 @@ class TestUpdate:
         with pytest.raises(KeyError):
             table.update("nonexistent", text="nope")
 
-    def test_update_returns_count(self, store):
-        """update() returns 1 on success."""
+    def test_update_changes_row(self, store):
+        """update() applies changes and re-derives downstream columns."""
         from hypergraph.materialization import HyperTable
 
         table = HyperTable(
@@ -193,6 +193,10 @@ class TestUpdate:
         ).with_runner(SyncRunner())
 
         table.insert(doc_id="d1", text="hello")
+        assert table.get("d1")["word_count"] == 1
+
+        table.update("d1", text="hello world")
+        assert table.get("d1")["word_count"] == 2
         assert table.count() == 1
 
 

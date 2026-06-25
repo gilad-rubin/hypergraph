@@ -11,7 +11,7 @@ Incremental document processing with HyperTable. Extract text from documents, sp
 
 ## The Pipeline
 
-```
+```text
 document --> extract_text --> split_pages --> [per page: clean --> embed]
 ```
 

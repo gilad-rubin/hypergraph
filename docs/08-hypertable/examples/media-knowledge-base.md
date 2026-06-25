@@ -10,7 +10,7 @@ Build a searchable knowledge base from video or audio recordings. Extract audio,
 
 ## The Pipeline
 
-```
+```text
 recording --> extract_audio --> transcribe --> split_utterances
     --> [per utterance: clean_text --> extract_keywords --> embed]
 ```
@@ -146,6 +146,10 @@ process_utterance = Graph(
     name="process_utterance",
 )
 
+from hypergraph.materialization._lancedb_store import LanceDBStore
+
+store = LanceDBStore("./recordings_store")
+
 # Parent table: processes recordings, expands into utterances
 recordings = HyperTable(
     [
@@ -193,7 +197,7 @@ utterances = recordings.children("ep-2024-01-15")
 #   'embedding': [0.1, ...]}, ...]
 
 # Count utterances across all recordings
-recordings.count("recordings__utterances")  # child table name
+recordings.count("utterance")  # child table name = identity without the _id suffix
 ```
 
 ## What Happens on Re-Run

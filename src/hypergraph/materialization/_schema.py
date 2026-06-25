@@ -157,6 +157,7 @@ def analyze_table(graph: Any, identity: str, components: dict[str, Any], map_ove
     for _name, n in nodes_dict.items():
         for out_name in n.data_outputs if hasattr(n, "data_outputs") else ():
             if out_name not in child_map_inputs:
+                _validate_column_name(out_name, "derived")
                 root_columns.append(_column(out_name, role="derived", produced_by=n, python_type=return_type(n)))
 
     derived_cols = [c for c in root_columns if c.role == "derived"]
@@ -192,6 +193,7 @@ def _analyze_map_over(map_node: Any, components: dict[str, Any]) -> TableSpec | 
         nodes_dict = inner_graph.nodes if isinstance(inner_graph.nodes, dict) else {}
         for _name, n in nodes_dict.items():
             for out_name in n.data_outputs if hasattr(n, "data_outputs") else []:
+                _validate_column_name(out_name, "derived")
                 child_columns.append(_column(out_name, role="derived", produced_by=n, python_type=return_type(n)))
 
     child_columns.extend(_internal_columns())
