@@ -70,3 +70,35 @@ async def test_async_sync_reconciles_rows(table) -> None:
     assert result.updated == 1
     assert result.inserted == 1
     assert table.get("d2")["word_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_async_backfill_populates_null_columns(tmp_path) -> None:
+    """backfill() runs the graph under AsyncRunner — a newly added column is derived,
+    not silently left null. Regression: recompute/backfill had no async dispatch and
+    fed an un-awaited coroutine to _extract_outputs, deriving nothing."""
+    store = LanceDBStore(str(tmp_path / "async_backfill_store"))
+
+    table_v1 = HyperTable([clean], identity="doc_id", store=store).with_runner(AsyncRunner())
+    await table_v1.insert(doc_id="d1", text="hello world")
+    await table_v1.insert(doc_id="d2", text="one two three")
+
+    table_v2 = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(AsyncRunner())
+    await table_v2.backfill("word_count")
+
+    assert table_v2.get("d1")["word_count"] == 2
+    assert table_v2.get("d2")["word_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_async_recompute_rederives_column(tmp_path) -> None:
+    """recompute() is awaitable under AsyncRunner and re-derives through the async
+    graph instead of leaving a stale value (or raising on an un-awaitable None)."""
+    store = LanceDBStore(str(tmp_path / "async_recompute_store"))
+    table = HyperTable([clean, count_words], identity="doc_id", store=store).with_runner(AsyncRunner())
+
+    await table.insert(doc_id="d1", text="hello world")
+    assert table.get("d1")["word_count"] == 2
+
+    await table.recompute("word_count")
+    assert table.get("d1")["word_count"] == 2

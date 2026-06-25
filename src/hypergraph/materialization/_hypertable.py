@@ -1175,89 +1175,96 @@ class HyperTable:
 
         return SyncResult(inserted=inserted, updated=updated, deleted=deleted, skipped=skipped, errored=errored, errors=tuple(errors))
 
-    def recompute(self, column: str) -> None:
-        """Re-derive one column for all rows using current bound components."""
-        self._require_runner()
-        self._ensure_analyzed()
+    # --- Column re-derivation (recompute / backfill) ---
 
-        rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
-        write_gen = self._store.max_write_gen(self._spec.name) + 1
+    def _source_inputs_from_row(self, existing: dict[str, Any]) -> dict[str, Any]:
+        """Reconstruct graph inputs from a stored row's source columns."""
+        return {c.name: _normalize_value(existing[c.name]) for c in self._spec.columns if c.role == "source" and c.name in existing}
 
-        for existing in rows:
-            id_val = existing[self._identity]
+    def _persist_rederived_column(
+        self,
+        existing: dict[str, Any],
+        column: str,
+        graph_inputs: dict[str, Any],
+        outputs: dict[str, Any],
+        write_gen: int,
+    ) -> None:
+        """Write a new generation of one row with `column` re-derived, then drop the old one."""
+        new_row = {k: _normalize_value(v) for k, v in existing.items()}
+        if column in outputs:
+            new_row[column] = outputs[column]
+        new_row["_write_gen"] = write_gen
+        new_row[f"_provenance_{column}"] = self._compute_provenance(column, graph_inputs, outputs)
 
-            graph_inputs = {}
-            for c in self._spec.columns:
-                if c.role == "source" and c.name in existing:
-                    graph_inputs[c.name] = _normalize_value(existing[c.name])
+        self._store.write_rows(self._spec.name, [new_row])
+        self._store.delete_rows(
+            self._spec.name,
+            [
+                (self._identity, "eq", existing[self._identity]),
+                ("_write_gen", "lt", write_gen),
+            ],
+        )
 
-            result = self._runner.run(self._graph, **graph_inputs)
-            outputs = self._extract_outputs(result)
-
-            new_row = {k: _normalize_value(v) for k, v in existing.items()}
-            if column in outputs:
-                new_row[column] = outputs[column]
-            new_row["_write_gen"] = write_gen
-            new_row[f"_provenance_{column}"] = self._compute_provenance(column, graph_inputs, outputs)
-
-            self._store.write_rows(self._spec.name, [new_row])
-            self._store.delete_rows(
-                self._spec.name,
-                [
-                    (self._identity, "eq", id_val),
-                    ("_write_gen", "lt", write_gen),
-                ],
-            )
-
-    def backfill(self, column: str) -> None:
-        """Derive a new column for existing rows that have NULL."""
-        self._require_runner()
-        self._ensure_analyzed()
-
-        # Evolve schema if the column doesn't exist yet
+    def _evolve_for_backfill_column(self, column: str) -> None:
+        """Add `column` (and its provenance) to the schema if it doesn't exist yet."""
         sample = self._store.read_rows(self._spec.name, limit=1)
         if sample and column not in sample[0]:
             col_type = self._get_derived_column_type(column)
-            self._store.evolve_schema(
-                self._spec.name,
-                {
-                    column: col_type,
-                    f"_provenance_{column}": str,
-                },
-            )
+            self._store.evolve_schema(self._spec.name, {column: col_type, f"_provenance_{column}": str})
 
-        rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+    @staticmethod
+    def _column_is_null(value: Any) -> bool:
+        return value is None or (isinstance(value, float) and math.isnan(value))
+
+    def recompute(self, column: str) -> Any:
+        """Re-derive one column for all rows using current bound components."""
+        self._require_runner()
+        self._ensure_analyzed()
+        if self._is_async_runner():
+            return self._recompute_async(column)
+        return self._recompute_sync(column)
+
+    def _recompute_sync(self, column: str) -> None:
         write_gen = self._store.max_write_gen(self._spec.name) + 1
+        for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
+            graph_inputs = self._source_inputs_from_row(existing)
+            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
+            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
 
-        for existing in rows:
-            val = existing.get(column)
-            if val is not None and not (isinstance(val, float) and math.isnan(val)):
+    async def _recompute_async(self, column: str) -> None:
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
+            graph_inputs = self._source_inputs_from_row(existing)
+            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
+            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
+
+    def backfill(self, column: str) -> Any:
+        """Derive a new column for existing rows that have NULL."""
+        self._require_runner()
+        self._ensure_analyzed()
+        if self._is_async_runner():
+            return self._backfill_async(column)
+        return self._backfill_sync(column)
+
+    def _backfill_sync(self, column: str) -> None:
+        self._evolve_for_backfill_column(column)
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
+            if not self._column_is_null(existing.get(column)):
                 continue
+            graph_inputs = self._source_inputs_from_row(existing)
+            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
+            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
 
-            id_val = existing[self._identity]
-
-            graph_inputs = {}
-            for c in self._spec.columns:
-                if c.role == "source" and c.name in existing:
-                    graph_inputs[c.name] = _normalize_value(existing[c.name])
-
-            result = self._runner.run(self._graph, **graph_inputs)
-            outputs = self._extract_outputs(result)
-
-            new_row = {k: _normalize_value(v) for k, v in existing.items()}
-            if column in outputs:
-                new_row[column] = outputs[column]
-            new_row["_write_gen"] = write_gen
-            new_row[f"_provenance_{column}"] = self._compute_provenance(column, graph_inputs, outputs)
-
-            self._store.write_rows(self._spec.name, [new_row])
-            self._store.delete_rows(
-                self._spec.name,
-                [
-                    (self._identity, "eq", id_val),
-                    ("_write_gen", "lt", write_gen),
-                ],
-            )
+    async def _backfill_async(self, column: str) -> None:
+        self._evolve_for_backfill_column(column)
+        write_gen = self._store.max_write_gen(self._spec.name) + 1
+        for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
+            if not self._column_is_null(existing.get(column)):
+                continue
+            graph_inputs = self._source_inputs_from_row(existing)
+            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
+            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
 
     # --- Fingerprint and provenance ---
 
