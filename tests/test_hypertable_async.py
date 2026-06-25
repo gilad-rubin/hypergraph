@@ -7,7 +7,6 @@ import pytest
 from hypergraph import node
 from hypergraph.materialization import HyperTable
 from hypergraph.materialization._lancedb_store import LanceDBStore
-from hypergraph.materialization._store import clear_store_cache
 from hypergraph.runners import AsyncRunner
 
 
@@ -19,13 +18,6 @@ async def clean(text: str) -> str:
 @node(output_name="word_count")
 def count_words(clean_text: str) -> int:
     return len(clean_text.split())
-
-
-@pytest.fixture(autouse=True)
-def _clear_stores():
-    clear_store_cache()
-    yield
-    clear_store_cache()
 
 
 @pytest.fixture

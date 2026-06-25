@@ -1,6 +1,6 @@
 # Bounded-memory materialization streams through the runner, with a sink protocol
 
-**Status:** Accepted — defines a new Hypergraph runner capability (the reserved `.iter()` streaming) and how DerivedTable persists results. Pre-implementation.
+**Status:** Partially superseded — the `map_iter` streaming runner capability shipped and is retained as a standalone primitive, but the sink-based persistence (the `Sink` protocol and `LanceSink`) was removed together with `DerivedTable`. `HyperTable` persists directly through the `TableStore` protocol rather than through a sink.
 
 To materialize a large derive without buffering a whole cascade level in memory, DerivedTable consumes results as a **stream** from the runner and persists them through a **sink**.
 

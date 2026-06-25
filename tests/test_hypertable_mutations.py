@@ -8,7 +8,6 @@ import pytest
 
 from hypergraph import Graph, node
 from hypergraph.materialization._lancedb_store import LanceDBStore
-from hypergraph.materialization._store import clear_store_cache
 from hypergraph.runners import SyncRunner
 
 # ---------------------------------------------------------------------------
@@ -75,13 +74,6 @@ process_utterance = Graph([clean, embed_text], name="process_utterance")
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _clear_stores():
-    clear_store_cache()
-    yield
-    clear_store_cache()
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 # Sync and async DerivedTable are separate classes, not one class parameterized by the runner
 
-**Status:** Accepted — informs the in-progress materialization work (the `hypergraph/materialization` package is new and not yet committed).
+**Status:** Superseded — the `DerivedTable` / `AsyncDerivedTable` design was abandoned in favor of `HyperTable` (graph-native, `TableStore` protocol), and the `DerivedTable` stack was removed before merge. Retained for the sync/async-by-color reasoning, which still bears on how `HyperTable` should structure its runner handling (see PRD 0004).
 
 `DerivedTable` (sync) and `AsyncDerivedTable` (async) are two classes split by execution *color*. The Hypergraph runner is injected to pick the engine within that color — `SyncRunner` (or `DaftRunner`) for the sync class, `AsyncRunner` for the async class.
 

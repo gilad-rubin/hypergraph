@@ -1,6 +1,11 @@
 # PRD 0001 — Materialize DerivedTable by streaming the derive through a sink
 
-status: ready-for-agent
+status: superseded
+
+> **Superseded.** `DerivedTable` and its sink-based persistence were removed in
+> favor of `HyperTable` (graph-native, `TableStore` protocol). The `map_iter`
+> runner primitive this PRD relied on still exists as a standalone capability,
+> but the sink layer it describes no longer does. Kept for historical context.
 
 ## Problem Statement
 
