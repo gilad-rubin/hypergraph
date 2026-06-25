@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **HyperTable child fingerprints** — child rows now have real fingerprints computed from the child's source inputs, child graph node hashes, and component config hashes (scoped to the child graph, not the parent). Re-inserting a parent skips children whose inputs and graph definition haven't changed. Makes insert naturally resumable after crashes.
+
+- **HyperTable `on_error` policy** — `HyperTable(..., on_error="store")` writes error rows instead of raising on derivation failure. Error rows preserve source columns and identity with `_status="error"` and `_error="{ExceptionType}: {message}"`. Successful siblings are unaffected. Error rows are retried (not skipped) on the next insert/sync. Default `on_error="raise"` preserves backward compatibility. Works for both parent and child rows, and with both `SyncRunner` and `AsyncRunner`.
+
+- **`include_status` on read methods** — `get()`, `children()`, `filter()`, and `filter_children()` accept `include_status=True` to expose `_status` and `_error` fields. Without it, these internal fields are stripped.
+
+- **`SyncResult.errors`** — `sync()` with `on_error="store"` populates `SyncResult.errors: tuple[ErrorRow, ...]` for programmatic inspection of which items failed, alongside the existing `errored` count.
+
+- **Reserved column name validation** — identity and source columns named `_status`, `_error`, `_row_fingerprint`, `_write_gen`, `_parent_id`, or `_provenance_*` are rejected at graph analysis time with a clear error message.
+
+### Fixed
+
+- **`set_children` parent scoping** — the cleanup predicate in `set_children` now includes `_parent_id`, preventing accidental deletion of another parent's children when child identity values overlap.
+
 ### Changed
 
 - **GraphNode boundary projection (breaking refinement)** — `Graph.as_node()` is flat by default again: a wrapped graph's inputs and outputs appear in the parent graph under their local names. Use `Graph.as_node(namespaced=True)` to project a boundary under the resolved GraphNode name, e.g. `retrieval.query` and `retrieval.docs`. ([#97](https://github.com/gilad-rubin/hypergraph/issues/97))

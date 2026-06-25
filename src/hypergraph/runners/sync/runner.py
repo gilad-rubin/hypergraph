@@ -116,7 +116,7 @@ class SyncRunner(SyncRunnerTemplate):
         return RunnerCapabilities(
             supports_cycles=True,
             supports_async_nodes=False,
-            supports_streaming=False,
+            supports_streaming=True,
             returns_coroutine=False,
             supports_checkpointing=self._checkpointer_instance is not None,
         )

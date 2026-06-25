@@ -8,6 +8,7 @@ import json
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import (
@@ -74,6 +75,10 @@ if TYPE_CHECKING:
 
 
 MAX_UNBOUNDED_MAP_TASKS = 10_000
+# Default streaming concurrency for map_iter when the caller doesn't pass one.
+# Unlike map(), map_iter is bounded by design, so an absent limit means a modest
+# bounded pool (tune via max_concurrency), never unbounded fan-out.
+_DEFAULT_STREAM_CONCURRENCY = 16
 _MAP_SIGNATURE_CONFIG_KEY = "map_item_signature"
 
 
@@ -835,6 +840,135 @@ class AsyncRunnerTemplate(BaseRunner, ABC):
                 self._reset_concurrency_limiter(token)
             if _parent_span_id is None and dispatcher.active:
                 await self._shutdown_dispatcher_async(dispatcher)
+
+    async def map_iter(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        map_over: str | list[str],
+        map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
+        select: str | list[str] = _UNSET_SELECT,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        max_concurrency: int | None = None,
+        error_handling: ErrorHandling = "raise",
+        **input_values: Any,
+    ) -> AsyncIterator[tuple[int, RunResult]]:
+        """Stream ``(index, RunResult)`` pairs as each mapped item completes.
+
+        Concurrent and backpressured: at most ``max_concurrency`` items run at
+        once, and a bounded internal buffer means a slow consumer pauses
+        production instead of materializing the whole batch — so peak memory is
+        bounded, not proportional to the input size. ``index`` is the input
+        item's position; results arrive in completion order. ``error_handling``
+        matches :meth:`map`: ``"raise"`` re-raises when a failed item is reached,
+        ``"continue"`` yields the failed ``RunResult`` and keeps going.
+        """
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
+        _validate_error_handling(error_handling)
+        _validate_on_missing(on_missing)
+        if max_concurrency is not None and max_concurrency < 1:
+            raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
+        effective_selected = resolve_runtime_selected(select, graph)
+        ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
+        normalized_values = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=run_option_names - map_option_names,
+            other_call_name="runner.run()",
+            call_name="runner.map_iter()",
+            graph=graph,
+            validation_ctx=ctx,
+        )
+
+        validate_runner_compatibility(graph, self.capabilities)
+        validate_node_types(graph, self.supported_node_types)
+        validate_delegated_runners(graph, self.capabilities)
+        validate_map_compatible(graph)
+
+        map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
+
+        # Always stream lazily: workers pull input variations on demand, so peak
+        # memory is bounded by the worker pool + result buffer, never the input
+        # size. map_iter is backpressured by default (its whole purpose), so an
+        # absent max_concurrency means a bounded default pool, not map()'s
+        # unbounded fan-out — and there is no whole-batch materialization or cap.
+        concurrency = max_concurrency if max_concurrency is not None else _DEFAULT_STREAM_CONCURRENCY
+        input_source = enumerate(generate_map_inputs(normalized_values, map_over_list, map_mode, clone))
+
+        # Share the concurrency limiter across every item run and its internal
+        # nodes/nested graphs, so max_concurrency is a global budget — matching
+        # map()'s invariant rather than only limiting the worker count.
+        existing_limiter = self._get_concurrency_limiter()
+        token = self._set_concurrency_limiter(max_concurrency) if existing_limiter is None and max_concurrency is not None else None
+
+        # maxsize bounds buffered completed results; a full queue blocks workers
+        # on put() — that is the backpressure that pauses production.
+        out_queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=concurrency)
+        done_sentinel = object()
+        worker_failures: list[BaseException] = []
+        stop_requested = False  # raise-mode: a sibling already produced a failure
+
+        async def _worker() -> None:
+            # Shared iterator: next() runs between awaits, so no two workers ever
+            # claim the same index. Anything that escapes this coroutine — a lazy
+            # input-generation error (e.g. zip mismatch) or a BaseException such
+            # as a node CancelledError — is collected by the gather below and
+            # re-raised to the consumer, never silently dropped.
+            nonlocal stop_requested
+            for i, variation_inputs in input_source:
+                if stop_requested:
+                    break  # raise-mode: don't start new items after a failure
+                try:
+                    result = await self.run(
+                        graph,
+                        variation_inputs,
+                        select=select,
+                        on_missing=on_missing,
+                        entrypoint=entrypoint,
+                        max_concurrency=max_concurrency,
+                        error_handling="continue",
+                        show_progress=False,
+                        _validation_ctx=ctx,
+                    )
+                except Exception as e:  # node/validation error during a single run → failed row
+                    result = RunResult(values={}, status=RunStatus.FAILED, run_id=_generate_run_id(), error=e)
+                if error_handling == "raise" and result.status == RunStatus.FAILED:
+                    stop_requested = True
+                await out_queue.put((i, result))
+
+        workers = [asyncio.create_task(_worker()) for _ in range(concurrency)]
+
+        async def _signal_done() -> None:
+            outcomes = await asyncio.gather(*workers, return_exceptions=True)
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    worker_failures.append(outcome)
+            await out_queue.put(done_sentinel)
+
+        closer = asyncio.create_task(_signal_done())
+        try:
+            while True:
+                item = await out_queue.get()
+                if item is done_sentinel:
+                    if worker_failures:
+                        raise worker_failures[0]
+                    break
+                i, result = item
+                if error_handling == "raise" and result.status == RunStatus.FAILED:
+                    raise result.error  # type: ignore[misc]
+                yield i, result
+        finally:
+            for w in workers:
+                w.cancel()
+            closer.cancel()
+            await asyncio.gather(*workers, closer, return_exceptions=True)
+            if token is not None:
+                self._reset_concurrency_limiter(token)
 
 
 def _normalize_signature_value(value: Any) -> Any:

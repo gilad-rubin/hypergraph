@@ -25,15 +25,33 @@ class Serializer(ABC):
         ...
 
 
+def _json_default(obj: Any) -> Any:
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump(mode="json")
+    if hasattr(obj, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        return asdict(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 class JsonSerializer(Serializer):
     """JSON serializer (default). Safe, human-readable, inspectable.
 
-    By default, raises TypeError on non-JSON-serializable types.
-    Pass ``lossy=True`` to fall back to ``str()`` for unsupported types.
+    By default, handles Pydantic models and dataclasses automatically.
+    Pass ``lossy=True`` to also fall back to ``str()`` for other unsupported types.
     """
 
     def __init__(self, *, lossy: bool = False):
-        self._default = str if lossy else None
+        self._lossy = lossy
+
+    def _default(self, obj: Any) -> Any:
+        try:
+            return _json_default(obj)
+        except TypeError:
+            if self._lossy:
+                return str(obj)
+            raise
 
     def serialize(self, value: Any) -> bytes:
         return json.dumps(value, default=self._default).encode("utf-8")

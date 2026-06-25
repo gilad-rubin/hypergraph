@@ -7,6 +7,7 @@ import json
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Literal
 
 from hypergraph.exceptions import (
@@ -44,7 +45,7 @@ from hypergraph.runners._shared.input_normalization import (
     runner_option_names,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
-from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus
+from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus, _generate_run_id
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -745,6 +746,73 @@ class SyncRunnerTemplate(BaseRunner, ABC):
         finally:
             if _parent_span_id is None and dispatcher.active:
                 self._shutdown_dispatcher_sync(dispatcher)
+
+    def map_iter(
+        self,
+        graph: Graph,
+        values: dict[str, Any] | None = None,
+        *,
+        map_over: str | list[str],
+        map_mode: Literal["zip", "product"] = "zip",
+        clone: bool | list[str] = False,
+        select: str | list[str] = _UNSET_SELECT,
+        on_missing: Literal["ignore", "warn", "error"] = "ignore",
+        entrypoint: str | None = None,
+        error_handling: ErrorHandling = "raise",
+        **input_values: Any,
+    ) -> Iterator[tuple[int, RunResult]]:
+        """Stream ``(index, RunResult)`` pairs as each mapped item completes.
+
+        Like :meth:`map`, but yields incrementally instead of buffering a
+        ``MapResult`` — bounding memory to one item at a time. ``index`` is the
+        input item's position, so a consumer can correlate a result with its
+        source item regardless of arrival order. ``error_handling="raise"``
+        re-raises when a failed item is reached; ``"continue"`` yields the failed
+        ``RunResult`` and keeps going.
+        """
+        run_option_names = runner_option_names(self.run)
+        map_option_names = runner_option_names(self.map)
+        _validate_error_handling(error_handling)
+        _validate_on_missing(on_missing)
+        effective_selected = resolve_runtime_selected(select, graph)
+        ctx = precompute_input_validation(graph, entrypoint=entrypoint, selected=effective_selected)
+        normalized_values = normalize_inputs(
+            values,
+            input_values,
+            reserved_option_names=run_option_names | map_option_names,
+            other_option_names=run_option_names - map_option_names,
+            other_call_name="runner.run()",
+            call_name="runner.map_iter()",
+            graph=graph,
+            validation_ctx=ctx,
+        )
+
+        validate_runner_compatibility(graph, self.capabilities)
+        validate_node_types(graph, self.supported_node_types)
+        validate_delegated_runners(graph, self.capabilities)
+        validate_map_compatible(graph)
+
+        map_over_list = [map_over] if isinstance(map_over, str) else list(map_over)
+
+        # Lazy: pull one input variation at a time so peak memory stays bounded
+        # by a single item, not the whole batch.
+        for idx, variation_inputs in enumerate(generate_map_inputs(normalized_values, map_over_list, map_mode, clone)):
+            try:
+                result = self.run(
+                    graph,
+                    variation_inputs,
+                    select=select,
+                    on_missing=on_missing,
+                    entrypoint=entrypoint,
+                    error_handling="continue",
+                    show_progress=False,
+                    _validation_ctx=ctx,
+                )
+            except Exception as e:  # per-item validation error (e.g. missing input) → failed row
+                result = RunResult(values={}, status=RunStatus.FAILED, run_id=_generate_run_id(), error=e)
+            if error_handling == "raise" and result.status == RunStatus.FAILED:
+                raise result.error  # type: ignore[misc]
+            yield idx, result
 
 
 def _flush_and_complete(
