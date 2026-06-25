@@ -128,6 +128,7 @@ Test pieces independently. Reuse across workflows.
 - [Overview](08-hypertable/overview.md) - What HyperTable is, when to use it
 - [Getting Started](08-hypertable/getting-started.md) - Build your first table, incrementality, child tables, error handling
 - [API Reference](08-hypertable/api-reference.md) - Complete method documentation
+- [Implementing a TableStore](08-hypertable/implementing-a-store.md) - Back HyperTable with your own database; the store contract + conformance harness
 - [Example: Document Processing](08-hypertable/examples/document-processing.md) - PDF ingestion with LLM enrichment
 - [Example: Media Knowledge Base](08-hypertable/examples/media-knowledge-base.md) - Video/audio transcription and search
 

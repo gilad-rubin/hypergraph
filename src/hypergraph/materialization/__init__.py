@@ -12,4 +12,15 @@ __all__ = [
     "validate_store",
     "ErrorRow",
     "SyncResult",
+    "check_store_conformance",
 ]
+
+
+def __getattr__(name: str):
+    # Lazy: the conformance harness imports pyarrow, so keep it off the default
+    # import path (runtime consumers that never author a store shouldn't pay it).
+    if name == "check_store_conformance":
+        from hypergraph.materialization._conformance import check_store_conformance
+
+        return check_store_conformance
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
