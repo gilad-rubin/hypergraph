@@ -241,6 +241,36 @@ def test_store_parent_error_retried_on_reinsert():
     assert row["clean_text"] == "BAD"
 
 
+def test_store_complete_parent_survives_transient_reconcile_failure():
+    """on_error='store': re-inserting an unchanged (complete) parent re-runs the parent
+    graph only to reconcile children. A transient failure there must NOT downgrade the
+    stored-complete parent to an error row."""
+    store = MemoryStore()
+    table = HyperTable(
+        [split_words, clean_maybe_fail, process_utterance.as_node().map_over("utterances", identity="utterance_id")],
+        identity="doc_id",
+        store=store,
+        on_error="store",
+    ).with_runner(SyncRunner())
+
+    table.insert(doc_id="d1", text="hello world")
+    assert table.get("d1", include_status=True)["_status"] == "complete"
+    assert table.get("d1")["clean_text"] == "HELLO WORLD"
+
+    # Parent fingerprint is unchanged (parent_skipped), but the parent graph now
+    # fails on this text. The complete parent must survive untouched.
+    fail_on_text.add("hello world")
+    try:
+        table.insert(doc_id="d1", text="hello world")
+    finally:
+        fail_on_text.discard("hello world")
+
+    row = table.get("d1", include_status=True)
+    assert row is not None, "complete parent must still exist after a transient reconcile failure"
+    assert row["_status"] == "complete", "complete parent must not be downgraded to error"
+    assert table.get("d1")["clean_text"] == "HELLO WORLD"
+
+
 # ---------------------------------------------------------------------------
 # on_error propagation through bind/with_runner
 # ---------------------------------------------------------------------------

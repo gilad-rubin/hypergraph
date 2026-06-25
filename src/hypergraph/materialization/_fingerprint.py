@@ -42,7 +42,7 @@ def _component_config_hashes(components: dict[str, Any], valid_inputs: set[str] 
 def _fingerprint(inputs: dict[str, Any], node_hashes: list[str], component_hashes: dict[str, str]) -> str:
     payload = json.dumps(
         {
-            "inputs": {k: str(v) for k, v in sorted(inputs.items())},
+            "inputs": {k: f"{type(v).__name__}:{v}" for k, v in sorted(inputs.items())},
             "nodes": sorted(node_hashes),
             "components": component_hashes,
         },

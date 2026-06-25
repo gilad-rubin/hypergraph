@@ -121,6 +121,16 @@ def _check_delete_returns_count(store: TableStore) -> None:
     assert _ids(store.read_rows("c_del")) == {"a"}, "delete_rows must actually remove the matched rows"
 
 
+def _check_string_quotes(store: TableStore) -> None:
+    store.open(_spec("c_quotes"), [])
+    store.write_rows("c_quotes", [_row("O'Brien", 1, 1)])
+    got = store.read_one("c_quotes", "cid", "O'Brien")
+    assert got is not None and got["n"] == 1, "read_one must handle identity values containing a single quote"
+    deleted = store.delete_rows("c_quotes", [("cid", "eq", "O'Brien")])
+    assert deleted == 1, f"delete_rows must handle a single quote in a string value; got {deleted}, expected 1"
+    assert store.read_one("c_quotes", "cid", "O'Brien") is None, "the row must be gone after delete"
+
+
 def _check_max_write_gen(store: TableStore) -> None:
     store.open(_spec("c_gen"), [])
     assert store.max_write_gen("c_gen") == 0, "max_write_gen must be 0 for an empty table"
@@ -157,6 +167,7 @@ _CHECKS: list[Callable[[TableStore], None]] = [
     _check_read_one_returns_newest_generation,
     _check_predicate_operators,
     _check_delete_returns_count,
+    _check_string_quotes,
     _check_max_write_gen,
     _check_evolve_schema,
     _check_parent_child_filter,

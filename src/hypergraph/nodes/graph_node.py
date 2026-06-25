@@ -735,6 +735,9 @@ class GraphNode(HyperNode):
         if not params:
             raise ValueError("map_over requires at least one parameter")
 
+        # When `identity` is set (HyperTable child graph), map params name the
+        # parent graph's outputs, not this GraphNode's local inputs — so skip
+        # _normalize_map_input_param, which would reject them as unknown inputs.
         normalized_params = tuple(params) if identity else tuple(self._normalize_map_input_param(param) for param in params)
         normalized_clone: bool | list[str]
         if not isinstance(clone, (bool, list)):

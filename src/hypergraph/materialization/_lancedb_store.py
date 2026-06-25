@@ -42,20 +42,23 @@ def _arrow_table_to_dicts(table: pa.Table) -> list[dict[str, Any]]:
     return [{c: pydict[c][i] for c in cols} for i in range(len(table))]
 
 
+def _sql_literal(val: Any) -> str:
+    """Render a predicate value as a LanceDB SQL literal, escaping quotes in strings."""
+    if isinstance(val, str):
+        return "'" + val.replace("'", "''") + "'"
+    return str(val)
+
+
 def _build_lance_filter(where: RowPredicate) -> str:
     """Convert RowPredicate to a LanceDB SQL-like filter string."""
     op_map = {"eq": "=", "ne": "!=", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
     clauses = []
     for col, op, val in where:
         if op == "in":
-            items = ", ".join(f"'{v}'" if isinstance(v, str) else str(v) for v in val)
+            items = ", ".join(_sql_literal(v) for v in val)
             clauses.append(f"`{col}` IN ({items})")
         else:
-            sql_op = op_map[op]
-            if isinstance(val, str):
-                clauses.append(f"`{col}` {sql_op} '{val}'")
-            else:
-                clauses.append(f"`{col}` {sql_op} {val}")
+            clauses.append(f"`{col}` {op_map[op]} {_sql_literal(val)}")
     return " AND ".join(clauses)
 
 

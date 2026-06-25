@@ -493,6 +493,11 @@ class HyperTable:
         except Exception as e:
             if self._on_error == "raise":
                 raise
+            if parent_skipped:
+                # Parent is complete and unchanged; a transient failure while
+                # re-deriving solely to reconcile children must not downgrade the
+                # stored-complete parent to an error row.
+                return "skipped"
             self._write_error_row(item, graph_inputs, write_gen, e, existing)
             return "errored"
 
@@ -524,6 +529,11 @@ class HyperTable:
         except Exception as e:
             if self._on_error == "raise":
                 raise
+            if parent_skipped:
+                # Parent is complete and unchanged; a transient failure while
+                # re-deriving solely to reconcile children must not downgrade the
+                # stored-complete parent to an error row.
+                return "skipped"
             self._write_error_row(item, graph_inputs, write_gen, e, existing)
             return "errored"
 
