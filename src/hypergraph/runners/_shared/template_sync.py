@@ -45,7 +45,7 @@ from hypergraph.runners._shared.input_normalization import (
     runner_option_names,
 )
 from hypergraph.runners._shared.run_log import RunLogCollector
-from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus
+from hypergraph.runners._shared.types import ErrorHandling, GraphState, MapResult, PauseExecution, RunResult, RunStatus, _generate_run_id
 from hypergraph.runners._shared.validation import (
     precompute_input_validation,
     resolve_runtime_selected,
@@ -809,7 +809,7 @@ class SyncRunnerTemplate(BaseRunner, ABC):
                     _validation_ctx=ctx,
                 )
             except Exception as e:  # per-item validation error (e.g. missing input) → failed row
-                result = RunResult(values={}, status=RunStatus.FAILED, error=e)
+                result = RunResult(values={}, status=RunStatus.FAILED, run_id=_generate_run_id(), error=e)
             if error_handling == "raise" and result.status == RunStatus.FAILED:
                 raise result.error  # type: ignore[misc]
             yield idx, result
