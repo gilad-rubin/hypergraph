@@ -64,7 +64,7 @@ def validate_store(store: Any) -> TableStore:
     if not isinstance(store, TableStore):
         raise TypeError(f"store must subclass TableStore, got {type(store).__name__}")
 
-    from hypergraph.materialization._hypertable import ColumnSpec, TableSpec
+    from hypergraph.materialization._schema import ColumnSpec, TableSpec
 
     spec = TableSpec(
         name="__validate_store",

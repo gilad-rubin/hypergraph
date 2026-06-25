@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from hypergraph.materialization import ErrorRow, SyncResult
-from hypergraph.materialization._keys import compute_definition_hash
+from hypergraph.materialization._fingerprint import compute_definition_hash
 
 # ---------------------------------------------------------------------------
 # Definition hash

@@ -8,7 +8,7 @@ import lancedb
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from hypergraph.materialization._hypertable import TableSpec
+from hypergraph.materialization._schema import TableSpec
 from hypergraph.materialization._table_store import RowPredicate, TableStore
 
 

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-import typing
-from dataclasses import dataclass, field
 from typing import Any
 
 from hypergraph import Graph
-from hypergraph.materialization._keys import compute_definition_hash
+from hypergraph.materialization._fingerprint import compute_child_fingerprint, compute_provenance, compute_row_fingerprint
+from hypergraph.materialization._schema import STATUS_COLUMNS, TableSpec, analyze_table, input_names, is_internal_column, return_type
 from hypergraph.materialization._types import ErrorRow, SyncResult
 
 
@@ -36,13 +33,6 @@ def _normalize_value(v: Any) -> Any:
     if isinstance(v, (np.floating, np.integer)):
         return v.item()
     return v
-
-
-_STATUS_FIELDS = {"_status", "_error"}
-
-
-def _is_internal(k: str) -> bool:
-    return k in ("_row_fingerprint", "_write_gen") or k in _STATUS_FIELDS or k.startswith("_provenance_")
 
 
 def _dedup_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[str, Any]]:
@@ -72,12 +62,12 @@ def _dedup_child_rows(rows: list[dict[str, Any]], identity: str) -> list[dict[st
 def _public_row(row: dict[str, Any], *, include_status: bool = False) -> dict[str, Any]:
     result = {}
     for k, v in row.items():
-        if include_status and k in _STATUS_FIELDS:
+        if include_status and k in STATUS_COLUMNS:
             if k == "_status" and v is None:
                 result[k] = "complete"
             else:
                 result[k] = _normalize_value(v)
-        elif not _is_internal(k):
+        elif not is_internal_column(k):
             result[k] = _normalize_value(v)
     return result
 
@@ -88,26 +78,6 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
     if isinstance(where, dict):
         return [(key, "eq", value) for key, value in where.items()]
     return list(where)
-
-
-@dataclass(frozen=True)
-class ColumnSpec:
-    name: str
-    role: str  # identity, source, derived, parent_link, internal
-    produced_by: Any = None
-    content_key: bool = False
-    arrow_type: Any = None
-
-
-@dataclass(frozen=True)
-class TableSpec:
-    name: str
-    identity: str
-    columns: list[ColumnSpec] = field(default_factory=list)
-    children: list[TableSpec] = field(default_factory=list)
-    parent_link: str | None = None
-    child_graph: Any = None
-    map_input: str | None = None
 
 
 class HyperTable:
@@ -183,172 +153,8 @@ class HyperTable:
             if root_binds:
                 self._graph = self._graph.bind(**root_binds)
 
-    def _python_type_to_arrow(self, tp: Any) -> Any:
-        import pyarrow as pa
-
-        if tp is str:
-            return pa.utf8()
-        if tp is int:
-            return pa.int64()
-        if tp is float:
-            return pa.float64()
-        if tp is bool:
-            return pa.bool_()
-        if tp is bytes:
-            return pa.large_binary()
-
-        origin = typing.get_origin(tp)
-        args = typing.get_args(tp)
-        if origin is list:
-            if args and args[0] is float:
-                return pa.list_(pa.float32())
-            if args and args[0] is str:
-                return pa.list_(pa.utf8())
-            if args and args[0] is int:
-                return pa.list_(pa.int64())
-            return pa.list_(pa.utf8())
-        return pa.utf8()
-
-    def _column(self, name: str, *, role: str, produced_by: Any = None, content_key: bool = False, python_type: Any = str) -> ColumnSpec:
-        return ColumnSpec(
-            name,
-            role=role,
-            produced_by=produced_by,
-            content_key=content_key,
-            arrow_type=self._python_type_to_arrow(python_type),
-        )
-
-    def _input_types(self, graph: Graph) -> dict[str, Any]:
-        input_types: dict[str, Any] = {}
-        nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}
-        for _name, node_obj in nodes_dict.items():
-            func = getattr(node_obj, "func", None) or getattr(node_obj, "_func", None)
-            if func is None:
-                continue
-            for name, hint in typing.get_type_hints(func).items():
-                if name != "return":
-                    input_types.setdefault(name, hint)
-        return input_types
-
-    def _return_type(self, node_obj: Any) -> Any:
-        func = getattr(node_obj, "func", None) or getattr(node_obj, "_func", None)
-        if func is None:
-            return str
-        return typing.get_type_hints(func).get("return", str)
-
-    _RESERVED_NAMES = frozenset(
-        {
-            "_status",
-            "_error",
-            "_row_fingerprint",
-            "_write_gen",
-            "_parent_id",
-        }
-    )
-
-    @classmethod
-    def _is_reserved_name(cls, name: str) -> bool:
-        return name in cls._RESERVED_NAMES or name.startswith("_provenance_")
-
-    def _validate_column_name(self, name: str, context: str) -> None:
-        if self._is_reserved_name(name):
-            raise ValueError(
-                f"{context} column name {name!r} is reserved for internal use. "
-                f"Reserved names: {', '.join(sorted(self._RESERVED_NAMES))} and _provenance_*"
-            )
-
     def _analyze_graph(self):
-        graph = self._graph
-        root_columns = []
-        child_specs = []
-
-        input_types = self._input_types(graph)
-        self._validate_column_name(self._identity, "identity")
-        root_columns.append(self._column(self._identity, role="identity"))
-
-        required = set(graph.inputs.required) if isinstance(graph.inputs.required, tuple) else set(graph.inputs.required.keys())
-
-        for inp_name in sorted(required):
-            if inp_name == self._identity:
-                continue
-            self._validate_column_name(inp_name, "source")
-            root_columns.append(self._column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
-
-        for map_node in getattr(self, "_map_over_nodes", []):
-            child_spec = self._analyze_map_over(map_node)
-            if child_spec:
-                child_specs.append(child_spec)
-
-        child_map_inputs = {cs.map_input for cs in child_specs if cs.map_input}
-
-        nodes_dict = graph.nodes if isinstance(graph.nodes, dict) else {}
-        for _name, n in nodes_dict.items():
-            for out_name in n.data_outputs if hasattr(n, "data_outputs") else ():
-                if out_name not in child_map_inputs:
-                    root_columns.append(self._column(out_name, role="derived", produced_by=n, python_type=self._return_type(n)))
-
-        derived_cols = [c for c in root_columns if c.role == "derived"]
-        prov_cols = [self._column(f"_provenance_{c.name}", role="internal") for c in derived_cols]
-        final_columns = (
-            root_columns
-            + [self._column("_row_fingerprint", role="internal")]
-            + prov_cols
-            + [self._column("_write_gen", role="internal", python_type=int)]
-            + [self._column("_status", role="internal")]
-            + [self._column("_error", role="internal")]
-        )
-
-        self._spec = TableSpec(
-            name=self._identity.replace("_id", ""),
-            identity=self._identity,
-            columns=final_columns,
-            children=child_specs,
-        )
-
-    def _analyze_map_over(self, map_node) -> TableSpec | None:
-        config = map_node._map_config if hasattr(map_node, "_map_config") else {}
-        identity = config.get("identity", "item_id")
-        inner_graph = getattr(map_node, "graph", None) or getattr(map_node, "_graph", None)
-        raw_map_over = getattr(map_node, "_map_over", None)
-        map_input = raw_map_over[0] if isinstance(raw_map_over, list) and raw_map_over else config.get("map_over")
-
-        child_columns = [
-            self._column(identity, role="identity"),
-            self._column("_parent_id", role="parent_link"),
-        ]
-
-        if inner_graph:
-            input_types = self._input_types(inner_graph)
-            component_names = set(self._components.keys())
-            inner_required = (
-                set(inner_graph.inputs.required) if isinstance(inner_graph.inputs.required, tuple) else set(inner_graph.inputs.required.keys())
-            )
-            inner_optional = (
-                set(inner_graph.inputs.optional) if isinstance(inner_graph.inputs.optional, tuple) else set(inner_graph.inputs.optional.keys())
-            )
-            inner_all = inner_required | inner_optional
-            for inp_name in sorted(inner_all):
-                if inp_name != identity and inp_name not in component_names:
-                    child_columns.append(self._column(inp_name, role="source", content_key=True, python_type=input_types.get(inp_name, str)))
-            nodes_dict = inner_graph.nodes if isinstance(inner_graph.nodes, dict) else {}
-            for _name, n in nodes_dict.items():
-                for out_name in n.data_outputs if hasattr(n, "data_outputs") else []:
-                    child_columns.append(self._column(out_name, role="derived", produced_by=n, python_type=self._return_type(n)))
-
-        child_columns.append(self._column("_row_fingerprint", role="internal"))
-        child_columns.append(self._column("_write_gen", role="internal", python_type=int))
-        child_columns.append(self._column("_status", role="internal"))
-        child_columns.append(self._column("_error", role="internal"))
-
-        table_name = identity.replace("_id", "")
-        return TableSpec(
-            name=table_name,
-            identity=identity,
-            columns=child_columns,
-            parent_link="_parent_id",
-            child_graph=inner_graph,
-            map_input=map_input,
-        )
+        self._spec = analyze_table(self._graph, self._identity, self._components, getattr(self, "_map_over_nodes", []))
 
     def _resolve_store(self):
         from hypergraph.materialization._table_store import TableStore
@@ -370,8 +176,7 @@ class HyperTable:
     # --- Shared helpers ---
 
     def _graph_required_inputs(self) -> set[str]:
-        required = self._graph.inputs.required
-        return set(required) if isinstance(required, tuple) else set(required.keys())
+        return input_names(self._graph.inputs.required)
 
     def _extract_graph_inputs(self, item: dict[str, Any]) -> dict[str, Any]:
         required = self._graph_required_inputs()
@@ -400,12 +205,11 @@ class HyperTable:
             if col.name in outputs:
                 row[col.name] = outputs[col.name]
 
-        row["_row_fingerprint"] = self._compute_row_fingerprint(item, graph_inputs)
+        row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
 
         for col in derived_cols:
-            prov = self._compute_provenance(col.name, graph_inputs, outputs)
-            row[f"_provenance_{col.name}"] = prov
+            row[f"_provenance_{col.name}"] = compute_provenance(col.name, graph_inputs)
 
         return row
 
@@ -427,7 +231,7 @@ class HyperTable:
         for col in derived_cols:
             row[col.name] = None
 
-        row["_row_fingerprint"] = self._compute_row_fingerprint(item, graph_inputs)
+        row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
         row["_status"] = "error"
         row["_error"] = f"{type(error).__name__}: {error}"
@@ -457,10 +261,7 @@ class HyperTable:
     def _get_derived_column_type(self, column_name: str) -> type:
         for c in self._spec.columns:
             if c.name == column_name and c.role == "derived" and c.produced_by:
-                func = getattr(c.produced_by, "func", None) or getattr(c.produced_by, "_func", None)
-                if func:
-                    hints = typing.get_type_hints(func)
-                    return hints.get("return", str)
+                return return_type(c.produced_by)
         return str
 
     # --- Public API ---
@@ -645,7 +446,7 @@ class HyperTable:
         """
         existing = self._store.read_one(self._spec.name, self._identity, item[self._identity])
         parent_skipped = False
-        if existing is not None and existing.get("_row_fingerprint") == self._compute_row_fingerprint(item, graph_inputs):
+        if existing is not None and existing.get("_row_fingerprint") == self._compute_row_fingerprint(graph_inputs):
             status = existing.get("_status")
             parent_skipped = status is None or status == "complete"
         return existing, parent_skipped
@@ -876,7 +677,7 @@ class HyperTable:
                 item[c.name] = _normalize_value(existing[c.name])
         spec_col_names = {c.name for c in self._spec.columns}
         for k, v in existing.items():
-            if k not in spec_col_names and not _is_internal(k):
+            if k not in spec_col_names and not is_internal_column(k):
                 item[k] = _normalize_value(v)
         item.update(changes)
 
@@ -966,7 +767,7 @@ class HyperTable:
         return {str(row[self._identity]): row for row in rows if row.get(self._identity) is not None}
 
     def _row_unchanged(self, item: dict[str, Any], existing: dict[str, Any]) -> bool:
-        return existing.get("_row_fingerprint") == self._compute_row_fingerprint(item, self._extract_graph_inputs(item))
+        return existing.get("_row_fingerprint") == self._compute_row_fingerprint(self._extract_graph_inputs(item))
 
     def _error_row_for(self, id_val: str) -> ErrorRow | None:
         """Build an ErrorRow from the persisted error row for a failed identity."""
@@ -1065,7 +866,7 @@ class HyperTable:
         if column in outputs:
             new_row[column] = outputs[column]
         new_row["_write_gen"] = write_gen
-        new_row[f"_provenance_{column}"] = self._compute_provenance(column, graph_inputs, outputs)
+        new_row[f"_provenance_{column}"] = compute_provenance(column, graph_inputs)
 
         self._store.write_rows(self._spec.name, [new_row])
         self._store.delete_rows(
@@ -1139,63 +940,8 @@ class HyperTable:
 
     # --- Fingerprint and provenance ---
 
-    def _compute_row_fingerprint(self, item: dict, graph_inputs: dict) -> str:
-        node_hashes = []
-        for n in self._graph.iter_nodes():
-            func = getattr(n, "func", None)
-            if func is not None:
-                node_hashes.append(compute_definition_hash(func))
-
-        component_hashes = {}
-        for name, comp in self._components.items():
-            config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
-            if config is not None:
-                component_hashes[name] = str(config)
-
-        payload = json.dumps(
-            {
-                "inputs": {k: str(v) for k, v in sorted(graph_inputs.items())},
-                "nodes": sorted(node_hashes),
-                "components": component_hashes,
-            },
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
+    def _compute_row_fingerprint(self, graph_inputs: dict) -> str:
+        return compute_row_fingerprint(self._graph, self._components, graph_inputs)
 
     def _compute_child_fingerprint(self, child_inputs: dict, child_spec: TableSpec) -> str:
-        child_graph = child_spec.child_graph
-        node_hashes = []
-        if child_graph:
-            for n in child_graph.iter_nodes():
-                func = getattr(n, "func", None)
-                if func is not None:
-                    node_hashes.append(compute_definition_hash(func))
-
-        component_hashes = {}
-        if child_graph:
-            valid_inputs = set(child_graph.inputs.all) if hasattr(child_graph.inputs, "all") else set()
-            for name, comp in self._components.items():
-                if name in valid_inputs:
-                    config = getattr(comp, "__component_config__", None) or (comp._config() if hasattr(comp, "_config") else None)
-                    if config is not None:
-                        component_hashes[name] = str(config)
-
-        payload = json.dumps(
-            {
-                "inputs": {k: str(v) for k, v in sorted(child_inputs.items())},
-                "nodes": sorted(node_hashes),
-                "components": component_hashes,
-            },
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
-
-    def _compute_provenance(self, col_name: str, inputs: dict, outputs: dict) -> str:
-        payload = json.dumps(
-            {
-                "column": col_name,
-                "inputs": {k: str(v) for k, v in sorted(inputs.items())},
-            },
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode()).hexdigest()
+        return compute_child_fingerprint(child_spec.child_graph, self._components, child_inputs)
