@@ -64,3 +64,6 @@ logs/security/
 
 # Dev scratch directories
 viz-dev/
+
+# Superposition delivery scratch / handoffs
+.sp/
