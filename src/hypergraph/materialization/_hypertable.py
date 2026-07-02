@@ -95,6 +95,17 @@ def _where_predicate(where: Any) -> list[tuple[str, str, Any]]:
     return list(where)
 
 
+def _split_boundary_provenance(value: Any) -> tuple[str | None, int | None]:
+    """Parse a stored boundary provenance ("<hash>#<item count>") into its parts."""
+    if not isinstance(value, str) or "#" not in value:
+        return None, None
+    prov, _, count = value.rpartition("#")
+    try:
+        return prov, int(count)
+    except ValueError:
+        return None, None
+
+
 class HyperTable:
     """A Hypergraph graph where each node output is a stored column."""
 
@@ -228,8 +239,15 @@ class HyperTable:
         if provenances is None:
             values = {**{k: v for k, v in item.items() if k != self._identity}, **outputs}
             provenances = {c.name: self._node_provenance(c.produced_by, values) for c in derived_cols}
-        for col in derived_cols:
-            row[f"_provenance_{col.name}"] = provenances.get(col.name)
+            for child_spec in self._spec.children:
+                bnode = self._boundary_node(child_spec)
+                if bnode is None:
+                    continue
+                prov = self._node_provenance(bnode, values)
+                if prov is not None:
+                    provenances[child_spec.map_input] = self._boundary_provenance_value(prov, outputs.get(child_spec.map_input))
+        for name, prov in provenances.items():
+            row[f"_provenance_{name}"] = prov
 
         return row
 
@@ -286,14 +304,15 @@ class HyperTable:
 
     # --- Per-column provenance (config-aware, value-chained) ---
 
-    def _derived_columns(self) -> list:
-        return [c for c in self._spec.columns if c.role == "derived"]
+    def _derived_columns(self, spec: TableSpec | None = None) -> list:
+        spec = spec or self._spec
+        return [c for c in spec.columns if c.role == "derived"]
 
     def _node_params(self, node: Any) -> Any:
         return inspect.signature(node_func(node)).parameters
 
-    def _node_columns(self, node: Any) -> list:
-        return [c for c in self._derived_columns() if c.produced_by is node]
+    def _node_columns(self, node: Any, spec: TableSpec | None = None) -> list:
+        return [c for c in self._derived_columns(spec) if c.produced_by is node]
 
     def _producing_node(self, column: str) -> Any:
         for c in self._derived_columns():
@@ -301,9 +320,9 @@ class HyperTable:
                 return c.produced_by
         raise KeyError(f"{column!r} is not a derived column")
 
-    def _nodes_in_dependency_order(self) -> list:
+    def _nodes_in_dependency_order(self, spec: TableSpec | None = None) -> list:
         """Producing nodes ordered so every node's column inputs are produced before it."""
-        derived = self._derived_columns()
+        derived = self._derived_columns(spec)
         nodes: list = []
         seen: set[int] = set()
         for col in derived:
@@ -320,7 +339,7 @@ class HyperTable:
                 deps = {p for p in self._node_params(n) if p in derived_names}
                 if deps <= placed:
                     ordered.append(n)
-                    placed.update(c.name for c in self._node_columns(n))
+                    placed.update(c.name for c in self._node_columns(n, spec))
                     remaining.remove(n)
                     progressed = True
             if not progressed:
@@ -365,14 +384,60 @@ class HyperTable:
     def _stored_values(self, row: dict[str, Any]) -> dict[str, Any]:
         return {k: _normalize_value(v) for k, v in row.items() if not is_internal_column(k)}
 
-    def _node_is_fresh(self, node: Any, prov: str, existing: dict[str, Any]) -> bool:
-        return all(existing.get(f"_provenance_{c.name}") == prov and not self._column_is_null(existing.get(c.name)) for c in self._node_columns(node))
+    def _node_is_fresh(self, node: Any, prov: str, existing: dict[str, Any], spec: TableSpec | None = None) -> bool:
+        return all(
+            existing.get(f"_provenance_{c.name}") == prov and not self._column_is_null(existing.get(c.name)) for c in self._node_columns(node, spec)
+        )
 
-    def _reconcile_columns(self, item: dict[str, Any], existing: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]] | None:
+    def _boundary_node(self, child_spec: TableSpec) -> Any:
+        """The root-graph node whose output is the child spec's mapped-items list."""
+        if not child_spec.map_input:
+            return None
+        nodes_dict = self._graph.nodes if isinstance(self._graph.nodes, dict) else {}
+        for n in nodes_dict.values():
+            if child_spec.map_input in (n.data_outputs if hasattr(n, "data_outputs") else ()):
+                return n
+        return None
+
+    def _stored_child_count(self, child_spec: TableSpec, parent_id: Any) -> int:
+        rows = self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)])
+        return len(_dedup_child_rows(rows, child_spec.identity))
+
+    def _boundary_provenance_value(self, prov: str, items: Any) -> str:
+        """Stored boundary provenance: recipe hash + how many items it produced.
+
+        The count is checked against the stored child rows on reconcile, so a
+        lost child row (crash leftover) forces the boundary node to re-run.
+        """
+        count = len(items) if isinstance(items, list) else 0
+        return f"{prov}#{count}"
+
+    def _boundary_freshness(
+        self, child_spec: TableSpec, item: dict[str, Any], existing: dict[str, Any], values: dict[str, Any]
+    ) -> tuple[Any, str, Any, bool] | None:
+        """Decide whether stored child rows can stand in for a boundary-node run.
+
+        Returns ``(boundary_node, provenance, stored_value, fresh)``, or None when
+        the boundary can't be reconciled column-scoped (full-run fallback).
+        """
+        bnode = self._boundary_node(child_spec)
+        if bnode is None or any(c.produced_by is bnode for c in self._derived_columns()):
+            return None
+        prov = self._node_provenance(bnode, values)
+        if prov is None:
+            return None
+        stored = existing.get(f"_provenance_{child_spec.map_input}")
+        stored_prov, stored_count = _split_boundary_provenance(stored)
+        fresh = stored_prov == prov and stored_count == self._stored_child_count(child_spec, item[self._identity])
+        return bnode, prov, stored, fresh
+
+    def _reconcile_columns(self, item: dict[str, Any], existing: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None:
         """Column-scoped upsert: reuse fresh columns, re-derive stale ones from stored upstream values.
 
-        Returns (outputs, provenances), or None when a required input is
-        unavailable — the caller falls back to a full graph run.
+        Returns (outputs, provenances, child_plan), or None when a required input
+        is unavailable — the caller falls back to a full graph run. A child_plan
+        entry of None means: rebuild the mapped items from stored child rows
+        instead of re-running the boundary node.
         """
         values = self._stored_values(existing)
         values.update({k: v for k, v in item.items() if k != self._identity})
@@ -391,9 +456,25 @@ class HyperTable:
                     outputs[c.name] = node_outputs[c.name]
                     values[c.name] = node_outputs[c.name]
                 provenances[c.name] = prov
-        return outputs, provenances
+        child_plan: dict[str, Any] = {}
+        for child_spec in self._spec.children:
+            state = self._boundary_freshness(child_spec, item, existing, values)
+            if state is None:
+                return None
+            bnode, prov, stored, fresh = state
+            if fresh:
+                provenances[child_spec.map_input] = stored
+                child_plan[child_spec.name] = None
+            else:
+                items = self._run_column_node(bnode, values).get(child_spec.map_input)
+                items = items if isinstance(items, list) else []
+                provenances[child_spec.map_input] = self._boundary_provenance_value(prov, items)
+                child_plan[child_spec.name] = items
+        return outputs, provenances, child_plan
 
-    async def _reconcile_columns_async(self, item: dict[str, Any], existing: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]] | None:
+    async def _reconcile_columns_async(
+        self, item: dict[str, Any], existing: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]] | None:
         """Async twin of ``_reconcile_columns`` — identical except the awaited node runs."""
         values = self._stored_values(existing)
         values.update({k: v for k, v in item.items() if k != self._identity})
@@ -412,7 +493,22 @@ class HyperTable:
                     outputs[c.name] = node_outputs[c.name]
                     values[c.name] = node_outputs[c.name]
                 provenances[c.name] = prov
-        return outputs, provenances
+        child_plan: dict[str, Any] = {}
+        for child_spec in self._spec.children:
+            state = self._boundary_freshness(child_spec, item, existing, values)
+            if state is None:
+                return None
+            bnode, prov, stored, fresh = state
+            if fresh:
+                provenances[child_spec.map_input] = stored
+                child_plan[child_spec.name] = None
+            else:
+                boundary_outputs = await self._run_column_node_async(bnode, values)
+                items = boundary_outputs.get(child_spec.map_input)
+                items = items if isinstance(items, list) else []
+                provenances[child_spec.map_input] = self._boundary_provenance_value(prov, items)
+                child_plan[child_spec.name] = items
+        return outputs, provenances, child_plan
 
     def _row_converged(self, row: dict[str, Any]) -> bool:
         """All derived columns present with provenance matching the current recipe."""
@@ -477,23 +573,25 @@ class HyperTable:
             **root,
         )
 
-    def _count_stale_columns(self, row: dict[str, Any], counts: dict[str, int]) -> None:
+    def _count_stale_columns(self, row: dict[str, Any], counts: dict[str, int], spec: TableSpec | None = None) -> None:
         """Attribute a stale row to the specific columns whose provenance no longer matches."""
         values = self._stored_values(row)
-        for node in self._nodes_in_dependency_order():
+        for node in self._nodes_in_dependency_order(spec):
             prov = self._node_provenance(node, values)
-            for c in self._node_columns(node):
+            for c in self._node_columns(node, spec):
                 if prov is None or self._column_is_null(row.get(c.name)) or row.get(f"_provenance_{c.name}") != prov:
                     counts[c.name] = counts.get(c.name, 0) + 1
 
     def _child_status(self, child_spec: TableSpec) -> TableStatus:
         rows = _dedup_child_rows(self._store.read_rows(child_spec.name), child_spec.identity)
+        stale_column_counts: dict[str, int] = {}
         counts = self._classify_rows(
             rows,
             identity=child_spec.identity,
             fingerprint_of=lambda row: self._compute_child_fingerprint(self._child_source_inputs_from_row(row, child_spec), child_spec),
+            on_stale=lambda row: self._count_stale_columns(row, stale_column_counts, spec=child_spec),
         )
-        return TableStatus(table=child_spec.name, **counts)
+        return TableStatus(table=child_spec.name, stale_columns=tuple(sorted(stale_column_counts.items())), **counts)
 
     def _classify_rows(self, rows: list[dict[str, Any]], *, identity: str, fingerprint_of: Any, on_stale: Any = None) -> dict[str, Any]:
         """Split stored rows into fresh / stale / errored for a status report."""
@@ -705,24 +803,70 @@ class HyperTable:
                 [("_parent_id", "eq", identity_value), ("_write_gen", "lt", write_gen)],
             )
 
-    def _can_reconcile(self, existing: dict[str, Any] | None, parent_skipped: bool) -> bool:
-        """Column-scoped reconcile applies to complete prior rows of childless tables."""
-        return existing is not None and not parent_skipped and not self._spec.children and existing.get("_status") != "error"
+    def _can_reconcile(self, existing: dict[str, Any] | None) -> bool:
+        """Column-scoped reconcile applies to any complete (non-error) prior row."""
+        return existing is not None and existing.get("_status") != "error"
 
-    def _write_reconciled_row(
+    def _apply_reconciled(
         self,
         item: dict[str, Any],
         graph_inputs: dict[str, Any],
-        reconciled: tuple[dict[str, Any], dict[str, str]],
+        existing: dict[str, Any],
+        reconciled: tuple[dict[str, Any], dict[str, str], dict[str, Any]],
+        parent_skipped: bool,
         write_gen: int,
-    ) -> None:
-        outputs, provenances = reconciled
-        self._evolve_for_metadata(item)
-        row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
-        row["_status"] = "complete"
-        row["_error"] = None
-        self._store.write_rows(self._spec.name, [row])
-        self._cleanup_old_parent_gens(item[self._identity], write_gen)
+    ) -> str:
+        """Persist a reconciled row: children first, then the parent row that vouches for them.
+
+        The parent row is rewritten only when it changed (or when a provenance
+        column must be persisted for a pre-provenance row); a skipped parent's
+        stored row is left untouched so its old generation is never cleaned away.
+        """
+        outputs, provenances, child_plan = reconciled
+        identity_value = item[self._identity]
+        for child_spec in self._spec.children:
+            items = child_plan.get(child_spec.name)
+            if items is None:
+                items = self._rebuild_child_items(child_spec, identity_value)
+            self._insert_children_items(identity_value, items, child_spec, write_gen)
+        prov_changed = any(existing.get(f"_provenance_{name}") != prov for name, prov in provenances.items())
+        if not parent_skipped or prov_changed:
+            self._evolve_for_metadata(item)
+            row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
+            row["_status"] = "complete"
+            row["_error"] = None
+            self._store.write_rows(self._spec.name, [row])
+            self._cleanup_old_parent_gens(identity_value, write_gen)
+        self._cleanup_old_child_gens(identity_value, write_gen)
+        return "skipped" if parent_skipped else "updated"
+
+    async def _apply_reconciled_async(
+        self,
+        item: dict[str, Any],
+        graph_inputs: dict[str, Any],
+        existing: dict[str, Any],
+        reconciled: tuple[dict[str, Any], dict[str, str], dict[str, Any]],
+        parent_skipped: bool,
+        write_gen: int,
+    ) -> str:
+        """Async twin of ``_apply_reconciled`` — identical except the awaited child runs."""
+        outputs, provenances, child_plan = reconciled
+        identity_value = item[self._identity]
+        for child_spec in self._spec.children:
+            items = child_plan.get(child_spec.name)
+            if items is None:
+                items = self._rebuild_child_items(child_spec, identity_value)
+            await self._insert_children_items_async(identity_value, items, child_spec, write_gen)
+        prov_changed = any(existing.get(f"_provenance_{name}") != prov for name, prov in provenances.items())
+        if not parent_skipped or prov_changed:
+            self._evolve_for_metadata(item)
+            row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
+            row["_status"] = "complete"
+            row["_error"] = None
+            self._store.write_rows(self._spec.name, [row])
+            self._cleanup_old_parent_gens(identity_value, write_gen)
+        self._cleanup_old_child_gens(identity_value, write_gen)
+        return "skipped" if parent_skipped else "updated"
 
     def _insert_one(self, item: dict[str, Any], write_gen: int) -> str:
         """Insert or upsert a single row. Returns 'inserted', 'updated', 'skipped', or 'errored'."""
@@ -732,17 +876,21 @@ class HyperTable:
         if parent_skipped and not self._spec.children:
             return "skipped"
 
-        if self._can_reconcile(existing, parent_skipped):
+        if self._can_reconcile(existing):
             try:
                 reconciled = self._reconcile_columns(item, existing)
             except Exception as e:
                 if self._on_error == "raise":
                     raise
+                if parent_skipped:
+                    # Parent is complete and unchanged; a transient failure while
+                    # reconciling solely for the children must not downgrade the
+                    # stored-complete parent to an error row.
+                    return "skipped"
                 self._write_error_row(item, graph_inputs, write_gen, e, existing)
                 return "errored"
             if reconciled is not None:
-                self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
-                return "updated"
+                return self._apply_reconciled(item, graph_inputs, existing, reconciled, parent_skipped, write_gen)
 
         try:
             outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
@@ -764,9 +912,11 @@ class HyperTable:
             self._cleanup_old_child_gens(identity_value, write_gen)
             return "skipped"
 
-        self._write_parent_row(item, graph_inputs, outputs, write_gen)
+        # Children before the parent row: the parent row carries the boundary
+        # provenance that vouches for the stored child set, so it must land last.
         for child_spec in self._spec.children:
             self._insert_children(identity_value, outputs, child_spec, write_gen)
+        self._write_parent_row(item, graph_inputs, outputs, write_gen)
         if existing is not None:
             self._cleanup_old_parent_gens(identity_value, write_gen)
             self._cleanup_old_child_gens(identity_value, write_gen)
@@ -780,17 +930,21 @@ class HyperTable:
         if parent_skipped and not self._spec.children:
             return "skipped"
 
-        if self._can_reconcile(existing, parent_skipped):
+        if self._can_reconcile(existing):
             try:
                 reconciled = await self._reconcile_columns_async(item, existing)
             except Exception as e:
                 if self._on_error == "raise":
                     raise
+                if parent_skipped:
+                    # Parent is complete and unchanged; a transient failure while
+                    # reconciling solely for the children must not downgrade the
+                    # stored-complete parent to an error row.
+                    return "skipped"
                 self._write_error_row(item, graph_inputs, write_gen, e, existing)
                 return "errored"
             if reconciled is not None:
-                self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
-                return "updated"
+                return await self._apply_reconciled_async(item, graph_inputs, existing, reconciled, parent_skipped, write_gen)
 
         try:
             outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
@@ -811,9 +965,11 @@ class HyperTable:
             self._cleanup_old_child_gens(identity_value, write_gen)
             return "skipped"
 
-        self._write_parent_row(item, graph_inputs, outputs, write_gen)
+        # Children before the parent row: the parent row carries the boundary
+        # provenance that vouches for the stored child set, so it must land last.
         for child_spec in self._spec.children:
             await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
+        self._write_parent_row(item, graph_inputs, outputs, write_gen)
         if existing is not None:
             self._cleanup_old_parent_gens(identity_value, write_gen)
             self._cleanup_old_child_gens(identity_value, write_gen)
@@ -837,8 +993,8 @@ class HyperTable:
 
     def _plan_child(
         self, child_spec: TableSpec, child_item: dict[str, Any], parent_id: str, write_gen: int
-    ) -> tuple[str, dict[str, Any], str] | None:
-        """Compute ``(child_identity, child_inputs, fingerprint)`` for a child item.
+    ) -> tuple[str, dict[str, Any], str, dict[str, Any] | None] | None:
+        """Compute ``(child_identity, child_inputs, fingerprint, existing_child)`` for a child item.
 
         If the child is unchanged and complete, bump its ``_write_gen`` so it
         survives cleanup and return None to signal a skip.
@@ -861,7 +1017,7 @@ class HyperTable:
                 bumped["_write_gen"] = write_gen
                 self._store.write_rows(child_spec.name, [bumped])
                 return None
-        return child_identity, child_inputs, new_fingerprint
+        return child_identity, child_inputs, new_fingerprint, existing_child
 
     def _child_row(
         self,
@@ -875,6 +1031,7 @@ class HyperTable:
         status: str,
         error: str | None,
         outputs: dict[str, Any] | None = None,
+        provenances: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Assemble a child row from its source item plus (on success) its derived outputs."""
         row = {
@@ -890,11 +1047,128 @@ class HyperTable:
                 row[k] = v
         for k, v in (outputs or {}).items():
             row[k] = v
+        for name, prov in (provenances or {}).items():
+            row[f"_provenance_{name}"] = prov
         return row
+
+    def _child_provenances(self, child_spec: TableSpec, values: dict[str, Any]) -> dict[str, str]:
+        """Per-column provenance for a child row, from the inner graph's nodes."""
+        provenances: dict[str, str] = {}
+        for node in self._nodes_in_dependency_order(child_spec):
+            prov = self._node_provenance(node, values)
+            for c in self._node_columns(node, child_spec):
+                provenances[c.name] = prov
+        return provenances
+
+    def _rebuild_child_items(self, child_spec: TableSpec, parent_id: str) -> list[dict[str, Any]]:
+        """Reconstruct the mapped items from stored child rows (source + metadata columns).
+
+        Error child rows are included — their source columns are preserved — so
+        they naturally retry.
+        """
+        rows = _dedup_child_rows(
+            self._store.read_rows(child_spec.name, [("_parent_id", "eq", parent_id)]),
+            child_spec.identity,
+        )
+        derived = {c.name for c in child_spec.columns if c.role == "derived"}
+        return [
+            {k: _normalize_value(v) for k, v in row.items() if k not in derived and k != "_parent_id" and not is_internal_column(k)} for row in rows
+        ]
+
+    def _reconcile_child_row(
+        self,
+        child_spec: TableSpec,
+        child_item: dict[str, Any],
+        existing_child: dict[str, Any],
+        parent_id: str,
+        new_fingerprint: str,
+        write_gen: int,
+    ) -> dict[str, Any] | None:
+        """Column-scoped child upsert: reuse fresh columns, re-derive stale ones.
+
+        Returns the new child row, or None when a required input is unavailable —
+        the caller falls back to a full child-graph run.
+        """
+        values = self._stored_values(existing_child)
+        values.update(child_item)
+        outputs: dict[str, Any] = {}
+        provenances: dict[str, str] = {}
+        for node in self._nodes_in_dependency_order(child_spec):
+            prov = self._node_provenance(node, values)
+            if prov is None:
+                return None
+            if self._node_is_fresh(node, prov, existing_child, child_spec):
+                node_outputs = {c.name: _normalize_value(existing_child[c.name]) for c in self._node_columns(node, child_spec)}
+            else:
+                node_outputs = self._run_column_node(node, values)
+            for c in self._node_columns(node, child_spec):
+                if c.name in node_outputs:
+                    outputs[c.name] = node_outputs[c.name]
+                    values[c.name] = node_outputs[c.name]
+                provenances[c.name] = prov
+        child_identity = child_item.get(child_spec.identity, "")
+        return self._child_row(
+            child_spec,
+            child_item,
+            child_identity,
+            parent_id,
+            new_fingerprint,
+            write_gen,
+            status="complete",
+            error=None,
+            outputs=outputs,
+            provenances=provenances,
+        )
+
+    async def _reconcile_child_row_async(
+        self,
+        child_spec: TableSpec,
+        child_item: dict[str, Any],
+        existing_child: dict[str, Any],
+        parent_id: str,
+        new_fingerprint: str,
+        write_gen: int,
+    ) -> dict[str, Any] | None:
+        """Async twin of ``_reconcile_child_row`` — identical except the awaited node runs."""
+        values = self._stored_values(existing_child)
+        values.update(child_item)
+        outputs: dict[str, Any] = {}
+        provenances: dict[str, str] = {}
+        for node in self._nodes_in_dependency_order(child_spec):
+            prov = self._node_provenance(node, values)
+            if prov is None:
+                return None
+            if self._node_is_fresh(node, prov, existing_child, child_spec):
+                node_outputs = {c.name: _normalize_value(existing_child[c.name]) for c in self._node_columns(node, child_spec)}
+            else:
+                node_outputs = await self._run_column_node_async(node, values)
+            for c in self._node_columns(node, child_spec):
+                if c.name in node_outputs:
+                    outputs[c.name] = node_outputs[c.name]
+                    values[c.name] = node_outputs[c.name]
+                provenances[c.name] = prov
+        child_identity = child_item.get(child_spec.identity, "")
+        return self._child_row(
+            child_spec,
+            child_item,
+            child_identity,
+            parent_id,
+            new_fingerprint,
+            write_gen,
+            status="complete",
+            error=None,
+            outputs=outputs,
+            provenances=provenances,
+        )
 
     def _insert_children(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
         child_items = self._child_items(outputs, child_spec)
         if child_items is None:
+            return
+        self._insert_children_items(parent_id, child_items, child_spec, write_gen)
+
+    def _insert_children_items(self, parent_id: str, child_items: list, child_spec: TableSpec, write_gen: int) -> None:
+        if child_spec.child_graph is None:
             return
         bound_graph = self._bind_child_components(child_spec.child_graph)
         for raw_item in child_items:
@@ -902,46 +1176,125 @@ class HyperTable:
             plan = self._plan_child(child_spec, child_item, parent_id, write_gen)
             if plan is None:
                 continue
-            child_identity, child_inputs, new_fingerprint = plan
-            try:
-                child_outputs = self._extract_outputs(self._runner.run(bound_graph, **child_inputs))
-            except Exception as e:
-                if self._on_error == "raise":
-                    raise
+            child_identity, child_inputs, new_fingerprint, existing_child = plan
+            row = None
+            if existing_child is not None and existing_child.get("_status") in (None, "complete"):
+                try:
+                    row = self._reconcile_child_row(child_spec, child_item, existing_child, parent_id, new_fingerprint, write_gen)
+                except Exception as e:
+                    if self._on_error == "raise":
+                        raise
+                    row = self._child_row(
+                        child_spec,
+                        child_item,
+                        child_identity,
+                        parent_id,
+                        new_fingerprint,
+                        write_gen,
+                        status="error",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                    self._store.write_rows(child_spec.name, [row])
+                    continue
+            if row is None:
+                try:
+                    child_outputs = self._extract_outputs(self._runner.run(bound_graph, **child_inputs))
+                except Exception as e:
+                    if self._on_error == "raise":
+                        raise
+                    row = self._child_row(
+                        child_spec,
+                        child_item,
+                        child_identity,
+                        parent_id,
+                        new_fingerprint,
+                        write_gen,
+                        status="error",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                    self._store.write_rows(child_spec.name, [row])
+                    continue
+                child_values = {**child_item, **child_outputs}
                 row = self._child_row(
-                    child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="error", error=f"{type(e).__name__}: {e}"
+                    child_spec,
+                    child_item,
+                    child_identity,
+                    parent_id,
+                    new_fingerprint,
+                    write_gen,
+                    status="complete",
+                    error=None,
+                    outputs=child_outputs,
+                    provenances=self._child_provenances(child_spec, child_values),
                 )
-                self._store.write_rows(child_spec.name, [row])
-                continue
-            row = self._child_row(
-                child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="complete", error=None, outputs=child_outputs
-            )
             self._store.write_rows(child_spec.name, [row])
 
     async def _insert_children_async(self, parent_id: str, outputs: dict, child_spec: TableSpec, write_gen: int) -> None:
         child_items = self._child_items(outputs, child_spec)
         if child_items is None:
             return
+        await self._insert_children_items_async(parent_id, child_items, child_spec, write_gen)
+
+    async def _insert_children_items_async(self, parent_id: str, child_items: list, child_spec: TableSpec, write_gen: int) -> None:
+        if child_spec.child_graph is None:
+            return
         bound_graph = self._bind_child_components(child_spec.child_graph)
         for raw_item in child_items:
             child_item = _normalize_to_dict(raw_item)
             plan = self._plan_child(child_spec, child_item, parent_id, write_gen)
             if plan is None:
                 continue
-            child_identity, child_inputs, new_fingerprint = plan
-            try:
-                child_outputs = self._extract_outputs(await self._runner.run(bound_graph, **child_inputs))
-            except Exception as e:
-                if self._on_error == "raise":
-                    raise
+            child_identity, child_inputs, new_fingerprint, existing_child = plan
+            row = None
+            if existing_child is not None and existing_child.get("_status") in (None, "complete"):
+                try:
+                    row = await self._reconcile_child_row_async(child_spec, child_item, existing_child, parent_id, new_fingerprint, write_gen)
+                except Exception as e:
+                    if self._on_error == "raise":
+                        raise
+                    row = self._child_row(
+                        child_spec,
+                        child_item,
+                        child_identity,
+                        parent_id,
+                        new_fingerprint,
+                        write_gen,
+                        status="error",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                    self._store.write_rows(child_spec.name, [row])
+                    continue
+            if row is None:
+                try:
+                    child_outputs = self._extract_outputs(await self._runner.run(bound_graph, **child_inputs))
+                except Exception as e:
+                    if self._on_error == "raise":
+                        raise
+                    row = self._child_row(
+                        child_spec,
+                        child_item,
+                        child_identity,
+                        parent_id,
+                        new_fingerprint,
+                        write_gen,
+                        status="error",
+                        error=f"{type(e).__name__}: {e}",
+                    )
+                    self._store.write_rows(child_spec.name, [row])
+                    continue
+                child_values = {**child_item, **child_outputs}
                 row = self._child_row(
-                    child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="error", error=f"{type(e).__name__}: {e}"
+                    child_spec,
+                    child_item,
+                    child_identity,
+                    parent_id,
+                    new_fingerprint,
+                    write_gen,
+                    status="complete",
+                    error=None,
+                    outputs=child_outputs,
+                    provenances=self._child_provenances(child_spec, child_values),
                 )
-                self._store.write_rows(child_spec.name, [row])
-                continue
-            row = self._child_row(
-                child_spec, child_item, child_identity, parent_id, new_fingerprint, write_gen, status="complete", error=None, outputs=child_outputs
-            )
             self._store.write_rows(child_spec.name, [row])
 
     def update(self, identity_value: str, **changes: Any) -> Any:
@@ -983,53 +1336,58 @@ class HyperTable:
 
     def _update_sync(self, identity_value: str, **changes: Any) -> None:
         item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
-        if needs_rederive:
-            graph_inputs = self._extract_graph_inputs(item)
-            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-            if self._can_reconcile(existing, False):
-                reconciled = self._reconcile_columns(item, existing)
-                if reconciled is not None:
-                    self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
-                    return
-            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
-            self._evolve_for_metadata(item)
-            row = self._build_row(item, graph_inputs, outputs, write_gen)
-        else:
-            outputs = None
+        if not needs_rederive:
             row = self._row_with_changes(identity_value, changes, write_gen)
+            self._store.write_rows(self._spec.name, [row])
+            self._cleanup_old_parent_gens(identity_value, write_gen)
+            return
 
+        graph_inputs = self._extract_graph_inputs(item)
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if self._can_reconcile(existing):
+            reconciled = self._reconcile_columns(item, existing)
+            if reconciled is not None:
+                self._apply_reconciled(item, graph_inputs, existing, reconciled, parent_skipped=False, write_gen=write_gen)
+                return
+
+        outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
+        self._evolve_for_metadata(item)
+        row = self._build_row(item, graph_inputs, outputs, write_gen)
+        # Write new children BEFORE the parent row and old-gen cleanup — crash-safe
+        # ordering: the parent row carries the boundary provenance that vouches
+        # for the stored child set.
+        for child_spec in self._spec.children:
+            self._insert_children(identity_value, outputs, child_spec, write_gen)
         self._store.write_rows(self._spec.name, [row])
-
-        if needs_rederive:
-            # Write new children BEFORE deleting old ones — crash-safe ordering.
-            for child_spec in self._spec.children:
-                self._insert_children(identity_value, outputs, child_spec, write_gen)
-            self._cleanup_old_child_gens(identity_value, write_gen)
+        self._cleanup_old_child_gens(identity_value, write_gen)
         self._cleanup_old_parent_gens(identity_value, write_gen)
 
     async def _update_async(self, identity_value: str, **changes: Any) -> None:
         item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
-        if needs_rederive:
-            graph_inputs = self._extract_graph_inputs(item)
-            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
-            if self._can_reconcile(existing, False):
-                reconciled = await self._reconcile_columns_async(item, existing)
-                if reconciled is not None:
-                    self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
-                    return
-            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
-            self._evolve_for_metadata(item)
-            row = self._build_row(item, graph_inputs, outputs, write_gen)
-        else:
-            outputs = None
+        if not needs_rederive:
             row = self._row_with_changes(identity_value, changes, write_gen)
+            self._store.write_rows(self._spec.name, [row])
+            self._cleanup_old_parent_gens(identity_value, write_gen)
+            return
 
+        graph_inputs = self._extract_graph_inputs(item)
+        existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+        if self._can_reconcile(existing):
+            reconciled = await self._reconcile_columns_async(item, existing)
+            if reconciled is not None:
+                await self._apply_reconciled_async(item, graph_inputs, existing, reconciled, parent_skipped=False, write_gen=write_gen)
+                return
+
+        outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
+        self._evolve_for_metadata(item)
+        row = self._build_row(item, graph_inputs, outputs, write_gen)
+        # Write new children BEFORE the parent row and old-gen cleanup — crash-safe
+        # ordering: the parent row carries the boundary provenance that vouches
+        # for the stored child set.
+        for child_spec in self._spec.children:
+            await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
         self._store.write_rows(self._spec.name, [row])
-
-        if needs_rederive:
-            for child_spec in self._spec.children:
-                await self._insert_children_async(identity_value, outputs, child_spec, write_gen)
-            self._cleanup_old_child_gens(identity_value, write_gen)
+        self._cleanup_old_child_gens(identity_value, write_gen)
         self._cleanup_old_parent_gens(identity_value, write_gen)
 
     def delete(self, identity_value: str) -> Any:
