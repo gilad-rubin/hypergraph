@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import lancedb
@@ -66,6 +68,7 @@ class LanceDBStore(TableStore):
     """LanceDB-backed TableStore implementation."""
 
     def __init__(self, path: str):
+        self._path = Path(path)
         self._db = lancedb.connect(path)
         self._tables: dict[str, Any] = {}
         self._schemas: dict[str, pa.Schema] = {}
@@ -163,6 +166,44 @@ class LanceDBStore(TableStore):
             return 0
         return pc.max(at.column("_write_gen")).as_py()
 
+    def search(
+        self,
+        table_name: str,
+        *,
+        query: str | None = None,
+        query_vector: list[float] | None = None,
+        vector_column: str | None = None,
+        where: RowPredicate | None = None,
+        limit: int | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        if query_vector is None:
+            raise ValueError("LanceDBStore.search requires query_vector (text-only search is not supported in v1)")
+        tbl = self._tables.get(table_name)
+        if tbl is None:
+            try:
+                tbl = self._db.open_table(table_name)
+            except Exception:
+                return []
+            self._tables[table_name] = tbl
+        q = tbl.search(list(query_vector), vector_column_name=vector_column)
+        if where:
+            q = q.where(_build_lance_filter(where), prefilter=True)
+        if limit is not None:
+            q = q.limit(limit)
+        return q.to_list()
+
+    def save_manifest(self, table_name: str, manifest: dict[str, Any]) -> None:
+        path = self._manifest_path(table_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+
+    def load_manifest(self, table_name: str) -> dict[str, Any] | None:
+        path = self._manifest_path(table_name)
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+
     def evolve_schema(self, table_name: str, new_columns: dict[str, pa.DataType]) -> list[str]:
         tbl = self._tables[table_name]
         existing_data = tbl.to_arrow()
@@ -178,6 +219,9 @@ class LanceDBStore(TableStore):
         return [f.name for f in new_schema]
 
     # --- Internal ---
+
+    def _manifest_path(self, table_name: str) -> Path:
+        return self._path / f"{table_name}__manifest.json"
 
     def _ensure_table(self, spec: TableSpec) -> None:
         try:

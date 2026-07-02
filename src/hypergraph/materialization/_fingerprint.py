@@ -62,6 +62,23 @@ def compute_child_fingerprint(child_graph: Any, components: dict[str, Any], chil
     return _fingerprint(child_inputs, _node_definition_hashes(child_graph), _component_config_hashes(components, valid_inputs))
 
 
+def compute_recipe_fingerprint(node_fn: Any, component_hashes: dict[str, str]) -> str:
+    """Recipe identity for a column's producing node: hash(node code + consumed component configs).
+
+    Unlike ``compute_column_provenance`` this excludes input values — it names
+    HOW a column is derived, not what it was derived from. A named index records
+    it so a rebound component (e.g. a different embedder) flips the index stale.
+    """
+    payload = json.dumps(
+        {
+            "node": compute_definition_hash(node_fn),
+            "components": component_hashes,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def compute_column_provenance(node_fn: Any, inputs: dict[str, Any], component_hashes: dict[str, str]) -> str:
     """Per-column provenance: hash(producing node's code + its direct input values + consumed component configs).
 

@@ -11,6 +11,7 @@ from hypergraph.materialization._fingerprint import (
     _component_config_hashes,
     compute_child_fingerprint,
     compute_column_provenance,
+    compute_recipe_fingerprint,
     compute_row_fingerprint,
 )
 from hypergraph.materialization._schema import (
@@ -361,6 +362,12 @@ class HyperTable:
                 return None
         return compute_column_provenance(node_func(node), inputs, _component_config_hashes(comp))
 
+    def _node_recipe(self, node: Any) -> str:
+        """Recipe identity for a node: hash(node code + consumed component configs), no input values."""
+        params = self._node_params(node)
+        comp = {k: v for k, v in self._components.items() if k in params}
+        return compute_recipe_fingerprint(node_func(node), _component_config_hashes(comp))
+
     def _column_graph(self, node: Any) -> Any:
         """A cached single-node graph for column-scoped execution."""
         graph = self._column_graphs.get(id(node))
@@ -663,6 +670,120 @@ class HyperTable:
         rows = self._store.read_rows(child_spec.name, _where_predicate(where), limit=limit)
         rows = _dedup_child_rows(rows, child_spec.identity)
         return [_public_row(row, include_status=include_status) for row in rows]
+
+    # --- Named indexes (persisted query specs) ---
+    #
+    # An index is a projection, not a table: a named, persisted query spec over
+    # a vector column that already lives in the (root or child) table. The
+    # LanceDB store ANN-searches that column directly — no separate artifact.
+    # Materializing into external backends (Chroma, Azure Search) is an
+    # application-layer concern, out of scope here.
+
+    def _resolve_index_table(self, on: str | None) -> TableSpec:
+        if on is None or on == self._spec.name:
+            return self._spec
+        for cs in self._spec.children:
+            if cs.name == on:
+                return cs
+        known = [self._spec.name, *(cs.name for cs in self._spec.children)]
+        raise ValueError(f"unknown table {on!r} for index; expected one of {known}")
+
+    def _index_recipe_fingerprint(self, spec: TableSpec, vector: str) -> str | None:
+        """The component-config + node-definition basis of the vector column's producing node."""
+        for c in self._derived_columns(spec):
+            if c.name == vector and c.produced_by is not None:
+                return self._node_recipe(c.produced_by)
+        return None
+
+    def _index_queryable_columns(self, spec: TableSpec) -> set[str]:
+        """Columns an index may reference: spec columns plus physical (metadata-evolved) ones."""
+        columns = {c.name for c in spec.columns if c.role != "internal"}
+        physical = self._store.open(self._spec, self._spec.children).get(spec.name, [])
+        columns.update(name for name in physical if not is_internal_column(name))
+        return columns
+
+    def _load_indexes(self) -> dict[str, dict[str, Any]]:
+        manifest = self._store.load_manifest(self._spec.name) or {}
+        return dict(manifest.get("indexes", {}))
+
+    def _save_indexes(self, indexes: dict[str, dict[str, Any]]) -> None:
+        manifest = self._store.load_manifest(self._spec.name) or {}
+        manifest["indexes"] = indexes
+        self._store.save_manifest(self._spec.name, manifest)
+
+    def create_index(
+        self,
+        name: str,
+        *,
+        on: str | None = None,
+        rows: Any = None,
+        text: str | None = None,
+        vector: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a named query spec: which table, which vector column, which row slice."""
+        self._ensure_analyzed()
+        spec = self._resolve_index_table(on)
+        if vector is None:
+            raise ValueError("create_index requires vector=<column>: v1 indexes are vector-search specs")
+        columns = self._index_queryable_columns(spec)
+        for label, col in (("vector", vector), ("text", text)):
+            if col is not None and col not in columns:
+                raise ValueError(f"{label} column {col!r} does not exist on table {spec.name!r}; known columns: {sorted(columns)}")
+        for col, _op, _val in _where_predicate(rows):
+            if col not in columns:
+                raise ValueError(f"rows filter column {col!r} does not exist on table {spec.name!r}; known columns: {sorted(columns)}")
+        index_spec = {
+            "name": name,
+            "on": spec.name,
+            "rows": rows,
+            "text": text,
+            "vector": vector,
+            "recipe_fingerprint": self._index_recipe_fingerprint(spec, vector),
+        }
+        indexes = self._load_indexes()
+        indexes[name] = index_spec
+        self._save_indexes(indexes)
+        return dict(index_spec)
+
+    def list_indexes(self) -> list[dict[str, Any]]:
+        """The persisted index specs, each with ``current``: does its recorded recipe match the recipe now?"""
+        self._ensure_analyzed()
+        specs = []
+        for index_spec in self._load_indexes().values():
+            spec = self._resolve_index_table(index_spec.get("on"))
+            now = self._index_recipe_fingerprint(spec, index_spec["vector"])
+            specs.append({**index_spec, "current": now == index_spec.get("recipe_fingerprint")})
+        return specs
+
+    def drop_index(self, name: str) -> None:
+        self._ensure_analyzed()
+        indexes = self._load_indexes()
+        if name not in indexes:
+            raise KeyError(f"no index named {name!r}")
+        del indexes[name]
+        self._save_indexes(indexes)
+
+    def search(self, query_vector: list[float], *, index: str, limit: int = 10, include_status: bool = False) -> list[dict[str, Any]]:
+        """Vector search through a named index: public rows plus a ``_distance`` field."""
+        self._ensure_analyzed()
+        indexes = self._load_indexes()
+        if index not in indexes:
+            raise KeyError(f"no index named {index!r}; known indexes: {sorted(indexes)}")
+        index_spec = indexes[index]
+        hits = self._store.search(
+            index_spec["on"],
+            query_vector=list(query_vector),
+            vector_column=index_spec["vector"],
+            where=_where_predicate(index_spec.get("rows")) or None,
+            limit=limit,
+        )
+        results = []
+        for row in hits:
+            distance = row.pop("_distance", None)
+            public = _public_row(row, include_status=include_status)
+            public["_distance"] = _normalize_value(distance)
+            results.append(public)
+        return results
 
     def set_children(self, where: Any = None, **fields: Any) -> int:
         """Bulk metadata update for child rows matching a predicate."""
