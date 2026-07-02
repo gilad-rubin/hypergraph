@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from hypergraph.materialization._hypertable import HyperTable
 from hypergraph.materialization._table_store import TableStore, validate_store
-from hypergraph.materialization._types import ErrorRow, SyncResult
+from hypergraph.materialization._types import ErrorRow, SyncResult, TableStatus
 
 __all__ = [
     "HyperTable",
@@ -12,6 +12,7 @@ __all__ = [
     "validate_store",
     "ErrorRow",
     "SyncResult",
+    "TableStatus",
     "check_store_conformance",
 ]
 

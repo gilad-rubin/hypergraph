@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from typing import Any
 
 from hypergraph import Graph
-from hypergraph.materialization._fingerprint import compute_child_fingerprint, compute_provenance, compute_row_fingerprint
+from hypergraph.materialization._fingerprint import (
+    _component_config_hashes,
+    compute_child_fingerprint,
+    compute_column_provenance,
+    compute_row_fingerprint,
+)
 from hypergraph.materialization._schema import (
     STATUS_COLUMNS,
     TableSpec,
     analyze_table,
     input_names,
     is_internal_column,
+    node_func,
     python_type_to_arrow,
     return_type,
 )
-from hypergraph.materialization._types import ErrorRow, SyncResult
+from hypergraph.materialization._types import ErrorRow, SyncResult, TableStatus
 
 
 def _normalize_to_dict(item: Any) -> dict[str, Any]:
@@ -113,6 +120,7 @@ class HyperTable:
         self._graph = _graph
         self._spec: TableSpec | None = None
         self._analyzed = False
+        self._column_graphs: dict[int, Any] = {}
 
     def bind(self, **components: Any) -> HyperTable:
         merged = {**self._components, **components}
@@ -203,6 +211,7 @@ class HyperTable:
         graph_inputs: dict[str, Any],
         outputs: dict[str, Any],
         write_gen: int,
+        provenances: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         identity_value = item[self._identity]
         row: dict[str, Any] = {self._identity: identity_value}
@@ -216,8 +225,11 @@ class HyperTable:
         row["_row_fingerprint"] = self._compute_row_fingerprint(graph_inputs)
         row["_write_gen"] = write_gen
 
+        if provenances is None:
+            values = {**{k: v for k, v in item.items() if k != self._identity}, **outputs}
+            provenances = {c.name: self._node_provenance(c.produced_by, values) for c in derived_cols}
         for col in derived_cols:
-            row[f"_provenance_{col.name}"] = compute_provenance(col.name, graph_inputs)
+            row[f"_provenance_{col.name}"] = provenances.get(col.name)
 
         return row
 
@@ -272,6 +284,146 @@ class HyperTable:
                 return return_type(c.produced_by)
         return str
 
+    # --- Per-column provenance (config-aware, value-chained) ---
+
+    def _derived_columns(self) -> list:
+        return [c for c in self._spec.columns if c.role == "derived"]
+
+    def _node_params(self, node: Any) -> Any:
+        return inspect.signature(node_func(node)).parameters
+
+    def _node_columns(self, node: Any) -> list:
+        return [c for c in self._derived_columns() if c.produced_by is node]
+
+    def _producing_node(self, column: str) -> Any:
+        for c in self._derived_columns():
+            if c.name == column:
+                return c.produced_by
+        raise KeyError(f"{column!r} is not a derived column")
+
+    def _nodes_in_dependency_order(self) -> list:
+        """Producing nodes ordered so every node's column inputs are produced before it."""
+        derived = self._derived_columns()
+        nodes: list = []
+        seen: set[int] = set()
+        for col in derived:
+            if id(col.produced_by) not in seen:
+                seen.add(id(col.produced_by))
+                nodes.append(col.produced_by)
+        derived_names = {c.name for c in derived}
+        placed: set[str] = set()
+        ordered: list = []
+        remaining = list(nodes)
+        while remaining:
+            progressed = False
+            for n in list(remaining):
+                deps = {p for p in self._node_params(n) if p in derived_names}
+                if deps <= placed:
+                    ordered.append(n)
+                    placed.update(c.name for c in self._node_columns(n))
+                    remaining.remove(n)
+                    progressed = True
+            if not progressed:
+                ordered.extend(remaining)
+                break
+        return ordered
+
+    def _node_provenance(self, node: Any, values: dict[str, Any]) -> str | None:
+        """Provenance for a node's output columns; None if a required input is unavailable."""
+        params = self._node_params(node)
+        comp = {k: v for k, v in self._components.items() if k in params}
+        inputs: dict[str, Any] = {}
+        for name, param in params.items():
+            if name in comp:
+                continue
+            if name in values:
+                inputs[name] = values[name]
+            elif param.default is inspect.Parameter.empty:
+                return None
+        return compute_column_provenance(node_func(node), inputs, _component_config_hashes(comp))
+
+    def _column_graph(self, node: Any) -> Any:
+        """A cached single-node graph for column-scoped execution."""
+        graph = self._column_graphs.get(id(node))
+        if graph is None:
+            graph = Graph([node], name=f"{self._spec.name}__{node_func(node).__name__}")
+            binds = {k: v for k, v in self._components.items() if k in set(graph.inputs.all)}
+            if binds:
+                graph = graph.bind(**binds)
+            self._column_graphs[id(node)] = graph
+        return graph
+
+    def _node_inputs(self, node: Any, values: dict[str, Any]) -> dict[str, Any]:
+        return {name: values[name] for name in self._node_params(node) if name not in self._components and name in values}
+
+    def _run_column_node(self, node: Any, values: dict[str, Any]) -> dict[str, Any]:
+        return self._extract_outputs(self._runner.run(self._column_graph(node), **self._node_inputs(node, values)))
+
+    async def _run_column_node_async(self, node: Any, values: dict[str, Any]) -> dict[str, Any]:
+        return self._extract_outputs(await self._runner.run(self._column_graph(node), **self._node_inputs(node, values)))
+
+    def _stored_values(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {k: _normalize_value(v) for k, v in row.items() if not is_internal_column(k)}
+
+    def _node_is_fresh(self, node: Any, prov: str, existing: dict[str, Any]) -> bool:
+        return all(existing.get(f"_provenance_{c.name}") == prov and not self._column_is_null(existing.get(c.name)) for c in self._node_columns(node))
+
+    def _reconcile_columns(self, item: dict[str, Any], existing: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]] | None:
+        """Column-scoped upsert: reuse fresh columns, re-derive stale ones from stored upstream values.
+
+        Returns (outputs, provenances), or None when a required input is
+        unavailable — the caller falls back to a full graph run.
+        """
+        values = self._stored_values(existing)
+        values.update({k: v for k, v in item.items() if k != self._identity})
+        outputs: dict[str, Any] = {}
+        provenances: dict[str, str] = {}
+        for node in self._nodes_in_dependency_order():
+            prov = self._node_provenance(node, values)
+            if prov is None:
+                return None
+            if self._node_is_fresh(node, prov, existing):
+                node_outputs = {c.name: _normalize_value(existing[c.name]) for c in self._node_columns(node)}
+            else:
+                node_outputs = self._run_column_node(node, values)
+            for c in self._node_columns(node):
+                if c.name in node_outputs:
+                    outputs[c.name] = node_outputs[c.name]
+                    values[c.name] = node_outputs[c.name]
+                provenances[c.name] = prov
+        return outputs, provenances
+
+    async def _reconcile_columns_async(self, item: dict[str, Any], existing: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]] | None:
+        """Async twin of ``_reconcile_columns`` — identical except the awaited node runs."""
+        values = self._stored_values(existing)
+        values.update({k: v for k, v in item.items() if k != self._identity})
+        outputs: dict[str, Any] = {}
+        provenances: dict[str, str] = {}
+        for node in self._nodes_in_dependency_order():
+            prov = self._node_provenance(node, values)
+            if prov is None:
+                return None
+            if self._node_is_fresh(node, prov, existing):
+                node_outputs = {c.name: _normalize_value(existing[c.name]) for c in self._node_columns(node)}
+            else:
+                node_outputs = await self._run_column_node_async(node, values)
+            for c in self._node_columns(node):
+                if c.name in node_outputs:
+                    outputs[c.name] = node_outputs[c.name]
+                    values[c.name] = node_outputs[c.name]
+                provenances[c.name] = prov
+        return outputs, provenances
+
+    def _row_converged(self, row: dict[str, Any]) -> bool:
+        """All derived columns present with provenance matching the current recipe."""
+        values = self._stored_values(row)
+        for node in self._nodes_in_dependency_order():
+            prov = self._node_provenance(node, values)
+            for c in self._node_columns(node):
+                if prov is None or self._column_is_null(row.get(c.name)) or row.get(f"_provenance_{c.name}") != prov:
+                    return False
+        return True
+
     # --- Public API ---
 
     def visualize(self, *, include_children: bool = True, **kwargs) -> Any:
@@ -299,6 +451,79 @@ class HyperTable:
                     return len(_dedup_child_rows(self._store.read_rows(child.name), child.identity))
             return 0
         return len(_dedup_rows(self._store.read_rows(self._spec.name), self._identity))
+
+    def status(self) -> TableStatus:
+        """Report which stored rows would re-derive if sync ran now, without deriving anything.
+
+        Read-only and runner-free: recomputes each row's fingerprint from its
+        stored source values plus the *current* node code and component configs,
+        and compares it with the fingerprint stored when the row was written.
+        Child tables are checked with their scoped child fingerprints.
+        """
+        self._ensure_analyzed()
+        rows = _dedup_rows(self._store.read_rows(self._spec.name), self._identity)
+        stale_column_counts: dict[str, int] = {}
+        root = self._classify_rows(
+            rows,
+            identity=self._identity,
+            fingerprint_of=lambda row: self._compute_row_fingerprint(self._source_inputs_from_row(row)),
+            on_stale=lambda row: self._count_stale_columns(row, stale_column_counts),
+        )
+        children = tuple(self._child_status(child_spec) for child_spec in self._spec.children)
+        return TableStatus(
+            table=self._spec.name,
+            children=children,
+            stale_columns=tuple(sorted(stale_column_counts.items())),
+            **root,
+        )
+
+    def _count_stale_columns(self, row: dict[str, Any], counts: dict[str, int]) -> None:
+        """Attribute a stale row to the specific columns whose provenance no longer matches."""
+        values = self._stored_values(row)
+        for node in self._nodes_in_dependency_order():
+            prov = self._node_provenance(node, values)
+            for c in self._node_columns(node):
+                if prov is None or self._column_is_null(row.get(c.name)) or row.get(f"_provenance_{c.name}") != prov:
+                    counts[c.name] = counts.get(c.name, 0) + 1
+
+    def _child_status(self, child_spec: TableSpec) -> TableStatus:
+        rows = _dedup_child_rows(self._store.read_rows(child_spec.name), child_spec.identity)
+        counts = self._classify_rows(
+            rows,
+            identity=child_spec.identity,
+            fingerprint_of=lambda row: self._compute_child_fingerprint(self._child_source_inputs_from_row(row, child_spec), child_spec),
+        )
+        return TableStatus(table=child_spec.name, **counts)
+
+    def _classify_rows(self, rows: list[dict[str, Any]], *, identity: str, fingerprint_of: Any, on_stale: Any = None) -> dict[str, Any]:
+        """Split stored rows into fresh / stale / errored for a status report."""
+        fresh = stale = errored = 0
+        stale_ids: list[str] = []
+        errored_ids: list[str] = []
+        for row in rows:
+            id_val = str(row.get(identity, ""))
+            if row.get("_status") == "error":
+                errored += 1
+                errored_ids.append(id_val)
+            elif row.get("_row_fingerprint") == fingerprint_of(row):
+                fresh += 1
+            else:
+                stale += 1
+                stale_ids.append(id_val)
+                if on_stale is not None:
+                    on_stale(row)
+        return {
+            "total": len(rows),
+            "fresh": fresh,
+            "stale": stale,
+            "errored": errored,
+            "stale_ids": tuple(sorted(stale_ids)),
+            "errored_ids": tuple(sorted(errored_ids)),
+        }
+
+    def _child_source_inputs_from_row(self, row: dict[str, Any], child_spec: TableSpec) -> dict[str, Any]:
+        """Reconstruct a child's content-key inputs from its stored row (mirrors _plan_child)."""
+        return {c.name: _normalize_value(row[c.name]) for c in child_spec.columns if c.role == "source" and c.content_key and c.name in row}
 
     def get(self, identity_value: str, *, include_status: bool = False) -> dict[str, Any] | None:
         self._ensure_analyzed()
@@ -480,6 +705,25 @@ class HyperTable:
                 [("_parent_id", "eq", identity_value), ("_write_gen", "lt", write_gen)],
             )
 
+    def _can_reconcile(self, existing: dict[str, Any] | None, parent_skipped: bool) -> bool:
+        """Column-scoped reconcile applies to complete prior rows of childless tables."""
+        return existing is not None and not parent_skipped and not self._spec.children and existing.get("_status") != "error"
+
+    def _write_reconciled_row(
+        self,
+        item: dict[str, Any],
+        graph_inputs: dict[str, Any],
+        reconciled: tuple[dict[str, Any], dict[str, str]],
+        write_gen: int,
+    ) -> None:
+        outputs, provenances = reconciled
+        self._evolve_for_metadata(item)
+        row = self._build_row(item, graph_inputs, outputs, write_gen, provenances=provenances)
+        row["_status"] = "complete"
+        row["_error"] = None
+        self._store.write_rows(self._spec.name, [row])
+        self._cleanup_old_parent_gens(item[self._identity], write_gen)
+
     def _insert_one(self, item: dict[str, Any], write_gen: int) -> str:
         """Insert or upsert a single row. Returns 'inserted', 'updated', 'skipped', or 'errored'."""
         identity_value = item[self._identity]
@@ -487,6 +731,18 @@ class HyperTable:
         existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
             return "skipped"
+
+        if self._can_reconcile(existing, parent_skipped):
+            try:
+                reconciled = self._reconcile_columns(item, existing)
+            except Exception as e:
+                if self._on_error == "raise":
+                    raise
+                self._write_error_row(item, graph_inputs, write_gen, e, existing)
+                return "errored"
+            if reconciled is not None:
+                self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
+                return "updated"
 
         try:
             outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
@@ -523,6 +779,18 @@ class HyperTable:
         existing, parent_skipped = self._plan_insert(item, graph_inputs)
         if parent_skipped and not self._spec.children:
             return "skipped"
+
+        if self._can_reconcile(existing, parent_skipped):
+            try:
+                reconciled = await self._reconcile_columns_async(item, existing)
+            except Exception as e:
+                if self._on_error == "raise":
+                    raise
+                self._write_error_row(item, graph_inputs, write_gen, e, existing)
+                return "errored"
+            if reconciled is not None:
+                self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
+                return "updated"
 
         try:
             outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
@@ -717,6 +985,12 @@ class HyperTable:
         item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
         if needs_rederive:
             graph_inputs = self._extract_graph_inputs(item)
+            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+            if self._can_reconcile(existing, False):
+                reconciled = self._reconcile_columns(item, existing)
+                if reconciled is not None:
+                    self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
+                    return
             outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen)
@@ -737,6 +1011,12 @@ class HyperTable:
         item, needs_rederive, write_gen = self._prepare_update(identity_value, changes)
         if needs_rederive:
             graph_inputs = self._extract_graph_inputs(item)
+            existing = self._store.read_one(self._spec.name, self._identity, identity_value)
+            if self._can_reconcile(existing, False):
+                reconciled = await self._reconcile_columns_async(item, existing)
+                if reconciled is not None:
+                    self._write_reconciled_row(item, graph_inputs, reconciled, write_gen)
+                    return
             outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
             self._evolve_for_metadata(item)
             row = self._build_row(item, graph_inputs, outputs, write_gen)
@@ -871,20 +1151,23 @@ class HyperTable:
         """Reconstruct graph inputs from a stored row's source columns."""
         return {c.name: _normalize_value(existing[c.name]) for c in self._spec.columns if c.role == "source" and c.name in existing}
 
-    def _persist_rederived_column(
-        self,
-        existing: dict[str, Any],
-        column: str,
-        graph_inputs: dict[str, Any],
-        outputs: dict[str, Any],
-        write_gen: int,
-    ) -> None:
-        """Write a new generation of one row with `column` re-derived, then drop the old one."""
+    def _persist_node_outputs(self, existing: dict[str, Any], node: Any, node_outputs: dict[str, Any], write_gen: int) -> None:
+        """Write a new generation of one row with the node's columns re-derived, then drop the old one.
+
+        The row fingerprint is refreshed only when every derived column now
+        matches the current recipe — a partially-current row must keep reporting
+        stale so the pending cascade stays visible.
+        """
         new_row = {k: _normalize_value(v) for k, v in existing.items()}
-        if column in outputs:
-            new_row[column] = outputs[column]
+        for c in self._node_columns(node):
+            if c.name in node_outputs:
+                new_row[c.name] = node_outputs[c.name]
+        prov = self._node_provenance(node, self._stored_values(new_row))
+        for c in self._node_columns(node):
+            new_row[f"_provenance_{c.name}"] = prov
         new_row["_write_gen"] = write_gen
-        new_row[f"_provenance_{column}"] = compute_provenance(column, graph_inputs)
+        if self._row_converged(new_row):
+            new_row["_row_fingerprint"] = self._compute_row_fingerprint(self._source_inputs_from_row(new_row))
 
         self._store.write_rows(self._spec.name, [new_row])
         self._store.delete_rows(
@@ -918,18 +1201,18 @@ class HyperTable:
         return self._recompute_sync(column)
 
     def _recompute_sync(self, column: str) -> None:
+        node = self._producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
-            graph_inputs = self._source_inputs_from_row(existing)
-            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
-            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
+            node_outputs = self._run_column_node(node, self._stored_values(existing))
+            self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     async def _recompute_async(self, column: str) -> None:
+        node = self._producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
-            graph_inputs = self._source_inputs_from_row(existing)
-            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
-            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
+            node_outputs = await self._run_column_node_async(node, self._stored_values(existing))
+            self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     def backfill(self, column: str) -> Any:
         """Derive a new column for existing rows that have NULL."""
@@ -941,23 +1224,23 @@ class HyperTable:
 
     def _backfill_sync(self, column: str) -> None:
         self._evolve_for_backfill_column(column)
+        node = self._producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
             if not self._column_is_null(existing.get(column)):
                 continue
-            graph_inputs = self._source_inputs_from_row(existing)
-            outputs = self._extract_outputs(self._runner.run(self._graph, **graph_inputs))
-            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
+            node_outputs = self._run_column_node(node, self._stored_values(existing))
+            self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     async def _backfill_async(self, column: str) -> None:
         self._evolve_for_backfill_column(column)
+        node = self._producing_node(column)
         write_gen = self._store.max_write_gen(self._spec.name) + 1
         for existing in _dedup_rows(self._store.read_rows(self._spec.name), self._identity):
             if not self._column_is_null(existing.get(column)):
                 continue
-            graph_inputs = self._source_inputs_from_row(existing)
-            outputs = self._extract_outputs(await self._runner.run(self._graph, **graph_inputs))
-            self._persist_rederived_column(existing, column, graph_inputs, outputs, write_gen)
+            node_outputs = await self._run_column_node_async(node, self._stored_values(existing))
+            self._persist_node_outputs(existing, node, node_outputs, write_gen)
 
     # --- Fingerprint and provenance ---
 
