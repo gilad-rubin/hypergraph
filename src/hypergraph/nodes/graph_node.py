@@ -675,9 +675,21 @@ class GraphNode(HyperNode):
                   equal-length lists. First values together, second together, etc.
                 - "product": Cartesian product. All combinations of values.
             error_handling: How to handle failures during map execution:
-                - "raise": Stop on first failure and raise the error (default).
-                - "continue": Collect all results; failed items become None
-                  placeholders to preserve list length.
+                - "raise": Stop on first failure and re-raise the original
+                  error (default). The parent graph run fails with that error.
+                - "continue": Run every iteration; for each failed item,
+                  EVERY output of this GraphNode gets a None placeholder at
+                  that item's position, preserving list length and alignment
+                  with the mapped inputs. The parent run completes normally,
+                  so downstream nodes receive lists that may contain None and
+                  must handle those entries:
+
+                      inner = Graph([double], name="inner")  # fails on x=3
+                      gn = inner.as_node().map_over("x", error_handling="continue")
+                      outer = Graph([gn, summarize])
+                      result = runner.run(outer, {"x": [1, 2, 3]})
+                      # summarize received doubled=[2, 4, None]
+                      # result.status is COMPLETED
             clone: Control deep-copying of broadcast (non-mapped) values per
                 iteration. Useful when nodes mutate broadcast inputs.
                 - False (default): share by reference (efficient, backward compatible)

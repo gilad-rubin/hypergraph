@@ -6,6 +6,7 @@ import hashlib
 import inspect
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 
 def ensure_tuple(value: str | tuple[str, ...]) -> tuple[str, ...]:
@@ -88,6 +89,15 @@ def hash_definition(func: Callable) -> str:
     bytecode for dynamically created functions (exec/eval), and finally to
     qualified name for builtins/C extensions.
 
+    For bound methods, an instance fingerprint is mixed into the hash so the
+    same method on two differently-configured instances hashes differently
+    (e.g. two ``Summarizer`` instances with different ``model`` attributes).
+    The fingerprint prefers the instance's ``cache_key()`` method when one is
+    defined (mirroring hypercache's convention), falling back to a
+    deterministic serialization of ``vars(instance)``. The fingerprint is
+    captured when the hash is computed — node construction — so mutating
+    instance state after construction is not tracked.
+
     Args:
         func: Function to hash
 
@@ -99,6 +109,42 @@ def hash_definition(func: Callable) -> str:
         >>> len(hash_definition(foo))
         64
     """
+    code_hash = _hash_code(func)
+
+    # Bound methods: mix in instance state so differently-configured
+    # instances of the same class do not share a hash (and a cache).
+    instance = getattr(func, "__self__", None)
+    if instance is None or isinstance(instance, type):
+        # Plain function, or classmethod (class-level state is not
+        # deterministic across processes — keep code-only hashing).
+        return code_hash
+
+    fingerprint = _instance_fingerprint(instance)
+    if fingerprint is None:
+        return code_hash
+    return hashlib.sha256(f"{code_hash}:{fingerprint}".encode()).hexdigest()
+
+
+def _instance_fingerprint(instance: Any) -> str | None:
+    """Deterministic fingerprint of a bound method's instance state.
+
+    Prefers the instance's ``cache_key()`` method when defined. Falls back
+    to a sorted serialization of ``vars(instance)``. Returns None when no
+    state is accessible (e.g. ``__slots__`` without ``__dict__``).
+    """
+    cache_key = getattr(instance, "cache_key", None)
+    if callable(cache_key):
+        return repr(cache_key())
+
+    try:
+        state = vars(instance)
+    except TypeError:
+        return None
+    return repr(tuple((key, repr(value)) for key, value in sorted(state.items())))
+
+
+def _hash_code(func: Callable) -> str:
+    """Hash a callable's code: source, bytecode, or qualified-name fallback."""
     # Prefer source code — most precise, captures comments and formatting
     try:
         source = inspect.getsource(func)
