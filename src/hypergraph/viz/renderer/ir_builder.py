@@ -78,7 +78,7 @@ def build_graph_ir(flat_graph: nx.DiGraph) -> GraphIR:
     # the container entrypoint (#169). Done here (not in _build_ir_edge) because
     # it needs the built ``external_inputs`` to resolve field -> pill id, which
     # keeps the edge target guaranteed to be a real scene node.
-    edges = _reroute_fanout_edges_to_field_pills(edges, flat_graph, external_inputs)
+    edges = _reroute_fanout_edges_to_field_pills(edges, flat_graph, external_inputs, map_fed_fields)
 
     configured_entrypoints = tuple(flat_graph.graph.get("configured_entrypoints") or ())
     visibility = build_graph_output_visibility(flat_graph)
@@ -118,27 +118,63 @@ def _map_fed_fields(flat_graph: nx.DiGraph) -> dict[str, set[str]]:
     return result
 
 
+def _owner_maps_field(
+    deepest_owner: str | None,
+    field: str | None,
+    map_fed_fields: dict[str, set[str]],
+    flat_graph: nx.DiGraph,
+) -> bool:
+    """True when ``field`` is an item field of a mapped container that owns the
+    input — the input's ``deepest_owner`` or any ancestor of it. Handles a field
+    consumer nested one or more graphs below the mapped container."""
+    if field is None:
+        return False
+    current = deepest_owner
+    while current is not None:
+        if field in map_fed_fields.get(current, set()):
+            return True
+        current = flat_graph.nodes.get(current, {}).get("parent")
+    return False
+
+
+def _mapped_container_for(owner: str | None, field: str, map_fed_fields: dict[str, set[str]], flat_graph: nx.DiGraph) -> str | None:
+    """The mapped container (``owner`` or an ancestor) whose map_fields hold ``field``."""
+    current = owner
+    while current is not None:
+        if field in map_fed_fields.get(current, set()):
+            return current
+        current = flat_graph.nodes.get(current, {}).get("parent")
+    return None
+
+
 def _reroute_fanout_edges_to_field_pills(
     edges: list[IREdge],
     flat_graph: nx.DiGraph,
     external_inputs: list[IRExternalInput],
+    map_fed_fields: dict[str, set[str]],
 ) -> list[IREdge]:
     """Point each map-fed fan-out edge at its item-field INPUT pill(s) on expand.
 
     For a fan-out edge into a container whose ``map_fields`` name inner inputs,
     the expanded target becomes the pill(s) for those fields (``input_page_text``)
     rather than the entrypoint — so the visible flow is
-    ``segment_pages ──pages──▶ [page_text] ──▶ embed_page``. Falls back to the
-    entrypoint target already computed by ``_build_ir_edge`` when no field pill
-    exists (broadcast-only inner inputs, or a fieldless ``list[str]`` item).
+    ``segment_pages ──pages──▶ [page_text] ──▶ embed_page``. A field consumer
+    nested a graph deeper than the mapped container still resolves: the pill is
+    keyed under the mapped container it belongs to, not its ``deepest_owner``.
+    Falls back to the entrypoint target already computed by ``_build_ir_edge``
+    when no field pill exists (broadcast-only inner inputs, or a fieldless
+    ``list[str]`` item).
     """
-    # container_id -> {field leaf name -> pill synthetic id}, from the map-fed
-    # pills already built into external_inputs.
+    # mapped-container_id -> {field leaf name -> pill synthetic id}. A map-fed
+    # pill is indexed under the mapped container that owns its field, which may
+    # be an ancestor of the pill's own deepest_owner (nested consumer).
     pill_by_field: dict[str, dict[str, str]] = {}
     for ext in external_inputs:
-        if ext.map_fed and ext.deepest_owner is not None and len(ext.params) == 1:
+        if ext.map_fed and len(ext.params) == 1:
             leaf = external_input_display_name(ext.params[0])
-            pill_by_field.setdefault(ext.deepest_owner, {})[leaf] = ext.synthetic_id
+            container = _mapped_container_for(ext.deepest_owner, leaf, map_fed_fields, flat_graph)
+            if container is not None:
+                pill_by_field.setdefault(container, {})[leaf] = ext.synthetic_id
 
     rerouted: list[IREdge] = []
     for edge in edges:
@@ -197,12 +233,14 @@ def _build_input_group(
     display_params = raw_params
     id_segments = tuple((id_for_param or {}).get(p, external_input_display_name(p)) for p in raw_params)
     # Map-fed when this single-param input's leaf name is an item field of the
-    # fan-out edge into its owning container. Multi-param INPUT_GROUPs never
-    # arise for a single mapped item's fields, so only single-param inputs are
-    # considered (a group would need every member field-fed to qualify, which
-    # the fan-out never produces).
-    fed_for_owner = (map_fed_fields or {}).get(deepest_owner or "", set())
-    map_fed = len(raw_params) == 1 and external_input_display_name(raw_params[0]) in fed_for_owner
+    # fan-out edge into a mapped container that owns this input. The owning
+    # container is ``deepest_owner`` OR any ancestor of it — a field consumer
+    # nested one graph deeper than the mapped container still counts (the pill's
+    # deepest_owner is then the inner container, but the map_fields live on the
+    # outer mapped container). Multi-param INPUT_GROUPs never arise for a single
+    # mapped item's fields, so only single-param inputs are considered.
+    leaf = external_input_display_name(raw_params[0]) if raw_params else None
+    map_fed = len(raw_params) == 1 and _owner_maps_field(deepest_owner, leaf, map_fed_fields or {}, flat_graph)
     return IRExternalInput(
         params=display_params,
         deepest_owner=deepest_owner,

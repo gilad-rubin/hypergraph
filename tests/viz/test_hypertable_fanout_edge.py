@@ -374,3 +374,69 @@ def test_fieldless_item_falls_back_to_entrypoint(store):
     assert not any(e.map_fed for e in ir.external_inputs), "a fieldless list[str] item feeds no field pills"
     (fanout,) = [e for e in ir.edges if e.source == "produce_plain_items" and e.target == "items_node"]
     assert fanout.target_when_expanded == "items_node/clean_plain"
+
+
+def test_field_consumer_nested_a_graph_deeper_is_still_map_fed(store):
+    """A field consumer wrapped in ANOTHER nested graph is still map-fed.
+
+    Regression for the nested-owner gap: ``clean`` consumes the ``text`` field
+    but sits inside ``items_node/inner_node``, so the ``text`` pill's
+    ``deepest_owner`` is that inner container while ``map_fields`` live on the
+    mapped ``items_node``. Matching must walk ancestors, or the pill reads as a
+    plain external input and the edge falls back to the entrypoint.
+    """
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+    inner = Graph([clean], name="inner").as_node(name="inner_node")
+    child = Graph([inner], name="proc").as_node(name="items_node").map_over("items", identity="item_id")
+    table = HyperTable([produce_items, child], identity="doc_id", store=store)
+    ir = build_graph_ir(_combined_flat_graph(table))
+
+    (text_pill,) = [e for e in ir.external_inputs if e.synthetic_id == "input_text"]
+    assert text_pill.map_fed is True, "nested field consumer must still be map-fed"
+    assert text_pill.deepest_owner == "items_node/inner_node"
+    (fanout,) = [e for e in ir.edges if e.source == "produce_items" and e.target == "items_node"]
+    assert fanout.target_when_expanded == "input_text", "edge must re-route to the nested field pill, not the entrypoint"
+
+
+def test_unresolvable_schema_yields_no_fields_not_a_raise():
+    """``_fanout_map_fields`` swallows a ``return_type`` failure (defensive).
+
+    A truly unresolved forward reference fails ``analyze_table`` (``_input_types``)
+    before viz is ever reached, so this can't be provoked through a constructed
+    table; the guard is exercised directly to prove field discovery degrades to
+    "no fields" rather than propagating, keeping ``visualize`` from raising if a
+    producer annotation ever resolves for analysis but not here.
+    """
+
+    class _RaisingProducer:
+        name = "producer"
+        data_outputs = ("items",)
+        func = None  # forces return_type -> str; we monkeypatch below
+
+    class _MapNode:
+        name = "items_node"
+        _map_config = {"identity": "item_id"}
+
+    class _ChildSpec:
+        map_input = "items"
+
+    table = HyperTable.__new__(HyperTable)
+
+    class _Spec:
+        children = [_ChildSpec()]
+
+    table._spec = _Spec()
+    table._map_over_nodes = [_MapNode()]
+    table._boundary_node = lambda child_spec: _RaisingProducer()
+
+    # Patch return_type to raise, simulating an annotation that resolves at
+    # analysis time but not here.
+    import hypergraph.materialization._hypertable as ht
+
+    original = ht.return_type
+    ht.return_type = lambda node: (_ for _ in ()).throw(NameError("Unresolved"))
+    try:
+        assert table._fanout_map_fields() == {("producer", "items_node"): ()}
+    finally:
+        ht.return_type = original

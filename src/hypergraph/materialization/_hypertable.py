@@ -666,7 +666,16 @@ class HyperTable:
             if producer is None:
                 continue
             config = getattr(map_node, "_map_config", None) or {}
-            schema = config.get("schema") or return_type(producer)
+            schema = config.get("schema")
+            if schema is None:
+                # ``return_type`` resolves the producer's annotation, which can
+                # raise on an unresolved forward reference. Viz must degrade to
+                # entrypoint routing on a valid table, never crash — so treat an
+                # unresolvable annotation as "no discoverable fields".
+                try:
+                    schema = return_type(producer)
+                except Exception:
+                    schema = None
             fields[(producer.name, map_node.name)] = item_schema_fields(schema)
         return fields
 
