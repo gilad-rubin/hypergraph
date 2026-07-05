@@ -165,10 +165,13 @@ def _build_ir_edge(
             if internal is not None:
                 target_when_expanded = internal
                 break
-        # Control edges to a container should re-route to the container's
-        # entrypoint when the container is expanded — value_names is empty
-        # for control edges, so the producer/consumer search above is a no-op.
-        if target_when_expanded is None and edge_type == "control":
+        # Any edge into a container still unresolved here must re-route to the
+        # container's entrypoint when the container is expanded, or the scene
+        # holds an edge into a node the layouter never ranked. Two ways to land
+        # here: control edges (value_names is empty, so the consumer search is
+        # a no-op) and identity-mode fan-out edges (the value names a parent
+        # column — e.g. "pages" — that no inner node consumes by name).
+        if target_when_expanded is None:
             target_when_expanded = _first_container_entrypoint(tgt, flat_graph)
 
     label = _branch_label_for_edge(src_attrs, tgt) if edge_type == "control" else None

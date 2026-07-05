@@ -249,3 +249,29 @@ def test_visualize_sizes_for_the_injected_fanout_edge(store):
     # Two stacked layers (produce_items -> items_node) must be taller than the
     # side-by-side (disconnected-roots) estimate would have been.
     assert out.height > 300
+
+
+def test_fanout_edge_ir_reroutes_into_expanded_container(store):
+    """The IR edge into the mapped GRAPH container must carry target_when_expanded.
+
+    The mapped container starts EXPANDED at the default depth, and the JS scene
+    builder ranks only visible nodes — an edge whose target is the (invisible,
+    expanded) container crashes dagre with "Cannot set properties of undefined
+    (setting 'rank')". The consumer-by-name search can never resolve an
+    identity-mode fan-out edge (the value names a parent column no inner node
+    consumes), so it must fall back to the container's entrypoint.
+    """
+    from hypergraph.viz.renderer.ir_builder import build_graph_ir
+
+    table = HyperTable(
+        [produce_items, Graph([clean], name="proc").as_node(name="items_node").map_over("items", identity="item_id")],
+        identity="doc_id",
+        store=store,
+    )
+
+    ir = build_graph_ir(_combined_flat_graph(table))
+
+    (fanout,) = [e for e in ir.edges if e.source == "produce_items" and e.target == "items_node"]
+    assert fanout.target_when_expanded == "items_node/clean", (
+        f"fan-out edge must re-route to the container entrypoint when expanded; got {fanout.target_when_expanded!r}"
+    )
