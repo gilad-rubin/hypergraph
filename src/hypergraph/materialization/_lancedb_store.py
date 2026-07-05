@@ -83,8 +83,24 @@ class LanceDBStore(TableStore):
             result[child.name] = [f.name for f in self._tables[child.name].schema]
         return result
 
-    def count(self, table_name: str) -> int:
+    def _readable(self, table_name: str) -> Any | None:
+        """The cached Table handle advanced to the latest committed version.
+
+        LanceDB pins an opened ``Table`` to the dataset version it was opened at,
+        so a commit made by ANOTHER connection on the same folder is invisible to
+        this handle until it is advanced. Every read goes through here so a store's
+        reads always reflect committed data — the KB gate flow relies on it (an
+        operator's KB handle must see a resolver handle's version bump). Returns
+        ``None`` for a table that was never opened (a documented empty result).
+        """
         tbl = self._tables.get(table_name)
+        if tbl is None:
+            return None
+        tbl.checkout_latest()
+        return tbl
+
+    def count(self, table_name: str) -> int:
+        tbl = self._readable(table_name)
         if tbl is None:
             return 0
         return tbl.count_rows()
@@ -92,7 +108,7 @@ class LanceDBStore(TableStore):
     def read_rows(
         self, table_name: str, where: RowPredicate | None = None, *, limit: int | None = None, columns: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        tbl = self._tables.get(table_name)
+        tbl = self._readable(table_name)
         if tbl is None:
             return []
         at = self._read_arrow(tbl, columns, extra=self._predicate_columns(where))
@@ -105,7 +121,7 @@ class LanceDBStore(TableStore):
         return _arrow_table_to_dicts(at)
 
     def read_one(self, table_name: str, identity_column: str, identity_value: Any, *, columns: list[str] | None = None) -> dict[str, Any] | None:
-        tbl = self._tables.get(table_name)
+        tbl = self._readable(table_name)
         if tbl is None:
             return None
         # Identity + _write_gen are always fetched: identity to match, _write_gen
@@ -181,7 +197,7 @@ class LanceDBStore(TableStore):
             tbl.add(record_batch)
 
     def delete_rows(self, table_name: str, where: RowPredicate) -> int:
-        tbl = self._tables.get(table_name)
+        tbl = self._readable(table_name)
         if tbl is None:
             return 0
         at = tbl.to_arrow()
@@ -193,7 +209,7 @@ class LanceDBStore(TableStore):
         return matching
 
     def max_write_gen(self, table_name: str) -> int:
-        tbl = self._tables.get(table_name)
+        tbl = self._readable(table_name)
         if tbl is None:
             return 0
         at = tbl.to_arrow()
@@ -214,7 +230,7 @@ class LanceDBStore(TableStore):
     ) -> list[dict[str, Any]]:
         if query_vector is None:
             raise ValueError("LanceDBStore.search requires query_vector (text-only search is not supported in v1)")
-        tbl = self._tables.get(table_name)
+        tbl = self._readable(table_name)
         if tbl is None:
             # A table LanceDB never created has no on-disk directory: that means
             # "no rows have ever been written" — a documented empty result

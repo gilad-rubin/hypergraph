@@ -108,6 +108,55 @@ def test_lancedb_store_conforms(tmp_path) -> None:
     check_store_conformance(LanceDBStore(str(tmp_path / "conformance_store")))
 
 
+def test_lancedb_reads_see_another_connection_write(tmp_path) -> None:
+    """A read must reflect a commit made by a SEPARATE store on the same folder.
+
+    Two ``LanceDBStore`` objects over one path model the KB gate flow: an operator
+    holds one KB handle while a decision resolver builds its own handle and writes
+    (a replace bumps ``version`` to 2). LanceDB caches a ``Table`` object pinned to
+    the version it was opened at, so without advancing the cached handle the
+    operator's reads would keep returning the stale ``version=1`` — a silent lie.
+    Reads must ``checkout_latest`` so committed data is always visible.
+    """
+    from hypergraph.materialization._schema import ColumnSpec, TableSpec
+
+    path = str(tmp_path / "cross_conn_store")
+    spec = TableSpec(
+        name="t",
+        identity="cid",
+        columns=[
+            ColumnSpec("cid", role="identity", arrow_type=pa.utf8()),
+            ColumnSpec("version", role="source", arrow_type=pa.int64()),
+            ColumnSpec("_write_gen", role="internal", arrow_type=pa.int64()),
+            ColumnSpec("_status", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_row_fingerprint", role="internal", arrow_type=pa.utf8()),
+            ColumnSpec("_error", role="internal", arrow_type=pa.utf8()),
+        ],
+    )
+    base_row = {"_status": "complete", "_row_fingerprint": "fp", "_error": None}
+
+    operator = LanceDBStore(path)
+    operator.open(spec, [])
+    operator.write_rows("t", [{"cid": "a", "version": 1, "_write_gen": 1, **base_row}])
+    # The operator reads once, which pins its cached Table handle.
+    assert operator.read_one("t", "cid", "a")["version"] == 1
+
+    # A separate store (the resolver) commits a version bump on the same folder.
+    resolver = LanceDBStore(path)
+    resolver.open(spec, [])
+    resolver.write_rows("t", [{"cid": "a", "version": 2, "_write_gen": 2, **base_row}])
+
+    # The operator's reads must now see version 2, not the pinned version 1.
+    assert operator.read_one("t", "cid", "a")["version"] == 2, "read_one must see another connection's commit"
+    newest = max(
+        operator.read_rows("t", [("cid", "eq", "a")], columns=["cid", "version", "_write_gen"]),
+        key=lambda r: r["_write_gen"],
+    )
+    assert newest["version"] == 2, "read_rows must see another connection's commit"
+    assert operator.count("t") == 2, "count must see another connection's commit"
+    assert operator.max_write_gen("t") == 2, "max_write_gen must see another connection's commit"
+
+
 def test_lancedb_projection_unknown_column_fails_loudly(tmp_path) -> None:
     """A schema-aware store must reject a projection naming a column it does not have."""
     from hypergraph.materialization._schema import ColumnSpec, TableSpec
