@@ -630,14 +630,31 @@ class HyperTable:
             edges.append((producer.name, map_node.name, (column,)))
         return edges
 
+    def _read_projected(self, table_name: str, columns: list[str], where: Any = None) -> list[dict[str, Any]]:
+        """Read only ``columns`` when the store can project; otherwise full rows.
+
+        Gated on ``supports_column_projection`` so an older external store whose
+        ``read_rows`` predates the ``columns=`` kwarg is never handed it — it
+        simply returns full rows and the caller works unchanged. Used only by
+        metadata-only internal reads (count/dedup) where dropping the blob
+        columns is a clear, safe win: the columns requested are always identity
+        and reserved keys, never derived content.
+        """
+        predicate = _where_predicate(where)
+        if self._store.supports_column_projection():
+            return self._store.read_rows(table_name, predicate, columns=columns)
+        return self._store.read_rows(table_name, predicate)
+
     def count(self, child_table: str | None = None) -> int:
         self._ensure_analyzed()
         if child_table:
             for child in self._spec.children:
                 if child.name == child_table:
-                    return len(_dedup_child_rows(self._store.read_rows(child.name), child.identity))
+                    rows = self._read_projected(child.name, [child.identity, "_parent_id", "_write_gen"])
+                    return len(_dedup_child_rows(rows, child.identity))
             return 0
-        return len(_dedup_rows(self._store.read_rows(self._spec.name), self._identity))
+        rows = self._read_projected(self._spec.name, [self._identity, "_write_gen"])
+        return len(_dedup_rows(rows, self._identity))
 
     def status(self) -> TableStatus:
         """Report which stored rows would re-derive if sync ran now, without deriving anything.

@@ -60,6 +60,44 @@ def _row(idval: str, n: int, write_gen: int, *, idcol: str = "cid", **extra: Any
     }
 
 
+def _binary_spec(name: str) -> TableSpec:
+    """A table whose source and derived columns are ``large_binary`` (blob columns).
+
+    Mirrors the one-HyperTable KB shape: a ``content`` source column carrying raw
+    bytes and a derived ``thumb`` column also in bytes. Exercises that a store
+    round-trips binary through write / read / update / evolve without decoding.
+    """
+    cols = [
+        ColumnSpec("cid", role="identity", arrow_type=pa.utf8()),
+        ColumnSpec("content", role="source", content_key=True, arrow_type=pa.large_binary()),
+        ColumnSpec("label", role="source", content_key=True, arrow_type=pa.utf8()),
+        ColumnSpec("thumb", role="derived", arrow_type=pa.large_binary()),
+        ColumnSpec("_row_fingerprint", role="internal", arrow_type=pa.utf8()),
+        ColumnSpec("_write_gen", role="internal", arrow_type=pa.int64()),
+        ColumnSpec("_status", role="internal", arrow_type=pa.utf8()),
+        ColumnSpec("_error", role="internal", arrow_type=pa.utf8()),
+    ]
+    return TableSpec(name=name, identity="cid", columns=cols)
+
+
+# A payload with bytes that are NOT valid UTF-8 (0x80, 0xff) and an embedded NUL,
+# so a store that secretly decodes-then-reencodes bytes is caught.
+_BLOB = bytes([0x00, 0x01, 0x02, 0x80, 0xFF, 0xFE]) + b"\x00PDF\x00" + bytes(range(256))
+
+
+def _binary_row(idval: str, content: bytes, write_gen: int, *, thumb: bytes | None = None, label: str = "x") -> dict[str, Any]:
+    return {
+        "cid": idval,
+        "content": content,
+        "label": label,
+        "thumb": thumb,
+        "_row_fingerprint": f"fp{write_gen}",
+        "_write_gen": write_gen,
+        "_status": "complete",
+        "_error": None,
+    }
+
+
 def _ids(rows: list[dict[str, Any]], key: str = "cid") -> set[str]:
     return {r[key] for r in rows}
 
@@ -162,6 +200,76 @@ def _check_parent_child_filter(store: TableStore) -> None:
     assert kids == {"k1", "k2"}, f"read_rows with a _parent_id predicate must scope to one parent; got {kids}, expected {{'k1', 'k2'}}"
 
 
+def _check_binary_source_roundtrip(store: TableStore) -> None:
+    store.open(_binary_spec("c_bin"), [])
+    store.write_rows("c_bin", [_binary_row("a", _BLOB, 1, thumb=b"\xde\xad\xbe\xef")])
+    got = store.read_one("c_bin", "cid", "a")
+    assert got is not None, "read_one must find a row with a large_binary source column"
+    assert got["content"] == _BLOB, (
+        f"a large_binary source column must round-trip its exact bytes (no decode/re-encode). Got {got['content']!r}, expected {_BLOB!r}"
+    )
+    assert got["thumb"] == b"\xde\xad\xbe\xef", f"a large_binary derived column must round-trip its bytes; got {got.get('thumb')!r}"
+
+
+def _check_binary_in_updates(store: TableStore) -> None:
+    store.open(_binary_spec("c_bin_upd"), [])
+    store.write_rows("c_bin_upd", [_binary_row("a", _BLOB, 1)])
+    new_blob = _BLOB[::-1]  # different bytes, same length
+    store.write_rows("c_bin_upd", [_binary_row("a", new_blob, 2, thumb=b"\x01\x02")])
+    got = store.read_one("c_bin_upd", "cid", "a")
+    assert got is not None and got["content"] == new_blob, (
+        f"updating a large_binary column (write a newer generation) must return the new bytes; got {got['content']!r} expected {new_blob!r}"
+    )
+    assert got["thumb"] == b"\x01\x02", "a large_binary column set on a later generation must round-trip"
+
+
+def _check_binary_null(store: TableStore) -> None:
+    store.open(_binary_spec("c_bin_null"), [])
+    store.write_rows("c_bin_null", [_binary_row("a", _BLOB, 1, thumb=None)])
+    got = store.read_one("c_bin_null", "cid", "a")
+    assert got is not None and got.get("thumb") is None, (
+        f"a null large_binary derived column must read back as None, not empty bytes; got {got.get('thumb')!r}"
+    )
+
+
+def _check_read_rows_column_projection(store: TableStore) -> None:
+    store.open(_binary_spec("c_proj"), [])
+    store.write_rows("c_proj", [_binary_row("a", _BLOB, 1, label="alpha"), _binary_row("b", _BLOB, 1, label="beta")])
+
+    projected = store.read_rows("c_proj", columns=["cid", "label"])
+    assert {r["cid"] for r in projected} == {"a", "b"}, "projected read_rows must still return every matching row"
+    for r in projected:
+        assert set(r.keys()) == {"cid", "label"}, f"read_rows(columns=[...]) must return ONLY the requested columns; got keys {sorted(r.keys())}"
+
+    # A predicate on a non-projected column must still filter correctly.
+    filtered = store.read_rows("c_proj", [("label", "eq", "alpha")], columns=["cid"])
+    assert {r["cid"] for r in filtered} == {"a"}, "a predicate must apply even when its column is not in the projection"
+    assert all(set(r.keys()) == {"cid"} for r in filtered), "the projection must hold after a predicate on a non-projected column"
+
+    # columns=None (default) returns the full row.
+    full = store.read_rows("c_proj", [("cid", "eq", "a")])
+    assert full and full[0]["content"] == _BLOB, "read_rows with columns=None must return every column, including the blob"
+
+
+def _check_read_one_column_projection(store: TableStore) -> None:
+    store.open(_binary_spec("c_proj_one"), [])
+    store.write_rows("c_proj_one", [_binary_row("a", _BLOB, 1, label="alpha")])
+
+    got = store.read_one("c_proj_one", "cid", "a", columns=["label"])
+    assert got is not None and got == {"label": "alpha"}, (
+        f"read_one(columns=[...]) must return only the requested columns (blob excluded); got {got!r}"
+    )
+
+    # The identity column is always retrievable even though it is the match key.
+    by_id = store.read_one("c_proj_one", "cid", "a", columns=["cid"])
+    assert by_id == {"cid": "a"}, f"read_one must retrieve the identity column when it is the sole projection; got {by_id!r}"
+
+    # Newest-generation dedup must still hold under projection (needs _write_gen internally).
+    store.write_rows("c_proj_one", [_binary_row("a", _BLOB, 2, label="beta")])
+    newest = store.read_one("c_proj_one", "cid", "a", columns=["label"])
+    assert newest == {"label": "beta"}, f"read_one under projection must still return the newest generation; got {newest!r}"
+
+
 _CHECKS: list[Callable[[TableStore], None]] = [
     _check_open_and_roundtrip,
     _check_read_one_returns_newest_generation,
@@ -171,6 +279,20 @@ _CHECKS: list[Callable[[TableStore], None]] = [
     _check_max_write_gen,
     _check_evolve_schema,
     _check_parent_child_filter,
+    _check_binary_source_roundtrip,
+    _check_binary_in_updates,
+    _check_binary_null,
+]
+
+# Column projection is a capability, not a universal requirement: a store that
+# predates the ``columns=`` kwarg (its ``read_rows`` signature lacks it) still
+# conforms — it is simply never handed a projection. These checks run only when
+# the store advertises ``supports_column_projection()``. Any store that DOES
+# accept the kwarg must satisfy them, whether it projects natively (LanceDB) or
+# leans on the base-class ``_project_rows`` default.
+_PROJECTION_CHECKS: list[Callable[[TableStore], None]] = [
+    _check_read_rows_column_projection,
+    _check_read_one_column_projection,
 ]
 
 
@@ -180,12 +302,20 @@ def check_store_conformance(store: TableStore) -> None:
     Raises ``AssertionError`` listing every invariant the store violates (or
     ``TypeError`` if it isn't a ``TableStore``). Each check uses its own table, so
     a single store instance is fine — just make sure it starts empty.
+
+    The column-projection checks are conditional: they run only when the store
+    advertises ``supports_column_projection()`` (its read methods accept the
+    ``columns=`` kwarg). A store that predates projection stays fully green.
     """
     if not isinstance(store, TableStore):
         raise TypeError(f"store must subclass TableStore, got {type(store).__name__}")
 
+    checks = list(_CHECKS)
+    if store.supports_column_projection():
+        checks += _PROJECTION_CHECKS
+
     failures: list[str] = []
-    for check in _CHECKS:
+    for check in checks:
         label = check.__name__.removeprefix("_check_")
         try:
             check(store)
